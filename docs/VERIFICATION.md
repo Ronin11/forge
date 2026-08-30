@@ -100,8 +100,10 @@ Flow:
    renders the claims and the mode's instructions (`MODES.md` §verify); the
    transcript of the subject is never included — no shared context.
 3. The verify agent builds and runs the thing, hits endpoints, and for UIs drives a
-   browser with Playwright (`npx playwright`, installed in the worktree on demand;
-   Node is a test-time dependency only). Screenshots and logs are written to
+   browser with Playwright from `<home>/deps` (installed by `forge init
+   --with-browser`; the worker advertises `browser: ready` only when it is present,
+   and UI verification routes only to such workers; Node is a test-time dependency
+   only). Screenshots and logs are written to
    `{{artifacts}}` = `<data_dir>/artifacts/<verify-attempt-id>/`; Forge records each
    file as an `artifacts` row with size and SHA-256 after the attempt exits.
 4. The verify result's `verdict` decides the subject: `pass` → `succeeded`; `fail` or
@@ -121,8 +123,8 @@ the subject mode's `FollowUps` (`MODES.md`).
 A Target whose mode or routine requires L3 (`routines.verification = "L3"` raises the
 mode's level; it can never lower it) waits in `verifying` after L0–L2 pass, with an
 item in the human queue: the summary, the diff stat, the L1 output tails, the L2
-verdict and artifacts. `forge approve target:<id>` (`POST
-/api/v1/targets/{id}/approve`) → `succeeded`; `forge reject target:<id> "reason"` →
+verdict and artifacts. `forge task approve <task>` (`POST
+/api/v1/targets/{id}/approve`) → `succeeded`; `forge task reject <task> "reason"` →
 `unverified` with `unverified_reason = human_rejected`. Waiting time is
 recorded as `wait_human_us`.
 
@@ -139,7 +141,8 @@ recorded as `wait_human_us`.
 ## Forge's own UI
 
 The Forge UI has Playwright tests (`ui/tests/*.spec.js`, run by `just ui-test` inside
-`just check`) that start `forge serve` against a temporary database seeded with
+`just check`) that start `forge daemon start --foreground` with `FORGE_HOME` set to a
+temporary directory seeded with
 fixture data, click through every page, and assert on content. They are the L2
 mechanism for Forge itself and the fixture for smoke 22–23. Node and `npm` are needed
 only to run them; the Forge binary builds without Node.

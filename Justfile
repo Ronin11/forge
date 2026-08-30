@@ -9,9 +9,9 @@ errcheck_version := "v1.20.0"
 build:
     go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o forge ./cmd/forge
 
-# Run the control plane and a worker in one process (M1).
+# Run the daemon in the foreground (it spawns the worker) — M1.
 run: build
-    ./forge run
+    ./forge daemon start --foreground
 
 # gofmt must report nothing.
 fmt-check:

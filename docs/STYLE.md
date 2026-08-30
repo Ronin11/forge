@@ -145,8 +145,8 @@ Code should be obvious on first read, boring on second read, and still correct a
 
 ## 7. HTTP and CLI
 
-- The API is `/api/v1/…`, JSON, loopback only (`127.0.0.1:7340`). Worker routes carry
-  the token from `~/.forge/token`. Errors are `{"error": "…"}` with an appropriate
+- The API is `/api/v1/…`, JSON, on the Unix socket and the loopback listener with the
+  auth rules of `DESIGN.md` §1.1. Errors are `{"error": "…"}` with an appropriate
   status. Handlers validate, call one store or service method, encode the result —
   no business logic in handlers.
 - List endpoints are bounded (`limit`, default 50, max 500) and stable-ordered.
@@ -203,9 +203,10 @@ never evidence of what happened and nothing reads logs to decide anything.
 
 ## 9. Journal
 
-Every state change of a Work, Target, Attempt, Question, or Proposal writes one row
-to `journal(id, ts, kind, entity_type, entity_id, payload)` **in the same
-transaction** as the change, through the one store helper every state-changing
+Every state change of a Work, Target, Attempt, Question, or Proposal — and every
+daemon lifecycle event and plugin decision (`entity_type` `daemon`, `plugin`) —
+writes one row to `journal(id, ts, kind, entity_type, entity_id, payload)` **in the
+same transaction** as the change, through the one store helper every state-changing
 method calls. `id` is the monotonic order of events in the system; `payload` holds
 the transition (`from`, `to`, `reason`, and the actor). The journal is the audit
 trail and the input to "what happened to X"; it is never reconstructed from logs. A

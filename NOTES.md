@@ -64,6 +64,40 @@ Newest entries at the bottom of each section. Dates are absolute.
   stdio so the structured file never receives duplicate lines. The daemon/plugin work discussed
   separately (a `daemon` subcommand, plugin loading) is the M6/M7 delta; only the
   vocabulary (`daemon`, `plugin` component) is used here.
+- **2026-08-30 · M6's process model is designed in before M1** (human decision:
+  "fold M6 into the design now"). The daemon is the only SQLite opener; the worker
+  is a detached child (or a systemd unit); the CLI is a thin client over a Unix
+  socket with auto-start; `task` is the user-facing word. `forge run`/`forge
+  serve`/`forge submit`/`forge answer`/`forge approve` never exist — the V2
+  smoke steps are run with the M6 names (`docs/SMOKE.md`). M6 keeps only what
+  M1–M5 do not need: drain-restart, `init`, `doctor`, `service`, capabilities,
+  streaming (`logs -f`, `--wait`). Lease tolerance for a daemon restart is 120 s on
+  both sides (daemon extends live leases on start; worker holds on through 120 s
+  of failed heartbeats). Detached processes' raw stdio goes to
+  `<component>.stdio.log`, structured logs to `<component>.log` — a deliberate
+  split from the prompt's "stdio to worker.log" so the structured file never sees
+  duplicate or unstructured lines. L3 sign-off gets `forge task approve|reject`,
+  which the M6 tree lacked. `forge-m6-m7-prompt.md` stays the source for M7's
+  plugin/indicator detail until `docs/PLUGINS.md` is written at M7 start.
+- **2026-08-30 · Fold-in review decisions.** The CLI hands the daemon its locked
+  `daemon.lock` descriptor as an extra file (no unlocked window); the daemon keeps
+  lock and listener descriptors without `FD_CLOEXEC` across the drain `exec` (no
+  socket gap); the daemon unlinks a stale socket itself after locking. A daemon
+  start spawns a worker only if the worker data-dir lock is free; `daemon stop`
+  stops the worker it spawned (`--keep-worker`). `--repo` resolves name → path →
+  `<projects_root>/X` and registers unregistered checkouts on the fly by appending
+  to `worker.toml`, which the worker re-reads every registration tick; the daemon
+  re-reads `config.toml` only on restart (no SIGHUP mechanism). Lease extension on
+  daemon start covers every claimed/preparing/running Target regardless of stored
+  expiry. `complete` is idempotent by lease-token hash. `routine_name = "ad-hoc"`.
+  Journal gains `daemon` and `plugin` entity types. Spawned processes get a fixed
+  environment pass-through list (plugins included — a deliberate widening of
+  "nothing else" so Python/Node plugins can start). `doctor` is one package used
+  by the CLI (local checks, works with the daemon down) and `GET /api/v1/doctor`.
+  `--wait` exits with the derived task state. systemd units use `KillMode=process`
+  so the detached worker outlives a daemon restart. Schema-only handshake mismatch
+  is still a mismatch, with a "to migrate" hint. Plain `daemon restart` (no drain)
+  is M1 so M3 smoke 17 can restart; drain is M6.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;

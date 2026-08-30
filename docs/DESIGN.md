@@ -18,29 +18,180 @@ Companion documents: `CONSTITUTION.md` (fixed principles), `STYLE.md` (code stan
 ## 1. Shape
 
 ```
-                 ┌──────────────────────────────────────────────────────────┐
-  browser / CLI  │ control plane   forge serve   127.0.0.1:7340             │
-  ──────────────▶│  http api · scheduler · budget · queue · stats · ui      │
-                 │  SQLite (~/.forge/forge.sqlite3, WAL)     kb index       │
-                 └───────────▲───────────────────────────▲─────────────────┘
-                             │ register / claim / heartbeat│ tool calls (http, token)
-                             │ events / complete           │
-                 ┌───────────┴───────────────┐   ┌─────────┴──────────────────┐
-                 │ worker   forge worker     │   │ forge mcp --attempt <id>   │
-                 │  repos · git · worktrees  │   │  stdio MCP server, one per │
-                 │  manifests · supervisor   │──▶│  agent process; pure http  │
-                 │  parser · reconcile       │   │  client of the control     │
-                 └───────────┬───────────────┘   │  plane                     │
-                             │ exec, Setpgid       └────────────────────────────┘
-                     claude --print … (cwd = worktree)
+  forge <cmd> (thin CLI)   browser         plugins (M7)
+        │ unix socket        │ 127.0.0.1:7340   │ unix socket + scoped token
+        ▼                    ▼                  ▼
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │ forge daemon — the only process that opens SQLite                   │
+  │  http api (one mux, two listeners) · scheduler · budget · queue     │
+  │  stats · ui · plugin supervision · kb index                         │
+  │  SQLite (<forge home>/forge.sqlite3, WAL) · journal                 │
+  └───────────▲──────────────────────────────────▲───────────────────────┘
+              │ register / claim / heartbeat      │ tool calls (http)
+              │ events / complete                 │
+  ┌───────────┴───────────────┐        ┌──────────┴─────────────────────┐
+  │ forge worker (detached    │        │ forge mcp --attempt <id>       │
+  │ child of the daemon, or   │        │ stdio MCP server, one per      │
+  │ a systemd unit)           │──exec─▶│ agent process; http client of  │
+  │ repos · git · worktrees   │        │ the daemon; runs repo tools    │
+  │ manifests · supervisor    │        │ in-process                     │
+  │ parser · reconcile        │        └────────────────────────────────┘
+  └───────────┬───────────────┘
+              │ exec, Setpgid
+      claude --print … (cwd = worktree)
 ```
 
-`forge run` starts both halves in one process for the single-machine case; they still
-talk over loopback HTTP so the boundary is real and `just boundary` can prove the
-worker never imports the control plane.
+**Every `forge` command is a thin client.** One daemon owns the state; the CLI,
+worker, MCP server, and plugins reach it only through the HTTP+JSON API. If the
+daemon is not running, a command starts it (§1.2) and proceeds. `forge task add "…"
+--repo X` on a fresh machine works with no other setup (§1.3).
+
+### 1.1 Process model
+
+- **`forge daemon`** is the control plane, scheduler, budget policy, UI, kb index,
+  and plugin supervisor in one long-lived process, and the only process that opens
+  SQLite. It holds `flock(<home>/daemon.lock)` for its lifetime (the descriptor is
+  kept without `FD_CLOEXEC` so the lock survives the `exec` of §1.4) and writes
+  `<home>/daemon.json` (`pid`, `pid_start` from `/proc/<pid>/stat`, `worker_pid`,
+  `version`, `schema_version`, `socket`, `http`, `started_at`, `state:
+  running|draining`) atomically (tmp + rename). Liveness is never inferred from
+  `daemon.json` alone: `daemon status` and auto-start trust only "the lock is held"
+  (a non-blocking `flock` attempt, released on success) and `pid`+`pid_start`; a
+  file left by a `kill -9` is reported as stale. After taking the lock and before
+  `bind`, the daemon unlinks a leftover `forge.sock` itself (the lock proves no
+  other daemon owns it) and creates the new one under `umask 077`. It never
+  idle-exits. `forge daemon start` runs it detached (`--foreground` to stay
+  attached); `stop` sends SIGTERM and waits (`--force` SIGKILLs and leaves reconcile
+  to clean up); `restart` drains (§1.4); `status`, `logs [-f]`, `log-level LEVEL`.
+- **The worker is a separate process.** On start the daemon ensures a worker is
+  running: if the daemon itself runs under systemd (`INVOCATION_ID` set) it runs
+  `systemctl --user start forge-worker`; otherwise, if the worker data-directory
+  lock (`<home>/worker/lock`, §7.1) is free, it spawns `forge worker` as a detached
+  child (`setsid`, own process group, stdio to `<home>/logs/worker.stdio.log`,
+  environment reduced to the pass-through list below) and records `worker_pid`; if
+  the lock is held a worker from before the restart is still alive and is left
+  alone. The worker survives a daemon restart: it keeps executing, retries
+  heartbeats with backoff, reconnects, and re-registers immediately on the first
+  successful request after a failure (§14). `forge daemon stop` also stops the
+  worker it spawned (`--keep-worker` leaves it); a systemd-owned worker is
+  systemd's. `forge worker start` runs it by hand or under systemd.
+- **Environment pass-through** for every process Forge spawns (daemon, worker,
+  executor, plugin): exactly `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TERM`,
+  `XDG_*`, `SSH_AUTH_SOCK`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*`, `FORGE_*`, plus
+  what the spawner sets itself (`FORGE_LOG_*` from `logging.Environ`,
+  `FORGE_SOCKET`/`FORGE_TOKEN`/`FORGE_PLUGIN_DIR` for plugins). Nothing else
+  leaks from the parent.
+- **Transport.** The same API on two listeners: a Unix socket `<home>/forge.sock`
+  (mode 0600, directory 0700; filesystem permissions are the auth) for the CLI,
+  worker, MCP server, and plugins; and `127.0.0.1:7340` for the browser. One mux,
+  one handler set. Streaming endpoints (`task logs -f`, `--wait`, the journal) use
+  SSE with event ids and a `?since=` cursor so a client resumes after any restart.
+  **Auth:** over the socket every route is open (the peer is this uid); a client
+  presenting a plugin token is narrowed to that token's scopes (§17) — scopes are a
+  discipline on the same uid, not a security boundary. Over TCP, operator routes
+  are open to loopback; `/api/v1/worker/*`, `/attempts/*` (worker side), and
+  `/tools/*` require the worker token (`<home>/token`) or a plugin token.
+  `[http] listen` in `config.toml` (default `127.0.0.1:7340`; env `FORGE_HTTP`)
+  sets the TCP address; a bind failure is fatal with a one-line error naming the
+  port.
+- **`FORGE_HOME`** overrides `~/.forge` for every process (the CLI passes it to the
+  daemon and worker it spawns, and puts it in the per-attempt MCP config's `env`
+  together with `FORGE_SOCKET`, so `forge mcp` never depends on `claude` forwarding
+  the worker's environment); it exists for the fresh-box smoke test and for running
+  two Forges side by side.
+
+### 1.2 Auto-start (each step guards a real race)
+
+1. Connect to the socket, retrying for up to 2 s (a daemon mid-`exec`, §1.4, is
+   not down). On success, `GET /api/v1/handshake`, then proceed.
+2. If `~/.config/systemd/user/forge.service` exists **and** `FORGE_HOME` is unset or
+   is `~/.forge` (a unit serves only the default home), run `systemctl --user start
+   forge`; if that fails, print its stderr and exit non-zero; otherwise wait for
+   the socket (≤ 10 s) and never spawn a daemon yourself.
+3. Otherwise take `<home>/daemon.lock` with a non-blocking `flock`. If it is held,
+   someone else (a live daemon, or another CLI starting one) owns it: wait for the
+   socket ≤ 10 s, then fail with `daemon pid N is running but <home>/forge.sock is
+   missing — run 'forge daemon restart'` (or, if `daemon.json` names a dead pid,
+   with a hint to remove the stale lock).
+4. Holding the lock, remove a stale socket file and spawn `forge daemon` detached
+   (`setsid`, stdio to `<home>/logs/daemon.stdio.log`, the pass-through
+   environment) **passing the locked descriptor as an extra file**: `flock` belongs
+   to the open-file description, so the child inherits the lock with no window in
+   which nobody holds it; the daemon keeps that descriptor. The CLI closes its copy
+   once `daemon.json` shows the new pid (≤ 5 s; on timeout it closes it anyway,
+   prints the tail of `daemon.stdio.log`, and exits non-zero), then polls the
+   socket (≤ 5 s) and proceeds.
+5. **Handshake** returns `version` and `schema_version`. On mismatch of either the
+   CLI prints one line — `forge: daemon is v0.3.1, this CLI is v0.4.0 — run 'forge
+   daemon restart'` (for a schema-only mismatch: `— run 'forge daemon restart' to
+   migrate`) — and exits non-zero. It never auto-restarts on mismatch. The commands
+   that *are* the cure — `daemon restart|stop|status|logs`, `doctor`, `version` —
+   print the line as a warning and continue.
+
+Commands that never auto-start the daemon: `daemon start|stop|status|logs`,
+`service *`, `worker start`, `mcp`, `version`, `doctor` (which inspects the
+database by `stat()` only and never opens SQLite), and `cleanup`/`prune`, which
+read `worker.toml` and touch worker files locally and call the API only if the
+daemon is already up.
+
+### 1.3 Bootstrap vs. `init`
+
+- **Implicit bootstrap** runs on every daemon start, idempotently, without prompts
+  or network: create `<home>` (0700) and its subdirectories (`logs`, `logs/plugins`,
+  `worker`, `kb`, `modes`, `plugins`, `deps`), the worker token, the schema
+  (migrations), the `default` project, seed `modes/*.md` and the default
+  `<home>/config.toml` (daemon: `[http]`, `[budget]`, `[kb]`, `[log]`) and
+  `<home>/worker.toml` (only if absent). The Forge repository is registered in the
+  seeded `worker.toml` only when the running binary sits inside a Git checkout
+  (`os.Executable()` and its parents); otherwise it is skipped and `init` offers it.
+- **Repositories on the fly.** `--repo X` resolves in order: a registered name; a
+  path (absolute, or relative to the cwd); `<projects_root>/X` (`[repositories]
+  projects_root` in `config.toml`, default `~/Projects`). An unregistered checkout
+  with an `origin` is registered on the fly under its directory name: the daemon
+  appends the entry to `worker.toml` (the daemon owns every file bootstrap writes)
+  and the worker re-reads `worker.toml` on its next registration tick (≤ 30 s) and
+  advertises it. This is what makes `forge task add "say hi" --repo equitizr` work
+  on a fresh box. `init` writes the same files; the daemon re-reads `config.toml`
+  only on `daemon restart`.
+- **`forge init`** is the optional interactive half (`--yes` takes defaults):
+  detect `claude`, `gh`, `git`, `node`/`npx` and report versions; offer to register
+  repositories (Git checkouts with an `origin` under `~/Projects`, plus the Forge
+  repo, pre-checked); choose the kb path; `--service` installs the systemd user
+  units (`forge.service`, `forge-worker.service`); `--with-browser` installs
+  Playwright under `<home>/deps/` (never global). It prints what it did and skipped.
+- **`forge doctor`** re-runs every detection — binaries, auth, socket, daemon
+  version, DB permissions, disk space, stale locks, orphaned worktrees, plugin
+  health — as a table with a fix hint per red row; exit non-zero if anything is red.
+  One `doctor` package holds every check; the CLI runs the local ones (binaries,
+  socket, lock, permissions, disk) itself so it works with the daemon down, and asks
+  `GET /api/v1/doctor` for the rest when the daemon is reachable.
+- **systemd units** (`forge service install`): `forge.service` — `Type=simple`,
+  `ExecStart=<abs forge> daemon start --foreground`, `KillMode=process` (the
+  detached worker is not the unit's to kill), `Restart=on-failure`,
+  `Environment=FORGE_HOME=<home>`; `forge-worker.service` — same shape with
+  `worker start`, `After=forge.service`. `install` enables both; `uninstall`
+  disables and removes them. Linger is never enabled by Forge; `doctor` mentions
+  `loginctl enable-linger` when the units exist and linger is off.
+
+### 1.4 Restart with drain
+
+`forge daemon restart` sends `POST /api/v1/daemon/drain {exec, timeout}` where
+`exec` is the CLI's own `os.Executable()` (the daemon's `/proc/self/exe` may read
+`(deleted)` after an upgrade); the daemon checks it is a regular executable file.
+Draining: stop admitting (`claim` and operator writes answer 503 — a 5xx, so the
+worker keeps retrying rather than disabling sends, §8); keep serving worker
+heartbeats, events, and completions; close SSE streams with a `retry` hint (clients
+resume from their cursor); set `state: draining` in `daemon.json` and the UI; journal
+`daemon.draining`; wait up to `timeout` (default 30 s) for remaining in-flight
+requests; then `exec` the new binary with `FORGE_HOME`, `logging.Environ`, the lock
+descriptor, and **both listener descriptors** inherited — no socket gap, same pid,
+same lock. The new process journals `daemon.restarted`. Running attempts continue on
+the worker throughout.
+
+`forge run` and `forge serve` do not exist; the one long-lived operator-facing
+process is the daemon.
 
 Trust model: one operator, one machine. Worktrees isolate Git state, not hostile code.
-The API is loopback-only; worker and MCP routes carry the token from `~/.forge/token`.
 
 ## 2. Identifiers and naming
 
@@ -103,7 +254,7 @@ verified against.
 ### Project
 
 `projects(id, name UNIQUE, autonomy, budget_class, priority_baseline)`. Every
-repository belongs to exactly one project; `default` is created by `forge init`.
+repository belongs to exactly one project; `default` is created by bootstrap.
 
 ### Routine
 
@@ -129,9 +280,15 @@ questions have an exact answer. `source` is `edit` or `proposal:<id>`.
 
 ### Work
 
-`work(id, routine_id NULL-able, routine_name, generation, trigger, snapshot JSON,
-priority, budget_class, autonomy, scheduled_for, submitted_by, created_at,
-finished_at)`. `trigger ∈ {manual, schedule, proposal, dependency}`. `snapshot` is the
+`work(id, routine_id NULL-able, routine_name, generation, title, trigger, snapshot
+JSON, priority, budget_class, autonomy, scheduled_for, submitted_by, external_refs
+JSON, created_at, finished_at)`. `trigger ∈ {manual, schedule, proposal,
+dependency, plugin}`. **The user-facing word is "task"**: `forge task add` creates a
+Work; the UI, CLI, and docs say task; Work and Target remain the internal names
+and never appear in the UI. `task add` without `--routine` creates an **ad-hoc**
+Work: `routine_id NULL`, `routine_name = "ad-hoc"` (a valid name; the UI shows "ad
+hoc"), an inline snapshot built from
+the flags (`--mode`, `--model`, `--autonomy`, …) and the mode's defaults. `snapshot` is the
 frozen routine (byte-for-byte what ran). `priority` is mutable (queue reordering);
 `finished_at` is written once, at the terminal transition (it bounds the 24 h
 attention window); everything else is immutable after creation. Blocked and deferred
@@ -149,7 +306,7 @@ Work state is **derived**, never stored (§4.2).
 
 `targets(id, work_id, repository_name, state, worker_id, lease_token_hash,
 lease_expires_at, cancel_requested, retained, failure_reason, unverified_reason,
-claimed_at, started_at, finished_at)`. One per repository in the Work; unique on
+external_refs JSON, claimed_at, started_at, finished_at)`. One per repository in the Work; unique on
 `(work_id, repository_name)`. `worker_id` is set at first claim and pins later claims
 (resume) to the worker that owns the worktree; a pinned Target whose worker is not
 connected stays `pending` with a visible reason (`waiting for worker <name>`) — it is
@@ -195,7 +352,11 @@ Defined in §9. Immutable once written.
 
 `proposals(id, source, kind, target, before JSON, after JSON, rationale,
 verification_plan, status, decided_by, decided_at, applied_ref, outcome_metrics JSON,
-created_at)`. §12.
+external_refs JSON, created_at)`. §12.
+
+`external_refs` (Work, Target, Proposal) is `[{plugin, kind, id, url, label}]`,
+written by plugins with `annotate:write` and rendered by the UI generically as
+links (§17).
 
 ### KbNote, KbLink
 
@@ -204,15 +365,29 @@ created_at)`. §12.
 
 ### Worker
 
-`workers(id, name, version, max_concurrent, active, executors JSON, registered_at,
-last_seen_at)` and `retained_worktrees(attempt_id, worker_id, path, reason,
-cleanup_command)` reported on every registration.
+`workers(id, name, version, max_concurrent, active, executors JSON, capabilities
+JSON, registered_at, last_seen_at)` and `retained_worktrees(attempt_id, worker_id,
+path, reason, cleanup_command)` reported on every registration. `capabilities` is
+discovered at worker start: `browser: ready|missing` (Playwright + Chromium under
+`<home>/deps`), and per executor `ready|missing|unauthenticated`. Modes requiring
+L2 UI verification route only to workers with `browser: ready`; the Workers page
+(renamed **System** in M7) shows them.
+
+### Plugin
+
+`plugins(name PRIMARY KEY, version, kind ∈ {first_party, third_party}, path,
+enabled, scopes JSON, token_hash, cursor, installed_at, enabled_at)`. `cursor` is
+the last journal id the plugin acknowledged (§17). Tokens are minted at enable
+time with exactly the declared scopes; the plain token is handed to the process
+in its environment and only its hash is stored.
 
 ### Journal
 
 `journal(id INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, entity_type, entity_id,
 payload JSON)`. One row per state change of a Work, Target, Attempt, Question, or
-Proposal (`entity_type`), written **in the same transaction** as the change by the
+Proposal (`entity_type`), plus `daemon` (`daemon.started|draining|restarted|
+leases_extended`) and `plugin` (`plugin.enabled|disabled|forbidden|restarted`) rows,
+written **in the same transaction** as the change by the
 single store helper every state-changing method calls (`store.journal(tx, …)`). `id`
 is the monotonic order of events across the whole system; `kind` names the change
 (`target.transition`, `work.priority`, `question.answered`, `proposal.decided`, …);
@@ -376,7 +551,7 @@ Each numbered step is a phase span (§8) unless noted. The worker records
 A `needs_input` result at step 8 (autonomy < `auto`) becomes: write the Question,
 Target → `waiting_human`, manifest `exited` with `resumable = true`, worktree and
 session kept, slot freed. At `auto` it is `failed:ambiguity_at_auto`. Answering
-(`forge answer`, UI) re-queues the Target as `pending` pinned to the owning worker;
+(`forge task answer`, UI) re-queues the Target as `pending` pinned to the owning worker;
 the resume launch runs steps 5–10 with `--resume <session_id>` and the answer as the
 prompt, continuing `seq` and `elapsed_us` from the manifest.
 
@@ -417,7 +592,7 @@ the raw output file and events are the record.
 Read `~/.forge/worker.toml`:
 
 ```toml
-control_plane = "http://127.0.0.1:7340"
+daemon        = "unix://~/.forge/forge.sock"   # or http://127.0.0.1:7340 with token_file
 token_file    = "~/.forge/token"
 name          = "laptop"
 max_concurrent = 4
@@ -694,6 +869,8 @@ One home: `controlplane/budget.Decide(now, Usage, class, cfg) Decision{Admit boo
 Reason string}`, pure and table-tested. Evaluated at claim time (claim *is*
 admission) and, for display, when listing the queue.
 
+In `<home>/config.toml`:
+
 ```toml
 [budget]
 five_hour_target    = 0.90
@@ -753,12 +930,12 @@ dashboard's "attention" panel is a view of it: open Questions; proposals in
 `proposed`; Targets in `verifying` awaiting L3; `notify`-level checkpoint events from
 the last 24 h (informational, no acknowledgement — they age out); Work that ended
 `partial`/`failed`/`unverified` in the last 24 h; retained worktrees. Each row: what,
-from which attempt/routine, waiting since, and the action. `forge answer <question>
-"…"`, `forge approve|reject <proposal>`, `forge approve|reject target:<id>`.
+from which attempt/routine, waiting since, and the action. `forge task answer <task>
+"…"`, `forge proposal approve|reject <id>`, `forge task approve|reject <task>` (L3).
 
 ## 11. Knowledge base
 
-Markdown notes under `[kb] path` (default `~/.forge/kb`). Frontmatter: `id`
+Markdown notes under `[kb] path` in `<home>/config.toml` (default `<home>/kb`). Frontmatter: `id`
 (immutable, equals the filename stem), `title`, `type ∈ {retro, hypothesis, proposal,
 spec, note}`, `created`, `links: {about: [], supersedes: [], evidence_for: []}`,
 `tags`. Inline links `[[id]]`. Fact links use the grammar in §2.
@@ -795,7 +972,14 @@ Funnel stats: proposed → approved → applied → reverted, and cost per appli
 
 ## 13. HTTP API (summary)
 
-Operator (loopback): `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
+Both listeners serve every route; authorisation is by transport and token (§1.1).
+
+Daemon: `GET /api/v1/handshake` → `{version, schema_version, state}`; `POST
+/api/v1/daemon/drain`; `GET|POST /api/v1/log-level`; `GET /api/v1/journal?since=<id>`
+(SSE, one event per journal row, `id` = journal id, so a client resumes from its
+cursor with no gaps); `GET /api/v1/doctor`.
+
+Operator: `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
 `GET|PUT|DELETE /api/v1/routines/{name}`, `POST /api/v1/routines/{name}/run`;
 `GET|POST /api/v1/work`, `GET|PATCH|DELETE /api/v1/work/{id}`; `GET /api/v1/queue`;
 `GET /api/v1/attention`; `GET /api/v1/attempts/{id}`, `GET
@@ -803,7 +987,18 @@ Operator (loopback): `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
 /api/v1/targets/{id}/approve|reject` (L3); `GET|POST
 /api/v1/proposals`, `POST /api/v1/proposals/{id}/approve|reject`; `GET /api/v1/stats`;
 `GET /api/v1/retro`; `GET /api/v1/usage`; `GET /api/v1/workers`; `GET
-/api/v1/repositories`; `GET /api/v1/kb/...`; `GET|POST /api/v1/log-level` (§15).
+/api/v1/repositories`; `GET /api/v1/kb/...`. `/api/v1/tasks[...]` is an alias of
+`/api/v1/work[...]` so URLs match the user-facing word; both accept
+`external_refs`. `GET /api/v1/work/{id}/stream?since=<journal id>` (SSE: the
+Work's journal rows and its attempts' events, each with an `id`) backs `task logs
+-f` and `--wait`, which reconnect from their last id until the Work is terminal.
+
+Plugins (scoped token): `GET|POST /api/v1/plugins`, `POST
+/api/v1/plugins/{name}/enable|disable`, `POST /api/v1/plugins/{name}/ack
+{cursor}`, `GET /api/v1/plugins/{name}/status`; plus whichever operator routes the
+token's scopes allow (`work:write` → create Work with `external_refs`;
+`annotate:write` → `PATCH …/external_refs`). A request outside scope is 403 and
+journaled (`plugin.forbidden`).
 
 Worker (token): `POST /api/v1/worker/register`; `POST /api/v1/worker/claim`; `POST
 /api/v1/attempts/{id}/heartbeat`; `POST /api/v1/attempts/{id}/events`; `POST
@@ -821,18 +1016,34 @@ by `forge mcp` as an `mcp`-source span through `POST /api/v1/attempts/{id}/event
 ## 14. Leases, crashes, and what can never be lost
 
 - Claim → 30 s lease; heartbeat every 10 s renews and returns `cancel_requested`;
-  completion requires the lease token (hash compare). A sweeper (every 10 s, and on
-  start) moves expired-lease Targets in `claimed`/`preparing`/`running` to
-  `failed:lease_expired` and computes their facts. `pending`, `waiting_human`, and
+  completion requires the lease token (hash compare). A sweeper (every 10 s) moves
+  expired-lease Targets in `claimed`/`preparing`/`running` to
+  `failed:lease_expired` and computes their facts. **Daemon restarts do not expire
+  running attempts:** on start, before the sweeper's first tick, the daemon sets
+  `lease_expires_at = now + 120 s` on **every** Target in
+  `claimed`/`preparing`/`running` regardless of its stored expiry, and journals
+  `daemon.leases_extended`; so a restart of up to 120 s (requirement: ≥ 60 s) is
+  invisible to the worker. The worker, for its part, keeps the agent running while
+  heartbeats fail, retrying with one shared backoff (1 s → 10 s, also used for claim
+  polling while the daemon is down), re-registers immediately on the first success
+  (and a heartbeat counts as liveness, so the 90 s "connected" rule never lags a
+  live worker), and only declares `lease_expired` locally after 120 s without a
+  successful heartbeat. A completion that arrives after that is still accepted for
+  its git/cleanup fields (§5.10). `complete` is idempotent: a retry for an attempt
+  already terminal with the same lease token hash returns 200 with the stored
+  outcome. `claim_request_id` is minted per claim attempt and reused only when the
+  previous attempt ended in a transport error or 5xx. `pending`, `waiting_human`, and
   `verifying` hold no lease; a `verifying` Target is resolved by its `verify` Work's
   terminal transition or a human, never by the sweeper.
 - Worker killed mid-attempt: the lease expires (Target `failed:lease_expired`); the
   restarted worker's reconcile finds the manifest, kills the orphan process group,
   inspects, cleans or retains, and patches the cleanup fields. Nothing leaks (smoke 7).
-- Control plane killed mid-attempt: the worker keeps running (heartbeats fail, it
-  retries until its own view of the lease expiry passes, then stops the agent as
-  `lease_lost`); on restart the sweeper fails the Target; a late completion is
-  accepted for its git/cleanup fields (smoke 8).
+- Daemon killed mid-attempt: the worker keeps running and retrying heartbeats;
+  the next CLI call auto-starts the daemon, which extends live leases before
+  sweeping, so the attempt's completion is accepted normally (smoke 8, M6 smoke
+  6). Only if the daemon stays down longer than 120 s does the worker stop the
+  agent as `lease_expired`; the completion is then accepted for its git/cleanup
+  fields.
 - Control plane killed mid-claim: the claim transaction either committed (the worker
   gets no response, retries with the same `claim_request_id` and receives the same
   Attempt via the unique index) or did not (the Target is still `pending`).
@@ -852,8 +1063,8 @@ the process-level shape.
   are dotted (`controlplane.http`, `controlplane.scheduler`, `store`, `worker.git`,
   `worker.supervisor`, `worker.parser`, `tools.<name>`).
 - **Sinks.** stderr at the operator's levels (`--log-level`, `--log-format`, `-v`,
-  `-vv`; `FORGE_LOG_LEVEL`, `FORGE_LOG_FORMAT`; `[log]` in `forge.toml` and
-  `worker.toml`; flag > env > config > default `info`/`text`). The daemon and worker
+  `-vv`; `FORGE_LOG_LEVEL`, `FORGE_LOG_FORMAT`; `[log]` in `<home>/config.toml` and
+  `<home>/worker.toml`; flag > env > config > default `info`/`text`). The daemon and worker
   also always write JSON at `debug` to `<forge home>/logs/daemon.log` and
   `<forge home>/logs/worker.log` — one file per process, and there is never more
   than one of either process (daemon lock, worker data-dir lock); rotation by size
@@ -871,7 +1082,7 @@ the process-level shape.
 - **Runtime control.** `POST /api/v1/log-level {"levels": "debug,store=trace"}` and
   `GET /api/v1/log-level` (`forge daemon log-level X` is the CLI); SIGUSR1 toggles
   debug in any long-running Forge process. Propagation: the daemon signals or
-  re-informs the children it started (the worker under `forge run`), the worker
+  re-informs the children it started (the worker it spawned), the worker
   reads the daemon's level on every registration and applies it, and `forge mcp`
   reads it at start; every Forge-spawned Forge child also inherits
   `FORGE_LOG_LEVEL`/`FORGE_LOG_FORMAT` from the parent's live handler
@@ -891,7 +1102,112 @@ copied from the build specification and run against the real repositories at the
 end of each milestone; the milestone report records the commands and observed
 output for each.
 
-M0 this document and its companions, scaffold. M1 model + store + worker + control
-plane + `forge run` + basic pages (smoke 1–10). M2 `forge mcp`, tools, kb, prompt
-versions (11–14). M3 budget, queue, questions, human queue, stats, retro pack
-(15–19). M4 modes, verification, browser tests (20–23). M5 reflection (24–27).
+The daemon model of §1 was designed in before M1 (decision 2026-08-30, NOTES.md), so
+nothing is built to be replaced:
+
+- **M1** model + store (every table, including `journal`, `plugins`,
+  `external_refs`) + worker + daemon (`daemon start|stop|status|log-level`, lock,
+  `daemon.json`, socket + TCP, handshake, auto-start §1.2, bootstrap §1.3, lease
+  extension on start, journal SSE, plain `daemon restart` without drain) + thin
+  CLI (`task add|list|show|cancel`, `routine add|list|show|edit|run|enable|disable`,
+  `cleanup`, `worker start`, `version`) + facts + basic pages. Smoke 1–10.
+- **M2** `forge mcp`, tools, kb, `prune`, prompt versions. Smoke 11–14.
+- **M3** budget, queue (`queue list|move|block`), questions (`task answer`), human
+  queue, stats, `usage`, `retro` pack. Smoke 15–19.
+- **M4** modes, verification, browser tests. Smoke 20–23.
+- **M5** reflection (`proposal list|show|approve|reject`). Smoke 24–27.
+- **M6** what remains of the daemon work: drain on `daemon restart`, `daemon logs
+  -f`, `task logs -f`, `--wait`, `forge init` (interactive; `--service`,
+  `--with-browser`), `forge doctor`, `forge service install|uninstall|status`,
+  worker capabilities and browser routing. Smoke M6 1–10.
+- **M7** plugins (§17) and the Omarchy indicator. Smoke M7 1–8.
+
+## 17. Plugins (M7)
+
+Integrations live outside the core. The core knows a manifest, a process, a token
+with scopes, a journal stream, and MCP aggregation.
+
+A plugin is a directory — first-party under `plugins/<name>/` in the repo (embedded,
+installed with `forge plugin install <name>`), third-party under
+`<home>/plugins/<name>/` — with `plugin.toml`: `name`, `version`, `description`,
+`command` (argv, relative to the plugin dir, any language), `capabilities ⊆
+{events, tools, intake, annotate}`, `scopes`, `restart ∈ {always, on-failure,
+never}`.
+
+- **events** — the plugin consumes `GET /api/v1/journal?since=<cursor>` (SSE). The
+  daemon persists the cursor from `POST /api/v1/plugins/<name>/ack` so a restarted
+  plugin resumes with no gaps and no duplicates beyond its last ack.
+- **tools** — the plugin is an MCP server on its stdio; `forge mcp` aggregates core
+  tools with enabled plugins' tools, namespaced `<plugin>_<tool>`, still gated per
+  mode by `--allowedTools` and by the plugin's scopes (`tools:provide`). A plugin
+  tool call is a span like any other.
+- **intake** — the plugin creates Work through the API with `external_refs`; how it
+  learns of work (poll, webhook) is its business.
+- **annotate** — `external_refs` on Work/Target/Proposal, rendered as links.
+
+Core responsibilities (the complete list): discover and validate manifests;
+supervise processes (start on daemon start, restart per `restart` with exponential
+backoff, stderr captured into `<home>/logs/plugins/<name>.log` with
+`component=plugin.<name>`); mint a per-plugin token carrying only the declared
+scopes, shown and approved at `forge plugin enable`; refuse out-of-scope requests
+with 403 and a journal row; serve the journal stream with cursors; aggregate MCP
+servers; store `external_refs`; expose plugin health on the System page and in
+`forge doctor`. `forge plugin list|install|uninstall|enable|disable|logs|status`.
+A plugin's environment is exactly `FORGE_SOCKET`, `FORGE_TOKEN`,
+`FORGE_PLUGIN_DIR`, `FORGE_LOG_LEVEL`, `FORGE_LOG_FORMAT`, plus the pass-through
+list of §1.1 (a deliberate widening of the prompt's "nothing else": without `PATH`
+and `HOME` a Python or Node plugin cannot start; recorded in NOTES.md).
+
+Scopes: `events:read`, `work:read`, `work:write`, `usage:read`, `kb:read`,
+`kb:write`, `proposal:read`, `tools:provide`, `annotate:write`.
+
+The first plugins are `status-file` (Go, first-party, `events`; maintains
+`~/.local/state/forge/status.json` atomically on every relevant journal event and
+a 5 s heartbeat; `state` is computed in exactly one function: `throttled` if a
+budget hard stop is active, else `attention` if the human queue is non-empty or
+anything failed in the last hour, else `working` if any attempt is running, else
+`idle`) and `omarchy-indicator` (a Quickshell bar widget + panel installed into
+`~/.config/omarchy/plugins/ronin.forge/` that reads the status file; consumers treat
+`ts` older than 30 s as "daemon down"). Their full specification is
+`forge-m6-m7-prompt.md` §M7; it is copied into `docs/PLUGINS.md` when M7 starts.
+
+## 18. Command tree
+
+Every command is a thin client (§1); each accepts the logging flags (`STYLE.md` §8),
+has `--help`, and returns non-zero with a one-line error on bad input. There are no
+aliases for older names.
+
+```
+forge init | doctor | version
+forge task add "<prompt>" [--repo X]... [--mode run] [--routine R] [--priority N]
+               [--class interactive|normal|backlog] [--autonomy L]
+               [--after WORK_ID]... [--model M] [--wait]
+forge task list [--state S] | show ID | logs ID [-f] | cancel ID | answer ID "…"
+forge task approve|reject ID ["reason"]          # L3 sign-off
+forge routine add|list|show|edit|run|enable|disable NAME
+forge queue [list] | queue move ID --before ID | queue block ID --on ID
+forge proposal list|show|approve|reject ID
+forge usage | stats | retro | prune | cleanup
+forge kb new|resolve|backlinks|links|graph|search|check|export
+forge daemon start|stop|restart|status|logs|log-level
+forge service install|uninstall|status
+forge worker start
+forge plugin list|install|uninstall|enable|disable|logs|status   # M7
+forge mcp --attempt ID                                            # spawned by the agent
+```
+
+`task add`: `--repo` is required without `--routine` and optional with it (it
+narrows the routine's repositories); the prompt is required without `--routine` and
+optional with it (it replaces the routine prompt for this task only). `--class`
+defaults to `interactive` for human submissions (§10.3). `task answer` on a task with
+one open Question answers it; with several, `--question ID` selects. `--wait`
+streams progress (SSE, resuming across restarts) and exits with the task's derived
+state (§4.2): 0 `succeeded`, 1 `failed`/`partial`/`cancelled`, 3 `unverified`, 4
+`waiting_human` when the human is not the caller.
+
+`routine add NAME` takes flags for the common fields (`--mode --prompt --repo… --model
+--effort --max-turns --timeout --schedule --autonomy --class --priority`) and
+`--from FILE.toml` for everything; `routine edit NAME` opens the routine as TOML in
+`$EDITOR` (or applies `--from`) and carries the generation so a stale write is a 409.
+
+Commands that do not auto-start the daemon are listed in §1.2; everything else does.

@@ -9,8 +9,9 @@ default budget class and autonomy.
 // internal/modes
 type Mode interface {
     Name() string
-    // PromptTemplate is the embedded default; the live copy is ~/.forge/modes/<name>.md,
-    // seeded by `forge init`, and is what actually runs (so proposals can target it).
+    // PromptTemplate is the embedded default; the live copy is <home>/modes/<name>.md,
+    // seeded by daemon bootstrap (DESIGN.md §1.3), and is what actually runs (so
+    // proposals can target it).
     PromptTemplate() string
     AllowedTools() []string          // Claude built-ins and forge_* tools
     ResultSchema() json.RawMessage   // passed via --json-schema
@@ -33,7 +34,7 @@ embedded default prompt, and its schema) plus one `Register` call.
 
 Every attempt's prompt is rendered from three layers, in this order:
 
-1. **Mode preamble** (`~/.forge/modes/<mode>.md`) — the mode's rules, the result
+1. **Mode preamble** (`<home>/modes/<mode>.md`) — the mode's rules, the result
    contract, and the autonomy instructions for the level in force.
 2. **Routine prompt** — the routine's `prompt` with `{{repo}}` substituted (and, for
    scheduled Work, a line with the occurrence time).
@@ -207,6 +208,10 @@ shared context.
 - **Tools:** `Read`, `Grep`, `Glob`, `Bash`; `forge_check`, `forge_attempt`,
   `forge_repo_status`. No `Edit`/`Write` (artifacts are written by Bash to
   `{{artifacts}}`, outside the worktree).
+- **Routing:** a verify Work whose subject declares a UI (the subject result's
+  `claims[]` carry `kind: "ui"`, or the repository's `forge.toml` sets
+  `[verify] ui = true`) is claimable only by a worker advertising `browser: ready`;
+  otherwise any worker.
 - **Result:** envelope + `verdict: "pass|fail|inconclusive"`, `claims_checked[]
   {claim, result: "confirmed|refuted|unverifiable", evidence, artifact}`.
 - **Verification:** L0 with `Writes() == None` (it *is* verification of its subject;
@@ -282,7 +287,8 @@ Data pack in → kb retro note + proposals out. Tools only.
 - **Result:** envelope + `note_id`, `proposals[] {id, kind, target}`,
   `hypotheses[] {statement, metric, expected_delta}`.
 - **Verification:** L0 with `Writes() == KbOnly` — the attempt runs in a worktree of
-  the `forge` repository (registered by `forge init`, `DESIGN.md` §7.1) purely for a
+  the `forge` repository (registered by bootstrap when the binary lives in a checkout,
+  else by `forge init`; `DESIGN.md` §1.3) purely for a
   cwd; nothing may be written there.
 - **Checkpoints:** none. **Budget class:** `backlog`. **Autonomy:** `auto`.
   **Writes:** `KbOnly` (+ proposals).
