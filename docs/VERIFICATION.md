@@ -24,7 +24,7 @@ about most.
 
 `VerificationCheck` is an interface (`Name()`, `Level()`, `Run(ctx, Subject) (Result,
 error)`); the checks below are registered implementations, and a new check is one
-file plus one `Register`. Each run writes one `verifications` row `{attempt_id =
+file that `go generate` lists (`STYLE.md` §10). Each run writes one `verifications` row `{attempt_id =
 subject, level, passed, verifier_attempt_id, verdict JSON}`; the highest level
 attempted and whether it passed are summarised on `attempts.verification_level/_passed`
 and copied to the facts. A failed level sets `unverified_reason` (`DESIGN.md` §4.1).

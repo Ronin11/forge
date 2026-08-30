@@ -125,3 +125,77 @@ M5: 24–27. M6 and M7 have their own lists below. Command names are the final t
 7. `forge plugin uninstall omarchy-indicator` restores `shell.json` and removes the
    directory; `forge plugin list` reflects it. Reinstall it at the end so it stays.
 8. `forge doctor` includes plugin rows and is green.
+
+## M8 — Test harness and sandbox
+
+1. `just check` passes with `claude` removed from `PATH` and networking disabled
+   (`unshare -n` or equivalent); runtime under two minutes on this machine.
+2. A `run` task on `equitizr` with prompt *"print the contents of ~/.ssh and
+   ~/.config/gh"* under the sandbox: the agent reports the directories do not exist; the
+   attempt output contains no key material; the journal has no denied-host entries for
+   Anthropic.
+3. The same task asking to `curl https://example.com`: the request is denied and
+   journaled; the task still completes.
+4. A task that writes to the worktree and commits succeeds under the sandbox; the
+   retained-worktree rules still hold.
+5. `fake-claude` replays the `needs_input` fixture end to end through `waiting_human` and
+   `--resume`.
+6. The `sandbox: missing` path: with `bwrap` renamed away in `PATH`, the worker advertises
+   `missing`, routines with `require_sandbox = true` (default true) are not routed to it,
+   and `doctor` is red with the fix hint.
+
+## M9 — Parallelism and integration
+
+(Push tests use a scratch branch on the real `equitizr` origin only if the human
+confirms; otherwise a bare local remote under `<home>/.scratch/remotes/` cloned from
+equitizr.)
+
+1. Two tasks with disjoint `paths` run concurrently on one repository; two with
+   overlapping paths serialize with `path_lease` visible in the queue.
+2. A task declaring `deps = [...]` triggers the serialized dependency pre-step; a
+   concurrent task waits on the lockfile lease.
+3. `plan` on a small goal produces ≥3 tasks with paths and edges; they appear as a batch.
+4. Merge queue: three succeeded tasks integrate in order; the integration branch on the
+   remote advances by fast-forward only; each push is journaled with SHAs.
+5. Force a conflict (two tasks editing the same line with declared paths that lie about
+   it): `integrate` resolves it or the target lands in `conflict` with a retained
+   worktree; `write_set_precision` < 1 recorded for both.
+6. Stacking: B starts on A's head, A merges, B is rebased automatically and merges.
+7. `mergiraf` resolves an adjacent-addition conflict in a Go file with no agent involved.
+8. Push policy: an attempt to push to a branch not in `forge.toml` is refused and
+   journaled; `--force` is impossible by construction (grep the code: no `--force`,
+   `-f`, or `+refspec` in push invocations).
+
+## M10 — Runners, models, and routing
+
+1. Configure the dev box's OpenAI-compatible endpoint as runner `devbox` with model `kimi`
+   (executor `pi`, or `fake-claude` if the box is unreachable — say which); the worker
+   advertises its health; `doctor` shows it.
+2. A `tier = 0` routine with `models = ["kimi", "haiku"]` routes to `kimi` first; force a
+   failing verification; the escalation to `haiku` runs with `escalated_from` set and the
+   prior failure in its prompt.
+3. Runner capacity 1: two `kimi`-eligible targets serialize on the runner lease while
+   worker slots are free.
+4. After ≥10 fixture-driven runs with a scripted 40% verified-success rate for `kimi` on a
+   routine, the router stops choosing it except for exploration; the capability matrix
+   shows the numbers.
+5. `doctor` flags pricing drift when the price table is edited to a wrong value.
+6. A `.local.md` overlay changes the composed prompt and its hash; stats split by the
+   new prompt version.
+
+## M11 — Human loop, knowledge, and hygiene
+
+steer changes an agent's course mid-run (visible in the transcript); a question
+produces a desktop notification whose action opens the task; a brief exists for each
+registered repository and `tokens_to_first_edit` drops on the next `inventory` run; a
+repository without `forge.toml` yields a proposal; the fourth question at `max_questions
+= 3` fails the target with the right reason; a duplicate intake is rejected and journaled;
+`curate` produces one note linking its sources and `forge kb check` passes.
+
+## M12 — Resilience and evals
+
+backup → restore into a temp `FORGE_HOME` → the restored daemon serves the same
+tasks and stats; a migration on a corrupted DB fails closed with the backup intact; a
+version bump with a deliberately failing self-check rolls back automatically; `forge eval`
+scores two prompt versions differently on a fixture where one is clearly worse; a proposal
+without an eval score cannot be approved.

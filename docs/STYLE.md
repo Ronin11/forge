@@ -16,9 +16,13 @@ Code should be obvious on first read, boring on second read, and still correct a
   `tools`, `VerificationCheck` in `verify`). Next to each is a registry type with
   `Register(name, impl)` and `Lookup(name)`.
 - Adding an implementation is **one new file (or one new package, for a mode with its
-  embedded prompt and schema) plus one `Register` call** at the wiring point
-  (`cmd/forge`). Nothing else changes. If adding one requires editing a switch, the
-  design is wrong.
+  embedded prompt and schema)** — and nothing else: modes, executors, parsers,
+  tools, and checks are listed by a generated file (`registry_gen.go`, produced by
+  `go generate` from the directory listing; §10) that emits one function, `func
+  All() []T`, which `cmd/forge` feeds to the registry value — no global, never
+  hand-edited, so two branches adding two implementations never conflict on the
+  same line. Plugins are discovered at runtime (`DESIGN.md` §17), not generated.
+  If adding one requires editing a switch, the design is wrong.
 - Core packages never type-switch on concrete implementations. If a caller needs to
   know a capability, the interface exposes it (`Capabilities() []string`), not the type.
 - Registries are values passed explicitly (constructed in `cmd/forge`, handed to
@@ -46,7 +50,9 @@ Code should be obvious on first read, boring on second read, and still correct a
 - **No globals.** No package-level mutable state, no `init()`, no `sync.Once` singletons.
   Construct things in `main` (or `cmd/forge`) and pass them down. The single
   exception is `main.version`, which the linker sets with `-X`.
-- **No reflection** except `encoding/json`. No `unsafe`. No code generation.
+- **No reflection** except `encoding/json`. No `unsafe`. No code generation except
+  the registry files of §10, which are checked in and verified up to date by `just
+  check` (`go generate` then `git diff --exit-code`).
 - **Generics** only when the third copy of something would otherwise appear (§2's
   rule), e.g. `Registry[T]`. A generic with one instantiation is a finding.
 - **`context.Context`** is the first parameter of every function that blocks, does I/O,
@@ -87,8 +93,8 @@ Code should be obvious on first read, boring on second read, and still correct a
   (SQLite; all SQL lives here); `internal/controlplane` (http, scheduler, budget, queue,
   ui); `internal/worker` (config, git, worktree, manifest, executor, parser, supervisor,
   reconcile); `internal/tools`; `internal/modes`; `internal/verify`; `internal/kb`.
-  The worker package never imports controlplane — `just boundary` proves it.
-  `model` and `protocol` import nothing from Forge.
+  The worker package never imports controlplane or store — `just boundary` proves
+  it. `model` imports nothing from Forge; `protocol` imports only `model`.
 - **Configuration** is parsed once into a struct with defaults applied and validated
   at load time; the rest of the program never sees a raw map.
 - **Logging** follows §8: `log/slog` through `internal/logging` only, structured, with
@@ -120,9 +126,10 @@ Code should be obvious on first read, boring on second read, and still correct a
 ## 5. Reliability is tested by breaking things
 
 - Tests use real temporary Git repositories (`git init` in `t.TempDir()`), real SQLite
-  files, and real child processes. Never a mock of `git`. A shell script standing in
-  for `claude` (a fake *executor*) is not a mock — it is a real child process that
-  emits a recorded stream — and is how the worker is tested without spending budget.
+  files, and real child processes. Never a mock of `git`. `forge fake-claude`
+  standing in for `claude` is not a mock — it is a real child process launched by
+  the real executor path that emits a recorded stream — and is how the worker is
+  tested without spending budget.
 - The required breakage suite: kill the worker mid-attempt; kill the control plane
   mid-claim; corrupt a manifest; expire a lease; run two workers on the same checkout;
   a parser given garbage and truncated lines; a worktree removed underneath the worker.
@@ -137,10 +144,13 @@ Code should be obvious on first read, boring on second read, and still correct a
 - IDs are 32 lower-case hex characters from `crypto/rand`; short IDs are the first 8.
   Every table's primary key is the ID as `TEXT`. Foreign keys are declared.
 - Every row that records a fact about an attempt is immutable once the attempt is
-  terminal. Facts are computed once, in one function, and inserted once.
+  terminal. Facts are computed once, in one function, and inserted once; the single
+  exception is the five integration columns an integrator fills NULL → value after
+  a merge (`DESIGN.md` §9.2).
 - JSON columns hold small, bounded structures (`tool_calls_by_name`, `attrs`), never
   raw output. Raw output lives in files under `data_dir/output/`.
-- Migrations are numbered SQL files embedded in `internal/store`, applied in order, in
+- Migrations are SQL files embedded in `internal/store`, named `<ULID>_<slug>.sql` so
+  two branches never collide on a number, applied in lexical (= creation) order, in
   a transaction, recorded in `schema_migrations`. No down-migrations.
 
 ## 7. HTTP and CLI
@@ -158,7 +168,7 @@ Code should be obvious on first read, boring on second read, and still correct a
 
 ## 8. Logging
 
-Logs are for debugging. The `journal` table (§10) is the audit trail; a log line is
+Logs are for debugging. The `journal` table (§9) is the audit trail; a log line is
 never evidence of what happened and nothing reads logs to decide anything.
 
 - **One mechanism.** `log/slog` via `internal/logging`. No `log.Printf`, no
@@ -213,7 +223,35 @@ trail and the input to "what happened to X"; it is never reconstructed from logs
 store method that changes state without a journal row is a finding, and the store
 tests assert the row for every transition.
 
-## 10. Review gate
+## 10. Conflict-resistant conventions
+
+Forge integrates parallel agent work into its own repository (M9), so its layout
+minimises merge conflicts. These apply to Forge and are the default checks Forge
+proposes for other repositories:
+
+- Registries are generated from directory listings by `go generate` (`//go:generate`
+  in each registry package; output `registry_gen.go`), never hand-edited; the merge
+  driver regenerates them.
+- Schema changes are ULID-named migration files (§6).
+- Changelog entries are fragment files under `changes/<ULID>-<slug>.md`, assembled at
+  release; nobody edits a shared `CHANGELOG.md` on a branch.
+- One concept per file; new tests go in new files where reasonable, so two tasks
+  adding tests rarely touch the same file.
+- `gofmt` and `goimports` (`go run golang.org/x/tools/cmd/goimports`) are pre-commit
+  gates (`just fmt-check`), so formatting never appears in a diff.
+- Forge-owned worktrees get `merge.conflictstyle=zdiff3`, `rerere`, and the `mergiraf`
+  merge driver through `GIT_CONFIG_*` environment variables — never by writing any
+  `.git/config` or the global config.
+
+## 11. Tests and budget
+
+Tests never spend budget: every Go and browser test that needs an agent runs the
+`fake-claude` executor over checked-in fixtures (`DESIGN.md` §7.4), and `just check`
+must pass with no network and no `claude` on `PATH`. Real Claude runs only under
+`just smoke`, which is opt-in and records commands and output for the milestone
+report.
+
+## 12. Review gate
 
 Before each commit the author spawns a reviewer with this document and the diff. The
 reviewer reports findings as `file:line — rule § — problem`. Every finding is fixed or

@@ -13,9 +13,10 @@ build:
 run: build
     ./forge daemon start --foreground
 
-# gofmt must report nothing.
+# gofmt and goimports must report nothing (STYLE §10).
 fmt-check:
     test -z "$(gofmt -l cmd internal 2>/dev/null)" || (echo "gofmt needed:"; gofmt -l cmd internal; exit 1)
+    test -z "$(go run golang.org/x/tools/cmd/goimports@v0.44.0 -l cmd internal 2>/dev/null)" || (echo "goimports needed:"; go run golang.org/x/tools/cmd/goimports@v0.44.0 -l cmd internal; exit 1)
 
 vet:
     go vet ./...
@@ -42,8 +43,11 @@ boundary:
     @for p in $(go list ./internal/worker/... 2>/dev/null); do \
         if go list -deps "$p" | grep -E '^forge/internal/(controlplane|store)(/|$)' >/dev/null; then echo "boundary: $p imports controlplane or store"; exit 1; fi; \
     done
-    @for p in $(go list ./internal/model/... ./internal/protocol/... 2>/dev/null); do \
+    @for p in $(go list ./internal/model/... 2>/dev/null); do \
         if go list -deps "$p" | grep -E '^forge/' | grep -vx "$p" >/dev/null; then echo "boundary: $p imports another Forge package"; exit 1; fi; \
+    done
+    @for p in $(go list ./internal/protocol/... 2>/dev/null); do \
+        if go list -deps "$p" | grep -E '^forge/' | grep -vx "$p" | grep -v '^forge/internal/model$' >/dev/null; then echo "boundary: $p imports more than model"; exit 1; fi; \
     done
     @echo "boundary: ok"
 
@@ -55,6 +59,18 @@ kb-check: build
 ui-test:
     @if [ -f ui/package.json ]; then cd ui && npm test; else echo "ui-test: not yet (M4)"; fi
 
+# Opt-in real-Claude smoke steps for the current milestone (spends budget; M1+).
+smoke:
+    @if [ -x ./scripts/smoke.sh ]; then ./scripts/smoke.sh; else echo "smoke: not yet (M1)"; fi
+
+# Generated registries must be committed up to date (STYLE §10; M1+).
+generate-check:
+    @if grep -rq '^//go:generate' cmd internal 2>/dev/null; then go generate ./... && test -z "$(git status --porcelain -- '*_gen.go')" || (git status --porcelain -- '*_gen.go'; exit 1); else echo "generate-check: no generators yet (M1)"; fi
+
+# STYLE §11: the gate must pass with no network and no claude binary.
+check-offline:
+    env PATH=/usr/bin:/bin:$(go env GOROOT)/bin HOME=$HOME unshare -Urn just check
+
 # Line counts for milestone reports.
 lines:
     @printf "Go (non-test): "; (find cmd internal -name '*.go' ! -name '*_test.go' 2>/dev/null | xargs cat 2>/dev/null || true) | wc -l
@@ -62,5 +78,5 @@ lines:
     @printf "UI (tmpl/js/css): "; (find internal -path '*/ui/*' -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) 2>/dev/null | xargs cat 2>/dev/null || true) | wc -l
 
 # The gate.
-check: fmt-check vet staticcheck errcheck boundary test bench kb-check ui-test lines
+check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-check ui-test lines
     @echo "check: green"

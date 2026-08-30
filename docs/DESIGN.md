@@ -77,18 +77,25 @@ daemon is not running, a command starts it (§1.2) and proceeds. `forge task add
   systemd's. `forge worker start` runs it by hand or under systemd.
 - **Environment pass-through** for every process Forge spawns (daemon, worker,
   executor, plugin): exactly `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TERM`,
-  `XDG_*`, `SSH_AUTH_SOCK`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*`, `FORGE_*`, plus
-  what the spawner sets itself (`FORGE_LOG_*` from `logging.Environ`,
-  `FORGE_SOCKET`/`FORGE_TOKEN`/`FORGE_PLUGIN_DIR` for plugins). Nothing else
-  leaks from the parent.
+  `XDG_*`, `SSH_AUTH_SOCK`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*`, `FORGE_HOME`,
+  `FORGE_HTTP`, `FORGE_LOG_*`, plus what the spawner sets itself (`FORGE_LOG_*`
+  from `logging.Environ`; `FORGE_SOCKET`/`FORGE_TOKEN`/`FORGE_PLUGIN_DIR` for
+  plugins; `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` for
+  executors and git; `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` for sandboxed
+  executors). The worker token is never passed to an executor. Nothing else leaks
+  from the parent.
 - **Transport.** The same API on two listeners: a Unix socket `<home>/forge.sock`
   (mode 0600, directory 0700; filesystem permissions are the auth) for the CLI,
   worker, MCP server, and plugins; and `127.0.0.1:7340` for the browser. One mux,
   one handler set. Streaming endpoints (`task logs -f`, `--wait`, the journal) use
   SSE with event ids and a `?since=` cursor so a client resumes after any restart.
-  **Auth:** over the socket every route is open (the peer is this uid); a client
-  presenting a plugin token is narrowed to that token's scopes (§17) — scopes are a
-  discipline on the same uid, not a security boundary. Over TCP, operator routes
+  **Auth:** over the socket a client without a token is the operator (the peer is
+  this uid); a client presenting a token is narrowed to it — a plugin token to its
+  scopes (§17), a per-attempt MCP token (minted at claim, `attempts.mcp_token_hash`)
+  to that attempt's routes (`/attempts/{id}/*`, `/tools/*` with that attempt id).
+  Tokens are a discipline on the same uid, not a security boundary — except inside
+  the sandbox (§19), which sees no daemon socket at all, only a worker-side
+  per-attempt socket that forwards attempt-scoped routes. Over TCP, operator routes
   are open to loopback; `/api/v1/worker/*`, `/attempts/*` (worker side), and
   `/tools/*` require the worker token (`<home>/token`) or a plugin token.
   `[http] listen` in `config.toml` (default `127.0.0.1:7340`; env `FORGE_HTTP`)
@@ -260,8 +267,13 @@ repository belongs to exactly one project; `default` is created by bootstrap.
 
 `routines(id, name UNIQUE, mode, prompt, repositories JSON, executor, model, effort,
 max_turns, timeout_seconds, max_budget_usd, allowed_tools JSON, autonomy, verification,
-priority, budget_class, schedule, schedule_enabled, concurrency, generation,
-archived_at)`.
+priority, budget_class, schedule, schedule_enabled, concurrency, paths JSON, deps JSON,
+tier, models JSON, integrate, require_sandbox, max_questions, generation,
+archived_at)`. The last seven are the M9–M11 columns (§20–§22): `paths` are the
+write-set globs, `deps` the dependencies a pre-step adds, `tier` (0–3) and `models`
+(allowlist and escalation ladder) drive routing, `integrate` enables the merge queue,
+`require_sandbox` (default true) restricts routing to sandbox-ready workers,
+`max_questions` (default 3) is the ask budget.
 `generation` starts at 1 and increments on every edit; edits carry the expected
 generation and return 409 on a stale write. `prompt` may use `{{repo}}`. Defaults:
 `executor = claude-code`, `concurrency = 1`, `budget_class = normal`, `priority` from
@@ -281,8 +293,15 @@ questions have an exact answer. `source` is `edit` or `proposal:<id>`.
 ### Work
 
 `work(id, routine_id NULL-able, routine_name, generation, title, trigger, snapshot
-JSON, priority, budget_class, autonomy, scheduled_for, submitted_by, external_refs
-JSON, created_at, finished_at)`. `trigger ∈ {manual, schedule, proposal,
+JSON, priority, budget_class, autonomy, integrate, paths JSON, deps JSON, tier,
+models JSON, plan_batch_id, prompt_hash, scheduled_for, submitted_by, external_refs
+JSON, created_at, finished_at)`. `integrate`/`paths`/`deps`/`tier`/`models` are
+frozen from the routine (or `task add --integrate/--paths/…`; ad-hoc default
+`integrate = false`) so `model.IsTerminal(state, work.integrate)` has a stable
+input; `plan_batch_id` comes from `plan` mode (§20); `prompt_hash` is what intake
+dedupes on (§22). Wherever this document says a Target is "terminal" it means
+`model.IsTerminal(state, work.integrate)`, and "success" means
+`model.IsSuccess(state)` (`succeeded`, the merge states, `merged`). `trigger ∈ {manual, schedule, proposal,
 dependency, plugin}`. **The user-facing word is "task"**: `forge task add` creates a
 Work; the UI, CLI, and docs say task; Work and Target remain the internal names
 and never appear in the UI. `task add` without `--routine` creates an **ad-hoc**
@@ -296,7 +315,10 @@ reasons are derived at read time (§4.2), never stored. `routine_id` is NULL for
 Forge creates without a routine (the `verify` Work of §L2); such Work is outside any
 routine's `concurrency`.
 
-`work_dependencies(work_id, blocked_by_work_id, on)` with `on ∈ {success, terminal}`.
+`work_dependencies(work_id, blocked_by_work_id, on, stack_on)` with `on ∈ {success,
+terminal}`; `stack_on` is a property of the edge (§20). For an integrating
+dependency `on: success` is satisfied at `merged`, or — with `stack_on` — as soon
+as its agent work succeeded (the dependant starts on its branch head).
 Inserting an edge that would create a cycle is rejected (`model.WouldCycle` over the
 dependency graph of non-terminal Work).
 
@@ -314,16 +336,24 @@ never failed automatically, a human may cancel it.
 
 ### Attempt
 
-`attempts(id, target_id, worker_id, claim_request_id UNIQUE, executor, model, effort,
-mode, autonomy, worktree_path, branch, base_branch, base_commit, head_commit, pid,
-pid_start, session_id, prompt_version_hash, launches, started_at, finished_at,
+`attempts(id, target_id, worker_id, claim_request_id UNIQUE, mcp_token_hash,
+executor, runner, model, model_alias, escalated_from, routing JSON, sandboxed,
+effort, mode, autonomy, worktree_path, branch, base_branch, base_commit,
+stack_base_commit, head_commit,
+pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at,
 exit_code, failure_reason, unverified_reason, is_error, result_text, result JSON, num_turns, input_tokens,
 output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty,
 git_commits, git_files_changed, git_insertions, git_deletions, git_pushed,
 verification_level, verification_passed, cleanup_outcome, cleanup_reason,
 cleanup_command, output_path, output_bytes, output_truncated)`.
 
-One Attempt per Target for now; the table allows many. A Target that pauses in
+`model` is the resolved `[models.<alias>].id` handed to `{{model}}` and confirmed by
+`system/init`; `model_alias` is what the routine or router chose. `base_commit` is
+the commit the worktree was created at — the integration branch head, or the
+dependency's branch head when stacked — and is what `git_inspect`, cleanup, and L0
+measure against; `stack_base_commit` is the integration-branch head at claim, the
+later rebase target (§20). `mcp_token_hash` is the per-attempt token `forge mcp`
+presents (§13). One Attempt per Target for now; the table allows many. A Target that pauses in
 `waiting_human` and resumes keeps the **same Attempt** (same worktree, branch, and
 `session_id`); `launches` counts agent processes; the manifest carries `elapsed_before_us` and
 `next_seq` from the previous launch so `elapsed_us` and `seq` continue monotonically
@@ -368,10 +398,12 @@ links (§17).
 `workers(id, name, version, max_concurrent, active, executors JSON, capabilities
 JSON, registered_at, last_seen_at)` and `retained_worktrees(attempt_id, worker_id,
 path, reason, cleanup_command)` reported on every registration. `capabilities` is
-discovered at worker start: `browser: ready|missing` (Playwright + Chromium under
-`<home>/deps`), and per executor `ready|missing|unauthenticated`. Modes requiring
-L2 UI verification route only to workers with `browser: ready`; the Workers page
-(renamed **System** in M7) shows them.
+discovered at worker start and uses one vocabulary from M1: `browser`
+(`ready|missing`; Playwright + Chromium under `<home>/deps`), `sandbox`
+(`ready|missing`; `bwrap` present), `executor:<name>` (`ready|missing|
+unauthenticated`), `runner:<name>` (`ready|down|unauthenticated`, §21), `steer`
+(`ready|missing`, §22). Routing requires what the Target needs (§10.2); the Workers
+page (renamed **System** in M7) shows them.
 
 ### Plugin
 
@@ -380,6 +412,19 @@ enabled, scopes JSON, token_hash, cursor, installed_at, enabled_at)`. `cursor` i
 the last journal id the plugin acknowledged (§17). Tokens are minted at enable
 time with exactly the declared scopes; the plain token is handed to the process
 in its environment and only its hash is stored.
+
+### PathLease, Merge, Runner
+
+`path_leases(target_id PRIMARY KEY, repository_name, globs JSON, acquired_at)` — the
+only home of live write-set leases: inserted in the claim transaction, deleted when
+the Target is terminal (§20); `merges(id, target_id,
+repository_name, integration_branch, before_sha, after_sha, rebase_attempts,
+outcome, pushed_at, created_at)` — one row per merge-queue pass, and every push is
+also a `journal` row (`merge.pushed`) with both SHAs; `runners(name, kind, billing,
+capacity, endpoint, health, last_probe_at)` mirrors `[runners]` from `config.toml`
+with the worker-probed health (§21). `evals(id, mode, prompt_version_hash,
+model_alias, fixture, verified, usd, turns, created_at)` and `backups(id, path,
+bytes, created_at)` serve M12.
 
 ### Journal
 
@@ -414,14 +459,35 @@ One transition function, `model.Transition(from, to State) error`, is the only c
 that changes a Target's state. The table is the whole rule:
 
 ```
-pending       → claimed | cancelled
-claimed       → preparing | failed | cancelled
-preparing     → running | failed | cancelled
-running       → waiting_human | verifying | failed | cancelled
-waiting_human → pending | cancelled
-verifying     → succeeded | unverified | cancelled
-succeeded, unverified, failed, cancelled → (terminal; no edges)
+pending          → claimed | cancelled
+claimed          → preparing | failed | cancelled
+preparing        → running | failed | cancelled
+running          → waiting_human | verifying | failed | cancelled
+waiting_human    → pending | cancelled
+verifying        → succeeded | unverified | cancelled
+succeeded        → queued_for_merge            (only when the Work has integrate = true)
+queued_for_merge → merging | cancelled
+merging          → merged | conflict | unverified | queued_for_merge | cancelled
+conflict         → queued_for_merge | cancelled (a human resolved it, or gave up)
+unverified, failed, cancelled, merged → (terminal; no edges)
+succeeded        → (terminal when integrate = false)
 ```
+
+`merging` is owned by a **worker**: the integrator runs under a *merge claim*
+(`POST /api/v1/worker/claim` hands out merge work the same way it hands out
+attempts, serial per repository), holds a lease, and heartbeats; `merging →
+merged` on push, `→ conflict` when the rebase fails and `integrate` mode cannot fix
+it, `→ unverified` (`check_failed:<name>`) when the declared checks fail on the
+rebased result, `→ queued_for_merge` when its lease expires (the sweeper's rule:
+`rebase_attempts++`, and after `[integration] max_rebase_attempts`, default 3,
+`→ conflict`), `→ cancelled` by a human. `conflict → queued_for_merge` is `forge
+task requeue ID` after the human fixed the retained worktree.
+
+The four merge states (§20, M9) are in the table and the store from M1 so the
+transition function never grows a second home; until M9 nothing sets
+`integrate = true` and `succeeded` is simply terminal. `model.IsTerminal(state,
+integrate)` is the one place that knows `succeeded` is terminal only without
+integration.
 
 Notes:
 
@@ -438,7 +504,10 @@ Notes:
   `succeeded`/`unverified` unless L2 or L3 is required, in which case it stays
   `verifying` **without a lease** until the `verify` Work is terminal or a human
   decides. Every Target passes through `verifying` — there is exactly one path.
-- `retained` is a flag, never a state.
+- `retained` is a flag, never a state. A Target in `succeeded` (integrating),
+  `queued_for_merge`, `merging`, or `conflict` keeps its worktree and branch by the
+  `awaiting merge` cleanup row (§6); its manifest sits in the side state
+  `awaiting_merge` (§4.3), which the worker does touch again — at merge time.
 - `failure_reason` (one home, `model.FailureReason`): `exit_nonzero`, `timeout`,
   `cancelled`, `lease_expired` (used by both the sweeper and a worker that lost its
   lease), `worker_restart`, `launch_failed`, `prepare_failed`, `ambiguity_at_auto`,
@@ -456,14 +525,17 @@ Notes:
 
 `model.DeriveWorkState(targets, deps, deferred)`:
 
-1. If every Target is terminal: `succeeded` if all succeeded; `unverified` if all are
-   succeeded/unverified with ≥ 1 unverified; `cancelled` if all cancelled; `failed` if
-   all failed; otherwise `partial`.
-2. Else if any Target is `waiting_human` → `waiting_human`.
+1. If every Target is terminal: `merged` if all merged; `succeeded` if all
+   succeeded; `unverified` if all are succeeded/unverified with ≥ 1 unverified;
+   `cancelled` if all cancelled; `failed` if all failed; otherwise `partial`.
+2. Else if any Target is `waiting_human` → `waiting_human`; else if any is
+   `conflict` → `conflict` (a human must act; it is in the attention list).
 3. Else if any Target is `claimed`/`preparing`/`running`/`verifying` → `running`.
-4. Else if a dependency is unsatisfied (§10.3) → `blocked`.
-5. Else if the budget policy currently defers this Work's class → `deferred`.
-6. Else `pending`.
+4. Else if the Work integrates and any Target is `succeeded`/`queued_for_merge`/
+   `merging` → `merging`.
+5. Else if a dependency is unsatisfied (§10.3) → `blocked`.
+6. Else if the budget policy currently defers this Work's class → `deferred`.
+7. Else `pending`.
 
 Attention items are defined once, in §10.4.
 
@@ -471,7 +543,11 @@ Attention items are defined once, in §10.4.
 
 `preparing → worktree_created → running → exited → cleaned | retained`, with side
 states `not_created` (finished before the worktree existed), `inconsistent`
-(filesystem and Git disagree; never repaired automatically), and `missing`.
+(filesystem and Git disagree; never repaired automatically), `missing`, and
+`awaiting_merge` (an integrating attempt's worktree, kept until the integrator has
+merged it or a human resolved a conflict; after a merge the worker fast-forwards the
+local task branch to the rebased head so the normal removal rule — clean, and head
+reachable from a remote ref — applies and the worktree is removed, the branch kept).
 A manifest is deleted only in `cleaned`, `not_created`, or `missing`, and only after
 the control plane has acknowledged the attempt's final cleanup fields.
 
@@ -568,6 +644,7 @@ pushed, mode write scope, and whether the attempt is resumable.
 | Condition (first match wins) | Decision | Recorded reason |
 |---|---|---|
 | resumable (`waiting_human`) | keep | `awaiting human answer` |
+| awaiting merge (Target in `succeeded` with integrate, `queued_for_merge`, `merging`, `conflict`) | keep | `awaiting merge` |
 | greenfield project directory (design pending, `MODES.md` §greenfield) | keep | `greenfield project` |
 | path missing and not registered | nothing to remove | `worktree missing` |
 | exactly one of path / registration exists | retain, mark `inconsistent` | `worktree exists in only one of filesystem and git registry` |
@@ -602,6 +679,7 @@ data_dir      = "~/.forge/worker"
 command = [...]
 output  = "claude-stream-json"
 capabilities = [...]
+sandbox = true                         # wrap with bubblewrap when available (§19)
 
 [repositories.equitizr]
 path = "~/Projects/equitizr"
@@ -682,8 +760,46 @@ capabilities = ["allowed_tools", "builtin_tools", "json_schema", "resume",
 ```
 
 `worker.Executor` is an interface: `Command(ctx, LaunchSpec) *exec.Cmd`,
-`Capabilities()`. The shipped implementation is the template executor above; each
-capability the executor declares *and* the routine/mode uses appends flags:
+`Capabilities()`. One implementation ships: the template executor above. The test
+executor **`fake-claude`** is not a second implementation but a hidden subcommand,
+`forge fake-claude --fixture DIR`, reached through the same template executor
+(`[executors.fake-claude] command = ["<forge>", "fake-claude", "--fixture",
+"{{fixture}}", …]`, `output = "claude-stream-json"`), so tests differ from
+production only in `worker.toml` and go through the same launch, parser, and
+sandbox path. A fixture directory holds `script.jsonl` (the stream-json lines to
+emit) and `meta.toml`:
+
+```toml
+exit_code = 0
+delay_ms = 5                       # between lines; per-line overrides below
+resume_script = "resume.jsonl"     # emitted instead when --resume <session> is given
+needs_input_at = 12                # stop after this line with a needs_input result
+rate_limit_event = { five_hour = 0.41, seven_day = 0.22 }   # emitted before result
+[[files]]                          # written into the cwd when the given line is emitted
+at_line = 4
+path = "FORGE_SMOKE.txt"
+content = "…"
+git_commit = "chore: forge smoke test"   # optional: commit after writing
+[[line_delays]]
+line = 7
+delay_ms = 3000
+```
+
+Six fixtures are required (`testdata/fixtures/`): `inventory` (read-only),
+`commit` (writes and commits), `failing` (non-zero exit, `is_error`),
+`needs-input` (pause and `resume.jsonl`), `timeout` (a long delay the worker must
+kill), `tool-error` (a `tool_result` with `is_error`). M1 ships them hand-authored
+from §7.5's event shapes; the M1 smoke records real haiku runs, which — scrubbed of
+paths, ids, and timestamps — replace the hand-authored ones. Every Go and browser
+test runs `fake-claude`; real Claude runs only in `just smoke`; `just check` passes
+with no network and no `claude` on `PATH` (`just check-offline`). The launch path
+has one wrapper hook — `Sandbox.Wrap(cmd)` (§19) — so M8's bubblewrap wrapping does
+not touch the executor. `{{model}}` receives the resolved model id, never the alias.
+Git options for Forge-owned worktrees (`merge.conflictstyle=zdiff3`, the `mergiraf`
+merge driver, `rerere`) are passed with `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+`GIT_CONFIG_VALUE_n` on the processes Forge launches — never by writing any
+`.git/config` or the user's global config. Each capability the executor declares
+*and* the routine/mode uses appends flags:
 
 | capability | flags |
 |---|---|
@@ -694,9 +810,12 @@ capability the executor declares *and* the routine/mode uses appends flags:
 | `max_budget_usd` | `--max-budget-usd <n>` |
 | `effort` | `--effort <level>` |
 | `append_system_prompt` | `--append-system-prompt <text>` |
+| `steer` | `--input-format stream-json` so `forge task tell` can inject a user turn (§22) |
 
 Template variables: `{{model}} {{max_turns}} {{repo}} {{worktree}} {{mcp_config}}
-{{session_id}}`. cwd = worktree; prompt on stdin; exit 0 is success; the worker owns
+{{session_id}} {{fixture}}`. Everything the worker needs from the daemon's config
+for one attempt — `require_sandbox`, `allow_hosts`, the `GIT_CONFIG_*` values —
+arrives in the claim's `policy` block; the worker has no second config file. cwd = worktree; prompt on stdin; exit 0 is success; the worker owns
 the timeout. Every flag above is verified against `claude --help` at worker start and
 a missing one fails registration with the flag named (the CLI changes often).
 
@@ -803,7 +922,18 @@ wait_human_us, events_total, events_dropped`); outcome (`state, exit_code,
 failure_reason, is_error, verification_level, verification_passed, retained,
 retained_reason`); git (`commits, files_changed, insertions, deletions, dirty, pushed,
 branch, base, head`); budget (`five_hour_before, five_hour_after, seven_day_before,
-seven_day_after, utilization_delta_estimate`).
+seven_day_after, utilization_delta_estimate`); integration (`declared_paths JSON,
+touched_paths JSON, write_set_precision` = |touched ∩ declared| / |touched|,
+`lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth`); cost
+vector (`usd` = tokens × price, notional on subscription; `five_hour_delta`,
+`seven_day_delta` measured, subscription only; `runner_seconds`); routing (`runner,
+model_alias, model_class, escalated_from, tokens_to_first_edit`); human loop
+(`questions_changed_outcome`; `questions_asked` is in the agent group). All present from the first migration, NULL until the milestone that computes them.
+Facts are computed at the attempt-terminal transition (`succeeded`, `unverified`,
+`failed`, `cancelled`); for integrating Work the integrator later fills the five
+integration columns (`merge_wait_us`, `rebase_attempts`, `merge_outcome`,
+`stack_depth`, and `touched_paths` if a rebase changed them) exactly once, NULL →
+value — the single exception to "immutable once written" (STYLE.md §6).
 
 Rules: phase times are the matching span's `duration_us` (sum over launches for
 `agent`); `total_us` is the sum of every phase span over every launch (so it excludes
@@ -877,7 +1007,7 @@ five_hour_target    = 0.90
 seven_day_target    = 0.90
 five_hour_hard_stop = 0.97
 seven_day_hard_stop = 0.97
-daily_usd_cap       = 25.0          # optional
+daily_usd_cap       = 25.0          # optional; gates all admission (a runner's own cap, §21, gates that runner only)
 [budget.quiet_hours]                # optional, local time
 start = "09:00"
 end = "18:00"
@@ -899,10 +1029,16 @@ In order, per window (both windows must admit):
    and backlog waits; as the reset nears the line rises to the target and backlog is
    admitted aggressively to spend what would otherwise be lost.
 
-Also enforced at claim: routine `concurrency` (Work of that routine with any Target
-in `claimed`/`preparing`/`running`; `waiting_human`, `pending`, and `verifying`
-Targets do not count, and routine-less Work never counts), worker `max_concurrent`,
-and that a connected worker advertises the Target's repository and executor. A Work whose class is deferred shows `deferred` with the reason. Measured:
+Also enforced at claim, in this order, each a named reason when it blocks: routine
+`concurrency` (Work of that routine with any Target in `claimed`/`preparing`/
+`running`; `waiting_human`, `pending`, and `verifying` Targets do not count, and
+routine-less Work never counts); a worker slot on a connected worker advertising the
+Target's repository, executor, and required capabilities (`sandbox`, `browser`,
+`runner:<name>`); a **runner slot** (`[runners.<name>].capacity`, §21); and a
+**path lease** on the repository (§20: the Target's globs must not intersect a
+running Target's globs; undeclared paths = the whole repository; lockfiles are an
+implicit exclusive lease). The claim query evaluates all four in one transaction so
+two workers cannot both win. A Work whose class is deferred shows `deferred` with the reason. Measured:
 at each reset boundary the scheduler records `target − u_at_reset` as the
 `unspent_at_reset` metric (a stats line).
 
@@ -927,7 +1063,9 @@ by; the API enforces the same rule (`queue.Violates`).
 
 `GET /api/v1/attention` is the one list of things needing a person, and the
 dashboard's "attention" panel is a view of it: open Questions; proposals in
-`proposed`; Targets in `verifying` awaiting L3; `notify`-level checkpoint events from
+`proposed`; Targets in `verifying` awaiting L3; Targets in `conflict`; Targets
+`pending` for more than 5 minutes with no eligible worker (a missing `sandbox`,
+`browser`, or `runner` capability, named); `notify`-level checkpoint events from
 the last 24 h (informational, no acknowledgement — they age out); Work that ended
 `partial`/`failed`/`unverified` in the last 24 h; retained worktrees. Each row: what,
 from which attempt/routine, waiting since, and the action. `forge task answer <task>
@@ -1030,8 +1168,8 @@ by `forge mcp` as an `mcp`-source span through `POST /api/v1/attempts/{id}/event
   live worker), and only declares `lease_expired` locally after 120 s without a
   successful heartbeat. A completion that arrives after that is still accepted for
   its git/cleanup fields (§5.10). `complete` is idempotent: a retry for an attempt
-  already terminal with the same lease token hash returns 200 with the stored
-  outcome. `claim_request_id` is minted per claim attempt and reused only when the
+  whose `finished_at` is already set, with the same lease token hash, returns 200
+  with the stored outcome. `claim_request_id` is minted per claim attempt and reused only when the
   previous attempt ended in a transport error or 5xx. `pending`, `waiting_human`, and
   `verifying` hold no lease; a `verifying` Target is resolved by its `verify` Work's
   terminal transition or a human, never by the sweeper.
@@ -1121,6 +1259,129 @@ nothing is built to be replaced:
   `--with-browser`), `forge doctor`, `forge service install|uninstall|status`,
   worker capabilities and browser routing. Smoke M6 1–10.
 - **M7** plugins (§17) and the Omarchy indicator. Smoke M7 1–8.
+- **M8** sandbox (§19: bubblewrap, netproxy allowlist, strace-discovered `claude`
+  write paths), `sandbox` capability, fixtures recorded and `just check` proven
+  offline. (`fake-claude` itself is M1.) Smoke M8 1–6.
+- **M9** write-set leases, `plan` and `integrate` modes, the merge queue and push
+  policy (§20; requires the constitution amendment), stacking, conflict-resistant
+  conventions applied to Forge, integration facts. Smoke M9 1–8.
+- **M10** runners, models, cost vector, router and escalation, prompt overlays,
+  capability matrix (§21). Smoke M10 1–6.
+- **M11** steer, `notify` plugin, repo briefs, `forge.toml` bootstrap proposals, ask
+  budget, retry/dedupe, `curate` mode (§22). Smoke M11.
+- **M12** backup/restore, upgrade/rollback, evals, health (§23). Smoke M12.
+
+The detailed specifications for M8–M12 are `forge-m8-plus-prompt.md`; §19–§23 hold
+what M1 must already respect. Each milestone extends these sections in place.
+
+## 19. Sandbox (M8)
+
+Executors run under `bubblewrap` by default (`sandbox = true` per executor; the
+worker advertises `sandbox: ready|missing`; routines with `require_sandbox = true`,
+the default, route only to ready workers). The wrapper is one function,
+`Sandbox.Wrap`, applied at launch. Mounts: the worktree read-write at its real path;
+the attempt's artifacts/output directory read-write; `<home>/deps` and the executor
+binary plus its required config read-only — for `claude`, its config directory
+read-only except the session/state paths it must write, discovered with `strace -f
+-e trace=file` on a fake run and recorded here in M8; a tmpfs `$HOME` otherwise;
+`/usr`, `/etc`, `/lib*` read-only; a private `/tmp`; `--unshare-pid
+--die-with-parent --new-session`. Never exposed: `~/.ssh`, `~/.config/gh`,
+`<home>/forge.sock`, the worker token, other registered checkouts. Environment: exactly
+`PATH`, `HOME` (the tmpfs), `LANG`, `TERM`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*`,
+`GIT_CONFIG_*` (including `user.name`, `user.email`, `rerere.enabled`, since the
+global gitconfig is not mounted), `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`,
+`FORGE_HOME`, `FORGE_SOCKET` (the per-attempt socket below), `FORGE_TOKEN` (the
+per-attempt MCP token — never the worker token), `FORGE_LOG_*`. Network: `--unshare-net` plus a per-attempt
+proxy (`forge netproxy`, in-process in the worker) exposed through a Unix socket
+bind-mounted into the sandbox, `HTTP_PROXY`/`HTTPS_PROXY` set, allowlist from
+`[sandbox] allow_hosts` in `config.toml`; denied hosts are journaled
+(`sandbox.denied`) with the attempt id. `forge mcp` runs **inside** the sandbox (so the repository tools it executes stay
+sandboxed) and reaches the daemon through a worker-side per-attempt Unix socket
+(`<data_dir>/mcp/<attempt>.sock`, bind-mounted) that forwards only attempt-scoped
+routes and rejects everything else; with the per-attempt token that makes tools the
+only path to Forge state. The daemon socket is never mounted. Credentials never enter the
+sandbox: anything needing `gh` or SSH is a tool executed by Forge outside it.
+
+## 20. Integration (M9)
+
+**Write sets.** `paths` (globs) come from `task add --paths`, the routine, or `plan`
+mode; the scheduler holds them as leases per repository (§10.2). Lockfiles
+(`go.mod`, `go.sum`, `package.json`, `*.lock`) are an implicit exclusive lease; a task
+declaring `deps` runs a serialized pre-step that adds them as a Forge-authored commit
+under the lockfile lease, which goes through the merge queue like any other change
+(rebase → checks → push — never a direct push to the integration branch) before the
+task starts. Undeclared `paths` means the whole repository.
+
+**Merge queue.** For `integrate = true` Work, `succeeded → queued_for_merge`. One
+integrator per repository, serial: rebase the task branch onto the current
+integration-branch head (`mergiraf` as merge driver, `merge.conflictstyle=zdiff3`, via
+`GIT_CONFIG_*` env); clean → run the repository's declared checks in a fresh worktree
+on the rebased result → push the fast-forward (push policy) → journal `merge.pushed`
+with before/after SHAs → clean up. Conflict → spawn an `integrate` attempt (conflict
+only; no web, no new dependencies; tight budget; must pass L1 and the original
+verification level); failure → `conflict`, human queue, worktree retained.
+Optimistic batching is out of scope (a future proposal).
+
+**Push policy** — the wording is proposed in the M8 report and lands as the commit
+`constitution: gated push for integration` only after approval; until then Forge
+never pushes. Forge pushes only from the integrator, only after checks on the actual
+merge result, only to a branch listed in the repository's `forge.toml`
+(`integration_branch`, optionally `task_branches = "forge/*"`), never with `--force`
+(no `--force`, `-f`, or `+refspec` anywhere in a push invocation — a test greps for
+them), never deleting remote refs, never from inside a sandbox, via an
+`integrate`-only tool executed by Forge with the user's credentials. `main` in the
+user's local checkout is never modified; the human pulls.
+
+**Stacking.** If B is `blocked_by` A with `on: success` and `stack_on: true`, B may
+start on A's branch head (`stack_base_commit` recorded) before A merges; when A
+merges, Forge rebases B onto the new integration head (failure → `integrate`).
+`[integration] max_stack_depth` defaults to 2.
+
+## 21. Runners, models, routing (M10)
+
+`config.toml` gains `[runners.<name>]` (`kind ∈ {claude-cli, anthropic,
+openai-compatible}`, `billing ∈ {subscription, api, local}`, `capacity`, `endpoint`,
+`probe`, `daily_usd_cap`, `usd_per_hour`), `[models.<alias>]` (`runner`, `id`, `class ∈
+{frontier, mid, small, local}`, `max_tier`, `executor`, `context`, `price = {input,
+output, cache_read, cache_write}` $/MTok), and `[routing]` (`objective`, `weights =
+{usd, five_hour, seven_day, runner_seconds}`, `min_verified_success`, `min_samples`,
+`explore`). A bundled default config carries the current Anthropic models and prices.
+`[runners]` and `[models]` have embedded defaults (`haiku`, `sonnet`, `opus` on
+the `claude` runner with current prices); `config.toml` overrides per key and
+bootstrap never writes them, so an upgrade refreshes prices. From M1,
+`routines.model` and `task add --model` are validated as aliases that exist in
+`[models]`, and `attempts.model` stores the resolved id, so M10 changes nothing
+about their meaning. The worker probes runners and advertises
+`runner:<name> ready|down|unauthenticated`; runner capacity is the second slot
+dimension (§10.2). The router scores candidates by the weighted cost vector from
+facts (p50 per routine/model, falling back to tier/model), subject to the Wilson
+lower bound of verified success ≥ `min_verified_success` once `min_samples` exist
+(below that, eligible with probability `explore`); failure escalates to the next rung
+with the previous structured result and failing checks in the prompt
+(`escalated_from`). Prompt overlays `modes/<mode>.<class>.md` are appended when
+present and hashed into the prompt version. `doctor` compares `total_cost_usd` with
+tokens × price and flags drift.
+
+## 22. Human loop and knowledge (M11)
+
+`forge task tell ID "…"` injects a user turn (`steer` capability, `--input-format
+stream-json`), journaled. A first-party `notify` plugin (`events`) sends desktop
+notifications via `notify-send`. `explore` maintains a `brief` note per repository,
+injected with `--append-system-prompt`; `tokens_to_first_edit` measures its effect.
+A repository without `forge.toml` yields a `doc` proposal for one. Ask budget
+(`max_questions`; exceeding it at `ask` fails `ask_budget_exhausted`). `forge task
+retry ID`; intake dedupes on `external_refs` and `prompt_hash` within 24 h. `curate`
+mode consolidates superseded retro notes monthly.
+
+## 23. Resilience and evals (M12)
+
+`forge backup` (`VACUUM INTO` + kb, modes, prompts, config, plugin state; nightly with
+retention) and `forge restore` into a fresh `FORGE_HOME` (tested in `just check`);
+migrations back up first; `forge daemon rollback` restores the previous binary and
+DB snapshot when a new version fails its post-start self-check; `forge eval` runs
+golden tasks under `evals/` and scores verified success, cost vector, and turns — a
+`routine`/`mode_prompt` proposal carries an eval score before it can be approved;
+`GET /api/v1/health` feeds `doctor` and the status file.
 
 ## 17. Plugins (M7)
 
@@ -1181,9 +1442,14 @@ aliases for older names.
 forge init | doctor | version
 forge task add "<prompt>" [--repo X]... [--mode run] [--routine R] [--priority N]
                [--class interactive|normal|backlog] [--autonomy L]
-               [--after WORK_ID]... [--model M] [--wait]
+               [--after WORK_ID]... [--model M] [--paths GLOB]... [--integrate]
+               [--wait]
 forge task list [--state S] | show ID | logs ID [-f] | cancel ID | answer ID "…"
 forge task approve|reject ID ["reason"]          # L3 sign-off
+forge task requeue ID                             # conflict → merge queue (M9)
+forge task tell ID "…" | retry ID [--model M]     # M11
+forge backup [--out DIR] | restore ARCHIVE | eval --mode M [...]   # M12
+forge daemon rollback                             # M12
 forge routine add|list|show|edit|run|enable|disable NAME
 forge queue [list] | queue move ID --before ID | queue block ID --on ID
 forge proposal list|show|approve|reject ID
@@ -1202,8 +1468,8 @@ optional with it (it replaces the routine prompt for this task only). `--class`
 defaults to `interactive` for human submissions (§10.3). `task answer` on a task with
 one open Question answers it; with several, `--question ID` selects. `--wait`
 streams progress (SSE, resuming across restarts) and exits with the task's derived
-state (§4.2): 0 `succeeded`, 1 `failed`/`partial`/`cancelled`, 3 `unverified`, 4
-`waiting_human` when the human is not the caller.
+state (§4.2): 0 `succeeded`/`merged`, 1 `failed`/`partial`/`cancelled`, 3
+`unverified`, 4 `waiting_human`/`conflict` when the human is not the caller.
 
 `routine add NAME` takes flags for the common fields (`--mode --prompt --repo… --model
 --effort --max-turns --timeout --schedule --autonomy --class --priority`) and

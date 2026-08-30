@@ -98,6 +98,42 @@ Newest entries at the bottom of each section. Dates are absolute.
   so the detached worker outlives a daemon restart. Schema-only handshake mismatch
   is still a mismatch, with a "to migrate" hint. Plain `daemon restart` (no drain)
   is M1 so M3 smoke 17 can restart; drain is M6.
+- **2026-08-30 · M8–M12 folded into the design the same way as M6** (schema, state
+  machine, config shapes, test harness; behaviour stays in its milestone). From M1:
+  `fake-claude` is the test executor and `just check` runs offline (the M8 rule,
+  adopted early so no test is ever rewritten); the merge-queue states are in the
+  transition table (`succeeded` is terminal only when `integrate = false`, one home:
+  `model.IsTerminal`); `attempt_facts` carries the integration/cost-vector/routing/
+  human-loop columns as NULL; `routines.model` is an alias into `[models]` seeded
+  with `haiku|sonnet|opus`; registries are `go generate`d and migrations
+  ULID-named (STYLE §11, a deliberate exception to "no code generation"); Git
+  options for worktrees go through `GIT_CONFIG_*` env only; the sandbox is one
+  `Sandbox.Wrap` hook on the launch path. Constitution 9 (untrusted data) added now
+  — the prompt says it needs no approval. The push-policy amendment waits for
+  approval (proposed wording in the addendum report). Machine facts checked:
+  `bwrap` 0.11.2 and `cargo` present, `mergiraf` absent, `rerere` on,
+  `conflictstyle` unset, Claude config is `~/.claude`; **`strace` is not
+  installed** (M8 write-path discovery needs it or an alternative) and unprivileged
+  `unshare -n` is refused — the offline proof uses `unshare -Urn` or `bwrap
+  --unshare-net`.
+- **2026-08-30 · M8+ fold-in review decisions.** `integrate` is frozen on Work;
+  `stack_on` lives on the dependency edge; `merging` is a leased merge claim run on
+  a worker (sweeper retries, `max_rebase_attempts = 3` → `conflict`); `succeeded`
+  is terminal only without integration (`model.IsTerminal`) and "success" is
+  `model.IsSuccess`; facts are computed at attempt-terminal with a one-time fill of
+  the integration columns (the sole immutability exception); worktrees awaiting
+  merge are kept by their own cleanup row and the local task branch is
+  fast-forwarded after a merge so the normal removal rule applies; `fake-claude`
+  is a hidden subcommand behind the one template executor (fixtures hand-authored
+  first, `meta.toml` schema fixed in DESIGN §7.4); `attempts.model` is the resolved
+  id, `model_alias` the alias; `[runners]`/`[models]` are embedded defaults
+  overridden per key; a per-attempt MCP token is minted at claim from M1 and `forge
+  mcp` runs inside the sandbox behind a worker-side attempt-scoped socket (M8);
+  the claim carries a `policy` block so the worker has no second config; the
+  `deps` pre-step is a merge-queue commit, never a direct push; `forge task
+  requeue` resolves `conflict`. `goimports` joins `fmt-check`; `just
+  check-offline` is the STYLE §11 proof. `protocol` may import `model` (wire types
+  carry model enums); `model` imports nothing.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;
