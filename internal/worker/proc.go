@@ -63,5 +63,9 @@ func killProcessGroup(pid int, identity string, grace time.Duration) error {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("kill process group %d: %w", pid, err)
 	}
+	// Killed members linger as zombies until reaped; give them a moment.
+	for deadline = time.Now().Add(time.Second); time.Now().Before(deadline) && processGroupAlive(pid); {
+		time.Sleep(25 * time.Millisecond)
+	}
 	return nil
 }
