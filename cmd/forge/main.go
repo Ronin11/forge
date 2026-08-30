@@ -1,15 +1,22 @@
-// Command forge is the single binary for the Forge control plane, worker, MCP
-// server, and operator CLI. Each subcommand is one file in this package exposing a
-// `func(args []string, stdout, stderr io.Writer) int`; main only builds the table
-// and dispatches.
+// Command forge is the single binary for the Forge daemon, worker, MCP server,
+// and operator CLI. Each subcommand is one file in this package exposing a
+// `func(ctx context.Context, c *cmdContext, args []string) int`; main only builds
+// the table and dispatches. Every subcommand parses the logging flags through
+// cmdContext.flags, so `forge <anything> -vv --log-format json` always works.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"forge/internal/logging"
 )
 
 // version is set by the linker (`-X main.version=...`); "dev" otherwise. It is the
@@ -19,11 +26,29 @@ var version = "dev"
 // command is a subcommand. Exit codes: 0 ok, 1 failed, 2 usage.
 type command struct {
 	summary string
-	run     func(args []string, stdout, stderr io.Writer) int
+	run     func(ctx context.Context, c *cmdContext, args []string) int
+}
+
+// cmdContext is what a subcommand gets from main: streams, environment, the Forge
+// home directory, and the means to build its logger once its flags are parsed.
+type cmdContext struct {
+	stdout, stderr io.Writer
+	getenv         func(string) string
+	forgeHome      string // ~/.forge, or $FORGE_HOME
 }
 
 func main() {
-	os.Exit(dispatch(commands(), os.Args[1:], os.Stdout, os.Stderr))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "forge: resolve home directory:", err)
+		os.Exit(1)
+	}
+	forgeHome := os.Getenv("FORGE_HOME")
+	if forgeHome == "" {
+		forgeHome = filepath.Join(home, ".forge")
+	}
+	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome}
+	os.Exit(dispatch(context.Background(), commands(), c, os.Args[1:]))
 }
 
 // commands is the table main dispatches on. Adding a subcommand is one file plus one
@@ -34,22 +59,22 @@ func commands() map[string]command {
 	}
 }
 
-func dispatch(table map[string]command, args []string, stdout, stderr io.Writer) int {
+func dispatch(ctx context.Context, table map[string]command, c *cmdContext, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage(table))
+		fmt.Fprint(c.stderr, usage(table))
 		return 2
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
-		fmt.Fprint(stdout, usage(table))
+		fmt.Fprint(c.stdout, usage(table))
 		return 0
 	}
 	cmd, ok := table[args[0]]
 	if !ok {
-		fmt.Fprintf(stderr, "forge: unknown command %q\n%s", args[0], usage(table))
+		fmt.Fprintf(c.stderr, "forge: unknown command %q\n%s", args[0], usage(table))
 		return 2
 	}
-	return cmd.run(args[1:], stdout, stderr)
+	return cmd.run(ctx, c, args[1:])
 }
 
 func usage(table map[string]command) string {
@@ -63,18 +88,63 @@ func usage(table map[string]command) string {
 	for _, name := range names {
 		fmt.Fprintf(&b, "  %-10s %s\n", name, table[name].summary)
 	}
+	b.WriteString("\nevery command accepts --log-level, --log-format, -v, -vv\n")
 	return b.String()
 }
 
-func runVersion(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 {
-		if args[0] == "-h" || args[0] == "--help" {
-			fmt.Fprintln(stdout, "usage: forge version\n\nPrint the build version.")
-			return 0
-		}
-		fmt.Fprintf(stderr, "forge version: unexpected argument %q\n", args[0])
+// flags builds a subcommand's FlagSet with the logging flags already registered.
+// Parse errors print to stderr; -h prints usage to stdout (see parse).
+func (c *cmdContext) flags(name string) (*flag.FlagSet, *logging.Flags) {
+	fs := flag.NewFlagSet("forge "+name, flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	return fs, logging.AddFlags(fs)
+}
+
+// parse runs fs.Parse and maps its outcome to an exit code: -1 means "carry on".
+// Only an explicit -h moves usage to stdout; a bad flag keeps everything on stderr
+// so a script piping stdout never sees help text where it expected output.
+func (c *cmdContext) parse(fs *flag.FlagSet, args []string) int {
+	fs.Usage = func() {}
+	switch err := fs.Parse(args); {
+	case err == flag.ErrHelp:
+		fmt.Fprintf(c.stdout, "usage: %s [flags]\n", fs.Name())
+		fs.SetOutput(c.stdout)
+		fs.PrintDefaults()
+		return 0
+	case err != nil:
+		fmt.Fprintln(c.stderr, fs.Name()+":", err)
 		return 2
 	}
-	fmt.Fprintln(stdout, "forge", version)
+	return -1
+}
+
+// logger resolves the logging options (flag > env > config) and returns the
+// handler and this command's own logger. One-shot commands have no [log] config
+// yet; the daemon and worker pass theirs in when their config loads (M1).
+func (c *cmdContext) logger(f *logging.Flags, cfg logging.Config, component string) (*logging.Handler, *slog.Logger, error) {
+	opts, err := logging.Resolve(f, c.getenv, cfg, c.forgeHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	h := logging.New(c.stderr, opts, nil)
+	return h, h.For(component), nil
+}
+
+func runVersion(ctx context.Context, c *cmdContext, args []string) int {
+	fs, lf := c.flags("version")
+	if code := c.parse(fs, args); code >= 0 {
+		return code
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(c.stderr, "forge version: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+	_, log, err := c.logger(lf, logging.Config{}, "cli.version")
+	if err != nil {
+		fmt.Fprintln(c.stderr, "forge version:", err)
+		return 2
+	}
+	log.DebugContext(ctx, "printing version", "version", version)
+	fmt.Fprintln(c.stdout, "forge", version)
 	return 0
 }

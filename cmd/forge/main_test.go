@@ -1,41 +1,59 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
+
+func run(args []string, env map[string]string) (code int, stdout, stderr string) {
+	var out, errOut strings.Builder
+	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(k string) string { return env[k] }, forgeHome: "/tmp/forge-test-home"}
+	code = dispatch(context.Background(), commands(), c, args)
+	return code, out.String(), errOut.String()
+}
 
 func TestDispatch(t *testing.T) {
 	cases := []struct {
 		name       string
 		args       []string
+		env        map[string]string
 		wantCode   int
 		wantStdout string
 		wantStderr string
 	}{
-		{"no args", nil, 2, "", "usage: forge"},
-		{"help", []string{"help"}, 0, "usage: forge", ""},
-		{"dash h", []string{"-h"}, 0, "version    print", ""},
-		{"version", []string{"version"}, 0, "forge dev", ""},
-		{"version -h", []string{"version", "-h"}, 0, "usage: forge version", ""},
-		{"version extra", []string{"version", "x"}, 2, "", "unexpected argument"},
-		{"unknown", []string{"bogus"}, 2, "", `unknown command "bogus"`},
+		{"no args", nil, nil, 2, "", "usage: forge"},
+		{"help", []string{"help"}, nil, 0, "usage: forge", ""},
+		{"dash h", []string{"-h"}, nil, 0, "version    print", ""},
+		{"version", []string{"version"}, nil, 0, "forge dev", ""},
+		{"version -h", []string{"version", "-h"}, nil, 0, "usage: forge version", ""},
+		{"version extra", []string{"version", "x"}, nil, 2, "", "unexpected argument"},
+		{"version bad flag", []string{"version", "--bogus"}, nil, 2, "", "flag provided but not defined"},
+		{"version -h flags", []string{"version", "--help"}, nil, 0, "-log-level", ""},
+		{"unknown", []string{"bogus"}, nil, 2, "", `unknown command "bogus"`},
+		{"-v shows debug line", []string{"version", "-v"}, nil, 0, "forge dev", "printing version"},
+		{"env level shows debug line", []string{"version"}, map[string]string{"FORGE_LOG_LEVEL": "debug"}, 0, "forge dev", "printing version"},
+		{"flag beats env", []string{"version", "--log-level", "warn"}, map[string]string{"FORGE_LOG_LEVEL": "debug"}, 0, "forge dev", ""},
+		{"json format", []string{"version", "-v", "--log-format=json"}, nil, 0, "forge dev", `"component":"cli.version"`},
+		{"bad level", []string{"version", "--log-level", "loud"}, nil, 2, "", "unknown log level"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var stdout, stderr strings.Builder
-			got := dispatch(commands(), c.args, &stdout, &stderr)
-			if got != c.wantCode {
-				t.Errorf("exit = %d, want %d", got, c.wantCode)
+			code, stdout, stderr := run(c.args, c.env)
+			if code != c.wantCode {
+				t.Errorf("exit = %d, want %d (stderr %q)", code, c.wantCode, stderr)
 			}
-			if !strings.Contains(stdout.String(), c.wantStdout) {
-				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), c.wantStdout)
+			if !strings.Contains(stdout, c.wantStdout) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout, c.wantStdout)
 			}
-			if !strings.Contains(stderr.String(), c.wantStderr) {
-				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), c.wantStderr)
+			if !strings.Contains(stderr, c.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr, c.wantStderr)
 			}
-			if c.wantStdout == "" && stdout.Len() != 0 {
-				t.Errorf("unexpected stdout %q", stdout.String())
+			if c.wantStderr == "" && stderr != "" {
+				t.Errorf("unexpected stderr %q", stderr)
+			}
+			if c.wantCode == 2 && stdout != "" {
+				t.Errorf("usage error wrote to stdout: %q", stdout)
 			}
 		})
 	}

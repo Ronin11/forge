@@ -50,6 +50,20 @@ Newest entries at the bottom of each section. Dates are absolute.
   (`<data_dir>/locks/<repo>.lock`, shared with the running worker); `retained`
   manifests are final so the worker never races it. `forge prune` deletes rows via
   the API and files via `worker.toml` (both configs are on the one machine).
+- **2026-08-30 · Logging standard and journal added before any store code.** One
+  handler, per-component levels by longest dotted prefix, correlation attrs in
+  context, stderr governed by flags, file sink fixed at debug JSON with size
+  rotation written in-package (~80 lines; a dependency was not worth a reason).
+  `-v`/`-vv` override the default level but keep `--log-level` component
+  overrides. SIGUSR1 toggles debug and remembers the previous level; an explicit
+  set clears that memory. The journal table is *specified* (`DESIGN.md` §3, `STYLE.md`
+  §9) to be in migration 1 and written in the same transaction as every
+  Work/Target/Attempt/Question/Proposal state change; the store lands in M1. Logs
+  are never authoritative. `OpenFileSink` takes no context (STYLE §3 carve-out for
+  non-blocking syscalls). Detached processes get `<component>.stdio.log` for raw
+  stdio so the structured file never receives duplicate lines. The daemon/plugin work discussed
+  separately (a `daemon` subcommand, plugin loading) is the M6/M7 delta; only the
+  vocabulary (`daemon`, `plugin` component) is used here.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;

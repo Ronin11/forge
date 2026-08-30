@@ -208,6 +208,19 @@ created_at)`. §12.
 last_seen_at)` and `retained_worktrees(attempt_id, worker_id, path, reason,
 cleanup_command)` reported on every registration.
 
+### Journal
+
+`journal(id INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, entity_type, entity_id,
+payload JSON)`. One row per state change of a Work, Target, Attempt, Question, or
+Proposal (`entity_type`), written **in the same transaction** as the change by the
+single store helper every state-changing method calls (`store.journal(tx, …)`). `id`
+is the monotonic order of events across the whole system; `kind` names the change
+(`target.transition`, `work.priority`, `question.answered`, `proposal.decided`, …);
+`payload` holds `{from, to, reason, actor}` plus whatever the change needs to be
+replayed by a reader. It is the audit trail — the answer to "what happened to X and
+when" — and is never reconstructed from logs (§15). Kept forever; `forge prune`
+never touches it.
+
 ### Verification, Artifact
 
 `verifications(id, attempt_id, level, passed, verifier_attempt_id, verdict JSON,
@@ -790,7 +803,7 @@ Operator (loopback): `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
 /api/v1/targets/{id}/approve|reject` (L3); `GET|POST
 /api/v1/proposals`, `POST /api/v1/proposals/{id}/approve|reject`; `GET /api/v1/stats`;
 `GET /api/v1/retro`; `GET /api/v1/usage`; `GET /api/v1/workers`; `GET
-/api/v1/repositories`; `GET /api/v1/kb/...`.
+/api/v1/repositories`; `GET /api/v1/kb/...`; `GET|POST /api/v1/log-level` (§15).
 
 Worker (token): `POST /api/v1/worker/register`; `POST /api/v1/worker/claim`; `POST
 /api/v1/attempts/{id}/heartbeat`; `POST /api/v1/attempts/{id}/events`; `POST
@@ -828,7 +841,50 @@ by `forge mcp` as an `mcp`-source span through `POST /api/v1/attempts/{id}/event
   metadata; each worker only ever removes worktrees under its own root); the same
   data dir is refused by the flock.
 
-## 15. Milestones and smoke tests
+## 15. Logging
+
+Logs are for debugging; the journal (§3) is the audit trail, and nothing reads logs to
+decide anything. The mechanism is `internal/logging` (`STYLE.md` §9); this section is
+the process-level shape.
+
+- **Components.** One per process: `daemon`, `worker`, `mcp`, `plugin.<name>`, and
+  the one-shot CLI commands (`cli.<command>`). Inside a process, package loggers
+  are dotted (`controlplane.http`, `controlplane.scheduler`, `store`, `worker.git`,
+  `worker.supervisor`, `worker.parser`, `tools.<name>`).
+- **Sinks.** stderr at the operator's levels (`--log-level`, `--log-format`, `-v`,
+  `-vv`; `FORGE_LOG_LEVEL`, `FORGE_LOG_FORMAT`; `[log]` in `forge.toml` and
+  `worker.toml`; flag > env > config > default `info`/`text`). The daemon and worker
+  also always write JSON at `debug` to `<forge home>/logs/daemon.log` and
+  `<forge home>/logs/worker.log` — one file per process, and there is never more
+  than one of either process (daemon lock, worker data-dir lock); rotation by size
+  (`max_size_mb`, default 50; `max_files`, default 5 rotated generations). A
+  detached process's raw stdio (panics, runtime warnings) goes to
+  `<component>.stdio.log`, never to the structured log. `forge mcp`, plugins, and
+  one-shot commands have no file sink of their own; a plugin's stderr is captured
+  by the daemon into `logs/plugins/<name>.log`.
+- **Correlation.** `controlplane.http` middleware generates `request_id` and puts it
+  in the request context; the worker's attempt runner builds the attempt context
+  with `attempt_id`, `target_id`, `work_id` once, at claim, and every phase and tool
+  span adds `span_id`; `forge mcp` gets the attempt from its flag and stamps it on
+  everything; plugins get `plugin`. The handler stamps these from the context — call
+  sites never repeat them.
+- **Runtime control.** `POST /api/v1/log-level {"levels": "debug,store=trace"}` and
+  `GET /api/v1/log-level` (`forge daemon log-level X` is the CLI); SIGUSR1 toggles
+  debug in any long-running Forge process. Propagation: the daemon signals or
+  re-informs the children it started (the worker under `forge run`), the worker
+  reads the daemon's level on every registration and applies it, and `forge mcp`
+  reads it at start; every Forge-spawned Forge child also inherits
+  `FORGE_LOG_LEVEL`/`FORGE_LOG_FORMAT` from the parent's live handler
+  (`logging.Environ`). A child's
+  stderr is captured line by line and re-logged under its component (JSON records
+  keep their level; anything else is `warn`).
+- **Executor output.** stream-json lines and executor stderr are *data*: they go to
+  `data_dir/output/<attempt>.log` and the parser. They are mirrored to the log only
+  at `trace` (`worker.executor`), never at `info`.
+- **Never logged:** prompt bodies, tool output, file contents, tokens, or anything
+  from a repository. IDs, names, sizes, durations, decisions, and errors are.
+
+## 16. Milestones and smoke tests
 
 The smoke tests referenced as "smoke N" throughout are listed in `docs/SMOKE.md`,
 copied from the build specification and run against the real repositories at the

@@ -50,7 +50,9 @@ Code should be obvious on first read, boring on second read, and still correct a
 - **Generics** only when the third copy of something would otherwise appear (§2's
   rule), e.g. `Registry[T]`. A generic with one instantiation is a finding.
 - **`context.Context`** is the first parameter of every function that blocks, does I/O,
-  spawns a process, or may be cancelled. Never stored in a struct.
+  spawns a process, or may be cancelled. Never stored in a struct. Carve-out: a
+  function whose only I/O is a few non-blocking syscalls (`open`, `stat`, `rename`,
+  `flock` with `LOCK_NB`) takes no context — a context it could not honour is a lie.
 - **Errors** are wrapped with what was being attempted, in the caller's vocabulary:
   `fmt.Errorf("resolve base for %s: %w", repo, err)`. Never `errors.New(err.Error())`.
   Never discarded — the tree is `errcheck`-clean, including `defer f.Close()` patterns
@@ -89,8 +91,9 @@ Code should be obvious on first read, boring on second read, and still correct a
   `model` and `protocol` import nothing from Forge.
 - **Configuration** is parsed once into a struct with defaults applied and validated
   at load time; the rest of the program never sees a raw map.
-- **Logging** is `log/slog`, structured, with IDs and sizes, never prompt bodies or
-  tool output. Errors are logged once, at the top of the stack that handles them.
+- **Logging** follows §8: `log/slog` through `internal/logging` only, structured, with
+  IDs and sizes, never prompt bodies or tool output. Errors are logged once, at the
+  top of the stack that handles them.
 - **Third-party dependencies** need a reason recorded in `NOTES.md`. Current allow-list:
   `modernc.org/sqlite` (pure-Go SQLite, no cgo), `github.com/BurntSushi/toml`,
   `github.com/robfig/cron/v3` (parsing only), `github.com/mark3labs/mcp-go` (MCP
@@ -153,7 +156,63 @@ Code should be obvious on first read, boring on second read, and still correct a
 - The UI is `html/template` + one stylesheet + vanilla JS. No framework, no bundler,
   no inline event handlers; scripts attach behaviour by `data-` attributes.
 
-## 8. Review gate
+## 8. Logging
+
+Logs are for debugging. The `journal` table (§10) is the audit trail; a log line is
+never evidence of what happened and nothing reads logs to decide anything.
+
+- **One mechanism.** `log/slog` via `internal/logging`. No `log.Printf`, no
+  `fmt.Fprintln(os.Stderr, …)` outside CLI output, no `slog.Default()`. Every package
+  gets its logger from `handler.For("<component>")` — dotted names (`store`,
+  `worker.git`, `controlplane.http`, `plugin.<name>`) — passed in at construction,
+  never fetched from a global. The `component` attribute is on every line.
+- **Levels:** `trace` (a custom level below debug: SQL statements, HTTP bodies, raw
+  executor lines), `debug` (state changes, decisions with their inputs), `info` (what
+  an operator watching would want: start/stop, claim, complete, retained), `warn`
+  (degraded but continuing: a failed fetch, a retry), `error` (something that needed
+  a human or lost work). Per-component levels: `--log-level store=trace,worker=debug`.
+- **Flags on every subcommand:** `--log-level`, `--log-format text|json`, `-v`
+  (debug), `-vv` (trace), with `FORGE_LOG_LEVEL` / `FORGE_LOG_FORMAT` and the `[log]`
+  config section; precedence **flag > env > config > default**. A subcommand builds
+  its `FlagSet` through `cmdContext.flags`, which registers them.
+- **Two sinks.** The flags control stderr only. The daemon and the worker also
+  always write JSON at `debug` to `<forge home>/logs/<component>.log` (`[log] dir`
+  overrides the directory; size rotation keeps `max_files` rotated generations
+  besides the live file, rotating when it would exceed `max_size_mb`); that sink
+  ignores the flags. The level spec that wins precedence replaces the others whole
+  — a `--log-level store=trace` does not inherit an env default. `-v`/`-vv` only
+  ever raise verbosity. SIGUSR1 raises the default to at least debug (or restores
+  it) and leaves component overrides alone. Records are flat: `WithGroup` is a
+  no-op so correlation fields stay top-level.
+- **Correlation travels in `context.Context`** (`logging.ContextWith`) and is stamped
+  by the handler: `request_id` on every HTTP request, `attempt_id`/`target_id`/
+  `work_id` inside an attempt, `plugin` inside a plugin, `span_id` inside a span.
+  Code inside an attempt logs with the `*Context` methods and the attempt's context;
+  **a log line inside an attempt without `attempt_id` is a finding**, as is a bare
+  `logger.Info(...)` where a context is in scope. Tests may assert with
+  `logging.HasAttr`.
+- **Runtime changes.** `SetLevels` via the API (`forge daemon log-level X`) and
+  SIGUSR1 toggling debug. A Forge process that starts another Forge process passes
+  `logging.Environ` so the child inherits level and format, and captures the
+  child's stderr with `logging.Forward` under the child's component.
+- **Executor output is not log.** stream-json and executor stderr go to the attempt
+  output file and the parser; they are mirrored to the log only at `trace`, one
+  line per line, bounded.
+- **Never log** prompt bodies, tool output, tokens, or file contents. Log IDs,
+  names, sizes, durations, and decisions.
+
+## 9. Journal
+
+Every state change of a Work, Target, Attempt, Question, or Proposal writes one row
+to `journal(id, ts, kind, entity_type, entity_id, payload)` **in the same
+transaction** as the change, through the one store helper every state-changing
+method calls. `id` is the monotonic order of events in the system; `payload` holds
+the transition (`from`, `to`, `reason`, and the actor). The journal is the audit
+trail and the input to "what happened to X"; it is never reconstructed from logs. A
+store method that changes state without a journal row is a finding, and the store
+tests assert the row for every transition.
+
+## 10. Review gate
 
 Before each commit the author spawns a reviewer with this document and the diff. The
 reviewer reports findings as `file:line — rule § — problem`. Every finding is fixed or
