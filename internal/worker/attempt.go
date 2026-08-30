@@ -212,6 +212,12 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 		if perr != nil {
 			state, reason = model.Failed, model.ReasonResultUnparseable
 			a.emitter.Lifecycle("result unparseable", map[string]any{"error": shortError(perr)})
+		} else if !hasEnv {
+			// The envelope is requested via --json-schema for every attempt
+			// (VERIFICATION.md L0.1); a success with no structured result at
+			// all means the agent never produced the required envelope.
+			state, reason = model.Failed, model.ReasonResultUnparseable
+			a.emitter.Lifecycle("result unparseable", map[string]any{"error": "no structured result"})
 		}
 	}
 	if state == model.Succeeded && env != nil && env.NeedsInput != nil {
@@ -508,11 +514,13 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	// The fake executor's fixture comes from the environment (tests and
 	// `just smoke` set it); production executors ignore the variable.
 	fixture := os.Getenv("FORGE_FAKE_FIXTURE")
-	schema := ""
-	if c.Autonomy.AllowsQuestions() {
-		// Enforce the needs_input envelope structurally: prose questions parse
-		// as nothing and the pause is lost (found by M3 smoke 18).
-		schema = EnvelopeSchema
+	// Enforce the envelope structurally for every autonomy level: prose
+	// questions parse as nothing and the pause is lost (M3 smoke 18), and a
+	// prose verify verdict is lost the same way (M4 smoke 22). The mode's own
+	// schema (which may extend the envelope) wins when the claim carries one.
+	schema := EnvelopeSchema
+	if c.ModeInfo != nil && len(c.ModeInfo.Schema) > 0 {
+		schema = string(c.ModeInfo.Schema)
 	}
 	cmd, err := exec.Command(ctx, LaunchRequest{
 		Model: c.Model, MaxTurns: c.MaxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,

@@ -105,6 +105,12 @@ type ModeInfo struct {
 	RequiredLevel int              `json:"required_level"`
 	Checkpoints   []string         `json:"checkpoints,omitempty"`
 	DocsPaths     []string         `json:"docs_paths,omitempty"` // [modes.docs] paths from the repo's forge.toml
+	// Schema is the mode's result schema (the common envelope, possibly
+	// extended — verify adds verdict/claims_checked). The worker passes it
+	// via --json-schema so the envelope is enforced structurally for every
+	// autonomy level, not trusted to prose (M4 smoke: a verify agent answered
+	// in fenced prose and its verdict was lost).
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 // VerifyOf marks a claim as an L2 verification of another attempt: the

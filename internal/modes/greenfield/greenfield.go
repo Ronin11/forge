@@ -52,6 +52,6 @@ func (mode) DefaultAutonomy() model.Autonomy { return model.AutonomyCheckpoint }
 func (mode) Writes() model.WriteScope        { return model.WritesNewProject }
 
 // FollowUps returns the verify Work every L2 mode needs (VERIFICATION.md §L2).
-func (mode) FollowUps(_ *protocol.ResultEnvelope, c modes.FollowUpContext) []modes.WorkSpec {
-	return modes.VerifyWork(c)
+func (mode) FollowUps(env *protocol.ResultEnvelope, c modes.FollowUpContext) []modes.WorkSpec {
+	return modes.VerifyWork(env, c)
 }

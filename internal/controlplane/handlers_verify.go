@@ -175,6 +175,7 @@ func (s *Server) claimModeInfo(ctx context.Context, tx *store.Tx, mode, reposito
 	if s.modes != nil {
 		if m := s.modes.Get(mode); m != nil {
 			mi.WriteScope, mi.RequiredLevel, mi.Checkpoints = m.Writes(), int(m.Level()), m.Checkpoints()
+			mi.Schema = m.ResultSchema()
 		}
 	}
 	ft := s.repoForgeToml(ctx, tx, repository)
