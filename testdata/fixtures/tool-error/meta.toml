@@ -1,0 +1,3 @@
+exit_code = 0
+delay_ms = 2
+rate_limit_event = { five_hour = 0.41, seven_day = 0.22 }

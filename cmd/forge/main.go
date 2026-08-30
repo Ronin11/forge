@@ -55,7 +55,8 @@ func main() {
 // entry here.
 func commands() map[string]command {
 	return map[string]command{
-		"version": {summary: "print the build version", run: runVersion},
+		"version":     {summary: "print the build version", run: runVersion},
+		"fake-claude": {summary: "replay a recorded stream-json fixture (test executor)", run: runFakeClaude},
 	}
 }
 

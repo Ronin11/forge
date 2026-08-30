@@ -1,0 +1,6 @@
+exit_code = 0
+delay_ms = 2
+
+[[line_delays]]
+line = 3
+delay_ms = 600000

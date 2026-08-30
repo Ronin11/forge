@@ -1,0 +1,4 @@
+exit_code = 0
+delay_ms = 2
+resume_script = "resume.jsonl"
+needs_input_at = 6

@@ -1,0 +1,8 @@
+exit_code = 0
+delay_ms = 2
+
+[[files]]
+at_line = 2
+path = "FORGE_SMOKE.txt"
+content = "2026-08-30\n"
+git_commit = "chore: forge smoke test"
