@@ -434,10 +434,14 @@ func decodeAfter(raw json.RawMessage, v any) error {
 // targetName strips the kind's prefix from a proposal target and validates the
 // remainder as a Forge name.
 func targetName(target, prefix string) (string, error) {
+	// The prefix is optional: retro agents file bare names ("inventory") as
+	// often as fact-link grammar ("routine:inventory"); both are unambiguous
+	// here because the kind picks the prefix.
 	name, ok := strings.CutPrefix(target, prefix)
 	if !ok {
-		return "", fmt.Errorf("target %q: want %s<name>", target, prefix)
+		name = target
 	}
+
 	if err := model.ValidateName(name); err != nil {
 		return "", err
 	}

@@ -385,3 +385,16 @@ func TestApplyCodeProposalNoForgeRepo(t *testing.T) {
 		t.Errorf("apply without a forge repository = %v, want missing-repo error", err)
 	}
 }
+
+// Bare targets (no kind prefix) are accepted: retro agents file both forms.
+func TestTargetNameBare(t *testing.T) {
+	for _, in := range []string{"inventory", "routine:inventory"} {
+		name, err := targetName(in, "routine:")
+		if err != nil || name != "inventory" {
+			t.Errorf("targetName(%q) = %q, %v", in, name, err)
+		}
+	}
+	if _, err := targetName("routine:bad name!", "routine:"); err == nil {
+		t.Error("invalid name accepted")
+	}
+}
