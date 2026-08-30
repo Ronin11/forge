@@ -165,6 +165,13 @@ Newest entries at the bottom of each section. Dates are absolute.
   MCP token. Prune compresses transcripts after 7 days (mtime preserved so
   retention still keys on age) and never touches rows. The Forge repo now
   declares its checks in `forge.toml` (fmt/vet/test — the fast subset).
+- **2026-08-30 · Known gap: the Forge mirror goes stale.** The local bare mirror
+  that serves as the forge repo's `origin` is only updated by an explicit
+  `git --git-dir ~/.forge/mirrors/forge.git fetch ~/Projects/forge main:main`;
+  attempts on the forge repo run at whatever `main` the mirror last saw (smoke 13
+  first ran at a base without `forge.toml`). Candidate fixes, decided in M6:
+  `forge doctor` flags a stale mirror, and the worker refreshes a `file://` origin
+  mirror before fetch (a fetch into the mirror, still never a push).
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;
