@@ -309,7 +309,7 @@ PY
 
 step20() {
   say "20. implement mode: schema populated; L1 re-runs declared checks; a false claim → unverified"
-  $FORGE routine list --json | grep -q '"name": "impl-smoke"' || run $FORGE routine add impl-smoke --mode implement --prompt "Issue: NOTES.md should mention that smoke logs live in .scratch/. Add one short sentence to the Cuts section of NOTES.md saying so, commit with a conventional message. Acceptance: the sentence exists; checks pass." --repos forge --model haiku --max-turns 12 --timeout 900
+  $FORGE routine list --json | grep -q '"name": "impl-smoke"' || run $FORGE routine add impl-smoke --mode implement --prompt "Issue: NOTES.md should mention that smoke logs live in .scratch/. Add one short sentence to the Cuts section of NOTES.md saying so, commit with a conventional message. Acceptance: the sentence exists; checks pass." --repos forge --model haiku --max-turns 12 --timeout 900 --class interactive
   run $FORGE routine run impl-smoke
   ID=$(taskid)
   echo "state: $(wait_task "$ID" 900)" | tee -a "$LOG"
@@ -319,7 +319,7 @@ step20() {
 
 step21() {
   say "21. review mode on a diff: structured findings, no writes"
-  $FORGE routine list --json | grep -q '"name": "review-smoke"' || run $FORGE routine add review-smoke --mode review --prompt "Review the most recent commit on the current branch (git show HEAD). Report findings." --repos forge --model haiku --max-turns 8 --timeout 600
+  $FORGE routine list --json | grep -q '"name": "review-smoke"' || run $FORGE routine add review-smoke --mode review --prompt "Review the most recent commit on the current branch (git show HEAD). Report findings." --repos forge --model haiku --max-turns 24 --timeout 600 --class interactive
   run $FORGE routine run review-smoke
   ID=$(taskid)
   echo "state: $(wait_task "$ID" 700)" | tee -a "$LOG"
