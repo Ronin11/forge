@@ -345,6 +345,79 @@ step23() {
   run just ui-test
 }
 
+api() { # api METHOD PATH [JSON] — operator API over loopback
+  local m=$1 p=$2 body=${3:-}
+  if [ -n "$body" ]; then
+    curl -s -X "$m" -H 'Content-Type: application/json' -d "$body" "http://127.0.0.1:7340$p"
+  else
+    curl -s -X "$m" "http://127.0.0.1:7340$p"
+  fi
+}
+
+# first proposal id matching status+kind from `forge proposal list --json`
+propid() {
+  $FORGE proposal list --json | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+ps=d if isinstance(d,list) else d.get("proposals",[])
+ps=[p for p in ps if p.get("status")=="'"$1"'" and (not "'"$2"'" or p.get("kind")=="'"$2"'")]
+print(ps[0]["id"] if ps else "")'
+}
+
+step24() {
+  say "24. retro on demand: kb retro note + at least one routine-kind proposal"
+  $FORGE routine list --json | grep -q '"name": "retro-smoke"' || run $FORGE routine add retro-smoke --mode retro --prompt "Reflect on the last 24 hours of runs across routines using the retro pack. Compare generations, tie every observation to a metric, write one kb note of type retro, and file at least one proposal of kind routine (a concrete prompt or settings improvement for an existing routine such as impl-smoke or review-smoke) via forge_propose." --repos forge --model haiku --max-turns 24 --timeout 900 --class interactive
+  run $FORGE routine run retro-smoke
+  ID=$(taskid)
+  echo "state: $(wait_task "$ID" 900)" | tee -a "$LOG"
+  run $FORGE task show "$ID"
+  run $FORGE proposal list
+  P=$(propid proposed routine)
+  [ -n "$P" ] && echo "routine proposal present: $P" | tee -a "$LOG" || echo "NO routine proposal" | tee -a "$LOG"
+}
+
+step25() {
+  say "25. approve → new generation via proposal; forced regression (max_turns=1) auto-reverts"
+  P=$(propid proposed routine)
+  if [ -n "$P" ]; then
+    run $FORGE proposal approve "$P"
+    run $FORGE proposal show "$P"
+  fi
+  # Forced regression: a manual routine proposal crippling inventory.
+  api POST /api/v1/proposals '{"kind":"routine","target":"routine:inventory","after":{"max_turns":1},"rationale":"smoke: force a regression for the A/B auto-revert","verification_plan":"A/B over the next 5 runs; auto-revert on regression"}' | tee -a "$LOG"; echo
+  R=$(propid proposed routine)
+  run $FORGE proposal approve "$R"
+  GEN_BAD=$($FORGE routine show inventory | grep -m1 '^Generation' || true); echo "after apply: $GEN_BAD" | tee -a "$LOG"
+  for i in 1 2 3 4 5; do
+    run $FORGE routine run inventory
+    ID=$(taskid)
+    echo "run $i state: $(wait_task "$ID" 600)" | tee -a "$LOG"
+  done
+  sleep 25  # two sweep cycles
+  run $FORGE proposal show "$R"
+  run $FORGE routine show inventory
+}
+
+step26() {
+  say "26. code proposal → forge/proposal-<id8> branch on the Forge repo, never merged"
+  MAIN_BEFORE=$(git -C "$HOME/Projects/forge" rev-parse main)
+  api POST /api/v1/proposals '{"kind":"code","target":"forge","after":{"diff":"--- a/NOTES.md\n+++ b/NOTES.md\n@@ example only @@\n"},"rationale":"smoke: example code proposal","verification_plan":"a human reviews the branch; Forge never merges"}' | tee -a "$LOG"; echo
+  C=$(propid proposed code)
+  run $FORGE proposal approve "$C"
+  run $FORGE proposal show "$C"
+  run git -C "$HOME/Projects/forge" branch --list 'forge/proposal-*'
+  [ "$(git -C "$HOME/Projects/forge" rev-parse main)" = "$MAIN_BEFORE" ] && echo "main untouched" | tee -a "$LOG" || echo "MAIN MOVED — BUG" | tee -a "$LOG"
+}
+
+step27() {
+  say "27. reject a proposal; status and funnel stats reflect it"
+  api POST /api/v1/proposals '{"kind":"doc","target":"kb:smoke-doc","after":{"note":"example"},"rationale":"smoke: to be rejected","verification_plan":"none"}' | tee -a "$LOG"; echo
+  D=$(propid proposed doc)
+  run $FORGE proposal reject "$D" "smoke: rejecting on purpose"
+  run $FORGE proposal show "$D"
+  run $FORGE stats
+}
+
 steps=("$@"); [ ${#steps[@]} -eq 0 ] && steps=(1 2 3 4 5 6 7 8 9 10)
 for s in "${steps[@]}"; do "step$s"; done
 echo; echo "log: $LOG"

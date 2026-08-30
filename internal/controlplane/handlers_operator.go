@@ -730,10 +730,11 @@ func (s *Server) repositories(r *http.Request) (int, any, error) {
 	return http.StatusOK, repos, nil
 }
 
-// attention is GET /api/v1/attention: what needs a human (M3 adds conflicts,
-// L3 approvals, and proposals).
+// attention is GET /api/v1/attention: what needs a human — open questions and
+// undecided proposals (M3 adds conflicts and L3 approvals).
 type attention struct {
 	Questions []store.Question `json:"questions"`
+	Proposals []store.Proposal `json:"proposals"`
 }
 
 func (s *Server) attention(r *http.Request) (int, any, error) {
@@ -744,5 +745,12 @@ func (s *Server) attention(r *http.Request) (int, any, error) {
 	if qs == nil {
 		qs = []store.Question{}
 	}
-	return http.StatusOK, attention{Questions: qs}, nil
+	ps, err := s.store.ListProposals(r.Context(), model.ProposalProposed)
+	if err != nil {
+		return 0, nil, err
+	}
+	if ps == nil {
+		ps = []store.Proposal{}
+	}
+	return http.StatusOK, attention{Questions: qs, Proposals: ps}, nil
 }

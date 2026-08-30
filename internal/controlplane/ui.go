@@ -54,6 +54,12 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return humanDuration(time.Duration(*us) * time.Microsecond)
 		},
 		"join": strings.Join,
+		"trunc": func(s string) string {
+			if r := []rune(s); len(r) > 60 {
+				return string(r[:60]) + "…"
+			}
+			return s
+		},
 		"deref": func(p *float64) string {
 			if p == nil {
 				return "-"
@@ -87,6 +93,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /system", u.system)
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
+	u.mux.HandleFunc("GET /proposals", u.proposals)
 	u.mux.HandleFunc("GET /stats", u.stats)
 	return u, nil
 }
@@ -177,6 +184,11 @@ func (u *UI) dashboard(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
+	proposals, err := u.store.ListProposals(ctx, model.ProposalProposed)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
 	var running, attention []taskRow
 	for _, row := range rows {
 		switch row.State {
@@ -186,7 +198,7 @@ func (u *UI) dashboard(w http.ResponseWriter, r *http.Request) {
 			attention = append(attention, row)
 		}
 	}
-	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions})
+	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions, "Proposals": proposals})
 }
 
 func (u *UI) tasks(w http.ResponseWriter, r *http.Request) {
@@ -350,5 +362,22 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, row{Question: q, Work: work})
 	}
-	u.render(w, r, "attention.html", "Human queue", rows)
+	proposals, err := u.store.ListProposals(r.Context(), model.ProposalProposed)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "attention.html", "Human queue", map[string]any{"Questions": rows, "Proposals": proposals})
+}
+
+// proposals lists every proposal with the decision buttons; the API does the
+// writing (POST approve applies in the same transaction), app.js only posts
+// and reloads.
+func (u *UI) proposals(w http.ResponseWriter, r *http.Request) {
+	ps, err := u.store.ListProposals(r.Context(), "")
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "proposals.html", "Proposals", ps)
 }

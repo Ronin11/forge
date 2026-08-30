@@ -125,6 +125,15 @@ type Report struct {
 	// runs in the previous window have no entry.
 	Prev      map[string]RoutineStats `json:"prev"`
 	TotalRuns int                     `json:"total_runs"`
+	// Funnel is the proposal funnel (DESIGN.md §12). Proposals are decided
+	// once, not windowed like facts, so Store.Funnel counts them all-time and
+	// every window reports the same funnel. Nil when the report came from
+	// Compute alone (which never touches the store).
+	Funnel *store.ProposalFunnel `json:"funnel,omitempty"`
+	// CostPerApplied is the window's reflection spend (facts with mode
+	// "retro", after the query's filters) divided by the all-time applied
+	// count; nil while nothing has been applied — undefined, not zero.
+	CostPerApplied *float64 `json:"cost_per_applied,omitempty"`
 }
 
 // Key names a RoutineStats row in Report.Prev: the bare routine for the
@@ -156,7 +165,8 @@ func Compute(current, prev []store.AttemptFacts) *Report {
 }
 
 // Load fetches the window and its previous equal window with the indexed
-// facts query, applies the Go-side filters, and computes the report.
+// facts query, applies the Go-side filters, computes the report, and attaches
+// the proposal funnel with its cost-per-applied.
 func Load(ctx context.Context, st *store.Store, q Query) (*Report, error) {
 	current, prev, err := loadFacts(ctx, st, q)
 	if err != nil {
@@ -164,6 +174,21 @@ func Load(ctx context.Context, st *store.Store, q Query) (*Report, error) {
 	}
 	r := Compute(current, prev)
 	r.Query = q
+	funnel, err := st.Funnel(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load proposal funnel: %w", err)
+	}
+	r.Funnel = &funnel
+	if funnel.Applied > 0 {
+		var retro float64
+		for i := range current {
+			if current[i].Mode == "retro" && current[i].CostUSD != nil {
+				retro += *current[i].CostUSD
+			}
+		}
+		v := retro / float64(funnel.Applied)
+		r.CostPerApplied = &v
+	}
 	return r, nil
 }
 

@@ -11,8 +11,9 @@ import (
 // RunSweeper is DESIGN.md §14's lease sweeper. On start it grants every live
 // lease RestartGrace (a daemon restart never expires running attempts); then,
 // every interval, it fails Targets whose lease lapsed and records their facts.
-// It returns when ctx is done.
-func (s *Server) RunSweeper(ctx context.Context, interval time.Duration) {
+// Each tick also runs the A/B auto-revert check over applied proposals
+// (ab.go), with the configured K and margin. It returns when ctx is done.
+func (s *Server) RunSweeper(ctx context.Context, interval time.Duration, reflection ReflectionConfig) {
 	var extended int
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		n, err := tx.ExtendLeases(ctx)
@@ -32,6 +33,7 @@ func (s *Server) RunSweeper(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			s.sweep(ctx)
+			s.checkABReverts(ctx, reflection)
 		}
 	}
 }

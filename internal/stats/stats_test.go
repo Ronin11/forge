@@ -435,3 +435,63 @@ func TestLoadAndRetroPack(t *testing.T) {
 		t.Error("cancelled attempt events = nil, want an empty slice")
 	}
 }
+
+// TestLoadFunnel pins the report's proposal funnel and cost-per-applied: the
+// funnel is all-time (proposals are decided once, not windowed), and the cost
+// numerator is only the window's retro-mode spend.
+func TestLoadFunnel(t *testing.T) {
+	f := newFixture(t)
+	aRetro := f.attempt("retro1")
+	aRun := f.attempt("run1")
+	now := f.now
+	f.write(func(tx *store.Tx) error {
+		retro := f.facts(aRetro, model.Succeeded, now.Add(-time.Hour))
+		retro.Mode, retro.CostUSD = "retro", fptr(3.0)
+		if err := tx.InsertFacts(ctx(), retro); err != nil {
+			return err
+		}
+		run := f.facts(aRun, model.Succeeded, now.Add(-time.Hour))
+		run.CostUSD = fptr(10.0) // mode "run": never in the retro numerator
+		return tx.InsertFacts(ctx(), run)
+	})
+	q := stats.Query{Since: now.Add(-24 * time.Hour), Until: now.Add(time.Minute)}
+
+	// No proposals yet: the funnel is present and empty, the ratio undefined.
+	r, err := stats.Load(ctx(), f.s, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Funnel == nil || *r.Funnel != (store.ProposalFunnel{}) {
+		t.Fatalf("empty funnel = %+v", r.Funnel)
+	}
+	if r.CostPerApplied != nil {
+		t.Errorf("cost per applied with nothing applied = %v, want nil", *r.CostPerApplied)
+	}
+
+	// One applied proposal, one still proposed.
+	f.write(func(tx *store.Tx) error {
+		p := &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", Rationale: "r", VerificationPlan: "v"}
+		if err := tx.CreateProposal(ctx(), p); err != nil {
+			return err
+		}
+		if _, err := tx.DecideProposal(ctx(), p.ID, model.ProposalApproved, "human"); err != nil {
+			return err
+		}
+		if _, err := tx.MarkProposalApplied(ctx(), p.ID, "generation:2"); err != nil {
+			return err
+		}
+		return tx.CreateProposal(ctx(), &store.Proposal{Source: "manual", Kind: model.ProposalDoc, Target: "kb:x", Rationale: "r", VerificationPlan: "v"})
+	})
+	r, err = stats.Load(ctx(), f.s, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := store.ProposalFunnel{Proposed: 2, Approved: 1, Applied: 1}
+	if r.Funnel == nil || *r.Funnel != want {
+		t.Fatalf("funnel = %+v, want %+v", r.Funnel, want)
+	}
+	if r.CostPerApplied == nil {
+		t.Fatal("cost per applied = nil, want 3.0")
+	}
+	approx(t, "cost per applied", *r.CostPerApplied, 3.0)
+}

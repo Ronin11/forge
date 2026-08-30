@@ -79,6 +79,28 @@ document.querySelectorAll('[data-answer-form]').forEach(function (form) {
   });
 });
 
+// Proposals: approve/reject post to the API, which owns the rule — approve
+// applies inside the decision's transaction, and a refused apply answers 409
+// with the proposal left proposed.
+document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var id = btn.dataset.proposalApprove || btn.dataset.proposalReject;
+    var action = btn.dataset.proposalApprove ? 'approve' : 'reject';
+    fetch('/api/v1/proposals/' + id + '/' + action, { method: 'POST' }).then(function (resp) {
+      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+      window.location.reload();
+    }).catch(function (err) {
+      var box = document.getElementById('proposal-error');
+      if (box) {
+        box.hidden = false;
+        box.textContent = 'Refused: ' + err.message;
+      } else {
+        window.alert('Refused: ' + err.message);
+      }
+    });
+  });
+});
+
 // Dashboard usage gauges: one per window, target line, filled from the API so
 // the page and `forge usage` can never disagree.
 (function () {

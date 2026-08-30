@@ -16,7 +16,10 @@ tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08
 .state-failed,.state-partial,.state-cancelled,.state-conflict{color:var(--bad);border-color:var(--bad)}
 .state-unverified{color:var(--warn);border-color:var(--warn)}
 .state-running,.state-claimed,.state-preparing,.state-verifying,.state-merging{color:var(--run);border-color:var(--run)}
-.state-waiting-human{color:var(--wait);border-color:var(--wait)}
+.state-waiting-human,.state-proposed{color:var(--wait);border-color:var(--wait)}
+.state-approved{color:var(--run);border-color:var(--run)}
+.state-applied{color:var(--ok);border-color:var(--ok)}
+.state-rejected,.state-reverted{color:var(--bad);border-color:var(--bad)}
 .chip{display:inline-block;font-size:.75rem;padding:0 .4rem;border:1px solid var(--line);border-radius:4px;margin:0 .1rem}
 .chip.warn{color:var(--warn);border-color:var(--warn)}
 .dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.off{background:var(--bad)}

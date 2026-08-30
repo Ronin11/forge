@@ -174,6 +174,7 @@ func (s *Server) routes() {
 		m.HandleFunc("DELETE "+base+"/{id}", s.handle(s.cancelWork))
 		m.HandleFunc("PATCH "+base+"/{id}", s.handle(s.patchWork))
 	}
+	s.proposalRoutes(m)
 	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
 	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
 	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))

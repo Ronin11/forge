@@ -67,6 +67,7 @@ func commands() map[string]command {
 		"queue":       {summary: "show the priority queue", run: runQueue},
 		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
 		"kb":          {summary: "new|resolve|backlinks|links|graph|search|check|export notes", run: runKb},
+		"proposal":    {summary: "list, inspect, approve, or reject proposals", run: runProposal},
 		"prune":       {summary: "apply the retention policy to raw output and artifacts", run: runPrune},
 		"usage":       {summary: "budget windows: utilization, rates, forecast, target", run: runUsage},
 		"stats":       {summary: "per-routine outcomes, durations, tokens, cost", run: runStats},

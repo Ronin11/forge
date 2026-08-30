@@ -64,28 +64,41 @@ func runStats(ctx context.Context, c *cmdContext, args []string) int {
 }
 
 // printStats renders the report. Each routine gets a header line and a table:
-// the all-generations rollup row first, then one indented row per generation.
+// the all-generations rollup row first, then one indented row per generation;
+// the proposal funnel closes the report.
 func printStats(c *cmdContext, r *stats.Report) error {
-	if r == nil || len(r.Routines) == 0 {
+	if r == nil {
 		fmt.Fprintln(c.stdout, "no attempts in the window")
 		return nil
 	}
-	fmt.Fprintf(c.stdout, "window %s → %s  (%d runs)\n", r.Query.Since.Format(time.RFC3339), r.Query.Until.Format(time.RFC3339), r.TotalRuns)
-	byRoutine := map[string][]stats.RoutineStats{}
-	for _, g := range r.Generations {
-		byRoutine[g.Routine] = append(byRoutine[g.Routine], g)
+	if len(r.Routines) == 0 {
+		fmt.Fprintln(c.stdout, "no attempts in the window")
+	} else {
+		fmt.Fprintf(c.stdout, "window %s → %s  (%d runs)\n", r.Query.Since.Format(time.RFC3339), r.Query.Until.Format(time.RFC3339), r.TotalRuns)
+		byRoutine := map[string][]stats.RoutineStats{}
+		for _, g := range r.Generations {
+			byRoutine[g.Routine] = append(byRoutine[g.Routine], g)
+		}
+		for _, rt := range r.Routines {
+			fmt.Fprintf(c.stdout, "\n%s\n", rt.Routine)
+			tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "  GEN\tRUNS\tVERIFIED\tSELF\tP50\tP95\tTOK IN/OUT\tCOST/RUN\tTOP FAILURE\tPREV")
+			statsRow(tw, "all", rt, r.Prev)
+			for _, g := range byRoutine[rt.Routine] {
+				statsRow(tw, fmt.Sprintf("  @%d", g.Generation), g, r.Prev)
+			}
+			if err := tw.Flush(); err != nil {
+				return fmt.Errorf("render table: %w", err)
+			}
+		}
 	}
-	for _, rt := range r.Routines {
-		fmt.Fprintf(c.stdout, "\n%s\n", rt.Routine)
-		tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "  GEN\tRUNS\tVERIFIED\tSELF\tP50\tP95\tTOK IN/OUT\tCOST/RUN\tTOP FAILURE\tPREV")
-		statsRow(tw, "all", rt, r.Prev)
-		for _, g := range byRoutine[rt.Routine] {
-			statsRow(tw, fmt.Sprintf("  @%d", g.Generation), g, r.Prev)
+	if f := r.Funnel; f != nil {
+		line := fmt.Sprintf("\nproposals: %d proposed → %d approved → %d applied → %d reverted (%d rejected)",
+			f.Proposed, f.Approved, f.Applied, f.Reverted, f.Rejected)
+		if r.CostPerApplied != nil {
+			line += fmt.Sprintf("; retro cost per applied $%.4f", *r.CostPerApplied)
 		}
-		if err := tw.Flush(); err != nil {
-			return fmt.Errorf("render table: %w", err)
-		}
+		fmt.Fprintln(c.stdout, line)
 	}
 	return nil
 }

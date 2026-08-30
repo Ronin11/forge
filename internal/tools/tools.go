@@ -130,7 +130,7 @@ func Defaults() *Registry {
 		usageTool{}, attemptTool{}, eventsTool{}, promptVersionTool{}, queueTool{},
 		statsTool{}, retroPackTool{},
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
-		askTool{}, noteProgressTool{},
+		askTool{}, noteProgressTool{}, proposeTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

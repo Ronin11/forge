@@ -135,6 +135,20 @@ export async function seed(base, home) {
   const qb = await call('POST', '/api/v1/work', { prompt: 'Queue task B: depends on A', repositories: ['demo'], after: [qa.work.id] }, 201);
   const qc = await call('POST', '/api/v1/tasks', { prompt: 'Queue task C: low priority chore', repositories: ['demo'], priority: 50 }, 201);
 
+  // 5. Proposals: one kept proposed (the dashboard and human queue render it)
+  // and one the browser test decides — reject is terminal whatever the apply
+  // engine does with a kind, so a retry stays green.
+  const propKeep = await call('POST', '/api/v1/proposals', {
+    kind: 'process', target: 'routine:ad-hoc',
+    rationale: 'Lower the ad-hoc timeout: p95 sits far below it',
+    verification_plan: 'Watch the next five ad-hoc runs for timeouts',
+  }, 201);
+  const propDecide = await call('POST', '/api/v1/proposals', {
+    kind: 'doc', target: 'kb:retro-findings',
+    rationale: 'Fold the retro findings into one kb note',
+    verification_plan: 'The note exists and links the problem attempts',
+  }, 201);
+
   // Refresh last_seen so the workers card still shows "connected" (90s window)
   // when the browser tests run.
   await worker('POST', '/api/v1/worker/register', registerBody(), 200);
@@ -145,5 +159,6 @@ export async function seed(base, home) {
     failed: { work_id: failed.work.id, attempt_id: claimB.attempt_id },
     waiting: { work_id: waiting.work.id, attempt_id: claimC.attempt_id, question_id: questionID },
     queue: { a: qa.work.id, b: qb.work.id, c: qc.work.id },
+    proposals: { keep: propKeep.id, decide: propDecide.id },
   };
 }

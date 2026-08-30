@@ -250,3 +250,10 @@ func floatPtr(f sql.NullFloat64) *float64 {
 	v := f.Float64
 	return &v
 }
+
+// FactsByRoutineGeneration returns up to limit facts of one routine
+// generation, newest first by finished_at — the A/B rule's "last K runs"
+// (DESIGN.md §12).
+func (s *Store) FactsByRoutineGeneration(ctx context.Context, routine string, generation, limit int) ([]AttemptFacts, error) {
+	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE routine = ? AND generation = ? ORDER BY finished_at DESC LIMIT ?`, routine, generation, limit)))
+}

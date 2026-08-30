@@ -212,3 +212,5 @@ Newest entries at the bottom of each section. Dates are absolute.
 - See the M0 report; resolved answers are moved into Decisions with the date.
 
 - `TestServeShutsDownOnCancel` can flake under full-package `-race` load (5s graceful-shutdown deadline exceeded once, passes alone and on rerun); widen the deadline if it recurs.
+
+- **A/B revert nuance**: the auto-revert restores generation N-1, which is usually the last human-approved snapshot but could itself be proposal-applied if two routine proposals were approved back-to-back without K runs between them; walking back to the last `edit`/human-source generation is a possible refinement.

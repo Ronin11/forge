@@ -107,9 +107,9 @@ test.describe('human queue', () => {
       await expect(card).toContainText('options: main, dev');
       await card.locator('input[name=answer]').fill('main');
       await card.locator('button[type=submit]').click();
-      // app.js reloads the page after the POST; the answered question leaves it.
+      // app.js reloads the page after the POST; the answered question leaves
+      // it (the seeded proposals stay on the page, so it is not empty).
       await expect(card).toHaveCount(0, { timeout: 10_000 });
-      await expect(page.locator('body')).toContainText('Nothing is waiting on you.');
     }
     // Answered (idempotent for a retry): the answer shows and the target went
     // back to pending — the state chip changed away from waiting_human.
@@ -194,5 +194,33 @@ test.describe('system', () => {
     await expect(repoRow).toBeVisible();
     await expect(repoRow).toContainText('demo');
     await expect(repoRow).toContainText('default');
+  });
+});
+
+test.describe('proposals', () => {
+  test('rows render and a decision moves the proposal to a terminal state', async ({ page }) => {
+    const s = seed();
+    await page.goto('/proposals');
+    // The kept proposal renders with its status chip, kind, and rationale.
+    const keep = page.locator(`tr[data-proposal="${s.proposals.keep}"]`);
+    await expect(keep).toContainText('process');
+    await expect(keep).toContainText('routine:ad-hoc');
+    await expect(keep).toContainText('Lower the ad-hoc timeout');
+    await expect(keep.locator('.state.state-proposed')).toBeVisible();
+    // Decide the second one. Reject is terminal regardless of the apply
+    // engine, so a retry after the mutation landed stays green: the button is
+    // gone and the chip already reads rejected.
+    const decide = page.locator(`tr[data-proposal="${s.proposals.decide}"]`);
+    const rejectBtn = decide.locator('button[data-proposal-reject]');
+    if ((await rejectBtn.count()) > 0) {
+      await rejectBtn.click(); // app.js POSTs and reloads on success
+    }
+    await expect(decide.locator('.state.state-rejected')).toBeVisible({ timeout: 10_000 });
+    await expect(decide.locator('button')).toHaveCount(0);
+    // The kept proposal reaches the human queue with the CLI hint.
+    await page.goto('/attention');
+    const card = page.locator(`[data-proposal="${s.proposals.keep}"]`);
+    await expect(card).toContainText('Lower the ad-hoc timeout');
+    await expect(card).toContainText('forge proposal approve');
   });
 });

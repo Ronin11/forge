@@ -8,7 +8,8 @@
 <div class="card"><h2>Running</h2>{{if .Data.Running}}{{template "taskTable" .Data.Running}}{{else}}<p class="empty">Nothing running.</p>{{end}}</div>
 <div class="card"><h2>Needs attention</h2>
 {{if .Data.Questions}}<ul class="attention">{{range .Data.Questions}}<li><span class="chip">question</span> <a href="/tasks/{{.WorkID}}">{{short .WorkID}}</a> {{.Text}} <small>{{ago .AskedAt}}</small> — <code>forge task answer {{short .WorkID}} "…"</code></li>{{end}}</ul>{{end}}
-{{if .Data.Attention}}{{template "taskTable" .Data.Attention}}{{else if not .Data.Questions}}<p class="empty">Nothing needs you.</p>{{end}}</div>
+{{if .Data.Proposals}}<ul class="attention">{{range .Data.Proposals}}<li><span class="chip">proposal</span> {{.Kind}} <a href="/proposals">{{.Target}}</a> {{trunc .Rationale}} <small>{{ago .CreatedAt}}</small> — <code>forge proposal approve {{short .ID}}</code></li>{{end}}</ul>{{end}}
+{{if .Data.Attention}}{{template "taskTable" .Data.Attention}}{{else if and (not .Data.Questions) (not .Data.Proposals)}}<p class="empty">Nothing needs you.</p>{{end}}</div>
 <div class="card"><h2>Workers</h2><ul>{{range .Data.Workers}}<li><span class="dot {{if .Connected}}ok{{else}}off{{end}}"></span> {{.Name}} <small>{{.Active}}/{{.MaxConcurrent}} slots · {{range $k,$v := .Capabilities}}{{$k}}={{$v}} {{end}}</small></li>{{else}}<li class="empty">No worker registered.</li>{{end}}</ul></div>
 </section>
 <h2>Recent tasks</h2>{{template "taskTable" .Data.Recent}}

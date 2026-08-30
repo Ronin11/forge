@@ -41,6 +41,10 @@ func TestUIPagesRender(t *testing.T) {
 		if err := tx.CreateRoutine(ctx, r); err != nil {
 			return err
 		}
+		if err := tx.CreateProposal(ctx, &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory",
+			Rationale: "Trim the timeout", VerificationPlan: "watch the next 5 runs"}); err != nil {
+			return err
+		}
 		work = &store.Work{RoutineID: r.ID, RoutineName: "inventory", Generation: 1, Title: "inventory run", Trigger: model.TriggerManual, Snapshot: []byte(`{}`), Priority: 100, BudgetClass: model.ClassInteractive, Autonomy: model.AutonomyAuto}
 		targets, err := tx.CreateWork(ctx, work, []string{"equitizr"}, nil)
 		if err != nil {
@@ -71,8 +75,9 @@ func TestUIPagesRender(t *testing.T) {
 		"/static/app.js":        {"data-timeline"},
 		"/tasks/does-not-exist": {"not found"},
 		"/queue":                {"Queue", "inventory run", "data-queue"},
-		"/stats?since=1d":       {"Stats", "window 1d"},
-		"/attention":            {"Human queue"},
+		"/stats?since=1d":       {"Stats", "window 1d", "1 proposed"},
+		"/attention":            {"Human queue", "Trim the timeout", "forge proposal approve"},
+		"/proposals":            {"Proposals", "routine:inventory", "Trim the timeout", "Approve"},
 	} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {

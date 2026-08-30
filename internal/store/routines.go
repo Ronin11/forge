@@ -310,3 +310,19 @@ func (s *Store) routines(iter func(func(*sql.Rows) error) error) ([]Routine, err
 	}
 	return out, nil
 }
+
+// GenerationSnapshot reads the stored JSON snapshot of one routine generation
+// (routine_generations, DESIGN.md §12): what the A/B auto-revert restores. The
+// snapshot is exactly what recordGeneration wrote, so a revert can only
+// reinstate a state that already existed.
+func (tx *Tx) GenerationSnapshot(ctx context.Context, routineID string, generation int) (json.RawMessage, error) {
+	var snap string
+	err := tx.QueryRow(ctx, `SELECT snapshot FROM routine_generations WHERE routine_id = ? AND generation = ?`, routineID, generation).Scan(&snap)
+	if isNoRows(err) {
+		return nil, fmt.Errorf("generation %d of routine %s: %w", generation, routineID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read generation %d of routine %s: %w", generation, routineID, err)
+	}
+	return json.RawMessage(snap), nil
+}

@@ -1,0 +1,17 @@
+{{template "head" .}}<h1>Proposals</h1>
+<p class="meta">Reflection proposes; a human decides. Approve applies in the same transaction — a refused apply leaves the proposal proposed.</p>
+<table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th>Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
+{{range .Data}}<tr data-proposal="{{.ID}}">
+<td><code>{{short .ID}}</code></td>
+<td><span class="state {{stateClass .Status}}">{{.Status}}</span></td>
+<td><span class="chip">{{.Kind}}</span></td>
+<td>{{.Target}}</td>
+<td class="prompt" title="{{.Rationale}}">{{trunc .Rationale}}</td>
+<td>{{if .DecidedBy}}{{.DecidedBy}} {{ago .DecidedAt}}{{else}}-{{end}}</td>
+<td>{{if .AppliedRef}}<code>{{.AppliedRef}}</code>{{else}}-{{end}}</td>
+<td>{{if eq .Status "proposed"}}<button data-proposal-approve="{{.ID}}">Approve</button> <button data-proposal-reject="{{.ID}}">Reject</button>{{end}}</td>
+</tr>
+{{else}}<tr><td colspan="8" class="empty">No proposals yet — retro attempts file them with <code>forge_propose</code>.</td></tr>{{end}}
+</tbody></table>
+<p id="proposal-error" class="meta" hidden></p>
+{{template "foot" .}}

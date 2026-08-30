@@ -22,6 +22,7 @@ import (
 	"forge/internal/modes"
 	"forge/internal/modes/all"
 	"forge/internal/store"
+	"forge/internal/tools"
 	"forge/internal/worker"
 )
 
@@ -168,12 +169,19 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return fmt.Errorf("mode registry: %w", err)
 	}
+	toolRegistry := tools.Defaults()
+	for _, t := range tools.LoadScriptTools(ctx, filepath.Join(home, "tools"), d.handler.For("tools.script")) {
+		if err := toolRegistry.Register(t); err != nil {
+			d.log.WarnContext(ctx, "script tool not registered", "tool", t.Name(), "error", err)
+		}
+	}
 	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
 		Store: st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,
+		Tools:         toolRegistry,
 		SetLogLevels: func(spec string) error {
 			levels, err := logging.ParseLevels(spec, slog.LevelInfo)
 			if err != nil {
@@ -218,7 +226,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
-	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second); return nil })
+	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
 	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
 	g.Go(func() error { logging.WatchSIGUSR1(d.handler, d.log, nil).Run(gctx); return nil })

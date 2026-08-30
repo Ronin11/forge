@@ -23,6 +23,7 @@ type Config struct {
 	Integration  IntegrationConfig  `toml:"integration"`
 	Repositories RepositoriesConfig `toml:"repositories"`
 	Retention    RetentionConfig    `toml:"retention"`
+	Reflection   ReflectionConfig   `toml:"reflection"`
 
 	path string
 }
@@ -77,6 +78,14 @@ type RetentionConfig struct {
 	ArtifactDays   int `toml:"artifact_days"`
 }
 
+// ReflectionConfig tunes the A/B auto-revert of DESIGN.md §12: after K runs on
+// a proposal's new routine generation, a regression beyond Margin (relative)
+// against the previous generation's last K runs restores that generation.
+type ReflectionConfig struct {
+	K      int     `toml:"k"`      // runs on each side before comparing; default 5
+	Margin float64 `toml:"margin"` // relative regression tolerance; default 0.20
+}
+
 // DefaultConfig is what bootstrap writes; userHome seeds the projects root.
 func DefaultConfig(home, userHome string) Config {
 	return Config{
@@ -87,6 +96,7 @@ func DefaultConfig(home, userHome string) Config {
 		Integration:  IntegrationConfig{MaxStackDepth: 2, MaxRebaseAttempts: 3},
 		Repositories: RepositoriesConfig{ProjectsRoot: filepath.Join(userHome, "Projects")},
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
+		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 	}
 }
 
@@ -145,6 +155,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Integration.MaxStackDepth < 0 || c.Integration.MaxRebaseAttempts < 1 {
 		return fmt.Errorf("[integration] max_stack_depth ≥ 0 and max_rebase_attempts ≥ 1")
+	}
+	if c.Reflection.K < 1 {
+		return fmt.Errorf("[reflection] k must be ≥ 1")
+	}
+	if c.Reflection.Margin <= 0 || c.Reflection.Margin >= 1 {
+		return fmt.Errorf("[reflection] margin must be in (0, 1)")
 	}
 	return c.Log.Validate()
 }
