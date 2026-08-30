@@ -181,6 +181,16 @@ Newest entries at the bottom of each section. Dates are absolute.
   Observed in the wild: normal-class work deferred by
   `forecast_over_target:seven_day` computed from the real account's rate spike —
   the policy behaving as designed; interactive bypasses it.
+- **2026-08-30 · M4 decisions.** Greenfield ships as option (a) per the human.
+  Per-repo `.forge/` directory (the human's ask, interpreted as the repo-scoped
+  Forge home — flag in the report if a different meaning was intended):
+  `.forge/config.toml` beats top-level `forge.toml`; `.forge/modes/<mode>.md`
+  prompt overlays; `.forge/notes/` indexed into the kb. Prompt assembly now
+  splits the hashable template (preamble + overlay + autonomy block + routine
+  prompt) from the rendered prompt (+ context block) — `Claim.PromptTemplate`
+  carries the former so PromptVersions stay comparable across attempts. The
+  envelope types moved to `protocol`; `worker` aliases them. The `-builtins`
+  sentinel as a mode's first allowed tool maps to `--tools ""`.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;

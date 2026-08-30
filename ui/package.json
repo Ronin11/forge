@@ -1,0 +1,11 @@
+{
+  "name": "forge-ui-tests",
+  "private": true,
+  "description": "Playwright browser tests for the Forge operator UI (just ui-test).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

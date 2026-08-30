@@ -222,6 +222,12 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 			req.Question = &protocol.QuestionRequest{Text: env.NeedsInput.Question, Options: env.NeedsInput.Options, Context: env.NeedsInput.Context, Checkpoint: env.NeedsInput.Checkpoint}
 		}
 	}
+	if state == model.Succeeded {
+		// Greenfield only: a finished project moves to its named home before
+		// git_inspect and cleanup record the final path (MODES.md §greenfield).
+		a.greenfieldMove(req.Result)
+	}
+	req.Artifacts = a.collectArtifacts()
 	return a.finish(ctx, req, state, reason, nil, func(git protocol.GitOutcome) protocol.Verification {
 		if state != model.Succeeded {
 			return protocol.Verification{}
@@ -231,7 +237,11 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 		if declared {
 			checks = RunChecks(ctx, m.WorktreePath, a.ft, a.env())
 		}
-		return Verify(env, hasEnv, git, checks, declared)
+		scope, docs := model.WritesRepo, []string(nil)
+		if c.ModeInfo != nil && c.ModeInfo.WriteScope != "" {
+			scope, docs = c.ModeInfo.WriteScope, c.ModeInfo.DocsPaths
+		}
+		return Verify(env, hasEnv, git, checks, declared, scope, docs)
 	})
 }
 
@@ -318,48 +328,67 @@ func (a *attempt) repoLock(name string) *sync.Mutex {
 // intent manifest written before the mutation.
 func (a *attempt) prepareWorktree(ctx context.Context, wt, branch string) error {
 	c := a.claim
+	if a.isGreenfield() {
+		return a.prepareGreenfield(ctx)
+	}
 	mu := a.repoLock(c.Repository)
 	mu.Lock()
 	defer mu.Unlock()
 	g := a.r.git
 
-	span := a.emitter.StartSpan("fetch", "fetch", "", nil)
-	err := g.CheckOrigin(ctx, a.repo)
-	var fetched bool
-	var warn error
-	if err == nil {
-		base := a.repo.BaseBranch
-		if base == "" {
-			if b, _, rerr := g.ResolveBase(ctx, a.repo, ""); rerr == nil {
-				base = b
+	var baseBranch, baseCommit string
+	if c.VerifyOf != nil {
+		// A verify attempt is cut at the SUBJECT's head: no fetch, no base
+		// resolution. The subject's branch was made in this checkout, so if
+		// the commit is absent a fetch would not help (VERIFICATION.md L2).
+		span := a.emitter.StartSpan("fetch", "fetch", "", nil)
+		span.End(nil, map[string]any{"skipped": true})
+		span = a.emitter.StartSpan("resolve_base", "resolve_base", "", nil)
+		_, err := g.Run(ctx, a.repo.Path, "rev-parse", "--verify", c.VerifyOf.Head+"^{commit}")
+		span.End(err, map[string]any{"branch": c.VerifyOf.Branch, "commit": c.VerifyOf.Head})
+		if err != nil {
+			return fmt.Errorf("verify subject head %s is not present in %s: %w", c.VerifyOf.Head, c.Repository, err)
+		}
+		baseBranch, baseCommit = c.VerifyOf.Branch, c.VerifyOf.Head
+	} else {
+		span := a.emitter.StartSpan("fetch", "fetch", "", nil)
+		err := g.CheckOrigin(ctx, a.repo)
+		var fetched bool
+		var warn error
+		if err == nil {
+			base := a.repo.BaseBranch
+			if base == "" {
+				if b, _, rerr := g.ResolveBase(ctx, a.repo, ""); rerr == nil {
+					base = b
+				}
+			}
+			if base != "" {
+				fetched, warn, err = g.Fetch(ctx, a.repo, base)
 			}
 		}
-		if base != "" {
-			fetched, warn, err = g.Fetch(ctx, a.repo, base)
+		if err == nil {
+			err = g.CheckOrigin(ctx, a.repo)
 		}
-	}
-	if err == nil {
-		err = g.CheckOrigin(ctx, a.repo)
-	}
-	attrs := map[string]any{"fetched": fetched}
-	if warn != nil {
-		attrs["fetch"] = "failed"
-		attrs["warning"] = shortError(warn)
-	}
-	span.End(err, attrs)
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", c.Repository, err)
-	}
+		attrs := map[string]any{"fetched": fetched}
+		if warn != nil {
+			attrs["fetch"] = "failed"
+			attrs["warning"] = shortError(warn)
+		}
+		span.End(err, attrs)
+		if err != nil {
+			return fmt.Errorf("fetch %s: %w", c.Repository, err)
+		}
 
-	span = a.emitter.StartSpan("resolve_base", "resolve_base", "", nil)
-	baseBranch, baseCommit, err := g.ResolveBase(ctx, a.repo, "")
-	span.End(err, map[string]any{"branch": baseBranch, "commit": baseCommit})
-	if err != nil {
-		return fmt.Errorf("resolve base for %s: %w", c.Repository, err)
+		span = a.emitter.StartSpan("resolve_base", "resolve_base", "", nil)
+		baseBranch, baseCommit, err = g.ResolveBase(ctx, a.repo, "")
+		span.End(err, map[string]any{"branch": baseBranch, "commit": baseCommit})
+		if err != nil {
+			return fmt.Errorf("resolve base for %s: %w", c.Repository, err)
+		}
 	}
 	a.heartbeat(ctx, protocol.HeartbeatRequest{State: model.Preparing, Phase: "resolve_base"})
 
-	span = a.emitter.StartSpan("worktree_add", "worktree_add", "", nil)
+	span := a.emitter.StartSpan("worktree_add", "worktree_add", "", nil)
 	if err := os.MkdirAll(filepath.Dir(wt), 0o700); err != nil {
 		span.End(err, nil)
 		return fmt.Errorf("create worktree root: %w", err)
@@ -370,7 +399,8 @@ func (a *attempt) prepareWorktree(ctx context.Context, wt, branch string) error 
 		BaseBranch: baseBranch, BaseCommit: baseCommit, WorktreePath: wt, Branch: branch, Kind: manifestKindAttempt,
 		Lifecycle: ManifestPreparing,
 	}
-	if err = a.r.manifests.Write(m); err == nil {
+	err := a.r.manifests.Write(m)
+	if err == nil {
 		a.manifest = m
 		err = g.WorktreeAdd(ctx, a.repo, wt, branch, baseCommit)
 		if err != nil {
@@ -429,7 +459,7 @@ func (a *attempt) remaining(launches int) time.Duration {
 }
 
 func (a *attempt) env() []string {
-	extra := []string{"FORGE_HOME=" + filepath.Dir(a.r.cfg.DataDir)}
+	extra := []string{"FORGE_HOME=" + filepath.Dir(a.r.cfg.DataDir), "FORGE_ARTIFACTS=" + a.artifactsDir()}
 	if len(a.claim.Policy.GitConfig) > 0 {
 		extra = append(extra, GitConfigEnv(a.claim.Policy.GitConfig)...)
 	}
@@ -449,8 +479,12 @@ func (a *attempt) promptVersion() *protocol.PromptVersion {
 	if c.Resume != nil {
 		return nil
 	}
-	h := promptHash(c.Mode, c.Prompt, "", c.AllowedTools, c.Model, c.Effort)
-	return &protocol.PromptVersion{Hash: h, Routine: c.RoutineName, Generation: c.Generation, Mode: c.Mode, Template: c.Prompt, RenderedExample: c.Prompt, ToolList: c.AllowedTools, Model: c.Model, Effort: c.Effort}
+	tpl := c.PromptTemplate
+	if tpl == "" {
+		tpl = c.Prompt
+	}
+	h := promptHash(c.Mode, tpl, "", c.AllowedTools, c.Model, c.Effort)
+	return &protocol.PromptVersion{Hash: h, Routine: c.RoutineName, Generation: c.Generation, Mode: c.Mode, Template: tpl, RenderedExample: c.Prompt, ToolList: c.AllowedTools, Model: c.Model, Effort: c.Effort}
 }
 
 // runAgent is phase 6: launch, stream, wait.
@@ -561,6 +595,14 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 // cleanup is phase 9: decide, act, record on the manifest.
 func (a *attempt) cleanup(ctx context.Context, state model.State, git protocol.GitOutcome, inspectFailed bool) protocol.Cleanup {
 	m := a.manifest
+	if m.Kind == manifestKindGreenfield {
+		// The project directory is the product; it is its own repository and
+		// git's worktree registry knows nothing about it (DESIGN.md §6).
+		d := DecideCleanup(CleanupInput{Greenfield: true, PathExists: true, AttemptShortID: model.ShortID(a.claim.AttemptID)})
+		m.Lifecycle = ManifestExited
+		a.writeManifest(ctx, m)
+		return protocol.Cleanup{Outcome: "kept", Reason: d.Reason}
+	}
 	st, err := a.r.git.WorktreeState(ctx, a.repo, m.WorktreePath)
 	if err != nil {
 		m.Lifecycle, m.RetentionReason = ManifestRetained, "worktree state unknown: "+shortError(err)

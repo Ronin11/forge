@@ -29,7 +29,7 @@ type taskView struct {
 
 func runTask(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|cancel|answer [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|cancel|answer|approve|reject [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -43,6 +43,10 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		return runTaskCancel(ctx, c, args[1:])
 	case "answer":
 		return runTaskAnswer(ctx, c, args[1:])
+	case "approve":
+		return runTaskApprove(ctx, c, args[1:])
+	case "reject":
+		return runTaskReject(ctx, c, args[1:])
 	}
 	fmt.Fprintf(c.stderr, "forge task: unknown subcommand %q\n", args[0])
 	return 2
@@ -92,7 +96,11 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	if *asJSON {
 		c.printJSON(out)
 	} else {
-		fmt.Fprintf(c.stdout, "task %s created (%s, %d target(s))\n", short(out.Work.ID), out.State, len(out.Targets))
+		state := string(out.State)
+		if state == "" {
+			state = "pending"
+		}
+		fmt.Fprintf(c.stdout, "task %s created (%s, %d target(s))\n", short(out.Work.ID), state, len(out.Targets))
 	}
 	if !*wait {
 		return 0
@@ -353,5 +361,77 @@ func runTaskAnswer(ctx context.Context, c *cmdContext, args []string) int {
 		return c.fail("task answer", err)
 	}
 	fmt.Fprintf(c.stdout, "answered %s; task %s re-queued\n", short(open[0].ID), short(v.Work.ID))
+	return 0
+}
+
+func runTaskApprove(ctx context.Context, c *cmdContext, args []string) int {
+	return runTaskDecide(ctx, c, args, "approve")
+}
+
+func runTaskReject(ctx context.Context, c *cmdContext, args []string) int {
+	return runTaskDecide(ctx, c, args, "reject")
+}
+
+// runTaskDecide is L3 (VERIFICATION.md): find the task's verifying Target and
+// post the human's decision; approve → succeeded, reject → unverified with
+// reason human_rejected.
+func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action string) int {
+	fs, lf := c.flags("task " + action)
+	if code := c.parse(fs, args); code >= 0 {
+		return code
+	}
+	if (action == "approve" && fs.NArg() != 1) || (action == "reject" && fs.NArg() < 2) {
+		if action == "approve" {
+			fmt.Fprintln(c.stderr, "usage: forge task approve ID")
+		} else {
+			fmt.Fprintln(c.stderr, "usage: forge task reject ID \"reason\"")
+		}
+		return 2
+	}
+	_, log, code := c.resolveLogging(lf, "cli.task")
+	if code >= 0 {
+		return code
+	}
+	cl := c.client(log)
+	if err := cl.connect(ctx); err != nil {
+		return c.fail("task "+action, err)
+	}
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.fail("task "+action, err)
+	}
+	var v taskView
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.fail("task "+action, err)
+	}
+	var target *store.Target
+	states := make([]string, 0, len(v.Targets))
+	for i, t := range v.Targets {
+		states = append(states, t.Repository+"="+string(t.State))
+		if t.State == model.Verifying && target == nil {
+			target = &v.Targets[i]
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(c.stderr, "forge task %s: no target of task %s is verifying (%s)\n", action, short(id), strings.Join(states, ", "))
+		return 2
+	}
+	body := map[string]string{"by": "human"}
+	if action == "reject" {
+		body["reason"] = strings.Join(fs.Args()[1:], " ")
+	}
+	var out store.Target
+	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/"+action, body, &out); err != nil {
+		return c.fail("task "+action, err)
+	}
+	verb := "approved"
+	if action == "reject" {
+		verb = "rejected"
+	}
+	line := fmt.Sprintf("target %s (%s) %s → %s", short(out.ID), out.Repository, verb, out.State)
+	if out.UnverifiedReason != "" {
+		line += " (" + out.UnverifiedReason + ")"
+	}
+	fmt.Fprintln(c.stdout, line)
 	return 0
 }

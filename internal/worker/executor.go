@@ -114,11 +114,18 @@ func (e *TemplateExecutor) Command(ctx context.Context, req LaunchRequest) (*exe
 	for _, arg := range e.cfg.Command {
 		args = append(args, render(arg, vars))
 	}
-	if e.Has(CapAllowedTools) && len(req.AllowedTools) > 0 {
+	allowed := req.AllowedTools
+	if len(allowed) > 0 && allowed[0] == "-builtins" {
+		// The sentinel a tools-only mode (retro) puts first: no built-in tools
+		// at all, only the listed MCP tools.
+		allowed = allowed[1:]
+		req.NoBuiltins = true
+	}
+	if e.Has(CapAllowedTools) && len(allowed) > 0 {
 		// Mode definitions name Forge tools bare (forge_usage); the MCP server
 		// is registered as "forge", so Claude sees them as mcp__forge__<name>.
-		named := make([]string, len(req.AllowedTools))
-		for i, t := range req.AllowedTools {
+		named := make([]string, len(allowed))
+		for i, t := range allowed {
 			if strings.HasPrefix(t, "forge_") {
 				t = "mcp__forge__" + t
 			}

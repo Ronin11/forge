@@ -141,16 +141,13 @@ Interview → spec → plan → build → verify → report, across several sess
 - **Verification:** L2 (a `verify` attempt exercises the built thing).
 - **Checkpoints:** `after_spec`, `after_plan`, `before_report`. **Budget class:**
   `normal`. **Autonomy:** `checkpoint`.
-- **Writes:** `NewProject`. **Open question for the human (M0 report):** the project
-  name comes out of the interview, so the directory cannot exist before the agent
-  starts, and a directory outside `data_dir` breaks the manifest's owned-path rule.
-  Recommended design, pending decision: the attempt runs in
-  `<data_dir>/greenfield/<attempt-id>` (Forge `git init`s it in `worktree_add`; the
-  manifest records `kind = greenfield`); the Target's `repository_name` is the
-  virtual `greenfield`; `fetch`/`resolve_base` are skipped; at `before_report` the
-  result carries `project_name`, and on completion Forge moves the directory to
-  `projects_root/<slug>` (refusing, and retaining in place, if the destination
-  exists) and records the final path on the attempt. Continuation sessions run in the
+- **Writes:** `NewProject`. **Decided (option a, 2026-08-30):** the attempt runs in
+  `<data_dir>/greenfield/<attempt-id>` (Forge `git init`s it; manifest `kind =
+  greenfield`); the Target's repository is the virtual `greenfield`, advertised by
+  any worker with `[greenfield] projects_root` configured; `fetch`/`resolve_base`
+  are skipped. The result carries `project_name`; on success Forge moves the
+  directory to `projects_root/<slug>` (refusing, and retaining in place, if the
+  destination exists) and records the final path. Continuation sessions run in the
   recorded path with `--resume`. Cleanup never removes either location.
 
 ### `intake`

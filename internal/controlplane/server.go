@@ -20,6 +20,7 @@ import (
 
 	"forge/internal/logging"
 	"forge/internal/model"
+	"forge/internal/modes"
 	"forge/internal/protocol"
 	"forge/internal/store"
 	"forge/internal/tools"
@@ -56,6 +57,7 @@ type Server struct {
 	mux               *http.ServeMux
 	tools             *tools.Registry
 	kbDir             string
+	modes             *modes.Registry
 
 	// draining refuses new claims and operator writes once set; heartbeats,
 	// events, and completions keep flowing so running attempts finish (§1.4).
@@ -88,6 +90,9 @@ type ServerOptions struct {
 	// tools.Defaults(). KbDir is the directory forge_kb_new writes notes into.
 	Tools *tools.Registry
 	KbDir string
+	// Modes is the mode registry (M4); nil means only the built-in "run"
+	// behaviour (RequiredLevel, envelope schema) until cmd/forge wires it.
+	Modes *modes.Registry
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -120,7 +125,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
-		tools: o.Tools, kbDir: o.KbDir,
+		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 	}
 	s.routes()
 	return s, nil
@@ -153,6 +158,7 @@ func (s *Server) routes() {
 	s.kbRoutes(m)
 	s.usageRoutes(m)
 	s.statsRoutes(m)
+	s.verifyRoutes(m)
 	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"forge/internal/model"
 	"forge/internal/protocol"
 )
 
@@ -33,17 +35,23 @@ type ForgeToml struct {
 	CheckTimeouts map[string]int `toml:"check_timeouts"`
 }
 
-// ReadForgeToml reads <worktree>/forge.toml; absent is (nil, nil).
+// ReadForgeToml reads the repository's Forge configuration: .forge/config.toml
+// wins over a top-level forge.toml (the per-repo .forge/ directory is the
+// repo-scoped home — config here, mode prompt overlays in .forge/modes/, notes
+// in .forge/notes/); absent is (nil, nil).
 func ReadForgeToml(worktree string) (*ForgeToml, error) {
-	path := filepath.Join(worktree, "forge.toml")
-	var ft ForgeToml
-	if _, err := toml.DecodeFile(path, &ft); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	for _, rel := range []string{filepath.Join(".forge", "config.toml"), "forge.toml"} {
+		path := filepath.Join(worktree, rel)
+		var ft ForgeToml
+		if _, err := toml.DecodeFile(path, &ft); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return &ft, nil
 	}
-	return &ft, nil
+	return nil, nil
 }
 
 // CheckResult is one declared check as Forge ran it (VERIFICATION.md L1).
@@ -132,45 +140,20 @@ func failingTests(out string) []string {
 	return names
 }
 
-// ResultEnvelope is the common part of every mode's structured result.
-type ResultEnvelope struct {
-	SchemaVersion int              `json:"schema_version"`
-	Summary       string           `json:"summary"`
-	NeedsInput    *NeedsInput      `json:"needs_input"`
-	Changes       []ResultChange   `json:"changes"`
-	ChecksRun     []ResultCheckRun `json:"checks_run"`
-	Claims        []ResultClaim    `json:"claims"`
-}
-
-// NeedsInput is the agent asking for a human.
-type NeedsInput struct {
-	Question   string          `json:"question"`
-	Options    []string        `json:"options"`
-	Context    json.RawMessage `json:"context"`
-	Checkpoint string          `json:"checkpoint"`
-}
-
-// ResultChange, ResultCheckRun, ResultClaim are envelope items.
-type ResultChange struct {
-	Path    string `json:"path"`
-	Kind    string `json:"kind"`
-	Summary string `json:"summary"`
-}
-type ResultCheckRun struct {
-	Check  string `json:"check"`
-	Passed bool   `json:"passed"`
-	Notes  string `json:"notes"`
-}
-type ResultClaim struct {
-	Claim    string `json:"claim"`
-	Evidence string `json:"evidence"`
-}
+// The envelope types live in protocol so the daemon, modes, and worker share
+// one definition; these aliases keep this package's vocabulary.
+type (
+	ResultEnvelope = protocol.ResultEnvelope
+	NeedsInput     = protocol.NeedsInput
+	ResultChange   = protocol.ResultChange
+	ResultCheckRun = protocol.ResultCheckRun
+	ResultClaim    = protocol.ResultClaim
+)
 
 // EnvelopeSchema is the common result contract, passed as --json-schema for
 // attempts whose autonomy allows questions so a needs_input pause is enforced
 // by the CLI rather than hoped for from the prompt (MODES.md). The per-mode
-// schemas of M4 extend this envelope; until then every field an agent must
-// fill is here.
+// schemas of M4 extend this envelope.
 const EnvelopeSchema = `{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{` +
 	`"schema_version":{"type":"integer"},` +
 	`"summary":{"type":"string"},` +
@@ -191,13 +174,25 @@ func ParseEnvelope(raw json.RawMessage) (*ResultEnvelope, bool, error) {
 	return &env, true, nil
 }
 
-// Verify applies L0 and L1 (VERIFICATION.md) from what the worker measured.
-// M1 scope: L0 checks the envelope parses and its changes[] agree with git when
-// present; L1 runs declared checks and compares them with checks_run claims.
-// Modes with write scopes and L2 arrive in M4 through the same function.
-func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, checks []CheckResult, declared bool) protocol.Verification {
+// DefaultDocsGlobs is what docs_only enforces when the repository declares no
+// [modes.docs] paths (MODES.md §docs).
+var DefaultDocsGlobs = []string{"docs/**", "*.md"}
+
+// Verify applies L0 and L1 (VERIFICATION.md) from what the worker measured:
+// changes[]-vs-git consistency, the mode's write scope against git, claim
+// evidence, then the declared checks against the agent's checks_run claims. An
+// L0 failure stops at level 0; L2/L3 are the daemon's to orchestrate. The
+// first failure sets the reason; the verdict records every check either way.
+func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, checks []CheckResult, declared bool, scope model.WriteScope, docsGlobs []string) protocol.Verification {
 	v := protocol.Verification{Level: 0, Passed: true}
-	verdict := map[string]any{}
+	fail := func(reason string) {
+		if v.Passed {
+			v.Passed, v.Reason = false, reason
+		}
+	}
+	verdict := map[string]any{"l0_envelope": hasEnvelope, "l0_scope": string(scope)}
+
+	// L0.2: changes[] ⊆ changed paths in git and changed paths ⊆ changes[].
 	if hasEnvelope && env != nil {
 		changed := map[string]bool{}
 		for _, p := range git.ChangedPaths {
@@ -220,33 +215,110 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 		sort.Strings(undeclared)
 		verdict["l0_claimed_not_changed"], verdict["l0_changed_not_claimed"] = missing, undeclared
 		if len(missing) > 0 || len(undeclared) > 0 {
-			v.Passed, v.Reason = false, "l0:changes_mismatch"
+			fail("l0:changes_mismatch")
 		}
 	}
-	verdict["l0_envelope"] = hasEnvelope
-	if !declared {
-		v.Level = 1
-		verdict["l1_vacuous"] = true
-	} else {
-		v.Level = 1
-		verdict["l1_checks"] = checks
-		for _, c := range checks {
-			if !c.Passed && v.Passed {
-				v.Passed, v.Reason = false, "check_failed:"+c.Check
+
+	// L0.3: write scope against what git measured.
+	switch scope {
+	case model.WritesNone, model.WritesKbOnly:
+		var offending []string
+		if git.Dirty {
+			offending = append(offending, "worktree dirty")
+		}
+		if git.Commits > 0 {
+			offending = append(offending, fmt.Sprintf("%d commits", git.Commits))
+		}
+		if env != nil && len(env.Changes) > 0 {
+			offending = append(offending, "changes[] not empty")
+		}
+		if len(offending) > 0 {
+			offending = append(offending, git.ChangedPaths...)
+			verdict["l0_scope_offending"] = offending
+			fail("l0:scope:" + string(scope))
+		}
+	case model.WritesDocsOnly:
+		globs := docsGlobs
+		if len(globs) == 0 {
+			globs = DefaultDocsGlobs
+		}
+		verdict["l0_docs_globs"] = globs
+		var offending []string
+		for _, p := range git.ChangedPaths {
+			matched := false
+			for _, g := range globs {
+				if globMatch(g, p) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				offending = append(offending, p)
 			}
 		}
+		if len(offending) > 0 {
+			sort.Strings(offending)
+			verdict["l0_scope_offending"] = offending
+			fail("l0:scope:" + string(scope))
+		}
+	default: // repo, new_project: no path restriction.
+	}
+
+	// L0.5: every claim carries evidence.
+	if env != nil {
+		var missing []string
+		for _, cl := range env.Claims {
+			if strings.TrimSpace(cl.Evidence) == "" {
+				missing = append(missing, cl.Claim)
+			}
+		}
+		if len(missing) > 0 {
+			verdict["l0_claims_without_evidence"] = missing
+			fail("l0:claims_evidence")
+		}
+	}
+	if !v.Passed {
+		// Stopped at L0: the level reports where verification got to.
+		v.Verdict = marshalAttrs(verdict)
+		return v
+	}
+
+	v.Level = 1
+	if !declared {
+		verdict["l1_vacuous"] = true
+	} else {
+		verdict["l1_checks"] = checks
 		if env != nil {
 			byName := map[string]bool{}
 			for _, c := range checks {
 				byName[c.Check] = c.Passed
 			}
+			// One-directional, and first: a claimed pass Forge cannot reproduce
+			// is the canonical false claim (VERIFICATION.md L1 rule 2); an
+			// unclaimed check is fine.
 			for _, claim := range env.ChecksRun {
-				if passed, ok := byName[claim.Check]; claim.Passed && ok && !passed && v.Passed {
-					v.Passed, v.Reason = false, "check_claim_mismatch:"+claim.Check
+				if passed, ok := byName[claim.Check]; claim.Passed && ok && !passed {
+					fail("check_claim_mismatch:" + claim.Check)
 				}
+			}
+		}
+		for _, c := range checks {
+			if !c.Passed {
+				fail("check_failed:" + c.Check)
 			}
 		}
 	}
 	v.Verdict = marshalAttrs(verdict)
 	return v
+}
+
+// globMatch matches one changed path against a docs glob. path.Match's `*`
+// never crosses a slash, so "<dir>/**" is implemented as the directory prefix:
+// it matches anything under <dir>.
+func globMatch(glob, p string) bool {
+	if prefix, ok := strings.CutSuffix(glob, "/**"); ok {
+		return p == prefix || strings.HasPrefix(p, prefix+"/")
+	}
+	ok, err := path.Match(glob, p)
+	return err == nil && ok
 }

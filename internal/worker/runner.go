@@ -123,6 +123,11 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 	git := Git{}
 	repos := map[string]*Repository{}
 	for _, name := range cfg.RepositoryNames() {
+		if name == greenfieldRepoName {
+			// The name is reserved for the virtual repository ([greenfield]
+			// projects_root); a checkout under it would shadow that contract.
+			return nil, fmt.Errorf("repository name %q is reserved; configure [greenfield] projects_root instead", name)
+		}
 		rc := cfg.Repositories[name]
 		r, err := git.ValidateRepository(ctx, name, rc.Path, rc.BaseBranch)
 		if err != nil {
@@ -135,6 +140,11 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 		}
 		repos[name] = r
 		log.InfoContext(ctx, "repository validated", "name", name, "path", r.Path, "origin", r.OriginIdentity)
+	}
+	if cfg.Greenfield.ProjectsRoot != "" {
+		// The virtual greenfield repository: not a checkout, never validated as
+		// one; attempts on it git-init their own directory (MODES.md §greenfield).
+		repos[greenfieldRepoName] = &Repository{Name: greenfieldRepoName, Path: cfg.Greenfield.ProjectsRoot, OriginIdentity: greenfieldOriginIdentity}
 	}
 	executors, err := ExecutorsFromConfig(cfg.Executors)
 	if err != nil {
@@ -286,6 +296,9 @@ func (w *Worker) registerRequest() protocol.RegisterRequest {
 	for _, name := range w.cfg.RepositoryNames() {
 		r := w.runner.repos[name]
 		repos = append(repos, protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: r.BaseBranch, Project: w.cfg.Repositories[name].Project})
+	}
+	if w.cfg.Greenfield.ProjectsRoot != "" {
+		repos = append(repos, protocol.Repository{Name: greenfieldRepoName, Path: w.cfg.Greenfield.ProjectsRoot, OriginIdentity: greenfieldOriginIdentity, Project: "default"})
 	}
 	return protocol.RegisterRequest{
 		WorkerID: w.id, Name: w.cfg.Name, Version: w.version, MaxConcurrent: w.cfg.MaxConcurrent, Active: len(w.slots),

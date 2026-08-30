@@ -298,3 +298,40 @@ func ResolveAutonomy(submit, routine, repository, project, mode Autonomy) Autono
 	}
 	return AutonomyCheckpoint
 }
+
+// VerificationLevel is how far a claim was checked (VERIFICATION.md): L0
+// consistency, L1 declared checks, L2 behavioural, L3 human sign-off.
+type VerificationLevel int
+
+// Levels. L0 is the minimum every mode gets.
+const (
+	L0 VerificationLevel = iota
+	L1
+	L2
+	L3
+)
+
+// Valid reports whether l is a defined level.
+func (l VerificationLevel) Valid() bool { return l >= L0 && l <= L3 }
+
+// WriteScope is what a mode may change; L0 enforces it against git
+// (VERIFICATION.md).
+type WriteScope string
+
+// Scopes. NewProject is greenfield's fresh directory.
+const (
+	WritesNone       WriteScope = "none"
+	WritesKbOnly     WriteScope = "kb_only"
+	WritesDocsOnly   WriteScope = "docs_only"
+	WritesRepo       WriteScope = "repo"
+	WritesNewProject WriteScope = "new_project"
+)
+
+// Valid reports whether w is a defined scope.
+func (w WriteScope) Valid() bool {
+	switch w {
+	case WritesNone, WritesKbOnly, WritesDocsOnly, WritesRepo, WritesNewProject:
+		return true
+	}
+	return false
+}

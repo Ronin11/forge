@@ -56,8 +56,24 @@ kb-check: build
     @if [ -x ./forge ] && ./forge help 2>/dev/null | grep -q '^  kb'; then ./forge kb check; else echo "kb-check: not yet (M2)"; fi
 
 # Playwright tests against the Forge UI (M4). Node is a test-time dependency only.
+# Offline skip (STYLE §11): when chromium is neither cached (~/.cache/ms-playwright)
+# nor downloadable (npx playwright install chromium fails without network), or npm
+# itself is unavailable, the recipe prints one skip line and exits 0 so `just check`
+# stays green with no network and no browser download.
 ui-test:
-    @if [ -f ui/package.json ]; then cd ui && npm test; else echo "ui-test: not yet (M4)"; fi
+    @if [ ! -f ui/package.json ]; then echo "ui-test: not yet (M4)"; exit 0; fi; \
+    if ! command -v npm >/dev/null 2>&1; then echo "ui-test: skipped (npm not available)"; exit 0; fi; \
+    cd ui; \
+    if [ ! -d node_modules ]; then \
+        (npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1) \
+            || { echo "ui-test: skipped (no chromium and offline)"; exit 0; }; \
+    fi; \
+    if ! ls "$HOME/.cache/ms-playwright"/chromium*/chrome-linux*/chrome >/dev/null 2>&1; then \
+        npx playwright install chromium >/dev/null 2>&1 || true; \
+        ls "$HOME/.cache/ms-playwright"/chromium*/chrome-linux*/chrome >/dev/null 2>&1 \
+            || { echo "ui-test: skipped (no chromium and offline)"; exit 0; }; \
+    fi; \
+    npx playwright test
 
 # Opt-in real-Claude smoke steps for the current milestone (spends budget; M1+).
 smoke:

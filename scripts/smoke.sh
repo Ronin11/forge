@@ -307,6 +307,44 @@ PY
   run curl -s "http://127.0.0.1:7340/stats"
 }
 
+step20() {
+  say "20. implement mode: schema populated; L1 re-runs declared checks; a false claim → unverified"
+  $FORGE routine list --json | grep -q '"name": "impl-smoke"' || run $FORGE routine add impl-smoke --mode implement --prompt "Issue: NOTES.md should mention that smoke logs live in .scratch/. Add one short sentence to the Cuts section of NOTES.md saying so, commit with a conventional message. Acceptance: the sentence exists; checks pass." --repos forge --model haiku --max-turns 12 --timeout 900
+  run $FORGE routine run impl-smoke
+  ID=$(taskid)
+  echo "state: $(wait_task "$ID" 900)" | tee -a "$LOG"
+  run $FORGE task show "$ID"
+  echo "$ID" > .scratch/smoke-impl-task
+}
+
+step21() {
+  say "21. review mode on a diff: structured findings, no writes"
+  $FORGE routine list --json | grep -q '"name": "review-smoke"' || run $FORGE routine add review-smoke --mode review --prompt "Review the most recent commit on the current branch (git show HEAD). Report findings." --repos forge --model haiku --max-turns 8 --timeout 600
+  run $FORGE routine run review-smoke
+  ID=$(taskid)
+  echo "state: $(wait_task "$ID" 700)" | tee -a "$LOG"
+  run $FORGE task show "$ID"
+}
+
+step22() {
+  say "22. verify mode re-checks the implement attempt in a separate session"
+  ID=$(cat .scratch/smoke-impl-task)
+  run $FORGE task show "$ID"
+  VID=$($FORGE task list --json | python3 -c 'import json,sys;[print(t["work"]["id"]) for t in json.load(sys.stdin) if t["work"]["routine_name"]=="verify"][:1]' | head -1)
+  if [ -n "$VID" ]; then
+    echo "verify work: $VID  state: $(wait_task "$VID" 900)" | tee -a "$LOG"
+    run $FORGE task show "$VID"
+  else
+    echo "no verify work found (implement may not have reached verifying)" | tee -a "$LOG"
+  fi
+  run ls ui/test-results 2>/dev/null || true
+}
+
+step23() {
+  say "23. Forge UI browser tests in just check"
+  run just ui-test
+}
+
 steps=("$@"); [ ${#steps[@]} -eq 0 ] && steps=(1 2 3 4 5 6 7 8 9 10)
 for s in "${steps[@]}"; do "step$s"; done
 echo; echo "log: $LOG"

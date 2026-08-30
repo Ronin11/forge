@@ -1,0 +1,198 @@
+// Browser tests for the Forge operator UI. The daemon under test was started by
+// global-setup.js against a temp FORGE_HOME and seeded over the HTTP API
+// (seed.mjs); everything here is offline and spends no budget (STYLE.md §11).
+// Single worker, single file: tests run top to bottom, and the two mutating tests
+// (answering the question, reordering the queue) are written to stay green on a
+// retry after the mutation landed.
+const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+
+const HOME = path.join(__dirname, '..', '.tmp-home');
+const seed = () => JSON.parse(fs.readFileSync(path.join(HOME, 'seed.json'), 'utf8'));
+
+test.describe('empty states', () => {
+  test('every page rendered 200 with its empty-state copy before seeding', () => {
+    // Captured by global-setup before any data existed: a restart per test would
+    // be slow, so the pass is a recorded fetch of every page (status + marker
+    // string), asserted here.
+    const results = JSON.parse(fs.readFileSync(path.join(HOME, 'empty-states.json'), 'utf8'));
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r.status, `${r.path} status`).toBe(200);
+      expect(r.found, `${r.path} should contain ${JSON.stringify(r.want)}`).toBe(true);
+    }
+  });
+});
+
+test.describe('dashboard', () => {
+  test('nav, connected worker, recent tasks with state chips', async ({ page }) => {
+    const s = seed();
+    await page.goto('/');
+    const nav = page.locator('nav.top');
+    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human queue', 'Routines', 'Stats', 'System']) {
+      await expect(nav.getByText(name, { exact: true })).toBeVisible();
+    }
+    const workers = page.locator('.card', { hasText: 'Workers' });
+    const laptop = workers.locator('li', { hasText: 'laptop' });
+    await expect(laptop).toBeVisible();
+    await expect(laptop.locator('.dot.ok')).toBeVisible(); // connected
+    // The recent-tasks table (scoped: failed/waiting rows also appear under
+    // "Needs attention") lists the seeded tasks with the right chip classes.
+    const recent = page.locator('h2:has-text("Recent tasks") + table');
+    await expect(recent.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"]`)).toContainText('Inventory the demo repo');
+    await expect(recent.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"] .state.state-succeeded`).first()).toBeVisible();
+    await expect(recent.locator(`tr[data-href="/tasks/${s.failed.work_id}"] .state.state-failed`).first()).toBeVisible();
+    for (const id of [s.waiting.work_id, s.queue.a, s.queue.b, s.queue.c]) {
+      await expect(recent.locator(`tr[data-href="/tasks/${id}"]`)).toBeVisible();
+    }
+  });
+});
+
+test.describe('tasks', () => {
+  test('lists every seeded task and a row click navigates to the detail', async ({ page }) => {
+    const s = seed();
+    await page.goto('/tasks');
+    const ids = [s.succeeded.work_id, s.failed.work_id, s.waiting.work_id, s.queue.a, s.queue.b, s.queue.c];
+    for (const id of ids) {
+      await expect(page.locator(`tr[data-href="/tasks/${id}"]`)).toBeVisible();
+    }
+    // Click a non-link cell: app.js's data-href handler must navigate.
+    await page.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"] td`).nth(4).click();
+    await expect(page).toHaveURL(`/tasks/${s.succeeded.work_id}`);
+  });
+});
+
+test.describe('task detail (succeeded)', () => {
+  test('attempt line, git line, result, facts, and a rendered timeline', async ({ page }) => {
+    const s = seed();
+    await page.goto(`/tasks/${s.succeeded.work_id}`);
+    await expect(page.locator('h1 .state.state-succeeded')).toBeVisible();
+    const kv = page.locator('dl.kv');
+    await expect(kv).toContainText(s.succeeded.attempt_id);
+    await expect(kv).toContainText('launches 1');
+    await expect(kv).toContainText('haiku');
+    await expect(kv).toContainText('forge/ui-1'); // git line: branch
+    await expect(kv).toContainText('commits 1');
+    await expect(kv).toContainText('tokens in 1200 out 340');
+    await expect(kv).toContainText('$0.0123');
+    await expect(page.locator('pre.result')).toContainText('Inventory complete: 42 files tracked.');
+    // Facts: the phase durations posted as span_end events.
+    const facts = page.locator('table.facts');
+    await expect(facts).toContainText('1ms'); // fetch: 1200µs
+    await expect(facts).toContainText('5.0s'); // agent: 5s
+    await expect(facts).toContainText('800ms'); // verify
+    // Timeline bars: app.js computes each bar's width from data-dur/data-elapsed.
+    const bars = page.locator('.timeline .span .bar');
+    expect(await bars.count()).toBeGreaterThanOrEqual(3);
+    for (const bar of await bars.all()) {
+      expect(await bar.evaluate((el) => el.style.width)).not.toBe('');
+    }
+  });
+});
+
+test.describe('human queue', () => {
+  test('question is shown, answerable, and the target goes pending', async ({ page }) => {
+    const s = seed();
+    await page.goto(`/tasks/${s.waiting.work_id}`);
+    const question = page.locator('.card.question');
+    await expect(question).toContainText('Which branch should I target?');
+    await expect(question).toContainText('main, dev');
+
+    await page.goto('/attention');
+    const card = page.locator(`[data-question="${s.waiting.question_id}"]`);
+    if ((await card.count()) > 0) {
+      // First run: the question is open on the human queue; answer it in place.
+      await expect(card).toContainText('Which branch should I target?');
+      await expect(card).toContainText('options: main, dev');
+      await card.locator('input[name=answer]').fill('main');
+      await card.locator('button[type=submit]').click();
+      // app.js reloads the page after the POST; the answered question leaves it.
+      await expect(card).toHaveCount(0, { timeout: 10_000 });
+      await expect(page.locator('body')).toContainText('Nothing is waiting on you.');
+    }
+    // Answered (idempotent for a retry): the answer shows and the target went
+    // back to pending — the state chip changed away from waiting_human.
+    await page.goto(`/tasks/${s.waiting.work_id}`);
+    await expect(page.locator('.card.question')).toContainText('Answered by human: main');
+    await expect(page.locator('.state.state-pending').first()).toBeVisible();
+    await expect(page.locator('.state.state-waiting-human')).toHaveCount(0);
+  });
+});
+
+test.describe('queue', () => {
+  test('order, refused drag above a dependency, accepted drag, screenshot', async ({ page }) => {
+    const s = seed();
+    await page.goto('/queue');
+    for (const id of [s.queue.a, s.queue.b, s.queue.c]) {
+      await expect(page.locator(`tr[data-id="${id}"]`)).toBeVisible();
+    }
+    // B is blocked by A and says so.
+    const rowB = page.locator(`tr[data-id="${s.queue.b}"]`);
+    await expect(rowB.locator('.state.state-blocked')).toBeVisible();
+    await expect(rowB).toContainText('waiting_on_dependencies');
+    // A sits above B on the first run (same priority, created earlier).
+    const order = () => page.$$eval('[data-queue] tbody tr[data-id]', (rows) => rows.map((r) => r.dataset.id));
+
+    // Illegal drag: B above A (B is blocked by A) — the daemon answers 409 and
+    // the page shows the refusal, then snaps back by reloading.
+    await page.dragAndDrop(`tr[data-id="${s.queue.b}"]`, `tr[data-id="${s.queue.a}"]`, {
+      targetPosition: { x: 30, y: 4 },
+    });
+    const err = page.locator('#queue-error');
+    await expect(err).toBeVisible();
+    await expect(err).toContainText('Refused');
+    await page.waitForTimeout(1500); // app.js reloads 1.2s after a refusal
+    await page.goto('/queue');
+    let ids = await order();
+    expect(ids.indexOf(s.queue.a)).toBeLessThan(ids.indexOf(s.queue.b));
+
+    // Legal drag: C immediately above B (no dependency between them). The PATCH
+    // lands move_before=B and the page reloads with the new order.
+    await page.dragAndDrop(`tr[data-id="${s.queue.c}"]`, `tr[data-id="${s.queue.b}"]`, {
+      targetPosition: { x: 30, y: 4 },
+    });
+    await expect(page.locator('#queue-error')).toBeHidden();
+    await page.waitForTimeout(1000);
+    await page.goto('/queue'); // assert the persisted order, not the drag preview
+    ids = await order();
+    expect(ids.indexOf(s.queue.c)).toBeLessThan(ids.indexOf(s.queue.b));
+
+    // Stored screenshot of the queue page (smoke 22's "L2 screenshots stored").
+    await page.screenshot({ path: path.join(__dirname, '..', 'test-results', 'queue-page.png'), fullPage: true });
+  });
+});
+
+test.describe('stats', () => {
+  test('routine table renders verified % from the seeded facts; window links work', async ({ page }) => {
+    await page.goto('/stats');
+    await expect(page.locator('h1')).toContainText('window 7d');
+    // Both terminal seeds are ad-hoc tasks: 2 runs, 1 verified success → 50%.
+    const section = page.locator('section.card', { hasText: 'ad-hoc' });
+    await expect(section).toBeVisible();
+    await expect(section.locator('h2')).toContainText('2 run(s)');
+    const verifiedCell = section.locator('tbody tr').first().locator('td').nth(2);
+    await expect(verifiedCell).toHaveText(/^\d+%$/);
+    await expect(verifiedCell).toHaveText('50%');
+    await expect(section).toContainText('$'); // cost columns rendered
+    // Window links.
+    await page.click('a[href="/stats?since=1d"]');
+    await expect(page).toHaveURL(/since=1d/);
+    await expect(page.locator('h1')).toContainText('window 1d');
+    await expect(page.locator('section.card', { hasText: 'ad-hoc' })).toBeVisible(); // still inside 1d
+  });
+});
+
+test.describe('system', () => {
+  test('worker and repository rows', async ({ page }) => {
+    await page.goto('/system');
+    const workerRow = page.locator('tr', { hasText: 'laptop' });
+    await expect(workerRow).toBeVisible();
+    await expect(workerRow).toContainText('claude-code');
+    await expect(workerRow).toContainText('sandbox=ready');
+    const repoRow = page.locator('tr', { hasText: 'github.com/x/demo' });
+    await expect(repoRow).toBeVisible();
+    await expect(repoRow).toContainText('demo');
+    await expect(repoRow).toContainText('default');
+  });
+});

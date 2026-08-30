@@ -240,11 +240,14 @@ func (s *Server) claimResponse(ctx context.Context, tx *store.Tx, w store.Work, 
 	}
 	claim := &protocol.Claim{
 		AttemptID: a.ID, TargetID: t.ID, WorkID: w.ID, RoutineName: w.RoutineName, Generation: w.Generation, Repository: t.Repository,
-		Mode: snap.Mode, Prompt: renderPrompt(snap.Prompt, t.Repository, a.Autonomy), Executor: a.Executor, Model: a.Model, Effort: a.Effort,
+		Mode: snap.Mode, Executor: a.Executor, Model: a.Model, Effort: a.Effort,
 		MaxTurns: snap.MaxTurns, TimeoutSeconds: snap.TimeoutSeconds, MaxBudgetUSD: snap.MaxBudgetUSD, AllowedTools: snap.AllowedTools,
 		Autonomy: a.Autonomy, BudgetClass: w.BudgetClass, Trigger: w.Trigger, LeaseExpiresAt: tx.Now().Add(store.LeaseDuration), Integrate: w.Integrate,
 		MCPToken: mcpToken, Policy: protocol.Policy{RequireSandbox: snap.RequireSandbox, AllowHosts: s.allowHosts, GitConfig: s.gitConfig}, Snapshot: w.Snapshot,
 	}
+	claim.PromptTemplate, claim.Prompt = s.assembleClaimPrompt(ctx, tx, snap, t, a)
+	claim.VerifyOf = verifyOfFromSnapshot(w.Snapshot)
+	claim.ModeInfo = s.claimModeInfo(ctx, tx, snap.Mode, t.Repository)
 	q, err := tx.LastAnswer(ctx, a.ID)
 	if err != nil {
 		return nil, nil, err
@@ -479,13 +482,20 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 			out, err = s.lateCompletion(ctx, tx, a, req)
 			return err
 		}
-		out, err = tx.Complete(ctx, id, req, s.requiredLevel(a.Mode))
+		out, err = tx.Complete(ctx, id, req, s.modeRequiredLevel(a.Mode))
 		if err != nil {
 			return err
 		}
 		work, err := tx.GetWork(ctx, out.Target.WorkID)
 		if err != nil {
 			return err
+		}
+		if !out.Late && !out.Again {
+			// M4 verification orchestration: worker verdict row, artifacts,
+			// verify-attempt verdicts, follow-up Work (handlers_verify.go).
+			if err := s.afterComplete(ctx, tx, a, work, out.Target, req); err != nil {
+				return err
+			}
 		}
 		if !model.IsTerminal(out.Target.State, work.Integrate) {
 			return nil

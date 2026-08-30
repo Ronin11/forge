@@ -19,6 +19,8 @@ import (
 	"forge/internal/controlplane"
 	"forge/internal/kb"
 	"forge/internal/logging"
+	"forge/internal/modes"
+	"forge/internal/modes/all"
 	"forge/internal/store"
 	"forge/internal/worker"
 )
@@ -153,6 +155,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	report, err := controlplane.Bootstrap(ctx, st, controlplane.BootstrapOptions{
 		Home: home, UserHome: d.c.userHome, Logger: d.handler.For("daemon.bootstrap"),
 		WriteWorkerConfig: func(path string) (bool, error) { return worker.WriteDefault(path, home, self) },
+		ModeSeeds:         modes.Seeds(all.All()),
 	})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
@@ -161,9 +164,13 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return err
 	}
+	registry, err := modes.NewRegistry(all.All())
+	if err != nil {
+		return fmt.Errorf("mode registry: %w", err)
+	}
 	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
-		Store: st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home,
+		Store: st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,
@@ -503,6 +510,19 @@ func (d *daemonProcess) kbReindexLoop(ctx context.Context, st *store.Store) {
 		if err != nil {
 			log.WarnContext(ctx, "kb scan", "error", err)
 			return
+		}
+		// Repo-scoped notes: each registered repository's .forge/notes is part
+		// of the index (the per-repo .forge/ directory is the repo's Forge home).
+		if repos, rerr := st.Repositories(ctx); rerr == nil {
+			for _, r := range repos {
+				rn, rf, rerr := kb.Scan(filepath.Join(r.Path, ".forge", "notes"))
+				if rerr != nil {
+					log.WarnContext(ctx, "repo kb scan", "repository", r.Name, "error", rerr)
+					continue
+				}
+				notes = append(notes, rn...)
+				findings = append(findings, rf...)
+			}
 		}
 		for _, f := range findings {
 			log.WarnContext(ctx, "kb note skipped", "path", f.Path, "problem", f.Problem)

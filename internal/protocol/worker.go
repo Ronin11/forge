@@ -56,14 +56,18 @@ type Claim struct {
 	AttemptID string `json:"attempt_id"`
 	// LeaseToken is minted by the worker and sent in the ClaimRequest; it is
 	// kept on the Claim in memory only so every later request can present it.
-	LeaseToken     string            `json:"-"`
-	TargetID       string            `json:"target_id"`
-	WorkID         string            `json:"work_id"`
-	RoutineName    string            `json:"routine_name"`
-	Generation     int               `json:"generation"`
-	Repository     string            `json:"repository"`
-	Mode           string            `json:"mode"`
-	Prompt         string            `json:"prompt"`
+	LeaseToken  string `json:"-"`
+	TargetID    string `json:"target_id"`
+	WorkID      string `json:"work_id"`
+	RoutineName string `json:"routine_name"`
+	Generation  int    `json:"generation"`
+	Repository  string `json:"repository"`
+	Mode        string `json:"mode"`
+	Prompt      string `json:"prompt"`
+	// PromptTemplate is the hashable layers of the prompt (preamble + autonomy
+	// block + routine prompt) without per-attempt context, for PromptVersion
+	// (DESIGN §9.1); empty falls back to Prompt.
+	PromptTemplate string            `json:"prompt_template,omitempty"`
 	Executor       string            `json:"executor"`
 	Model          string            `json:"model"`
 	Effort         string            `json:"effort,omitempty"`
@@ -82,10 +86,43 @@ type Claim struct {
 	// Policy is what the worker needs from the daemon's config so no second config
 	// file exists on the worker side.
 	Policy Policy `json:"policy"`
+	// ModeInfo is the mode's verification contract (M4); nil means the M1
+	// default: repo writes, level 1.
+	ModeInfo *ModeInfo `json:"mode_info,omitempty"`
+	// VerifyOf is set on a verify-mode claim: the subject this attempt re-checks.
+	VerifyOf *VerifyOf `json:"verify_of,omitempty"`
 	// Resume is set when the Target is being resumed after a human answer.
 	Resume *Resume `json:"resume,omitempty"`
 	// Snapshot is the whole frozen routine for anything the fields above omit.
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
+}
+
+// ModeInfo is what the worker needs to know about the claim's mode without
+// importing the modes package: the write scope L0 enforces, the level the
+// daemon requires, and the docs globs for docs_only (VERIFICATION.md L0).
+type ModeInfo struct {
+	WriteScope    model.WriteScope `json:"write_scope"`
+	RequiredLevel int              `json:"required_level"`
+	Checkpoints   []string         `json:"checkpoints,omitempty"`
+	DocsPaths     []string         `json:"docs_paths,omitempty"` // [modes.docs] paths from the repo's forge.toml
+}
+
+// VerifyOf marks a claim as an L2 verification of another attempt: the
+// worktree is cut at the subject's head, in a fresh session (VERIFICATION.md L2).
+type VerifyOf struct {
+	AttemptID string `json:"attempt_id"`
+	Branch    string `json:"branch"`
+	Head      string `json:"head"`
+	UI        bool   `json:"ui"`
+}
+
+// ArtifactUpload is one file a verify attempt left in its artifacts directory;
+// the worker reports metadata and the path, never the bytes.
+type ArtifactUpload struct {
+	Kind   string `json:"kind"` // screenshot | file
+	Path   string `json:"path"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
 }
 
 // Policy is daemon config the worker applies to one attempt.
@@ -192,6 +229,7 @@ type CompleteRequest struct {
 	Launches        int                 `json:"launches"`
 	Git             GitOutcome          `json:"git"`
 	Verification    Verification        `json:"verification"`
+	Artifacts       []ArtifactUpload    `json:"artifacts,omitempty"`
 	Cleanup         Cleanup             `json:"cleanup"`
 	OutputPath      string              `json:"output_path"`
 	OutputBytes     int64               `json:"output_bytes"`
@@ -233,4 +271,46 @@ type Handshake struct {
 // Error is every error body.
 type Error struct {
 	Error string `json:"error"`
+}
+
+// ResultEnvelope is the common part of every mode's structured result
+// (MODES.md "Result contract"); mode schemas extend it.
+type ResultEnvelope struct {
+	SchemaVersion int              `json:"schema_version"`
+	Summary       string           `json:"summary"`
+	NeedsInput    *NeedsInput      `json:"needs_input"`
+	Changes       []ResultChange   `json:"changes"`
+	ChecksRun     []ResultCheckRun `json:"checks_run"`
+	Claims        []ResultClaim    `json:"claims"`
+	// Mode-specific fields modes read back out of Extra (decoded separately
+	// against the mode's schema; the envelope stays one type).
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// NeedsInput is the agent asking for a human.
+type NeedsInput struct {
+	Question   string          `json:"question"`
+	Options    []string        `json:"options"`
+	Context    json.RawMessage `json:"context"`
+	Checkpoint string          `json:"checkpoint"`
+}
+
+// ResultChange, ResultCheckRun, and ResultClaim are envelope items.
+type ResultChange struct {
+	Path    string `json:"path"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+}
+
+// ResultCheckRun is the agent's claim about one declared check.
+type ResultCheckRun struct {
+	Check  string `json:"check"`
+	Passed bool   `json:"passed"`
+	Notes  string `json:"notes"`
+}
+
+// ResultClaim is a free-text claim with its evidence.
+type ResultClaim struct {
+	Claim    string `json:"claim"`
+	Evidence string `json:"evidence"`
 }

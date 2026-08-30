@@ -238,7 +238,17 @@ advertises `{name, path, origin_identity, base_branch, project}` on every
 registration. The control plane upserts `repositories(name, project_id, path,
 origin_identity, base_branch, worker_id, last_seen_at)`; it never clones.
 
-An optional `forge.toml` *inside* the repository declares:
+Each repository Forge works on has a **`.forge/` directory** — the repo-scoped
+home (decided with M4): `.forge/config.toml` is the preferred location of the
+configuration below (a top-level `forge.toml` is still honoured, `.forge/`
+wins); `.forge/modes/<mode>.md` are per-repo prompt overlays appended after the
+global mode preamble and hashed into the prompt version; `.forge/notes/` holds
+repo-scoped kb notes in the standard format, indexed by the daemon alongside
+the global kb (ids must be globally unique; `forge kb check` reports
+collisions as parse findings). Overlays and notes are read from the registered
+checkout (read-only) and from worktrees like any repository content.
+
+The configuration (either location) declares:
 
 ```toml
 [checks]                      # each value is one command as argv; run in the worktree

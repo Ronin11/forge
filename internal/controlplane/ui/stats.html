@@ -6,7 +6,6 @@
 <h2>{{.Routine}} <small>{{.Runs}} run(s)</small></h2>
 <table class="list"><thead><tr><th></th><th>Runs</th><th>Verified ✓</th><th>Self-reported ✓</th><th>p50 total</th><th>p95 total</th><th>p50 agent</th><th>Tokens in/out per run</th><th>Cost/run</th><th>Cost/verified ✓</th><th>Turns</th><th>Top failure</th></tr></thead><tbody>
 {{template "statsRow" .}}
-{{range $.Data.Report.Generations}}{{if eq .Routine $.Data.Report.Routines 0}}{{end}}{{end}}
 </tbody></table>
 <p class="meta">tools: {{range $k, $v := .ToolMix}}{{$k}}×{{$v}} {{end}}{{with .UtilizationConsumed}}· utilization consumed {{printf "%.3f" .}}{{end}}</p>
 </section>
