@@ -260,9 +260,31 @@ func (d *daemonProcess) ensureWorker(ctx context.Context, self string) error {
 		return err
 	}
 	if held {
-		d.log.InfoContext(ctx, "a worker already owns the data directory; not spawning one")
-		<-ctx.Done()
-		return nil
+		// A worker from before a restart still owns the data directory. Watch
+		// it: if it dies without a successor (found by M3 smoke — a wedged
+		// orphan held the lock and no worker existed at all), spawn one then.
+		d.log.InfoContext(ctx, "a worker already owns the data directory; watching instead of spawning")
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-t.C:
+			}
+			f, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+			if err != nil {
+				continue
+			}
+			free := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
+			if err := f.Close(); err != nil {
+				d.log.WarnContext(ctx, "close lock probe", "error", err)
+			}
+			if free {
+				d.log.WarnContext(ctx, "the worker holding the data directory is gone; spawning a fresh one")
+				break
+			}
+		}
 	}
 	stdio, err := os.OpenFile(filepath.Join(home, "logs", "worker.stdio.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

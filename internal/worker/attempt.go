@@ -474,9 +474,15 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	// The fake executor's fixture comes from the environment (tests and
 	// `just smoke` set it); production executors ignore the variable.
 	fixture := os.Getenv("FORGE_FAKE_FIXTURE")
+	schema := ""
+	if c.Autonomy.AllowsQuestions() {
+		// Enforce the needs_input envelope structurally: prose questions parse
+		// as nothing and the pause is lost (found by M3 smoke 18).
+		schema = EnvelopeSchema
+	}
 	cmd, err := exec.Command(ctx, LaunchRequest{
 		Model: c.Model, MaxTurns: c.MaxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,
-		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, MaxBudgetUSD: c.MaxBudgetUSD, Effort: c.Effort, Env: a.env(),
+		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, JSONSchema: schema, MaxBudgetUSD: c.MaxBudgetUSD, Effort: c.Effort, Env: a.env(),
 	})
 	if err != nil {
 		span.End(err, nil)

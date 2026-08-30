@@ -173,6 +173,30 @@ func runTaskList(ctx context.Context, c *cmdContext, args []string) int {
 	return 0
 }
 
+// resolveTaskID accepts a full id or a unique prefix over open+recent tasks.
+func resolveTaskID(ctx context.Context, cl *cliClient, prefix string) (string, error) {
+	if len(prefix) == 32 {
+		return prefix, nil
+	}
+	var out []taskView
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks?limit=200", nil, &out); err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, t := range out {
+		if strings.HasPrefix(t.Work.ID, prefix) {
+			matches = append(matches, t.Work.ID)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no task matches %q", prefix)
+	}
+	return "", fmt.Errorf("%q matches %d tasks; be more specific", prefix, len(matches))
+}
+
 func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 	fs, lf := c.flags("task show")
 	asJSON := fs.Bool("json", false, "JSON output")
@@ -191,8 +215,12 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 	if err := cl.connect(ctx); err != nil {
 		return c.fail("task show", err)
 	}
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.fail("task show", err)
+	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+fs.Arg(0), nil, &v); err != nil {
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
 		return c.fail("task show", err)
 	}
 	if *asJSON {
@@ -268,10 +296,14 @@ func runTaskCancel(ctx context.Context, c *cmdContext, args []string) int {
 	if err := cl.connect(ctx); err != nil {
 		return c.fail("task cancel", err)
 	}
-	if err := cl.do(ctx, http.MethodDelete, "/api/v1/tasks/"+fs.Arg(0), nil, nil); err != nil {
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
 		return c.fail("task cancel", err)
 	}
-	fmt.Fprintf(c.stdout, "task %s cancel requested\n", short(fs.Arg(0)))
+	if err := cl.do(ctx, http.MethodDelete, "/api/v1/tasks/"+id, nil, nil); err != nil {
+		return c.fail("task cancel", err)
+	}
+	fmt.Fprintf(c.stdout, "task %s cancel requested\n", short(id))
 	return 0
 }
 
@@ -293,8 +325,12 @@ func runTaskAnswer(ctx context.Context, c *cmdContext, args []string) int {
 	if err := cl.connect(ctx); err != nil {
 		return c.fail("task answer", err)
 	}
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.fail("task answer", err)
+	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+fs.Arg(0), nil, &v); err != nil {
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
 		return c.fail("task answer", err)
 	}
 	var open []store.Question

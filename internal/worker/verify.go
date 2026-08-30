@@ -166,6 +166,19 @@ type ResultClaim struct {
 	Evidence string `json:"evidence"`
 }
 
+// EnvelopeSchema is the common result contract, passed as --json-schema for
+// attempts whose autonomy allows questions so a needs_input pause is enforced
+// by the CLI rather than hoped for from the prompt (MODES.md). The per-mode
+// schemas of M4 extend this envelope; until then every field an agent must
+// fill is here.
+const EnvelopeSchema = `{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{` +
+	`"schema_version":{"type":"integer"},` +
+	`"summary":{"type":"string"},` +
+	`"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question"],"properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]}}}]},` +
+	`"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},` +
+	`"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},` +
+	`"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}`
+
 // ParseEnvelope decodes a structured result; ok=false when there is none.
 func ParseEnvelope(raw json.RawMessage) (*ResultEnvelope, bool, error) {
 	if len(raw) == 0 {

@@ -172,6 +172,15 @@ Newest entries at the bottom of each section. Dates are absolute.
   first ran at a base without `forge.toml`). Candidate fixes, decided in M6:
   `forge doctor` flags a stale mirror, and the worker refreshes a `file://` origin
   mirror before fetch (a fetch into the mirror, still never a push).
+- **2026-08-30 · M3 smoke findings.** The needs_input envelope is now enforced
+  with `--json-schema` for ask/checkpoint attempts (`worker.EnvelopeSchema`) —
+  prose questions parse as nothing and the pause was lost; the per-mode schemas
+  of M4 extend this envelope. A wedged hand-started worker held the data-dir
+  lock while no live worker existed: `ensureWorker` now watches a held lock and
+  spawns when it frees. `task show/cancel/answer` accept unique id prefixes.
+  Observed in the wild: normal-class work deferred by
+  `forecast_over_target:seven_day` computed from the real account's rate spike —
+  the policy behaving as designed; interactive bypasses it.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;
