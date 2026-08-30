@@ -19,10 +19,11 @@ import (
 // reconcileDaemon extends fakeDaemon with the reconcile calls.
 type reconcileDaemon struct {
 	fakeDaemon
-	mu       sync.Mutex
-	states   map[string]*AttemptState
-	patched  map[string]protocol.CleanupPatch
-	complete map[string]protocol.CompleteRequest
+	mu               sync.Mutex
+	refuseEmptyLease bool
+	states           map[string]*AttemptState
+	patched          map[string]protocol.CleanupPatch
+	complete         map[string]protocol.CompleteRequest
 }
 
 func (d *reconcileDaemon) Register(context.Context, protocol.RegisterRequest) (*protocol.RegisterResponse, error) {
@@ -48,6 +49,9 @@ func (d *reconcileDaemon) PatchCleanup(_ context.Context, id string, p protocol.
 func (d *reconcileDaemon) Complete(_ context.Context, id string, req protocol.CompleteRequest) (*protocol.CompleteResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.refuseEmptyLease && req.LeaseToken == "" {
+		return nil, &StatusError{Status: 400, Message: "lease_token is required"}
+	}
 	d.complete[id] = req
 	return &protocol.CompleteResponse{State: req.State}, nil
 }
@@ -158,6 +162,35 @@ func TestReconcileKillsOrphanAndReports(t *testing.T) {
 	// Idle: a second pass touches nothing.
 	if err := w.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestReconcileFallsBackToPatchOn400 pins the smoke-7 finding: a worker_restart
+// completion has no lease token (manifests never store one); when the daemon
+// refuses it with 400, the cleanup fields must still land via the patch.
+func TestReconcileFallsBackToPatchOn400(t *testing.T) {
+	w, gf, d := newReconcileWorker(t)
+	d.refuseEmptyLease = true
+	m, child := orphanedAttempt(t, w, gf, true)
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err == nil {
+		t.Fatal("expected a signal exit")
+	}
+	m.ProcessActive, m.PID, m.PIDStart = false, 0, 0
+	if err := w.runner.manifests.Write(m); err != nil {
+		t.Fatal(err)
+	}
+	d.states[m.AttemptID] = &AttemptState{AttemptID: m.AttemptID, TargetState: "running"}
+	if err := w.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.complete[m.AttemptID]; ok {
+		t.Error("complete must not land without a lease")
+	}
+	if p, ok := d.patched[m.AttemptID]; !ok || p.Cleanup.Outcome != "retained" {
+		t.Errorf("cleanup patch = %+v", p)
 	}
 }
 

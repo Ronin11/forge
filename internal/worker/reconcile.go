@@ -125,8 +125,11 @@ func (w *Worker) reconcileOne(ctx context.Context, m *Manifest, rep *ReconcileRe
 		SessionID: m.SessionID, Launches: m.Launches, StartedAt: m.CreatedAt, FinishedAt: w.clock().UTC(),
 	})
 	if err != nil {
-		// The lease is gone (the sweeper closed it): the cleanup patch still lands.
-		if errors.As(err, &se) && se.Status == 409 {
+		// 409: the sweeper closed the lease. 400: the daemon requires a lease
+		// token, which manifests never store (tokens are not persisted), so a
+		// worker_restart completion cannot present one. Either way the target's
+		// state is the daemon's business; the cleanup fields still land.
+		if errors.As(err, &se) && (se.Status == 400 || se.Status == 409) {
 			return w.client.PatchCleanup(flushCtx, m.AttemptID, protocol.CleanupPatch{Git: &git, Cleanup: cleanup})
 		}
 		return err
