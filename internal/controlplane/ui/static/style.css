@@ -1,0 +1,30 @@
+:root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#6b6b66;--line:#e2e1dc;--card:#fff;--ok:#2f8f4e;--warn:#c27a12;--bad:#c23b2f;--run:#2b6cb0;--wait:#8a5bd0}
+@media(prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ebeae5;--muted:#9a9993;--line:#2c2c2a;--card:#1c1c1a}}
+body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+nav.top{display:flex;gap:1.2rem;align-items:center;padding:.6rem 1.2rem;border-bottom:1px solid var(--line);background:var(--card)}
+nav.top a{color:var(--muted);text-decoration:none}nav.top a.active,nav.top a:hover{color:var(--fg)}nav.top .brand{font-weight:700;color:var(--fg)}
+main{max-width:1200px;margin:0 auto;padding:1rem 1.2rem}
+h1{font-size:1.4rem;margin:.4rem 0 1rem}h2{font-size:1.05rem;margin:1rem 0 .5rem}h3{font-size:.95rem;margin:.8rem 0 .3rem}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.8rem 1rem;margin-bottom:1rem}
+table.list,table.facts,table.events{width:100%;border-collapse:collapse}
+table th{text-align:left;font-weight:600;color:var(--muted);font-size:.8rem;padding:.3rem .5rem;border-bottom:1px solid var(--line)}
+table td{padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08)}
+.state{display:inline-block;padding:0 .45rem;border-radius:999px;font-size:.75rem;border:1px solid var(--line);color:var(--muted)}
+.state-succeeded,.state-merged{color:var(--ok);border-color:var(--ok)}
+.state-failed,.state-partial,.state-cancelled,.state-conflict{color:var(--bad);border-color:var(--bad)}
+.state-unverified{color:var(--warn);border-color:var(--warn)}
+.state-running,.state-claimed,.state-preparing,.state-verifying,.state-merging{color:var(--run);border-color:var(--run)}
+.state-waiting-human{color:var(--wait);border-color:var(--wait)}
+.chip{display:inline-block;font-size:.75rem;padding:0 .4rem;border:1px solid var(--line);border-radius:4px;margin:0 .1rem}
+.chip.warn{color:var(--warn);border-color:var(--warn)}
+.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.off{background:var(--bad)}
+.empty{color:var(--muted)}.meta{color:var(--muted)}small{color:var(--muted)}
+dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;margin:.4rem 0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;word-break:break-word}
+pre.result{white-space:pre-wrap;background:var(--bg);padding:.5rem;border-radius:4px;max-height:16rem;overflow:auto;margin:0}
+td.prompt{white-space:pre-wrap;max-width:36rem;color:var(--muted)}
+.timeline .span{display:grid;grid-template-columns:10rem 1fr 5rem;align-items:center;gap:.5rem;font-size:.8rem}
+.timeline .bar{height:.6rem;background:var(--run);border-radius:2px;opacity:.7}
+table.events{font-size:.78rem}table.events code{white-space:pre-wrap;word-break:break-all}
+ul.attention li{margin:.2rem 0}

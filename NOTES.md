@@ -134,6 +134,17 @@ Newest entries at the bottom of each section. Dates are absolute.
   requeue` resolves `conflict`. `goimports` joins `fmt-check`; `just
   check-offline` is the STYLE §11 proof. `protocol` may import `model` (wire types
   carry model enums); `model` imports nothing.
+- **2026-08-30 · M1 build decisions.** `task add --wait` polls every 2 s in M1
+  (SSE and `task logs -f` are M6); `daemon restart` is stop-then-start in M1 (the
+  draining exec is M6); the model alias table is a fixed map in the server until
+  M10's `[models]`; the worker's repository tools/MCP server arrive in M2, but the
+  per-attempt MCP config and token are written from M1 so the executor command is
+  final. Every test that needs an agent runs the real `forge fake-claude` binary
+  built in `TestMain`, through the real executor/supervisor/parser path; the six
+  fixtures are hand-authored from the recorded haiku stream shapes. Interrupted
+  subagents left three real bugs that tests caught: a five-goroutine WaitGroup
+  counted as four, a verify closure that captured `req` before `git_inspect` filled
+  it, and a resume that never bumped `launches`.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;

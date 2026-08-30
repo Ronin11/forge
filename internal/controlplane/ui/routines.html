@@ -1,0 +1,5 @@
+{{template "head" .}}<h1>Routines</h1>
+<table class="list"><thead><tr><th>Name</th><th>Gen</th><th>Mode</th><th>Model</th><th>Repositories</th><th>Class</th><th>Schedule</th><th>Prompt</th></tr></thead><tbody>
+{{range .Data}}<tr><td>{{.Name}}</td><td>{{.Generation}}</td><td>{{.Mode}}</td><td>{{.Model}}</td><td>{{join .Repositories ", "}}</td><td>{{.BudgetClass}}</td><td>{{.Schedule}}{{if and .Schedule (not .ScheduleEnabled)}} (off){{end}}</td><td class="prompt">{{.Prompt}}</td></tr>
+{{else}}<tr><td colspan="8" class="empty">No routines — <code>forge routine add NAME --prompt "…" --repos a,b</code></td></tr>{{end}}
+</tbody></table>{{template "foot" .}}

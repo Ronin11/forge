@@ -1,0 +1,26 @@
+{{template "head" .}}
+<h1>Task {{short .Data.Work.ID}} <span class="state {{stateClass .Data.State}}">{{.Data.State}}</span></h1>
+<p class="meta">{{.Data.Work.Title}} · routine <b>{{.Data.Work.RoutineName}}@{{.Data.Work.Generation}}</b> · {{.Data.Work.Trigger}} · class {{.Data.Work.BudgetClass}} · priority {{.Data.Work.Priority}} · autonomy {{.Data.Work.Autonomy}} · created {{ago .Data.Work.CreatedAt}}</p>
+{{range .Data.Questions}}<div class="card question"><b>Question</b> {{.Text}}{{if .Options}} <small>options: {{join .Options ", "}}</small>{{end}}
+{{if .AnsweredAt.IsZero}}<div><code>forge task answer {{short .WorkID}} "…"</code></div>{{else}}<div>Answered by {{.AnsweredBy}}: {{.Answer}}</div>{{end}}</div>{{end}}
+{{range .Data.Targets}}
+<section class="card">
+<h2>{{.Target.Repository}} <span class="state {{stateClass .Target.State}}">{{.Target.State}}</span>{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>
+{{range .Attempts}}
+<dl class="kv">
+<dt>Attempt</dt><dd>{{.ID}} · launches {{.Launches}} · executor {{.Executor}} · model {{.ModelAlias}} ({{.Model}})</dd>
+{{if .Branch}}<dt>Git</dt><dd>{{.Branch}} · base {{short .BaseCommit}} · head {{short .HeadCommit}} · commits {{.Git.Commits}} · files ±{{.Git.FilesChanged}} · pushed {{.Git.Pushed}} · dirty {{.Git.Dirty}}</dd>{{end}}
+<dt>Agent</dt><dd>turns {{.NumTurns}} · tokens in {{.Usage.InputTokens}} out {{.Usage.OutputTokens}} cache {{.Usage.CacheReadTokens}}/{{.Usage.CacheCreationTokens}} · cost {{deref .CostUSD}}{{if .SessionID}} · session {{.SessionID}}{{end}}</dd>
+{{if .Cleanup.Outcome}}<dt>Cleanup</dt><dd>{{.Cleanup.Outcome}} — {{.Cleanup.Reason}}{{if .Cleanup.Command}} · <code>{{.Cleanup.Command}}</code>{{end}}</dd>{{end}}
+{{if .VerificationLevel}}<dt>Verification</dt><dd>L{{.VerificationLevel}} passed={{.VerificationPass}}</dd>{{end}}
+{{if .ResultText}}<dt>Result</dt><dd><pre class="result">{{.ResultText}}</pre></dd>{{end}}
+</dl>
+{{end}}
+{{with .Facts}}<h3>Facts</h3><table class="facts"><tr><th>queue wait</th><th>fetch</th><th>resolve</th><th>worktree</th><th>manifest</th><th>agent</th><th>inspect</th><th>verify</th><th>cleanup</th><th>total</th></tr>
+<tr><td>{{dur (index .Phases "queue_wait")}}</td><td>{{dur (index .Phases "fetch")}}</td><td>{{dur (index .Phases "resolve_base")}}</td><td>{{dur (index .Phases "worktree_add")}}</td><td>{{dur (index .Phases "manifest")}}</td><td>{{dur (index .Phases "agent")}}</td><td>{{dur (index .Phases "git_inspect")}}</td><td>{{dur (index .Phases "verify")}}</td><td>{{dur (index .Phases "cleanup")}}</td><td>{{dur (index .Phases "total")}}</td></tr></table>
+<p class="meta">tools: {{range $k,$v := .ToolCallsByName}}{{$k}}×{{$v}} {{end}}</p>{{end}}
+{{if .Events}}<h3>Timeline</h3><div class="timeline" data-timeline>{{range .Events}}{{if eq .Kind "span_end"}}<div class="span" data-elapsed="{{.ElapsedUS}}" data-dur="{{.DurationUS}}" data-parent="{{.ParentID}}"><span class="name">{{.Name}}</span><span class="bar"></span><span class="dur">{{dur .DurationUS | printf "%s"}}</span></div>{{end}}{{end}}</div>
+<details><summary>Events ({{len .Events}})</summary><table class="events">{{range .Events}}<tr><td>{{.Seq}}</td><td>{{.Source}}</td><td>{{.ElapsedUS}}µs</td><td>{{.Kind}}</td><td>{{.Name}}</td><td>{{.Message}}</td><td><code>{{printf "%s" .Attrs}}</code></td></tr>{{end}}</table></details>{{end}}
+</section>
+{{end}}
+{{template "foot" .}}

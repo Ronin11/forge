@@ -79,7 +79,6 @@ type attempt struct {
 	mu         sync.Mutex
 	process    *Process
 	stopReason string
-	leaseLost  bool
 }
 
 // Run executes the claim and reports to the daemon. It returns only when the
@@ -472,16 +471,9 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	if c.Resume != nil {
 		sessionID = c.Resume.SessionID
 	}
-	fixture := ""
-	if c.Executor == "fake-claude" {
-		fixture = os.Getenv("FORGE_FAKE_FIXTURE")
-		if a.ft != nil {
-			// A repository may pin the fixture for tests via [modes.fake].
-			if md, ok := a.ft.Modes["fake"]; ok && len(md.Paths) > 0 {
-				fixture = md.Paths[0]
-			}
-		}
-	}
+	// The fake executor's fixture comes from the environment (tests and
+	// `just smoke` set it); production executors ignore the variable.
+	fixture := os.Getenv("FORGE_FAKE_FIXTURE")
 	cmd, err := exec.Command(ctx, LaunchRequest{
 		Model: c.Model, MaxTurns: c.MaxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,
 		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, MaxBudgetUSD: c.MaxBudgetUSD, Effort: c.Effort, Env: a.env(),

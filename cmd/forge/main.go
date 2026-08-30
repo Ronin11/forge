@@ -35,6 +35,7 @@ type cmdContext struct {
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	forgeHome      string // ~/.forge, or $FORGE_HOME
+	userHome       string
 }
 
 func main() {
@@ -47,7 +48,7 @@ func main() {
 	if forgeHome == "" {
 		forgeHome = filepath.Join(home, ".forge")
 	}
-	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome}
+	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome, userHome: home}
 	os.Exit(dispatch(context.Background(), commands(), c, os.Args[1:]))
 }
 
@@ -57,6 +58,12 @@ func commands() map[string]command {
 	return map[string]command{
 		"version":     {summary: "print the build version", run: runVersion},
 		"fake-claude": {summary: "replay a recorded stream-json fixture (test executor)", run: runFakeClaude},
+		"daemon":      {summary: "start|stop|restart|status|logs|log-level", run: runDaemon},
+		"worker":      {summary: "start the worker process", run: runWorker},
+		"task":        {summary: "add|list|show|cancel|answer tasks", run: runTask},
+		"routine":     {summary: "add|list|show|edit|run|enable|disable routines", run: runRoutine},
+		"queue":       {summary: "show the priority queue", run: runQueue},
+		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
 	}
 }
 

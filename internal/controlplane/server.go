@@ -1,0 +1,543 @@
+package controlplane
+
+import (
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"forge/internal/logging"
+	"forge/internal/model"
+	"forge/internal/protocol"
+	"forge/internal/store"
+)
+
+// maxBodyBytes bounds every request body; the largest legitimate body is an
+// event batch (protocol.MaxEventBatchBytes) with headroom for a routine prompt.
+const maxBodyBytes = 1 << 20
+
+// traceBodyBytes is how much of a JSON body the trace level records.
+const traceBodyBytes = 4 << 10
+
+// shutdownGrace is how long Serve waits for in-flight requests after ctx ends.
+const shutdownGrace = 5 * time.Second
+
+// Server is the daemon's HTTP surface: one mux served on two listeners (the
+// Unix socket and loopback TCP) whose only difference is the auth rule of
+// DESIGN.md §1.1, decided per connection by the transport stamped in ConnContext.
+type Server struct {
+	store             *store.Store
+	policy            SchedulerPolicy
+	log               *slog.Logger
+	now               func() time.Time
+	version           string
+	token             string
+	home              string
+	requiredLevel     func(mode string) int
+	resolveModel      func(alias string) (string, bool)
+	setLogLevels      func(spec string) error
+	logLevels         func() string
+	allowHosts        []string
+	gitConfig         map[string]string
+	transportOverride string
+	mux               *http.ServeMux
+
+	// draining refuses new claims and operator writes once set; heartbeats,
+	// events, and completions keep flowing so running attempts finish (§1.4).
+	draining atomic.Bool
+}
+
+// ServerOptions are the inputs the server cannot derive itself.
+type ServerOptions struct {
+	Store         *store.Store
+	Policy        SchedulerPolicy       // AdmitAll in M1
+	Logger        *slog.Logger          // component "controlplane.http"
+	Clock         func() time.Time      // defaults to time.Now
+	Version       string                // reported by the handshake
+	Token         string                // the worker token; required on TCP for worker/tool routes
+	RequiredLevel func(mode string) int // verification level a mode requires; nil means 1 for every mode
+	Home          string                // for daemon.json's state field on drain; "" skips the file
+	// ResolveModel turns an alias into an executor model id. Nil installs M1's
+	// fixed table; M10's routing replaces it through this seam.
+	ResolveModel func(alias string) (id string, ok bool)
+	// SetLogLevels and LogLevels back GET|POST /api/v1/log-level and the levels
+	// workers inherit; when nil, GET answers "" and POST 501.
+	SetLogLevels func(spec string) error
+	LogLevels    func() string
+	AllowHosts   []string          // [sandbox] allow_hosts, handed to workers as claim policy
+	GitConfig    map[string]string // GIT_CONFIG_* the worker applies to attempt worktrees
+	// TransportOverride forces the transport ("unix" | "tcp") instead of reading
+	// it from the connection; tests use it because httptest listens on TCP.
+	TransportOverride string
+}
+
+// NewServer wires the routes. It does not listen; Serve does.
+func NewServer(o ServerOptions) (*Server, error) {
+	if o.Store == nil {
+		return nil, fmt.Errorf("server: store is required")
+	}
+	if o.Policy == nil {
+		o.Policy = AdmitAll{}
+	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.DiscardHandler)
+	}
+	if o.Clock == nil {
+		o.Clock = time.Now
+	}
+	if o.RequiredLevel == nil {
+		o.RequiredLevel = func(string) int { return 1 }
+	}
+	if o.ResolveModel == nil {
+		o.ResolveModel = defaultResolveModel
+	}
+	if o.TransportOverride != "" && o.TransportOverride != transportUnix && o.TransportOverride != transportTCP {
+		return nil, fmt.Errorf("server: transport override %q: want unix or tcp", o.TransportOverride)
+	}
+	s := &Server{
+		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
+		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
+		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
+	}
+	s.routes()
+	return s, nil
+}
+
+// routes is the whole route table; ui.go and stream.go add theirs to s.mux.
+func (s *Server) routes() {
+	m := s.mux
+	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := io.WriteString(w, "ok"); err != nil {
+			s.log.Warn("write healthz", "error", err)
+		}
+	})
+	m.HandleFunc("GET /api/v1/handshake", s.handle(s.handshake))
+	m.HandleFunc("GET /api/v1/log-level", s.handle(s.getLogLevel))
+	m.HandleFunc("POST /api/v1/log-level", s.handle(s.setLogLevel))
+	m.HandleFunc("POST /api/v1/daemon/drain", s.handle(s.drain))
+	m.HandleFunc("GET /api/v1/journal", s.handle(s.journal))
+
+	m.HandleFunc("POST /api/v1/worker/register", s.handle(s.register))
+	m.HandleFunc("POST /api/v1/worker/claim", s.handle(s.claim))
+	m.HandleFunc("GET /api/v1/worker/attempts/{id}", s.handle(s.workerAttempt))
+	m.HandleFunc("POST /api/v1/attempts/{id}/heartbeat", s.handle(s.heartbeat))
+	m.HandleFunc("POST /api/v1/attempts/{id}/events", s.handle(s.postEvents))
+	m.HandleFunc("POST /api/v1/attempts/{id}/complete", s.handle(s.complete))
+	m.HandleFunc("PATCH /api/v1/attempts/{id}/cleanup", s.handle(s.cleanup))
+
+	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
+	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))
+	m.HandleFunc("GET /api/v1/routines/{name}", s.handle(s.getRoutine))
+	m.HandleFunc("PUT /api/v1/routines/{name}", s.handle(s.updateRoutine))
+	m.HandleFunc("DELETE /api/v1/routines/{name}", s.handle(s.archiveRoutine))
+	m.HandleFunc("POST /api/v1/routines/{name}/run", s.handle(s.runRoutine))
+	for _, base := range []string{"/api/v1/work", "/api/v1/tasks"} {
+		m.HandleFunc("GET "+base, s.handle(s.listWork))
+		m.HandleFunc("POST "+base, s.handle(s.createWork))
+		m.HandleFunc("GET "+base+"/{id}", s.handle(s.getWork))
+		m.HandleFunc("DELETE "+base+"/{id}", s.handle(s.cancelWork))
+		m.HandleFunc("PATCH "+base+"/{id}", s.handle(s.patchWork))
+	}
+	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
+	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
+	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))
+	m.HandleFunc("GET /api/v1/attempts/{id}/events", s.handle(s.getEvents))
+	m.HandleFunc("GET /api/v1/workers", s.handle(s.workers))
+	m.HandleFunc("GET /api/v1/repositories", s.handle(s.repositories))
+	m.HandleFunc("GET /api/v1/attention", s.handle(s.attention))
+}
+
+// handlerFunc is the shape of every JSON route: validate, call the store,
+// return what to encode. A nil body answers with the bare status (204).
+type handlerFunc func(r *http.Request) (status int, body any, err error)
+
+// handle adapts a handlerFunc to net/http so the error-to-status mapping has
+// one home (fail) and no handler touches the ResponseWriter.
+func (s *Server) handle(fn handlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status, body, err := fn(r)
+		switch {
+		case err != nil:
+			s.fail(r.Context(), w, err)
+		case body == nil:
+			w.WriteHeader(status)
+		default:
+			writeJSON(r.Context(), s.log, w, status, body)
+		}
+	}
+}
+
+// Handler is the mux wrapped in the middleware chain: recover, request id and
+// logging, transport auth, body limit.
+func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := logging.NewRequestID()
+		ctx := logging.ContextWith(r.Context(), slog.String("request_id", id))
+		r = r.WithContext(ctx)
+		w.Header().Set("X-Request-ID", id)
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		transport := s.transport(ctx)
+		defer func() {
+			if p := recover(); p != nil {
+				s.log.ErrorContext(ctx, "handler panic", "panic", fmt.Sprint(p), "method", r.Method, "path", r.URL.Path)
+				if !sw.wrote {
+					writeJSON(ctx, s.log, sw, http.StatusInternalServerError, protocol.Error{Error: "internal error"})
+				}
+			}
+			s.log.DebugContext(ctx, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "duration_us", time.Since(start).Microseconds(), "remote", r.RemoteAddr, "transport", transport)
+		}()
+		if transport == transportTCP && requiresToken(r.Method, r.URL.Path) && !s.tokenOK(r) {
+			writeJSON(ctx, s.log, sw, http.StatusUnauthorized, protocol.Error{Error: "token required"})
+			return
+		}
+		r.Body = http.MaxBytesReader(sw, r.Body, maxBodyBytes)
+		if s.log.Enabled(ctx, logging.LevelTrace) && r.ContentLength != 0 && isJSON(r) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				s.fail(ctx, sw, badRequest("read body: %v", err))
+				return
+			}
+			s.log.Log(ctx, logging.LevelTrace, "request body", "bytes", len(body), "body", string(body[:min(len(body), traceBodyBytes)]))
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		s.mux.ServeHTTP(sw, r)
+	})
+}
+
+// Transports, as stamped by Serve's ConnContext.
+const (
+	transportUnix = "unix"
+	transportTCP  = "tcp"
+)
+
+type transportKey struct{}
+
+// transport reports how the request arrived; an unstamped context (a handler
+// served outside Serve) is treated as TCP, the stricter rule.
+func (s *Server) transport(ctx context.Context) string {
+	if s.transportOverride != "" {
+		return s.transportOverride
+	}
+	if t, ok := ctx.Value(transportKey{}).(string); ok {
+		return t
+	}
+	return transportTCP
+}
+
+// requiresToken lists the routes that are the worker's or a tool's, not the
+// operator's, over TCP: GET on an attempt's events is the operator reading a
+// timeline, so only the writing methods on attempt sub-routes are gated.
+func requiresToken(method, path string) bool {
+	if strings.HasPrefix(path, "/api/v1/worker/") || strings.HasPrefix(path, "/api/v1/tools/") {
+		return true
+	}
+	rest, ok := strings.CutPrefix(path, "/api/v1/attempts/")
+	if !ok || method == http.MethodGet {
+		return false
+	}
+	_, action, ok := strings.Cut(rest, "/")
+	if !ok {
+		return false
+	}
+	switch action {
+	case "heartbeat", "events", "complete", "cleanup":
+		return true
+	}
+	return false
+}
+
+func (s *Server) tokenOK(r *http.Request) bool {
+	if s.token == "" {
+		return false
+	}
+	presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && subtle.ConstantTimeCompare([]byte(presented), []byte(s.token)) == 1
+}
+
+func isJSON(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	return ct == "" || strings.HasPrefix(ct, "application/json")
+}
+
+// statusWriter records what the handler answered, for the request log.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if !w.wrote {
+		w.status, w.wrote = code, true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(b)
+}
+
+// Serve runs the handler on both listeners until ctx is done, then shuts both
+// down with shutdownGrace for in-flight requests. It returns nil on ctx
+// cancellation and the first listener error otherwise. Either listener may be
+// nil (a socket-only daemon), not both.
+func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
+	if unix == nil && tcp == nil {
+		return fmt.Errorf("serve: no listener")
+	}
+	h := s.Handler()
+	var servers []*http.Server
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, l := range []struct {
+		transport string
+		listener  net.Listener
+	}{{transportUnix, unix}, {transportTCP, tcp}} {
+		if l.listener == nil {
+			continue
+		}
+		transport := l.transport
+		srv := &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second,
+			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
+				return context.WithValue(ctx, transportKey{}, transport)
+			},
+		}
+		servers = append(servers, srv)
+		wg.Add(1)
+		go func(l net.Listener) {
+			defer wg.Done()
+			if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs <- fmt.Errorf("serve %s listener: %w", transport, err)
+			}
+		}(l.listener)
+	}
+	var err error
+	select {
+	case <-ctx.Done():
+	case err = <-errs:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	defer cancel()
+	for _, srv := range servers {
+		if serr := srv.Shutdown(shutdownCtx); serr != nil && err == nil {
+			err = fmt.Errorf("shutdown: %w", serr)
+		}
+	}
+	wg.Wait()
+	return err
+}
+
+// SetDraining flips the drain flag: claims and operator writes answer 503
+// while it is on; the worker's heartbeat, events, complete, and cleanup keep
+// working so running attempts finish.
+func (s *Server) SetDraining(on bool) { s.draining.Store(on) }
+
+// Draining reports the drain flag.
+func (s *Server) Draining() bool { return s.draining.Load() }
+
+// Model aliases M1 knows. M10 replaces the table through ServerOptions.ResolveModel.
+func defaultResolveModel(alias string) (string, bool) {
+	switch alias {
+	case "haiku":
+		return "claude-haiku-4-5-20251001", true
+	case "sonnet":
+		return "claude-sonnet-4-5", true
+	case "opus":
+		return "claude-opus-4-1", true
+	}
+	// A full model id ("claude-haiku-4-5-20251001") carries a "-<digit>"; it is
+	// passed through unchanged.
+	for i := 0; i+1 < len(alias); i++ {
+		if alias[i] == '-' && alias[i+1] >= '0' && alias[i+1] <= '9' {
+			return alias, true
+		}
+	}
+	return "", false
+}
+
+// requestError is a client mistake: it becomes 400 with its message.
+type requestError struct{ msg string }
+
+func (e *requestError) Error() string { return e.msg }
+
+func badRequest(format string, args ...any) error {
+	return &requestError{msg: fmt.Sprintf(format, args...)}
+}
+
+// errDraining is answered 503 by the routes drain refuses.
+var errDraining = errors.New("draining")
+
+// fail maps an error to its status and body: store sentinels to 404/409, a
+// requestError to 400, draining to 503, anything else to 500 logged once here.
+func (s *Server) fail(ctx context.Context, w http.ResponseWriter, err error) {
+	var re *requestError
+	status := http.StatusInternalServerError
+	switch {
+	case errors.As(err, &re):
+		status = http.StatusBadRequest
+	case errors.Is(err, store.ErrNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrStaleGeneration), errors.Is(err, store.ErrLease), errors.Is(err, model.ErrTransition):
+		status = http.StatusConflict
+	case errors.Is(err, errDraining):
+		status = http.StatusServiceUnavailable
+	}
+	if status == http.StatusInternalServerError {
+		s.log.ErrorContext(ctx, "request failed", "error", err)
+	}
+	writeJSON(ctx, s.log, w, status, protocol.Error{Error: err.Error()})
+}
+
+// writeJSON encodes v with status. An encode failure after the header is out
+// cannot be reported to the client, so it is logged.
+func writeJSON(ctx context.Context, log *slog.Logger, w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.WarnContext(ctx, "write response", "error", err)
+	}
+}
+
+// decodeJSON reads one JSON body into v; a body over maxBodyBytes and malformed
+// JSON are both the client's fault.
+func decodeJSON(r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return badRequest("body exceeds %d bytes", maxBodyBytes)
+		}
+		return badRequest("decode body: %v", err)
+	}
+	return nil
+}
+
+// pathID reads a {id} segment and validates it as a Forge ID before it reaches
+// a query or a log line.
+func pathID(r *http.Request) (string, error) {
+	id := r.PathValue("id")
+	if err := model.ValidateID(id); err != nil {
+		return "", badRequest("%v", err)
+	}
+	return id, nil
+}
+
+// listLimit reads ?limit= with STYLE.md §7's bounds: default 50, max 500.
+func listLimit(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return 50, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, badRequest("limit %q: want a positive integer", raw)
+	}
+	return min(n, 500), nil
+}
+
+func (s *Server) handshake(*http.Request) (int, any, error) {
+	state := "running"
+	if s.Draining() {
+		state = "draining"
+	}
+	return http.StatusOK, protocol.Handshake{Version: s.version, SchemaVersion: s.store.SchemaVersion(), State: state, PID: os.Getpid()}, nil
+}
+
+// logLevelBody is GET|POST /api/v1/log-level's shape in both directions.
+type logLevelBody struct {
+	Levels string `json:"levels"`
+}
+
+func (s *Server) getLogLevel(*http.Request) (int, any, error) {
+	return http.StatusOK, logLevelBody{Levels: s.currentLogLevels()}, nil
+}
+
+func (s *Server) currentLogLevels() string {
+	if s.logLevels == nil {
+		return ""
+	}
+	return s.logLevels()
+}
+
+func (s *Server) setLogLevel(r *http.Request) (int, any, error) {
+	if s.setLogLevels == nil {
+		return http.StatusNotImplemented, protocol.Error{Error: "log levels are not adjustable in this process"}, nil
+	}
+	var body logLevelBody
+	if err := decodeJSON(r, &body); err != nil {
+		return 0, nil, err
+	}
+	if err := s.setLogLevels(body.Levels); err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	s.log.InfoContext(r.Context(), "log levels changed", "levels", body.Levels)
+	return http.StatusOK, logLevelBody{Levels: s.currentLogLevels()}, nil
+}
+
+func (s *Server) drain(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	s.SetDraining(true)
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.Journal(ctx, "daemon.draining", store.EntityDaemon, "daemon", map[string]string{"actor": "human"})
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	if s.home != "" {
+		if err := s.markStateDraining(); err != nil {
+			s.log.WarnContext(ctx, "update daemon.json", "error", err)
+		}
+	}
+	s.log.InfoContext(ctx, "draining")
+	return http.StatusOK, map[string]string{"state": "draining"}, nil
+}
+
+// markStateDraining rewrites daemon.json's state so `daemon status` agrees with
+// the handshake; a missing file is left missing.
+func (s *Server) markStateDraining() error {
+	st, err := ReadState(s.home)
+	if err != nil || st == nil {
+		return err
+	}
+	st.State = "draining"
+	return WriteState(s.home, *st)
+}
+
+func (s *Server) journal(r *http.Request) (int, any, error) {
+	var since int64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			return 0, nil, badRequest("since %q: want a journal id", raw)
+		}
+		since = n
+	}
+	limit, err := listLimit(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	entries, err := s.store.JournalSince(r.Context(), since, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	if entries == nil {
+		entries = []store.JournalEntry{}
+	}
+	return http.StatusOK, entries, nil
+}

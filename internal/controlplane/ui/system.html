@@ -1,0 +1,6 @@
+{{template "head" .}}<h1>System</h1>
+<h2>Workers</h2><table class="list"><thead><tr><th></th><th>Name</th><th>Version</th><th>Slots</th><th>Executors</th><th>Capabilities</th><th>Last seen</th></tr></thead><tbody>
+{{range .Data.Workers}}<tr><td><span class="dot {{if .Connected}}ok{{else}}off{{end}}"></span></td><td>{{.Name}} <small>{{short .ID}}</small></td><td>{{.Version}}</td><td>{{.Active}}/{{.MaxConcurrent}}</td><td>{{join .Executors ", "}}</td><td>{{range $k,$v := .Capabilities}}<span class="chip">{{$k}}={{$v}}</span> {{end}}</td><td>{{ago .LastSeenAt}}</td></tr>{{else}}<tr><td colspan="7" class="empty">No worker has registered.</td></tr>{{end}}</tbody></table>
+<h2>Repositories</h2><table class="list"><thead><tr><th>Name</th><th>Project</th><th>Path</th><th>Origin</th><th>Base</th><th>Worker</th><th>Seen</th></tr></thead><tbody>
+{{range .Data.Repositories}}<tr><td>{{.Name}}</td><td>{{.Project}}</td><td><code>{{.Path}}</code></td><td>{{.OriginIdentity}}</td><td>{{.BaseBranch}}</td><td>{{short .WorkerID}}</td><td>{{ago .LastSeenAt}}</td></tr>{{else}}<tr><td colspan="7" class="empty">No repositories advertised — add <code>[repositories.NAME]</code> to worker.toml.</td></tr>{{end}}</tbody></table>
+{{template "foot" .}}
