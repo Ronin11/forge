@@ -135,7 +135,11 @@ func (e *TemplateExecutor) Command(ctx context.Context, req LaunchRequest) (*exe
 	if e.Has(CapAppendSystemPrompt) && req.SystemAppend != "" {
 		args = append(args, "--append-system-prompt", req.SystemAppend)
 	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	// exec.Command, not CommandContext: the supervisor owns the deadline and
+	// kills the whole process group; CommandContext's Cancel would kill only
+	// the direct child. ctx is kept in the signature for executors that need it.
+	_ = ctx
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = req.Worktree
 	cmd.Env = req.Env
 	return cmd, nil

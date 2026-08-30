@@ -53,7 +53,10 @@ type ClaimRequest struct {
 // Claim is the frozen snapshot a worker executes. It never contains mutable
 // routine state.
 type Claim struct {
-	AttemptID      string            `json:"attempt_id"`
+	AttemptID string `json:"attempt_id"`
+	// LeaseToken is minted by the worker and sent in the ClaimRequest; it is
+	// kept on the Claim in memory only so every later request can present it.
+	LeaseToken     string            `json:"-"`
 	TargetID       string            `json:"target_id"`
 	WorkID         string            `json:"work_id"`
 	RoutineName    string            `json:"routine_name"`
