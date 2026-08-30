@@ -116,7 +116,12 @@ The verify Work has no routine (`routine_id NULL`, so it is outside the subject
 routine's `concurrency` — otherwise a `concurrency = 1` routine could never be
 verified), is `interactive` if the subject was and `normal` otherwise, and carries the
 subject's priority so verification does not starve behind backlog. It is created by
-the subject mode's `FollowUps` (`MODES.md`).
+the subject mode's `FollowUps` (`MODES.md`). At admission time every
+dependency-triggered follow-up is judged as `interactive` regardless of its stored
+class: the marginal spend was committed when the subject ran, and a soft budget
+deferral (`over_target`/`forecast_over_target`/quiet hours/burn-down) would strand
+the subject in `verifying`. Hard stops and the daily USD cap still defer it —
+constitution 6 is absolute (`DESIGN.md` §10.2).
 
 ## L3 — human
 

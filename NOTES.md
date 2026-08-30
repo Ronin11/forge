@@ -210,3 +210,5 @@ Newest entries at the bottom of each section. Dates are absolute.
 ## Open questions
 
 - See the M0 report; resolved answers are moved into Decisions with the date.
+
+- `TestServeShutsDownOnCancel` can flake under full-package `-race` load (5s graceful-shutdown deadline exceeded once, passes alone and on rerun); widen the deadline if it recurs.

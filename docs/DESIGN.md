@@ -1029,7 +1029,10 @@ In order, per window (both windows must admit):
 1. `u ≥ hard_stop` → defer all classes: `hard_stop:<window>`. Running work is never
    killed (constitution 6). Sum of `cost_usd` since local midnight ≥ `daily_usd_cap`
    → `daily_usd_cap`.
-2. `interactive` → admit.
+2. `interactive` → admit. A dependency-triggered follow-up Work (the L2 verify
+   attempt, `trigger = dependency`) is judged as `interactive` here regardless of
+   its stored class: its subject already spent the tokens, and a soft deferral
+   would strand the subject in `verifying`. Rule 1 still applies to it.
 3. Quiet hours: non-interactive classes admit only while `u < target − reserve`
    (`quiet_hours`).
 4. `normal` → admit iff `u < target` and the 1 h-rate forecast at reset ≤ `target`

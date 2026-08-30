@@ -54,7 +54,16 @@ func Order(in QueueInput) []QueueEntry {
 		blocked := !deps.Satisfied
 		deferred, reason := false, ""
 		if in.Deferred != nil && !blocked {
-			deferred, reason = in.Deferred(w.BudgetClass)
+			// Dependency-triggered follow-ups (L2 verify Work) are admitted as
+			// interactive: the marginal spend was committed when the subject
+			// ran, and deferring them strands the subject in `verifying`. Hard
+			// stops and the daily cap still apply — the interactive class is
+			// checked after rule 1 (constitution 6 intact).
+			class := w.BudgetClass
+			if w.Trigger == model.TriggerDependency {
+				class = model.ClassInteractive
+			}
+			deferred, reason = in.Deferred(class)
 		}
 		e.State = model.DeriveWorkState(model.WorkInputs{Targets: targetStates(e.Targets), Integrate: w.Integrate, Blocked: blocked, Deferred: deferred})
 		switch {

@@ -100,3 +100,38 @@ func TestOrderAndPick(t *testing.T) {
 		t.Errorf("capability: %+v", pick)
 	}
 }
+
+// A dependency-triggered follow-up (the L2 verify Work) is admitted as
+// interactive: soft budget rules must not strand its subject in `verifying`.
+func TestOrderDependencyFollowUpAdmission(t *testing.T) {
+	w := store.Work{ID: "v", Priority: 50, BudgetClass: model.ClassNormal,
+		Trigger: model.TriggerDependency, RoutineName: "verify"}
+	plain := store.Work{ID: "p", Priority: 50, BudgetClass: model.ClassNormal,
+		Trigger: model.TriggerManual, RoutineName: "r"}
+	targets := map[string][]store.Target{
+		"v": {{ID: "tv", WorkID: "v", Repository: "forge", State: model.Pending}},
+		"p": {{ID: "tp", WorkID: "p", Repository: "forge", State: model.Pending}},
+	}
+	var asked []model.BudgetClass
+	deferNormal := func(class model.BudgetClass) (bool, string) {
+		asked = append(asked, class)
+		return class != model.ClassInteractive, "forecast_over_target:seven_day"
+	}
+	order := Order(QueueInput{Work: []store.Work{w, plain}, Targets: targets, Deferred: deferNormal})
+	byID := map[string]QueueEntry{}
+	for _, e := range order {
+		byID[e.Work.ID] = e
+	}
+	if byID["v"].State != model.WorkPending {
+		t.Errorf("dependency follow-up deferred: %v/%s", byID["v"].State, byID["v"].Reason)
+	}
+	if byID["p"].State != model.WorkDeferred || byID["p"].Reason != "forecast_over_target:seven_day" {
+		t.Errorf("plain normal work must still defer: %v/%s", byID["p"].State, byID["p"].Reason)
+	}
+	want := map[model.BudgetClass]bool{model.ClassInteractive: true, model.ClassNormal: true}
+	for _, c := range asked {
+		if !want[c] {
+			t.Errorf("unexpected class asked: %s", c)
+		}
+	}
+}
