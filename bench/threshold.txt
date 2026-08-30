@@ -1,0 +1,3 @@
+# benchmark name → maximum ns/op accepted by `just bench` (3× the first measurement on
+# the reference laptop, so noise passes and a real regression fails).
+BenchmarkInsertEvents 1000000
