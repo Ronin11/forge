@@ -129,7 +129,17 @@ func (tx *Tx) CreateRoutine(ctx context.Context, r *Routine) error {
 
 // UpdateRoutine replaces every editable field, requires the caller's expected
 // generation (409 otherwise), and bumps the generation.
+// UpdateRoutineFrom is UpdateRoutine with an explicit generation source
+// (`proposal:<id>` when an approved proposal applies, DESIGN.md §12).
+func (tx *Tx) UpdateRoutineFrom(ctx context.Context, r *Routine, expectedGeneration int, source string) error {
+	return tx.updateRoutine(ctx, r, expectedGeneration, source)
+}
+
 func (tx *Tx) UpdateRoutine(ctx context.Context, r *Routine, expectedGeneration int) error {
+	return tx.updateRoutine(ctx, r, expectedGeneration, "edit")
+}
+
+func (tx *Tx) updateRoutine(ctx context.Context, r *Routine, expectedGeneration int, source string) error {
 	r.applyDefaults()
 	if err := r.Validate(); err != nil {
 		return err
@@ -153,7 +163,7 @@ func (tx *Tx) UpdateRoutine(ctx context.Context, r *Routine, expectedGeneration 
 	if err != nil {
 		return fmt.Errorf("update routine %s: %w", r.Name, err)
 	}
-	return tx.recordGeneration(ctx, r, "edit")
+	return tx.recordGeneration(ctx, r, source)
 }
 
 func (tx *Tx) insertRoutine(ctx context.Context, r *Routine) error {
