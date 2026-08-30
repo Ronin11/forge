@@ -113,7 +113,7 @@ func (c *cmdContext) flags(name string) (*flag.FlagSet, *logging.Flags) {
 // so a script piping stdout never sees help text where it expected output.
 func (c *cmdContext) parse(fs *flag.FlagSet, args []string) int {
 	fs.Usage = func() {}
-	switch err := fs.Parse(args); {
+	switch err := fs.Parse(flagsFirst(fs, args)); {
 	case err == flag.ErrHelp:
 		fmt.Fprintf(c.stdout, "usage: %s [flags]\n", fs.Name())
 		fs.SetOutput(c.stdout)
@@ -155,4 +155,39 @@ func runVersion(ctx context.Context, c *cmdContext, args []string) int {
 	log.DebugContext(ctx, "printing version", "version", version)
 	fmt.Fprintln(c.stdout, "forge", version)
 	return 0
+}
+
+// flagsFirst reorders args so every flag precedes the positionals: `forge
+// routine add NAME --prompt …` reads naturally, but the flag package stops at
+// the first positional. A flag's value stays attached to it; "--" ends flags.
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name, _, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if hasValue {
+			continue
+		}
+		f := fs.Lookup(name)
+		isBool := false
+		if f != nil {
+			if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+				isBool = true
+			}
+		}
+		if !isBool && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	return append(flags, positional...)
 }

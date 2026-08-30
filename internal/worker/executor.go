@@ -204,7 +204,9 @@ func PassthroughEnv(parent []string, extra ...string) []string {
 		case "PATH", "HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "CLAUDE_CONFIG_DIR", "FORGE_HOME", "FORGE_HTTP":
 			return true
 		}
-		for _, prefix := range []string{"LC_", "XDG_", "ANTHROPIC_", "FORGE_LOG_"} {
+		// FORGE_FAKE_* reaches the fake executor only; production executors
+		// never read it.
+		for _, prefix := range []string{"LC_", "XDG_", "ANTHROPIC_", "FORGE_LOG_", "FORGE_FAKE_"} {
 			if strings.HasPrefix(key, prefix) {
 				return true
 			}
