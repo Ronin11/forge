@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -293,7 +294,9 @@ func TestClaimThroughCompletion(t *testing.T) {
 		t.Errorf("unregistered claim = %d", status)
 	}
 	c := h.mustClaim("r1")
-	if c.TargetID != created.Targets[0].ID || c.Prompt != "list files in equitizr" || c.Model != "claude-haiku-4-5-20251001" || c.MCPToken == "" || len(c.MCPToken) != 64 {
+	// The prompt is the routine prompt with {{repo}} substituted, wrapped by the
+	// autonomy block and context line (renderPrompt).
+	if c.TargetID != created.Targets[0].ID || !strings.Contains(c.Prompt, "list files in equitizr") || !strings.Contains(c.Prompt, "AUTONOMY:") || c.Model != "claude-haiku-4-5-20251001" || c.MCPToken == "" || len(c.MCPToken) != 64 {
 		t.Errorf("claim = %+v", c)
 	}
 	if !c.LeaseExpiresAt.Equal(h.clock.Now().Add(store.LeaseDuration)) || !c.Policy.RequireSandbox || c.Policy.AllowHosts[0] != "api.anthropic.com" || c.Policy.GitConfig["merge.conflictstyle"] != "zdiff3" {

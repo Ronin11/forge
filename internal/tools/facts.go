@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"sort"
 	"time"
 
 	"forge/internal/model"
+	"forge/internal/stats"
 	"forge/internal/store"
 )
 
@@ -281,7 +281,7 @@ type statsTool struct{}
 
 func (statsTool) Name() string { return "forge_stats" }
 func (statsTool) Description() string {
-	return "Per-routine aggregates over the facts of a window: runs, outcomes, verified vs self-reported success, duration percentiles, tokens, cost."
+	return "Per-routine and per-generation aggregates over the facts of a window: runs, outcomes, verified vs self-reported success, duration percentiles, tokens, cost, tool mix, failure reasons, and the previous equal window for deltas."
 }
 func (statsTool) Where() string { return WhereDaemon }
 func (statsTool) InputSchema() json.RawMessage {
@@ -301,15 +301,14 @@ func (statsTool) Call(ctx context.Context, req Request) (json.RawMessage, error)
 		return nil, err
 	}
 	now := req.Deps.Clock().UTC()
-	rows, err := req.Deps.Store.FactsSince(ctx, now.Add(-time.Duration(hours)*time.Hour), now, in.Routine)
+	report, err := stats.Load(ctx, req.Deps.Store, stats.Query{Since: now.Add(-time.Duration(hours) * time.Hour), Until: now, Routine: in.Routine})
 	if err != nil {
 		return nil, err
 	}
 	return respond(map[string]any{
 		"schema_version": SchemaVersion,
 		"since_hours":    hours,
-		"routines":       computeStats(rows),
-		"note":           "deltas and prev windows arrive in M3",
+		"report":         report,
 	})
 }
 
@@ -323,116 +322,15 @@ func sinceHours(in int) (int, error) {
 	return in, nil
 }
 
-// routineStats is one routine's aggregate. Verified success is what
-// model.IsSuccess accepts; self-reported success also counts unverified —
-// the agent claimed success but verification did not confirm it.
-type routineStats struct {
-	Runs                    int     `json:"runs"`
-	Succeeded               int     `json:"succeeded"`
-	Unverified              int     `json:"unverified"`
-	Failed                  int     `json:"failed"`
-	Cancelled               int     `json:"cancelled"`
-	VerifiedSuccessRate     float64 `json:"verified_success_rate"`
-	SelfReportedSuccessRate float64 `json:"self_reported_success_rate"`
-	P50TotalUS              *int64  `json:"p50_total_us"`
-	P95TotalUS              *int64  `json:"p95_total_us"`
-	MaxTotalUS              *int64  `json:"max_total_us"`
-	P50AgentUS              *int64  `json:"p50_agent_us"`
-	TokensIn                int64   `json:"tokens_in"`
-	TokensOut               int64   `json:"tokens_out"`
-	CostUSDTotal            float64 `json:"cost_usd_total"`
-	CostPerRun              float64 `json:"cost_per_run"`
-}
-
-// computeStats aggregates facts rows per routine; percentiles are computed in
-// Go over the fetched rows (STYLE.md §4), never in SQL.
-func computeStats(rows []store.AttemptFacts) map[string]*routineStats {
-	out := map[string]*routineStats{}
-	totals, agents := map[string][]int64{}, map[string][]int64{}
-	for _, f := range rows {
-		st := out[f.Routine]
-		if st == nil {
-			st = &routineStats{}
-			out[f.Routine] = st
-		}
-		st.Runs++
-		switch {
-		case model.IsSuccess(f.State):
-			st.Succeeded++
-		case f.State == model.Unverified:
-			st.Unverified++
-		case f.State == model.Failed:
-			st.Failed++
-		case f.State == model.Cancelled:
-			st.Cancelled++
-		}
-		if v := f.Phases["total"]; v != nil {
-			totals[f.Routine] = append(totals[f.Routine], *v)
-		}
-		if v := f.Phases["agent"]; v != nil {
-			agents[f.Routine] = append(agents[f.Routine], *v)
-		}
-		if f.InputTokens != nil {
-			st.TokensIn += *f.InputTokens
-		}
-		if f.OutputTokens != nil {
-			st.TokensOut += *f.OutputTokens
-		}
-		if f.CostUSD != nil {
-			st.CostUSDTotal += *f.CostUSD
-		}
-	}
-	for name, st := range out {
-		st.VerifiedSuccessRate = float64(st.Succeeded) / float64(st.Runs)
-		st.SelfReportedSuccessRate = float64(st.Succeeded+st.Unverified) / float64(st.Runs)
-		st.CostPerRun = st.CostUSDTotal / float64(st.Runs)
-		if ts := totals[name]; len(ts) > 0 {
-			sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
-			st.P50TotalUS = ptr(percentile(ts, 0.50))
-			st.P95TotalUS = ptr(percentile(ts, 0.95))
-			st.MaxTotalUS = ptr(ts[len(ts)-1])
-		}
-		if as := agents[name]; len(as) > 0 {
-			sort.Slice(as, func(i, j int) bool { return as[i] < as[j] })
-			st.P50AgentUS = ptr(percentile(as, 0.50))
-		}
-	}
-	return out
-}
-
-// percentile is nearest-rank over a sorted, non-empty slice.
-func percentile(sorted []int64, p float64) int64 {
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	return sorted[idx]
-}
-
-func ptr[T any](v T) *T { return &v }
-
-// retroProblemCap bounds problem_attempts to the newest rows.
-const retroProblemCap = 50
-
-// retroEventLimit is how many non-line events each problem attempt carries.
-const retroEventLimit = 30
-
 type retroPackTool struct{}
 
 func (retroPackTool) Name() string { return "forge_retro_pack" }
 func (retroPackTool) Description() string {
-	return "The retro data pack: all-routine stats for a window plus the newest problem attempts (not verified successes) with their structured result and span events."
+	return "The retro data pack: all-routine stats with previous-window deltas, the current prompt and settings per routine, and the newest problem attempts (not verified successes) with their structured result and last span events."
 }
 func (retroPackTool) Where() string { return WhereDaemon }
 func (retroPackTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"since_hours":{"type":"integer","minimum":1,"description":"window size; default 168 (one week)"}},"additionalProperties":false}`)
-}
-
-// problemAttempt is one facts row that was not a verified success.
-type problemAttempt struct {
-	Facts  store.AttemptFacts  `json:"facts"`
-	Result json.RawMessage     `json:"result,omitempty"` // the attempt's structured result
-	Events []store.StoredEvent `json:"events"`           // first non-line events, elapsed order
 }
 
 func (retroPackTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
@@ -447,35 +345,11 @@ func (retroPackTool) Call(ctx context.Context, req Request) (json.RawMessage, er
 		return nil, err
 	}
 	now := req.Deps.Clock().UTC()
-	rows, err := req.Deps.Store.FactsSince(ctx, now.Add(-time.Duration(hours)*time.Hour), now, "")
+	pack, err := stats.LoadRetroPack(ctx, req.Deps.Store, stats.Query{Since: now.Add(-time.Duration(hours) * time.Hour), Until: now})
 	if err != nil {
 		return nil, err
 	}
-	problems := []problemAttempt{}
-	// rows are oldest first; walk backwards so the cap keeps the newest.
-	for i := len(rows) - 1; i >= 0 && len(problems) < retroProblemCap; i-- {
-		f := rows[i]
-		if model.IsSuccess(f.State) && (f.VerificationPass == nil || *f.VerificationPass) {
-			continue
-		}
-		a, err := req.Deps.Store.GetAttempt(ctx, f.AttemptID)
-		if err != nil {
-			return nil, err
-		}
-		events, err := req.Deps.Store.Events(ctx, f.AttemptID, false, retroEventLimit)
-		if err != nil {
-			return nil, err
-		}
-		if events == nil {
-			events = []store.StoredEvent{}
-		}
-		problems = append(problems, problemAttempt{Facts: f, Result: a.Result, Events: events})
-	}
-	return respond(map[string]any{
-		"schema_version":   SchemaVersion,
-		"since_hours":      hours,
-		"stats":            computeStats(rows),
-		"problem_attempts": problems,
-		"note":             "deltas and prev windows arrive in M3",
-	})
+	// The pack already carries schema_version (stats.SchemaVersion): the
+	// response is the pack itself, the same shape GET /api/v1/retro serves.
+	return respond(pack)
 }

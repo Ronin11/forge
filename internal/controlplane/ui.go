@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"forge/internal/model"
+	"forge/internal/stats"
 	"forge/internal/store"
 )
 
@@ -60,6 +61,14 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return fmt.Sprintf("$%.4f", *p)
 		},
 		"stateClass": func(s any) string { return "state-" + strings.ReplaceAll(fmt.Sprint(s), "_", "-") },
+		"mulf":       func(a, b float64) float64 { return a * b },
+		"dereff":     func(p *float64) float64 { return *p },
+		"dur64": func(us int64) string {
+			if us == 0 {
+				return "-"
+			}
+			return humanDuration(time.Duration(us) * time.Microsecond)
+		},
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(uiFS, "ui/*.html")
 	if err != nil {
@@ -76,6 +85,9 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /system", u.system)
+	u.mux.HandleFunc("GET /queue", u.queue)
+	u.mux.HandleFunc("GET /attention", u.attention)
+	u.mux.HandleFunc("GET /stats", u.stats)
 	return u, nil
 }
 
@@ -263,4 +275,80 @@ func (u *UI) system(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos})
+}
+
+// stats renders the same report the API and CLI serve (stats.Load is the one
+// aggregation), for the window in ?since (default 7d).
+func (u *UI) stats(w http.ResponseWriter, r *http.Request) {
+	since := r.URL.Query().Get("since")
+	if since == "" {
+		since = "7d"
+	}
+	dur, err := parseSince(since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	now := u.clock()
+	report, err := stats.Load(r.Context(), u.store, stats.Query{Since: now.Add(-dur), Until: now})
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "stats.html", "Stats", map[string]any{"Report": report, "Since": since})
+}
+
+// queueRows loads the queue in the one true order (controlplane/queue.Order),
+// without budget deferral (the UI shows a "deferred" state only when the API
+// exposes it; M3's budget policy feeds the API, and this page mirrors it).
+func (u *UI) queueRows(ctx context.Context) ([]QueueEntry, error) {
+	works, err := u.store.OpenWork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(works))
+	for i, w := range works {
+		ids[i] = w.ID
+	}
+	targets, err := u.store.TargetsForWorks(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := u.store.DependencyEdges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Order(QueueInput{Work: works, Targets: targets, Edges: edges}), nil
+}
+
+// queue is the drag-and-drop priority page.
+func (u *UI) queue(w http.ResponseWriter, r *http.Request) {
+	rows, err := u.queueRows(r.Context())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "queue.html", "Queue", rows)
+}
+
+func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
+	questions, err := u.store.OpenQuestions(r.Context())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	type row struct {
+		Question store.Question
+		Work     *store.Work
+	}
+	rows := make([]row, 0, len(questions))
+	for _, q := range questions {
+		work, err := u.store.GetWork(r.Context(), q.WorkID)
+		if err != nil {
+			u.fail(w, r, err)
+			return
+		}
+		rows = append(rows, row{Question: q, Work: work})
+	}
+	u.render(w, r, "attention.html", "Human queue", rows)
 }

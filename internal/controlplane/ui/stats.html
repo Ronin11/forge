@@ -1,0 +1,18 @@
+{{template "head" .}}<h1>Stats <small>window {{.Data.Since}}</small></h1>
+<p class="meta">Window: <a href="/stats?since=1d">1d</a> · <a href="/stats?since=7d">7d</a> · <a href="/stats?since=30d">30d</a> — verified success is counted separately from self-reported.</p>
+{{if not .Data.Report.Routines}}<p class="empty">No finished attempts in this window.</p>{{end}}
+{{range .Data.Report.Routines}}
+<section class="card">
+<h2>{{.Routine}} <small>{{.Runs}} run(s)</small></h2>
+<table class="list"><thead><tr><th></th><th>Runs</th><th>Verified ✓</th><th>Self-reported ✓</th><th>p50 total</th><th>p95 total</th><th>p50 agent</th><th>Tokens in/out per run</th><th>Cost/run</th><th>Cost/verified ✓</th><th>Turns</th><th>Top failure</th></tr></thead><tbody>
+{{template "statsRow" .}}
+{{range $.Data.Report.Generations}}{{if eq .Routine $.Data.Report.Routines 0}}{{end}}{{end}}
+</tbody></table>
+<p class="meta">tools: {{range $k, $v := .ToolMix}}{{$k}}×{{$v}} {{end}}{{with .UtilizationConsumed}}· utilization consumed {{printf "%.3f" .}}{{end}}</p>
+</section>
+{{end}}
+{{if .Data.Report.Generations}}<h2>By generation</h2>
+<table class="list"><thead><tr><th>Routine@gen</th><th>Runs</th><th>Verified ✓</th><th>Self-reported ✓</th><th>p50 total</th><th>p95 total</th><th>p50 agent</th><th>Tokens in/out per run</th><th>Cost/run</th><th>Cost/verified ✓</th><th>Turns</th><th>Top failure</th></tr></thead><tbody>
+{{range .Data.Report.Generations}}{{template "statsRow" .}}{{end}}
+</tbody></table>{{end}}
+{{template "foot" .}}

@@ -151,6 +151,8 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/v1/tools", s.handle(s.listTools))
 	s.kbRoutes(m)
+	s.usageRoutes(m)
+	s.statsRoutes(m)
 	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))

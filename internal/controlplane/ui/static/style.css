@@ -28,3 +28,11 @@ td.prompt{white-space:pre-wrap;max-width:36rem;color:var(--muted)}
 .timeline .bar{height:.6rem;background:var(--run);border-radius:2px;opacity:.7}
 table.events{font-size:.78rem}table.events code{white-space:pre-wrap;word-break:break-all}
 ul.attention li{margin:.2rem 0}
+.grip{cursor:grab;color:var(--muted);user-select:none}
+tr[draggable]{background:var(--card)}
+.card.question form{margin:.4rem 0}
+.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:1rem}
+.gauge{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.6rem .9rem}
+.gauge .bar{position:relative;height:.8rem;background:var(--bg);border:1px solid var(--line);border-radius:999px;overflow:visible;margin:.4rem 0}
+.gauge .fill{height:100%;border-radius:999px;background:var(--ok)}.gauge .fill.warn{background:var(--warn)}.gauge .fill.bad{background:var(--bad)}
+.gauge .target{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--fg);opacity:.6}

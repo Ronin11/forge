@@ -377,22 +377,22 @@ func seedFacts(f *fixture) (a1, a2, a3 *store.Attempt) {
 	_, _, a2 = f.attempt(model.AutonomyAuto, "s2")
 	_, _, a3 = f.attempt(model.AutonomyAuto, "s3")
 	base := f.now
-	row := func(a *store.Attempt, st model.State, total, agent, in, out int64, cost *float64, pass *bool, age time.Duration) *store.AttemptFacts {
+	row := func(a *store.Attempt, st model.State, total, agent, in, out int64, cost *float64, pass, isErr *bool, reason model.FailureReason, age time.Duration) *store.AttemptFacts {
 		return &store.AttemptFacts{AttemptID: a.ID, TargetID: a.TargetID, WorkID: "", Routine: "inventory", Generation: 1, Project: "default",
 			Repository: "equitizr", Worker: workerID, Executor: "claude-code", Model: "haiku", Mode: "run", Trigger: model.TriggerManual, Autonomy: model.AutonomyAuto,
-			Phases: map[string]*int64{"total": &total, "agent": &agent}, FinishedAt: base.Add(-age), State: st,
-			InputTokens: &in, OutputTokens: &out, CostUSD: cost, VerificationPass: pass}
+			Phases: map[string]*int64{"total": &total, "agent": &agent}, FinishedAt: base.Add(-age), State: st, FailureReason: reason,
+			InputTokens: &in, OutputTokens: &out, CostUSD: cost, VerificationPass: pass, IsError: isErr}
 	}
 	cost1, cost2 := 1.0, 2.0
-	passed, failedV := true, false
+	passed, failedV, selfOK, selfErr := true, false, false, true
 	f.write(func(tx *store.Tx) error {
-		if err := tx.InsertFacts(ctx(), row(a1, model.Succeeded, 100, 110, 10, 1, &cost1, &passed, 3*time.Hour)); err != nil {
+		if err := tx.InsertFacts(ctx(), row(a1, model.Succeeded, 100, 110, 10, 1, &cost1, &passed, &selfOK, "", 3*time.Hour)); err != nil {
 			return err
 		}
-		if err := tx.InsertFacts(ctx(), row(a2, model.Unverified, 200, 220, 20, 2, &cost2, &failedV, 2*time.Hour)); err != nil {
+		if err := tx.InsertFacts(ctx(), row(a2, model.Unverified, 200, 220, 20, 2, &cost2, &failedV, &selfOK, "", 2*time.Hour)); err != nil {
 			return err
 		}
-		if err := tx.InsertFacts(ctx(), row(a3, model.Failed, 300, 330, 30, 3, nil, nil, time.Hour)); err != nil {
+		if err := tx.InsertFacts(ctx(), row(a3, model.Failed, 300, 330, 30, 3, nil, nil, &selfErr, model.ReasonExitNonzero, time.Hour)); err != nil {
 			return err
 		}
 		_, err := tx.InsertEvents(ctx(), a3.ID, protocol.SourceWorker, []protocol.Event{
@@ -409,25 +409,51 @@ func TestStatsPercentiles(t *testing.T) {
 	seedFacts(f)
 	att := tools.Attempt{}
 	out := f.mustCall("forge_stats", att, `{}`)
-	inv := obj(t, obj(t, out["routines"])["inventory"])
+	report := obj(t, out["report"])
+	routines := arr(t, report["routines"])
+	if len(routines) != 1 {
+		t.Fatalf("routines = %v, want the inventory rollup only", routines)
+	}
+	inv := obj(t, routines[0])
+	if inv["routine"] != "inventory" || inv["generation"] != float64(0) {
+		t.Errorf("rollup row = %v@%v", inv["routine"], inv["generation"])
+	}
 	for key, want := range map[string]float64{
-		"runs": 3, "succeeded": 1, "unverified": 1, "failed": 1, "cancelled": 0,
-		"p50_total_us": 200, "p95_total_us": 300, "max_total_us": 300, "p50_agent_us": 220,
-		"tokens_in": 60, "tokens_out": 6, "cost_usd_total": 3, "cost_per_run": 1,
+		"runs": 3, "verified_successes": 1,
+		"p50_total_us": 200, "p95_total_us": 300, "max_total_us": 300,
+		"p50_agent_us": 220, "p95_agent_us": 330, "max_agent_us": 330,
+		"tokens_in_per_run": 20, "tokens_out_per_run": 2,
+		"cost_usd_total": 3, "cost_per_run": 1.5, "cost_per_verified_success": 3,
 	} {
 		if got := inv[key]; got != want {
 			t.Errorf("%s = %v, want %v", key, got, want)
 		}
 	}
+	oc := obj(t, inv["outcomes"])
+	if oc["succeeded"] != float64(1) || oc["unverified"] != float64(1) || oc["failed"] != float64(1) {
+		t.Errorf("outcomes = %v", oc)
+	}
 	if r := num(t, inv["verified_success_rate"]); r < 0.33 || r > 0.34 {
 		t.Errorf("verified_success_rate = %v", r)
 	}
+	// is_error is recorded on all three rows — false, false, true → 2/3.
 	if r := num(t, inv["self_reported_success_rate"]); r < 0.66 || r > 0.67 {
 		t.Errorf("self_reported_success_rate = %v", r)
 	}
+	reasons := arr(t, inv["top_failure_reasons"])
+	if len(reasons) != 1 || obj(t, reasons[0])["reason"] != "exit_nonzero" {
+		t.Errorf("top_failure_reasons = %v", reasons)
+	}
+	gens := arr(t, report["generations"])
+	if len(gens) != 1 || obj(t, gens[0])["generation"] != float64(1) || obj(t, gens[0])["runs"] != float64(3) {
+		t.Errorf("generations = %v", gens)
+	}
+	if tot := report["total_runs"]; tot != float64(3) {
+		t.Errorf("total_runs = %v", tot)
+	}
 	out = f.mustCall("forge_stats", att, `{"routine":"other"}`)
-	if n := len(obj(t, out["routines"])); n != 0 {
-		t.Errorf("filtered routines = %d", n)
+	if rs := arr(t, obj(t, out["report"])["routines"]); len(rs) != 0 {
+		t.Errorf("filtered routines = %v", rs)
 	}
 	if _, err := f.call("forge_stats", att, `{"since_hours":-1}`); !tools.IsBadInput(err) {
 		t.Errorf("negative window = %v", err)
@@ -438,8 +464,14 @@ func TestRetroPack(t *testing.T) {
 	f := newFixture(t)
 	_, a2, a3 := seedFacts(f)
 	out := f.mustCall("forge_retro_pack", tools.Attempt{}, `{}`)
-	if inv := obj(t, obj(t, out["stats"])["inventory"]); inv["runs"] != float64(3) {
-		t.Errorf("stats.inventory.runs = %v", inv["runs"])
+	statsRoutines := arr(t, obj(t, out["stats"])["routines"])
+	if len(statsRoutines) != 1 || obj(t, statsRoutines[0])["runs"] != float64(3) {
+		t.Errorf("stats routines = %v", statsRoutines)
+	}
+	// The current routine settings ride along for the retro reader.
+	current := arr(t, out["routines"])
+	if len(current) != 1 || obj(t, current[0])["name"] != "inventory" || obj(t, current[0])["prompt"] != "list files" {
+		t.Errorf("routines = %v", current)
 	}
 	problems := arr(t, out["problem_attempts"])
 	if len(problems) != 2 {

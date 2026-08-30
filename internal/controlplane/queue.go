@@ -92,11 +92,17 @@ func targetStates(ts []store.Target) []model.State {
 }
 
 // Violates reports whether placing `moving` immediately before `before` would
-// put a Work above one it is blocked by (the drag-and-drop rule, enforced by the
-// API too).
+// put the moved Work above one of its own dependencies (or drag one of its
+// dependants above it). Only the moved item's edges count: a blocked Work may
+// sit anywhere in the display order — it simply does not run — so pre-existing
+// inversions elsewhere never veto an unrelated drag. One home for the API and
+// the drag UI alike.
 func Violates(order []QueueEntry, edges []model.Edge, moving, before string) bool {
 	blockedBy := map[string]map[string]bool{}
 	for _, e := range edges {
+		if e.Work != moving && e.BlockedBy != moving {
+			continue
+		}
 		if blockedBy[e.Work] == nil {
 			blockedBy[e.Work] = map[string]bool{}
 		}

@@ -5,7 +5,10 @@
 <a class="brand" href="/">Forge</a>
 <a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}>Dashboard</a>
 <a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html")}}class="active"{{end}}>Tasks</a>
+<a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}>Queue</a>
+<a href="/attention" {{if eq .Active "attention.html"}}class="active"{{end}}>Human queue</a>
 <a href="/routines" {{if eq .Active "routines.html"}}class="active"{{end}}>Routines</a>
+<a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}>Stats</a>
 <a href="/system" {{if eq .Active "system.html"}}class="active"{{end}}>System</a>
 </nav><main>{{end}}
 {{define "foot"}}</main><script src="/static/app.js"></script></body></html>{{end}}
@@ -13,3 +16,5 @@
 {{range .}}<tr data-href="/tasks/{{.Work.ID}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}</td><td><span class="state {{stateClass .State}}">{{.State}}</span></td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} <span class="state {{stateClass .State}}">{{.State}}</span></span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>
 {{else}}<tr><td colspan="7" class="empty">No tasks yet — <code>forge task add "…" --repo NAME</code></td></tr>{{end}}
 </tbody></table>{{end}}
+{{define "statsRow"}}<tr><td>{{.Routine}}{{if .Generation}}@{{.Generation}}{{end}}</td><td>{{.Runs}}</td><td>{{printf "%.0f%%" (mulf .VerifiedSuccessRate 100)}}</td><td>{{printf "%.0f%%" (mulf .SelfReportedSuccessRate 100)}}</td><td>{{dur64 .P50TotalUS}}</td><td>{{dur64 .P95TotalUS}}</td><td>{{dur64 .P50AgentUS}}</td><td>{{printf "%.0f/%.0f" .TokensInPerRun .TokensOutPerRun}}</td><td>{{printf "$%.4f" .CostPerRun}}</td><td>{{if .CostPerVerifiedSuccess}}{{printf "$%.4f" (dereff .CostPerVerifiedSuccess)}}{{else}}-{{end}}</td><td>{{printf "%.1f" .TurnsPerRun}}</td><td>{{range .TopFailureReasons}}{{.Reason}}×{{.Count}} {{end}}</td></tr>
+{{end}}

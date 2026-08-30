@@ -439,6 +439,10 @@ type workPatch struct {
 	Priority        *int         `json:"priority"`
 	AddBlockedBy    []dependency `json:"add_blocked_by"`
 	RemoveBlockedBy []string     `json:"remove_blocked_by"`
+	// MoveBefore reorders: place this Work immediately above the named one ("" =
+	// the queue's tail). The daemon refuses an order that would put a Work above
+	// one it is blocked by — the one rule for the CLI and the UI drag alike.
+	MoveBefore *string `json:"move_before"`
 }
 
 type dependency struct {
@@ -476,6 +480,12 @@ func (s *Server) patchWork(r *http.Request) (int, any, error) {
 			return 0, nil, badRequest("remove_blocked_by: %v", err)
 		}
 	}
+	if patch.MoveBefore != nil {
+		status, body, err := s.moveWork(ctx, id, *patch.MoveBefore)
+		if err != nil || patch.Priority == nil && len(patch.AddBlockedBy) == 0 && len(patch.RemoveBlockedBy) == 0 {
+			return status, body, err
+		}
+	}
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
 		if patch.Priority != nil {
 			if err := tx.SetPriority(ctx, id, *patch.Priority); err != nil {
@@ -501,6 +511,67 @@ func (s *Server) patchWork(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	s.log.InfoContext(ctx, "work patched", "work_id", id, "priority", patch.Priority != nil, "added", len(patch.AddBlockedBy), "removed", len(patch.RemoveBlockedBy))
+	return s.workDetail(ctx, id)
+}
+
+// moveWork places one Work immediately above another (or at the tail),
+// refusing an order that puts it above a dependency (queue.Violates — the same
+// rule the drag UI relies on).
+func (s *Server) moveWork(ctx context.Context, id, before string) (int, any, error) {
+	if before != "" {
+		if err := model.ValidateID(before); err != nil {
+			return 0, nil, badRequest("move_before: %v", err)
+		}
+	}
+	order, err := s.loadQueue(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	inQueue := false
+	for _, e := range order {
+		if e.Work.ID == id {
+			inQueue = true
+		}
+	}
+	if !inQueue {
+		return 0, nil, fmt.Errorf("work %s: %w", id, store.ErrNotFound)
+	}
+	edges, err := s.store.DependencyEdges(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	if before != "" && Violates(order, edges, id, before) {
+		return 0, nil, fmt.Errorf("moving %s above %s would put it before a task it is blocked by: %w", id[:8], before[:8], store.ErrConflict)
+	}
+	priority := 0
+	found := false
+	if before == "" {
+		for _, e := range order {
+			if e.Work.ID == id {
+				found = true
+			}
+			if e.Work.Priority-1 < priority || priority == 0 {
+				priority = e.Work.Priority - 1
+			}
+		}
+	} else {
+		for _, e := range order {
+			if e.Work.ID == id {
+				found = true
+			}
+			if e.Work.ID == before {
+				priority = e.Work.Priority + 1
+			}
+		}
+	}
+	if !found {
+		return 0, nil, fmt.Errorf("work %s: %w", id, store.ErrNotFound)
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error { return tx.SetPriority(ctx, id, priority) })
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "work moved", "work_id", id, "before", before, "priority", priority)
 	return s.workDetail(ctx, id)
 }
 

@@ -70,6 +70,9 @@ func TestUIPagesRender(t *testing.T) {
 		"/static/style.css":     {"nav.top"},
 		"/static/app.js":        {"data-timeline"},
 		"/tasks/does-not-exist": {"not found"},
+		"/queue":                {"Queue", "inventory run", "data-queue"},
+		"/stats?since=1d":       {"Stats", "window 1d"},
+		"/attention":            {"Human queue"},
 	} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {

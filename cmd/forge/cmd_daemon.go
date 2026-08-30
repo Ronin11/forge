@@ -161,8 +161,9 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return err
 	}
+	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
-		Store: st, Policy: controlplane.AdmitAll{}, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home,
+		Store: st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,

@@ -68,6 +68,9 @@ func commands() map[string]command {
 		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
 		"kb":          {summary: "new|resolve|backlinks|links|graph|search|check|export notes", run: runKb},
 		"prune":       {summary: "apply the retention policy to raw output and artifacts", run: runPrune},
+		"usage":       {summary: "budget windows: utilization, rates, forecast, target", run: runUsage},
+		"stats":       {summary: "per-routine outcomes, durations, tokens, cost", run: runStats},
+		"retro":       {summary: "emit the reflection data pack as JSON", run: runRetro},
 		"mcp":         {summary: "per-attempt MCP server over stdio (loaded by the agent)", run: runMCP},
 	}
 }
