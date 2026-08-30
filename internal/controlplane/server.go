@@ -22,6 +22,7 @@ import (
 	"forge/internal/model"
 	"forge/internal/protocol"
 	"forge/internal/store"
+	"forge/internal/tools"
 )
 
 // maxBodyBytes bounds every request body; the largest legitimate body is an
@@ -53,6 +54,8 @@ type Server struct {
 	gitConfig         map[string]string
 	transportOverride string
 	mux               *http.ServeMux
+	tools             *tools.Registry
+	kbDir             string
 
 	// draining refuses new claims and operator writes once set; heartbeats,
 	// events, and completions keep flowing so running attempts finish (§1.4).
@@ -81,6 +84,10 @@ type ServerOptions struct {
 	// TransportOverride forces the transport ("unix" | "tcp") instead of reading
 	// it from the connection; tests use it because httptest listens on TCP.
 	TransportOverride string
+	// Tools are the MCP tool implementations behind /api/v1/tools; nil installs
+	// tools.Defaults(). KbDir is the directory forge_kb_new writes notes into.
+	Tools *tools.Registry
+	KbDir string
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -106,10 +113,14 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if o.TransportOverride != "" && o.TransportOverride != transportUnix && o.TransportOverride != transportTCP {
 		return nil, fmt.Errorf("server: transport override %q: want unix or tcp", o.TransportOverride)
 	}
+	if o.Tools == nil {
+		o.Tools = tools.Defaults()
+	}
 	s := &Server{
 		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
+		tools: o.Tools, kbDir: o.KbDir,
 	}
 	s.routes()
 	return s, nil
@@ -137,6 +148,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/attempts/{id}/events", s.handle(s.postEvents))
 	m.HandleFunc("POST /api/v1/attempts/{id}/complete", s.handle(s.complete))
 	m.HandleFunc("PATCH /api/v1/attempts/{id}/cleanup", s.handle(s.cleanup))
+
+	m.HandleFunc("GET /api/v1/tools", s.handle(s.listTools))
+	s.kbRoutes(m)
+	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))
@@ -201,8 +216,13 @@ func (s *Server) Handler() http.Handler {
 			s.log.DebugContext(ctx, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "duration_us", time.Since(start).Microseconds(), "remote", r.RemoteAddr, "transport", transport)
 		}()
 		if transport == transportTCP && requiresToken(r.Method, r.URL.Path) && !s.tokenOK(r) {
-			writeJSON(ctx, s.log, sw, http.StatusUnauthorized, protocol.Error{Error: "token required"})
-			return
+			// Tool routes also accept the attempt's own MCP token, which only
+			// the handler can verify (the attempt id is in the query or body),
+			// so they fall through to authorizeTools (handlers_tools.go).
+			if !strings.HasPrefix(r.URL.Path, "/api/v1/tools") {
+				writeJSON(ctx, s.log, sw, http.StatusUnauthorized, protocol.Error{Error: "token required"})
+				return
+			}
 		}
 		r.Body = http.MaxBytesReader(sw, r.Body, maxBodyBytes)
 		if s.log.Enabled(ctx, logging.LevelTrace) && r.ContentLength != 0 && isJSON(r) {

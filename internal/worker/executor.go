@@ -115,7 +115,16 @@ func (e *TemplateExecutor) Command(ctx context.Context, req LaunchRequest) (*exe
 		args = append(args, render(arg, vars))
 	}
 	if e.Has(CapAllowedTools) && len(req.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(req.AllowedTools, ","))
+		// Mode definitions name Forge tools bare (forge_usage); the MCP server
+		// is registered as "forge", so Claude sees them as mcp__forge__<name>.
+		named := make([]string, len(req.AllowedTools))
+		for i, t := range req.AllowedTools {
+			if strings.HasPrefix(t, "forge_") {
+				t = "mcp__forge__" + t
+			}
+			named[i] = t
+		}
+		args = append(args, "--allowedTools", strings.Join(named, ","))
 	}
 	if e.Has(CapBuiltinTools) && req.NoBuiltins {
 		args = append(args, "--tools", "")

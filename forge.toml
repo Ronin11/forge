@@ -1,0 +1,12 @@
+# Forge's own declared checks (DESIGN.md §3): what L1 re-runs after an attempt
+# on this repository, and what forge_check reports. A fast, deterministic subset
+# of `just check` — staticcheck/errcheck download toolchains, so they stay in
+# the full gate, not in per-attempt verification.
+
+[checks]
+fmt  = ["bash", "-c", "test -z \"$(gofmt -l cmd internal)\""]
+vet  = ["go", "vet", "./..."]
+test = ["go", "test", "-race", "-count=1", "./..."]
+
+[defaults]
+base_branch = "main"

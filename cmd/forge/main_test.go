@@ -4,11 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func run(args []string, env map[string]string) (code int, stdout, stderr string) {
 	var out, errOut strings.Builder
-	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(k string) string { return env[k] }, forgeHome: "/tmp/forge-test-home"}
+	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(k string) string { return env[k] }, forgeHome: "/tmp/forge-test-home", userHome: "/tmp/forge-test-user", now: time.Now}
 	code = dispatch(context.Background(), commands(), c, args)
 	return code, out.String(), errOut.String()
 }

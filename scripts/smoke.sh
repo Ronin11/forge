@@ -166,6 +166,54 @@ print("prompt version:", db.execute("select routine, generation, model from prom
 PY
 }
 
+step11() {
+  say "11. an attempt calls forge_repo_status; the call is a span with hashes"
+  $FORGE routine list --json | grep -q '"name": "toolcall"' || run $FORGE routine add toolcall --prompt "Call the forge_repo_status MCP tool once and report its JSON output verbatim. Do nothing else." --repos equitizr --model haiku --max-turns 4 --timeout 300
+  run $FORGE routine run toolcall
+  local id; id=$(taskid)
+  echo "state: $(wait_task "$id")" | tee -a "$LOG"
+  local a; a=$(attempt_of "$id")
+  run python3 - "$FORGE_HOME/forge.sqlite3" "$a" <<'PY'
+import sqlite3, sys
+db, a = sqlite3.connect(sys.argv[1]), sys.argv[2]
+print("mcp spans:", db.execute("select seq, kind, name, attrs from events where attempt_id=? and source='mcp' order by seq", (a,)).fetchall())
+PY
+  run $FORGE task show "$id"
+  echo "$a" > .scratch/smoke-tool-attempt
+}
+
+step12() {
+  say "12. kb new / backlinks / check; a dangling link fails by name"
+  local a; a=$(cat .scratch/smoke-tool-attempt 2>/dev/null || echo 00000000000000000000000000000000)
+  run $FORGE kb new --type note --title "Smoke note" --about "attempt:$a"
+  run $FORGE kb backlinks "attempt:$a"
+  run $FORGE kb check
+  echo 'see [[does-not-exist]]' >> "$FORGE_HOME/kb/smoke-note.md"
+  run $FORGE kb check && echo "SMOKE FAIL: check passed with a dangling link" | tee -a "$LOG"
+  sed -i '/does-not-exist/d' "$FORGE_HOME/kb/smoke-note.md"
+  run $FORGE kb check
+}
+
+step13() {
+  say "13. forge_check on the Forge repo returns the just-check structure"
+  local a; a=$(cat .scratch/smoke-tool-attempt)
+  run curl -s --unix-socket "$FORGE_HOME/forge.sock" "http://forge/api/v1/tools?attempt_id=$a"
+  run python3 - "$FORGE_HOME/forge.sock" <<'PY'
+import json, http.client, socket, sys
+class C(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX); self.sock.connect(sys.argv[1])
+c = C("forge"); c.request("GET", "/api/v1/tools?attempt_id=dummy")
+print(c.getresponse().status)
+PY
+  echo "(forge_check runs inside forge mcp in the worktree; exercised by the toolcall task and unit tests — the Forge repo's declared checks land with its forge.toml)" | tee -a "$LOG"
+}
+
+step14() {
+  say "14. forge prune --dry-run reports zero deletions"
+  run $FORGE prune --dry-run
+}
+
 steps=("$@"); [ ${#steps[@]} -eq 0 ] && steps=(1 2 3 4 5 6 7 8 9 10)
 for s in "${steps[@]}"; do "step$s"; done
 echo; echo "log: $LOG"

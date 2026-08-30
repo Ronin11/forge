@@ -152,6 +152,19 @@ Newest entries at the bottom of each section. Dates are absolute.
   checkout) and adds it as `origin`. `origin/main` then exists for base
   resolution; the mirror is refreshed the same way. M9's push policy will make
   the integration branch story explicit.
+- **2026-08-30 · M2 decisions.** `forge kb check` is file-based so `just check`
+  passes offline; fact links are verified only when a daemon answers, otherwise
+  they are warnings. Duplicate note ids are structurally impossible (id must
+  equal the filename stem; stems are unique), so the check has no duplicate rule.
+  The kb CLI splits file-local subcommands (new/resolve/graph/check/export) from
+  index-backed ones (search/backlinks/links, served by the daemon). `forge mcp`
+  implements MCP by hand (line-delimited JSON-RPC; the mark3labs dependency was
+  declined — the needed surface is ~5 methods). Repository tools run inside
+  `forge mcp`; fact/kb/control tools run in the daemon behind
+  `POST /api/v1/tools/{name}`, both accepting the worker token or the attempt's
+  MCP token. Prune compresses transcripts after 7 days (mtime preserved so
+  retention still keys on age) and never touches rows. The Forge repo now
+  declares its checks in `forge.toml` (fmt/vet/test — the fast subset).
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;

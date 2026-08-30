@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"forge/internal/controlplane"
+	"forge/internal/kb"
 	"forge/internal/logging"
 	"forge/internal/store"
 	"forge/internal/worker"
@@ -164,6 +165,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		Store: st, Policy: controlplane.AdmitAll{}, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
+		KbDir:         d.cfg.KB.Path,
 		SetLogLevels: func(spec string) error {
 			levels, err := logging.ParseLevels(spec, slog.LevelInfo)
 			if err != nil {
@@ -209,6 +211,8 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second); return nil })
+	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
+	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
 	g.Go(func() error { logging.WatchSIGUSR1(d.handler, d.log, nil).Run(gctx); return nil })
 	g.Go(func() error { return d.ensureWorker(gctx, self) })
 	err = g.Wait()
@@ -464,4 +468,75 @@ func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {
 	}
 	fmt.Fprintln(c.stdout, out.Levels)
 	return 0
+}
+
+// kbReindexLoop keeps the kb index in step with the files: on start, every five
+// minutes, and whenever the API pings /api/v1/kb/reindex (the server closes over
+// the same function; the timer covers edits made outside Forge).
+func (d *daemonProcess) kbReindexLoop(ctx context.Context, st *store.Store) {
+	log := d.handler.For("daemon.kb")
+	reindex := func() {
+		notes, findings, err := kb.Scan(d.cfg.KB.Path)
+		if err != nil {
+			log.WarnContext(ctx, "kb scan", "error", err)
+			return
+		}
+		for _, f := range findings {
+			log.WarnContext(ctx, "kb note skipped", "path", f.Path, "problem", f.Problem)
+		}
+		var n int
+		err = st.Write(ctx, func(tx *store.Tx) error {
+			var werr error
+			n, werr = tx.ReindexKb(ctx, notes)
+			return werr
+		})
+		if err != nil {
+			log.WarnContext(ctx, "kb reindex", "error", err)
+			return
+		}
+		if n > 0 {
+			log.InfoContext(ctx, "kb reindexed", "notes", n, "total", len(notes))
+		}
+	}
+	reindex()
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			reindex()
+		}
+	}
+}
+
+// nightlyPrune applies the retention policy once a day; `forge prune` is the
+// manual form of the same function.
+func (d *daemonProcess) nightlyPrune(ctx context.Context, st *store.Store) {
+	log := d.handler.For("daemon.prune")
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			wcfg, err := worker.LoadConfig(filepath.Join(d.c.forgeHome, "worker.toml"))
+			if err != nil {
+				log.WarnContext(ctx, "nightly prune: worker config", "error", err)
+				continue
+			}
+			rep, err := controlplane.Prune(ctx, controlplane.PruneInput{DataDir: wcfg.DataDir, Retention: d.cfg.Retention, Now: time.Now(), Delete: true, Logger: log})
+			if err != nil {
+				log.WarnContext(ctx, "nightly prune", "error", err)
+				continue
+			}
+			if err := st.Write(ctx, func(tx *store.Tx) error {
+				return tx.Journal(ctx, "daemon.pruned", store.EntityDaemon, "daemon", rep)
+			}); err != nil {
+				log.WarnContext(ctx, "journal prune", "error", err)
+			}
+		}
+	}
 }

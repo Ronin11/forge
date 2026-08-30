@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"forge/internal/logging"
 )
@@ -36,6 +37,7 @@ type cmdContext struct {
 	getenv         func(string) string
 	forgeHome      string // ~/.forge, or $FORGE_HOME
 	userHome       string
+	now            func() time.Time
 }
 
 func main() {
@@ -48,7 +50,7 @@ func main() {
 	if forgeHome == "" {
 		forgeHome = filepath.Join(home, ".forge")
 	}
-	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome, userHome: home}
+	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome, userHome: home, now: time.Now}
 	os.Exit(dispatch(context.Background(), commands(), c, os.Args[1:]))
 }
 
@@ -64,6 +66,9 @@ func commands() map[string]command {
 		"routine":     {summary: "add|list|show|edit|run|enable|disable routines", run: runRoutine},
 		"queue":       {summary: "show the priority queue", run: runQueue},
 		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
+		"kb":          {summary: "new|resolve|backlinks|links|graph|search|check|export notes", run: runKb},
+		"prune":       {summary: "apply the retention policy to raw output and artifacts", run: runPrune},
+		"mcp":         {summary: "per-attempt MCP server over stdio (loaded by the agent)", run: runMCP},
 	}
 }
 

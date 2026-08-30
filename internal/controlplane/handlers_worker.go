@@ -155,8 +155,8 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 // §14): the worker already holds a leased Target whose attempt carries this
 // claim_request_id. The attempt row was committed by the first claim, so the
 // reader pool sees it. The mcp_token cannot be returned again — only its hash
-// is stored — so a fresh one is minted but not bound; forge mcp (M2) needs a
-// store method to rebind it.
+// is stored — so a fresh one is minted and rebound (RebindMCPToken) inside the
+// transaction, so forge mcp can present the token this response carries.
 func (s *Server) replayedClaim(ctx context.Context, tx *store.Tx, req protocol.ClaimRequest, targets []store.Target) (*protocol.Claim, error) {
 	for _, t := range targets {
 		if t.WorkerID != req.WorkerID || !model.Leased(t.State) {
@@ -175,6 +175,9 @@ func (s *Server) replayedClaim(ctx context.Context, tx *store.Tx, req protocol.C
 		}
 		token, err := newToken()
 		if err != nil {
+			return nil, err
+		}
+		if err := tx.RebindMCPToken(ctx, a.ID, token); err != nil {
 			return nil, err
 		}
 		s.log.InfoContext(ctx, "claim replayed", "attempt_id", a.ID, "target_id", t.ID, "worker_id", req.WorkerID)
