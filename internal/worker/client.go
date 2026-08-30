@@ -89,6 +89,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (err 
 			err = fmt.Errorf("close response body: %w", cerr)
 		}
 	}()
+	if resp.StatusCode == http.StatusNoContent {
+		// An empty answer (no claimable work); there is no body to decode.
+		return nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var e protocol.Error
 		msg, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))

@@ -54,6 +54,11 @@ var errMismatch = errors.New("version mismatch")
 // succeeded (or the mismatch line was printed).
 func (cl *cliClient) connect(ctx context.Context) error {
 	home := cl.c.forgeHome
+	// The home must exist before the lock file can (a fresh box); bootstrap
+	// proper runs in the daemon.
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", home, err)
+	}
 	if err := cl.tryHandshake(ctx, 2*time.Second); err == nil {
 		return nil
 	} else if errors.Is(err, errMismatch) {

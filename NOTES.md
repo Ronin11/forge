@@ -145,6 +145,13 @@ Newest entries at the bottom of each section. Dates are absolute.
   subagents left three real bugs that tests caught: a five-goroutine WaitGroup
   counted as four, a verify closure that captured `req` before `git_inspect` filled
   it, and a resume that never bumped `launches`.
+- **2026-08-30 · The Forge repo's origin is a local bare mirror.** Repositories
+  require an `origin`, and the spec forbids pushing anywhere — so `forge init`
+  logic (M1: done by hand, recorded here) creates `~/.forge/mirrors/forge.git`
+  with `git clone --bare` (a fetch into the mirror, never a push from the
+  checkout) and adds it as `origin`. `origin/main` then exists for base
+  resolution; the mirror is refreshed the same way. M9's push policy will make
+  the integration branch story explicit.
 - **Third-party modules** (why): `modernc.org/sqlite` — SQLite without cgo so the
   binary builds anywhere Go does; `BurntSushi/toml` — the config format the spec
   fixes; `robfig/cron/v3` — cron parsing only, `Next()` is computed by Forge;
