@@ -2,3 +2,5 @@
 /forge
 /bin/
 *.sqlite3*
+/ui/node_modules/
+/ui/test-results/
