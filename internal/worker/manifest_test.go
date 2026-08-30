@@ -85,34 +85,40 @@ func TestManifestLoadRefusesTampering(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	try := func(err error) {
+		t.Helper()
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
 	cases := []struct {
 		name   string
 		mutate func()
 		want   string
 	}{
-		{"world readable", func() { _ = os.Chmod(path, 0o644) }, "group or other access"},
+		{"world readable", func() { try(os.Chmod(path, 0o644)) }, "group or other access"},
 		{"unknown field", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), `"kind"`, `"bogus":1,"kind"`, 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), `"kind"`, `"bogus":1,"kind"`, 1)), 0o600))
 		}, "unknown"},
-		{"trailing json", func() { _ = os.WriteFile(path, append(append([]byte{}, original...), []byte("{}")...), 0o600) }, "trailing"},
+		{"trailing json", func() { try(os.WriteFile(path, append(append([]byte{}, original...), []byte("{}")...), 0o600)) }, "trailing"},
 		{"wrong worker", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), testWorkerID, strings.Repeat("f", 32), 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), testWorkerID, strings.Repeat("f", 32), 1)), 0o600))
 		}, "different worker"},
 		{"wrong worktree path", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), "/worktrees/", "/elsewhere/", 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), "/worktrees/", "/elsewhere/", 1)), 0o600))
 		}, "owned path"},
 		{"wrong branch", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), "forge/inventory-", "forge/other-", 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), "forge/inventory-", "forge/other-", 1)), 0o600))
 		}, "derived name"},
 		{"partial identity", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), `"process_active"`, `"pid":5,"process_active"`, 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), `"process_active"`, `"pid":5,"process_active"`, 1)), 0o600))
 		}, "partial"},
 		{"foreign schema", func() {
-			_ = os.WriteFile(path, []byte(strings.Replace(string(original), `"schema_version": 1`, `"schema_version": 9`, 1)), 0o600)
+			try(os.WriteFile(path, []byte(strings.Replace(string(original), `"schema_version": 1`, `"schema_version": 9`, 1)), 0o600))
 		}, "schema version"},
 		{"symlink", func() {
-			_ = os.Rename(path, path+".real")
-			_ = os.Symlink(path+".real", path)
+			try(os.Rename(path, path+".real"))
+			try(os.Symlink(path+".real", path))
 		}, "symlink"},
 	}
 	for _, c := range cases {
@@ -121,8 +127,8 @@ func TestManifestLoadRefusesTampering(t *testing.T) {
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(c.want)) {
 			t.Errorf("%s: err = %v, want it to mention %q", c.name, err, c.want)
 		}
-		_ = os.Remove(path)
-		_ = os.Remove(path + ".real")
+		try(os.Remove(path))
+		try(os.Remove(path + ".real"))
 		restore()
 	}
 	if _, err := s.Load(m.AttemptID); err != nil {
@@ -193,11 +199,9 @@ func TestNewManifestStoreRefusesSymlinkedDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(real, "attempts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(base, "link")
 	if err := os.Symlink(filepath.Join(real, "attempts"), filepath.Join(base, "attempts")); err != nil {
 		t.Fatal(err)
 	}
-	_ = link
 	if _, err := NewManifestStore(base, testWorkerID, time.Now); err == nil {
 		t.Error("symlinked attempts dir accepted")
 	}

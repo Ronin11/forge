@@ -261,18 +261,16 @@ func Launch(ctx context.Context, spec LaunchSpec) (p *Process, err error) {
 	if childEnds != nil {
 		// The process is already running; reap it so the failure does not
 		// leave an orphan, then report.
-		_ = KillGroup(cmd.Process.Pid, 0, 0)
-		_ = cmd.Wait()
-		return nil, errors.Join(fmt.Errorf("launch: close child pipe ends: %w", childEnds), p.closeParentEnds(), mirror.close())
+		reap := errors.Join(signalGroup(cmd.Process.Pid, syscall.SIGKILL), cmd.Wait())
+		return nil, errors.Join(fmt.Errorf("launch: close child pipe ends: %w", childEnds), reap, p.closeParentEnds(), mirror.close())
 	}
 	p.pid = cmd.Process.Pid
 	p.start, err = ProcessStart(p.pid)
 	if err != nil {
 		// Identity is what lets everything later be verified; without it the
 		// process is unusable and must not survive.
-		_ = signalGroup(p.pid, syscall.SIGKILL)
-		_ = cmd.Wait()
-		return nil, errors.Join(fmt.Errorf("launch: record identity: %w", err), p.closeParentEnds(), mirror.close())
+		reap := errors.Join(signalGroup(p.pid, syscall.SIGKILL), cmd.Wait())
+		return nil, errors.Join(fmt.Errorf("launch: record identity: %w", err), reap, p.closeParentEnds(), mirror.close())
 	}
 
 	p.pumps.Add(4)

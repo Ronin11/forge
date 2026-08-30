@@ -77,9 +77,8 @@ type RetentionConfig struct {
 	ArtifactDays   int `toml:"artifact_days"`
 }
 
-// DefaultConfig is what bootstrap writes.
-func DefaultConfig(home string) Config {
-	userHome, _ := os.UserHomeDir() //nolint:errcheck // a missing home only changes a default path
+// DefaultConfig is what bootstrap writes; userHome seeds the projects root.
+func DefaultConfig(home, userHome string) Config {
 	return Config{
 		HTTP:         HTTPConfig{Listen: "127.0.0.1:7340"},
 		Budget:       BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97},
@@ -93,8 +92,8 @@ func DefaultConfig(home string) Config {
 
 // LoadConfig reads config.toml, applying defaults for absent keys and refusing
 // unknown ones. A missing file is the defaults.
-func LoadConfig(path, home string, getenv func(string) string) (*Config, error) {
-	c := DefaultConfig(home)
+func LoadConfig(path, home, userHome string, getenv func(string) string) (*Config, error) {
+	c := DefaultConfig(home, userHome)
 	c.path = path
 	if _, err := os.Stat(path); err == nil {
 		meta, err := toml.DecodeFile(path, &c)
@@ -151,14 +150,14 @@ func (c *Config) Validate() error {
 }
 
 // WriteDefaultConfig writes DefaultConfig to path if absent (bootstrap).
-func WriteDefaultConfig(path, home string) (written bool, err error) {
+func WriteDefaultConfig(path, home, userHome string) (written bool, err error) {
 	if _, err := os.Stat(path); err == nil {
 		return false, nil
 	} else if !os.IsNotExist(err) {
 		return false, fmt.Errorf("stat %s: %w", path, err)
 	}
 	var b strings.Builder
-	if err := toml.NewEncoder(&b).Encode(DefaultConfig(home)); err != nil {
+	if err := toml.NewEncoder(&b).Encode(DefaultConfig(home, userHome)); err != nil {
 		return false, fmt.Errorf("encode default config: %w", err)
 	}
 	header := "# Forge daemon configuration. Written by bootstrap; edit freely.\n\n"

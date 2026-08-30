@@ -294,7 +294,8 @@ func TestFetch(t *testing.T) {
 	}
 
 	// A malformed base never reaches git.
-	if _, _, err := f.g.Fetch(ctx, f.repo, "origin/master"); err == nil {
+	if fetched, warn, err := f.g.Fetch(ctx, f.repo, "origin/master"); err == nil {
+		t.Logf("fetched=%v warn=%v", fetched, warn)
 		t.Error("Fetch accepted origin/master as a base branch")
 	}
 }

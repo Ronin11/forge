@@ -61,6 +61,43 @@ func jsonLines(t *testing.T, stdout string) []map[string]any {
 	return out
 }
 
+// obj, str, and arr read typed values out of decoded JSON, failing the test on a
+// shape mismatch instead of panicking on an unchecked assertion.
+func obj(t *testing.T, m map[string]any, key string) map[string]any {
+	t.Helper()
+	v, ok := m[key].(map[string]any)
+	if !ok {
+		t.Fatalf("%q is not an object: %v", key, m[key])
+	}
+	return v
+}
+
+func str(t *testing.T, m map[string]any, key string) string {
+	t.Helper()
+	v, ok := m[key].(string)
+	if !ok {
+		t.Fatalf("%q is not a string: %v", key, m[key])
+	}
+	return v
+}
+
+func arr(t *testing.T, m map[string]any, key string) []map[string]any {
+	t.Helper()
+	raw, ok := m[key].([]any)
+	if !ok {
+		t.Fatalf("%q is not an array: %v", key, m[key])
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, e := range raw {
+		o, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("%q element is not an object: %v", key, e)
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
 func lastResult(t *testing.T, lines []map[string]any) map[string]any {
 	t.Helper()
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -85,7 +122,7 @@ func TestFakeClaudeInventoryIgnoresRealFlags(t *testing.T) {
 	}
 	lines := jsonLines(t, stdout)
 	init := lines[0]
-	session, _ := init["session_id"].(string)
+	session := str(t, init, "session_id")
 	if init["type"] != "system" || len(session) != 36 || strings.Contains(stdout, "{{SESSION}}") {
 		t.Errorf("init = %v", init)
 	}
@@ -145,15 +182,14 @@ func TestFakeClaudeNeedsInputAndResume(t *testing.T) {
 		t.Fatalf("got %d lines, want 7", len(lines))
 	}
 	res := lastResult(t, lines)
-	so, _ := res["structured_output"].(map[string]any)
-	if so == nil || so["needs_input"] == nil {
+	if so := obj(t, res, "structured_output"); so["needs_input"] == nil {
 		t.Fatalf("no needs_input in %v", res)
 	}
 	var text map[string]any
-	if err := json.Unmarshal([]byte(res["result"].(string)), &text); err != nil || text["needs_input"] == nil {
+	if err := json.Unmarshal([]byte(str(t, res, "result")), &text); err != nil || text["needs_input"] == nil {
 		t.Errorf("result text is not the envelope: %v %v", res["result"], err)
 	}
-	session := res["session_id"].(string)
+	session := str(t, res, "session_id")
 	stdout, _, code = runForge(t, t.TempDir(), "docs/README.md", "fake-claude", "--fixture", fx, "--resume", session)
 	if code != 0 {
 		t.Fatalf("resume exit %d", code)
@@ -162,7 +198,7 @@ func TestFakeClaudeNeedsInputAndResume(t *testing.T) {
 	if lines[0]["session_id"] != session || len(lines) != 5 {
 		t.Errorf("resume: %d lines, session %v", len(lines), lines[0]["session_id"])
 	}
-	if res := lastResult(t, lines); res["session_id"] != session || res["structured_output"].(map[string]any)["needs_input"] != nil {
+	if res := lastResult(t, lines); res["session_id"] != session || obj(t, res, "structured_output")["needs_input"] != nil {
 		t.Errorf("resume result = %v", res)
 	}
 }
@@ -177,14 +213,14 @@ func TestFakeClaudeToolErrorEmitsRateLimit(t *testing.T) {
 	for _, l := range lines {
 		if l["type"] == "rate_limit_event" {
 			sawRate = true
-			info := l["rate_limit_info"].(map[string]any)["unifiedWindows"].(map[string]any)
-			if info["five_hour"].(map[string]any)["utilization"] != 0.41 {
-				t.Errorf("rate limit = %v", info)
+			windows := obj(t, obj(t, l, "rate_limit_info"), "unifiedWindows")
+			if obj(t, windows, "five_hour")["utilization"] != 0.41 {
+				t.Errorf("rate limit = %v", windows)
 			}
 		}
 		if l["type"] == "user" {
-			for _, b := range l["message"].(map[string]any)["content"].([]any) {
-				if b.(map[string]any)["is_error"] == true {
+			for _, b := range arr(t, obj(t, l, "message"), "content") {
+				if b["is_error"] == true {
 					sawErr = true
 				}
 			}

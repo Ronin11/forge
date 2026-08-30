@@ -176,8 +176,8 @@ func TestProcessIdentityAndKillGroupRefusal(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if alive, _ := ProcessAlive(cmd.Process.Pid, 1); alive {
-		t.Error("exited process reported alive")
+	if alive, err := ProcessAlive(cmd.Process.Pid, 1); alive {
+		t.Errorf("exited process reported alive (%v)", err)
 	}
 	if err := KillGroup(self, start+1, 0); err == nil {
 		t.Fatal("KillGroup accepted a wrong identity (and would have killed the test)")

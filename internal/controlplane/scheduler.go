@@ -134,11 +134,13 @@ func globsIntersect(a, b []string) bool {
 	return false
 }
 
+// matchesEither treats a malformed glob as non-matching; globs are validated
+// where they enter (task add, routine save), so this is belt and braces.
 func matchesEither(x, y string) bool {
-	if ok, _ := path.Match(x, y); ok {
+	if ok, err := path.Match(x, y); err == nil && ok {
 		return true
 	}
-	if ok, _ := path.Match(y, x); ok {
+	if ok, err := path.Match(y, x); err == nil && ok {
 		return true
 	}
 	return false

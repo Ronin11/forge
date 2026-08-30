@@ -14,7 +14,8 @@ import (
 
 // BootstrapOptions are the inputs bootstrap cannot derive itself.
 type BootstrapOptions struct {
-	Home string
+	Home     string
+	UserHome string // the operator's home, for the default projects root
 	// WriteWorkerConfig writes the default worker.toml if absent; it lives in the
 	// worker package so cmd/forge passes it in (the daemon does not import worker).
 	WriteWorkerConfig func(path string) (written bool, err error)
@@ -64,7 +65,7 @@ func Bootstrap(ctx context.Context, st *store.Store, o BootstrapOptions) (*Boots
 	} else if err != nil {
 		return nil, fmt.Errorf("stat token: %w", err)
 	}
-	if written, err := WriteDefaultConfig(filepath.Join(o.Home, "config.toml"), o.Home); err != nil {
+	if written, err := WriteDefaultConfig(filepath.Join(o.Home, "config.toml"), o.Home, o.UserHome); err != nil {
 		return nil, err
 	} else if written {
 		rep.Created = append(rep.Created, filepath.Join(o.Home, "config.toml"))
