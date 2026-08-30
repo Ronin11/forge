@@ -1,0 +1,4 @@
+/.scratch/
+/forge
+/bin/
+*.sqlite3*
