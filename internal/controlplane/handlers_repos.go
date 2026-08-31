@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"forge/internal/model"
+	"forge/internal/protocol"
 	"forge/internal/store"
 )
 
@@ -22,6 +23,10 @@ func (s *Server) repoRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/repositories/{name}", s.handle(s.getRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/archive", s.handle(s.archiveRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/restore", s.handle(s.restoreRepository))
+	m.HandleFunc("GET /api/v1/repositories/{name}/app", s.handle(s.appStatusHandler))
+	m.HandleFunc("POST /api/v1/repositories/{name}/app/start", s.handle(s.appStart))
+	m.HandleFunc("POST /api/v1/repositories/{name}/app/stop", s.handle(s.appStop))
+	m.HandleFunc("POST /api/v1/repositories/{name}/app/rebuild", s.handle(s.appRebuild))
 	m.HandleFunc("POST /api/v1/repositories/{name}/pause", s.handle(s.pauseRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/resume", s.handle(s.resumeRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/cancel-running", s.handle(s.cancelRepositoryRunning))
@@ -539,4 +544,61 @@ func (s *Server) repositoryHasActiveWork(ctx context.Context, name string) (bool
 		}
 	}
 	return false, nil
+}
+
+// appActionRepo resolves the repository (for its checkout path) shared by the
+// app lifecycle handlers; archived or unknown repositories are refused.
+func (s *Server) appActionRepo(r *http.Request) (*store.Repository, error) {
+	name, err := repoName(r)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := s.store.Repository(r.Context(), name)
+	if err != nil {
+		return nil, err
+	}
+	if repo.Archived {
+		return nil, badRequest("repository %s is archived", name)
+	}
+	return repo, nil
+}
+
+// appStatusHandler is GET /api/v1/repositories/{name}/app: the run state the
+// Repos page polls. A nil supervisor reports a stopped, unconfigured app.
+func (s *Server) appStatusHandler(r *http.Request) (int, any, error) {
+	repo, err := s.appActionRepo(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if s.appStatus == nil {
+		return http.StatusOK, protocol.AppStatus{State: "stopped"}, nil
+	}
+	st, err := s.appStatus(r.Context(), repo.Name, repo.Path)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, st, nil
+}
+
+func (s *Server) appStart(r *http.Request) (int, any, error)   { return s.appAction(r, s.startApp) }
+func (s *Server) appStop(r *http.Request) (int, any, error)    { return s.appAction(r, s.stopApp) }
+func (s *Server) appRebuild(r *http.Request) (int, any, error) { return s.appAction(r, s.rebuildApp) }
+
+// appAction runs one supervised app command and answers with the new status.
+func (s *Server) appAction(r *http.Request, fn func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)) (int, any, error) {
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	if fn == nil {
+		return 0, nil, badRequest("the app lifecycle is not available in this process")
+	}
+	repo, err := s.appActionRepo(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	st, err := fn(r.Context(), repo.Name, repo.Path)
+	if err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	return http.StatusOK, st, nil
 }

@@ -22,6 +22,7 @@ type Config struct {
 	Sandbox      SandboxConfig      `toml:"sandbox"`
 	Integration  IntegrationConfig  `toml:"integration"`
 	Repositories RepositoriesConfig `toml:"repositories"`
+	Run          RunConfig          `toml:"run"`
 	Retention    RetentionConfig    `toml:"retention"`
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Backup       BackupConfig       `toml:"backup"`
@@ -82,6 +83,13 @@ type IntegrationConfig struct {
 	MaxRebaseAttempts int `toml:"max_rebase_attempts"`
 }
 
+// RunConfig bounds the app-lifecycle supervisor (the Repos page's Start/Stop):
+// the inclusive port range the daemon leases free ports from for started apps.
+type RunConfig struct {
+	PortMin int `toml:"port_min"`
+	PortMax int `toml:"port_max"`
+}
+
 // RepositoriesConfig is where `--repo X` looks for unregistered checkouts.
 type RepositoriesConfig struct {
 	ProjectsRoot string `toml:"projects_root"`
@@ -116,6 +124,7 @@ func DefaultConfig(home, userHome string) Config {
 		Sandbox:      SandboxConfig{AllowHosts: []string{"api.anthropic.com", "statsig.anthropic.com", "proxy.golang.org", "sum.golang.org", "registry.npmjs.org"}},
 		Integration:  IntegrationConfig{MaxStackDepth: 2, MaxRebaseAttempts: 3},
 		Repositories: RepositoriesConfig{ProjectsRoot: filepath.Join(userHome, "Projects")},
+		Run:          RunConfig{PortMin: 3000, PortMax: 3099},
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 		Backup:       BackupConfig{Keep: 7},

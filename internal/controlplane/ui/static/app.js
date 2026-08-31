@@ -1292,3 +1292,56 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       }).catch(function (err) { setErr('plugin-error', 'Refused: ' + err.message); });
   });
 })();
+
+// --- Repo app lifecycle: Start/Stop/Rebuild a repo's [run] app, no agent ---
+(function () {
+  var card = document.querySelector('[data-app-card]');
+  if (!card) return;
+  var name = card.dataset.repo;
+  var base = '/api/v1/repositories/' + encodeURIComponent(name) + '/app';
+  var stateEl = card.querySelector('[data-app-state]');
+  var metaEl = card.querySelector('[data-app-meta]');
+  var controls = card.querySelector('[data-app-controls]');
+  var unconfigured = card.querySelector('[data-app-unconfigured]');
+  var openLink = card.querySelector('[data-app-open]');
+  var buttons = card.querySelectorAll('[data-app-action]');
+  var busy = false;
+
+  function render(st) {
+    stateEl.textContent = st.state;
+    stateEl.className = 'state state-' + String(st.state).replace(/_/g, '-');
+    unconfigured.hidden = st.configured;
+    controls.hidden = !st.configured;
+    var bits = [];
+    if (st.port) bits.push('port ' + st.port);
+    if (st.pid) bits.push('pid ' + st.pid);
+    if (st.hot_reload) bits.push('hot-reload');
+    if (st.message) bits.push(st.message);
+    metaEl.textContent = bits.join(' · ');
+    var running = st.state === 'running' || st.state === 'starting' || st.state === 'building';
+    card.querySelector('[data-app-action="start"]').disabled = running;
+    card.querySelector('[data-app-action="stop"]').disabled = st.state === 'stopped' || st.state === 'errored';
+    if (st.url && st.state === 'running') { openLink.hidden = false; openLink.href = st.url; } else { openLink.hidden = true; }
+  }
+  function refresh() {
+    fetch(base).then(function (r) { return r.json(); }).then(render).catch(function () {});
+  }
+  buttons.forEach(function (btn) {
+    if (!btn.dataset.appAction) return;
+    btn.addEventListener('click', function () {
+      if (busy) return;
+      busy = true;
+      var label = btn.textContent; btn.textContent = label + '…';
+      fetch(base + '/' + btn.dataset.appAction, { method: 'POST' })
+        .then(function (r) { if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || r.status); }); return r.json(); })
+        .then(render)
+        .catch(function (err) {
+          var box = document.getElementById('repo-error');
+          if (box) { box.hidden = false; box.textContent = 'Refused: ' + err.message; }
+        })
+        .then(function () { busy = false; btn.textContent = label; });
+    });
+  });
+  refresh();
+  window.setInterval(refresh, 3000); // live state while transitioning
+})();

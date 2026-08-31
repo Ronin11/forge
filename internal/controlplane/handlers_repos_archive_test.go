@@ -89,3 +89,46 @@ func TestArchiveRefusesRunningWork(t *testing.T) {
 		t.Fatalf("archive with running work = %d, want 400 (%s)", status, body)
 	}
 }
+
+// The app lifecycle endpoints: disabled by default, wired to the supervisor
+// hook, and refusing an archived repository.
+func TestRepositoryAppLifecycle(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID) // "equitizr"
+
+	// Disabled (nil hooks): actions 400; status still answers stopped.
+	for _, a := range []string{"start", "stop", "rebuild"} {
+		if status, _ := h.do(http.MethodPost, "/api/v1/repositories/equitizr/app/"+a, nil, nil, ""); status != http.StatusBadRequest {
+			t.Fatalf("app %s with nil hook = %d, want 400", a, status)
+		}
+	}
+	var st protocol.AppStatus
+	h.call(http.MethodGet, "/api/v1/repositories/equitizr/app", nil, &st, http.StatusOK)
+	if st.State != "stopped" {
+		t.Fatalf("nil-hook status = %+v", st)
+	}
+
+	// Wire fakes; every action returns the supervisor's status.
+	var seen string
+	mk := func(state string) func(context.Context, string, string) (protocol.AppStatus, error) {
+		return func(_ context.Context, name, path string) (protocol.AppStatus, error) {
+			seen = name + ":" + path
+			return protocol.AppStatus{Configured: true, State: state, Port: 3001, URL: "http://localhost:3001"}, nil
+		}
+	}
+	h.srv.startApp, h.srv.stopApp, h.srv.rebuildApp = mk("running"), mk("stopped"), mk("running")
+	h.srv.appStatus = mk("running")
+
+	h.call(http.MethodPost, "/api/v1/repositories/equitizr/app/start", nil, &st, http.StatusOK)
+	if st.State != "running" || st.Port != 3001 || seen == "" {
+		t.Fatalf("start = %+v (hook saw %q)", st, seen)
+	}
+	h.call(http.MethodPost, "/api/v1/repositories/equitizr/app/stop", nil, &st, http.StatusOK)
+	if st.State != "stopped" {
+		t.Fatalf("stop = %+v", st)
+	}
+	h.call(http.MethodGet, "/api/v1/repositories/equitizr/app", nil, &st, http.StatusOK)
+	if !st.Configured || st.State != "running" {
+		t.Fatalf("status = %+v", st)
+	}
+}

@@ -87,6 +87,12 @@ type Server struct {
 	addRepo     func(ctx context.Context, path, url, name string) (protocol.Repository, error)
 	archiveRepo func(ctx context.Context, name, path string) (originURL string, err error)
 	restoreRepo func(ctx context.Context, name, originURL string) (protocol.Repository, error)
+	// startApp/stopApp/rebuildApp/appStatus back the Repos page's app lifecycle
+	// (Start/Stop/Rebuild), supervised by the daemon; nil disables them.
+	startApp   func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	stopApp    func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	rebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	appStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -163,6 +169,12 @@ type ServerOptions struct {
 	AddRepo     func(ctx context.Context, path, url, name string) (protocol.Repository, error)
 	ArchiveRepo func(ctx context.Context, name, path string) (originURL string, err error)
 	RestoreRepo func(ctx context.Context, name, originURL string) (protocol.Repository, error)
+	// StartApp/StopApp/RebuildApp/AppStatus drive a repository's app process
+	// (Repos page Start/Stop/Rebuild); nil disables the routes.
+	StartApp   func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	StopApp    func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	RebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	AppStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -245,7 +257,9 @@ func NewServer(o ServerOptions) (*Server, error) {
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
-		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
+		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
+		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
+		closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
 	s.evalFn = o.EvalFn

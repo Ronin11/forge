@@ -383,6 +383,17 @@ test.describe('repositories', () => {
     await expect(row.locator('.state').first()).toBeVisible();
   });
 
+  test('repo page shows the app lifecycle card', async ({ page }) => {
+    seed();
+    await page.goto('/repos/demo');
+    const card = page.locator('[data-app-card]');
+    await expect(card).toBeVisible();
+    await expect(card.locator('h2')).toContainText('App');
+    // The demo repo declares no [run] section, so the card shows the hint and
+    // the controls stay hidden (the status poll resolves configured=false).
+    await expect(card.locator('[data-app-unconfigured]')).toBeVisible({ timeout: 5000 });
+  });
+
   test('repo page renders name, state, app link, and pause toggles the state', async ({ page }) => {
     await page.goto('/repos/demo');
     await expect(page.locator('h1')).toContainText('demo');

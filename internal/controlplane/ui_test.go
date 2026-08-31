@@ -90,7 +90,7 @@ func TestUIPagesRender(t *testing.T) {
 		"/system":                        {"laptop", "github.com/x/equitizr", "sandbox=ready", "data-chat-toggle", "Settings", ">General<", ">Plugins<"},
 		"/settings":                      {"Settings", "Daemon", "Logging", "data-settings-general", "data-loglevel-form", `data-action-post="/api/v1/backup"`, ">General<"},
 		"/settings/plugins":              {"Plugins", "data-plugin-install-form", "Install a plugin", "No plugins installed"},
-		"/repos/equitizr":                {"equitizr", "Location", "Pause", "Checks"},
+		"/repos/equitizr":                {"equitizr", "Location", "Pause", "Checks", "data-app-card", "data-app-action=\"start\""},
 		"/repos":                         {"Repos", "data-repo-add", `data-repo-archive="equitizr"`, "equitizr", `data-searchbar="client"`},
 		"/repos/does-not-exist":          {"not found"},
 		"/static/style.css":              {"nav.top"},

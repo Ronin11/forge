@@ -11,6 +11,16 @@
 <p id="repo-error" class="repo-error" hidden></p>
 
 <section class="cards">
+<div class="card" data-app-card data-repo="{{$r.Name}}"><h2>App <span class="state" data-app-state>—</span></h2>
+<p class="meta" data-app-meta></p>
+<p class="meta" data-app-unconfigured hidden>No <code>[run]</code> in .forge/config.toml — declare <code>start</code> (and <code>build</code>) to drive the app from here.</p>
+<div class="repo-controls" data-app-controls hidden>
+<button class="btn" data-app-action="start">Start</button>
+<button class="btn" data-app-action="stop">Stop</button>
+<button class="btn" data-app-action="rebuild">Rebuild</button>
+<a class="btn" data-app-open target="_blank" rel="noopener" hidden>Open ↗</a>
+</div>
+</div>
 <div class="card"><h2>Location</h2>
 <dl class="kv">
 <dt>Path</dt><dd><code>{{$r.Path}}</code></dd>

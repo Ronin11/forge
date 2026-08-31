@@ -342,3 +342,17 @@ type ResultClaim struct {
 	Claim    string `json:"claim"`
 	Evidence string `json:"evidence"`
 }
+
+// AppStatus is a repository's run-process state for the Repos page's
+// Start/Stop/Rebuild controls (daemon-supervised app lifecycle, no agent).
+type AppStatus struct {
+	Configured bool      `json:"configured"` // the repo declares a [run] start command
+	State      string    `json:"state"`      // stopped | building | starting | running | errored
+	Port       int       `json:"port,omitempty"`
+	PID        int       `json:"pid,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	LogPath    string    `json:"log_path,omitempty"`
+	HotReload  bool      `json:"hot_reload,omitempty"`
+	Message    string    `json:"message,omitempty"` // last status/error detail
+}

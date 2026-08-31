@@ -170,6 +170,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
+	runSup := newRunSupervisor(home, controlplaneRunConfig{portMin: d.cfg.Run.PortMin, portMax: d.cfg.Run.PortMax}, st, d.handler.For("run"), time.Now)
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve forge binary: %w", err)
@@ -225,6 +226,10 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		AddRepo:      d.addRepo,
 		ArchiveRepo:  d.archiveRepo,
 		RestoreRepo:  d.restoreRepo,
+		StartApp:     runSup.StartApp,
+		StopApp:      runSup.StopApp,
+		RebuildApp:   runSup.RebuildApp,
+		AppStatus:    runSup.AppStatus,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
@@ -263,6 +268,15 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return err
 	}
+	// Bring back apps that were running before a restart (daemon-supervised
+	// children die with the daemon; the intent file records what to relaunch).
+	go runSup.reconcile(ctx, func(name string) (string, bool) {
+		r, rerr := st.Repository(ctx, name)
+		if rerr != nil || r.Archived {
+			return "", false
+		}
+		return r.Path, true
+	})
 	ui, err := controlplane.NewUI(st, d.handler.For("controlplane.ui"), nil)
 	if err != nil {
 		return err

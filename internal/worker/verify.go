@@ -37,6 +37,24 @@ type ForgeToml struct {
 		UI bool `toml:"ui"`
 	} `toml:"verify"`
 	CheckTimeouts map[string]int `toml:"check_timeouts"`
+	// Run is the app lifecycle Forge can drive with no agent in the loop: the
+	// Repos page's Start/Stop/Rebuild just run these commands. The daemon leases
+	// a free port, injects it as PortEnv, and treats the app as up once ReadyLog
+	// appears (or ReadyTimeout elapses). See docs and RepoRun.
+	Run RepoRun `toml:"run"`
+}
+
+// RepoRun is the [run] table of .forge/config.toml.
+type RepoRun struct {
+	Build         []string          `toml:"build"` // one-off build (Rebuild runs this)
+	Start         []string          `toml:"start"` // the long-running command (a dev server)
+	Stop          []string          `toml:"stop"`  // optional graceful stop; else the group is signalled
+	HotReload     bool              `toml:"hot_reload"`
+	PortEnv       string            `toml:"port_env"`      // env var the leased port is injected as, e.g. "PORT"
+	HealthPath    string            `toml:"health_path"`   // path under the app URL for a readiness check
+	ReadyLog      string            `toml:"ready_log"`     // stdout/stderr substring that signals "up"
+	ReadyTimeoutS int               `toml:"ready_timeout"` // seconds to wait for ready before giving up (default 60)
+	Env           map[string]string `toml:"env"`           // extra environment for the app
 }
 
 // ReadForgeToml reads the repository's Forge configuration: .forge/config.toml
