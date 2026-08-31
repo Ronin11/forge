@@ -19,8 +19,13 @@ func (c *cmdContext) kbDir() string { return filepath.Join(c.forgeHome, "kb") }
 
 func runKb(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		// --help on a parent command is a request, not a mistake.
+		code := 2
+		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+			code = 0
+		}
 		fmt.Fprintln(c.stderr, "usage: forge kb new|resolve|backlinks|links|graph|search|check|export [flags]")
-		return 2
+		return code
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

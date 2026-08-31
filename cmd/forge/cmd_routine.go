@@ -17,8 +17,13 @@ import (
 
 func runRoutine(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		// --help on a parent command is a request, not a mistake.
+		code := 2
+		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+			code = 0
+		}
 		fmt.Fprintln(c.stderr, "usage: forge routine add|list|show|edit|run|enable|disable NAME [flags]")
-		return 2
+		return code
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

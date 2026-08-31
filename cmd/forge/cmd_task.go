@@ -31,8 +31,13 @@ type taskView struct {
 
 func runTask(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		// --help on a parent command is a request, not a mistake.
+		code := 2
+		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+			code = 0
+		}
 		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject [flags]")
-		return 2
+		return code
 	}
 	switch args[0] {
 	case "add":

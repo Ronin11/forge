@@ -17,6 +17,9 @@ import (
 func runWorker(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || args[0] != "start" {
 		fmt.Fprintln(c.stderr, "usage: forge worker start [--config PATH]")
+		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+			return 0
+		}
 		return 2
 	}
 	fs, lf := c.flags("worker start")
