@@ -1,0 +1,153 @@
+package doctor
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"forge/internal/store"
+)
+
+// kbStaleAfter is how old the kb index may be before it is a warn: the daemon
+// reindexes every five minutes, so three missed ticks means the loop is stuck.
+const kbStaleAfter = 15 * time.Minute
+
+// budgetStaleAfter is how old the newest rate-limit sample may be before the
+// budget policy is flying blind; samples arrive with every real attempt.
+const budgetStaleAfter = 6 * time.Hour
+
+// DaemonInput is everything the daemon-side checks decide over; the handler
+// gathers it from the store and daemon.json, keeping SQL and file formats in
+// their homes.
+type DaemonInput struct {
+	Version         string
+	SchemaVersion   string
+	StartedAt       time.Time // zero when daemon.json is unavailable
+	Now             time.Time
+	Workers         []store.Worker
+	Repositories    []store.Repository
+	KbLastIndexedAt time.Time // zero when nothing is indexed
+	RetainedCount   int       // rows in retained_worktrees
+	FiveHourSample  *store.RateLimitSample
+	SevenDaySample  *store.RateLimitSample
+}
+
+// Daemon runs every daemon-side check over one gathered input.
+func Daemon(in DaemonInput) []Check {
+	checks := []Check{daemonInfo(in), schema(in)}
+	checks = append(checks, workers(in)...)
+	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in))
+	return checks
+}
+
+func daemonInfo(in DaemonInput) Check {
+	detail := "version " + in.Version
+	if !in.StartedAt.IsZero() {
+		detail += ", up " + in.Now.Sub(in.StartedAt).Round(time.Second).String()
+	}
+	return Check{Name: "daemon", Status: StatusOK, Detail: detail}
+}
+
+func schema(in DaemonInput) Check {
+	if in.SchemaVersion == "" {
+		return Check{Name: "schema", Status: StatusWarn, Detail: "no schema version recorded"}
+	}
+	return Check{Name: "schema", Status: StatusOK, Detail: in.SchemaVersion}
+}
+
+// workers reports registration, heartbeat age, and the capabilities each
+// worker advertises (executors, browser); one row per concern so a red row
+// names exactly what is wrong.
+func workers(in DaemonInput) []Check {
+	if len(in.Workers) == 0 {
+		return []Check{{Name: "worker", Status: StatusWarn, Detail: "no worker has registered", Hint: "forge worker start (or forge service install)"}}
+	}
+	var out []Check
+	for _, w := range in.Workers {
+		age := in.Now.Sub(w.LastSeenAt).Round(time.Second)
+		if w.Connected {
+			out = append(out, Check{Name: "worker." + w.Name, Status: StatusOK, Detail: fmt.Sprintf("registered, heartbeat %s ago, %d/%d slots", age, w.Active, w.MaxConcurrent)})
+		} else {
+			out = append(out, Check{Name: "worker." + w.Name, Status: StatusWarn, Detail: fmt.Sprintf("last seen %s ago", age), Hint: "is the worker running? forge worker start"})
+		}
+		out = append(out, capabilityChecks(w)...)
+	}
+	return out
+}
+
+// capabilityChecks renders the worker's advertised capability map: executors
+// (executor:<name> → ready|missing) and the browser.
+func capabilityChecks(w store.Worker) []Check {
+	names := make([]string, 0, len(w.Capabilities))
+	for name := range w.Capabilities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []Check
+	for _, name := range names {
+		value := w.Capabilities[name]
+		switch {
+		case strings.HasPrefix(name, "executor:"):
+			c := Check{Name: w.Name + "." + name, Status: StatusOK, Detail: value}
+			if value != "ready" {
+				c.Status = StatusWarn
+				c.Hint = "install " + strings.TrimPrefix(name, "executor:") + "'s command on the worker's PATH"
+			}
+			out = append(out, c)
+		case name == "browser":
+			c := Check{Name: w.Name + ".browser", Status: StatusOK, Detail: value}
+			if value != "ready" {
+				c.Status = StatusWarn
+				c.Hint = "forge init --with-browser installs Playwright under <home>/deps"
+			}
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func repositories(in DaemonInput) Check {
+	if len(in.Repositories) == 0 {
+		return Check{Name: "repositories", Status: StatusWarn, Detail: "none registered", Hint: "forge init, or add [repositories.<name>] to worker.toml"}
+	}
+	names := make([]string, len(in.Repositories))
+	for i, r := range in.Repositories {
+		names[i] = r.Name
+	}
+	return Check{Name: "repositories", Status: StatusOK, Detail: fmt.Sprintf("%d registered: %s", len(names), strings.Join(names, ", "))}
+}
+
+func kbIndex(in DaemonInput) Check {
+	if in.KbLastIndexedAt.IsZero() {
+		return Check{Name: "kb", Status: StatusWarn, Detail: "nothing indexed yet", Hint: "forge kb new writes the first note; the daemon indexes every 5 minutes"}
+	}
+	age := in.Now.Sub(in.KbLastIndexedAt).Round(time.Second)
+	if age > kbStaleAfter {
+		return Check{Name: "kb", Status: StatusWarn, Detail: fmt.Sprintf("index last updated %s ago", age), Hint: "POST /api/v1/kb/reindex, or check the daemon log's daemon.kb component"}
+	}
+	return Check{Name: "kb", Status: StatusOK, Detail: fmt.Sprintf("index updated %s ago", age)}
+}
+
+func worktrees(in DaemonInput) Check {
+	if in.RetainedCount == 0 {
+		return Check{Name: "worktrees", Status: StatusOK, Detail: "none retained"}
+	}
+	return Check{Name: "worktrees", Status: StatusWarn, Detail: fmt.Sprintf("%d retained", in.RetainedCount), Hint: "forge cleanup ATTEMPT_ID --confirm removes one after review"}
+}
+
+func budget(in DaemonInput) Check {
+	newest := in.FiveHourSample
+	if newest == nil || (in.SevenDaySample != nil && in.SevenDaySample.Time.After(newest.Time)) {
+		newest = in.SevenDaySample
+	}
+	if newest == nil {
+		return Check{Name: "budget", Status: StatusWarn, Detail: "no rate-limit samples yet", Hint: "samples arrive with the first real attempt; the policy admits conservatively until then"}
+	}
+	age := in.Now.Sub(newest.Time).Round(time.Second)
+	detail := fmt.Sprintf("%s window at %.0f%%, sampled %s ago", newest.Window, newest.Utilization*100, age)
+	if age > budgetStaleAfter {
+		return Check{Name: "budget", Status: StatusWarn, Detail: detail, Hint: "no recent samples; the budget policy is deciding on stale data"}
+	}
+	return Check{Name: "budget", Status: StatusOK, Detail: detail}
+}

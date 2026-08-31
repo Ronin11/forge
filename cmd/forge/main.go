@@ -33,6 +33,7 @@ type command struct {
 // cmdContext is what a subcommand gets from main: streams, environment, the Forge
 // home directory, and the means to build its logger once its flags are parsed.
 type cmdContext struct {
+	stdin          io.Reader // prompts (forge init); nil takes every default
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	forgeHome      string // ~/.forge, or $FORGE_HOME
@@ -50,7 +51,7 @@ func main() {
 	if forgeHome == "" {
 		forgeHome = filepath.Join(home, ".forge")
 	}
-	c := &cmdContext{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome, userHome: home, now: time.Now}
+	c := &cmdContext{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, forgeHome: forgeHome, userHome: home, now: time.Now}
 	os.Exit(dispatch(context.Background(), commands(), c, os.Args[1:]))
 }
 
@@ -59,6 +60,9 @@ func main() {
 func commands() map[string]command {
 	return map[string]command{
 		"version":     {summary: "print the build version", run: runVersion},
+		"init":        {summary: "interactive setup: binaries, repositories, kb path, service, browser", run: runInit},
+		"doctor":      {summary: "health checks with fix hints; exit 1 if anything failed", run: runDoctor},
+		"service":     {summary: "install|uninstall|status of the systemd user units", run: runService},
 		"fake-claude": {summary: "replay a recorded stream-json fixture (test executor)", run: runFakeClaude},
 		"daemon":      {summary: "start|stop|restart|status|logs|log-level", run: runDaemon},
 		"worker":      {summary: "start the worker process", run: runWorker},

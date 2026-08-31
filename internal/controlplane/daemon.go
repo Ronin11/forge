@@ -23,6 +23,33 @@ const (
 	DBFile     = "forge.sqlite3"
 )
 
+// Environment keys of the drain restart (DESIGN.md §1.4): the exec'd image
+// adopts the listener descriptors these name instead of binding fresh ones,
+// and journals daemon.restarted instead of daemon.started. The lock keeps
+// travelling by the --lock-fd flag, the same convention the auto-start spawn
+// uses.
+const (
+	EnvSockFD    = "FORGE_SOCK_FD"
+	EnvHTTPFD    = "FORGE_HTTP_FD"
+	EnvRestarted = "FORGE_RESTARTED"
+)
+
+// ListenerFromFD adopts a listening descriptor inherited across §1.4's exec.
+// The inherited fd is closed after adoption (FileListener dups it), so
+// repeated restarts never accumulate descriptors. For a unix listener the
+// socket file is left exactly as it is — unlinking it would cut off clients.
+func ListenerFromFD(fd uintptr, name string) (net.Listener, error) {
+	f := os.NewFile(fd, name)
+	l, err := net.FileListener(f)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("adopt listener %s (fd %d): %w", name, fd, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return nil, errors.Join(fmt.Errorf("close inherited fd %d: %w", fd, err), l.Close())
+	}
+	return l, nil
+}
+
 // DaemonState is <home>/daemon.json. Liveness is never inferred from it alone;
 // the lock and pid identity decide (DESIGN.md §1.1).
 type DaemonState struct {

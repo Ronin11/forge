@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -176,8 +178,22 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 	}
 	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
+	unixL, tcpL, err := d.listeners(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Serve already closed both on the normal path; only the error paths
+		// between here and Serve still hold them open.
+		for _, l := range []net.Listener{unixL, tcpL} {
+			if cerr := l.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+				err = errors.Join(err, cerr)
+			}
+		}
+	}()
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
-		Store: st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
+		ExecRestart: func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
+		Store:       st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,
@@ -200,14 +216,6 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		return err
 	}
 	srv.MountUI(ui)
-	unixL, err := controlplane.ListenSocket(home)
-	if err != nil {
-		return err
-	}
-	tcpL, err := controlplane.ListenTCP(ctx, d.cfg.HTTP.Listen)
-	if err != nil {
-		return errors.Join(err, unixL.Close())
-	}
 	pid := os.Getpid()
 	pidStart, err := controlplane.ProcStart(pid)
 	if err != nil {
@@ -217,12 +225,19 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err := controlplane.WriteState(home, d.state); err != nil {
 		return err
 	}
+	// After §1.4's exec the image is new but the process is the same; the
+	// journal says so, and daemon.json (written running above) replaces the
+	// draining state the old image left behind.
+	journalKind := "daemon.started"
+	if d.c.getenv(controlplane.EnvRestarted) == "1" {
+		journalKind = "daemon.restarted"
+	}
 	if err := st.Write(ctx, func(tx *store.Tx) error {
-		return tx.Journal(ctx, "daemon.started", store.EntityDaemon, "daemon", map[string]any{"pid": pid, "version": version, "created": len(report.Created)})
+		return tx.Journal(ctx, journalKind, store.EntityDaemon, "daemon", map[string]any{"pid": pid, "version": version, "created": len(report.Created)})
 	}); err != nil {
 		return err
 	}
-	d.log.InfoContext(ctx, "daemon started", "pid", pid, "version", version, "socket", d.state.Socket, "http", d.cfg.HTTP.Listen, "log_file", filepath.Join(opts(d).File.Dir, "daemon.log"))
+	d.log.InfoContext(ctx, "daemon started", "pid", pid, "version", version, "restarted", journalKind == "daemon.restarted", "socket", d.state.Socket, "http", d.cfg.HTTP.Listen, "log_file", filepath.Join(opts(d).File.Dir, "daemon.log"))
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
@@ -382,32 +397,6 @@ func runDaemonStop(ctx context.Context, c *cmdContext, args []string) int {
 	return 0
 }
 
-func runDaemonRestart(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon restart")
-	if code := c.parse(fs, args); code >= 0 {
-		return code
-	}
-	_, log, code := c.resolveLogging(lf, "cli.daemon")
-	if code >= 0 {
-		return code
-	}
-	// M1: stop then start; the draining exec arrives in M6.
-	if code := runDaemonStop(ctx, c, nil); code != 0 {
-		return code
-	}
-	cl := c.client(log)
-	cl.tolerateMismatch = true
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("daemon restart", err)
-	}
-	st, err := controlplane.ReadState(c.forgeHome)
-	if err != nil || st == nil {
-		return c.fail("daemon restart", fmt.Errorf("daemon.json missing after restart"))
-	}
-	fmt.Fprintf(c.stdout, "daemon restarted (pid %d)\n", st.PID)
-	return 0
-}
-
 func runDaemonStatus(ctx context.Context, c *cmdContext, args []string) int {
 	fs, lf := c.flags("daemon status")
 	asJSON := fs.Bool("json", false, "print daemon.json")
@@ -456,6 +445,7 @@ func runDaemonStatus(ctx context.Context, c *cmdContext, args []string) int {
 func runDaemonLogs(ctx context.Context, c *cmdContext, args []string) int {
 	fs, lf := c.flags("daemon logs")
 	n := fs.Int("n", 50, "lines to show")
+	follow := fs.Bool("f", false, "keep printing as the daemon logs (Ctrl-C exits)")
 	if code := c.parse(fs, args); code >= 0 {
 		return code
 	}
@@ -474,7 +464,57 @@ func runDaemonLogs(ctx context.Context, c *cmdContext, args []string) int {
 	for _, l := range lines {
 		fmt.Fprintln(c.stdout, l)
 	}
+	if !*follow {
+		return 0
+	}
+	if err := tailFile(ctx, c.stdout, path, int64(len(data))); err != nil {
+		return c.fail("daemon logs", err)
+	}
 	return 0
+}
+
+// tailFile follows path from offset, polling its size every 500 ms and copying
+// what appeared; a shrink (rotation) restarts from the top of the new file.
+// It returns nil when ctx ends — Ctrl-C is how the human leaves.
+func tailFile(ctx context.Context, out io.Writer, path string, offset int64) error {
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if fi.Size() < offset {
+			offset = 0
+		}
+		if fi.Size() == offset {
+			continue
+		}
+		n, err := copyFrom(out, path, offset)
+		offset += n
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// copyFrom copies path's bytes from offset to out and reports how many.
+func copyFrom(out io.Writer, path string, offset int64) (n int64, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("seek %s: %w", path, err)
+	}
+	n, err = io.Copy(out, f)
+	return n, err
 }
 
 func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {

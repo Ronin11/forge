@@ -140,14 +140,32 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 		return nil, err
 	}
 	order := Order(QueueInput{Work: work, Targets: groupTargets(targets), Edges: edges, Deferred: s.deferred, FinishedStates: finished})
-	// Path leases (M9) and capability requirements are not read yet; Pick's
-	// inputs for them stay nil so the rule's home is ready when they arrive.
-	pick := Pick(PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active})
+	// Path leases (M9) are not read yet; Pick's input for them stays nil so
+	// the rule's home is ready when they arrive.
+	pick := Pick(PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active, Requirements: workRequirements})
 	if pick.Target == nil {
 		s.log.DebugContext(ctx, "nothing to claim", "worker_id", req.WorkerID, "open_work", len(work), "skipped", SortedSkips(pick.Skipped))
 		return nil, nil
 	}
 	return s.claimTarget(ctx, tx, req, *pick.Work, *pick.Target)
+}
+
+// workRequirements is the capability-routing rule at the claim site: a verify
+// Work whose subject needs L2 UI verification runs only on a worker whose
+// browser capability is ready. Everything else needs nothing extra (M8 adds
+// sandbox, M10 runners, through the same seam).
+func workRequirements(w store.Work) []string {
+	snap, err := snapshotRoutine(w)
+	if err != nil {
+		return nil
+	}
+	if snap.Mode != "verify" {
+		return nil
+	}
+	if vo := verifyOfFromSnapshot(w.Snapshot); vo != nil && vo.UI {
+		return []string{"browser"}
+	}
+	return nil
 }
 
 // replayedClaim answers a retried claim whose first response was lost (DESIGN.md

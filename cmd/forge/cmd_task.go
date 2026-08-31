@@ -29,7 +29,7 @@ type taskView struct {
 
 func runTask(ctx context.Context, c *cmdContext, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|cancel|answer|approve|reject [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -39,6 +39,8 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		return runTaskList(ctx, c, args[1:])
 	case "show":
 		return runTaskShow(ctx, c, args[1:])
+	case "logs":
+		return runTaskLogs(ctx, c, args[1:])
 	case "cancel":
 		return runTaskCancel(ctx, c, args[1:])
 	case "answer":
@@ -108,34 +110,54 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	return waitForTask(ctx, c, cl, out.Work.ID)
 }
 
-// waitForTask polls until the task is terminal (SSE arrives in M6).
+// waitForTask follows the task's SSE stream until it reaches a state that
+// maps to an exit code. Terminal states arrive as the stream's end event;
+// waiting_human and conflict pause the Work without ending it, so every
+// journal row triggers one state read. The stream reconnects across a daemon
+// drain-restart (DESIGN.md §1.4).
 func waitForTask(ctx context.Context, c *cmdContext, cl *cliClient, id string) int {
 	last := model.WorkState("")
-	for {
+	exit := -1
+	report := func(state model.WorkState) bool {
+		if state == "" {
+			return false
+		}
+		if state != last {
+			fmt.Fprintf(c.stderr, "task %s: %s\n", short(id), state)
+			last = state
+		}
+		switch state {
+		case model.WorkSucceeded, model.WorkMerged:
+			exit = 0
+		case model.WorkFailed, model.WorkPartial, model.WorkCancelled:
+			exit = 1
+		case model.WorkUnverified:
+			exit = 3
+		case model.WorkWaitingHuman, model.WorkConflict:
+			exit = 4
+		default:
+			return false
+		}
+		return true
+	}
+	hooks := streamHooks{onJournal: func(store.JournalEntry) bool {
 		var v taskView
 		if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-			return c.fail("task add --wait", err)
+			return false // transient (a restart in flight); the stream carries on
 		}
-		if v.State != last {
-			fmt.Fprintf(c.stderr, "task %s: %s\n", short(id), v.State)
-			last = v.State
-		}
-		switch v.State {
-		case model.WorkSucceeded, model.WorkMerged:
-			return 0
-		case model.WorkFailed, model.WorkPartial, model.WorkCancelled:
-			return 1
-		case model.WorkUnverified:
-			return 3
-		case model.WorkWaitingHuman, model.WorkConflict:
-			return 4
-		}
-		select {
-		case <-ctx.Done():
-			return 1
-		case <-time.After(2 * time.Second):
-		}
+		return report(v.State)
+	}}
+	state, err := followWork(ctx, cl, id, true, hooks)
+	if exit >= 0 {
+		return exit
 	}
+	if err != nil {
+		return c.fail("task add --wait", err)
+	}
+	if report(state) {
+		return exit
+	}
+	return c.fail("task add --wait", fmt.Errorf("stream ended in state %q", state))
 }
 
 func runTaskList(ctx context.Context, c *cmdContext, args []string) int {

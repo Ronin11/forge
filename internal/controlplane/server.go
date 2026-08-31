@@ -62,6 +62,19 @@ type Server struct {
 	// draining refuses new claims and operator writes once set; heartbeats,
 	// events, and completions keep flowing so running attempts finish (§1.4).
 	draining atomic.Bool
+	// inflight counts requests inside handle; the drain's exec waits for it to
+	// reach zero so no response is cut off mid-write. SSE streams are not
+	// counted — the drain flag closes them instead (§1.4).
+	inflight atomic.Int64
+	// execRestart replaces this process with a new binary once the drain is
+	// idle; nil in processes that cannot (tests, or a server without listeners).
+	execRestart func(execPath string) error
+	// closed is closed by Serve on shutdown so long-lived streams end with a
+	// retry hint instead of holding Shutdown for the whole grace period.
+	closed    chan struct{}
+	closeOnce sync.Once
+	// streamInterval is the SSE endpoints' store poll cadence.
+	streamInterval time.Duration
 }
 
 // ServerOptions are the inputs the server cannot derive itself.
@@ -93,6 +106,13 @@ type ServerOptions struct {
 	// Modes is the mode registry (M4); nil means only the built-in "run"
 	// behaviour (RequiredLevel, envelope schema) until cmd/forge wires it.
 	Modes *modes.Registry
+	// ExecRestart execs the given binary in place of this process with the
+	// lock and listener descriptors inherited (DESIGN.md §1.4); nil disables
+	// the drain body's exec form.
+	ExecRestart func(execPath string) error
+	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
+	// Tests shorten it.
+	StreamInterval time.Duration
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -126,6 +146,10 @@ func NewServer(o ServerOptions) (*Server, error) {
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
+		execRestart: o.ExecRestart, closed: make(chan struct{}), streamInterval: o.StreamInterval,
+	}
+	if s.streamInterval <= 0 {
+		s.streamInterval = time.Second
 	}
 	s.routes()
 	return s, nil
@@ -194,6 +218,8 @@ type handlerFunc func(r *http.Request) (status int, body any, err error)
 // one home (fail) and no handler touches the ResponseWriter.
 func (s *Server) handle(fn handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		s.inflight.Add(1)
+		defer s.inflight.Add(-1)
 		status, body, err := fn(r)
 		switch {
 		case err != nil:
@@ -323,6 +349,10 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Unwrap lets http.NewResponseController reach the real writer, so the SSE
+// handlers can flush through the middleware.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // Serve runs the handler on both listeners until ctx is done, then shuts both
 // down with shutdownGrace for in-flight requests. It returns nil on ctx
 // cancellation and the first listener error otherwise. Either listener may be
@@ -364,6 +394,7 @@ func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
 	case <-ctx.Done():
 	case err = <-errs:
 	}
+	s.closeStreams()
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
 	for _, srv := range servers {
@@ -374,6 +405,10 @@ func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
 	wg.Wait()
 	return err
 }
+
+// closeStreams tells long-lived SSE handlers to end (with a retry hint) so
+// Shutdown is not held open for the whole grace period by a healthy stream.
+func (s *Server) closeStreams() { s.closeOnce.Do(func() { close(s.closed) }) }
 
 // SetDraining flips the drain flag: claims and operator writes answer 503
 // while it is on; the worker's heartbeat, events, complete, and cleanup keep
@@ -519,35 +554,6 @@ func (s *Server) setLogLevel(r *http.Request) (int, any, error) {
 	}
 	s.log.InfoContext(r.Context(), "log levels changed", "levels", body.Levels)
 	return http.StatusOK, logLevelBody{Levels: s.currentLogLevels()}, nil
-}
-
-func (s *Server) drain(r *http.Request) (int, any, error) {
-	ctx := r.Context()
-	s.SetDraining(true)
-	err := s.store.Write(ctx, func(tx *store.Tx) error {
-		return tx.Journal(ctx, "daemon.draining", store.EntityDaemon, "daemon", map[string]string{"actor": "human"})
-	})
-	if err != nil {
-		return 0, nil, err
-	}
-	if s.home != "" {
-		if err := s.markStateDraining(); err != nil {
-			s.log.WarnContext(ctx, "update daemon.json", "error", err)
-		}
-	}
-	s.log.InfoContext(ctx, "draining")
-	return http.StatusOK, map[string]string{"state": "draining"}, nil
-}
-
-// markStateDraining rewrites daemon.json's state so `daemon status` agrees with
-// the handshake; a missing file is left missing.
-func (s *Server) markStateDraining() error {
-	st, err := ReadState(s.home)
-	if err != nil || st == nil {
-		return err
-	}
-	st.State = "draining"
-	return WriteState(s.home, *st)
 }
 
 func (s *Server) journal(r *http.Request) (int, any, error) {

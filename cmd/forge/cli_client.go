@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -250,6 +251,78 @@ func (cl *cliClient) do(ctx context.Context, method, path string, in, out any) (
 		return err
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// stream opens an SSE GET and returns the response body. Unlike do it uses no
+// client timeout: the stream lives until the Work ends or the daemon drains.
+func (cl *cliClient) stream(ctx context.Context, path string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cl.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	client := &http.Client{Transport: cl.http.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		cerr := resp.Body.Close()
+		if rerr != nil {
+			return nil, errors.Join(&worker.StatusError{Status: resp.StatusCode, Message: rerr.Error()}, cerr)
+		}
+		var e protocol.Error
+		if json.Unmarshal(msg, &e) == nil && e.Error != "" {
+			return nil, errors.Join(&worker.StatusError{Status: resp.StatusCode, Message: e.Error}, cerr)
+		}
+		return nil, errors.Join(&worker.StatusError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}, cerr)
+	}
+	return resp.Body, nil
+}
+
+// sseEvent is one parsed server-sent event.
+type sseEvent struct {
+	event string
+	id    string
+	data  string
+	retry bool
+}
+
+// readSSE reads one event (terminated by a blank line) from an SSE stream.
+// io.EOF means the server closed it; a partial event at EOF is dropped, which
+// is safe because clients resume from the last id they applied.
+func readSSE(br *bufio.Reader) (sseEvent, error) {
+	var ev sseEvent
+	var got bool
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return ev, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if got {
+				return ev, nil
+			}
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "event":
+			ev.event, got = value, true
+		case "id":
+			ev.id, got = value, true
+		case "data":
+			if ev.data != "" {
+				ev.data += "\n"
+			}
+			ev.data, got = ev.data+value, true
+		case "retry":
+			ev.retry, got = true, true
+		}
+	}
 }
 
 // fail prints one line and returns the exit code for the error kind.
