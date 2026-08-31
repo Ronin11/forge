@@ -84,6 +84,8 @@ func TestUIPagesRender(t *testing.T) {
 		"/routines":             {"inventory", "list files", "data-routine-new", `data-routine-edit="inventory"`, `data-action-post="/api/v1/routines/inventory/run"`},
 		"/workflows":            {"nightly", "scan → fix", "data-workflow-new", `data-workflow-edit="nightly"`, `data-action-post="/api/v1/workflows/nightly/run"`, `datalist id="routine-names"`, `<option value="inventory">`},
 		"/system":               {"laptop", "github.com/x/equitizr", "sandbox=ready", "data-chat-toggle"},
+		"/repos/equitizr":       {"equitizr", "Location", "Pause", "Checks"},
+		"/repos/does-not-exist": {"not found"},
 		"/static/style.css":     {"nav.top"},
 		"/static/app.js":        {"data-timeline"},
 		"/tasks/does-not-exist": {"not found"},

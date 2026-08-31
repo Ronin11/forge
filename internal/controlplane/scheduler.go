@@ -100,6 +100,12 @@ func skipReason(in PickInput, e QueueEntry, t store.Target) string {
 	if !ok || repo.WorkerID != in.Worker.ID {
 		return "repository " + t.Repository + " not advertised by this worker"
 	}
+	// A paused repository admits no new work; running attempts continue, the
+	// same posture as a budget stop (DESIGN.md §10.2). The paused flag rides on
+	// the Repository row Repositories() already returned, so no extra read.
+	if repo.Paused {
+		return "repository_paused"
+	}
 	var snapshot struct {
 		Executor string `json:"executor"`
 	}

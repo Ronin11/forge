@@ -338,6 +338,32 @@ test.describe('system', () => {
   });
 });
 
+test.describe('repositories', () => {
+  test('system page shows a repo state chip and a link to the repo page', async ({ page }) => {
+    await page.goto('/system');
+    const row = page.locator('tr', { hasText: 'github.com/x/demo' });
+    await expect(row).toBeVisible();
+    await expect(row.locator('a[href="/repos/demo"]')).toBeVisible();
+    await expect(row.locator('.state').first()).toBeVisible();
+  });
+
+  test('repo page renders name, state, app link, and pause toggles the state', async ({ page }) => {
+    await page.goto('/repos/demo');
+    await expect(page.locator('h1')).toContainText('demo');
+    await expect(page.locator('h1 .state').first()).toBeVisible();
+    // The seeded app_url renders an "Open app" link.
+    await expect(page.locator('a', { hasText: 'Open app' })).toBeVisible();
+
+    // Pause (idempotent on a retry: if already paused, the button is Resume).
+    const pauseBtn = page.locator('button[data-repo-pause="demo"]');
+    if ((await pauseBtn.count()) > 0) {
+      await pauseBtn.click(); // app.js POSTs and reloads on success
+    }
+    await expect(page.locator('h1 .state.state-paused')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('button[data-repo-resume="demo"]')).toBeVisible();
+  });
+});
+
 test.describe('proposals', () => {
   test('rows render and a decision moves the proposal to a terminal state', async ({ page }) => {
     const s = seed();
