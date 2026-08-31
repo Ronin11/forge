@@ -177,6 +177,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/daemon/drain", s.handle(s.drain))
 	s.streamRoutes(m)
 	s.doctorRoutes(m)
+	s.pluginRoutes(m)
 	m.HandleFunc("GET /api/v1/journal", s.handle(s.journal))
 
 	m.HandleFunc("POST /api/v1/worker/register", s.handle(s.register))
