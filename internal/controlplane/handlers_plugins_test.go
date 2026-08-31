@@ -383,6 +383,44 @@ func readSSEEvents(t *testing.T, r *bufio.Reader, n int) []ssePluginEvent {
 	return out
 }
 
+// An out-of-tree plugin — one under a configured plugin_dir, not <home>/plugins
+// — installs by name and its stored path points at the configured directory, so
+// the daemon starts it from there (DESIGN.md §17).
+func TestPluginInstallFromConfiguredRoot(t *testing.T) {
+	t.Parallel()
+	extRoot := t.TempDir()
+	ps := newPluginServer(t, transportUnix, func(o *ServerOptions) {
+		o.PluginRoots = []string{filepath.Join(o.Home, "plugins"), extRoot}
+	})
+	dir := filepath.Join(extRoot, "ext")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `name = "ext"
+version = "0.9.0"
+command = ["./run"]
+capabilities = ["events"]
+scopes = ["events:read"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, body := ps.do(http.MethodPost, "/api/v1/plugins/install", "", map[string]string{"name": "ext", "kind": "third_party"})
+	if status != http.StatusOK {
+		t.Fatalf("install = %d %s", status, body)
+	}
+	p, err := ps.st.GetPlugin(context.Background(), "ext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Path != dir {
+		t.Errorf("stored path = %q, want the configured root %q", p.Path, dir)
+	}
+	if p.Version != "0.9.0" || p.Kind != "third_party" {
+		t.Errorf("installed row = %+v", p)
+	}
+}
+
 func TestJournalSSECatchUpSinceAndAck(t *testing.T) {
 	t.Parallel()
 	ps := newPluginServer(t, transportUnix, nil)

@@ -321,13 +321,19 @@ func (s *Server) installPlugin(r *http.Request) (int, any, error) {
 	if s.home == "" {
 		return 0, nil, badRequest("this daemon has no home directory; plugins cannot be installed")
 	}
-	dir := filepath.Join(s.home, "plugins", body.Name)
-	m, err := plugin.Load(dir)
+	// Resolve the plugin across the discovery roots (earlier wins): the CLI has
+	// placed a first-party copy under <home>/plugins, but an out-of-tree plugin
+	// lives in a configured plugin_dir and is registered in place.
+	roots := s.pluginRoots
+	if len(roots) == 0 {
+		roots = []string{filepath.Join(s.home, "plugins")}
+	}
+	m, err := plugin.LoadFromRoots(roots, body.Name)
 	if err != nil {
 		return 0, nil, badRequest("%v", err)
 	}
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
-		return tx.InstallPlugin(ctx, store.Plugin{Name: m.Name, Version: m.Version, Kind: body.Kind, Path: dir, Scopes: m.Scopes})
+		return tx.InstallPlugin(ctx, store.Plugin{Name: m.Name, Version: m.Version, Kind: body.Kind, Path: m.Dir, Scopes: m.Scopes})
 	})
 	if err != nil {
 		return 0, nil, err

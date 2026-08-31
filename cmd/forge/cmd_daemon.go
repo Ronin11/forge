@@ -244,6 +244,9 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		PluginHealth:     sup.Health,
 		PluginStart:      startPlugin,
 		PluginStop:       func(name string) { sup.Stop(name) },
+		// The same discovery roots the supervisor used, so install resolves an
+		// out-of-tree plugin by name (warnings already logged in startPlugins).
+		PluginRoots: d.cfg.PluginRoots(home, nil),
 		SetLogLevels: func(spec string) error {
 			levels, err := logging.ParseLevels(spec, slog.LevelInfo)
 			if err != nil {
@@ -618,7 +621,6 @@ func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {
 // hook the enable handler uses to (re)start one plugin at runtime.
 func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *tools.Registry) (*plugin.Supervisor, func(name, token string) error, error) {
 	home := d.c.forgeHome
-	pluginsDir := filepath.Join(home, "plugins")
 	logsDir := filepath.Join(home, "logs", "plugins")
 	if err := os.MkdirAll(logsDir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create plugin logs dir: %w", err)
@@ -645,7 +647,13 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 		}
 		return sup.Start(ctx, spec)
 	}
-	manifests := plugin.Discover([]string{pluginsDir}, func(dir string, err error) {
+	// Discover across the built-in root and every configured plugin_dir so an
+	// out-of-tree plugin (e.g. ~/.config/forge/plugins/foo) is a first-class
+	// citizen (DESIGN.md §17). A missing configured root warns, never fails.
+	roots := d.cfg.PluginRoots(home, func(dir string, err error) {
+		log.WarnContext(ctx, "configured plugin_dir missing or unreadable; skipped", "dir", dir, "error", err)
+	})
+	manifests := plugin.Discover(roots, func(dir string, err error) {
 		log.WarnContext(ctx, "invalid plugin manifest", "dir", dir, "error", err)
 	})
 	byName := map[string]*plugin.Manifest{}
@@ -691,7 +699,9 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 		}
 	}
 	startPlugin := func(name, token string) error {
-		m, err := plugin.Load(filepath.Join(pluginsDir, name))
+		// Enable can name a plugin under any discovery root, so search them in
+		// the same order (earlier root wins) rather than assuming <home>/plugins.
+		m, err := plugin.LoadFromRoots(roots, name)
 		if err != nil {
 			return err
 		}

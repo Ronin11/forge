@@ -208,3 +208,39 @@ func TestFindRepoPluginDirFrom(t *testing.T) {
 		t.Errorf("missing plugin error = %v, want a clear line naming the path", err)
 	}
 }
+
+// TestPluginListDiscoversConfiguredDir proves an out-of-tree plugin — one that
+// lives under a plugin_dir in config.toml, outside any Forge checkout — is
+// discovered and listed as "available" by `forge plugin list`, with no change
+// to the checkout (the acceptance for out-of-tree plugins, DESIGN.md §17).
+func TestPluginListDiscoversConfiguredDir(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "forge-home")
+	mux := http.NewServeMux()
+	// The daemon knows of no installed plugins; the CLI adds discovered ones.
+	mux.HandleFunc("GET /api/v1/plugins", func(w http.ResponseWriter, _ *http.Request) { writeRow(t, w, []pluginRow{}) })
+	stubDaemon(t, home, mux)
+
+	// A plugin living entirely outside the repo.
+	outside := t.TempDir()
+	pdir := filepath.Join(outside, "foo")
+	if err := os.MkdirAll(pdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name = \"foo\"\nversion = \"0.3.0\"\ncommand = [\"./foo\"]\ncapabilities = [\"events\"]\nscopes = [\"events:read\"]\n"
+	if err := os.WriteFile(filepath.Join(pdir, "plugin.toml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// config.toml points a plugin_dir at that directory.
+	cfg := "plugin_dirs = [\"" + outside + "\"]\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, out, _ := pluginCmdContext(t, home, "")
+	if code := runPlugin(context.Background(), c, []string{"list"}); code != 0 {
+		t.Fatalf("plugin list exit = %d\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "foo") || !strings.Contains(out.String(), "available") {
+		t.Errorf("out-of-tree plugin not listed as available:\n%s", out.String())
+	}
+}

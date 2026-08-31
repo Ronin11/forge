@@ -1433,7 +1433,10 @@ with scopes, a journal stream, and MCP aggregation.
 
 A plugin is a directory — first-party under `plugins/<name>/` in the repo (embedded,
 installed with `forge plugin install <name>`), third-party under
-`<home>/plugins/<name>/` — with `plugin.toml`: `name`, `version`, `description`,
+`<home>/plugins/<name>/` or any directory listed in `config.toml`'s `plugin_dirs`
+(so a user keeps out-of-tree customizations in their own repos; `~` and relative
+paths resolve at load, earlier root wins a duplicate name, a missing root warns) —
+with `plugin.toml`: `name`, `version`, `description`,
 `command` (argv, relative to the plugin dir, any language), `capabilities ⊆
 {events, tools, intake, annotate}`, `scopes`, `restart ∈ {always, on-failure,
 never}`.

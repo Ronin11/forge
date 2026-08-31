@@ -16,6 +16,25 @@ just build
 forge daemon
 ```
 
+## Plugins
+
+Integrations — bars, notifiers, GitHub intake, extra MCP tools — live outside the
+core as separate programs that speak Forge's wire contract over its Unix socket.
+Repo-embedded plugins install with `forge plugin install <name>`.
+
+Your own customizations stay in your own directories: list them under
+`plugin_dirs` in `~/.forge/config.toml` and the daemon discovers, starts, and
+lists them with no change to a Forge checkout.
+
+```toml
+# ~/.forge/config.toml
+plugin_dirs = ["~/.config/forge/plugins"]
+```
+
+See [PLUGINS.md](docs/PLUGINS.md) for the wire contract (the public plugin API)
+and the out-of-tree workflow. Plugins consume the contract and never import
+Forge's Go packages.
+
 ## Documentation
 
 - [DESIGN.md](docs/DESIGN.md) — Architecture and system design

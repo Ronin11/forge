@@ -33,6 +33,14 @@ type Config struct {
 	Models  map[string]ModelConfig  `toml:"models"`
 	Routing RoutingConfig           `toml:"routing"`
 
+	// PluginDirs are extra roots the daemon discovers plugins from, besides the
+	// built-in <home>/plugins (DESIGN.md §17). They let a user keep out-of-tree
+	// plugins in their own directories (e.g. ~/.config/forge/plugins) with no
+	// change to a Forge checkout. Each entry is resolved at load: ~ expands to
+	// the user's home and a relative path resolves against config.toml's own
+	// directory, so what the daemon discovers does not depend on its cwd.
+	PluginDirs []string `toml:"plugin_dirs"`
+
 	path string
 }
 
@@ -139,11 +147,54 @@ func LoadConfig(path, home, userHome string, getenv func(string) string) (*Confi
 	if v := getenv("FORGE_HTTP"); v != "" {
 		c.HTTP.Listen = v
 	}
+	base := filepath.Dir(path)
+	for i, d := range c.PluginDirs {
+		c.PluginDirs[i] = expandPath(d, base, userHome)
+	}
 	c.applyModelDefaults(meta)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// expandPath resolves ~ to userHome and a relative path against base, yielding
+// a clean absolute path. Used for plugin_dirs so discovery is independent of
+// the daemon's working directory.
+func expandPath(p, base, userHome string) string {
+	if p == "" {
+		return p
+	}
+	switch {
+	case p == "~":
+		p = userHome
+	case strings.HasPrefix(p, "~/"):
+		p = filepath.Join(userHome, p[2:])
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(base, p)
+	}
+	return filepath.Clean(p)
+}
+
+// PluginRoots is the ordered list of directories plugin discovery scans: the
+// built-in <home>/plugins first, then each configured plugin_dir. Order is the
+// shadowing order — an earlier root wins a duplicate name (DESIGN.md §17), so a
+// locally installed plugin takes precedence over a configured one. A configured
+// root that is missing or unreadable is reported through warn and still listed
+// (never fatal): one created after startup is picked up on the next restart.
+func (c *Config) PluginRoots(home string, warn func(dir string, err error)) []string {
+	roots := make([]string, 0, 1+len(c.PluginDirs))
+	roots = append(roots, filepath.Join(home, "plugins"))
+	for _, d := range c.PluginDirs {
+		if warn != nil {
+			if _, err := os.Stat(d); err != nil {
+				warn(d, err)
+			}
+		}
+		roots = append(roots, d)
+	}
+	return roots
 }
 
 // Validate is applied at load so a bad value never reaches a running daemon.

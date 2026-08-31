@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"forge/internal/controlplane"
 	"forge/internal/plugin"
 )
 
@@ -88,8 +90,10 @@ func runPluginList(ctx context.Context, c *cmdContext, args []string) int {
 		return c.fail("plugin list", err)
 	}
 	// Merge in discovered-but-uninstalled manifests: the repo's first-party
-	// plugins (install sources) and anything dropped under <home>/plugins.
-	roots := []string{filepath.Join(c.forgeHome, "plugins")}
+	// plugins (install sources), anything dropped under <home>/plugins, and the
+	// configured plugin_dirs — the SAME roots the daemon discovers from, so the
+	// CLI and the daemon agree on what exists (DESIGN.md §17).
+	roots := c.pluginDiscoveryRoots(ctx, log)
 	if repoRoot, err := findRepoPluginsRoot(); err == nil {
 		roots = append([]string{repoRoot}, roots...)
 	}
@@ -152,23 +156,21 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 	kind := "first_party"
 	src, err := findRepoPluginDir(name)
 	if err != nil {
-		// Third-party: the directory already sits under <home>/plugins —
-		// register it in place, no copy (M7 smoke 4).
-		local := filepath.Join(c.forgeHome, "plugins", name)
-		if _, serr := os.Stat(filepath.Join(local, "plugin.toml")); serr == nil {
-			m, lerr := plugin.Load(local)
-			if lerr != nil {
-				return c.fail("plugin install", lerr)
-			}
-			if len(m.Build) > 0 {
-				fmt.Fprintf(c.stdout, "building %s: %s\n", name, strings.Join(m.Build, " "))
-				if berr := runPluginBuild(ctx, c, local, m.Build); berr != nil {
-					return c.fail("plugin install", berr)
-				}
-			}
-			return finishPluginInstall(ctx, c, log, name, "third_party")
+		// Third-party: the directory already sits under <home>/plugins or a
+		// configured plugin_dir — register it in place, no copy (M7 smoke 4).
+		m, lerr := plugin.LoadFromRoots(c.pluginDiscoveryRoots(ctx, log), name)
+		if lerr != nil {
+			// Neither a first-party source nor a valid in-place plugin; show
+			// both reasons so the user knows which path they missed.
+			return c.fail("plugin install", errors.Join(err, lerr))
 		}
-		return c.fail("plugin install", err)
+		if len(m.Build) > 0 {
+			fmt.Fprintf(c.stdout, "building %s: %s\n", name, strings.Join(m.Build, " "))
+			if berr := runPluginBuild(ctx, c, m.Dir, m.Build); berr != nil {
+				return c.fail("plugin install", berr)
+			}
+		}
+		return finishPluginInstall(ctx, c, log, name, "third_party")
 	}
 	dst := filepath.Join(c.forgeHome, "plugins", name)
 	if _, err := os.Stat(dst); err == nil {
@@ -431,6 +433,22 @@ func runPluginStatus(ctx context.Context, c *cmdContext, args []string) int {
 		return c.fail("plugin status", err)
 	}
 	return 0
+}
+
+// pluginDiscoveryRoots is the daemon's plugin discovery roots as the CLI sees
+// them: the built-in <home>/plugins first, then the configured plugin_dirs from
+// config.toml (DESIGN.md §17), so `forge plugin` and the daemon agree on what
+// is discovered. A missing configured root is warned through log (may be nil).
+func (c *cmdContext) pluginDiscoveryRoots(ctx context.Context, log *slog.Logger) []string {
+	roots := []string{filepath.Join(c.forgeHome, "plugins")}
+	if cfg, err := controlplane.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv); err == nil {
+		roots = cfg.PluginRoots(c.forgeHome, func(dir string, err error) {
+			if log != nil {
+				log.WarnContext(ctx, "configured plugin_dir missing or unreadable; skipped", "dir", dir, "error", err)
+			}
+		})
+	}
+	return roots
 }
 
 // findRepoPluginDir resolves the first-party install source: plugins/NAME

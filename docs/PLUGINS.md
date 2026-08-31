@@ -26,6 +26,58 @@ restart = "always"                                # always | on-failure | never 
 `internal/plugin` is the one home of this contract (manifest shape, capability
 and scope vocabularies, discovery); the daemon refuses invalid manifests.
 
+### The wire contract is the public plugin API
+
+A plugin is a separate program that speaks to the daemon over a socket. **It
+consumes this wire contract and MUST NOT import Forge's Go packages** — not
+`forge/internal/plugin`, `forge/internal/protocol`, or anything else under
+`forge/`. Forge is not published as a library; an out-of-tree plugin lives in
+its own module (or no module at all — any language) and could not import those
+packages even if it wanted to. First-party plugins in this repo hold to the
+same rule so each stays a copyable template: `plugins/status-file` (the
+reference `events` plugin) and `plugins/notify` keep their own small copies of
+every view type they read, and even a first-party plugin's tests validate its
+`plugin.toml` by decoding the file (`github.com/BurntSushi/toml`) rather than
+calling `internal/plugin`.
+
+**Transport and auth.** The daemon hands each plugin exactly two things it needs
+to talk back: `FORGE_SOCKET` (the path to the Unix socket `<home>/forge.sock`)
+and `FORGE_TOKEN` (the plugin's bearer token, minted at `forge plugin enable`
+with only the declared scopes and rotated on every daemon start). A plugin dials
+the socket and sends `Authorization: Bearer <FORGE_TOKEN>` on every request; a
+request outside the token's scopes is `403` and journaled (`DESIGN.md` §1.1,
+§17). The daemon's browser UI lives on the loopback listener
+(`http://127.0.0.1:7340`), but a plugin's API calls go over the socket.
+
+**The journal stream, both transports.** An `events` plugin follows the audit
+trail at `GET /api/v1/journal?follow=1&since=<cursor>` (cursor = the last
+journal id it acknowledged). With `follow=1` the daemon streams Server-Sent
+Events, each entry framed as three lines and a blank separator:
+
+```
+event: journal
+id: <journal id>
+data: {"id":…,"ts":"…","kind":"…","entity_type":"…","entity_id":"…","payload":{…}}
+
+```
+
+Without `follow=1` the same endpoint returns a plain JSON array of those same
+entries — the polling fallback (older daemons, or a plugin that prefers to
+poll). Either way the plugin advances its cursor and persists progress with
+`POST /api/v1/plugins/<name>/ack` (`{"cursor": N}`) so a restart resumes with no
+gaps and no duplicates beyond the last ack. The entry shape — `id`, `ts`,
+`kind`, `entity_type`, `entity_id`, `payload` — is strings and small JSON; a
+plugin copies that struct (see `plugins/status-file/client.go`) and needs no
+Forge dependency to decode it.
+
+**View types plugins copy.** Every response a plugin reads (a task detail, the
+queue, attention, usage, a journal entry) is JSON. A plugin declares its own
+struct with just the fields it uses and the matching `json:` tags — its private
+copy of the slice of the contract it depends on. `plugins/status-file` is the
+reference: its `client.go` shows the copied view types and the journal reader in
+both transports; `plugins/notify` mirrors the same shapes. When the wire shape
+changes, a plugin updates its copy — it is never coupled to Forge's build.
+
 ### Capabilities
 
 - **events** — the plugin consumes the journal stream:
@@ -70,6 +122,46 @@ cannot start) and nothing else from the daemon's environment.
 
 `events:read`, `work:read`, `work:write`, `usage:read`, `kb:read`, `kb:write`,
 `proposal:read`, `tools:provide`, `annotate:write`.
+
+## Out-of-tree plugins — the documented path for customization
+
+Forge is one repository; plugins are the seam where your own customizations
+live, in your own directories, with no change to a Forge checkout. The daemon
+discovers plugins from an ordered list of roots: the built-in `<home>/plugins`
+first, then every directory you list under `plugin_dirs` in `config.toml`.
+
+```toml
+# ~/.forge/config.toml
+plugin_dirs = [
+  "~/.config/forge/plugins",   # ~ expands to your home directory
+  "team-plugins",              # relative paths resolve against config.toml's dir
+  "/opt/forge/plugins",        # absolute paths are used as-is
+]
+```
+
+Each root holds one directory per plugin (`<root>/<name>/plugin.toml`, the base
+name matching the manifest name — the same rule as a first-party plugin). Drop a
+plugin at `~/.config/forge/plugins/foo/` with a valid `plugin.toml`, list the
+directory in `plugin_dirs`, and on the next daemon start Forge discovers it,
+starts it if enabled, and `forge plugin list|status` shows it — the CLI reads
+the same `config.toml`, so it and the daemon always agree on what exists.
+
+Rules for the roots:
+
+- **Earlier root wins a duplicate name.** If two roots hold a plugin of the same
+  name, the one in the earlier root is used and the shadowed copy is logged as a
+  warning. `<home>/plugins` is first, so a locally installed plugin always shadows
+  a configured one of the same name.
+- **A missing or unreadable configured root warns, never fails.** A `plugin_dir`
+  that does not exist (yet) is logged at `warn` and skipped; the daemon starts
+  normally and picks the directory up on a later restart once it exists.
+- **Paths are resolved once, at load.** `~` expands to your home directory and a
+  relative path resolves against `config.toml`'s own directory, so what the
+  daemon discovers never depends on its working directory.
+
+Installing a repo-embedded plugin still copies it into `<home>/plugins`
+(`forge plugin install <name>`); `plugin_dirs` is for plugins you maintain
+yourself, kept wherever you keep your own code.
 
 ## First plugin: the Omarchy indicator
 

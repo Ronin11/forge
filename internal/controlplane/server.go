@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ type Server struct {
 	pluginHealth      func() []plugin.PluginHealth
 	pluginStart       func(name, token string) error
 	pluginStop        func(name string)
+	pluginRoots       []string
 
 	// draining refuses new claims and operator writes once set; heartbeats,
 	// events, and completions keep flowing so running attempts finish (§1.4).
@@ -162,6 +164,11 @@ type ServerOptions struct {
 	PluginStart func(name, token string) error
 	// PluginStop stops a disabled plugin's process; nil is a no-op.
 	PluginStop func(name string)
+	// PluginRoots is the ordered discovery roots install resolves a plugin
+	// name against (earlier root wins) — the built-in <home>/plugins plus the
+	// configured plugin_dirs (DESIGN.md §17), so an out-of-tree plugin can be
+	// installed and started. Empty falls back to just <home>/plugins.
+	PluginRoots []string
 	// ModelInfo resolves an alias to its M10 routing info (runner, class,
 	// price); nil disables routing so a claim uses the routine's single model
 	// (the M1 path). ModelAliases is the sorted alias set the router considers
@@ -218,12 +225,15 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if o.Tools == nil {
 		o.Tools = tools.Defaults()
 	}
+	if len(o.PluginRoots) == 0 && o.Home != "" {
+		o.PluginRoots = []string{filepath.Join(o.Home, "plugins")}
+	}
 	s := &Server{
 		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, modelInfo: o.ModelInfo, modelAliases: o.ModelAliases, routing: o.Routing, runnerCapacities: o.RunnerCapacities, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
-		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop,
+		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
