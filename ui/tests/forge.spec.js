@@ -567,3 +567,28 @@ test.describe('search chips', () => {
     await expect(page.locator(`tr[data-href="/tasks/${s.failed.work_id}"]`)).toBeVisible();
   });
 });
+
+test.describe('responsive', () => {
+  const sizes = [
+    { name: 'phone', w: 390, h: 844 },
+    { name: 'tablet', w: 768, h: 1024 },
+  ];
+  const pages = ['/', '/tasks?scope=all', '/queue', '/attention', '/proposals', '/kb', '/routines', '/workflows', '/stats', '/system', '/settings', '/settings/plugins'];
+  for (const sz of sizes) {
+    test(`no horizontal page overflow at ${sz.name} (${sz.w}px)`, async ({ page }) => {
+      seed();
+      await page.setViewportSize({ width: sz.w, height: sz.h });
+      for (const path of pages) {
+        await page.goto(path);
+        // The nav is present and the document does not scroll sideways: any wide
+        // content (tables) scrolls inside its own container, not the page body.
+        await expect(page.locator('nav.top')).toBeVisible();
+        const overflow = await page.evaluate(() => {
+          const el = document.scrollingElement || document.documentElement;
+          return el.scrollWidth - el.clientWidth;
+        });
+        expect(overflow, `${path} overflows by ${overflow}px at ${sz.w}px`).toBeLessThanOrEqual(1);
+      }
+    });
+  }
+});

@@ -779,6 +779,10 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       var tick = document.createElement('span');
       tick.className = 'tl-tick';
       tick.style.left = (100 * i / (n - 1)) + '%';
+      // Keep the first and last labels inside the axis so they never spill past
+      // the page edge (the default centering half-overhangs both ends).
+      if (i === 0) tick.style.transform = 'translateX(0)';
+      else if (i === n - 1) tick.style.transform = 'translateX(-100%)';
       tick.textContent = clock(t);
       axisEl.appendChild(tick);
     }
