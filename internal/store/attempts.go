@@ -114,7 +114,10 @@ func (tx *Tx) attemptByClaimRequest(ctx context.Context, claimRequestID string) 
 }
 
 func (tx *Tx) attemptForTarget(ctx context.Context, targetID string) (*Attempt, error) {
-	as, err := scanAttempts(each(tx.Query(ctx, `SELECT `+attemptColumns+` FROM attempts WHERE target_id = ? ORDER BY created_at DESC LIMIT 1`, targetID)))
+	// Only an UNFINISHED attempt is rebindable (a waiting_human resume: the
+	// answer clears finished_at). A finished attempt stays finished — a
+	// retried target gets a fresh attempt (M11: new attempt, same target).
+	as, err := scanAttempts(each(tx.Query(ctx, `SELECT `+attemptColumns+` FROM attempts WHERE target_id = ? AND finished_at IS NULL ORDER BY created_at DESC LIMIT 1`, targetID)))
 	if err != nil {
 		return nil, err
 	}
