@@ -39,8 +39,16 @@ type Work struct {
 	ScheduledFor  time.Time       `json:"scheduled_for,omitempty"`
 	SubmittedBy   string          `json:"submitted_by,omitempty"`
 	ExternalRefs  json.RawMessage `json:"external_refs,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	FinishedAt    time.Time       `json:"finished_at,omitempty"`
+	// Provenance (DESIGN.md §3): CausedByWorkID is the Work whose execution
+	// created this one (empty for a root); RootWorkID is the root of the tree
+	// (own id for a root, else the parent's root), computed by CreateWork, not
+	// callers; Cause is the machine label for the reason. plan_batch_id and the
+	// snapshot's verify_of are the older, narrower homes of the same links.
+	CausedByWorkID string      `json:"caused_by_work_id,omitempty"`
+	RootWorkID     string      `json:"root_work_id,omitempty"`
+	Cause          model.Cause `json:"cause,omitempty"`
+	CreatedAt      time.Time   `json:"created_at"`
+	FinishedAt     time.Time   `json:"finished_at,omitempty"`
 }
 
 // Target is one repository within one Work.
@@ -71,10 +79,36 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 	if !w.BudgetClass.Valid() || !w.Autonomy.Valid() {
 		return nil, fmt.Errorf("work: budget_class %q or autonomy %q invalid", w.BudgetClass, w.Autonomy)
 	}
+	if !w.Cause.Valid() {
+		return nil, fmt.Errorf("work: cause %q invalid", w.Cause)
+	}
 	if w.ID == "" {
 		w.ID = model.NewID()
 	}
 	w.CreatedAt = tx.now
+	// Provenance invariant (DESIGN.md §3): the root is derived here, so callers
+	// only set the immediate cause. A caused_by parent must exist; the row's
+	// root is the parent's root. A root's root is its own id. A RootWorkID a
+	// caller pre-set is honoured only when it agrees with this.
+	if w.CausedByWorkID != "" {
+		parent, err := tx.GetWork(ctx, w.CausedByWorkID)
+		if err != nil {
+			return nil, fmt.Errorf("caused_by work %s: %w", w.CausedByWorkID, err)
+		}
+		root := parent.RootWorkID
+		if root == "" {
+			root = parent.ID
+		}
+		if w.RootWorkID != "" && w.RootWorkID != root {
+			return nil, fmt.Errorf("work: root_work_id %s contradicts caused_by parent's root %s", w.RootWorkID, root)
+		}
+		w.RootWorkID = root
+	} else {
+		if w.RootWorkID != "" && w.RootWorkID != w.ID {
+			return nil, fmt.Errorf("work: root_work_id %s set on a root whose id is %s", w.RootWorkID, w.ID)
+		}
+		w.RootWorkID = w.ID
+	}
 	open, err := tx.openEdges(ctx)
 	if err != nil {
 		return nil, err
@@ -86,9 +120,9 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 		}
 		open = append(open, e)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), formatTime(w.CreatedAt))
+	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), nullString(w.CausedByWorkID), w.RootWorkID, nullString(string(w.Cause)), formatTime(w.CreatedAt))
 	if err != nil {
 		return nil, fmt.Errorf("insert work: %w", err)
 	}
@@ -118,6 +152,13 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 	if w.WorkflowRunID != "" {
 		payload["workflow"], payload["workflow_run_id"], payload["workflow_step"] = w.WorkflowName, w.WorkflowRunID, w.WorkflowStep
 	}
+	if w.CausedByWorkID != "" {
+		payload["caused_by"] = w.CausedByWorkID
+	}
+	if w.Cause != "" {
+		payload["cause"] = w.Cause
+	}
+	payload["root"] = w.RootWorkID
 	if err := tx.Journal(ctx, "work.created", EntityWork, w.ID, payload); err != nil {
 		return nil, err
 	}
@@ -192,7 +233,7 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 	return tx.Journal(ctx, "work.finished", EntityWork, workID, nil)
 }
 
-const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, created_at, finished_at`
+const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at, finished_at`
 
 // GetWork reads one Work.
 func (s *Store) GetWork(ctx context.Context, id string) (*Work, error) {
@@ -257,6 +298,46 @@ func (s *Store) ListWorkPage(ctx context.Context, scope string, limit, offset in
 	return scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work `+where+`ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)))
 }
 
+// WorkTree returns every Work in one provenance tree — all rows sharing a
+// root_work_id — oldest first. One indexed query is the whole point of the
+// denormalized root (DESIGN.md §3 "Provenance").
+func (s *Store) WorkTree(ctx context.Context, rootID string) ([]Work, error) {
+	return scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work WHERE root_work_id = ? ORDER BY created_at`, rootID)))
+}
+
+// WorkDependenciesWithin returns every dependency edge whose BOTH ends are in
+// the given set of Work ids — the edges to draw inside one lineage tree
+// (finished or not, unlike DependencyEdges).
+func (s *Store) WorkDependenciesWithin(ctx context.Context, ids []string) ([]model.Edge, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	in := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		in[id] = true
+	}
+	q, args := inClause(`SELECT work_id, blocked_by_work_id, "on", stack_on FROM work_dependencies WHERE work_id IN (`, ids, `)`)
+	var out []model.Edge
+	err := each(s.query(ctx, q, args...))(func(rows *sql.Rows) error {
+		var e model.Edge
+		var on string
+		var stack int
+		if err := rows.Scan(&e.Work, &e.BlockedBy, &on, &stack); err != nil {
+			return err
+		}
+		if !in[e.BlockedBy] {
+			return nil
+		}
+		e.On, e.StackOn = model.DependencyOn(on), stack == 1
+		out = append(out, e)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read tree dependencies: %w", err)
+	}
+	return out, nil
+}
+
 // ActiveWorkByRoutine counts Work per routine with a Target holding a slot —
 // the concurrency rule's input.
 func (tx *Tx) ActiveWorkByRoutine(ctx context.Context) (map[string]int, error) {
@@ -280,15 +361,16 @@ func scanWork(iter func(func(*sql.Rows) error) error) ([]Work, error) {
 	var out []Work
 	err := iter(func(rows *sql.Rows) error {
 		var w Work
-		var routineID, paths, deps, models, batch, wfRun, wfName, wfStep, hash, scheduled, submitted, refs, finished sql.NullString
+		var routineID, paths, deps, models, batch, wfRun, wfName, wfStep, hash, scheduled, submitted, refs, causedBy, root, cause, finished sql.NullString
 		var tier sql.NullInt64
 		var snapshot, created string
 		var integrate int
-		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &scheduled, &submitted, &refs, &created, &finished); err != nil {
+		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &scheduled, &submitted, &refs, &causedBy, &root, &cause, &created, &finished); err != nil {
 			return fmt.Errorf("scan work: %w", err)
 		}
 		w.RoutineID, w.PlanBatchID, w.PromptHash, w.SubmittedBy = routineID.String, batch.String, hash.String, submitted.String
 		w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = wfRun.String, wfName.String, wfStep.String
+		w.CausedByWorkID, w.RootWorkID, w.Cause = causedBy.String, root.String, model.Cause(cause.String)
 		w.Snapshot, w.Integrate = json.RawMessage(snapshot), integrate == 1
 		if refs.Valid {
 			w.ExternalRefs = json.RawMessage(refs.String)
