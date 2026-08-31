@@ -58,12 +58,12 @@ type BudgetConfig struct {
 	SevenDayHardStop float64          `toml:"seven_day_hard_stop"`
 	DailyUSDCap      float64          `toml:"daily_usd_cap"`
 	QuietHours       QuietHoursConfig `toml:"quiet_hours"`
-	// ForecastPacing gates the forecast_over_target admission rule (§10.2): when
-	// true (default), normal/backlog work is deferred if the recent burn rate
-	// projected to the window reset would overshoot the target, spreading work
-	// across the window. When false, only current utilization gates admission —
-	// a transient end-of-session spike no longer blocks new work (worst case a
-	// burst overshoots and is cut at the reset, to be restarted).
+	// ForecastPacing gates the forecast_over_target admission rule (§10.2). When
+	// true, normal/backlog work is deferred if the recent burn rate projected to
+	// the window reset would overshoot the target, spreading work across the
+	// window. Default false: only current utilization gates admission, so a
+	// transient burst no longer blocks new work (worst case it overshoots and is
+	// cut at the reset, to be restarted); the hard stop still protects the ceiling.
 	ForecastPacing bool `toml:"forecast_pacing"`
 }
 
@@ -126,7 +126,7 @@ type BackupConfig struct {
 func DefaultConfig(home, userHome string) Config {
 	return Config{
 		HTTP:         HTTPConfig{Listen: "127.0.0.1:7340"},
-		Budget:       BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: true},
+		Budget:       BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97},
 		KB:           KBConfig{Path: filepath.Join(home, "kb")},
 		Sandbox:      SandboxConfig{AllowHosts: []string{"api.anthropic.com", "statsig.anthropic.com", "proxy.golang.org", "sum.golang.org", "registry.npmjs.org"}},
 		Integration:  IntegrationConfig{MaxStackDepth: 2, MaxRebaseAttempts: 3},
