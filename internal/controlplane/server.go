@@ -50,6 +50,10 @@ type Server struct {
 	home              string
 	requiredLevel     func(mode string) int
 	resolveModel      func(alias string) (string, bool)
+	modelInfo         func(alias string) (ModelInfo, bool)
+	modelAliases      []string
+	routing           RoutingConfig
+	runnerCapacities  map[string]int
 	setLogLevels      func(spec string) error
 	logLevels         func() string
 	allowHosts        []string
@@ -137,6 +141,18 @@ type ServerOptions struct {
 	PluginStart func(name, token string) error
 	// PluginStop stops a disabled plugin's process; nil is a no-op.
 	PluginStop func(name string)
+	// ModelInfo resolves an alias to its M10 routing info (runner, class,
+	// price); nil disables routing so a claim uses the routine's single model
+	// (the M1 path). ModelAliases is the sorted alias set the router considers
+	// when a routine gives a tier but no explicit models list. Routing is the
+	// [routing] policy. cmd/forge wires all three from the loaded Config.
+	ModelInfo    func(alias string) (ModelInfo, bool)
+	ModelAliases []string
+	Routing      RoutingConfig
+	// RunnerCapacities is each runner's capacity (a second scheduler slot
+	// dimension, DESIGN.md §21); a runner absent or with capacity ≤ 0 is
+	// unbounded (bounded only by worker slots).
+	RunnerCapacities map[string]int
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -157,7 +173,16 @@ func NewServer(o ServerOptions) (*Server, error) {
 		o.RequiredLevel = func(string) int { return 1 }
 	}
 	if o.ResolveModel == nil {
-		o.ResolveModel = defaultResolveModel
+		// Prefer the config-backed model table when wired; fall back to M1's
+		// fixed aliases so tests and a bare daemon still resolve models.
+		if o.ModelInfo != nil {
+			o.ResolveModel = func(alias string) (string, bool) {
+				info, ok := o.ModelInfo(alias)
+				return info.ID, ok
+			}
+		} else {
+			o.ResolveModel = defaultResolveModel
+		}
 	}
 	if o.TransportOverride != "" && o.TransportOverride != transportUnix && o.TransportOverride != transportTCP {
 		return nil, fmt.Errorf("server: transport override %q: want unix or tcp", o.TransportOverride)
@@ -167,7 +192,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 	}
 	s := &Server{
 		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
-		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
+		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, modelInfo: o.ModelInfo, modelAliases: o.ModelAliases, routing: o.Routing, runnerCapacities: o.RunnerCapacities, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop,

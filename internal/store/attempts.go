@@ -13,13 +13,20 @@ import (
 
 // Attempt is one execution of a Target.
 type Attempt struct {
-	ID                string              `json:"id"`
-	TargetID          string              `json:"target_id"`
-	WorkerID          string              `json:"worker_id"`
-	ClaimRequestID    string              `json:"claim_request_id"`
-	Executor          string              `json:"executor"`
-	Model             string              `json:"model"`
-	ModelAlias        string              `json:"model_alias"`
+	ID             string `json:"id"`
+	TargetID       string `json:"target_id"`
+	WorkerID       string `json:"worker_id"`
+	ClaimRequestID string `json:"claim_request_id"`
+	Executor       string `json:"executor"`
+	Model          string `json:"model"`
+	ModelAlias     string `json:"model_alias"`
+	// Runner is the M10 runner the chosen model runs on (DESIGN.md §21);
+	// EscalatedFrom is the previous attempt's model alias when this attempt is
+	// the next rung of an escalation ladder; Routing is the JSON routing
+	// decision the task-detail UI reads. All empty on a plain M1-style claim.
+	Runner            string              `json:"runner,omitempty"`
+	EscalatedFrom     string              `json:"escalated_from,omitempty"`
+	Routing           json.RawMessage     `json:"routing,omitempty"`
 	Effort            string              `json:"effort,omitempty"`
 	Mode              string              `json:"mode"`
 	Autonomy          model.Autonomy      `json:"autonomy"`
@@ -55,7 +62,7 @@ type Attempt struct {
 	CreatedAt         time.Time           `json:"created_at"`
 }
 
-const attemptColumns = `id, target_id, worker_id, claim_request_id, executor, model, model_alias, effort, mode, autonomy, worktree_path, branch, base_branch, base_commit, stack_base_commit, head_commit, pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at, exit_code, failure_reason, unverified_reason, is_error, result_text, result, num_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty, git_commits, git_files_changed, git_insertions, git_deletions, git_pushed, verification_level, verification_passed, cleanup_outcome, cleanup_reason, cleanup_command, output_path, output_bytes, output_truncated, created_at`
+const attemptColumns = `id, target_id, worker_id, claim_request_id, executor, model, model_alias, runner, escalated_from, routing, effort, mode, autonomy, worktree_path, branch, base_branch, base_commit, stack_base_commit, head_commit, pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at, exit_code, failure_reason, unverified_reason, is_error, result_text, result, num_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty, git_commits, git_files_changed, git_insertions, git_deletions, git_pushed, verification_level, verification_passed, cleanup_outcome, cleanup_reason, cleanup_command, output_path, output_bytes, output_truncated, created_at`
 
 // GetAttempt reads one attempt.
 func (s *Store) GetAttempt(ctx context.Context, id string) (*Attempt, error) {
@@ -362,11 +369,16 @@ func scanAttempts(iter func(func(*sql.Rows) error) error) ([]Attempt, error) {
 	err := iter(func(rows *sql.Rows) error {
 		var a Attempt
 		var effort, worktree, branch, baseBranch, baseCommit, stackBase, head, session, promptHash, started, finished, failure, unverified, resultText, result, cleanupOutcome, cleanupReason, cleanupCommand, outputPath sql.NullString
+		var runner, escalatedFrom, routing sql.NullString
 		var pid, pidStart, exitCode, numTurns, in, outT, cacheR, cacheC, dirty, commits, files, ins, del, pushed, vlevel, vpassed, outputBytes, outputTruncated, isError sql.NullInt64
 		var cost sql.NullFloat64
 		var created string
-		if err := rows.Scan(&a.ID, &a.TargetID, &a.WorkerID, &a.ClaimRequestID, &a.Executor, &a.Model, &a.ModelAlias, &effort, &a.Mode, &a.Autonomy, &worktree, &branch, &baseBranch, &baseCommit, &stackBase, &head, &pid, &pidStart, &session, &promptHash, &a.Launches, &started, &finished, &exitCode, &failure, &unverified, &isError, &resultText, &result, &numTurns, &in, &outT, &cacheR, &cacheC, &cost, &dirty, &commits, &files, &ins, &del, &pushed, &vlevel, &vpassed, &cleanupOutcome, &cleanupReason, &cleanupCommand, &outputPath, &outputBytes, &outputTruncated, &created); err != nil {
+		if err := rows.Scan(&a.ID, &a.TargetID, &a.WorkerID, &a.ClaimRequestID, &a.Executor, &a.Model, &a.ModelAlias, &runner, &escalatedFrom, &routing, &effort, &a.Mode, &a.Autonomy, &worktree, &branch, &baseBranch, &baseCommit, &stackBase, &head, &pid, &pidStart, &session, &promptHash, &a.Launches, &started, &finished, &exitCode, &failure, &unverified, &isError, &resultText, &result, &numTurns, &in, &outT, &cacheR, &cacheC, &cost, &dirty, &commits, &files, &ins, &del, &pushed, &vlevel, &vpassed, &cleanupOutcome, &cleanupReason, &cleanupCommand, &outputPath, &outputBytes, &outputTruncated, &created); err != nil {
 			return fmt.Errorf("scan attempt: %w", err)
+		}
+		a.Runner, a.EscalatedFrom = runner.String, escalatedFrom.String
+		if routing.Valid {
+			a.Routing = json.RawMessage(routing.String)
 		}
 		a.Effort, a.WorktreePath, a.Branch, a.BaseBranch, a.BaseCommit, a.HeadCommit = effort.String, worktree.String, branch.String, baseBranch.String, baseCommit.String, head.String
 		a.StackBaseCommit = stackBase.String
@@ -410,6 +422,28 @@ func scanAttempts(iter func(func(*sql.Rows) error) error) ([]Attempt, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read attempts: %w", err)
+	}
+	return out, nil
+}
+
+// InFlightByRunner counts non-terminal attempts grouped by their runner — the
+// M10 runner-capacity denominator (DESIGN.md §21). An attempt is in flight
+// while its finished_at is NULL; runs inside the claim transaction so the
+// count is race-free against concurrent claims. Attempts with no runner
+// (M1-style claims) are not counted.
+func (tx *Tx) InFlightByRunner(ctx context.Context) (map[string]int, error) {
+	out := map[string]int{}
+	err := each(tx.Query(ctx, `SELECT runner, count(*) FROM attempts WHERE finished_at IS NULL AND runner IS NOT NULL AND runner != '' GROUP BY runner`))(func(rows *sql.Rows) error {
+		var runner string
+		var n int
+		if err := rows.Scan(&runner, &n); err != nil {
+			return fmt.Errorf("scan in-flight runner: %w", err)
+		}
+		out[runner] = n
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("count in-flight by runner: %w", err)
 	}
 	return out, nil
 }

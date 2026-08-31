@@ -134,6 +134,36 @@ type Report struct {
 	// "retro", after the query's filters) divided by the all-time applied
 	// count; nil while nothing has been applied — undefined, not zero.
 	CostPerApplied *float64 `json:"cost_per_applied,omitempty"`
+	// Matrix is the M10 capability matrix (DESIGN.md §21): one row per model
+	// (its class the capability axis), with verified success and cost per
+	// verified success in each currency. Runners is per-runner utilization.
+	Matrix  []ModelCapability   `json:"matrix"`
+	Runners []RunnerUtilization `json:"runners"`
+}
+
+// ModelCapability is one model's row in the capability matrix: how often it
+// verified and what each verified success cost, notional and in subscription
+// budget (M10, DESIGN.md §21).
+type ModelCapability struct {
+	Model               string   `json:"model"`
+	Class               string   `json:"class"`
+	Runner              string   `json:"runner"`
+	Runs                int      `json:"runs"`
+	Trials              int      `json:"trials"` // attempts whose verification was decided
+	VerifiedSuccesses   int      `json:"verified_successes"`
+	VerifiedSuccessRate float64  `json:"verified_success_rate"`
+	CostPerVerifiedUSD  *float64 `json:"cost_per_verified_usd"`       // nil when no verified success
+	FiveHourPerVerified *float64 `json:"cost_per_verified_five_hour"` // subscription-window points
+	SevenDayPerVerified *float64 `json:"cost_per_verified_seven_day"`
+	AvgRunnerSeconds    float64  `json:"avg_runner_seconds"`
+}
+
+// RunnerUtilization is one runner's totals across the window.
+type RunnerUtilization struct {
+	Runner             string  `json:"runner"`
+	Runs               int     `json:"runs"`
+	TotalRunnerSeconds float64 `json:"total_runner_seconds"`
+	TotalUSD           float64 `json:"total_usd"`
 }
 
 // Key names a RoutineStats row in Report.Prev: the bare routine for the
@@ -161,7 +191,120 @@ func Compute(current, prev []store.AttemptFacts) *Report {
 	for _, s := range aggregate(prev, true) {
 		r.Prev[Key(s.Routine, s.Generation)] = s
 	}
+	r.Matrix = capabilityMatrix(current)
+	r.Runners = runnerUtilization(current)
 	return r
+}
+
+// capabilityMatrix groups the window's facts by model into the M10 capability
+// matrix. Cost-per-verified-success is the summed cost over the verified
+// successes; nil when a model has none, so an unproven model reads as "no
+// cost-per-success yet" rather than a misleading zero.
+func capabilityMatrix(rows []store.AttemptFacts) []ModelCapability {
+	type acc struct {
+		class, runner                    string
+		runs, trials, verified           int
+		usd, fiveHour, sevenDay, seconds float64
+		usdN, fiveHourN, sevenDayN       int
+	}
+	byModel := map[string]*acc{}
+	for _, f := range rows {
+		if f.Model == "" {
+			continue
+		}
+		a := byModel[f.Model]
+		if a == nil {
+			a = &acc{}
+			byModel[f.Model] = a
+		}
+		a.runs++
+		if f.ModelClass != "" {
+			a.class = f.ModelClass
+		}
+		if f.Runner != "" {
+			a.runner = f.Runner
+		}
+		verified := model.IsSuccess(f.State) && f.VerificationPass != nil && *f.VerificationPass
+		if f.VerificationPass != nil {
+			a.trials++
+		}
+		if verified {
+			a.verified++
+			if f.USD != nil {
+				a.usd += *f.USD
+				a.usdN++
+			}
+			if f.FiveHourDelta != nil {
+				a.fiveHour += *f.FiveHourDelta
+				a.fiveHourN++
+			}
+			if f.SevenDayDelta != nil {
+				a.sevenDay += *f.SevenDayDelta
+				a.sevenDayN++
+			}
+		}
+		if f.RunnerSeconds != nil {
+			a.seconds += *f.RunnerSeconds
+		}
+	}
+	out := make([]ModelCapability, 0, len(byModel))
+	for name, a := range byModel {
+		m := ModelCapability{Model: name, Class: a.class, Runner: a.runner, Runs: a.runs, Trials: a.trials, VerifiedSuccesses: a.verified}
+		m.VerifiedSuccessRate = ratio(a.verified, a.trials)
+		if a.runs > 0 {
+			m.AvgRunnerSeconds = a.seconds / float64(a.runs)
+		}
+		if a.verified > 0 {
+			if a.usdN > 0 {
+				v := a.usd / float64(a.verified)
+				m.CostPerVerifiedUSD = &v
+			}
+			if a.fiveHourN > 0 {
+				v := a.fiveHour / float64(a.verified)
+				m.FiveHourPerVerified = &v
+			}
+			if a.sevenDayN > 0 {
+				v := a.sevenDay / float64(a.verified)
+				m.SevenDayPerVerified = &v
+			}
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
+}
+
+// runnerUtilization sums runner_seconds and notional usd per runner.
+func runnerUtilization(rows []store.AttemptFacts) []RunnerUtilization {
+	type acc struct {
+		runs    int
+		seconds float64
+		usd     float64
+	}
+	byRunner := map[string]*acc{}
+	for _, f := range rows {
+		if f.Runner == "" {
+			continue
+		}
+		a := byRunner[f.Runner]
+		if a == nil {
+			a = &acc{}
+			byRunner[f.Runner] = a
+		}
+		a.runs++
+		if f.RunnerSeconds != nil {
+			a.seconds += *f.RunnerSeconds
+		}
+		if f.USD != nil {
+			a.usd += *f.USD
+		}
+	}
+	out := make([]RunnerUtilization, 0, len(byRunner))
+	for name, a := range byRunner {
+		out = append(out, RunnerUtilization{Runner: name, Runs: a.runs, TotalRunnerSeconds: a.seconds, TotalUSD: a.usd})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Runner < out[j].Runner })
+	return out
 }
 
 // Load fetches the window and its previous equal window with the indexed

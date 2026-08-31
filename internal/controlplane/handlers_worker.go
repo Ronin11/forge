@@ -165,7 +165,7 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 		s.log.DebugContext(ctx, "nothing to claim", "worker_id", req.WorkerID, "open_work", len(work), "skipped", SortedSkips(pick.Skipped))
 		return nil, nil
 	}
-	return s.claimTarget(ctx, tx, req, *pick.Work, *pick.Target, edges)
+	return s.claimTarget(ctx, tx, req, *worker, *pick.Work, *pick.Target, edges)
 }
 
 // leaseExempt reports Work whose mode does not write the repository
@@ -351,14 +351,21 @@ func (s *Server) replayedClaim(ctx context.Context, tx *store.Tx, req protocol.C
 
 // claimTarget records the claim and the queue_wait span, then renders the
 // worker's frozen view of the Work.
-func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.ClaimRequest, w store.Work, t store.Target, edges []model.Edge) (*protocol.Claim, error) {
+func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.ClaimRequest, worker store.Worker, w store.Work, t store.Target, edges []model.Edge) (*protocol.Claim, error) {
 	snap, err := snapshotRoutine(w)
 	if err != nil {
 		return nil, err
 	}
-	modelID, ok := s.resolveModel(snap.Model)
-	if !ok {
-		return nil, fmt.Errorf("work %s: unknown model alias %q", w.ID, snap.Model)
+	// M10 routing (DESIGN.md §21): choose the model, runner, and escalation
+	// rung before any state change. A nil choice means no runner can run a
+	// candidate right now — leave the Target pending and let the worker retry.
+	choice, err := s.routeClaim(ctx, worker, w, t, snap, tx)
+	if err != nil {
+		return nil, err
+	}
+	if choice == nil {
+		s.log.DebugContext(ctx, "no runner available for target", "target_id", t.ID, "routine", w.RoutineName)
+		return nil, nil
 	}
 	token, err := newToken()
 	if err != nil {
@@ -370,7 +377,8 @@ func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.Cla
 	}
 	params := store.ClaimParams{
 		TargetID: t.ID, WorkerID: req.WorkerID, ClaimRequestID: req.ClaimRequestID, LeaseToken: req.LeaseToken, MCPToken: token,
-		Executor: snap.Executor, Model: modelID, ModelAlias: snap.Model, Effort: snap.Effort, Mode: snap.Mode, Autonomy: w.Autonomy,
+		Executor: choice.Executor, Model: choice.ModelID, ModelAlias: choice.Alias, Runner: choice.Runner,
+		EscalatedFrom: choice.EscalatedFrom, Routing: choice.RoutingJSON, Effort: snap.Effort, Mode: snap.Mode, Autonomy: w.Autonomy,
 	}
 	if !s.leaseExempt(w) {
 		params.Globs = EffectiveGlobs(w.Paths, w.Deps)
@@ -876,7 +884,8 @@ func (s *Server) recordFacts(ctx context.Context, tx *store.Tx, attemptID string
 	if err != nil {
 		return err
 	}
-	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now(), LeaseBlockedAt: leaseBlockedAt})
+	info, _ := s.modelInfoFor(a.ModelAlias)
+	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now(), LeaseBlockedAt: leaseBlockedAt, Model: info})
 	if err := tx.InsertFacts(ctx, facts); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.log.DebugContext(ctx, "facts already recorded", "attempt_id", a.ID)

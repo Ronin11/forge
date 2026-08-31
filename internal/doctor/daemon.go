@@ -34,15 +34,66 @@ type DaemonInput struct {
 	SevenDaySample  *store.RateLimitSample
 	Plugins         []store.Plugin        // installed plugin rows
 	PluginHealth    []plugin.PluginHealth // the supervisor's live state
+	// PricingPairs are recent attempts' notional cost (tokens × Forge's price
+	// table) beside the executor's self-reported cost (M10, DESIGN.md §21);
+	// large drift means the price table is stale.
+	PricingPairs []PricingPair
+}
+
+// PricingPair is one attempt's notional-vs-reported cost, both in dollars.
+type PricingPair struct {
+	Notional float64
+	Reported float64
 }
 
 // Daemon runs every daemon-side check over one gathered input.
 func Daemon(in DaemonInput) []Check {
 	checks := []Check{daemonInfo(in), schema(in)}
 	checks = append(checks, workers(in)...)
-	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in))
+	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in), pricing(in))
 	checks = append(checks, plugins(in)...)
 	return checks
+}
+
+// pricingDriftThreshold is how far Forge's notional cost may sit from the
+// executor's reported cost before the price table is flagged stale.
+const pricingDriftThreshold = 0.15
+
+// pricingMinSamples is how many priced attempts the drift check needs before it
+// trusts the comparison.
+const pricingMinSamples = 3
+
+// pricing compares Forge's notional per-attempt cost (tokens × its price table)
+// with the executor's self-reported total_cost_usd over recent attempts and
+// warns when the mean relative drift exceeds the threshold — the signal that
+// the embedded price table has gone stale (DESIGN.md §21).
+func pricing(in DaemonInput) Check {
+	var sumRel float64
+	n := 0
+	for _, p := range in.PricingPairs {
+		if p.Reported <= 0 || p.Notional <= 0 {
+			continue
+		}
+		sumRel += abs(p.Notional-p.Reported) / p.Reported
+		n++
+	}
+	if n < pricingMinSamples {
+		return Check{Name: "pricing", Status: StatusOK, Detail: fmt.Sprintf("not enough priced attempts to check drift (%d/%d)", n, pricingMinSamples)}
+	}
+	drift := sumRel / float64(n)
+	detail := fmt.Sprintf("notional cost within %.0f%% of reported over %d attempts", drift*100, n)
+	if drift > pricingDriftThreshold {
+		return Check{Name: "pricing", Status: StatusWarn, Detail: fmt.Sprintf("notional cost drifts %.0f%% from reported over %d attempts", drift*100, n),
+			Hint: "the [models] price table looks stale; refresh input/output/cache prices against the provider's list prices"}
+	}
+	return Check{Name: "pricing", Status: StatusOK, Detail: detail}
+}
+
+func abs(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
 }
 
 // plugins reports each enabled plugin: ok while its process runs, fail when

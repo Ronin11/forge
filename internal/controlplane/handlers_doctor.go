@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -56,11 +57,36 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 			startedAt = st.StartedAt
 		}
 	}
+	pricing, err := s.pricingPairs(ctx, now)
+	if err != nil {
+		return 0, nil, err
+	}
 	checks := doctor.Daemon(doctor.DaemonInput{
 		Version: s.version, SchemaVersion: s.store.SchemaVersion(), StartedAt: startedAt, Now: now,
 		Workers: workers, Repositories: repos, KbLastIndexedAt: kbAt, RetainedCount: retained,
 		FiveHourSample: fiveHour, SevenDaySample: sevenDay,
-		Plugins: plugins, PluginHealth: pluginHealth,
+		Plugins: plugins, PluginHealth: pluginHealth, PricingPairs: pricing,
 	})
 	return http.StatusOK, checks, nil
+}
+
+// pricingDriftWindow bounds how far back the doctor's pricing-drift check looks.
+const pricingDriftWindow = 7 * 24 * time.Hour
+
+// pricingPairs gathers recent attempts that carry both a notional cost (usd,
+// tokens × Forge's price table) and the executor's self-reported cost, for the
+// doctor's price-table staleness check (DESIGN.md §21).
+func (s *Server) pricingPairs(ctx context.Context, now time.Time) ([]doctor.PricingPair, error) {
+	facts, err := s.store.FactsSince(ctx, now.Add(-pricingDriftWindow), now.Add(time.Hour), "")
+	if err != nil {
+		return nil, err
+	}
+	var pairs []doctor.PricingPair
+	for _, f := range facts {
+		if f.USD == nil || f.CostUSD == nil {
+			continue
+		}
+		pairs = append(pairs, doctor.PricingPair{Notional: *f.USD, Reported: *f.CostUSD})
+	}
+	return pairs, nil
 }

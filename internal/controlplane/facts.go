@@ -26,6 +26,10 @@ type FactsInput struct {
 	// LeaseBlockedAt is when the Target was first passed over for a path
 	// lease (journal target.lease_blocked); zero when it never was.
 	LeaseBlockedAt time.Time
+	// Model is the chosen model's resolved routing info (M10, DESIGN.md §21):
+	// its class and price drive the notional usd term. Zero (empty ID) when the
+	// alias resolved to a bare id with no routing metadata.
+	Model ModelInfo
 }
 
 // ComputeFacts is the one function that turns an attempt into its facts row
@@ -54,12 +58,14 @@ func ComputeFacts(in FactsInput) *store.AttemptFacts {
 		f.Commits, f.FilesChanged, f.Insertions, f.Deletions = ptr(a.Git.Commits), ptr(a.Git.FilesChanged), ptr(a.Git.Insertions), ptr(a.Git.Deletions)
 		f.Dirty, f.Pushed = ptr(a.Git.Dirty), ptr(a.Git.Pushed)
 	}
+	f.Runner, f.EscalatedFrom, f.ModelClass = a.Runner, a.EscalatedFrom, in.Model.Class
 	computePhases(f, in.Events)
 	computeTools(f, in.Events)
 	computeTokensToFirstEdit(f, in.Events)
 	computeEventCounts(f, in.Events)
 	computeQuestions(f, in.Questions, in.Now)
 	computeBudget(f, a, in.Samples)
+	computeCostVector(f, a, in.Model)
 	computeWriteSet(f, w, a)
 	if !in.LeaseBlockedAt.IsZero() && !t.ClaimedAt.IsZero() && !t.ClaimedAt.Before(in.LeaseBlockedAt) {
 		// Wall clock: the block and the claim happen in different
@@ -326,5 +332,33 @@ func computeBudget(f *store.AttemptFacts, a store.Attempt, samples []store.RateL
 	}
 	if sdAfter != nil {
 		f.SevenDayAfter = ptr(sdAfter.Utilization)
+	}
+	// The window deltas the router scores (M10, DESIGN.md §21): the movement
+	// bracketing the attempt, only when both samples came from the same
+	// unreset window. NULL otherwise — honest, never a fabricated zero.
+	if before != nil && after != nil && after.ResetsAt.Equal(before.ResetsAt) {
+		f.FiveHourDelta = ptr(after.Utilization - before.Utilization)
+	}
+	if sdBefore != nil && sdAfter != nil && sdAfter.ResetsAt.Equal(sdBefore.ResetsAt) {
+		f.SevenDayDelta = ptr(sdAfter.Utilization - sdBefore.Utilization)
+	}
+}
+
+// computeCostVector fills the M10 usd and runner_seconds terms. usd is
+// notional (tokens × the model's list price, $/MTok); it is computed whenever
+// the model carries a price and the attempt reported tokens, on subscription or
+// api alike (the subscription figure is notional, the billing tells the reader
+// which). runner_seconds is the agent phase's wall seconds.
+func computeCostVector(f *store.AttemptFacts, a store.Attempt, info ModelInfo) {
+	p := info.Price
+	if (p.Input != 0 || p.Output != 0 || p.CacheRead != 0 || p.CacheWrite != 0) && (a.Usage.InputTokens != 0 || a.Usage.OutputTokens != 0 || a.Usage.CacheReadTokens != 0 || a.Usage.CacheCreationTokens != 0) {
+		usd := (float64(a.Usage.InputTokens)*p.Input +
+			float64(a.Usage.OutputTokens)*p.Output +
+			float64(a.Usage.CacheReadTokens)*p.CacheRead +
+			float64(a.Usage.CacheCreationTokens)*p.CacheWrite) / 1e6
+		f.USD = ptr(usd)
+	}
+	if agent := f.Phases["agent"]; agent != nil {
+		f.RunnerSeconds = ptr(float64(*agent) / 1e6)
 	}
 }

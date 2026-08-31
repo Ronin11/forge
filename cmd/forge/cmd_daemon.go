@@ -231,9 +231,15 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		MaxStackDepth: d.cfg.Integration.MaxStackDepth,
 		KbDir:         d.cfg.KB.Path,
 		Tools:         toolRegistry,
-		PluginHealth:  sup.Health,
-		PluginStart:   startPlugin,
-		PluginStop:    func(name string) { sup.Stop(name) },
+		// M10 routing (DESIGN.md §21): the model table, alias set, routing
+		// policy, and per-runner capacities from the loaded config.
+		ModelInfo:        d.cfg.ModelInfoFor,
+		ModelAliases:     d.cfg.ModelAliases(),
+		Routing:          d.cfg.Routing,
+		RunnerCapacities: runnerCapacities(d.cfg),
+		PluginHealth:     sup.Health,
+		PluginStart:      startPlugin,
+		PluginStop:       func(name string) { sup.Stop(name) },
 		SetLogLevels: func(spec string) error {
 			levels, err := logging.ParseLevels(spec, slog.LevelInfo)
 			if err != nil {
@@ -821,4 +827,16 @@ func detectBaseBranch(ctx context.Context, path string) string {
 		return strings.TrimSpace(string(out))
 	}
 	return ""
+}
+
+// runnerCapacities extracts each runner's capacity for the scheduler's
+// runner-slot dimension (DESIGN.md §21); a capacity ≤ 0 stays unbounded.
+func runnerCapacities(cfg *controlplane.Config) map[string]int {
+	out := map[string]int{}
+	for name, r := range cfg.Runners {
+		if r.Capacity > 0 {
+			out[name] = r.Capacity
+		}
+	}
+	return out
 }

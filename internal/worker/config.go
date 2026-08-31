@@ -29,6 +29,7 @@ type Config struct {
 
 	Executors    map[string]ExecutorConfig   `toml:"executors"`
 	Repositories map[string]RepositoryConfig `toml:"repositories"`
+	Runners      map[string]RunnerConfig     `toml:"runners"`
 	Greenfield   GreenfieldConfig            `toml:"greenfield"`
 	Sandbox      SandboxSettings             `toml:"sandbox"`
 	Log          logging.Config              `toml:"log"`
@@ -43,6 +44,19 @@ type ExecutorConfig struct {
 	Output       string   `toml:"output"`
 	Capabilities []string `toml:"capabilities"`
 	Sandbox      *bool    `toml:"sandbox"` // nil → true
+}
+
+// RunnerConfig is one [runners.<name>] entry the worker health-probes and
+// advertises as `runner:<name>` (M10, DESIGN.md §21). The daemon owns the
+// authoritative runner table (routing, capacity, billing); the worker needs
+// only what a health probe requires. A claude-cli runner reuses the executor
+// readiness (the claude binary on PATH); an openai-compatible runner is probed
+// with GET {endpoint}{probe}.
+type RunnerConfig struct {
+	Kind     string `toml:"kind"`     // claude-cli | openai-compatible
+	Endpoint string `toml:"endpoint"` // …/v1 for openai-compatible
+	Probe    string `toml:"probe"`    // probe path; default /v1/models
+	Executor string `toml:"executor"` // claude-cli: the executor whose readiness stands in; default claude-code
 }
 
 // RepositoryConfig is one [repositories.<name>] entry.
@@ -158,6 +172,33 @@ func (c *Config) finish() error {
 	}
 	if c.MaxConcurrent < 1 || c.MaxConcurrent > 100 {
 		return fmt.Errorf("max_concurrent must be in 1..100")
+	}
+	if c.Runners == nil {
+		c.Runners = map[string]RunnerConfig{}
+	}
+	if _, ok := c.Runners["claude"]; !ok {
+		// The default local subscription runner: its health is the claude
+		// executor's readiness (M10, DESIGN.md §21).
+		c.Runners["claude"] = RunnerConfig{Kind: "claude-cli", Executor: "claude-code"}
+	}
+	for name, r := range c.Runners {
+		switch r.Kind {
+		case "claude-cli":
+			if r.Executor == "" {
+				r.Executor = "claude-code"
+				c.Runners[name] = r
+			}
+		case "openai-compatible":
+			if r.Endpoint == "" {
+				return fmt.Errorf("[runners.%s] openai-compatible runner needs an endpoint", name)
+			}
+			if r.Probe == "" {
+				r.Probe = "/v1/models"
+				c.Runners[name] = r
+			}
+		default:
+			return fmt.Errorf("[runners.%s] kind %q must be claude-cli|openai-compatible", name, r.Kind)
+		}
 	}
 	if c.DataDir == "" {
 		c.DataDir = filepath.Join(base, "worker")

@@ -26,6 +26,13 @@ type Config struct {
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Backup       BackupConfig       `toml:"backup"`
 
+	// Runners, Models, and Routing (M10, DESIGN.md §21) ship as embedded
+	// defaults merged under config.toml by LoadConfig; bootstrap does not write
+	// them so an upgrade refreshes prices. See config_models.go.
+	Runners map[string]RunnerConfig `toml:"runners"`
+	Models  map[string]ModelConfig  `toml:"models"`
+	Routing RoutingConfig           `toml:"routing"`
+
 	path string
 }
 
@@ -112,11 +119,13 @@ func DefaultConfig(home, userHome string) Config {
 func LoadConfig(path, home, userHome string, getenv func(string) string) (*Config, error) {
 	c := DefaultConfig(home, userHome)
 	c.path = path
+	var meta toml.MetaData
 	if _, err := os.Stat(path); err == nil {
-		meta, err := toml.DecodeFile(path, &c)
+		m, err := toml.DecodeFile(path, &c)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
+		meta = m
 		if undecoded := meta.Undecoded(); len(undecoded) > 0 {
 			keys := make([]string, len(undecoded))
 			for i, k := range undecoded {
@@ -130,6 +139,7 @@ func LoadConfig(path, home, userHome string, getenv func(string) string) (*Confi
 	if v := getenv("FORGE_HTTP"); v != "" {
 		c.HTTP.Listen = v
 	}
+	c.applyModelDefaults(meta)
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -172,6 +182,9 @@ func (c *Config) Validate() error {
 	if c.Backup.Keep < 1 {
 		return fmt.Errorf("[backup] keep must be ≥ 1")
 	}
+	if err := c.validateModels(); err != nil {
+		return err
+	}
 	return c.Log.Validate()
 }
 
@@ -187,7 +200,17 @@ func WriteDefaultConfig(path, home, userHome string) (written bool, err error) {
 		return false, fmt.Errorf("encode default config: %w", err)
 	}
 	header := "# Forge daemon configuration. Written by bootstrap; edit freely.\n\n"
-	if err := os.WriteFile(path, []byte(header+b.String()), 0o600); err != nil {
+	out := header + b.String()
+	// Bootstrap does not persist the embedded [runners]/[models]/[routing]
+	// tables (config_models.go): keeping them out of config.toml lets a Forge
+	// upgrade refresh the built-in prices and routing policy. The nil runner
+	// and model maps are already omitted by the encoder; the zero [routing]
+	// table — always the final emitted table, since it is the last struct
+	// field — is trimmed here so the file does not ship misleading zeros.
+	if i := strings.Index(out, "\n[routing]"); i >= 0 {
+		out = strings.TrimRight(out[:i], "\n") + "\n"
+	}
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return true, nil

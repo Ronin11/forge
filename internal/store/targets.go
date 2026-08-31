@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -138,10 +139,17 @@ type ClaimParams struct {
 	Executor       string
 	Model          string // resolved id
 	ModelAlias     string
-	Effort         string
-	Mode           string
-	Autonomy       model.Autonomy
-	Globs          []string
+	// Runner, EscalatedFrom, and Routing are the M10 claim-time routing record
+	// (DESIGN.md §21): the runner the chosen model runs on, the previous
+	// attempt's alias when this claim escalated to the next rung, and the JSON
+	// routing decision. All empty on an M1-style claim.
+	Runner        string
+	EscalatedFrom string
+	Routing       string // JSON; "" stores NULL
+	Effort        string
+	Mode          string
+	Autonomy      model.Autonomy
+	Globs         []string
 	// StackBase is the dependency's branch head a stacked attempt starts on
 	// (DESIGN.md §20); empty for an unstacked claim.
 	StackBase string
@@ -197,11 +205,14 @@ func (tx *Tx) Claim(ctx context.Context, p ClaimParams) (*Attempt, error) {
 	}
 	a := &Attempt{
 		ID: model.NewID(), TargetID: p.TargetID, WorkerID: p.WorkerID, ClaimRequestID: p.ClaimRequestID,
-		Executor: p.Executor, Model: p.Model, ModelAlias: p.ModelAlias, Effort: p.Effort, Mode: p.Mode,
-		Autonomy: p.Autonomy, StackBaseCommit: p.StackBase, CreatedAt: tx.now,
+		Executor: p.Executor, Model: p.Model, ModelAlias: p.ModelAlias, Runner: p.Runner, EscalatedFrom: p.EscalatedFrom,
+		Effort: p.Effort, Mode: p.Mode, Autonomy: p.Autonomy, StackBaseCommit: p.StackBase, CreatedAt: tx.now,
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, effort, mode, autonomy, stack_base_commit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.TargetID, a.WorkerID, a.ClaimRequestID, HashToken(p.MCPToken), a.Executor, a.Model, a.ModelAlias, nullString(a.Effort), a.Mode, string(a.Autonomy), nullString(a.StackBaseCommit), formatTime(tx.now), formatTime(tx.now)); err != nil {
+	if p.Routing != "" {
+		a.Routing = json.RawMessage(p.Routing)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, runner, escalated_from, routing, effort, mode, autonomy, stack_base_commit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.TargetID, a.WorkerID, a.ClaimRequestID, HashToken(p.MCPToken), a.Executor, a.Model, a.ModelAlias, nullString(p.Runner), nullString(p.EscalatedFrom), nullString(p.Routing), nullString(a.Effort), a.Mode, string(a.Autonomy), nullString(a.StackBaseCommit), formatTime(tx.now), formatTime(tx.now)); err != nil {
 		return nil, fmt.Errorf("insert attempt: %w", err)
 	}
 	if err := tx.Journal(ctx, "attempt.created", EntityAttempt, a.ID, map[string]any{"target_id": a.TargetID, "worker_id": a.WorkerID}); err != nil {

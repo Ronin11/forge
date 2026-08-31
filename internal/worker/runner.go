@@ -43,6 +43,9 @@ type Worker struct {
 	handler  *logging.Handler
 	clock    func() time.Time
 	lockFile *os.File
+	// capsMu guards caps: New seeds it, the runner probe loop rewrites the
+	// runner:<name> entries every ~2 min, and registration reads a snapshot.
+	capsMu   sync.Mutex
 	caps     map[string]string
 	slots    chan struct{}
 	retained *retainedSet
@@ -201,8 +204,17 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 // ID is the stable worker identity.
 func (w *Worker) ID() string { return w.id }
 
-// Capabilities are what registration advertises.
-func (w *Worker) Capabilities() map[string]string { return w.caps }
+// Capabilities are what registration advertises (a snapshot; the runner probe
+// loop mutates the live map under capsMu).
+func (w *Worker) Capabilities() map[string]string {
+	w.capsMu.Lock()
+	defer w.capsMu.Unlock()
+	out := make(map[string]string, len(w.caps))
+	for k, v := range w.caps {
+		out[k] = v
+	}
+	return out
+}
 
 // Close releases the data directory lock.
 func (w *Worker) Close() error { return w.lockFile.Close() }
@@ -253,7 +265,8 @@ func trimSpace(b []byte) []byte {
 // Run registers, reconciles, and loops until ctx is done, then stops active
 // attempts and waits for them (bounded).
 func (w *Worker) Run(ctx context.Context) error {
-	w.log.InfoContext(ctx, "worker starting", "id", w.id, "name", w.cfg.Name, "slots", w.cfg.MaxConcurrent, "capabilities", w.caps)
+	w.probeRunners(ctx)
+	w.log.InfoContext(ctx, "worker starting", "id", w.id, "name", w.cfg.Name, "slots", w.cfg.MaxConcurrent, "capabilities", w.Capabilities())
 	if err := w.reconcile(ctx); err != nil {
 		w.log.WarnContext(ctx, "reconcile on start", "error", err)
 	}
@@ -262,6 +275,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	g.Go(func() error { w.registerLoop(gctx); return nil })
 	g.Go(func() error { w.reconcileLoop(gctx); return nil })
 	g.Go(func() error { w.pollLoop(gctx); return nil })
+	g.Go(func() error { w.runnerProbeLoop(gctx); return nil })
 	if w.handler != nil {
 		g.Go(func() error {
 			logging.WatchSIGUSR1(w.handler, w.log, nil).Run(gctx)
@@ -302,7 +316,7 @@ func (w *Worker) registerRequest() protocol.RegisterRequest {
 	}
 	return protocol.RegisterRequest{
 		WorkerID: w.id, Name: w.cfg.Name, Version: w.version, MaxConcurrent: w.cfg.MaxConcurrent, Active: len(w.slots),
-		Executors: w.runner.executors.Names(), Capabilities: w.caps, Repositories: repos, Retained: w.retained.list(),
+		Executors: w.runner.executors.Names(), Capabilities: w.Capabilities(), Repositories: repos, Retained: w.retained.list(),
 	}
 }
 

@@ -181,6 +181,24 @@ test.describe('stats', () => {
     await expect(page.locator('h1')).toContainText('window 1d');
     await expect(page.locator('section.card', { hasText: 'ad-hoc' })).toBeVisible(); // still inside 1d
   });
+
+  test('capability matrix renders per-model verified success from the seeded facts (M10)', async ({ page }) => {
+    await page.goto('/stats');
+    // The seeded ad-hoc attempts run on model haiku (class small, runner claude
+    // from the embedded model table); the capability matrix groups by model.
+    const matrix = page.locator('#capability-matrix');
+    await expect(matrix).toBeVisible();
+    const row = matrix.locator('tbody tr', { hasText: 'haiku' });
+    await expect(row).toBeVisible();
+    // Columns: Model, Class, Runner, Runs, Verified %, Samples, ...
+    await expect(row.locator('td').nth(1)).toHaveText('small');
+    await expect(row.locator('td').nth(2)).toHaveText('claude');
+    await expect(row.locator('td').nth(4)).toHaveText(/^\d+%$/);
+    // Per-runner utilization table lists the claude runner.
+    const util = page.locator('#runner-utilization');
+    await expect(util).toBeVisible();
+    await expect(util.locator('tbody tr', { hasText: 'claude' })).toBeVisible();
+  });
 });
 
 test.describe('system', () => {

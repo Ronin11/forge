@@ -3,11 +3,13 @@ package controlplane
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +84,19 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 				return "-"
 			}
 			return humanDuration(time.Duration(us) * time.Microsecond)
+		},
+		// routing decodes an attempt's stored routing decision (M10) for the
+		// task-detail page; nil (rendered as {{with}} skips) when absent or
+		// unreadable, so a pre-M10 attempt shows nothing.
+		"routing": func(raw json.RawMessage) *RoutingDecision {
+			if len(raw) == 0 {
+				return nil
+			}
+			var d RoutingDecision
+			if json.Unmarshal(raw, &d) != nil {
+				return nil
+			}
+			return &d
 		},
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(uiFS, "ui/*.html")
@@ -206,7 +221,16 @@ func (u *UI) dashboard(w http.ResponseWriter, r *http.Request) {
 			attention = append(attention, row)
 		}
 	}
-	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions, "Proposals": proposals})
+	runners := runnerHealth(workers)
+	pending := 0
+	for _, row := range rows {
+		for _, t := range row.Targets {
+			if t.State == model.Pending {
+				pending++
+			}
+		}
+	}
+	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions, "Proposals": proposals, "Runners": runners, "QueueDepth": pending})
 }
 
 func (u *UI) tasks(w http.ResponseWriter, r *http.Request) {
@@ -413,4 +437,35 @@ func (u *UI) proposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, r, "proposals.html", "Proposals", ps)
+}
+
+// runnerHealthRow is one runner's advertised health for the dashboard (M10).
+type runnerHealthRow struct {
+	Name  string
+	State string
+}
+
+// runnerHealth aggregates the runner:<name> capabilities advertised across all
+// workers into one health row per runner: the best state any worker reports
+// wins (a runner is available while any worker can run it). Sorted by name.
+func runnerHealth(workers []store.Worker) []runnerHealthRow {
+	rank := map[string]int{"ready": 3, "unauthenticated": 2, "down": 1}
+	best := map[string]string{}
+	for _, w := range workers {
+		for k, v := range w.Capabilities {
+			name, ok := strings.CutPrefix(k, "runner:")
+			if !ok {
+				continue
+			}
+			if cur, seen := best[name]; !seen || rank[v] > rank[cur] {
+				best[name] = v
+			}
+		}
+	}
+	out := make([]runnerHealthRow, 0, len(best))
+	for name, state := range best {
+		out = append(out, runnerHealthRow{Name: name, State: state})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

@@ -69,6 +69,18 @@ type AttemptFacts struct {
 	SevenDayBefore    *float64            `json:"seven_day_before,omitempty"`
 	SevenDayAfter     *float64            `json:"seven_day_after,omitempty"`
 	UtilizationDelta  *float64            `json:"utilization_delta_estimate,omitempty"`
+	// M10 cost vector and routing record (DESIGN.md §21). USD is notional on a
+	// subscription model (tokens × the model's price); FiveHourDelta and
+	// SevenDayDelta are the subscription-window movement bracketing the attempt
+	// (NULL when no samples bracket it, honestly); RunnerSeconds is agent-phase
+	// wall seconds. Runner/ModelClass/EscalatedFrom mirror the attempt.
+	USD           *float64 `json:"usd,omitempty"`
+	FiveHourDelta *float64 `json:"five_hour_delta,omitempty"`
+	SevenDayDelta *float64 `json:"seven_day_delta,omitempty"`
+	RunnerSeconds *float64 `json:"runner_seconds,omitempty"`
+	Runner        string   `json:"runner,omitempty"`
+	ModelClass    string   `json:"model_class,omitempty"`
+	EscalatedFrom string   `json:"escalated_from,omitempty"`
 	// TokensToFirstEdit is the cumulative message tokens up to the first
 	// file-mutating tool call (M11 repo briefs, DESIGN §22); NULL when the
 	// attempt never edited or the signal was unavailable.
@@ -114,15 +126,17 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 		commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
 		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
-		declared_paths, touched_paths, write_set_precision, lease_wait_us)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		declared_paths, touched_paths, write_set_precision, lease_wait_us,
+		usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.AttemptID, f.TargetID, f.WorkID, f.Routine, f.Generation, f.Project, f.Repository, f.Worker, f.Executor, f.Model, nullString(f.Effort), f.Mode, string(f.Trigger), nullString(f.PromptVersionHash), string(f.Autonomy),
 		phase("queue_wait"), phase("fetch"), phase("resolve_base"), phase("worktree_add"), phase("manifest"), phase("agent"), phase("git_inspect"), phase("verify"), phase("cleanup"), phase("total"), nullTime(f.StartedAt), formatTime(f.FinishedAt),
 		ptrInt(f.Turns), ptrInt64(f.InputTokens), ptrInt64(f.OutputTokens), ptrInt64(f.CacheReadTokens), ptrInt64(f.CacheCreation), nullFloatPtr(f.CostUSD), ptrInt(f.ToolCallsTotal), string(byName), string(timeByName), ptrInt64(f.ToolP50US), ptrInt64(f.ToolMaxUS), ptrInt(f.ToolErrors), ptrInt(f.QuestionsAsked), ptrInt64(f.WaitHumanUS), ptrInt(f.EventsTotal), ptrInt(f.EventsDropped),
 		string(f.State), ptrInt(f.ExitCode), nullString(string(f.FailureReason)), ptrBool(f.IsError), ptrInt(f.VerificationLevel), ptrBool(f.VerificationPass), boolInt(f.Retained), nullString(f.RetainedReason),
 		ptrInt(f.Commits), ptrInt(f.FilesChanged), ptrInt(f.Insertions), ptrInt(f.Deletions), ptrBool(f.Dirty), ptrBool(f.Pushed), nullString(f.Branch), nullString(f.Base), nullString(f.Head),
 		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta), ptrInt64(f.TokensToFirstEdit),
-		jsonOrNull(f.DeclaredPaths), jsonOrNull(f.TouchedPaths), nullFloatPtr(f.WriteSetPrecision), ptrInt64(f.LeaseWaitUS))
+		jsonOrNull(f.DeclaredPaths), jsonOrNull(f.TouchedPaths), nullFloatPtr(f.WriteSetPrecision), ptrInt64(f.LeaseWaitUS),
+		nullFloatPtr(f.USD), nullFloatPtr(f.FiveHourDelta), nullFloatPtr(f.SevenDayDelta), nullFloatPtr(f.RunnerSeconds), nullString(f.Runner), nullString(f.ModelClass), nullString(f.EscalatedFrom))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("facts for %s already exist: %w", f.AttemptID, ErrConflict)
@@ -182,7 +196,8 @@ const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation,
 	state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 	commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
 	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
-	declared_paths, touched_paths, write_set_precision, lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth FROM attempt_facts`
+	declared_paths, touched_paths, write_set_precision, lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth,
+	usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from FROM attempt_facts`
 
 func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFacts, error) {
 	var out []AttemptFacts
@@ -196,13 +211,16 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		var cost, fhb, fha, sdb, sda, delta, precision sql.NullFloat64
 		var declared, touched, mergeOutcome sql.NullString
 		var leaseWait, mergeWait, rebases, stackDepth sql.NullInt64
+		var usd, fhDelta, sdDelta, runnerSecs sql.NullFloat64
+		var runner, modelClass, escalatedFrom sql.NullString
 		dest := []any{&f.AttemptID, &f.TargetID, &f.WorkID, &f.Routine, &f.Generation, &f.Project, &f.Repository, &f.Worker, &f.Executor, &f.Model, &effort, &f.Mode, &f.Trigger, &promptHash, &f.Autonomy}
 		for i := range phases {
 			dest = append(dest, &phases[i])
 		}
 		dest = append(dest, &started, &finished, &turns, &in, &outT, &cacheR, &cacheC, &cost, &toolTotal, &byName, &timeByName, &p50, &maxT, &toolErr, &qAsked, &waitH, &evTotal, &evDropped,
 			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta, &firstEdit,
-			&declared, &touched, &precision, &leaseWait, &mergeWait, &rebases, &mergeOutcome, &stackDepth)
+			&declared, &touched, &precision, &leaseWait, &mergeWait, &rebases, &mergeOutcome, &stackDepth,
+			&usd, &fhDelta, &sdDelta, &runnerSecs, &runner, &modelClass, &escalatedFrom)
 		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("scan facts: %w", err)
 		}
@@ -242,6 +260,8 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		}
 		f.WriteSetPrecision, f.LeaseWaitUS, f.MergeWaitUS = floatPtr(precision), int64Ptr(leaseWait), int64Ptr(mergeWait)
 		f.RebaseAttempts, f.StackDepth, f.MergeOutcome = intPtr(rebases), intPtr(stackDepth), mergeOutcome.String
+		f.USD, f.FiveHourDelta, f.SevenDayDelta, f.RunnerSeconds = floatPtr(usd), floatPtr(fhDelta), floatPtr(sdDelta), floatPtr(runnerSecs)
+		f.Runner, f.ModelClass, f.EscalatedFrom = runner.String, modelClass.String, escalatedFrom.String
 		out = append(out, f)
 		return nil
 	})

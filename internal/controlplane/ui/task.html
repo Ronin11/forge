@@ -8,7 +8,8 @@
 <h2>{{.Target.Repository}} <span class="state {{stateClass .Target.State}}">{{.Target.State}}</span>{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>
 {{range .Attempts}}
 <dl class="kv">
-<dt>Attempt</dt><dd>{{.ID}} · launches {{.Launches}} · executor {{.Executor}} · model {{.ModelAlias}} ({{.Model}})</dd>
+<dt>Attempt</dt><dd>{{.ID}} · launches {{.Launches}} · executor {{.Executor}} · model {{.ModelAlias}} ({{.Model}}){{if .Runner}} · runner {{.Runner}}{{end}}{{if .EscalatedFrom}} · escalated from {{.EscalatedFrom}}{{end}}</dd>
+{{with routing .Routing}}<dt>Routing</dt><dd class="routing" data-routing>chosen {{.Chosen}} — {{.Why}}<table class="list"><thead><tr><th>Model</th><th>Runner</th><th>Score</th><th>Verified LB</th><th>Samples</th><th>Eligible</th><th>Reason</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{.Model}}</td><td>{{.Runner}}</td><td>{{printf "%.4f" .Score}}</td><td>{{printf "%.2f" .WilsonLB}}</td><td>{{.Successes}}/{{.Trials}}</td><td>{{.Eligible}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody></table></dd>{{end}}
 {{if .Branch}}<dt>Git</dt><dd>{{.Branch}} · base {{short .BaseCommit}} · head {{short .HeadCommit}} · commits {{.Git.Commits}} · files ±{{.Git.FilesChanged}} · pushed {{.Git.Pushed}} · dirty {{.Git.Dirty}}</dd>{{end}}
 <dt>Agent</dt><dd>turns {{.NumTurns}} · tokens in {{.Usage.InputTokens}} out {{.Usage.OutputTokens}} cache {{.Usage.CacheReadTokens}}/{{.Usage.CacheCreationTokens}} · cost {{deref .CostUSD}}{{if .SessionID}} · session {{.SessionID}}{{end}}</dd>
 {{if .Cleanup.Outcome}}<dt>Cleanup</dt><dd>{{.Cleanup.Outcome}} — {{.Cleanup.Reason}}{{if .Cleanup.Command}} · <code>{{.Cleanup.Command}}</code>{{end}}</dd>{{end}}

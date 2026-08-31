@@ -27,6 +27,16 @@ type promptInput struct {
 	// ModePreamble is the embedded default (from the registry); the live file
 	// <home>/modes/<mode>.md wins, then the repo overlay is appended.
 	ModePreamble string
+	// ModelClass is the chosen model's class (M10, DESIGN.md §21). When a live
+	// overlay <home>/modes/<mode>.<class>.md exists it is appended to the
+	// hashable template, so a class overlay changes the PromptVersion — stats
+	// then split by prompt version.
+	ModelClass string
+	// EscalationNote is the previous attempt's failure, injected into the
+	// rendered prompt (not the template) when this attempt escalates to the
+	// next model rung; the escalated_from column, not the prompt hash, tracks
+	// the escalation.
+	EscalationNote string
 	// Context Forge computed; the agent should not have to discover it.
 	DeclaredChecks []string
 	AttemptID      string
@@ -47,6 +57,16 @@ func assemblePrompt(in promptInput) (template, rendered string) {
 	if preamble != "" {
 		t.WriteString(strings.TrimRight(preamble, "\n"))
 		t.WriteString("\n\n")
+	}
+	// Model-class overlay (M10): a live <home>/modes/<mode>.<class>.md is
+	// appended to the hashable template, mirroring how the base preamble
+	// resolves the live file over the embedded default. Composing it into the
+	// template is what makes the class overlay change the PromptVersion hash.
+	if in.Home != "" && in.ModelClass != "" {
+		if b, err := os.ReadFile(filepath.Join(in.Home, "modes", in.Mode+"."+in.ModelClass+".md")); err == nil {
+			t.WriteString(strings.TrimRight(string(b), "\n"))
+			t.WriteString("\n\n")
+		}
 	}
 	if in.RepoPath != "" {
 		// The repo-scoped overlay: .forge/modes/<mode>.md inside the checkout,
@@ -73,6 +93,12 @@ func assemblePrompt(in promptInput) (template, rendered string) {
 
 	var c strings.Builder
 	c.WriteString(template)
+	if in.EscalationNote != "" {
+		// Per-attempt context: injected into the rendered prompt only, so it
+		// never enters the template hash (DESIGN.md §9.1, §21).
+		c.WriteString("\n\n")
+		c.WriteString(in.EscalationNote)
+	}
 	fmt.Fprintf(&c, "\n\nCONTEXT (computed by Forge): repository %s; attempt %s; autonomy %s.", in.Repository, in.AttemptID, in.Autonomy)
 	if len(in.DeclaredChecks) > 0 {
 		fmt.Fprintf(&c, " Declared checks Forge will re-run: %s.", strings.Join(in.DeclaredChecks, ", "))
@@ -143,6 +169,93 @@ func (s *Server) repoBrief(ctx context.Context, repo string) string {
 	return head + cutBytes(body, briefMaxBytes-len(head))
 }
 
+// escalationNoteMaxBytes caps the previous-attempt failure injected into an
+// escalated attempt's prompt.
+const escalationNoteMaxBytes = 6 << 10
+
+// escalationNote renders the previous finished attempt's outcome for an
+// escalated retry (DESIGN.md §21): its self-reported result summary and the
+// checks that failed verification, so the stronger model starts from what the
+// weaker one produced instead of a blank slate. Every failure degrades to no
+// note — a claim never fails on this.
+func (s *Server) escalationNote(ctx context.Context, targetID, currentAttemptID string) string {
+	priors, err := s.store.AttemptsForTarget(ctx, targetID)
+	if err != nil {
+		s.log.WarnContext(ctx, "escalation note: attempts", "error", err)
+		return ""
+	}
+	var prev *store.Attempt
+	for i := range priors {
+		p := priors[i]
+		if p.ID == currentAttemptID || p.FinishedAt.IsZero() {
+			continue
+		}
+		if prev == nil || p.FinishedAt.After(prev.FinishedAt) {
+			prev = &priors[i]
+		}
+	}
+	if prev == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "ESCALATION: a previous attempt with model %q did not pass verification. Build on its work; do not repeat its mistakes.", prev.ModelAlias)
+	if prev.UnverifiedReason != "" {
+		fmt.Fprintf(&b, "\nUnverified reason: %s.", prev.UnverifiedReason)
+	} else if prev.FailureReason != "" {
+		fmt.Fprintf(&b, "\nFailure reason: %s.", prev.FailureReason)
+	}
+	if summary := strings.TrimSpace(prev.ResultText); summary != "" {
+		fmt.Fprintf(&b, "\nPrevious attempt summary: %s", summary)
+	}
+	if checks := failingChecks(ctx, s, prev.ID); checks != "" {
+		fmt.Fprintf(&b, "\nFailing checks: %s", checks)
+	}
+	return cutBytes(b.String(), escalationNoteMaxBytes)
+}
+
+// failingChecks renders the names of the checks a previous attempt failed, from
+// its verification verdicts. "" when none are recorded or readable.
+func failingChecks(ctx context.Context, s *Server, attemptID string) string {
+	vs, err := s.store.VerificationsForAttempt(ctx, attemptID)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, v := range vs {
+		if v.Passed || len(v.Verdict) == 0 {
+			continue
+		}
+		var verdict struct {
+			Checks []struct {
+				Name   string `json:"name"`
+				Passed bool   `json:"passed"`
+			} `json:"checks"`
+		}
+		if json.Unmarshal(v.Verdict, &verdict) != nil {
+			continue
+		}
+		for _, c := range verdict.Checks {
+			if !c.Passed && c.Name != "" {
+				names = append(names, c.Name)
+			}
+		}
+	}
+	sort.Strings(names)
+	return strings.Join(dedupeStrings(names), ", ")
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // cutBytes cuts s to at most n bytes without splitting a UTF-8 sequence.
 func cutBytes(s string, n int) string {
 	if len(s) <= n {
@@ -158,6 +271,12 @@ func cutBytes(s string, n int) string {
 // beside assemblePrompt so the claim builder stays one line.
 func (s *Server) assembleClaimPrompt(ctx context.Context, tx *store.Tx, snap store.Routine, t store.Target, a *store.Attempt) (template, rendered string) {
 	in := promptInput{Mode: snap.Mode, RoutinePrompt: snap.Prompt, Repository: t.Repository, Autonomy: a.Autonomy, Home: s.home, AttemptID: a.ID}
+	if info, ok := s.modelInfoFor(a.ModelAlias); ok {
+		in.ModelClass = info.Class
+	}
+	if a.EscalatedFrom != "" {
+		in.EscalationNote = s.escalationNote(ctx, t.ID, a.ID)
+	}
 	if s.modes != nil {
 		if m := s.modes.Get(snap.Mode); m != nil {
 			in.ModePreamble = m.Preamble()

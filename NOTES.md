@@ -304,3 +304,52 @@ Newest entries at the bottom of each section. Dates are absolute.
   clean up normally.
 - **`stack_depth` facts are 0/1**, not the true chain length; the honest chain is on
   the edges and Pick computes it, but the integrator records only "stacked or not".
+
+## M10 runners, models, routing (DESIGN §21)
+
+- **Sonnet is classed `mid`.** With classes frontier|mid|small|local and opus=frontier,
+  haiku=small, sonnet sits between as the workhorse mid-tier model; opus stays reserved
+  for the hardest (frontier) work. All three embedded models ship `max_tier = 3` so any
+  routine tier can reach any of them. Prices are Anthropic list prices ($/MTok):
+  haiku 1/5, sonnet 3/15, opus 15/75, with cache_read = 0.1× input and cache_write =
+  1.25× input. Model ids match the M1 `defaultResolveModel` table
+  (claude-haiku-4-5-20251001, claude-sonnet-4-5, claude-opus-4-1); refresh both together.
+- **Embedded runner/model/routing defaults are NOT written by bootstrap** so a Forge
+  upgrade refreshes prices and policy. `LoadConfig` merges the embedded defaults under
+  config.toml using the decoder's `MetaData.IsDefined` — a field the operator set, even
+  to a zero (an `explore = 0`, a free `price.input = 0`), is respected; an unmentioned
+  field inherits the default. `WriteDefaultConfig` trims the trailing zero `[routing]`
+  table the encoder emits (runner/model maps are nil and already omitted).
+- **No new migration.** The initial migration already provisions every M10 column
+  (attempts.runner/escalated_from/routing; attempt_facts.usd/five_hour_delta/
+  seven_day_delta/runner_seconds/runner/model_class/escalated_from), so M10 only wires
+  them through `AttemptFacts`, `ClaimParams`, and the scanners. STYLE §10's "never edit
+  the initial migration" is honoured — nothing was edited.
+- **Routing decision storage:** the JSON decision (candidates, scores, chosen, why) is
+  stored on `attempts.routing` (the pre-provisioned JSON column), read by the task-detail
+  UI via the `routing` template func. `escalated_from` and `runner` are their own columns.
+- **Routing engages only when a routine opts in** — a `models` allowlist or an explicit
+  `tier`. A plain routine (just `model`) keeps the M1 single-model path, so existing
+  behaviour and every prior test are unchanged. When there is no allowlist but a tier is
+  set, candidates are all models with `max_tier ≥ tier`.
+- **Escalation is a deterministic ladder climb**, separate from first-attempt scoring:
+  attempt N+1 of an allowlist routine uses rung `min(priorFinishedAttempts, len-1)` with
+  the previous attempt's failure injected into the *rendered* prompt only (not the
+  hashable template — the `escalated_from` column tracks it). First-attempt selection is
+  by lowest weighted cost-vector score subject to the Wilson gate; the ladder order is
+  the escalation order and the score tie-break.
+- **Runner capacity is enforced at claim time** in `routeClaim` (via an in-transaction
+  in-flight-by-runner count), not in `Pick`: since routing chooses the model — and thus
+  the runner — at claim time, `Pick` cannot know the runner. A claim that finds no
+  runnable candidate returns nil (the target stays pending and retries), which is how two
+  capacity-1 targets serialise on a runner while worker slots are free.
+- **Cost-per-verified-success in the two subscription windows** is summed from
+  `five_hour_delta`/`seven_day_delta` facts; these are NULL for api/local runners (no
+  rate-limit samples bracket them), so those columns read `-` honestly rather than 0.
+- **Model-class prompt overlay** resolves the live `<home>/modes/<mode>.<class>.md` only
+  (no embedded per-class default exists in the mode registry); it is composed into the
+  hashable template so a class overlay changes the PromptVersion.
+- **Deviation — capability matrix axis:** the spec says "tier × model", but attempt_facts
+  carry the model's *class*, not the routine tier, so the matrix rows are per-model with
+  the class shown as the capability axis (tier is a routine property, not an attempt one).
+- No new third-party dependencies.
