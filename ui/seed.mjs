@@ -137,6 +137,26 @@ export async function seed(base, home) {
   const waitingDetail = await call('GET', `/api/v1/tasks/${waiting.work.id}`, undefined, 200);
   const questionID = waitingDetail.questions[0].id;
 
+  // 3b. A provenance tree: a root with a finished attempt (so the Work-view
+  // rollup is non-zero), two children chained to it via caused_by, and a
+  // verify-style follow-up under the first child. Created here — before the
+  // queue tasks — so the root is the only pending target when its attempt is
+  // claimed. The children stay pending and are never claimed.
+  const provRoot = await call('POST', '/api/v1/tasks', {
+    prompt: 'Provenance root: plan the refactor', repositories: ['demo'],
+  }, 201);
+  const claimP = await runAttempt('ui-prov', 'sess-ui-prov', 'forge/ui-prov', spanEvents(),
+    completeBody('succeeded', 'lease-ui-prov', { result_text: 'Planned two follow-ups.' }));
+  const provA = await call('POST', '/api/v1/work', {
+    prompt: 'Provenance child A: implement piece one', repositories: ['demo'], caused_by: provRoot.work.id,
+  }, 201);
+  const provB = await call('POST', '/api/v1/work', {
+    prompt: 'Provenance child B: implement piece two', repositories: ['demo'], caused_by: provRoot.work.id,
+  }, 201);
+  const provVerify = await call('POST', '/api/v1/work', {
+    prompt: 'Provenance verify: re-check child A', repositories: ['demo'], caused_by: provA.work.id,
+  }, 201);
+
   // 4. Open queue: A (pending), B blocked by A, C at lower priority — the same
   // shape as the Go move test, so the drag refusal (B above A) is reachable.
   const qa = await call('POST', '/api/v1/tasks', { prompt: 'Queue task A: refactor the parser', repositories: ['demo'] }, 201);
@@ -183,6 +203,10 @@ export async function seed(base, home) {
     failed: { work_id: failed.work.id, attempt_id: claimB.attempt_id },
     waiting: { work_id: waiting.work.id, attempt_id: claimC.attempt_id, question_id: questionID },
     queue: { a: qa.work.id, b: qb.work.id, c: qc.work.id },
+    provenance: {
+      root: provRoot.work.id, childA: provA.work.id, childB: provB.work.id,
+      verify: provVerify.work.id, attempt: claimP.attempt_id,
+    },
     proposals: { keep: propKeep.id, decide: propDecide.id },
     kb: { id: 'ui-test-brief', title: 'UI Test Brief' },
     repo: { name: 'demo', app_url: 'http://127.0.0.1:5173' },

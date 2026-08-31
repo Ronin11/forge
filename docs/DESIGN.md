@@ -357,6 +357,41 @@ dependency graph of non-terminal Work).
 
 Work state is **derived**, never stored (§4.2).
 
+### Provenance
+
+Every Work carries where it came from and which root intent it serves, so the
+tree is walkable both ways: backward ("why does this exist?") and forward ("what
+did it spawn?"). The root of a tree is itself a Work — a manual submission, a
+routine firing, a plan — never a new entity.
+
+- **`caused_by_work_id`** is the Work whose *execution* created this one — the
+  immediate cause. NULL for a root.
+- **`root_work_id`** is the root of this Work's tree: its own id for a root, else
+  the parent's root. It is denormalized on purpose so "give me the whole tree" is
+  one indexed query, not a recursive walk; `CreateWork` is the one place that
+  computes it and it is NOT NULL for every row it writes.
+- **`cause`** is a short machine label for the functional reason —
+  `plan_task`, `verify`, or `follow_up` — empty for roots
+  (`model.Cause`, validated alongside `Trigger`).
+
+The invariant is enforced in the store, not by callers: setting
+`caused_by_work_id` looks up the parent (which must exist) and copies its root; a
+root's `root_work_id` is its own id. The three spawn sites stamp it —
+`planFollowUps` (`plan_task`), `createFollowUp` (`verify`/`follow_up`), and an
+explicit `caused_by` on a work request — while a manual, routine-run, or
+workflow-step Work is a parentless root (a workflow run groups its siblings by
+`workflow_run_id`, not by a fabricated parent).
+
+This is distinct from **dependency edges** (`work_dependencies`, §10.3): a
+dependency is a *scheduling* relation ("B may not start until A succeeds"),
+whereas provenance is a *causal* one ("A's run created B"). A plan batch has
+both — the plan is every task's cause, and `blocked_by` edges order the tasks —
+but the two answer different questions and neither is derivable from the other.
+`plan_batch_id` and the snapshot's `verify_of` are kept as-is (existing readers);
+the provenance columns are the walkable superset, redundant on purpose. The
+lineage API (`GET /api/v1/work/{id}/lineage`) and the `/work/{id}` view read this
+tree; the schema lives in the `work_provenance` migration.
+
 ### Target
 
 `targets(id, work_id, repository_name, state, worker_id, lease_token_hash,

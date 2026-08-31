@@ -136,7 +136,7 @@ test.describe('search bar', () => {
     await q.fill('state:succeeded');
     await expect(row(s.succeeded.work_id)).toBeVisible();
     await expect(row(s.failed.work_id)).toBeHidden();
-    await expect(page.locator('[data-sb-count]')).toHaveText('1/6');
+    await expect(page.locator('[data-sb-count]')).toHaveText('2/10');
     await expect(page).toHaveURL(/q=state%3Asucceeded/);
 
     // negation flips it.
@@ -154,7 +154,7 @@ test.describe('search bar', () => {
     await expect(row(s.succeeded.work_id)).toBeVisible();
     await q.fill('repo:nope');
     await expect(row(s.succeeded.work_id)).toBeHidden();
-    await expect(page.locator('[data-sb-count]')).toHaveText('0/6');
+    await expect(page.locator('[data-sb-count]')).toHaveText('0/10');
 
     // clearing restores every row and drops ?q=.
     await q.fill('');
@@ -236,6 +236,55 @@ test.describe('task detail (waiting)', () => {
     await expect(form).toBeVisible();
     await expect(form.locator('input[name=answer]')).toBeVisible();
     await expect(form.locator('button[type=submit]')).toHaveText(/Answer/);
+  });
+});
+
+test.describe('provenance', () => {
+  test('task strip breadcrumb, back/forward links, and the Work view rollups', async ({ page }) => {
+    const s = seed();
+    const p = s.provenance;
+
+    // A middle child's task page: the strip carries a breadcrumb up to the
+    // root, a forward link to its own follow-up, and a View-work link.
+    await page.goto(`/tasks/${p.childA}`);
+    const strip = page.locator('nav.prov');
+    await expect(strip).toBeVisible();
+    // Breadcrumb links to the root.
+    await expect(strip.locator(`.prov-crumb a[href="/tasks/${p.root}"]`)).toBeVisible();
+    // Forward: the verify follow-up under child A.
+    await expect(strip.locator(`.prov-fwd a[href="/tasks/${p.verify}"]`)).toBeVisible();
+    // View work → the root's tree.
+    const viewWork = strip.locator(`a.prov-view[href="/work/${p.root}"]`);
+    await expect(viewWork).toBeVisible();
+
+    // The breadcrumb navigates to the root task.
+    await strip.locator(`.prov-crumb a[href="/tasks/${p.root}"]`).click();
+    await expect(page).toHaveURL(`/tasks/${p.root}`);
+
+    // From the root, View work opens the tree.
+    await page.locator(`a.prov-view[href="/work/${p.root}"]`).click();
+    await expect(page).toHaveURL(`/work/${p.root}`);
+
+    // The Work view lists every node in the tree and the root's rollups.
+    await expect(page.locator('h1')).toContainText(p.root.slice(0, 8));
+    const tree = page.locator('section.wtree');
+    for (const id of [p.root, p.childA, p.childB, p.verify]) {
+      await expect(tree.locator(`a.wid[href="/tasks/${id}"]`)).toBeVisible();
+    }
+    // Rollup header: the root's one attempt and its cost.
+    const roll = page.locator('.wrollup');
+    await expect(roll).toContainText('attempts');
+    await expect(roll).toContainText('$0.0123');
+    // A node link navigates to its task detail.
+    await tree.locator(`a.wid[href="/tasks/${p.childB}"]`).click();
+    await expect(page).toHaveURL(`/tasks/${p.childB}`);
+  });
+
+  test('non-root tasks carry a "part of" chip in the list', async ({ page }) => {
+    const s = seed();
+    await page.goto('/tasks?scope=all');
+    const row = page.locator(`tr[data-href="/tasks/${s.provenance.childA}"]`);
+    await expect(row.locator(`a.chip.part[href="/work/${s.provenance.root}"]`)).toBeVisible();
   });
 });
 
@@ -326,13 +375,14 @@ test.describe('stats', () => {
   test('routine table renders verified % from the seeded facts; window links work', async ({ page }) => {
     await page.goto('/stats');
     await expect(page.locator('h1')).toContainText('window 7d');
-    // Both terminal seeds are ad-hoc tasks: 2 runs, 1 verified success → 50%.
+    // The terminal ad-hoc seeds: the two originals (1 succeeded, 1 failed) plus
+    // the provenance root's succeeded attempt → 3 runs, 2 verified → 67%.
     const section = page.locator('section.card', { hasText: 'ad-hoc' });
     await expect(section).toBeVisible();
-    await expect(section.locator('h2')).toContainText('2 run(s)');
+    await expect(section.locator('h2')).toContainText('3 run(s)');
     const verifiedCell = section.locator('tbody tr').first().locator('td').nth(2);
     await expect(verifiedCell).toHaveText(/^\d+%$/);
-    await expect(verifiedCell).toHaveText('50%');
+    await expect(verifiedCell).toHaveText('67%');
     await expect(section).toContainText('$'); // cost columns rendered
     // Window links.
     await page.click('a[href="/stats?since=1d"]');

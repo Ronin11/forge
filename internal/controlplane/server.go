@@ -324,6 +324,7 @@ func (s *Server) routes() {
 		m.HandleFunc("GET "+base, s.handle(s.listWork))
 		m.HandleFunc("POST "+base, s.handle(s.createWork))
 		m.HandleFunc("GET "+base+"/{id}", s.handle(s.getWork))
+		m.HandleFunc("GET "+base+"/{id}/lineage", s.handle(s.workLineage))
 		m.HandleFunc("DELETE "+base+"/{id}", s.handle(s.cancelWork))
 		m.HandleFunc("PATCH "+base+"/{id}", s.handle(s.patchWork))
 	}

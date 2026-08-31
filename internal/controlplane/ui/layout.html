@@ -4,7 +4,7 @@
 <body>{{template "iconSprite"}}<nav class="top">
 <a class="brand" href="/"><svg class="i i-brand"><use href="#i-anvil"/></svg> Forge</a>
 <a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}><svg class="i"><use href="#i-dashboard"/></svg> Dashboard</a>
-<a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
+<a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html") (eq .Active "work.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
 <a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}><svg class="i"><use href="#i-queue"/></svg> Queue</a>
 <a href="/attention" {{if eq .Active "attention.html"}}class="active"{{end}}><svg class="i"><use href="#i-human"/></svg> Human Queue</a>
 <a href="/proposals" {{if or (eq .Active "proposals.html") (eq .Active "proposal-detail.html")}}class="active"{{end}}><svg class="i"><use href="#i-proposals"/></svg> Proposals</a>
@@ -65,7 +65,7 @@
 <a href="/system"{{if eq .Active "system.html"}} class="on"{{end}}>System</a>
 <a href="/settings/plugins"{{if eq .Active "settings-plugins.html"}} class="on"{{end}}>Plugins</a>
 </div>{{end}}
-{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} {{template "stateChip" .State}}</span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
+{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}{{if .Work.CausedByWorkID}} <a class="chip part" href="/work/{{.Work.RootWorkID}}">part of {{short .Work.RootWorkID}}</a>{{end}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} {{template "stateChip" .State}}</span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
 {{define "taskRowList"}}{{range .}}{{template "taskRow" .}}{{end}}{{end}}
 {{define "taskTable"}}<table class="list"><thead><tr><th>Task</th><th>State</th><th>Routine</th><th>Repositories</th><th>Class</th><th>Priority</th><th>Created</th></tr></thead><tbody data-task-rows>
 {{range .}}{{template "taskRow" .}}

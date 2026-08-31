@@ -256,6 +256,26 @@ const (
 	TriggerPlugin     Trigger = "plugin"
 )
 
+// Cause is the functional reason a Work was spawned — the machine label beside
+// caused_by_work_id (DESIGN.md §3 "Provenance"). Empty for a root (a manual
+// submission, a routine firing, a plan).
+type Cause string
+
+const (
+	CausePlanTask Cause = "plan_task"
+	CauseVerify   Cause = "verify"
+	CauseFollowUp Cause = "follow_up"
+)
+
+// Valid reports whether c is empty (a root) or one of the known causes.
+func (c Cause) Valid() bool {
+	switch c {
+	case "", CausePlanTask, CauseVerify, CauseFollowUp:
+		return true
+	}
+	return false
+}
+
 // BudgetClass orders Work in the queue and gates admission under the budget policy.
 type BudgetClass string
 
