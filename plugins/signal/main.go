@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -64,7 +65,7 @@ func run(log *slog.Logger) error {
 
 	b := &bridge{
 		api: newClient(socket, token),
-		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account},
+		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account, mu: &sync.Mutex{}},
 		cfg: cfg, log: log, seen: map[string]bool{},
 	}
 	log.Info("signal starting", "account", cfg.Account, "recipient", cfg.Recipient, "intake", cfg.Intake)

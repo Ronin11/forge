@@ -12,18 +12,24 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
-// signalCLI runs signal-cli for one account.
+// signalCLI runs signal-cli for one account. signal-cli holds an exclusive lock
+// on the account store, so send and receive must never run at once — mu
+// serializes every invocation.
 type signalCLI struct {
 	bin     string
 	account string
+	mu      *sync.Mutex
 }
 
 // send delivers one message to a recipient. A failure is returned, never fatal —
 // a missed message must not kill the plugin.
 func (s signalCLI) send(ctx context.Context, recipient, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, s.bin, "-a", s.account, "send", "-m", message, recipient)
@@ -57,6 +63,13 @@ type envelope struct {
 // signal-cli's line-delimited JSON; non-text envelopes (receipts, typing) yield
 // no incoming and are skipped.
 func (s signalCLI) receive(ctx context.Context, timeout time.Duration) ([]incoming, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Cap the blocking wait: while receive holds the account lock a queued send
+	// waits behind it, so keep the window short (the inbound loop just polls again).
+	if timeout > 3*time.Second {
+		timeout = 3 * time.Second
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 	secs := int(timeout.Seconds())
