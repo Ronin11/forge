@@ -1,12 +1,17 @@
 package controlplane
 
 import (
-	"html"
+	"bytes"
 	"html/template"
 	"net/http"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/microcosm-cc/bluemonday"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 
 	"forge/internal/kb"
 	"forge/internal/store"
@@ -30,12 +35,12 @@ func (u *UI) kb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The tag rail: every tag in use, with counts, for one-click filtering.
-	counts := map[string]int{}
 	all, err := u.store.ListKbNotes(ctx, "")
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
+	counts := map[string]int{}
 	for _, n := range all {
 		for _, t := range n.Tags {
 			counts[t]++
@@ -88,115 +93,45 @@ func (u *UI) kbNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, r, "kbnote.html", note.Title, kbNoteView{
-		Note: note, BodyHTML: template.HTML(renderKbMarkdown(note.Body)), Backlinks: backlinks,
+		Note: note, BodyHTML: renderKbMarkdown(note.Body), Backlinks: backlinks,
 	})
 }
 
-var (
-	reHeading  = regexp.MustCompile(`(?m)^(#{1,4})\s+(.*)$`)
-	reFence    = regexp.MustCompile("(?s)```.*?```")
-	reInline   = regexp.MustCompile("`([^`]+)`")
-	reBold     = regexp.MustCompile(`\*\*([^*]+)\*\*`)
-	reWikiLink = regexp.MustCompile(`\[\[([a-z0-9-]+)\]\]`)
-	reBullet   = regexp.MustCompile(`(?m)^[-*]\s+(.*)$`)
+// reWikiLink turns the note format's [[id]] links into ordinary Markdown links
+// to the note's page before goldmark ever sees them (goldmark has no wiki-link
+// syntax). Ids are the restricted [a-z0-9-] slug kb.WriteNew produces.
+var reWikiLink = regexp.MustCompile(`\[\[([a-z0-9-]+)\]\]`)
+
+// mdRenderer is goldmark with GitHub-flavoured Markdown (tables, strikethrough,
+// task lists, autolinks). Raw HTML in a note is escaped, not passed through
+// (WithUnsafe is deliberately off); bluemonday then sanitises the output, so a
+// note built from untrusted repository content (constitution 9) cannot inject
+// script or a javascript: URL.
+var mdRenderer = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithRendererOptions(gmhtml.WithHardWraps()),
 )
 
-// renderKbMarkdown is a deliberately small, safe markdown renderer for kb
-// note bodies: it escapes everything first, then reintroduces only a fixed
-// set of tags. Not a full CommonMark implementation — headings, fenced and
-// inline code, bold, [[wiki links]], bullet lists, and paragraphs, which is
-// all the note format uses. [[id]] links to the note's own page.
-func renderKbMarkdown(body string) string {
-	// Pull fenced code out first so its contents are not reformatted.
-	type block struct{ code string }
-	var blocks []block
-	escaped := reFence.ReplaceAllStringFunc(body, func(m string) string {
-		inner := strings.TrimSuffix(strings.TrimPrefix(m, "```"), "```")
-		inner = strings.TrimPrefix(inner, "\n")
-		blocks = append(blocks, block{code: html.EscapeString(inner)})
-		return "\x00FENCE" + itoa(len(blocks)-1) + "\x00"
-	})
-	escaped = html.EscapeString(escaped)
+// mdPolicy allows the tags GFM emits and nothing dangerous; relative URLs stay
+// so /kb/<id> links resolve.
+var mdPolicy = func() *bluemonday.Policy {
+	p := bluemonday.UGCPolicy()
+	p.AllowRelativeURLs(true)
+	p.RequireNoReferrerOnLinks(true)
+	p.AllowAttrs("class").OnElements("code", "span", "pre", "input", "li", "ul")
+	p.AllowAttrs("type", "checked", "disabled").OnElements("input") // GFM task lists
+	return p
+}()
 
-	escaped = reHeading.ReplaceAllStringFunc(escaped, func(m string) string {
-		g := reHeading.FindStringSubmatch(m)
-		level := len(g[1])
-		if level < 2 {
-			level = 2 // page already has an h1 title
-		}
-		return "\x00H" + itoa(level) + "\x00" + g[2] + "\x00/H\x00"
-	})
-	escaped = reInline.ReplaceAllString(escaped, "\x00CODE\x00$1\x00/CODE\x00")
-	escaped = reBold.ReplaceAllString(escaped, "\x00B\x00$1\x00/B\x00")
-	escaped = reWikiLink.ReplaceAllString(escaped, `<a href="/kb/$1">$1</a>`)
-
-	var out strings.Builder
-	inList := false
-	for _, para := range strings.Split(escaped, "\n\n") {
-		para = strings.TrimSpace(para)
-		if para == "" {
-			continue
-		}
-		if strings.HasPrefix(para, "\x00FENCE") {
-			idx := strings.TrimSuffix(strings.TrimPrefix(para, "\x00FENCE"), "\x00")
-			if n := atoi(idx); n >= 0 && n < len(blocks) {
-				out.WriteString("<pre class=\"kb-code\">" + blocks[n].code + "</pre>")
-			}
-			continue
-		}
-		if reBullet.MatchString(para) {
-			out.WriteString("<ul class=\"kb-list\">")
-			for _, line := range strings.Split(para, "\n") {
-				if g := reBullet.FindStringSubmatch(line); g != nil {
-					out.WriteString("<li>" + g[1] + "</li>")
-				}
-			}
-			out.WriteString("</ul>")
-			inList = true
-			continue
-		}
-		_ = inList
-		// Headings become their own blocks.
-		if strings.HasPrefix(para, "\x00H") {
-			out.WriteString(para)
-			continue
-		}
-		out.WriteString("<p>" + strings.ReplaceAll(para, "\n", "<br>") + "</p>")
+// renderKbMarkdown renders a kb note body to safe HTML: [[wiki links]] →
+// /kb/<id>, then goldmark (GFM), then bluemonday. Replaces the earlier
+// hand-rolled renderer.
+func renderKbMarkdown(body string) template.HTML {
+	pre := reWikiLink.ReplaceAllString(body, `[$1](/kb/$1)`)
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(pre), &buf); err != nil {
+		// Convert only errors on a broken writer; fall back to escaped text.
+		return template.HTML("<pre>" + template.HTMLEscapeString(body) + "</pre>")
 	}
-	s := out.String()
-	// Swap the placeholder tokens for real, safe tags.
-	repl := strings.NewReplacer(
-		"\x00H2\x00", "<h2>", "\x00H3\x00", "<h3>", "\x00H4\x00", "<h4>", "\x00/H\x00", "</h>",
-		"\x00CODE\x00", "<code>", "\x00/CODE\x00", "</code>",
-		"\x00B\x00", "<strong>", "\x00/B\x00", "</strong>",
-	)
-	s = repl.Replace(s)
-	// Close the generic </h> against the right level.
-	s = regexp.MustCompile(`<h([234])>(.*?)</h>`).ReplaceAllString(s, "<h$1>$2</h$1>")
-	return s
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return -1
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
+	return template.HTML(mdPolicy.SanitizeBytes(buf.Bytes()))
 }
