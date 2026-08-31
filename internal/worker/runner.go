@@ -159,7 +159,9 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 		}
 		caps["executor:"+name] = state
 	}
-	if _, err := exec.LookPath("bwrap"); err == nil {
+	// NewSandbox and the capability agree by construction: nil is `missing`.
+	sandbox := NewSandbox(filepath.Dir(cfg.DataDir), cfg.Sandbox)
+	if sandbox != nil {
 		caps["sandbox"] = "ready"
 	} else {
 		caps["sandbox"] = "missing"
@@ -192,7 +194,7 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 		lockFile: lock, caps: caps, slots: make(chan struct{}, cfg.MaxConcurrent), retained: &retainedSet{items: map[string]protocol.RetainedWorktree{}},
 		forgeBin: o.ForgeBin, rng: mrand.New(mrand.NewPCG(uint64(o.Clock().UnixNano()), 7)), active: map[string]context.CancelFunc{},
 	}
-	w.runner = &Runner{cfg: cfg, workerID: id, git: git, executors: executors, parsers: DefaultParsers(), manifests: manifests, daemon: client, repos: repos, log: o.Handler.For("worker.attempt"), clock: o.Clock, forgeBin: o.ForgeBin}
+	w.runner = &Runner{cfg: cfg, workerID: id, git: git, executors: executors, parsers: DefaultParsers(), manifests: manifests, daemon: client, repos: repos, log: o.Handler.For("worker.attempt"), clock: o.Clock, forgeBin: o.ForgeBin, sandbox: sandbox}
 	return w, nil
 }
 

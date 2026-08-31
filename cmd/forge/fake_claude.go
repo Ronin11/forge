@@ -24,17 +24,28 @@ import (
 // rejected so a typo in a fixture fails loudly instead of silently replaying with
 // defaults.
 type fakeMeta struct {
-	ExitCode       int             `toml:"exit_code"`
-	DelayMS        int             `toml:"delay_ms"`
-	ResumeScript   string          `toml:"resume_script"`
-	NeedsInputAt   int             `toml:"needs_input_at"`
-	RateLimitEvent *fakeRateLimit  `toml:"rate_limit_event"`
-	Files          []fakeFile      `toml:"files"`
-	LineDelays     []fakeLineDelay `toml:"line_delays"`
+	ExitCode       int               `toml:"exit_code"`
+	DelayMS        int               `toml:"delay_ms"`
+	ResumeScript   string            `toml:"resume_script"`
+	NeedsInputAt   int               `toml:"needs_input_at"`
+	RateLimitEvent *fakeRateLimit    `toml:"rate_limit_event"`
+	RateLimits     []fakeRateLimitAt `toml:"rate_limit_events"`
+	Files          []fakeFile        `toml:"files"`
+	LineDelays     []fakeLineDelay   `toml:"line_delays"`
 }
 
 // fakeRateLimit is the utilisation of the two windows a rate_limit_event reports.
 type fakeRateLimit struct {
+	FiveHour float64 `toml:"five_hour"`
+	SevenDay float64 `toml:"seven_day"`
+}
+
+// fakeRateLimitAt is one positioned rate_limit_event, emitted right after the
+// named script line — so budget and scheduler tests can script utilisation
+// rising mid-run deterministically. Line references are validated against
+// whichever script this invocation replays (script.jsonl or resume_script).
+type fakeRateLimitAt struct {
+	AtLine   int     `toml:"at_line"`
 	FiveHour float64 `toml:"five_hour"`
 	SevenDay float64 `toml:"seven_day"`
 }
@@ -70,6 +81,14 @@ func (m fakeMeta) validate(lines int) error {
 	}
 	if r := m.RateLimitEvent; r != nil && (r.FiveHour < 0 || r.SevenDay < 0) {
 		return errors.New("rate_limit_event utilisations must not be negative")
+	}
+	for _, r := range m.RateLimits {
+		if r.AtLine < 1 || r.AtLine > lines {
+			return fmt.Errorf("rate_limit_events: at_line %d is not in 1..%d", r.AtLine, lines)
+		}
+		if r.FiveHour < 0 || r.SevenDay < 0 {
+			return fmt.Errorf("rate_limit_events: utilisations for line %d must not be negative", r.AtLine)
+		}
 	}
 	for _, f := range m.Files {
 		if f.AtLine < 1 || f.AtLine > lines {
@@ -264,6 +283,10 @@ func (r *fakeReplay) run(ctx context.Context) (int, error) {
 	for _, f := range meta.Files {
 		files[f.AtLine] = append(files[f.AtLine], f)
 	}
+	ratesAt := map[int][]fakeRateLimitAt{}
+	for _, rl := range meta.RateLimits {
+		ratesAt[rl.AtLine] = append(ratesAt[rl.AtLine], rl)
+	}
 	resultAt := 0
 	for i, l := range r.fx.lines {
 		if lineType(l) == "result" {
@@ -308,6 +331,11 @@ func (r *fakeReplay) run(ctx context.Context) (int, error) {
 		}
 		for _, f := range files[n] {
 			if err := r.writeFile(ctx, f); err != nil {
+				return 1, fmt.Errorf("line %d: %w", n, err)
+			}
+		}
+		for _, rl := range ratesAt[n] {
+			if err := r.emitJSON(r.rateLimitEvent(fakeRateLimit{FiveHour: rl.FiveHour, SevenDay: rl.SevenDay})); err != nil {
 				return 1, fmt.Errorf("line %d: %w", n, err)
 			}
 		}

@@ -1,0 +1,13 @@
+exit_code = 0
+delay_ms = 2
+rate_limit_event = { five_hour = 0.81, seven_day = 0.24 }
+
+[[rate_limit_events]]
+at_line = 2
+five_hour = 0.35
+seven_day = 0.12
+
+[[rate_limit_events]]
+at_line = 3
+five_hour = 0.62
+seven_day = 0.18

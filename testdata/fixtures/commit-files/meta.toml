@@ -1,0 +1,12 @@
+exit_code = 0
+delay_ms = 2
+
+[[files]]
+at_line = 2
+path = "FORGE_NOTES.md"
+content = "# Notes\n\nWritten by the commit-files fixture.\n"
+
+[[files]]
+at_line = 4
+path = "docs/PLAN.md"
+content = "# Plan\n\n1. Write files.\n2. Claim them in the result.\n"

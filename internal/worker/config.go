@@ -30,6 +30,7 @@ type Config struct {
 	Executors    map[string]ExecutorConfig   `toml:"executors"`
 	Repositories map[string]RepositoryConfig `toml:"repositories"`
 	Greenfield   GreenfieldConfig            `toml:"greenfield"`
+	Sandbox      SandboxSettings             `toml:"sandbox"`
 	Log          logging.Config              `toml:"log"`
 
 	// path is where the file was read from; relative paths resolve against it.
@@ -56,6 +57,16 @@ type GreenfieldConfig struct {
 	ProjectsRoot string `toml:"projects_root"`
 }
 
+// SandboxSettings is [sandbox] in worker.toml (DESIGN.md §19). ClaudeWritePaths
+// are the session/state paths under $HOME that the claude executor must be able
+// to write; everything else under $HOME is a tmpfs inside the sandbox. The
+// shipped default (~/.claude and ~/.claude.json read-write) is the safe but
+// coarse fallback until the strace pass narrows it to the exact session paths
+// and DESIGN.md records the list.
+type SandboxSettings struct {
+	ClaudeWritePaths []string `toml:"claude_write_paths"`
+}
+
 // DefaultConfig is what bootstrap writes when worker.toml is absent; forgeHome
 // is expanded into the paths.
 func DefaultConfig(forgeHome, forgeBinary string) Config {
@@ -77,10 +88,22 @@ func DefaultConfig(forgeHome, forgeBinary string) Config {
 				Command:      []string{forgeBinary, "fake-claude", "--fixture", "{{fixture}}", "--model", "{{model}}", "--max-turns", "{{max_turns}}", "--mcp-config", "{{mcp_config}}"},
 				Output:       "claude-stream-json",
 				Capabilities: []string{"allowed_tools", "json_schema", "resume"},
+				// The fake executor replays fixtures in tests and smoke, on
+				// machines that may not have bwrap; it spends no budget and
+				// touches only its worktree, so it runs unsandboxed.
+				Sandbox: new(bool),
 			},
 		},
 		Repositories: map[string]RepositoryConfig{},
+		Sandbox:      SandboxSettings{ClaudeWritePaths: defaultClaudeWritePaths()},
 	}
+}
+
+// defaultClaudeWritePaths is the placeholder writable-exception list for the
+// claude executor's state (SandboxSettings). Coarse on purpose: the whole
+// config dir and the top-level state file, until strace narrows it.
+func defaultClaudeWritePaths() []string {
+	return []string{"~/.claude", "~/.claude.json"}
 }
 
 // LoadConfig reads and validates worker.toml. Unknown keys are errors: a typo in
@@ -183,6 +206,20 @@ func (c *Config) finish() error {
 			return fmt.Errorf("repository %s: project: %w", name, err)
 		}
 		c.Repositories[name] = r
+	}
+	if len(c.Sandbox.ClaudeWritePaths) == 0 {
+		c.Sandbox.ClaudeWritePaths = defaultClaudeWritePaths()
+	}
+	for i, p := range c.Sandbox.ClaudeWritePaths {
+		p = expand(p)
+		// The write paths become read-write bind mounts inside the sandbox;
+		// the paths §19 says are never exposed cannot be smuggled in here.
+		for _, forbidden := range []string{filepath.Join(home, ".ssh"), filepath.Join(home, ".config", "gh")} {
+			if p == forbidden || strings.HasPrefix(p, forbidden+string(filepath.Separator)) {
+				return fmt.Errorf("sandbox: claude_write_paths must not expose %s", forbidden)
+			}
+		}
+		c.Sandbox.ClaudeWritePaths[i] = p
 	}
 	if err := c.Log.Validate(); err != nil {
 		return err

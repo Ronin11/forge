@@ -62,6 +62,9 @@ type Runner struct {
 	log      *slog.Logger
 	clock    func() time.Time
 	forgeBin string
+	// sandbox wraps executor launches in bubblewrap (DESIGN §19); nil when
+	// bwrap is missing, which the worker advertises as `sandbox: missing`.
+	sandbox *Sandbox
 	// repoLocks serialise git metadata operations per checkout.
 	repoLocks sync.Map // name → *sync.Mutex
 }
@@ -358,6 +361,12 @@ func (a *attempt) validate() error {
 	if _, ok := a.r.executors[c.Executor]; !ok {
 		return fmt.Errorf("executor %s is not configured", c.Executor)
 	}
+	// Belt and braces under DESIGN §19's routing rule: a routine with
+	// require_sandbox should never be routed to a sandbox-missing worker, and
+	// if it is anyway, the claim fails loudly instead of running unsandboxed.
+	if c.Policy.RequireSandbox && a.r.sandbox == nil {
+		return fmt.Errorf("routine requires a sandbox but bwrap is missing on this worker")
+	}
 	if c.TimeoutSeconds <= 0 || c.TimeoutSeconds > 8*3600 {
 		return fmt.Errorf("timeout %d out of range", c.TimeoutSeconds)
 	}
@@ -572,6 +581,50 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	if err != nil {
 		span.End(err, nil)
 		return ParseResult{}, ExitStatus{Code: -1}, err
+	}
+	if a.r.sandbox != nil && a.r.cfg.Executors[c.Executor].SandboxEnabled() {
+		proxy, perr := StartNetProxy(c.Policy.AllowHosts, func(host string) {
+			a.emitter.Lifecycle("net.denied", map[string]any{"host": host})
+		}, a.log)
+		if perr != nil {
+			span.End(perr, nil)
+			return ParseResult{}, ExitStatus{Code: -1}, perr
+		}
+		// The proxy lives exactly as long as the launch; runAgent returns
+		// only after the process has exited (p.Wait below).
+		defer func() {
+			if cerr := proxy.Close(); cerr != nil {
+				a.log.WarnContext(ctx, "netproxy close", "error", cerr)
+			}
+		}()
+		spec := SandboxSpec{
+			Worktree:     m.WorktreePath,
+			ArtifactsDir: a.artifactsDir(),
+			MCPConfig:    mcpConfig,
+			ExecutorPath: cmd.Path,
+			ForgeBin:     a.r.forgeBin,
+			ProxyURL:     proxy.URL(),
+			Env:          cmd.Env,
+		}
+		// The MCP config's FORGE_SOCKET must resolve inside the sandbox so
+		// `forge mcp` (a child of the executor) still reaches the daemon.
+		if socket, ok := strings.CutPrefix(a.r.cfg.Daemon, "unix://"); ok {
+			spec.Socket = socket
+		}
+		// git inside the worktree needs the checkout's gitdir (the worktree's
+		// .git file points there and commits write its object store).
+		if a.repo != nil && !a.isGreenfield() {
+			spec.RepoGitDir = filepath.Join(a.repo.Path, ".git")
+		}
+		if fixture != "" {
+			spec.ExtraRO = []string{fixture}
+		}
+		cmd, err = a.r.sandbox.Wrap(cmd, spec)
+		if err != nil {
+			span.End(err, nil)
+			return ParseResult{}, ExitStatus{Code: -1}, err
+		}
+		a.emitter.Lifecycle("sandboxed", map[string]any{"proxy": proxy.URL(), "allow_hosts": len(c.Policy.AllowHosts)})
 	}
 	if err := os.MkdirAll(filepath.Dir(a.outputPath()), 0o700); err != nil {
 		span.End(err, nil)
