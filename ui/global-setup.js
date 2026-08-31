@@ -12,7 +12,7 @@ const BASE = 'http://127.0.0.1:7346'; // NOT 7340: a live dev daemon may own it
 // deliberately not asserted here: the daemon spawns its own local worker, which
 // registers at an arbitrary moment after start.
 const EMPTY_CHECKS = [
-  { path: '/', wants: ['No tasks yet', 'Nothing running.'] },
+  { path: '/', wants: ['No tasks yet', 'Nothing running.', 'No activity in this window.'] },
   { path: '/tasks', wants: ['No tasks yet'] },
   { path: '/queue', wants: ['The queue is empty.'] },
   { path: '/attention', wants: ['Nothing is waiting on you.'] },

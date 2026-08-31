@@ -1,5 +1,15 @@
 {{template "head" .}}
 <h1>Dashboard</h1>
+<section class="tl" data-timeline-live>
+<h2>Timeline</h2>
+<div class="tl-controls">
+<div class="tl-group" role="group" aria-label="Window"><button type="button" data-tl-window="15m">15m</button><button type="button" data-tl-window="1h" class="on">1h</button><button type="button" data-tl-window="6h">6h</button></div>
+<div class="tl-group" role="group" aria-label="View"><button type="button" data-tl-view="attempt">By attempt</button><button type="button" data-tl-view="task" class="on">By task</button><button type="button" data-tl-view="repo">By repo</button></div>
+</div>
+<div class="tl-axis" aria-hidden="true"></div>
+<div class="tl-lanes" role="list"></div>
+<p class="tl-empty empty">No activity in this window.</p>
+</section>
 <section class="gauges" data-usage hidden>
 <div class="gauge" data-window="five_hour"><h2>5-hour window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>
 <div class="gauge" data-window="seven_day"><h2>7-day window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>

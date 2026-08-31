@@ -87,3 +87,29 @@ code.cmd-copy::after{content:"\29C9";margin-left:.45em;opacity:.5;font-size:.85e
 code.cmd-copy:hover::after{opacity:.8}
 code.cmd-copy.copied{background:rgba(47,143,78,.16);border-color:var(--ok)}
 code.cmd-copy.copied::after{content:"copied \2713";margin-left:.5em;color:var(--ok);opacity:1;font-size:.78em;font-family:inherit}
+
+/* Dashboard timeline */
+.tl{margin:0 0 1.4rem}
+.tl-controls{display:flex;flex-wrap:wrap;gap:.8rem;margin:.2rem 0 .6rem}
+.tl-group{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.tl-group button{font:inherit;font-size:.8rem;padding:.25rem .6rem;border:0;border-left:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
+.tl-group button:first-child{border-left:0}
+.tl-group button:hover{color:var(--fg)}
+.tl-group button.on{background:var(--fg);color:var(--bg)}
+.tl-group button:focus-visible{outline:2px solid var(--run);outline-offset:-2px}
+.tl-axis{position:relative;height:1.1rem;margin-left:9.5rem;font-variant-numeric:tabular-nums;color:var(--muted);font-size:.72rem}
+.tl-tick{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap}
+.tl-lanes{display:flex;flex-direction:column;gap:.15rem;max-width:100%}
+.tl-lane{display:grid;grid-template-columns:9rem 1fr;gap:.5rem;align-items:start}
+.tl-label{font-size:.78rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:.15rem}
+.tl-track{position:relative;min-height:1.35rem;border-top:1px solid var(--line)}
+.tl-bar{position:absolute;height:.95rem;border-radius:3px;overflow:hidden;cursor:pointer;display:flex;background:var(--muted)}
+.tl-bar:hover{filter:brightness(1.08)}
+.tl-bar:focus-visible{outline:2px solid var(--fg);outline-offset:1px}
+.tl-seg{display:block;min-width:1px;height:100%}
+.tl-empty,.tl-more{margin:.5rem 0 0;font-size:.82rem}
+.tl-tip{position:fixed;z-index:50;max-width:20rem;background:var(--card);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.18);padding:.4rem .55rem;font-size:.76rem;line-height:1.35;pointer-events:none;color:var(--fg)}
+.tl-tip .m{color:var(--muted)}
+.tl-bar.tl-running{background-image:linear-gradient(90deg,rgba(255,255,255,.18) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.18) 50%,rgba(255,255,255,.18) 75%,transparent 75%,transparent);background-size:.7rem .7rem}
+@media(prefers-reduced-motion:no-preference){.tl-bar.tl-running{animation:tl-stripe 1s linear infinite}}
+@keyframes tl-stripe{to{background-position:.7rem 0}}

@@ -167,3 +167,255 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
     });
   });
 })();
+
+// Dashboard timeline: a live wall-clock view of everything active in a trailing
+// window. Two controls (window + view) persist in the URL hash (#tl=view,window)
+// so a reload keeps them. It re-fetches on a window change and every 10s so
+// running bars grow and `now` advances — but never while the pointer is over the
+// section (that would yank the tooltip). Colours use theme tokens only.
+(function () {
+  var root = document.querySelector('[data-timeline-live]');
+  if (!root) return;
+  var axisEl = root.querySelector('.tl-axis');
+  var lanesEl = root.querySelector('.tl-lanes');
+  var emptyEl = root.querySelector('.tl-empty');
+  var windows = ['15m', '1h', '6h'];
+  var views = ['attempt', 'task', 'repo'];
+  var state = { window: '1h', view: 'task' };
+  var data = null;      // last fetch: {now, since, window_seconds, items}
+  var hovering = false; // pointer over the section: skip auto-refresh
+
+  // Phase → colour: agent is the dominant work (--run), verify is --wait, the
+  // git/setup phases are muted greys, cleanup the faintest. rgba() greys read
+  // the same in light and dark.
+  var phaseColor = {
+    queue_wait: 'rgba(128,128,128,.22)',
+    fetch: 'rgba(128,128,128,.3)',
+    resolve_base: 'rgba(128,128,128,.4)',
+    worktree_add: 'rgba(128,128,128,.35)',
+    manifest: 'rgba(128,128,128,.48)',
+    agent: 'var(--run)',
+    git_inspect: 'rgba(128,128,128,.55)',
+    verify: 'var(--wait)',
+    cleanup: 'rgba(128,128,128,.16)'
+  };
+
+  // State → colour where phases are absent (running or a finished attempt with
+  // no facts). The running family collapses to --run.
+  function stateColor(s) {
+    switch (s) {
+      case 'succeeded': case 'merged': case 'applied': return 'var(--ok)';
+      case 'failed': case 'unverified': case 'conflict': case 'cancelled': case 'partial': return 'var(--bad)';
+      case 'running': case 'merging': case 'claimed': case 'preparing': case 'verifying': return 'var(--run)';
+      case 'waiting_human': return 'var(--wait)';
+      default: return 'var(--muted)';
+    }
+  }
+
+  var tip = document.createElement('div');
+  tip.className = 'tl-tip';
+  tip.hidden = true;
+  document.body.appendChild(tip);
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function clock(ms) { var d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function fmtDur(us) {
+    var s = us / 1e6;
+    if (s < 1) return Math.round(us / 1000) + 'ms';
+    if (s < 60) return s.toFixed(1) + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm' + pad(Math.round(s) % 60) + 's';
+    return Math.floor(m / 60) + 'h' + pad(m % 60) + 'm';
+  }
+  function isRunning(it) { return !it.finished_at || it.finished_at.indexOf('0001-01-01') === 0; }
+  function startMs(it) { return Date.parse(it.started_at); }
+  function endMs(it, nowMs) { return isRunning(it) ? nowMs : Date.parse(it.finished_at); }
+  function durLabel(it, nowMs) {
+    if (isRunning(it)) return 'running ' + Math.max(1, Math.round((nowMs - startMs(it)) / 60000)) + 'm';
+    return fmtDur(endMs(it, nowMs) - startMs(it));
+  }
+
+  function readHash() {
+    var m = /(?:^|[#&])tl=([a-z]+),([0-9a-z]+)/i.exec(location.hash);
+    if (!m) return;
+    if (views.indexOf(m[1]) >= 0) state.view = m[1];
+    if (windows.indexOf(m[2]) >= 0) state.window = m[2];
+  }
+  function writeHash() { location.hash = 'tl=' + state.view + ',' + state.window; }
+  function syncButtons() {
+    root.querySelectorAll('[data-tl-window]').forEach(function (b) { b.classList.toggle('on', b.dataset.tlWindow === state.window); });
+    root.querySelectorAll('[data-tl-view]').forEach(function (b) { b.classList.toggle('on', b.dataset.tlView === state.view); });
+  }
+
+  function renderAxis(sinceMs, nowMs) {
+    axisEl.textContent = '';
+    var n = 5;
+    for (var i = 0; i < n; i++) {
+      var t = sinceMs + (nowMs - sinceMs) * i / (n - 1);
+      var tick = document.createElement('span');
+      tick.className = 'tl-tick';
+      tick.style.left = (100 * i / (n - 1)) + '%';
+      tick.textContent = clock(t);
+      axisEl.appendChild(tick);
+    }
+  }
+
+  function showTip(it, nowMs, seg) {
+    var lines = [
+      '<b>' + esc(it.title || it.work_id) + '</b>',
+      '<span class="m">' + esc(it.routine || '?') + ' · ' + esc(it.repository || '?') + '</span>',
+      '<span class="m">' + esc(it.state) + '</span>',
+      '<span class="m">start ' + clock(startMs(it)) + ' · ' + esc(durLabel(it, nowMs)) + '</span>'
+    ];
+    if (seg && seg.dataset.phase) {
+      lines.push('<span class="m">' + esc(seg.dataset.phase) + ' ' + fmtDur(Number(seg.dataset.dur)) + '</span>');
+    }
+    tip.innerHTML = lines.join('<br>');
+    tip.hidden = false;
+  }
+  function moveTip(x, y) {
+    var w = tip.offsetWidth, h = tip.offsetHeight;
+    var left = Math.min(x + 14, window.innerWidth - w - 8);
+    var top = Math.min(y + 14, window.innerHeight - h - 8);
+    tip.style.left = Math.max(4, left) + 'px';
+    tip.style.top = Math.max(4, top) + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+
+  function bindBar(bar, it, nowMs) {
+    function go() { window.location = '/tasks/' + it.work_id; }
+    bar.addEventListener('click', go);
+    bar.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+    });
+    bar.addEventListener('mouseenter', function (e) { showTip(it, nowMs, null); moveTip(e.clientX, e.clientY); });
+    bar.addEventListener('mousemove', function (e) {
+      var seg = e.target.classList && e.target.classList.contains('tl-seg') ? e.target : null;
+      showTip(it, nowMs, seg);
+      moveTip(e.clientX, e.clientY);
+    });
+    bar.addEventListener('focus', function () {
+      var r = bar.getBoundingClientRect();
+      showTip(it, nowMs, null);
+      moveTip(r.left, r.bottom);
+    });
+    bar.addEventListener('mouseleave', hideTip);
+    bar.addEventListener('blur', hideTip);
+  }
+
+  function renderBar(it, subRow, sinceMs, nowMs, span) {
+    var s = Math.max(startMs(it), sinceMs), e = Math.min(endMs(it, nowMs), nowMs);
+    var bar = document.createElement('div');
+    bar.className = 'tl-bar';
+    bar.style.left = ((s - sinceMs) / span * 100) + '%';
+    bar.style.width = Math.max(0.6, (e - s) / span * 100) + '%';
+    bar.style.top = (subRow * 1.15 + 0.1) + 'rem';
+    bar.setAttribute('tabindex', '0');
+    bar.setAttribute('role', 'listitem');
+    bar.setAttribute('aria-label', (it.title || it.work_id) + ', ' + it.state + ', start ' + clock(startMs(it)) + ', ' + durLabel(it, nowMs));
+    if (isRunning(it)) {
+      bar.classList.add('tl-running');
+      bar.style.background = stateColor(it.state);
+    } else if (it.phases && it.phases.length) {
+      var sum = 0;
+      it.phases.forEach(function (p) { sum += p.duration_us; });
+      it.phases.forEach(function (p) {
+        var seg = document.createElement('span');
+        seg.className = 'tl-seg';
+        seg.style.flexGrow = String(p.duration_us);
+        seg.style.background = phaseColor[p.name] || 'var(--muted)';
+        seg.dataset.phase = p.name;
+        seg.dataset.dur = p.duration_us;
+        bar.appendChild(seg);
+      });
+      bar.style.boxShadow = 'inset 3px 0 ' + stateColor(it.state) + ', inset -3px 0 ' + stateColor(it.state);
+    } else {
+      bar.style.background = stateColor(it.state);
+    }
+    bindBar(bar, it, nowMs);
+    return bar;
+  }
+
+  function renderLane(lane, sinceMs, nowMs, span) {
+    var row = document.createElement('div');
+    row.className = 'tl-lane';
+    var label = document.createElement('div');
+    label.className = 'tl-label';
+    label.textContent = lane.label;
+    label.title = lane.label;
+    var track = document.createElement('div');
+    track.className = 'tl-track';
+    // Greedy packing: place each bar in the first sub-row whose last bar ends
+    // before this one starts, so overlapping bars never visually collide.
+    var bars = lane.items.slice().sort(function (a, b) { return startMs(a) - startMs(b); });
+    var rowEnd = [];
+    bars.forEach(function (it) {
+      var s = startMs(it), e = endMs(it, nowMs), r = 0;
+      for (; r < rowEnd.length; r++) { if (rowEnd[r] <= s) break; }
+      rowEnd[r] = e;
+      track.appendChild(renderBar(it, r, sinceMs, nowMs, span));
+    });
+    track.style.height = (Math.max(1, rowEnd.length) * 1.15 + 0.2) + 'rem';
+    row.appendChild(label);
+    row.appendChild(track);
+    return row;
+  }
+
+  function render() {
+    if (!data) return;
+    var sinceMs = Date.parse(data.since), nowMs = Date.parse(data.now);
+    var span = (nowMs - sinceMs) || 1;
+    renderAxis(sinceMs, nowMs);
+    emptyEl.hidden = data.items.length > 0;
+    var groups = {}, order = [];
+    data.items.forEach(function (it) {
+      var key, label;
+      if (state.view === 'attempt') { key = it.attempt_id; label = it.attempt_id.slice(0, 8); }
+      else if (state.view === 'repo') { key = it.repository || '(none)'; label = key; }
+      else { key = it.work_id; label = it.title || it.work_id.slice(0, 8); }
+      var g = groups[key];
+      if (!g) { g = groups[key] = { label: label, items: [], latest: 0 }; order.push(key); }
+      g.items.push(it);
+      var e = endMs(it, nowMs);
+      if (e > g.latest) g.latest = e;
+    });
+    var lanes = order.map(function (k) { return groups[k]; });
+    lanes.sort(function (a, b) { return b.latest - a.latest; }); // most-recent activity first
+    var extra = 0;
+    if (lanes.length > 40) { extra = lanes.length - 40; lanes = lanes.slice(0, 40); }
+    lanesEl.textContent = '';
+    lanes.forEach(function (lane) { lanesEl.appendChild(renderLane(lane, sinceMs, nowMs, span)); });
+    if (extra > 0) {
+      var more = document.createElement('p');
+      more.className = 'tl-more empty';
+      more.textContent = '+' + extra + ' more';
+      lanesEl.appendChild(more);
+    }
+  }
+
+  function load() {
+    return fetch('/api/v1/timeline?window=' + encodeURIComponent(state.window))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { if (d) { data = d; render(); } })
+      .catch(function () {});
+  }
+
+  root.querySelectorAll('[data-tl-window]').forEach(function (b) {
+    b.addEventListener('click', function () { state.window = b.dataset.tlWindow; syncButtons(); writeHash(); load(); });
+  });
+  root.querySelectorAll('[data-tl-view]').forEach(function (b) {
+    b.addEventListener('click', function () { state.view = b.dataset.tlView; syncButtons(); writeHash(); render(); });
+  });
+  root.addEventListener('pointerenter', function () { hovering = true; });
+  root.addEventListener('pointerleave', function () { hovering = false; });
+
+  readHash();
+  syncButtons();
+  load();
+  window.setInterval(function () { if (!hovering) load(); }, 10000);
+})();

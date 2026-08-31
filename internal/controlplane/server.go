@@ -235,6 +235,7 @@ func (s *Server) routes() {
 	s.kbRoutes(m)
 	s.usageRoutes(m)
 	s.statsRoutes(m)
+	s.timelineRoutes(m)
 	s.verifyRoutes(m)
 	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 

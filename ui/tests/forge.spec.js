@@ -49,6 +49,33 @@ test.describe('dashboard', () => {
   });
 });
 
+test.describe('dashboard timeline', () => {
+  test('renders bars, a hover tooltip, the repo toggle, and a bar click navigates', async ({ page }) => {
+    const s = seed();
+    await page.goto('/');
+    // The timeline fetches /api/v1/timeline and draws a bar per seeded attempt.
+    const live = page.locator('[data-timeline-live]');
+    await expect(live.locator('.tl-bar').first()).toBeVisible();
+
+    // Hover the succeeded task's bar → the reused tooltip shows the task title.
+    const lane = page.locator('.tl-lane', { hasText: 'Inventory the demo repo' });
+    await lane.locator('.tl-bar').first().hover();
+    const tip = page.locator('.tl-tip');
+    await expect(tip).toBeVisible();
+    await expect(tip).toContainText('Inventory the demo repo');
+
+    // "By repo" regroups: lane labels become the repository name; bars stay.
+    await page.click('[data-tl-view="repo"]');
+    await expect(page.locator('.tl-label', { hasText: 'demo' }).first()).toBeVisible();
+    await expect(live.locator('.tl-bar').first()).toBeVisible();
+
+    // Back to "By task"; clicking that task's bar opens its detail page.
+    await page.click('[data-tl-view="task"]');
+    await lane.locator('.tl-bar').first().click();
+    await expect(page).toHaveURL(`/tasks/${s.succeeded.work_id}`);
+  });
+});
+
 test.describe('tasks', () => {
   test('lists every seeded task and a row click navigates to the detail', async ({ page }) => {
     const s = seed();
