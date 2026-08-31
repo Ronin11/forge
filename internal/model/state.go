@@ -105,6 +105,15 @@ func Active(s State) bool {
 	return s == Claimed || s == Preparing || s == Running
 }
 
+// HoldsWriteSet reports whether a Target in s holds its Work's path lease
+// (DESIGN.md §10.2, §20): the write set is leased from claim until the agent
+// work is decided. waiting_human and the merge states hold no lease — a
+// resume re-acquires it at claim, and the merge queue serialises per
+// repository on its own.
+func HoldsWriteSet(s State) bool {
+	return s == Claimed || s == Preparing || s == Running || s == Verifying
+}
+
 // IsSuccess is the one definition of "the agent's work was accepted": stats'
 // verified success, on:success dependencies, and the derived Work state all use
 // it. For integrating Work the merge states are successes in flight.

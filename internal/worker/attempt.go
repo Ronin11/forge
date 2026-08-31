@@ -441,10 +441,23 @@ func (a *attempt) prepareWorktree(ctx context.Context, wt, branch string) error 
 		}
 
 		span = a.emitter.StartSpan("resolve_base", "resolve_base", "", nil)
-		baseBranch, baseCommit, err = g.ResolveBase(ctx, a.repo, "")
-		span.End(err, map[string]any{"branch": baseBranch, "commit": baseCommit})
-		if err != nil {
-			return fmt.Errorf("resolve base for %s: %w", c.Repository, err)
+		if sb := c.StackBase; sb != nil {
+			// A stacked attempt (DESIGN.md §20) starts on the dependency's
+			// branch head, pinned at claim time. The dependency's branch was
+			// created in this checkout, so the commit is local; a fetch
+			// would not help if it is missing.
+			_, err = g.Run(ctx, a.repo.Path, "rev-parse", "--verify", sb.Commit+"^{commit}")
+			baseBranch, baseCommit = sb.Branch, sb.Commit
+			span.End(err, map[string]any{"branch": baseBranch, "commit": baseCommit, "stacked_on": sb.WorkID, "depth": sb.Depth})
+			if err != nil {
+				return fmt.Errorf("stack base %s for %s is not present: %w", sb.Commit, c.Repository, err)
+			}
+		} else {
+			baseBranch, baseCommit, err = g.ResolveBase(ctx, a.repo, "")
+			span.End(err, map[string]any{"branch": baseBranch, "commit": baseCommit})
+			if err != nil {
+				return fmt.Errorf("resolve base for %s: %w", c.Repository, err)
+			}
 		}
 	}
 	a.heartbeat(ctx, protocol.HeartbeatRequest{State: model.Preparing, Phase: "resolve_base"})

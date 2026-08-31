@@ -218,3 +218,89 @@ Newest entries at the bottom of each section. Dates are absolute.
 - **daemon status shows worker pid 0** after an exec-restart or when the worker was adopted rather than spawned (the pid is only recorded at spawn); derive it from the data-dir lock holder in M7.
 - **service install with a daemon-spawned worker running**: the old worker holds the data-dir lock, so forge-worker.service flaps until that worker exits (hand-over: kill the old worker, reset-failed, start the unit). init --service could offer this hand-over.
 - **smoke-m6.sh step 5 journal check** reads only the first page of /api/v1/journal; page to the tail (the daemon.draining/daemon.restarted rows are there — verified by hand).
+
+## M8 sandbox — live-verification findings (overnight, needs morning review)
+- The mise-shim `claude` on PATH cannot run inside the sandbox (it tries to
+  fetch/install via network and hits the netproxy deny). The LIVE ~/.forge/worker.toml
+  executor command was repointed at the resolved real binary
+  (~/.local/share/mise/installs/claude/<ver>/claude). Bootstrap still writes bare
+  "claude"; doctor/init should resolve the real binary for the sandbox, or the mise
+  shim path be added to claude_write_paths + PATH. MORNING ITEM.
+- A sandboxed ssh-probe attempt's result listed HOME as containing .cache/.claude/
+  .claude.json/.forge/.local/Projects but NOT ~/.ssh (keymat grep = 0, the security
+  goal held). Confirm whether that home view is the sandboxed tmpfs (with bind mounts
+  for .claude write-paths + the .forge socket) or leakage of the real home — the
+  presence of Projects/.local is unexpected. Verify $HOME is a clean tmpfs and no
+  sibling checkout under ~/Projects is visible. MORNING ITEM (security).
+- **2026-08-30 · M9 build decisions.** The integrator is DAEMON-side V0
+  (`internal/integrator`, its own package so it may import both `worker` — Git,
+  RunChecks, ForgeToml — and `store`, which controlplane-by-convention and worker-by-rule
+  cannot combine): one serial loop per daemon, oldest `queued_for_merge` per repository
+  per tick, git work in a scratch clone under `<home>/integrator/<repo>/<target8>`
+  cloned from the REGISTERED CHECKOUT (reads only; constitution 1), integration branch
+  fetched from and pushed to the checkout's real origin URL. `merging` is held without
+  a lease; a crash leaves a leaseless `merging` row the next tick requeues
+  (`recoverMerging`) — the DESIGN §4.1 worker-side merge claim is deferred.
+  **Mergiraf wiring that actually works:** a plain `git rebase` with
+  `merge.conflictstyle=zdiff3` via `GIT_CONFIG_*` env, then `mergiraf solve
+  --keep-backup=false` per conflicted file, `git add`, `rebase --continue` (looped) —
+  no `.gitattributes`, no merge-driver config, verified live on an adjacent-addition
+  Go conflict. Anything mergiraf cannot solve → `conflict`, human queue, scratch clone
+  retained (`forge task requeue` re-enters). Checks failing on the rebased result →
+  `unverified` `check_failed:<name>`. Push goes through ONE function
+  (`integrator.PushIntegration`): branch must be `integration_branch` or match
+  `task_branches` from the repo's forge.toml, argv is `push <url>
+  HEAD:refs/heads/<branch>` by construction, and a test greps the package source for
+  force flags and +refspecs.
+- **2026-08-30 · M9 lease rules.** Write-set leases live in `path_leases`, inserted at
+  claim with the EFFECTIVE globs (`controlplane.EffectiveGlobs`: undeclared = `["**"]`;
+  deps or lockfile-touching globs widen with the implicit exclusive lockfile lease
+  go.mod/go.sum/package.json/*.lock) and deleted by `Transition` when the Target
+  leaves `model.HoldsWriteSet` (claimed/preparing/running/verifying). Intersection is
+  conservative-with-proofs (`globPairIntersects`): literals compare with a `/`
+  boundary, globs by literal-prefix divergence, and single-segment globs (`*.lock`)
+  meet slash-carrying globs only at the bare first directory — so `docs/**` vs
+  `internal/*` and `*.lock` vs `docs/**` are disjoint while anything vs `**`
+  intersects. Non-writing modes (WritesNone/KbOnly: verify, plan) are LEASE-EXEMPT in
+  both directions — without this the L2 verify follow-up deadlocks against its own
+  subject, which holds the lease through `verifying`. `lease_wait_us` is derived from
+  a one-time `target.lease_blocked` journal row written the first time a claim passes
+  a Target over for `path_lease` (wall clock, blocked→claimed).
+- **2026-08-30 · M9 plan/integrate modes and facts.** `plan` (L0, WritesNone,
+  interactive) returns a required `tasks[]`; the daemon creates the batch inside the
+  completion transaction (`planFollowUps`): one `run`-mode Work per task (deliberate:
+  L1 is the level the merge queue re-checks, and an `implement` batch would multiply
+  into L2 verify chains), `plan_batch_id` set, edges from `blocked_by` indexes with
+  `stack_on` on the edge; the plan Work's own `integrate` flag is CLEARED at creation
+  (a non-writing mode has nothing to merge — otherwise `succeeded` is never terminal)
+  and travels in the snapshot as the batch-inheritance hint. Facts for integrating
+  attempts are inserted at `succeeded` (before `queued_for_merge`), and the integrator
+  fills merge_wait_us/rebase_attempts/merge_outcome/stack_depth NULL→value once
+  (`UpdateIntegrationFacts`, refusing a second fill) — only for `merged` and
+  `checks_failed`; a `conflict` is not terminal and keeps the columns NULL for the
+  eventual real outcome. `touched_paths` come from the L0-checked envelope
+  `changes[]`; `write_set_precision` uses the scheduler's own matcher; both NULL when
+  underivable. Stacking is implemented end to end: a `stack_on` edge lets the claim
+  pin `Claim.StackBase` to the unmerged dependency's branch head (recorded as
+  `attempts.stack_base_commit`, surviving claim replays), the worker resolves the base
+  there, and Pick refuses chains deeper than `[integration] max_stack_depth`
+  (`stack_depth` facts V0: 1 when stacked, else 0).
+
+## M9 known gaps (reported)
+
+- **The `deps = [...]` serialized pre-step is NOT implemented.** A submission whose
+  Work declares deps with `integrate = true` is refused with a 400 naming the gap
+  ("M9 known gap: the serialized dependency pre-step is missing"); non-integrating
+  deps-declaring Work still runs and holds the implicit lockfile lease.
+- **The automatic `integrate`-mode conflict attempt is NOT spawned.** The mode ships
+  (registry, preamble, schema, L1, no-web toolset) and a human can run it by hand,
+  but a rebase conflict lands directly in `conflict` + human queue with the scratch
+  clone retained; wiring an attempt into the integrator's scratch state needs the
+  worker-side merge claim and is deferred with it.
+- **Worktrees of merged Targets are not fast-forwarded** (DESIGN §4.3's "worker
+  touches the manifest at merge time"): after a multi-task merge rewrites SHAs, the
+  attempt worktree's head is unreachable from the remote and reconcile retains it
+  with "unpushed commits" instead of removing it. Single-task fast-forward merges
+  clean up normally.
+- **`stack_depth` facts are 0/1**, not the true chain length; the honest chain is on
+  the edges and Pick computes it, but the integrator records only "stacked or not".

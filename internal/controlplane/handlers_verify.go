@@ -31,6 +31,7 @@ func (s *Server) verifyRoutes(m *http.ServeMux) {
 	// M11 retry and steer live beside the other POST decisions; the handlers
 	// are in handlers_operator.go.
 	m.HandleFunc("POST /api/v1/targets/{id}/retry", s.handle(s.retryTarget))
+	m.HandleFunc("POST /api/v1/targets/{id}/requeue", s.handle(s.requeueTarget))
 	m.HandleFunc("POST /api/v1/attempts/{id}/steer", s.handle(s.steerAttempt))
 	m.HandleFunc("GET /api/v1/verifications", s.handle(s.listVerifications))
 }
@@ -96,7 +97,18 @@ func (s *Server) decideTarget(r *http.Request, approve bool) (int, any, error) {
 		if err != nil {
 			return err
 		}
-		return s.recordFacts(ctx, tx, a.ID)
+		if err := s.recordFacts(ctx, tx, a.ID); err != nil {
+			return err
+		}
+		tw, err := tx.GetWork(ctx, t.WorkID)
+		if err != nil {
+			return err
+		}
+		if err := s.enqueueMerge(ctx, tx, tw, t.ID); err != nil {
+			return err
+		}
+		target, err = tx.GetTarget(ctx, t.ID)
+		return err
 	})
 	if err != nil {
 		return 0, nil, err
@@ -247,6 +259,33 @@ func (s *Server) afterComplete(ctx context.Context, tx *store.Tx, a *store.Attem
 	if t.State == model.Verifying && req.State == model.Succeeded && req.Verification.Passed && s.modes != nil {
 		return s.verifyFollowUps(ctx, tx, a, w, t, req)
 	}
+	if a.Mode == "plan" && t.State == model.Succeeded && req.Verification.Passed {
+		// The batch a plan produces (DESIGN.md §20) is created here, in the
+		// completion transaction, so the tasks appear together or not at all.
+		return s.planFollowUps(ctx, tx, a, w, t, decodeEnvelope(req.Result))
+	}
+	return nil
+}
+
+// enqueueMerge moves a succeeded Target of an integrating Work into the merge
+// queue (DESIGN.md §4.1: succeeded → queued_for_merge, only with integrate).
+// Safe to call for any Target; anything not integrating-and-succeeded is left
+// alone.
+func (s *Server) enqueueMerge(ctx context.Context, tx *store.Tx, w *store.Work, targetID string) error {
+	if w == nil || !w.Integrate {
+		return nil
+	}
+	t, err := tx.GetTarget(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	if t.State != model.Succeeded {
+		return nil
+	}
+	if _, err := tx.Transition(ctx, t.ID, model.QueuedForMerge, store.TransitionOptions{Actor: "daemon"}); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "queued for merge", "target_id", t.ID, "work_id", w.ID, "repository", t.Repository)
 	return nil
 }
 
@@ -308,7 +347,14 @@ func (s *Server) applyVerifyVerdict(ctx context.Context, tx *store.Tx, verifier 
 	if err != nil {
 		return err
 	}
-	return s.recordFacts(ctx, tx, subject.ID)
+	if err := s.recordFacts(ctx, tx, subject.ID); err != nil {
+		return err
+	}
+	sw, err := tx.GetWork(ctx, st.WorkID)
+	if err != nil {
+		return err
+	}
+	return s.enqueueMerge(ctx, tx, sw, st.ID)
 }
 
 // verifyFollowUps hands the successful result to the mode and creates each

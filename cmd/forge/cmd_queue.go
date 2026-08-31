@@ -109,6 +109,7 @@ func runQueueBlock(ctx context.Context, c *cmdContext, args []string) int {
 	on := fs.String("on", "", "the task this one waits for")
 	remove := fs.Bool("remove", false, "remove the edge instead")
 	onKind := fs.String("when", "success", "success|terminal: when the dependency is satisfied")
+	stack := fs.Bool("stack", false, "stack: start on the dependency's branch head before it merges (M9)")
 	if code := c.parse(fs, args); code >= 0 {
 		return code
 	}
@@ -128,7 +129,7 @@ func runQueueBlock(ctx context.Context, c *cmdContext, args []string) int {
 	if *remove {
 		body = map[string]any{"remove_blocked_by": []string{*on}}
 	} else {
-		body = map[string]any{"add_blocked_by": []map[string]string{{"work_id": *on, "on": *onKind}}}
+		body = map[string]any{"add_blocked_by": []map[string]any{{"work_id": *on, "on": *onKind, "stack_on": *stack}}}
 	}
 	if err := cl.do(ctx, http.MethodPatch, "/api/v1/work/"+fs.Arg(0), body, nil); err != nil {
 		return c.fail("queue block", err)

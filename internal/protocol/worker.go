@@ -95,6 +95,10 @@ type Claim struct {
 	ModeInfo *ModeInfo `json:"mode_info,omitempty"`
 	// VerifyOf is set on a verify-mode claim: the subject this attempt re-checks.
 	VerifyOf *VerifyOf `json:"verify_of,omitempty"`
+	// StackBase is set when this Work stacks on an unmerged dependency
+	// (DESIGN.md §20): the worker cuts the worktree at the dependency's
+	// branch head instead of the integration base.
+	StackBase *StackBase `json:"stack_base,omitempty"`
 	// Resume is set when the Target is being resumed after a human answer.
 	Resume *Resume `json:"resume,omitempty"`
 	// Snapshot is the whole frozen routine for anything the fields above omit.
@@ -115,6 +119,16 @@ type ModeInfo struct {
 	// autonomy level, not trusted to prose (M4 smoke: a verify agent answered
 	// in fenced prose and its verdict was lost).
 	Schema json.RawMessage `json:"schema,omitempty"`
+}
+
+// StackBase pins a stacked attempt's base: the dependency Work's task branch
+// head at claim time (DESIGN.md §20). Depth is the stack_on chain length, for
+// the facts row.
+type StackBase struct {
+	WorkID string `json:"work_id"`
+	Branch string `json:"branch"`
+	Commit string `json:"commit"`
+	Depth  int    `json:"depth"`
 }
 
 // VerifyOf marks a claim as an L2 verification of another attempt: the

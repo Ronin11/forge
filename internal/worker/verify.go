@@ -20,13 +20,17 @@ import (
 )
 
 // ForgeToml is the optional file inside a repository (DESIGN.md §3).
+// IntegrationBranch and TaskBranches are the M9 push policy (constitution 10):
+// Forge pushes only to a branch this file lists.
 type ForgeToml struct {
 	Checks   map[string][]string `toml:"checks"`
 	Defaults struct {
 		Autonomy   string `toml:"autonomy"`
 		BaseBranch string `toml:"base_branch"`
 	} `toml:"defaults"`
-	Modes map[string]struct {
+	IntegrationBranch string `toml:"integration_branch"`
+	TaskBranches      string `toml:"task_branches"`
+	Modes             map[string]struct {
 		Paths []string `toml:"paths"`
 	} `toml:"modes"`
 	Verify struct {

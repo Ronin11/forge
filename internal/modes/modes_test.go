@@ -35,6 +35,8 @@ var wantTable = map[string]struct {
 	"docs":       {model.L1, model.WritesDocsOnly, model.ClassBacklog, "", nil, "docs_updated", nil},
 	"explore":    {model.L0, model.WritesKbOnly, model.ClassBacklog, model.AutonomyAuto, nil, "sources", nil},
 	"retro":      {model.L0, model.WritesKbOnly, model.ClassBacklog, model.AutonomyAuto, nil, "proposals", nil},
+	"plan":       {model.L0, model.WritesNone, model.ClassInteractive, "", []string{"before_report"}, "tasks", []string{"tasks"}},
+	"integrate":  {model.L1, model.WritesRepo, model.ClassInteractive, model.AutonomyAuto, nil, "resolved", []string{"resolved"}},
 }
 
 var envelopeFields = []string{"schema_version", "summary", "needs_input", "changes", "checks_run", "claims"}

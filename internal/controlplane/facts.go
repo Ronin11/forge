@@ -23,6 +23,9 @@ type FactsInput struct {
 	Questions []store.Question
 	Samples   []store.RateLimitSample // five_hour samples around the attempt
 	Now       time.Time
+	// LeaseBlockedAt is when the Target was first passed over for a path
+	// lease (journal target.lease_blocked); zero when it never was.
+	LeaseBlockedAt time.Time
 }
 
 // ComputeFacts is the one function that turns an attempt into its facts row
@@ -57,7 +60,56 @@ func ComputeFacts(in FactsInput) *store.AttemptFacts {
 	computeEventCounts(f, in.Events)
 	computeQuestions(f, in.Questions, in.Now)
 	computeBudget(f, a, in.Samples)
+	computeWriteSet(f, w, a)
+	if !in.LeaseBlockedAt.IsZero() && !t.ClaimedAt.IsZero() && !t.ClaimedAt.Before(in.LeaseBlockedAt) {
+		// Wall clock: the block and the claim happen in different
+		// transactions (attrs.clock = "wall", DESIGN.md §9.2).
+		f.LeaseWaitUS = ptr(t.ClaimedAt.Sub(in.LeaseBlockedAt).Microseconds())
+	}
 	return f
+}
+
+// computeWriteSet fills declared_paths, touched_paths, and
+// write_set_precision (M9). Touched paths come from the result envelope's
+// changes[] — a claim, but one L0 checked against git when verification
+// passed — so an attempt without a parsed result honestly stays NULL.
+// Precision is |touched ∩ declared| / |touched| with the scheduler's own
+// matcher; a Work with no declared paths leases the whole repository, so
+// declared and precision stay NULL rather than pretending 1.0.
+func computeWriteSet(f *store.AttemptFacts, w store.Work, a store.Attempt) {
+	f.DeclaredPaths = w.Paths
+	if len(a.Result) == 0 {
+		return
+	}
+	var env struct {
+		Changes []struct {
+			Path string `json:"path"`
+		} `json:"changes"`
+	}
+	if json.Unmarshal(a.Result, &env) != nil || env.Changes == nil {
+		return
+	}
+	touched := make([]string, 0, len(env.Changes))
+	for _, c := range env.Changes {
+		if c.Path != "" {
+			touched = append(touched, c.Path)
+		}
+	}
+	sort.Strings(touched)
+	f.TouchedPaths = touched
+	if len(w.Paths) == 0 || len(touched) == 0 {
+		return
+	}
+	matched := 0
+	for _, p := range touched {
+		for _, g := range w.Paths {
+			if PathMatchesGlob(g, p) {
+				matched++
+				break
+			}
+		}
+	}
+	f.WriteSetPrecision = ptr(float64(matched) / float64(len(touched)))
 }
 
 func finishedAt(a store.Attempt, t store.Target, now time.Time) time.Time {

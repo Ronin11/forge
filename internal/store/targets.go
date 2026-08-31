@@ -95,6 +95,13 @@ func (tx *Tx) Transition(ctx context.Context, targetID string, to model.State, o
 	if _, err := tx.Exec(ctx, `UPDATE targets SET `+set+` WHERE id = ?`, args...); err != nil {
 		return nil, fmt.Errorf("update target %s: %w", targetID, err)
 	}
+	// The write-set lease (DESIGN.md §10.2, §20) lives exactly as long as the
+	// states model.HoldsWriteSet names; a resume re-acquires it at claim.
+	if !model.HoldsWriteSet(to) {
+		if _, err := tx.Exec(ctx, `DELETE FROM path_leases WHERE target_id = ?`, targetID); err != nil {
+			return nil, fmt.Errorf("release path lease of %s: %w", targetID, err)
+		}
+	}
 	if err := tx.Journal(ctx, "target.transition", EntityTarget, targetID, map[string]any{
 		"from": from, "to": to, "reason": opts.Reason, "unverified_reason": opts.UnverifiedReason, "actor": opts.Actor, "work_id": t.WorkID,
 	}); err != nil {
@@ -135,6 +142,9 @@ type ClaimParams struct {
 	Mode           string
 	Autonomy       model.Autonomy
 	Globs          []string
+	// StackBase is the dependency's branch head a stacked attempt starts on
+	// (DESIGN.md §20); empty for an unstacked claim.
+	StackBase string
 }
 
 // Claim moves a pending Target to claimed for one worker and creates (or, on a
@@ -164,9 +174,13 @@ func (tx *Tx) Claim(ctx context.Context, p ClaimParams) (*Attempt, error) {
 		p.WorkerID, HashToken(p.LeaseToken), formatTime(expires), p.TargetID); err != nil {
 		return nil, fmt.Errorf("lease target %s: %w", p.TargetID, err)
 	}
+	// The caller passes the effective globs (controlplane.EffectiveGlobs:
+	// undeclared paths lease the whole repository as ["**"]); an empty list
+	// means the Work's mode is lease-exempt (writes nothing) and no row is
+	// taken.
 	if len(p.Globs) > 0 {
 		if _, err := tx.Exec(ctx, `INSERT OR REPLACE INTO path_leases (target_id, repository_name, globs, acquired_at) VALUES (?, ?, ?, ?)`,
-			p.TargetID, t.Repository, jsonOrNull(p.Globs), formatTime(tx.now)); err != nil {
+			p.TargetID, t.Repository, jsonList(p.Globs), formatTime(tx.now)); err != nil {
 			return nil, fmt.Errorf("path lease for %s: %w", p.TargetID, err)
 		}
 	}
@@ -184,10 +198,10 @@ func (tx *Tx) Claim(ctx context.Context, p ClaimParams) (*Attempt, error) {
 	a := &Attempt{
 		ID: model.NewID(), TargetID: p.TargetID, WorkerID: p.WorkerID, ClaimRequestID: p.ClaimRequestID,
 		Executor: p.Executor, Model: p.Model, ModelAlias: p.ModelAlias, Effort: p.Effort, Mode: p.Mode,
-		Autonomy: p.Autonomy, CreatedAt: tx.now,
+		Autonomy: p.Autonomy, StackBaseCommit: p.StackBase, CreatedAt: tx.now,
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, effort, mode, autonomy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.TargetID, a.WorkerID, a.ClaimRequestID, HashToken(p.MCPToken), a.Executor, a.Model, a.ModelAlias, nullString(a.Effort), a.Mode, string(a.Autonomy), formatTime(tx.now), formatTime(tx.now)); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, effort, mode, autonomy, stack_base_commit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.TargetID, a.WorkerID, a.ClaimRequestID, HashToken(p.MCPToken), a.Executor, a.Model, a.ModelAlias, nullString(a.Effort), a.Mode, string(a.Autonomy), nullString(a.StackBaseCommit), formatTime(tx.now), formatTime(tx.now)); err != nil {
 		return nil, fmt.Errorf("insert attempt: %w", err)
 	}
 	if err := tx.Journal(ctx, "attempt.created", EntityAttempt, a.ID, map[string]any{"target_id": a.TargetID, "worker_id": a.WorkerID}); err != nil {

@@ -73,6 +73,19 @@ type AttemptFacts struct {
 	// file-mutating tool call (M11 repo briefs, DESIGN §22); NULL when the
 	// attempt never edited or the signal was unavailable.
 	TokensToFirstEdit *int64 `json:"tokens_to_first_edit,omitempty"`
+	// Integration columns (DESIGN.md §9.2, M9). Declared/touched paths and
+	// precision are computed at attempt-terminal; LeaseWaitUS is wall clock
+	// (blocked-at to claimed-at spans transactions). The merge columns are
+	// filled NULL → value once by the integrator (UpdateIntegrationFacts) —
+	// the single exception to facts immutability.
+	DeclaredPaths     []string `json:"declared_paths,omitempty"`
+	TouchedPaths      []string `json:"touched_paths,omitempty"`
+	WriteSetPrecision *float64 `json:"write_set_precision,omitempty"`
+	LeaseWaitUS       *int64   `json:"lease_wait_us,omitempty"` // attrs.clock = "wall"
+	MergeWaitUS       *int64   `json:"merge_wait_us,omitempty"` // attrs.clock = "wall"
+	RebaseAttempts    *int     `json:"rebase_attempts,omitempty"`
+	MergeOutcome      string   `json:"merge_outcome,omitempty"`
+	StackDepth        *int     `json:"stack_depth,omitempty"`
 }
 
 // PhaseNames are the columns Phases maps to, in order.
@@ -100,14 +113,16 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
 		state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 		commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
-		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
+		declared_paths, touched_paths, write_set_precision, lease_wait_us)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.AttemptID, f.TargetID, f.WorkID, f.Routine, f.Generation, f.Project, f.Repository, f.Worker, f.Executor, f.Model, nullString(f.Effort), f.Mode, string(f.Trigger), nullString(f.PromptVersionHash), string(f.Autonomy),
 		phase("queue_wait"), phase("fetch"), phase("resolve_base"), phase("worktree_add"), phase("manifest"), phase("agent"), phase("git_inspect"), phase("verify"), phase("cleanup"), phase("total"), nullTime(f.StartedAt), formatTime(f.FinishedAt),
 		ptrInt(f.Turns), ptrInt64(f.InputTokens), ptrInt64(f.OutputTokens), ptrInt64(f.CacheReadTokens), ptrInt64(f.CacheCreation), nullFloatPtr(f.CostUSD), ptrInt(f.ToolCallsTotal), string(byName), string(timeByName), ptrInt64(f.ToolP50US), ptrInt64(f.ToolMaxUS), ptrInt(f.ToolErrors), ptrInt(f.QuestionsAsked), ptrInt64(f.WaitHumanUS), ptrInt(f.EventsTotal), ptrInt(f.EventsDropped),
 		string(f.State), ptrInt(f.ExitCode), nullString(string(f.FailureReason)), ptrBool(f.IsError), ptrInt(f.VerificationLevel), ptrBool(f.VerificationPass), boolInt(f.Retained), nullString(f.RetainedReason),
 		ptrInt(f.Commits), ptrInt(f.FilesChanged), ptrInt(f.Insertions), ptrInt(f.Deletions), ptrBool(f.Dirty), ptrBool(f.Pushed), nullString(f.Branch), nullString(f.Base), nullString(f.Head),
-		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta), ptrInt64(f.TokensToFirstEdit))
+		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta), ptrInt64(f.TokensToFirstEdit),
+		jsonOrNull(f.DeclaredPaths), jsonOrNull(f.TouchedPaths), nullFloatPtr(f.WriteSetPrecision), ptrInt64(f.LeaseWaitUS))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("facts for %s already exist: %w", f.AttemptID, ErrConflict)
@@ -166,7 +181,8 @@ const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation,
 	turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
 	state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 	commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
-	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit FROM attempt_facts`
+	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
+	declared_paths, touched_paths, write_set_precision, lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth FROM attempt_facts`
 
 func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFacts, error) {
 	var out []AttemptFacts
@@ -177,13 +193,16 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		var finished, byName, timeByName string
 		var turns, in, outT, cacheR, cacheC, toolTotal, p50, maxT, toolErr, qAsked, waitH, evTotal, evDropped, exit, isErr, vLevel, vPass, commits, files, ins, del, dirty, pushed, firstEdit sql.NullInt64
 		var retained int
-		var cost, fhb, fha, sdb, sda, delta sql.NullFloat64
+		var cost, fhb, fha, sdb, sda, delta, precision sql.NullFloat64
+		var declared, touched, mergeOutcome sql.NullString
+		var leaseWait, mergeWait, rebases, stackDepth sql.NullInt64
 		dest := []any{&f.AttemptID, &f.TargetID, &f.WorkID, &f.Routine, &f.Generation, &f.Project, &f.Repository, &f.Worker, &f.Executor, &f.Model, &effort, &f.Mode, &f.Trigger, &promptHash, &f.Autonomy}
 		for i := range phases {
 			dest = append(dest, &phases[i])
 		}
 		dest = append(dest, &started, &finished, &turns, &in, &outT, &cacheR, &cacheC, &cost, &toolTotal, &byName, &timeByName, &p50, &maxT, &toolErr, &qAsked, &waitH, &evTotal, &evDropped,
-			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta, &firstEdit)
+			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta, &firstEdit,
+			&declared, &touched, &precision, &leaseWait, &mergeWait, &rebases, &mergeOutcome, &stackDepth)
 		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("scan facts: %w", err)
 		}
@@ -215,6 +234,14 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		f.IsError, f.VerificationPass, f.Dirty, f.Pushed = boolPtr(isErr), boolPtr(vPass), boolPtr(dirty), boolPtr(pushed)
 		f.CostUSD, f.FiveHourBefore, f.FiveHourAfter, f.SevenDayBefore, f.SevenDayAfter, f.UtilizationDelta = floatPtr(cost), floatPtr(fhb), floatPtr(fha), floatPtr(sdb), floatPtr(sda), floatPtr(delta)
 		f.TokensToFirstEdit = int64Ptr(firstEdit)
+		if f.DeclaredPaths, err = jsonStrings(declared); err != nil {
+			return err
+		}
+		if f.TouchedPaths, err = jsonStrings(touched); err != nil {
+			return err
+		}
+		f.WriteSetPrecision, f.LeaseWaitUS, f.MergeWaitUS = floatPtr(precision), int64Ptr(leaseWait), int64Ptr(mergeWait)
+		f.RebaseAttempts, f.StackDepth, f.MergeOutcome = intPtr(rebases), intPtr(stackDepth), mergeOutcome.String
 		out = append(out, f)
 		return nil
 	})
@@ -261,4 +288,41 @@ func floatPtr(f sql.NullFloat64) *float64 {
 // (DESIGN.md §12).
 func (s *Store) FactsByRoutineGeneration(ctx context.Context, routine string, generation, limit int) ([]AttemptFacts, error) {
 	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE routine = ? AND generation = ? ORDER BY finished_at DESC LIMIT ?`, routine, generation, limit)))
+}
+
+// IntegrationFacts is the one-time NULL → value fill of a facts row's merge
+// columns (DESIGN.md §9.2 — the single exception to facts immutability).
+type IntegrationFacts struct {
+	MergeWaitUS    *int64 // wall clock: attempt finished → merge decided
+	RebaseAttempts *int
+	MergeOutcome   string // merged | conflict | checks_failed
+	StackDepth     *int
+	TouchedPaths   []string // only when the rebase changed them; nil keeps the stored value
+}
+
+// UpdateIntegrationFacts fills the integration columns exactly once: a row
+// whose merge_outcome is already set is left alone (ErrConflict), and a
+// missing row is ErrNotFound so the integrator can log honestly.
+func (tx *Tx) UpdateIntegrationFacts(ctx context.Context, attemptID string, f IntegrationFacts) error {
+	var existing sql.NullString
+	err := tx.QueryRow(ctx, `SELECT merge_outcome FROM attempt_facts WHERE attempt_id = ?`, attemptID).Scan(&existing)
+	if isNoRows(err) {
+		return fmt.Errorf("facts for %s: %w", attemptID, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("read facts of %s: %w", attemptID, err)
+	}
+	if existing.Valid {
+		return fmt.Errorf("integration facts for %s already filled: %w", attemptID, ErrConflict)
+	}
+	set, args := `merge_wait_us = ?, rebase_attempts = ?, merge_outcome = ?, stack_depth = ?`, []any{ptrInt64(f.MergeWaitUS), ptrInt(f.RebaseAttempts), nullString(f.MergeOutcome), ptrInt(f.StackDepth)}
+	if f.TouchedPaths != nil {
+		set += `, touched_paths = ?`
+		args = append(args, jsonOrNull(f.TouchedPaths))
+	}
+	args = append(args, attemptID)
+	if _, err := tx.Exec(ctx, `UPDATE attempt_facts SET `+set+` WHERE attempt_id = ?`, args...); err != nil {
+		return fmt.Errorf("update integration facts of %s: %w", attemptID, err)
+	}
+	return nil
 }

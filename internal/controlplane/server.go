@@ -54,6 +54,7 @@ type Server struct {
 	logLevels         func() string
 	allowHosts        []string
 	gitConfig         map[string]string
+	maxStackDepth     int
 	transportOverride string
 	mux               *http.ServeMux
 	tools             *tools.Registry
@@ -102,6 +103,9 @@ type ServerOptions struct {
 	LogLevels    func() string
 	AllowHosts   []string          // [sandbox] allow_hosts, handed to workers as claim policy
 	GitConfig    map[string]string // GIT_CONFIG_* the worker applies to attempt worktrees
+	// MaxStackDepth caps the stack_on chain a claim may sit on ([integration]
+	// max_stack_depth, DESIGN.md §20); 0 means the default of 2.
+	MaxStackDepth int
 	// TransportOverride forces the transport ("unix" | "tcp") instead of reading
 	// it from the connection; tests use it because httptest listens on TCP.
 	TransportOverride string
@@ -164,7 +168,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 	s := &Server{
 		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
-		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
+		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop,
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,

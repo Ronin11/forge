@@ -28,7 +28,9 @@ func indexBrief(h *harness, title, body string, created time.Time) {
 func claimForPrompt(h *harness, reqID, prompt string) string {
 	h.t.Helper()
 	var out workCreated
-	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: prompt, Repositories: []string{"equitizr"}}, &out, http.StatusCreated)
+	// Disjoint declared write sets: the earlier claim of this test still
+	// holds its path lease (M9), and an undeclared write set would serialise.
+	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: prompt, Repositories: []string{"equitizr"}, Paths: []string{"zone-" + reqID + "/**"}}, &out, http.StatusCreated)
 	return h.mustClaim(reqID).SystemAppend
 }
 

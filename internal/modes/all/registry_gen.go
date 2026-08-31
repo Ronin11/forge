@@ -16,7 +16,9 @@ import (
 	"forge/internal/modes/greenfield"
 	"forge/internal/modes/implement"
 	"forge/internal/modes/intake"
+	"forge/internal/modes/integrate"
 	"forge/internal/modes/maintain"
+	"forge/internal/modes/plan"
 	"forge/internal/modes/retro"
 	"forge/internal/modes/review"
 	"forge/internal/modes/run"
@@ -34,7 +36,9 @@ func All() []modes.Mode {
 		greenfield.New(),
 		implement.New(),
 		intake.New(),
+		integrate.New(),
 		maintain.New(),
+		plan.New(),
 		retro.New(),
 		review.New(),
 		run.New(),

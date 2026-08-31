@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"forge/internal/controlplane"
+	"forge/internal/integrator"
 	"forge/internal/kb"
 	"forge/internal/logging"
 	"forge/internal/model"
@@ -224,6 +225,10 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
+		// Attempt worktrees get conflict-resistant git options through the
+		// claim's policy env (STYLE.md §10) — never a .git/config write.
+		GitConfig:     map[string]string{"merge.conflictstyle": "zdiff3", "rerere.enabled": "true"},
+		MaxStackDepth: d.cfg.Integration.MaxStackDepth,
 		KbDir:         d.cfg.KB.Path,
 		Tools:         toolRegistry,
 		PluginHealth:  sup.Health,
@@ -284,6 +289,8 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
 	g.Go(func() error { <-gctx.Done(); sup.Wait(); return nil })
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
+	integ := integrator.New(st, d.handler.For("integrator"), time.Now, integrator.Config{Home: home, MaxRebaseAttempts: d.cfg.Integration.MaxRebaseAttempts})
+	g.Go(func() error { integ.Run(gctx); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
 	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
 	g.Go(func() error { d.nightlyBackup(gctx, st); return nil })

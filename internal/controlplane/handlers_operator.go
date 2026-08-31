@@ -337,6 +337,22 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	w.Trigger, w.Snapshot, w.Priority, w.BudgetClass = model.TriggerManual, snapshot, rt.Priority, rt.BudgetClass
 	w.Autonomy = model.ResolveAutonomy(req.Autonomy, rt.Autonomy, "", project.Autonomy, "")
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
+	if w.Integrate && s.modeWritesNothing(rt.Mode) {
+		// A non-writing mode (plan, verify) produces nothing to merge: the
+		// Work-level flag off keeps succeeded terminal, while the snapshot
+		// keeps integrate = true as the batch-inheritance hint planFollowUps
+		// reads (DESIGN.md §20).
+		w.Integrate = false
+	}
+	if len(rt.Deps) > 0 {
+		w.Deps = rt.Deps
+	}
+	if w.Integrate && len(w.Deps) > 0 {
+		// M9 known gap: the serialized deps pre-step (a Forge-authored
+		// lockfile commit through the merge queue, DESIGN.md §20) is not
+		// implemented. Refusing loudly beats silently integrating without it.
+		return workCreated{}, badRequest("deps = [...] with integrate = true is not implemented (M9 known gap: the serialized dependency pre-step is missing); drop deps or integrate")
+	}
 	targets, err := tx.CreateWork(ctx, &w, repos, edges)
 	if err != nil {
 		return workCreated{}, err
@@ -570,6 +586,9 @@ type workPatch struct {
 type dependency struct {
 	WorkID string             `json:"work_id"`
 	On     model.DependencyOn `json:"on"`
+	// StackOn marks a stacking edge (DESIGN.md §20): the dependant may start
+	// on this dependency's branch head before it merges.
+	StackOn bool `json:"stack_on"`
 }
 
 func (s *Server) patchWork(r *http.Request) (int, any, error) {
@@ -618,7 +637,7 @@ func (s *Server) patchWork(r *http.Request) (int, any, error) {
 			if _, err := tx.GetWork(ctx, d.WorkID); err != nil {
 				return err
 			}
-			if err := tx.AddDependency(ctx, model.Edge{Work: id, BlockedBy: d.WorkID, On: d.On}); err != nil {
+			if err := tx.AddDependency(ctx, model.Edge{Work: id, BlockedBy: d.WorkID, On: d.On, StackOn: d.StackOn}); err != nil {
 				return err
 			}
 		}
@@ -730,7 +749,11 @@ func (s *Server) loadQueue(ctx context.Context) ([]QueueEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Order(QueueInput{Work: work, Targets: targets, Edges: edges, Deferred: s.deferred, FinishedStates: finished}), nil
+	leases, err := s.store.PathLeasesRead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Order(QueueInput{Work: work, Targets: targets, Edges: edges, Deferred: s.deferred, FinishedStates: finished, Leases: toPathLeases(leases), LeaseExempt: s.leaseExempt}), nil
 }
 
 func (s *Server) queue(r *http.Request) (int, any, error) {
@@ -915,5 +938,29 @@ func (s *Server) retryTarget(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	s.log.InfoContext(ctx, "target retried", "target_id", id)
+	return http.StatusOK, target, nil
+}
+
+// requeueTarget resolves a conflict by hand (DESIGN.md §4.1: `forge task
+// requeue` after the human fixed the retained worktree): conflict →
+// queued_for_merge. The transition table refuses every other state (409).
+func (s *Server) requeueTarget(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var target *store.Target
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		target, err = tx.Transition(ctx, id, model.QueuedForMerge, store.TransitionOptions{Actor: "human"})
+		return err
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "target requeued for merge", "target_id", id)
 	return http.StatusOK, target, nil
 }

@@ -28,6 +28,11 @@ type QueueInput struct {
 	Deferred func(class model.BudgetClass) (deferred bool, reason string)
 	// States of finished dependencies not in Work (looked up by the caller).
 	FinishedStates map[string]model.WorkState
+	// Leases annotate pending entries whose write set is held (DESIGN.md
+	// §10.2): the state stays pending — enforcement is Pick's — but the
+	// queue shows `path_lease` as the reason. LeaseExempt mirrors Pick's.
+	Leases      []PathLease
+	LeaseExempt func(w store.Work) bool
 }
 
 // Order is the one home of queue order and eligibility: priority desc, class
@@ -73,6 +78,8 @@ func Order(in QueueInput) []QueueEntry {
 			e.Reason, e.Waiting = "waiting_on_dependencies", deps.Waiting
 		case e.State == model.WorkDeferred:
 			e.Reason = reason
+		case e.State == model.WorkPending && (in.LeaseExempt == nil || !in.LeaseExempt(w)):
+			e.Reason = leaseHoldReason(w, e.Targets, in.Leases)
 		}
 		entries = append(entries, e)
 	}
@@ -150,4 +157,33 @@ func Violates(order []QueueEntry, edges []model.Edge, moving, before string) boo
 		}
 	}
 	return false
+}
+
+// leaseHoldReason renders the queue's path_lease annotation: non-empty when
+// every pending Target of the Work is blocked by a live lease on its
+// repository (the same intersection rule Pick enforces).
+func leaseHoldReason(w store.Work, targets []store.Target, leases []PathLease) string {
+	globs := EffectiveGlobs(w.Paths, w.Deps)
+	holder, pending := "", 0
+	for _, t := range targets {
+		if t.State != model.Pending {
+			continue
+		}
+		pending++
+		blocked := ""
+		for _, l := range leases {
+			if l.Repository == t.Repository && l.TargetID != t.ID && globsIntersect(globs, l.Globs) {
+				blocked = l.TargetID
+				break
+			}
+		}
+		if blocked == "" {
+			return ""
+		}
+		holder = blocked
+	}
+	if pending == 0 || holder == "" {
+		return ""
+	}
+	return "path_lease held by " + model.ShortID(holder)
 }

@@ -43,6 +43,10 @@ const gitWaitDelay = 5 * time.Second
 type Git struct {
 	// Timeout caps each command; zero means gitDefaultTimeout.
 	Timeout time.Duration
+	// Env is appended to the inherited environment of every command — the
+	// integrator's GIT_CONFIG_* options travel here (STYLE.md §10: never a
+	// .git/config write).
+	Env []string
 }
 
 // Repository is a validated registered checkout. Path is canonical so every later
@@ -110,7 +114,7 @@ func (g Git) Run(ctx context.Context, dir string, args ...string) (string, error
 	// GIT_TERMINAL_PROMPT=0 turns a missing credential into an error instead of a
 	// prompt nobody will answer. The user's global config must still apply, so
 	// nothing else is overridden.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append(os.Environ(), g.Env...), "GIT_TERMINAL_PROMPT=0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return killProcessGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = gitWaitDelay

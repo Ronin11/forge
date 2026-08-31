@@ -145,15 +145,65 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 	if err != nil {
 		return nil, err
 	}
+	leases, err := tx.PathLeases(ctx)
+	if err != nil {
+		return nil, err
+	}
 	order := Order(QueueInput{Work: work, Targets: groupTargets(targets), Edges: edges, Deferred: s.deferred, FinishedStates: finished})
-	// Path leases (M9) are not read yet; Pick's input for them stays nil so
-	// the rule's home is ready when they arrive.
-	pick := Pick(PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active, Requirements: workRequirements})
+	pick := Pick(PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active,
+		Requirements: workRequirements, Leases: toPathLeases(leases), Edges: edges, MaxStackDepth: s.maxStackDepth, LeaseExempt: s.leaseExempt})
+	// A path_lease skip starts the lease_wait_us clock (facts): journal the
+	// first refusal per Target, inside this transaction.
+	for id, reason := range pick.Skipped {
+		if holder, ok := strings.CutPrefix(reason, "path_lease held by "); ok {
+			if err := tx.MarkLeaseBlocked(ctx, id, holder); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if pick.Target == nil {
 		s.log.DebugContext(ctx, "nothing to claim", "worker_id", req.WorkerID, "open_work", len(work), "skipped", SortedSkips(pick.Skipped))
 		return nil, nil
 	}
-	return s.claimTarget(ctx, tx, req, *pick.Work, *pick.Target)
+	return s.claimTarget(ctx, tx, req, *pick.Work, *pick.Target, edges)
+}
+
+// leaseExempt reports Work whose mode does not write the repository
+// (WritesNone, WritesKbOnly): verify and plan attempts neither take nor wait
+// on path leases. An unknown mode (or no registry) is treated as writing —
+// the conservative side.
+func (s *Server) leaseExempt(w store.Work) bool {
+	snap, err := snapshotRoutine(w)
+	if err != nil {
+		return false
+	}
+	return s.modeWritesNothing(snap.Mode)
+}
+
+// modeWritesNothing reports a registered mode whose write scope cannot touch
+// the repository. An unknown mode (or no registry) counts as writing.
+func (s *Server) modeWritesNothing(mode string) bool {
+	if s.modes == nil {
+		return false
+	}
+	m := s.modes.Get(mode)
+	if m == nil {
+		return false
+	}
+	switch m.Writes() {
+	case model.WritesNone, model.WritesKbOnly:
+		return true
+	}
+	return false
+}
+
+// toPathLeases adapts the store rows to the scheduler's input type.
+func toPathLeases(rows []store.PathLease) []PathLease {
+	out := make([]PathLease, len(rows))
+	for i, l := range rows {
+		out[i] = PathLease{TargetID: l.TargetID, Repository: l.Repository, Globs: l.Globs}
+	}
+	return out
 }
 
 // workRequirements is the capability-routing rule at the claim site: a
@@ -301,7 +351,7 @@ func (s *Server) replayedClaim(ctx context.Context, tx *store.Tx, req protocol.C
 
 // claimTarget records the claim and the queue_wait span, then renders the
 // worker's frozen view of the Work.
-func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.ClaimRequest, w store.Work, t store.Target) (*protocol.Claim, error) {
+func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.ClaimRequest, w store.Work, t store.Target, edges []model.Edge) (*protocol.Claim, error) {
 	snap, err := snapshotRoutine(w)
 	if err != nil {
 		return nil, err
@@ -314,10 +364,21 @@ func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.Cla
 	if err != nil {
 		return nil, err
 	}
-	a, err := tx.Claim(ctx, store.ClaimParams{
+	stack, err := s.stackBase(ctx, tx, w, t, edges)
+	if err != nil {
+		return nil, err
+	}
+	params := store.ClaimParams{
 		TargetID: t.ID, WorkerID: req.WorkerID, ClaimRequestID: req.ClaimRequestID, LeaseToken: req.LeaseToken, MCPToken: token,
-		Executor: snap.Executor, Model: modelID, ModelAlias: snap.Model, Effort: snap.Effort, Mode: snap.Mode, Autonomy: w.Autonomy, Globs: w.Paths,
-	})
+		Executor: snap.Executor, Model: modelID, ModelAlias: snap.Model, Effort: snap.Effort, Mode: snap.Mode, Autonomy: w.Autonomy,
+	}
+	if !s.leaseExempt(w) {
+		params.Globs = EffectiveGlobs(w.Paths, w.Deps)
+	}
+	if stack != nil {
+		params.StackBase = stack.Commit
+	}
+	a, err := tx.Claim(ctx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +386,9 @@ func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.Cla
 	claim, answered, err := s.claimResponse(ctx, tx, w, t, a, token)
 	if err != nil {
 		return nil, err
+	}
+	if stack != nil {
+		claim.StackBase = stack
 	}
 	// queue_wait is the one span the control plane records: created (or, on a
 	// resume, answered) to claimed, on its own wall clock (DESIGN.md §5 step 0).
@@ -362,6 +426,12 @@ func (s *Server) claimResponse(ctx context.Context, tx *store.Tx, w store.Work, 
 	claim.SystemAppend = s.repoBrief(ctx, t.Repository)
 	claim.VerifyOf = verifyOfFromSnapshot(w.Snapshot)
 	claim.ModeInfo = s.claimModeInfo(ctx, tx, snap.Mode, t.Repository)
+	if a.StackBaseCommit != "" {
+		// A replayed or resumed stacked claim: the pinned base commit is on
+		// the attempt row; branch and depth matter only for the first
+		// prepare, which already happened.
+		claim.StackBase = &protocol.StackBase{Commit: a.StackBaseCommit}
+	}
 	q, err := tx.LastAnswer(ctx, a.ID)
 	if err != nil {
 		return nil, nil, err
@@ -370,6 +440,52 @@ func (s *Server) claimResponse(ctx context.Context, tx *store.Tx, w store.Work, 
 		claim.Resume = &protocol.Resume{SessionID: a.SessionID, Answer: q.Answer, Launches: a.Launches}
 	}
 	return claim, q, nil
+}
+
+// stackBase resolves the base a stacked claim starts on (DESIGN.md §20): when
+// the Work has a stack_on edge to a dependency that has succeeded but not yet
+// merged, the claim is pinned to that dependency's task-branch head. A merged
+// (or plainly succeeded, non-integrating) dependency means the ordinary base
+// already contains its work. The dependency's attempt row is read through the
+// pool: it was committed when that attempt completed.
+func (s *Server) stackBase(ctx context.Context, tx *store.Tx, w store.Work, t store.Target, edges []model.Edge) (*protocol.StackBase, error) {
+	var dep string
+	for _, e := range edges {
+		if e.Work == w.ID && e.StackOn && e.On == model.OnSuccess {
+			dep = e.BlockedBy
+			break
+		}
+	}
+	if dep == "" {
+		return nil, nil
+	}
+	dw, err := tx.GetWork(ctx, dep)
+	if err != nil {
+		return nil, fmt.Errorf("stack dependency of %s: %w", w.ID, err)
+	}
+	dts, err := s.store.TargetsForWork(ctx, dw.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, dt := range dts {
+		if dt.Repository != t.Repository {
+			continue
+		}
+		switch dt.State {
+		case model.Succeeded, model.QueuedForMerge, model.Merging, model.Conflict:
+		default:
+			return nil, nil // merged (or not integrating): the ordinary base carries it
+		}
+		da, err := s.store.AttemptForTarget(ctx, dt.ID)
+		if err != nil {
+			return nil, err
+		}
+		if da == nil || da.HeadCommit == "" || da.Branch == "" {
+			return nil, fmt.Errorf("stack base of %s: dependency %s has no recorded branch head", w.ID, dep)
+		}
+		return &protocol.StackBase{WorkID: dep, Branch: da.Branch, Commit: da.HeadCommit, Depth: StackDepth(w.ID, edges)}, nil
+	}
+	return nil, nil
 }
 
 // snapshotRoutine decodes the Work's frozen routine; ad-hoc Work stores the same
@@ -620,10 +736,21 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 				return err
 			}
 		}
-		if !model.IsTerminal(out.Target.State, work.Integrate) {
-			return nil
+		// Facts are computed at attempt-terminal (DESIGN.md §9.2): for an
+		// integrating Work that is `succeeded`, before the Target moves on
+		// into the merge queue; the integrator later fills the merge columns.
+		if model.IsTerminal(out.Target.State, work.Integrate) || (work.Integrate && out.Target.State == model.Succeeded) {
+			if err := s.recordFacts(ctx, tx, id); err != nil {
+				return err
+			}
 		}
-		return s.recordFacts(ctx, tx, id)
+		if err := s.enqueueMerge(ctx, tx, work, out.Target.ID); err != nil {
+			return err
+		}
+		// The response reports where the Target actually landed (it may have
+		// just entered the merge queue).
+		out.Target, err = tx.GetTarget(ctx, out.Target.ID)
+		return err
 	})
 	if err != nil {
 		return 0, nil, err
@@ -745,7 +872,11 @@ func (s *Server) recordFacts(ctx context.Context, tx *store.Tx, attemptID string
 	if err != nil {
 		return err
 	}
-	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now()})
+	leaseBlockedAt, err := s.store.LeaseBlockedAt(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now(), LeaseBlockedAt: leaseBlockedAt})
 	if err := tx.InsertFacts(ctx, facts); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.log.DebugContext(ctx, "facts already recorded", "attempt_id", a.ID)

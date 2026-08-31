@@ -27,6 +27,7 @@ type Attempt struct {
 	Branch            string              `json:"branch,omitempty"`
 	BaseBranch        string              `json:"base_branch,omitempty"`
 	BaseCommit        string              `json:"base_commit,omitempty"`
+	StackBaseCommit   string              `json:"stack_base_commit,omitempty"`
 	HeadCommit        string              `json:"head_commit,omitempty"`
 	PID               int                 `json:"pid,omitempty"`
 	PIDStart          int64               `json:"pid_start,omitempty"`
@@ -54,7 +55,7 @@ type Attempt struct {
 	CreatedAt         time.Time           `json:"created_at"`
 }
 
-const attemptColumns = `id, target_id, worker_id, claim_request_id, executor, model, model_alias, effort, mode, autonomy, worktree_path, branch, base_branch, base_commit, head_commit, pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at, exit_code, failure_reason, unverified_reason, is_error, result_text, result, num_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty, git_commits, git_files_changed, git_insertions, git_deletions, git_pushed, verification_level, verification_passed, cleanup_outcome, cleanup_reason, cleanup_command, output_path, output_bytes, output_truncated, created_at`
+const attemptColumns = `id, target_id, worker_id, claim_request_id, executor, model, model_alias, effort, mode, autonomy, worktree_path, branch, base_branch, base_commit, stack_base_commit, head_commit, pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at, exit_code, failure_reason, unverified_reason, is_error, result_text, result, num_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty, git_commits, git_files_changed, git_insertions, git_deletions, git_pushed, verification_level, verification_passed, cleanup_outcome, cleanup_reason, cleanup_command, output_path, output_bytes, output_truncated, created_at`
 
 // GetAttempt reads one attempt.
 func (s *Store) GetAttempt(ctx context.Context, id string) (*Attempt, error) {
@@ -360,14 +361,15 @@ func scanAttempts(iter func(func(*sql.Rows) error) error) ([]Attempt, error) {
 	var out []Attempt
 	err := iter(func(rows *sql.Rows) error {
 		var a Attempt
-		var effort, worktree, branch, baseBranch, baseCommit, head, session, promptHash, started, finished, failure, unverified, resultText, result, cleanupOutcome, cleanupReason, cleanupCommand, outputPath sql.NullString
+		var effort, worktree, branch, baseBranch, baseCommit, stackBase, head, session, promptHash, started, finished, failure, unverified, resultText, result, cleanupOutcome, cleanupReason, cleanupCommand, outputPath sql.NullString
 		var pid, pidStart, exitCode, numTurns, in, outT, cacheR, cacheC, dirty, commits, files, ins, del, pushed, vlevel, vpassed, outputBytes, outputTruncated, isError sql.NullInt64
 		var cost sql.NullFloat64
 		var created string
-		if err := rows.Scan(&a.ID, &a.TargetID, &a.WorkerID, &a.ClaimRequestID, &a.Executor, &a.Model, &a.ModelAlias, &effort, &a.Mode, &a.Autonomy, &worktree, &branch, &baseBranch, &baseCommit, &head, &pid, &pidStart, &session, &promptHash, &a.Launches, &started, &finished, &exitCode, &failure, &unverified, &isError, &resultText, &result, &numTurns, &in, &outT, &cacheR, &cacheC, &cost, &dirty, &commits, &files, &ins, &del, &pushed, &vlevel, &vpassed, &cleanupOutcome, &cleanupReason, &cleanupCommand, &outputPath, &outputBytes, &outputTruncated, &created); err != nil {
+		if err := rows.Scan(&a.ID, &a.TargetID, &a.WorkerID, &a.ClaimRequestID, &a.Executor, &a.Model, &a.ModelAlias, &effort, &a.Mode, &a.Autonomy, &worktree, &branch, &baseBranch, &baseCommit, &stackBase, &head, &pid, &pidStart, &session, &promptHash, &a.Launches, &started, &finished, &exitCode, &failure, &unverified, &isError, &resultText, &result, &numTurns, &in, &outT, &cacheR, &cacheC, &cost, &dirty, &commits, &files, &ins, &del, &pushed, &vlevel, &vpassed, &cleanupOutcome, &cleanupReason, &cleanupCommand, &outputPath, &outputBytes, &outputTruncated, &created); err != nil {
 			return fmt.Errorf("scan attempt: %w", err)
 		}
 		a.Effort, a.WorktreePath, a.Branch, a.BaseBranch, a.BaseCommit, a.HeadCommit = effort.String, worktree.String, branch.String, baseBranch.String, baseCommit.String, head.String
+		a.StackBaseCommit = stackBase.String
 		a.SessionID, a.PromptVersionHash, a.UnverifiedReason, a.ResultText, a.OutputPath = session.String, promptHash.String, unverified.String, resultText.String, outputPath.String
 		a.FailureReason = model.FailureReason(failure.String)
 		a.PID, a.PIDStart, a.NumTurns, a.OutputBytes = int(pid.Int64), pidStart.Int64, int(numTurns.Int64), outputBytes.Int64

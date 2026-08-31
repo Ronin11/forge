@@ -36,7 +36,7 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry|tell [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry|requeue|tell [flags]")
 		return code
 	}
 	switch args[0] {
@@ -58,6 +58,8 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		return runTaskReject(ctx, c, args[1:])
 	case "retry":
 		return runTaskRetry(ctx, c, args[1:])
+	case "requeue":
+		return runTaskRequeue(ctx, c, args[1:])
 	case "tell":
 		return runTaskTell(ctx, c, args[1:])
 	}
@@ -614,5 +616,53 @@ func runTaskRetry(ctx context.Context, c *cmdContext, args []string) int {
 		return c.fail("task retry", err)
 	}
 	fmt.Fprintf(c.stdout, "target %s (%s) retried → %s\n", short(out.ID), out.Repository, out.State)
+	return 0
+}
+
+// runTaskRequeue is M9's conflict resolution hand-off (DESIGN.md §4.1): after
+// the human fixed the retained state, the conflicted Target re-enters the
+// merge queue.
+func runTaskRequeue(ctx context.Context, c *cmdContext, args []string) int {
+	fs, lf := c.flags("task requeue")
+	if code := c.parse(fs, args); code >= 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(c.stderr, "usage: forge task requeue ID")
+		return 2
+	}
+	_, log, code := c.resolveLogging(lf, "cli.task")
+	if code >= 0 {
+		return code
+	}
+	cl := c.client(log)
+	if err := cl.connect(ctx); err != nil {
+		return c.fail("task requeue", err)
+	}
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.fail("task requeue", err)
+	}
+	var v taskView
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.fail("task requeue", err)
+	}
+	var target *store.Target
+	states := make([]string, 0, len(v.Targets))
+	for i, t := range v.Targets {
+		states = append(states, t.Repository+"="+string(t.State))
+		if t.State == model.Conflict && target == nil {
+			target = &v.Targets[i]
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(c.stderr, "forge task requeue: no target of task %s is in conflict (%s)\n", short(id), strings.Join(states, ", "))
+		return 2
+	}
+	var out store.Target
+	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/requeue", nil, &out); err != nil {
+		return c.fail("task requeue", err)
+	}
+	fmt.Fprintf(c.stdout, "target %s (%s) requeued -> %s\n", short(out.ID), out.Repository, out.State)
 	return 0
 }
