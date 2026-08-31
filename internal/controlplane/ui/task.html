@@ -1,12 +1,12 @@
 {{template "head" .}}
-<h1>Task {{short .Data.Work.ID}} <span class="state {{stateClass .Data.State}}">{{.Data.State}}</span></h1>
+<h1>Task {{short .Data.Work.ID}} {{template "stateChip" .Data.State}}</h1>
 <p class="meta">{{.Data.Work.Title}} · routine <b>{{.Data.Work.RoutineName}}@{{.Data.Work.Generation}}</b> · {{.Data.Work.Trigger}} · class {{.Data.Work.BudgetClass}} · priority {{.Data.Work.Priority}} · autonomy {{.Data.Work.Autonomy}} · created {{ago .Data.Work.CreatedAt}}</p>
 {{range .Data.Questions}}<div class="card question" data-question="{{.ID}}"><b>Question</b> {{.Text}}{{if .Options}} <small>options: {{join .Options ", "}}</small>{{end}}
 {{if .AnsweredAt.IsZero}}<form data-answer-form="{{.ID}}"><input type="text" name="answer" placeholder="your answer" size="60" required> <button type="submit">Answer &amp; resume</button></form>
 <p class="meta">or: <code>forge task answer {{short .WorkID}} "…"</code></p>{{else}}<div>Answered by {{.AnsweredBy}}: {{.Answer}}</div>{{end}}</div>{{end}}
 {{range .Data.Targets}}
 <section class="card">
-<h2>{{.Target.Repository}} <span class="state {{stateClass .Target.State}}">{{.Target.State}}</span>{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>
+<h2>{{.Target.Repository}} {{template "stateChip" .Target.State}}{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>
 {{range .Attempts}}
 <dl class="kv">
 <dt>Attempt</dt><dd>{{.ID}} · launches {{.Launches}} · executor {{.Executor}} · model {{.ModelAlias}} ({{.Model}}){{if .Runner}} · runner {{.Runner}}{{end}}{{if .EscalatedFrom}} · escalated from {{.EscalatedFrom}}{{end}}</dd>

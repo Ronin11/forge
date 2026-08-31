@@ -17,7 +17,7 @@
 <div class="tl-lanes" role="list"></div>
 <p class="tl-empty empty">No activity in this window.</p>
 </section>
-{{if .Data.Repositories}}<section class="repos-strip">{{range .Data.Repositories}}<span class="repo-launch"><a class="repo-chip" href="{{.Href}}"><span class="state {{stateClass .State}}">{{.State}}</span> {{.Name}}</a>{{if .AppURL}}<a class="repo-app" href="{{.AppURL}}" target="_blank" rel="noopener" title="Open app">↗</a>{{end}}</span>{{end}}</section>{{end}}
+{{if .Data.Repositories}}<section class="repos-strip">{{range .Data.Repositories}}<span class="repo-launch"><a class="repo-chip" href="{{.Href}}">{{template "stateChip" .State}} {{.Name}}</a>{{if .AppURL}}<a class="repo-app" href="{{.AppURL}}" target="_blank" rel="noopener" title="Open app">↗</a>{{end}}</span>{{end}}</section>{{end}}
 <section class="cards">
 <div class="card"><h2>Running</h2>{{if .Data.Running}}{{template "taskTable" .Data.Running}}{{else}}<p class="empty">Nothing running.</p>{{end}}</div>
 <div class="card"><h2>Needs attention</h2>

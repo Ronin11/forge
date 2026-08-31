@@ -94,6 +94,26 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return fmt.Sprintf("$%.4f", *p)
 		},
 		"stateClass": func(s any) string { return "state-" + strings.ReplaceAll(fmt.Sprint(s), "_", "-") },
+		// stateIcon maps a state to the sprite symbol id for its pill glyph,
+		// following the same groups as the .state-* colors in style.css; idle and
+		// any unmapped state get "" (no glyph).
+		"stateIcon": func(s any) string {
+			switch strings.ReplaceAll(fmt.Sprint(s), "_", "-") {
+			case "running", "claimed", "preparing", "verifying", "merging", "approved":
+				return "i-st-running"
+			case "waiting-human", "proposed":
+				return "i-st-waiting"
+			case "paused":
+				return "i-st-paused"
+			case "unverified":
+				return "i-st-unverified"
+			case "succeeded", "merged", "applied":
+				return "i-st-ok"
+			case "failed", "partial", "cancelled", "conflict", "errored", "rejected", "reverted":
+				return "i-st-x"
+			}
+			return ""
+		},
 		// originURL turns a github.com/…-style origin identity into a browsable
 		// https link; other forms (ssh remotes, bare paths) yield "" so the
 		// template shows the identity as plain text.

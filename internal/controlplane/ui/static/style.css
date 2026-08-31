@@ -223,3 +223,18 @@ dialog{max-width:min(40rem,95vw);box-sizing:border-box}
   nav.top{gap:.4rem .7rem}
   nav.top a{font-size:.85rem}
 }
+
+/* --- Line Forge icons (inline SVG sprite; everything currentColor) --- */
+.i{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em;flex:none}
+nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap:.4em}
+.i-brand{width:18px;height:18px}
+.state{display:inline-flex;align-items:center;gap:.2em}
+.i-pill{width:11px;height:11px;stroke-width:2.4;vertical-align:0}
+.i-work{width:19px;height:19px;vertical-align:-.35em;color:var(--run)}
+.i-empty{width:56px;height:56px}
+.empty-il{display:flex;flex-direction:column;align-items:center;gap:.5rem;padding:1rem 0;text-align:center}
+.fw-hammer{transform-box:view-box;transform-origin:27px 5.8px;animation:fw-strike 1.3s ease-in-out infinite}
+.fw-spark{opacity:0;animation:fw-flash 1.3s linear infinite}
+@keyframes fw-strike{0%,30%{transform:rotate(-30deg)}42%,52%{transform:rotate(0)}70%{transform:rotate(-33deg)}100%{transform:rotate(-30deg)}}
+@keyframes fw-flash{0%,40%{opacity:0}45%,56%{opacity:1}64%,100%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.fw-hammer,.fw-spark{animation:none}.fw-spark{opacity:1}}

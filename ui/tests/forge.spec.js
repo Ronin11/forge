@@ -568,6 +568,23 @@ test.describe('search chips', () => {
   });
 });
 
+test.describe('icons', () => {
+  test('favicon, nav icons, and state-pill glyphs render', async ({ page }) => {
+    seed();
+    await page.goto('/');
+    // Favicon linked in the head.
+    await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/static/favicon.svg');
+    // Every nav link carries an icon.
+    const navIcons = page.locator('nav.top a svg.i');
+    expect(await navIcons.count()).toBeGreaterThanOrEqual(10);
+    // Brand anvil.
+    await expect(page.locator('nav.top .brand svg use[href="#i-anvil"]')).toHaveCount(1);
+    // A state pill shows its glyph (a closed task has a terminal-state glyph).
+    await page.goto('/tasks?scope=all');
+    await expect(page.locator('.state svg.i-pill').first()).toBeVisible();
+  });
+});
+
 test.describe('responsive', () => {
   const sizes = [
     { name: 'phone', w: 390, h: 844 },

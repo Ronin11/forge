@@ -4,7 +4,7 @@
 <table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th>Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
 {{range .Data}}<tr data-proposal="{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
 <td><code>{{short .ID}}</code></td>
-<td><span class="state {{stateClass .Status}}">{{.Status}}</span></td>
+<td>{{template "stateChip" .Status}}</td>
 <td><span class="chip">{{.Kind}}</span></td>
 <td>{{.Target}}</td>
 <td class="prompt" title="{{.Rationale}}">{{trunc .Rationale}}</td>

@@ -1,6 +1,6 @@
 {{template "head" .}}
 {{$r := .Data.Repository}}
-<h1>{{$r.Name}} <span class="state {{stateClass .Data.State}}">{{.Data.State}}</span></h1>
+<h1>{{$r.Name}} {{template "stateChip" .Data.State}}</h1>
 <p class="meta">project <b>{{$r.Project}}</b> · base {{if $r.BaseBranch}}{{$r.BaseBranch}}{{else}}default{{end}} · worker {{if $r.WorkerID}}{{short $r.WorkerID}}{{else}}none{{end}} · last seen {{ago $r.LastSeenAt}}</p>
 
 <div class="repo-controls">

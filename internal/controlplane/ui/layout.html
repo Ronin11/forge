@@ -1,20 +1,47 @@
 {{define "head"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} · Forge</title><link rel="stylesheet" href="/static/style.css"></head>
-<body><nav class="top">
-<a class="brand" href="/">Forge</a>
-<a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}>Dashboard</a>
-<a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html")}}class="active"{{end}}>Tasks</a>
-<a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}>Queue</a>
-<a href="/attention" {{if eq .Active "attention.html"}}class="active"{{end}}>Human Queue</a>
-<a href="/proposals" {{if eq .Active "proposals.html"}}class="active"{{end}}>Proposals</a>
-<a href="/kb" {{if or (eq .Active "kb.html") (eq .Active "kbnote.html")}}class="active"{{end}}>Knowledge</a>
-<a href="/routines" {{if eq .Active "routines.html"}}class="active"{{end}}>Routines</a>
-<a href="/workflows" {{if eq .Active "workflows.html"}}class="active"{{end}}>Workflows</a>
-<a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}>Stats</a>
-<a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}>Settings</a>
-<button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false">✳ Ask Forge</button>
+<title>{{.Title}} · Forge</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"></head>
+<body>{{template "iconSprite"}}<nav class="top">
+<a class="brand" href="/"><svg class="i i-brand"><use href="#i-anvil"/></svg> Forge</a>
+<a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}><svg class="i"><use href="#i-dashboard"/></svg> Dashboard</a>
+<a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
+<a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}><svg class="i"><use href="#i-queue"/></svg> Queue</a>
+<a href="/attention" {{if eq .Active "attention.html"}}class="active"{{end}}><svg class="i"><use href="#i-human"/></svg> Human Queue</a>
+<a href="/proposals" {{if eq .Active "proposals.html"}}class="active"{{end}}><svg class="i"><use href="#i-proposals"/></svg> Proposals</a>
+<a href="/kb" {{if or (eq .Active "kb.html") (eq .Active "kbnote.html")}}class="active"{{end}}><svg class="i"><use href="#i-knowledge"/></svg> Knowledge</a>
+<a href="/routines" {{if eq .Active "routines.html"}}class="active"{{end}}><svg class="i"><use href="#i-routines"/></svg> Routines</a>
+<a href="/workflows" {{if eq .Active "workflows.html"}}class="active"{{end}}><svg class="i"><use href="#i-workflows"/></svg> Workflows</a>
+<a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}><svg class="i"><use href="#i-stats"/></svg> Stats</a>
+<a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}><svg class="i"><use href="#i-system"/></svg> Settings</a>
+<button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false"><svg class="i"><use href="#i-hammer"/></svg> Ask Forge</button>
 </nav><main>{{end}}
+
+{{define "stateChip"}}<span class="state {{stateClass .}}">{{$ic := stateIcon .}}{{if $ic}}<svg class="i i-pill"><use href="#{{$ic}}"/></svg>{{end}}{{.}}</span>{{end}}
+
+{{define "workingIcon"}}<svg class="i-work" viewBox="0 0 32 32" style="overflow:visible" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="translate(5,13) scale(0.72)"><path d="M2 8c2.5 0 4-1.5 4-2h15v4c0 1.5-2 2.5-4.5 2.5H14v4h3v3H7v-3h3v-4H8.5C5 12.5 2 10.5 2 8z"/></g><g class="fw-spark" stroke="var(--warn)"><path d="M8.9 15.2l-2-1.1M10.8 13.4l-.9-2M7.8 17.5H5.6"/></g><g class="fw-hammer"><rect x="9.4" y="11.6" width="7.2" height="3.6" rx="1"/><path d="M16.6 12.7 27 5.8"/></g></svg>{{end}}
+
+{{define "emptyAnvil"}}<svg class="i-empty" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8c2.5 0 4-1.5 4-2h15v4c0 1.5-2 2.5-4.5 2.5H14v4h3v3H7v-3h3v-4H8.5C5 12.5 2 10.5 2 8z" stroke="var(--muted)" stroke-width="1.2"/><path d="M11 2.6l.7 1.4M14.5 1.8v1.6M17.6 2.8l-.7 1.3" stroke="var(--warn)" stroke-width="1.2"/></svg>{{end}}
+
+{{define "iconSprite"}}<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-anvil" viewBox="0 0 24 24"><path d="M2 8c2.5 0 4-1.5 4-2h15v4c0 1.5-2 2.5-4.5 2.5H14v4h3v3H7v-3h3v-4H8.5C5 12.5 2 10.5 2 8z"/></symbol>
+<symbol id="i-hammer" viewBox="0 0 24 24"><path d="M13.16 4.34 19.66 10.84 16.84 13.66 10.34 7.16z"/><path d="M4.5 19.5 12.9 11.1"/></symbol>
+<symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-tasks" viewBox="0 0 24 24"><circle cx="5" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="5" cy="18" r="1" fill="currentColor" stroke="none"/><path d="M9 6h11M9 12h11M9 18h11"/></symbol>
+<symbol id="i-queue" viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+<symbol id="i-human" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c1-3.5 3.5-5 6.5-5s5.5 1.5 6.5 5"/></symbol>
+<symbol id="i-proposals" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/><path d="M12 9.25v4.5M9.75 11.5h4.5M9.75 16h4.5"/></symbol>
+<symbol id="i-knowledge" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+<symbol id="i-routines" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
+<symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 3v12"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+<symbol id="i-stats" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></symbol>
+<symbol id="i-system" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+<symbol id="i-st-running" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 0 8 8"/><path d="M17.8 14.2 20 12l2.2 2.2"/></symbol>
+<symbol id="i-st-waiting" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c1-3.5 3.5-5 6.5-5s5.5 1.5 6.5 5"/></symbol>
+<symbol id="i-st-paused" viewBox="0 0 24 24"><path d="M9.5 6v12M14.5 6v12"/></symbol>
+<symbol id="i-st-unverified" viewBox="0 0 24 24"><path d="M12 4.5 3.5 19h17z"/><path d="M12 10.5v3.5"/><path d="M12 16.8h.01"/></symbol>
+<symbol id="i-st-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-st-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+</defs></svg>{{end}}
 {{define "foot"}}</main>
 <div class="chat-pop" data-chat role="dialog" aria-label="Ask Forge" hidden>
 <div class="chat-head"><b>Ask Forge</b><button type="button" class="btn" data-chat-close aria-label="Close">×</button></div>
@@ -36,11 +63,11 @@
 <a href="/system"{{if eq .Active "system.html"}} class="on"{{end}}>System</a>
 <a href="/settings/plugins"{{if eq .Active "settings-plugins.html"}} class="on"{{end}}>Plugins</a>
 </div>{{end}}
-{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}</td><td><span class="state {{stateClass .State}}">{{.State}}</span></td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} <span class="state {{stateClass .State}}">{{.State}}</span></span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
+{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} {{template "stateChip" .State}}</span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
 {{define "taskRowList"}}{{range .}}{{template "taskRow" .}}{{end}}{{end}}
 {{define "taskTable"}}<table class="list"><thead><tr><th>Task</th><th>State</th><th>Routine</th><th>Repositories</th><th>Class</th><th>Priority</th><th>Created</th></tr></thead><tbody data-task-rows>
 {{range .}}{{template "taskRow" .}}
-{{else}}<tr><td colspan="7" class="empty">No tasks yet — <code>forge task add "…" --repo NAME</code></td></tr>{{end}}
+{{else}}<tr><td colspan="7" class="empty"><div class="empty-il">{{template "emptyAnvil"}}<span>No tasks yet — <code>forge task add "…" --repo NAME</code></span></div></td></tr>{{end}}
 </tbody></table>{{end}}
 {{define "statsRow"}}<tr data-sf-item data-f-routine="{{.Routine}}"><td>{{.Routine}}{{if .Generation}}@{{.Generation}}{{end}}</td><td>{{.Runs}}</td><td>{{printf "%.0f%%" (mulf .VerifiedSuccessRate 100)}}</td><td>{{printf "%.0f%%" (mulf .SelfReportedSuccessRate 100)}}</td><td>{{dur64 .P50TotalUS}}</td><td>{{dur64 .P95TotalUS}}</td><td>{{dur64 .P50AgentUS}}</td><td>{{printf "%.0f/%.0f" .TokensInPerRun .TokensOutPerRun}}</td><td>{{printf "$%.4f" .CostPerRun}}</td><td>{{if .CostPerVerifiedSuccess}}{{printf "$%.4f" (dereff .CostPerVerifiedSuccess)}}{{else}}-{{end}}</td><td>{{printf "%.1f" .TurnsPerRun}}</td><td>{{range .TopFailureReasons}}{{.Reason}}×{{.Count}} {{end}}</td></tr>
 {{end}}
