@@ -30,7 +30,7 @@ test.describe('dashboard', () => {
     const s = seed();
     await page.goto('/');
     const nav = page.locator('nav.top');
-    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human queue', 'Routines', 'Stats', 'System']) {
+    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Routines', 'Stats', 'System']) {
       await expect(nav.getByText(name, { exact: true })).toBeVisible();
     }
     const workers = page.locator('.card', { hasText: 'Workers' });
@@ -148,7 +148,9 @@ test.describe('search bar', () => {
     const opt = page.locator('.sb-opt', { hasText: 'repo:demo' });
     await expect(opt).toBeVisible();
     await opt.click();
-    await expect(q).toHaveValue('repo:demo ');
+    // Accepting a value commits it as a chip and clears the input.
+    await expect(page.locator('.sb-chip', { hasText: 'repo:demo' })).toBeVisible();
+    await expect(q).toHaveValue('');
   });
 
   test('knowledge search accepts tag: in the server-side query', async ({ page }) => {
@@ -481,5 +483,31 @@ test.describe('chat popout', () => {
     await expect(page.locator('[data-chat]')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('[data-chat]')).toBeHidden();
+  });
+});
+
+test.describe('search chips', () => {
+  test('a committed filter becomes a deletable chip and persists across pages', async ({ page }) => {
+    const s = seed();
+    const q = page.locator('.searchbar input[name=q]');
+    await page.goto('/tasks');
+    // Type a filter and commit it with Enter → it becomes a chip, input clears.
+    await q.fill('state:succeeded');
+    await q.press('Enter');
+    const chip = page.locator('.sb-chip', { hasText: 'state:succeeded' });
+    await expect(chip).toBeVisible();
+    await expect(q).toHaveValue('');
+    await expect(page.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"]`)).toBeVisible();
+    await expect(page.locator(`tr[data-href="/tasks/${s.failed.work_id}"]`)).toBeHidden();
+
+    // The filter persists onto another client-mode page.
+    await page.goto('/queue');
+    await expect(page.locator('.sb-chip', { hasText: 'state:succeeded' })).toBeVisible();
+
+    // Deleting the chip clears the filter.
+    await page.goto('/tasks');
+    await page.locator('.sb-chip', { hasText: 'state:succeeded' }).locator('.sb-chip-x').click();
+    await expect(page.locator('.sb-chip')).toHaveCount(0);
+    await expect(page.locator(`tr[data-href="/tasks/${s.failed.work_id}"]`)).toBeVisible();
   });
 });

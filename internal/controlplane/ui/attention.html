@@ -1,4 +1,4 @@
-{{template "head" .}}<h1>Human queue</h1>
+{{template "head" .}}<h1>Human Queue</h1>
 {{if and (not .Data.Questions) (not .Data.Proposals)}}<p class="empty">Nothing is waiting on you.</p>{{end}}
 {{if or .Data.Questions .Data.Proposals}}{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter — text, type:question, kind:prompt, routine:name" "Keys" "type,kind,routine,target"}}{{end}}
 {{range .Data.Questions}}

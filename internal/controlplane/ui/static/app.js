@@ -253,39 +253,44 @@ document.querySelectorAll('[data-action-post]').forEach(function (btn) {
   });
 })();
 
-// Search bar: GitHub-flavoured filtering. Free text ANDs, key:value qualifiers
-// (same key ORs, different keys AND), "-" negates, values may be quoted. In
-// client mode it live-filters every [data-sf-item] on the page against its
-// data-f-* attributes and mirrors the query into ?q= (shareable); in server
-// mode (Knowledge full-text) the form submits and only the suggestion dropdown
-// runs here. Suggestions: qualifier keys from data-keys, values scraped from
-// the page's own data-f-* attributes (so repo: offers exactly the repos shown)
-// unless the page supplies them via data-values-<key>. "/" focuses the bar.
+// Search bar: GitHub-flavoured filtering as deletable chips. Committed filters
+// render as chips (each with a delete ×); the input types the next one. Free
+// text ANDs, key:value qualifiers (same key ORs, different keys AND), "-"
+// negates, values may be quoted. In client mode it live-filters every
+// [data-sf-item] on the page and mirrors the whole query into ?q= (shareable)
+// AND into localStorage, so the active filters persist as you move between
+// pages. A ?q= in the URL wins over the saved set. Server mode (Knowledge
+// full-text) just submits. "/" focuses the bar.
 (function () {
   var form = document.querySelector('[data-searchbar]');
   if (!form) return;
   var input = form.querySelector('input[name=q]');
   var suggestBox = form.querySelector('[data-sb-suggest]');
   var countEl = form.querySelector('[data-sb-count]');
+  var chipsBox = form.querySelector('[data-sb-chips]');
   var serverMode = form.dataset.searchbar === 'server';
   var keys = (input.dataset.keys || '').split(',').filter(Boolean);
   var items = Array.prototype.slice.call(document.querySelectorAll('[data-sf-item]'));
+  var STORE = 'forge.filter'; // shared across client-mode pages
 
-  // --- parsing: [-]key:value | [-]"quoted phrase" | bare word ---
+  // committed filter tokens (the chips); the input holds the one being typed.
+  var tokens = [];
+
+  // --- tokenising: split a query into its raw [-]key:"value" pieces ---
   var TOKEN = /(-)?(?:([a-zA-Z][a-zA-Z0-9_-]*):)?("([^"]*)"?|[^\s"]+)/g;
+  function tokenize(q) {
+    var out = [], m; TOKEN.lastIndex = 0;
+    while ((m = TOKEN.exec(q))) if (m[0].trim()) out.push(m[0].trim());
+    return out;
+  }
   function parse(q) {
-    var terms = [], quals = {}, m;
-    TOKEN.lastIndex = 0;
+    var terms = [], quals = {}, m; TOKEN.lastIndex = 0;
     while ((m = TOKEN.exec(q))) {
       var neg = !!m[1];
       var key = m[2] ? m[2].toLowerCase() : '';
       var val = (m[4] !== undefined ? m[4] : m[3]).toLowerCase();
-      if (key && keys.indexOf(key) >= 0) {
-        (quals[key] = quals[key] || []).push({ v: val, neg: neg });
-      } else {
-        var text = key ? key + ':' + val : val; // unknown key: plain text
-        if (text) terms.push({ v: text, neg: neg });
-      }
+      if (key && keys.indexOf(key) >= 0) (quals[key] = quals[key] || []).push({ v: val, neg: neg });
+      else { var text = key ? key + ':' + val : val; if (text) terms.push({ v: text, neg: neg }); }
     }
     return { terms: terms, quals: quals };
   }
@@ -301,8 +306,8 @@ document.querySelectorAll('[data-action-post]').forEach(function (btn) {
   }
   function valMatch(el, key, v) {
     var vals = declared(el, key);
-    if (vals === null) return textOf(el).indexOf(v) >= 0; // undeclared key: fall back to text
-    for (var i = 0; i < vals.length; i++) if (vals[i].indexOf(v) === 0) return true; // prefix: state:wait hits waiting_human
+    if (vals === null) return textOf(el).indexOf(v) >= 0;
+    for (var i = 0; i < vals.length; i++) if (vals[i].indexOf(v) === 0) return true;
     return false;
   }
   function matches(el, q) {
@@ -319,53 +324,73 @@ document.querySelectorAll('[data-action-post]').forEach(function (btn) {
     return true;
   }
 
+  // effective query = committed chips + the token being typed.
+  function effective() {
+    var live = input.value.trim();
+    return tokens.concat(live ? [live] : []).join(' ');
+  }
+
+  function renderChips() {
+    if (!chipsBox) return;
+    chipsBox.textContent = '';
+    tokens.forEach(function (tok, i) {
+      var chip = document.createElement('span');
+      chip.className = 'sb-chip' + (tok.charAt(0) === '-' ? ' neg' : '');
+      var label = document.createElement('span');
+      label.className = 'sb-chip-label';
+      label.textContent = tok;
+      var x = document.createElement('button');
+      x.type = 'button'; x.className = 'sb-chip-x'; x.setAttribute('aria-label', 'Remove filter ' + tok);
+      x.textContent = '×';
+      x.addEventListener('click', function (e) { e.preventDefault(); tokens.splice(i, 1); renderChips(); apply(); input.focus(); });
+      chip.appendChild(label); chip.appendChild(x);
+      chipsBox.appendChild(chip);
+    });
+  }
+
   function apply() {
-    var active = input.value.trim() !== '';
-    var q = parse(input.value.trim());
-    items.forEach(function (el) { el._sfMatch = !active || matches(el, q); });
-    // An item containing a matching item stays visible (stats: a routine card
-    // around its rows).
+    var q = effective();
+    var active = q !== '';
+    var pq = parse(q);
+    items.forEach(function (el) { el._sfMatch = !active || matches(el, pq); });
     items.forEach(function (el) {
       var show = el._sfMatch;
-      if (!show) {
-        var kids = el.querySelectorAll('[data-sf-item]');
-        for (var i = 0; i < kids.length; i++) if (kids[i]._sfMatch) { show = true; break; }
-      }
+      if (!show) { var kids = el.querySelectorAll('[data-sf-item]'); for (var i = 0; i < kids.length; i++) if (kids[i]._sfMatch) { show = true; break; } }
       el.hidden = !show;
     });
     if (countEl) {
       countEl.hidden = !active;
       if (active) {
         var total = 0, shown = 0;
-        items.forEach(function (el) {
-          if (el.parentElement && el.parentElement.closest('[data-sf-item]')) return; // count top-level only
-          total++;
-          if (!el.hidden) shown++;
-        });
+        items.forEach(function (el) { if (el.parentElement && el.parentElement.closest('[data-sf-item]')) return; total++; if (!el.hidden) shown++; });
         countEl.textContent = shown + '/' + total;
       }
     }
     var params = new URLSearchParams(location.search);
-    if (active) params.set('q', input.value.trim()); else params.delete('q');
+    if (active) params.set('q', q); else params.delete('q');
     var qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+    try { if (active) localStorage.setItem(STORE, q); else localStorage.removeItem(STORE); } catch (e) { /* private mode */ }
   }
   var applyTimer = null;
-  function scheduleApply() {
-    if (serverMode) return;
-    window.clearTimeout(applyTimer);
-    applyTimer = window.setTimeout(apply, 120);
+  function scheduleApply() { if (serverMode) return; window.clearTimeout(applyTimer); applyTimer = window.setTimeout(apply, 120); }
+
+  // commit the typed input into chips (called on Enter / blur / navigation).
+  function commit() {
+    var live = input.value.trim();
+    if (!live) return;
+    tokenize(live).forEach(function (t) { tokens.push(t); });
+    input.value = '';
+    renderChips();
   }
 
-  // --- suggestions ---
+  // --- suggestions (operate on the token being typed in the input) ---
   var current = [], sel = -1;
   function valuesFor(key) {
     var provided = input.getAttribute('data-values-' + key);
     if (provided) return provided.split(/\s+/).filter(Boolean);
     var seen = {}, out = [];
-    items.forEach(function (el) {
-      (declared(el, key) || []).forEach(function (v) { if (!seen[v]) { seen[v] = true; out.push(v); } });
-    });
+    items.forEach(function (el) { (declared(el, key) || []).forEach(function (v) { if (!seen[v]) { seen[v] = true; out.push(v); } }); });
     return out.sort();
   }
   function tokenAt() {
@@ -376,78 +401,66 @@ document.querySelectorAll('[data-action-post]').forEach(function (btn) {
   }
   function buildSuggestions() {
     var t = tokenAt().text.replace(/^-/, '');
-    var list = [];
-    var colon = t.indexOf(':');
+    var list = [], colon = t.indexOf(':');
     if (colon >= 0) {
-      var key = t.slice(0, colon).toLowerCase();
-      var part = t.slice(colon + 1).toLowerCase().replace(/^"/, '');
-      if (keys.indexOf(key) >= 0) {
-        valuesFor(key).forEach(function (v) {
-          if (v.indexOf(part) === 0) list.push({ label: key + ':' + v, insert: key + ':' + v + ' ' });
-        });
-      }
+      var key = t.slice(0, colon).toLowerCase(), part = t.slice(colon + 1).toLowerCase().replace(/^"/, '');
+      if (keys.indexOf(key) >= 0) valuesFor(key).forEach(function (v) { if (v.indexOf(part) === 0) list.push({ label: key + ':' + v, insert: key + ':' + v }); });
     } else {
-      keys.forEach(function (k) {
-        if (!t || k.indexOf(t.toLowerCase()) === 0) list.push({ label: k + ':', insert: k + ':' });
-      });
+      keys.forEach(function (k) { if (!t || k.indexOf(t.toLowerCase()) === 0) list.push({ label: k + ':', insert: k + ':' }); });
     }
-    current = list.slice(0, 12);
-    sel = -1;
-    renderSuggest();
+    current = list.slice(0, 12); sel = -1; renderSuggest();
   }
   function renderSuggest() {
     suggestBox.textContent = '';
     if (!current.length) { suggestBox.hidden = true; return; }
-    current.forEach(function (s, i) {
+    current.forEach(function (sug, i) {
       var el = document.createElement('div');
       el.className = 'sb-opt' + (i === sel ? ' on' : '');
-      el.setAttribute('role', 'option');
-      el.setAttribute('aria-selected', i === sel ? 'true' : 'false');
-      el.textContent = s.label;
+      el.setAttribute('role', 'option'); el.setAttribute('aria-selected', i === sel ? 'true' : 'false');
+      el.textContent = sug.label;
       el.addEventListener('mousedown', function (e) { e.preventDefault(); accept(i); });
       suggestBox.appendChild(el);
     });
     suggestBox.hidden = false;
   }
   function accept(i) {
-    var s = current[i];
-    if (!s) return;
-    var tok = tokenAt();
-    var neg = tok.text.charAt(0) === '-' ? '-' : '';
-    input.value = input.value.slice(0, tok.start) + neg + s.insert + input.value.slice(tok.end);
-    var caret = tok.start + neg.length + s.insert.length;
-    input.setSelectionRange(caret, caret);
-    input.focus();
-    buildSuggestions();
-    scheduleApply();
+    var sug = current[i]; if (!sug) return;
+    var tok = tokenAt(), neg = tok.text.charAt(0) === '-' ? '-' : '';
+    input.value = input.value.slice(0, tok.start) + neg + sug.insert + input.value.slice(tok.end);
+    // a complete value (key:value) becomes a chip; a bare key: stays to type the value.
+    if (sug.insert.charAt(sug.insert.length - 1) !== ':') { commit(); apply(); buildSuggestions(); return; }
+    var caret = tok.start + neg.length + sug.insert.length;
+    input.setSelectionRange(caret, caret); input.focus();
+    buildSuggestions(); scheduleApply();
   }
 
-  form.addEventListener('submit', function (e) { if (!serverMode) e.preventDefault(); });
+  form.addEventListener('submit', function (e) { if (!serverMode) { e.preventDefault(); commit(); apply(); } });
   input.addEventListener('input', function () { buildSuggestions(); scheduleApply(); });
   input.addEventListener('focus', buildSuggestions);
   input.addEventListener('click', buildSuggestions);
-  input.addEventListener('blur', function () { window.setTimeout(function () { suggestBox.hidden = true; }, 150); });
+  input.addEventListener('blur', function () { window.setTimeout(function () { suggestBox.hidden = true; if (!serverMode && input.value.trim()) { commit(); apply(); } }, 150); });
   input.addEventListener('keydown', function (e) {
-    if (suggestBox.hidden) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % current.length; renderSuggest(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + current.length) % current.length; renderSuggest(); }
-    else if (e.key === 'Enter' && sel >= 0) { e.preventDefault(); accept(sel); }
-    else if (e.key === 'Tab' && current.length) { e.preventDefault(); accept(sel >= 0 ? sel : 0); }
-    else if (e.key === 'Escape') { suggestBox.hidden = true; }
+    if (e.key === 'Backspace' && input.value === '' && tokens.length) { e.preventDefault(); input.value = tokens.pop(); renderChips(); apply(); buildSuggestions(); return; }
+    if (!suggestBox.hidden && current.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % current.length; renderSuggest(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + current.length) % current.length; renderSuggest(); return; }
+      if (e.key === 'Enter' && sel >= 0) { e.preventDefault(); accept(sel); return; }
+      if (e.key === 'Tab') { e.preventDefault(); accept(sel >= 0 ? sel : 0); return; }
+      if (e.key === 'Escape') { suggestBox.hidden = true; return; }
+    }
+    if (e.key === 'Enter' && !serverMode) { e.preventDefault(); commit(); apply(); buildSuggestions(); }
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    e.preventDefault();
-    input.focus();
-    input.select();
+    e.preventDefault(); input.focus(); input.select();
   });
 
   if (!serverMode) {
     var initial = new URLSearchParams(location.search).get('q');
-    if (initial) input.value = initial;
-    if (input.value.trim()) apply();
+    if (initial == null) { try { initial = localStorage.getItem(STORE); } catch (e) { initial = null; } }
+    if (initial) { tokens = tokenize(initial); renderChips(); apply(); }
   }
 })();
 

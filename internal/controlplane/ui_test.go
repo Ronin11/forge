@@ -91,7 +91,7 @@ func TestUIPagesRender(t *testing.T) {
 		"/tasks/does-not-exist": {"not found"},
 		"/queue":                {"Queue", "inventory run", "data-queue", `data-searchbar="client"`, `data-f-repo="equitizr`},
 		"/stats?since=1d":       {"Stats", "window 1d", "2 proposed", `data-searchbar="client"`},
-		"/attention": {"Human queue", "Trim the timeout", "forge proposal approve", `data-searchbar="client"`, `data-f-type="proposal"`,
+		"/attention": {"Human Queue", "Trim the timeout", "forge proposal approve", `data-searchbar="client"`, `data-f-type="proposal"`,
 			"Verify notify click-routing", `<a href="/kb/setup-guide">Open the doc →</a>`,
 			`<button data-action-post="/api/v1/notify/test">Send test toast</button>`,
 			`<a href="/kb/setup-guide">kb:setup-guide</a>`},

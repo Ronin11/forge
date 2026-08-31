@@ -565,7 +565,7 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 	for _, p := range proposals {
 		prows = append(prows, proposalRow{Proposal: p, OpenURL: proposalOpenURL(p)})
 	}
-	u.render(w, r, "attention.html", "Human queue", map[string]any{"Questions": rows, "Proposals": prows})
+	u.render(w, r, "attention.html", "Human Queue", map[string]any{"Questions": rows, "Proposals": prows})
 }
 
 // proposals lists every proposal with the decision buttons; the API does the

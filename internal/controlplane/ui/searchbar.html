@@ -7,7 +7,7 @@ the comma-separated qualifier list this page understands — it drives the
 suggestion dropdown; values are scraped from the page's data-f-* attributes
 unless the page supplies them via .Values.
 */}}<form class="searchbar" role="search" data-searchbar="{{.Mode}}"{{if eq .Mode "server"}} method="get" action="{{.Action}}"{{end}}>
-<input type="search" name="q" value="{{with .Query}}{{.}}{{end}}" placeholder="{{.Placeholder}}" aria-label="{{.Placeholder}}" autocomplete="off" autocapitalize="off" spellcheck="false" data-keys="{{.Keys}}"{{range $k, $v := .Values}} data-values-{{$k}}="{{$v}}"{{end}}>
+<span class="sb-field"><span class="sb-chips" data-sb-chips></span><input type="search" name="q" value="{{with .Query}}{{.}}{{end}}" placeholder="{{.Placeholder}}" aria-label="{{.Placeholder}}" autocomplete="off" autocapitalize="off" spellcheck="false" data-keys="{{.Keys}}"{{range $k, $v := .Values}} data-values-{{$k}}="{{$v}}"{{end}}></span>
 {{if eq .Mode "server"}}<button type="submit">Search</button>{{if .Query}}<a class="clear" href="{{.Action}}">Clear</a>{{end}}{{else}}<span class="sb-count" data-sb-count hidden></span>{{end}}
 <div class="sb-suggest" data-sb-suggest role="listbox" hidden></div>
 </form>{{end}}
