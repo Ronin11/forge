@@ -484,6 +484,15 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     if (initial == null) { try { initial = localStorage.getItem(STORE); } catch (e) { initial = null; } }
     if (initial) { tokens = tokenize(initial); renderChips(); apply(); }
   }
+
+  // Re-collect [data-sf-item]s and re-run the filter — for lists that grow after
+  // load (the Tasks infinite-scroll loader appends rows the initial scan missed).
+  window.ForgeSearch = {
+    reapply: function () {
+      items = Array.prototype.slice.call(document.querySelectorAll('[data-sf-item]'));
+      apply();
+    },
+  };
 })();
 
 // Routine and workflow editors: one <dialog> per page, filled from the API on
@@ -1041,4 +1050,123 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
   });
 
   setRoute('explore', false);
+})();
+
+// --- Tasks page: infinite scroll, New-task dialog, and scope-by-DSL ---
+// The Tasks list loads 100 rows at a time (newest first) and defaults to open
+// tasks; a sentinel below the table pulls the next page into view, the New-task
+// button files arbitrary work, and a scope token in the search (scope:all,
+// scope:closed, or a state: naming a terminal state) widens past open tasks.
+(function () {
+  var sentinel = document.querySelector('[data-task-more]');
+  var tbody = document.querySelector('[data-task-rows]');
+
+  // Infinite scroll: fetch and append the next page when the sentinel nears the
+  // viewport. Newly appended rows are run through the active search filter so a
+  // committed chip keeps hiding what it should.
+  if (sentinel && tbody && 'IntersectionObserver' in window) {
+    var loading = false;
+    function loadMore() {
+      if (loading || sentinel.dataset.done) return;
+      loading = true;
+      var scope = sentinel.dataset.scope || 'open';
+      var offset = Number(sentinel.dataset.offset) || 0;
+      fetch('/tasks/rows?scope=' + encodeURIComponent(scope) + '&offset=' + offset)
+        .then(function (resp) {
+          if (!resp.ok) throw new Error(resp.status);
+          var more = resp.headers.get('X-Has-More');
+          return resp.text().then(function (html) { return { html: html, more: more }; });
+        })
+        .then(function (r) {
+          var tpl = document.createElement('tbody');
+          tpl.innerHTML = r.html.trim();
+          var added = tpl.querySelectorAll('tr').length;
+          while (tpl.firstChild) tbody.appendChild(tpl.firstChild);
+          sentinel.dataset.offset = String(offset + added);
+          if (!r.more || added === 0) sentinel.dataset.done = '1';
+          if (window.ForgeSearch && window.ForgeSearch.reapply) window.ForgeSearch.reapply();
+          loading = false;
+          if (!sentinel.dataset.done && isNear(sentinel)) loadMore(); // fill a tall viewport
+        })
+        .catch(function () { loading = false; });
+    }
+    function isNear(el) {
+      var r = el.getBoundingClientRect();
+      return r.top < (window.innerHeight || document.documentElement.clientHeight) + 400;
+    }
+    var obs = new IntersectionObserver(function (entries) {
+      if (entries.some(function (e) { return e.isIntersecting; })) loadMore();
+    }, { rootMargin: '400px' });
+    obs.observe(sentinel);
+  }
+
+  // New-task dialog: file arbitrary work (POST /api/v1/tasks, the ad-hoc path).
+  var dialog = document.querySelector('[data-task-dialog]');
+  if (dialog) {
+    var form = dialog.querySelector('form');
+    var errBox = form.querySelector('.dialog-error');
+    var saveBtn = form.querySelector('[data-task-save]');
+    function field(n) { return form.querySelector('[name=' + n + ']'); }
+    var newBtn = document.querySelector('[data-task-new]');
+    if (newBtn) newBtn.addEventListener('click', function () {
+      form.reset();
+      errBox.hidden = true;
+      dialog.showModal();
+    });
+    form.querySelector('[data-task-cancel]').onclick = function () { dialog.close(); };
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      var body = {
+        prompt: field('prompt').value.trim(),
+        title: field('title').value.trim(),
+        mode: field('mode').value.trim(),
+        model: field('model').value.trim(),
+        class: field('class').value,
+        integrate: field('integrate').checked,
+        repositories: field('repositories').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+      };
+      saveBtn.disabled = true;
+      fetch('/api/v1/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          return resp.json().then(function (out) { window.location = '/tasks/' + out.work.id; });
+        })
+        .catch(function (err) {
+          errBox.hidden = false;
+          errBox.textContent = 'Refused: ' + String(err.message || err).replace(/: (conflict|not found|draining)$/, '');
+        })
+        .then(function () { saveBtn.disabled = false; });
+    };
+  }
+
+  // Scope by DSL: a scope:open|closed|all token, or a state: naming a terminal
+  // state, widens the server scope so closed tasks are actually fetched. The
+  // search chips still filter client-side within whatever scope is loaded.
+  if (sentinel) {
+    var CLOSED = { succeeded: 1, failed: 1, cancelled: 1, merged: 1, partial: 1, unverified: 1 };
+    function impliedScope(q) {
+      var m = /(?:^|\s)scope:(open|closed|all)\b/.exec(q);
+      if (m) return m[1];
+      var st = /(?:^|\s)-?state:([a-z_]+)/g, x;
+      while ((x = st.exec(q))) { if (CLOSED[x[1]]) return 'all'; }
+      return null;
+    }
+    var rank = { open: 0, closed: 1, all: 2 };
+    function maybeWiden(q) {
+      var want = impliedScope(q);
+      var cur = sentinel.dataset.scope || 'open';
+      if (!want || want === cur) return;
+      // Only ever widen automatically (open -> all); never silently narrow.
+      if (rank[want] <= rank[cur] && !(want === 'closed' && cur === 'open')) return;
+      var url = '/tasks?scope=' + want + (q ? '&q=' + encodeURIComponent(q) : '');
+      window.location = url;
+    }
+    var input = document.querySelector('.searchbar input');
+    if (input) {
+      var check = function () { window.setTimeout(function () { maybeWiden(new URLSearchParams(location.search).get('q') || ''); }, 0); };
+      input.addEventListener('change', check);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') check(); });
+    }
+    maybeWiden(new URLSearchParams(location.search).get('q') || '');
+  }
 })();

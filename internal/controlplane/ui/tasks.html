@@ -1,3 +1,29 @@
-{{template "head" .}}<h1>Tasks</h1>
+{{template "head" .}}<div class="page-head"><h1>Tasks</h1><button class="btn primary" data-task-new>New task</button></div>
+<div class="tabs" data-task-scope>
+<a href="/tasks?scope=open"{{if eq .Data.Scope "open"}} class="on"{{end}}>Open</a>
+<a href="/tasks?scope=closed"{{if eq .Data.Scope "closed"}} class="on"{{end}}>Closed</a>
+<a href="/tasks?scope=all"{{if eq .Data.Scope "all"}} class="on"{{end}}>All</a>
+</div>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter tasks — text, repo:name, state:failed, -state:succeeded" "Keys" "repo,state,routine,class"}}
-{{template "taskTable" .Data}}{{template "foot" .}}
+<p id="editor-error" class="error" hidden></p>
+{{template "taskTable" .Data.Rows}}
+<div class="task-more" data-task-more data-scope="{{.Data.Scope}}" data-offset="{{len .Data.Rows}}"{{if not .Data.HasMore}} data-done="1"{{end}} aria-hidden="true"></div>
+
+<dialog data-task-dialog>
+<form method="dialog" data-task-form>
+<h2>New task</h2>
+<p class="dialog-error" hidden></p>
+<div class="form-grid">
+<label class="wide">What should the agent do? <textarea name="prompt" rows="5" required placeholder="e.g. Add a --json flag to the status command and update its help text"></textarea></label>
+<label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>
+<label>Title <input name="title" maxlength="80" placeholder="optional — first line of the prompt if blank"></label>
+<label>Mode <input name="mode" value="run"></label>
+<label>Model <input name="model" value="haiku"></label>
+<label>Class <select name="class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
+<label class="check"><input type="checkbox" name="integrate"> Integrate (merge on success)</label>
+</div>
+<div class="dialog-actions"><button type="button" class="btn" data-task-cancel>Cancel</button><button type="submit" class="btn primary" data-task-save>Create task</button></div>
+</form>
+</dialog>
+<datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
+{{template "foot" .}}

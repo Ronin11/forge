@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 	u.mux.HandleFunc("GET /{$}", u.dashboard)
 	u.mux.HandleFunc("GET /tasks", u.tasks)
+	u.mux.HandleFunc("GET /tasks/rows", u.taskRowsFragment)
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /workflows", u.workflows)
@@ -190,6 +192,14 @@ func (u *UI) render(w http.ResponseWriter, r *http.Request, name, title string, 
 func (u *UI) fail(w http.ResponseWriter, r *http.Request, err error) {
 	u.log.ErrorContext(r.Context(), "ui", "path", r.URL.Path, "error", err)
 	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+// renderPartial writes one named template with no page layout — used for the
+// HTML fragments the JS loaders append (see taskRowsFragment).
+func (u *UI) renderPartial(w http.ResponseWriter, r *http.Request, name string, data any) {
+	if err := u.tmpl.ExecuteTemplate(w, name, data); err != nil {
+		u.log.ErrorContext(r.Context(), "render partial", "template", name, "error", err)
+	}
 }
 
 // taskRow is one Work with its derived state for lists.
@@ -317,18 +327,85 @@ func (u *UI) repo(w http.ResponseWriter, r *http.Request) {
 	u.render(w, r, "repo.html", "Repository "+name, detail)
 }
 
+// tasksPageSize is how many tasks the Tasks page loads per request — the first
+// page server-rendered, each next page appended by the infinite-scroll loader.
+const tasksPageSize = 100
+
+// tasksData backs tasks.html: the current scope, its first page of rows, whether
+// a next page exists, and the repository names for the New-task datalist.
+type tasksData struct {
+	Scope        string
+	Rows         []taskRow
+	HasMore      bool
+	Repositories []string
+}
+
+// taskScope clamps the ?scope= param to open (the default — unfinished work),
+// closed (terminal), or all.
+func taskScope(q string) string {
+	switch q {
+	case "closed", "all":
+		return q
+	default:
+		return "open"
+	}
+}
+
 func (u *UI) tasks(w http.ResponseWriter, r *http.Request) {
-	works, err := u.store.ListWork(r.Context(), 200)
+	ctx := r.Context()
+	scope := taskScope(r.URL.Query().Get("scope"))
+	rows, hasMore, err := u.taskPage(ctx, scope, 0)
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
-	rows, err := u.taskRows(r.Context(), works)
+	repos, err := u.store.Repositories(ctx)
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "tasks.html", "Tasks", rows)
+	names := make([]string, len(repos))
+	for i, rep := range repos {
+		names[i] = rep.Name
+	}
+	u.render(w, r, "tasks.html", "Tasks", tasksData{Scope: scope, Rows: rows, HasMore: hasMore, Repositories: names})
+}
+
+// taskRowsFragment serves one appended page of task rows (bare <tr>s) for the
+// infinite-scroll loader: GET /tasks/rows?scope=&offset=. An empty body means
+// no more rows; the loader stops on that.
+func (u *UI) taskRowsFragment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	scope := taskScope(r.URL.Query().Get("scope"))
+	offset := 0
+	if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil {
+		offset = n
+	}
+	rows, hasMore, err := u.taskPage(ctx, scope, offset)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if hasMore {
+		w.Header().Set("X-Has-More", "1")
+	}
+	u.renderPartial(w, r, "taskRowList", rows)
+}
+
+// taskPage reads one page of Work for scope at offset and derives its rows,
+// asking for one extra row to tell whether a further page exists.
+func (u *UI) taskPage(ctx context.Context, scope string, offset int) ([]taskRow, bool, error) {
+	works, err := u.store.ListWorkPage(ctx, scope, tasksPageSize+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(works) > tasksPageSize
+	if hasMore {
+		works = works[:tasksPageSize]
+	}
+	rows, err := u.taskRows(ctx, works)
+	return rows, hasMore, err
 }
 
 func (u *UI) task(w http.ResponseWriter, r *http.Request) {

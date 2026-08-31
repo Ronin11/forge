@@ -236,6 +236,27 @@ func (s *Store) ListWork(ctx context.Context, limit int) ([]Work, error) {
 	return scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work ORDER BY created_at DESC LIMIT ?`, limit)))
 }
 
+// ListWorkPage returns a page of Work newest-first for the Tasks view: scope
+// "open" (finished_at IS NULL — still queued, running, blocked, or waiting),
+// "closed" (finished_at set — a terminal state), or "all". limit caps the page
+// (default/…max 100/500) and offset walks the pages for infinite scroll.
+func (s *Store) ListWorkPage(ctx context.Context, scope string, limit, offset int) ([]Work, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where := ""
+	switch scope {
+	case "open":
+		where = "WHERE finished_at IS NULL "
+	case "closed":
+		where = "WHERE finished_at IS NOT NULL "
+	}
+	return scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work `+where+`ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)))
+}
+
 // ActiveWorkByRoutine counts Work per routine with a Target holding a slot —
 // the concurrency rule's input.
 func (tx *Tx) ActiveWorkByRoutine(ctx context.Context) (map[string]int, error) {

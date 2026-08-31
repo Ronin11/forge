@@ -149,6 +149,11 @@ code.cmd-copy.copied::after{content:"copied \2713";margin-left:.5em;color:var(--
 /* Editors: routine and workflow add/edit dialogs */
 .page-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}
 .page-head h1{margin:.4rem 0}
+.tabs{display:flex;gap:.3rem;margin:.5rem 0}
+.tabs a{padding:.28rem .7rem;border:1px solid var(--line);border-radius:999px;font-size:.8rem;color:var(--muted);text-decoration:none}
+.tabs a:hover{border-color:var(--run);color:var(--fg)}
+.tabs a.on{background:var(--run);border-color:var(--run);color:#fff}
+.task-more{height:1px}
 .btn{display:inline-block;font:inherit;font-size:.8rem;padding:.25rem .7rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
 .btn:hover{border-color:var(--fg)}
 .btn.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}

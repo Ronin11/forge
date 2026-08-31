@@ -79,7 +79,7 @@ test.describe('dashboard timeline', () => {
 test.describe('tasks', () => {
   test('lists every seeded task and a row click navigates to the detail', async ({ page }) => {
     const s = seed();
-    await page.goto('/tasks');
+    await page.goto('/tasks?scope=all');
     const ids = [s.succeeded.work_id, s.failed.work_id, s.waiting.work_id, s.queue.a, s.queue.b, s.queue.c];
     for (const id of ids) {
       await expect(page.locator(`tr[data-href="/tasks/${id}"]`)).toBeVisible();
@@ -91,11 +91,45 @@ test.describe('tasks', () => {
 });
 
 test.describe('search bar', () => {
+  test('defaults to open tasks; scope tabs and DSL reveal closed; New task opens', async ({ page }) => {
+    const s = seed();
+    await page.goto('/tasks');
+    const row = (id) => page.locator(`tr[data-href="/tasks/${id}"]`);
+
+    // Open by default: the waiting/queued tasks show, the succeeded/failed
+    // (terminal) ones do not.
+    await expect(row(s.waiting.work_id)).toBeVisible();
+    await expect(row(s.queue.a)).toBeVisible();
+    await expect(row(s.succeeded.work_id)).toHaveCount(0);
+    await expect(row(s.failed.work_id)).toHaveCount(0);
+    await expect(page.locator('[data-task-scope] a.on')).toHaveText('Open');
+
+    // The All tab loads the closed ones too.
+    await page.locator('[data-task-scope] a', { hasText: 'All' }).click();
+    await expect(row(s.succeeded.work_id)).toBeVisible();
+    await expect(row(s.failed.work_id)).toBeVisible();
+
+    // DSL: a terminal state token typed on the open view widens to all so the
+    // closed rows are actually fetched (the page navigates to scope=all).
+    await page.goto('/tasks');
+    await expect(row(s.succeeded.work_id)).toHaveCount(0);
+    const q = page.locator('.searchbar input[name=q]');
+    await q.fill('state:succeeded');
+    await q.press('Enter');
+    await expect(page).toHaveURL(/scope=all/);
+    await expect(row(s.succeeded.work_id)).toBeVisible();
+
+    // New task opens the dialog for arbitrary work.
+    await page.goto('/tasks');
+    await page.locator('[data-task-new]').click();
+    await expect(page.locator('[data-task-dialog] textarea[name=prompt]')).toBeVisible();
+  });
+
   test('DSL filters rows, negation, repo qualifier, count, and ?q= sync', async ({ page }) => {
     const s = seed();
     const q = page.locator('.searchbar input[name=q]');
     const row = (id) => page.locator(`tr[data-href="/tasks/${id}"]`);
-    await page.goto('/tasks');
+    await page.goto('/tasks?scope=all');
 
     // state qualifier: only the succeeded task remains, count reflects it, and
     // the query lands in the URL so the filter is shareable.
@@ -136,7 +170,7 @@ test.describe('search bar', () => {
   });
 
   test('suggestions offer keys then page-scraped values; "/" focuses the bar', async ({ page }) => {
-    await page.goto('/tasks');
+    await page.goto('/tasks?scope=all');
     // "/" focuses the input from anywhere outside a field.
     await page.locator('body').press('/');
     const q = page.locator('.searchbar input[name=q]');
@@ -490,7 +524,7 @@ test.describe('search chips', () => {
   test('a committed filter becomes a deletable chip and persists across pages', async ({ page }) => {
     const s = seed();
     const q = page.locator('.searchbar input[name=q]');
-    await page.goto('/tasks');
+    await page.goto('/tasks?scope=all');
     // Type a filter and commit it with Enter → it becomes a chip, input clears.
     await q.fill('state:succeeded');
     await q.press('Enter');
@@ -505,7 +539,7 @@ test.describe('search chips', () => {
     await expect(page.locator('.sb-chip', { hasText: 'state:succeeded' })).toBeVisible();
 
     // Deleting the chip clears the filter.
-    await page.goto('/tasks');
+    await page.goto('/tasks?scope=all');
     await page.locator('.sb-chip', { hasText: 'state:succeeded' }).locator('.sb-chip-x').click();
     await expect(page.locator('.sb-chip')).toHaveCount(0);
     await expect(page.locator(`tr[data-href="/tasks/${s.failed.work_id}"]`)).toBeVisible();
