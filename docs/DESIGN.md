@@ -1315,6 +1315,13 @@ routes and rejects everything else; with the per-attempt token that makes tools 
 only path to Forge state. The daemon socket is never mounted. Credentials never enter the
 sandbox: anything needing `gh` or SSH is a tool executed by Forge outside it.
 
+As built (M8, this machine): `strace` is not installed, so the writable
+exception list is the config knob `[sandbox] claude_write_paths` in
+worker.toml with the coarse documented default `["~/.claude",
+"~/.claude.json"]`; run the strace pass and tighten it when strace is
+available. Entries under `~/.ssh` or `~/.config/gh` are rejected at
+config load.
+
 ## 20. Integration (M9)
 
 **Write sets.** `paths` (globs) come from `task add --paths`, the routine, or `plan`
