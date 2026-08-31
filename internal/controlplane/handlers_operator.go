@@ -143,6 +143,7 @@ func (s *Server) archiveRoutine(r *http.Request) (int, any, error) {
 // runRequest is POST /api/v1/routines/{name}/run's optional body.
 type runRequest struct {
 	Repositories []string `json:"repositories"`
+	Objective    string   `json:"objective"`
 }
 
 func (s *Server) runRoutine(r *http.Request) (int, any, error) {
@@ -152,7 +153,7 @@ func (s *Server) runRoutine(r *http.Request) (int, any, error) {
 			return 0, nil, err
 		}
 	}
-	return s.submitWork(r.Context(), workRequest{Routine: r.PathValue("name"), Repositories: body.Repositories})
+	return s.submitWork(r.Context(), workRequest{Routine: r.PathValue("name"), Repositories: body.Repositories, Objective: body.Objective})
 }
 
 // workRequest is POST /api/v1/work|tasks: a routine run with overrides, or an
@@ -175,6 +176,10 @@ type workRequest struct {
 	// "unset" is distinct from 0.
 	MaxTurns       *int `json:"max_turns"`
 	TimeoutSeconds *int `json:"timeout_seconds"`
+	// Objective, when set, is substituted for {{objective}} in the routine
+	// prompt at creation (per-work, like {{repo}} is per-repo at claim). Empty
+	// leaves a self-directed fallback. Threaded from a workflow/routine run.
+	Objective string `json:"objective"`
 	// Force overrides intake dedupe (M11): submit even when an identical
 	// prompt was created within the window.
 	Force bool `json:"force"`
@@ -224,6 +229,21 @@ func (s *Server) submitWork(ctx context.Context, req workRequest) (int, any, err
 	}
 	s.log.InfoContext(ctx, "work created", "work_id", out.Work.ID, "routine", out.Work.RoutineName, "generation", out.Work.Generation, "targets", len(out.Targets), "priority", out.Work.Priority, "class", out.Work.BudgetClass)
 	return http.StatusCreated, out, nil
+}
+
+// injectObjective substitutes a routine prompt's {{objective}} placeholder with
+// the run's objective (per-work, baked at creation). An empty objective becomes
+// a self-directed fallback, so a flow works with or without one; a prompt with
+// no placeholder is unchanged.
+func injectObjective(prompt, objective string) string {
+	if !strings.Contains(prompt, "{{objective}}") {
+		return prompt
+	}
+	obj := strings.TrimSpace(objective)
+	if obj == "" {
+		obj = "(No specific objective was given — identify the single highest-value next piece of work for this repository yourself, and state clearly what you chose and why.)"
+	}
+	return strings.ReplaceAll(prompt, "{{objective}}", obj)
 }
 
 // createWorkTx freezes the routine (or the ad-hoc fields as a routine) into a
@@ -278,6 +298,7 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		w = store.Work{RoutineName: adHocRoutineName}
 	}
+	rt.Prompt = injectObjective(rt.Prompt, req.Objective)
 	if req.Class != "" {
 		if !req.Class.Valid() {
 			return workCreated{}, badRequest("class %q: want interactive, normal, or backlog", req.Class)

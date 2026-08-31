@@ -70,8 +70,19 @@ func (tx *Tx) AnswerQuestion(ctx context.Context, questionID, answer, by string)
 		return nil, fmt.Errorf("count open questions: %w", err)
 	}
 	if open == 0 {
-		if _, err := tx.Transition(ctx, q.TargetID, model.Pending, TransitionOptions{Actor: by}); err != nil {
+		// Only resume a target still parked on the question. If it reached a
+		// terminal state (e.g. cancelled) while the question sat open,
+		// answering the stale question must not resurrect it — cancelled →
+		// pending is a legal edge (it exists for retry, see retry.go), so a
+		// bare Transition would silently reopen a finished Work.
+		t, err := tx.GetTarget(ctx, q.TargetID)
+		if err != nil {
 			return nil, err
+		}
+		if t.State == model.WaitingHuman {
+			if _, err := tx.Transition(ctx, q.TargetID, model.Pending, TransitionOptions{Actor: by}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &q, nil

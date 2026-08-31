@@ -178,6 +178,7 @@ func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 			created, err := s.createWorkTx(ctx, tx, workRequest{
 				Routine:       st.Routine,
 				Repositories:  body.Repositories,
+				Objective:     body.Objective,
 				Title:         wf.Name + ": " + st.Name,
 				workflowRunID: out.RunID, workflowName: wf.Name, workflowStep: st.Name,
 				stepEdges: edges,

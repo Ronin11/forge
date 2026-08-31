@@ -370,6 +370,56 @@ func TestQuestionPausesAndAnswerRequeues(t *testing.T) {
 	}
 }
 
+// TestAnswerDoesNotResurrectCancelledTarget guards the state-machine bug where
+// answering a stale question whose target was cancelled while the question sat
+// open transitioned the (terminal) target back to pending — cancelled → pending
+// is a legal edge (it exists for retry) — leaving a pending Target on a finished
+// Work that the scheduler never re-claims: an inert zombie.
+func TestAnswerDoesNotResurrectCancelledTarget(t *testing.T) {
+	f := newFixture(t)
+	work, target := f.newWork(model.ClassNormal)
+	a := f.claim(target, "r1")
+	f.run(a.ID, "lease-r1")
+	f.write(func(tx *Tx) error {
+		_, err := tx.Complete(ctx(), a.ID, protocol.CompleteRequest{LeaseToken: "lease-r1", State: model.WaitingHuman, SessionID: "sess-1", Launches: 1, Question: &protocol.QuestionRequest{Text: "Which one?"}, FinishedAt: f.now}, 1)
+		return err
+	})
+	// Cancel the target while it waits on the question; the Work finishes.
+	f.write(func(tx *Tx) error {
+		_, err := tx.Transition(ctx(), target.ID, model.Cancelled, TransitionOptions{Reason: model.ReasonCancelled, Actor: "human"})
+		return err
+	})
+	wk := must(f.s.GetWork(ctx(), work.ID))
+	if wk.FinishedAt.IsZero() {
+		t.Fatalf("work not finished after cancel: %+v", wk)
+	}
+
+	// Answer the still-open question long after the cancel.
+	f.now = f.now.Add(12 * time.Hour)
+	open := must(f.s.OpenQuestions(ctx()))
+	if len(open) != 1 {
+		t.Fatalf("open questions = %+v", open)
+	}
+	f.write(func(tx *Tx) error {
+		_, err := tx.AnswerQuestion(ctx(), open[0].ID, "the answer", "human")
+		return err
+	})
+
+	// The target must stay cancelled — not resurrected to pending — and its
+	// Work must stay finished. The answer is still recorded for the record.
+	tg := must(f.s.GetTarget(ctx(), target.ID))
+	if tg.State != model.Cancelled {
+		t.Errorf("target resurrected: state = %s, want cancelled", tg.State)
+	}
+	wk = must(f.s.GetWork(ctx(), work.ID))
+	if wk.FinishedAt.IsZero() {
+		t.Errorf("work reopened by stale answer: %+v", wk)
+	}
+	if q := must(f.s.OpenQuestions(ctx())); len(q) != 0 {
+		t.Errorf("question not recorded as answered: %+v", q)
+	}
+}
+
 func TestDependenciesAndCycles(t *testing.T) {
 	f := newFixture(t)
 	a, _ := f.newWork(model.ClassBacklog)
