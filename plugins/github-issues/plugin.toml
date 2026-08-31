@@ -1,0 +1,8 @@
+name = "github-issues"
+version = "0.1.0"
+description = "Turns open GitHub issues into Forge tasks and comments the outcome back on the issue when the task finishes."
+build = ["go", "build", "-o", "forge-github-issues", "."]
+command = ["./forge-github-issues"]
+capabilities = ["intake", "annotate"]
+scopes = ["work:read", "work:write", "annotate:write"]
+restart = "always"

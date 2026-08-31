@@ -101,6 +101,8 @@ check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-
 # build argv; this is the developer convenience for the same step.
 build-plugins:
     cd plugins/status-file && go build -o forge-status-file .
+    cd plugins/notify && go build -o forge-notify .
+    cd plugins/github-issues && go build -o forge-github-issues .
 
 # M12: golden eval cases through the fake executor (offline, no budget).
 eval-check: build

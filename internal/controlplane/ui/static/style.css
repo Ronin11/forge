@@ -78,3 +78,12 @@ tr[draggable]{background:var(--card)}
 .kb-linkcol h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 .5rem}
 .kb-link{font-size:.85rem;margin:.25rem 0}
 .kb-link .lt{display:inline-block;min-width:5.5rem;color:var(--muted);font-size:.68rem;text-transform:uppercase}
+
+/* Click-to-copy forge commands */
+code.cmd-copy{cursor:pointer;user-select:all;background:rgba(128,128,128,.12);border:1px solid var(--line);border-radius:4px;padding:.05em .4em;transition:background .12s,border-color .12s}
+code.cmd-copy:hover{background:rgba(128,128,128,.2);border-color:var(--muted)}
+code.cmd-copy:focus-visible{outline:2px solid var(--run);outline-offset:2px}
+code.cmd-copy::after{content:"\29C9";margin-left:.45em;opacity:.5;font-size:.85em}
+code.cmd-copy:hover::after{opacity:.8}
+code.cmd-copy.copied{background:rgba(47,143,78,.16);border-color:var(--ok)}
+code.cmd-copy.copied::after{content:"copied \2713";margin-left:.5em;color:var(--ok);opacity:1;font-size:.78em;font-family:inherit}

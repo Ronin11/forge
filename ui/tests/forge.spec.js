@@ -272,3 +272,20 @@ test.describe('knowledge base', () => {
     await expect(body.locator(`a[href="/kb/${s.kb.id}"]`)).toBeVisible();
   });
 });
+
+test.describe('click-to-copy', () => {
+  test('a forge command in the human queue copies on click', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-write', 'clipboard-read']);
+    await page.goto('/attention');
+    // The human queue shows `forge proposal approve <id>` for the still-proposed
+    // "keep" proposal — stable regardless of which earlier tests mutated state.
+    const cmd = page.locator('code.cmd-copy', { hasText: 'forge proposal approve' }).first();
+    await expect(cmd).toBeVisible();
+    await expect(cmd).toHaveAttribute('role', 'button');
+    const text = (await cmd.textContent()).trim();
+    await cmd.click();
+    await expect(cmd).toHaveClass(/copied/); // visual feedback
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe(text);
+  });
+});

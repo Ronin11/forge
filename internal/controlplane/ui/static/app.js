@@ -128,3 +128,42 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
     });
   }).catch(function () {});
 })();
+
+// Click-to-copy: any inline `forge …` command shown anywhere in the UI becomes
+// a one-click copy. A single pass upgrades every page, so a command in the
+// human queue, an empty state, a hint, or a kb note is copied with one click
+// (loopback is a secure context, so the clipboard API is available).
+(function () {
+  document.querySelectorAll('code').forEach(function (el) {
+    var text = el.textContent.trim();
+    if (text.indexOf('forge ') !== 0) return;   // only forge commands
+    if (el.closest('pre')) return;               // leave fenced blocks alone
+    el.classList.add('cmd-copy');
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', 'Copy command: ' + text);
+    el.setAttribute('title', 'Click to copy');
+    function copy(e) {
+      if (e) { e.stopPropagation(); e.preventDefault(); }
+      var done = function () {
+        el.classList.add('copied');
+        window.setTimeout(function () { el.classList.remove('copied'); }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(select);
+      } else {
+        select();
+      }
+    }
+    function select() {
+      var r = document.createRange(); r.selectNodeContents(el);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      el.classList.add('copied');
+      window.setTimeout(function () { el.classList.remove('copied'); }, 1200);
+    }
+    el.addEventListener('click', copy);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') copy(e);
+    });
+  });
+})();
