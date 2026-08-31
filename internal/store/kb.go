@@ -247,3 +247,25 @@ func (s *Store) scanKbNotes(iter func(func(*sql.Rows) error) error) ([]KbNote, e
 	}
 	return out, nil
 }
+
+// ListKbNotes returns every indexed note, newest first; when tag is non-empty
+// only notes carrying it. For the web UI's Knowledge page.
+func (s *Store) ListKbNotes(ctx context.Context, tag string) ([]KbNote, error) {
+	notes, err := s.scanKbNotes(each(s.query(ctx, `SELECT id, path, title, type, created, tags FROM kb_notes ORDER BY created DESC, id`)))
+	if err != nil {
+		return nil, err
+	}
+	if tag == "" {
+		return notes, nil
+	}
+	out := notes[:0]
+	for _, n := range notes {
+		for _, t := range n.Tags {
+			if t == tag {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out, nil
+}

@@ -117,6 +117,8 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
 	u.mux.HandleFunc("GET /proposals", u.proposals)
+	u.mux.HandleFunc("GET /kb", u.kb)
+	u.mux.HandleFunc("GET /kb/{id}", u.kbNote)
 	u.mux.HandleFunc("GET /stats", u.stats)
 	return u, nil
 }

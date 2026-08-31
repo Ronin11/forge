@@ -1,0 +1,17 @@
+{{define "kbnote.html"}}{{template "head" .}}
+<article class="kb-note">
+  <p class="crumb"><a href="/kb">Knowledge</a> / {{.Data.Note.Type}}</p>
+  <h1>{{.Data.Note.Title}}</h1>
+  <p class="sub"><code>{{.Data.Note.ID}}</code> · created {{ago .Data.Note.Created}}
+    {{range .Data.Note.Tags}}<span class="chip">{{.}}</span> {{end}}</p>
+  <div class="kb-body">{{.Data.BodyHTML}}</div>
+  {{if or .Data.Note.Links .Data.Backlinks}}<div class="kb-links">
+    {{if .Data.Note.Links}}<div class="kb-linkcol"><h3>Links</h3>
+      {{range $type, $targets := .Data.Note.Links}}{{range $targets}}<div class="kb-link"><span class="lt">{{$type}}</span> <code>{{.}}</code></div>{{end}}{{end}}
+    </div>{{end}}
+    {{if .Data.Backlinks}}<div class="kb-linkcol"><h3>Referenced by</h3>
+      {{range .Data.Backlinks}}<div class="kb-link"><span class="lt">{{.LinkType}}</span> <a href="/kb/{{.FromID}}">{{.FromID}}</a></div>{{end}}
+    </div>{{end}}
+  </div>{{end}}
+</article>
+{{template "foot" .}}{{end}}
