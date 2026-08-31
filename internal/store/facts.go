@@ -69,6 +69,10 @@ type AttemptFacts struct {
 	SevenDayBefore    *float64            `json:"seven_day_before,omitempty"`
 	SevenDayAfter     *float64            `json:"seven_day_after,omitempty"`
 	UtilizationDelta  *float64            `json:"utilization_delta_estimate,omitempty"`
+	// TokensToFirstEdit is the cumulative message tokens up to the first
+	// file-mutating tool call (M11 repo briefs, DESIGN §22); NULL when the
+	// attempt never edited or the signal was unavailable.
+	TokensToFirstEdit *int64 `json:"tokens_to_first_edit,omitempty"`
 }
 
 // PhaseNames are the columns Phases maps to, in order.
@@ -96,14 +100,14 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
 		state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 		commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
-		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.AttemptID, f.TargetID, f.WorkID, f.Routine, f.Generation, f.Project, f.Repository, f.Worker, f.Executor, f.Model, nullString(f.Effort), f.Mode, string(f.Trigger), nullString(f.PromptVersionHash), string(f.Autonomy),
 		phase("queue_wait"), phase("fetch"), phase("resolve_base"), phase("worktree_add"), phase("manifest"), phase("agent"), phase("git_inspect"), phase("verify"), phase("cleanup"), phase("total"), nullTime(f.StartedAt), formatTime(f.FinishedAt),
 		ptrInt(f.Turns), ptrInt64(f.InputTokens), ptrInt64(f.OutputTokens), ptrInt64(f.CacheReadTokens), ptrInt64(f.CacheCreation), nullFloatPtr(f.CostUSD), ptrInt(f.ToolCallsTotal), string(byName), string(timeByName), ptrInt64(f.ToolP50US), ptrInt64(f.ToolMaxUS), ptrInt(f.ToolErrors), ptrInt(f.QuestionsAsked), ptrInt64(f.WaitHumanUS), ptrInt(f.EventsTotal), ptrInt(f.EventsDropped),
 		string(f.State), ptrInt(f.ExitCode), nullString(string(f.FailureReason)), ptrBool(f.IsError), ptrInt(f.VerificationLevel), ptrBool(f.VerificationPass), boolInt(f.Retained), nullString(f.RetainedReason),
 		ptrInt(f.Commits), ptrInt(f.FilesChanged), ptrInt(f.Insertions), ptrInt(f.Deletions), ptrBool(f.Dirty), ptrBool(f.Pushed), nullString(f.Branch), nullString(f.Base), nullString(f.Head),
-		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta))
+		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta), ptrInt64(f.TokensToFirstEdit))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("facts for %s already exist: %w", f.AttemptID, ErrConflict)
@@ -162,7 +166,7 @@ const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation,
 	turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
 	state, exit_code, failure_reason, is_error, verification_level, verification_passed, retained, retained_reason,
 	commits, files_changed, insertions, deletions, dirty, pushed, branch, base, head,
-	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate FROM attempt_facts`
+	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit FROM attempt_facts`
 
 func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFacts, error) {
 	var out []AttemptFacts
@@ -171,7 +175,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		var effort, promptHash, started, failure, retainedReason, branch, base, head sql.NullString
 		phases := make([]sql.NullInt64, len(PhaseNames))
 		var finished, byName, timeByName string
-		var turns, in, outT, cacheR, cacheC, toolTotal, p50, maxT, toolErr, qAsked, waitH, evTotal, evDropped, exit, isErr, vLevel, vPass, commits, files, ins, del, dirty, pushed sql.NullInt64
+		var turns, in, outT, cacheR, cacheC, toolTotal, p50, maxT, toolErr, qAsked, waitH, evTotal, evDropped, exit, isErr, vLevel, vPass, commits, files, ins, del, dirty, pushed, firstEdit sql.NullInt64
 		var retained int
 		var cost, fhb, fha, sdb, sda, delta sql.NullFloat64
 		dest := []any{&f.AttemptID, &f.TargetID, &f.WorkID, &f.Routine, &f.Generation, &f.Project, &f.Repository, &f.Worker, &f.Executor, &f.Model, &effort, &f.Mode, &f.Trigger, &promptHash, &f.Autonomy}
@@ -179,7 +183,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 			dest = append(dest, &phases[i])
 		}
 		dest = append(dest, &started, &finished, &turns, &in, &outT, &cacheR, &cacheC, &cost, &toolTotal, &byName, &timeByName, &p50, &maxT, &toolErr, &qAsked, &waitH, &evTotal, &evDropped,
-			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta)
+			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta, &firstEdit)
 		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("scan facts: %w", err)
 		}
@@ -210,6 +214,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		f.InputTokens, f.OutputTokens, f.CacheReadTokens, f.CacheCreation, f.ToolP50US, f.ToolMaxUS, f.WaitHumanUS = int64Ptr(in), int64Ptr(outT), int64Ptr(cacheR), int64Ptr(cacheC), int64Ptr(p50), int64Ptr(maxT), int64Ptr(waitH)
 		f.IsError, f.VerificationPass, f.Dirty, f.Pushed = boolPtr(isErr), boolPtr(vPass), boolPtr(dirty), boolPtr(pushed)
 		f.CostUSD, f.FiveHourBefore, f.FiveHourAfter, f.SevenDayBefore, f.SevenDayAfter, f.UtilizationDelta = floatPtr(cost), floatPtr(fhb), floatPtr(fha), floatPtr(sdb), floatPtr(sda), floatPtr(delta)
+		f.TokensToFirstEdit = int64Ptr(firstEdit)
 		out = append(out, f)
 		return nil
 	})

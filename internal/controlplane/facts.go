@@ -53,6 +53,7 @@ func ComputeFacts(in FactsInput) *store.AttemptFacts {
 	}
 	computePhases(f, in.Events)
 	computeTools(f, in.Events)
+	computeTokensToFirstEdit(f, in.Events)
 	computeEventCounts(f, in.Events)
 	computeQuestions(f, in.Questions, in.Now)
 	computeBudget(f, a, in.Samples)
@@ -162,6 +163,37 @@ func computeTools(f *store.AttemptFacts, events []store.StoredEvent) {
 }
 
 func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
+
+// editToolNames are the built-in tools that mutate files; the first span with
+// one of these names marks "first edit" for tokens_to_first_edit. Bash is
+// excluded on purpose: it may or may not mutate and there is no cheap signal.
+var editToolNames = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+
+// computeTokensToFirstEdit sums the per-message usage metrics (input + output
+// tokens) recorded up to and including the assistant message that makes the
+// first file-mutating tool call (M11 repo briefs, DESIGN §22). Events are
+// ordered by elapsed time and a message's usage metric is emitted before its
+// tool spans, so the editing message's own tokens count. NULL when the
+// attempt never edited.
+func computeTokensToFirstEdit(f *store.AttemptFacts, events []store.StoredEvent) {
+	var total int64
+	for _, e := range events {
+		if e.Kind == protocol.KindMetric && e.Name == "usage" {
+			var attrs struct {
+				Input  int64 `json:"input_tokens"`
+				Output int64 `json:"output_tokens"`
+			}
+			if json.Unmarshal(e.Attrs, &attrs) == nil {
+				total += attrs.Input + attrs.Output
+			}
+			continue
+		}
+		if e.Kind == protocol.KindSpanStart && hasPrefix(e.ParentID, "agent-") && editToolNames[e.Name] {
+			f.TokensToFirstEdit = &total
+			return
+		}
+	}
+}
 
 func computeEventCounts(f *store.AttemptFacts, events []store.StoredEvent) {
 	n := len(events)

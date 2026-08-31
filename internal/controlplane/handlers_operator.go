@@ -2,12 +2,15 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"forge/internal/model"
 	"forge/internal/protocol"
@@ -167,6 +170,9 @@ type workRequest struct {
 	Paths        []string          `json:"paths"`
 	Integrate    bool              `json:"integrate"`
 	Title        string            `json:"title"`
+	// Force overrides intake dedupe (M11): submit even when an identical
+	// prompt was created within the window.
+	Force bool `json:"force"`
 }
 
 // workCreated is the 201 body.
@@ -186,6 +192,9 @@ func (s *Server) createWork(r *http.Request) (int, any, error) {
 func (s *Server) submitWork(ctx context.Context, req workRequest) (int, any, error) {
 	if s.Draining() {
 		return 0, nil, errDraining
+	}
+	if err := s.dedupeWork(ctx, req); err != nil {
+		return 0, nil, err
 	}
 	var out workCreated
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
@@ -324,6 +333,7 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	if w.Title == "" {
 		w.Title = titleFromPrompt(rt.Prompt, rt.Name)
 	}
+	w.PromptHash = promptHashOf(rt.Prompt)
 	w.Trigger, w.Snapshot, w.Priority, w.BudgetClass = model.TriggerManual, snapshot, rt.Priority, rt.BudgetClass
 	w.Autonomy = model.ResolveAutonomy(req.Autonomy, rt.Autonomy, "", project.Autonomy, "")
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
@@ -332,6 +342,101 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		return workCreated{}, err
 	}
 	return workCreated{Work: w, Targets: targets}, nil
+}
+
+// dedupeWindow is how long an identical ad-hoc prompt is refused (M11 intake
+// dedupe, DESIGN §22). Wall clock across requests by necessity.
+const dedupeWindow = 24 * time.Hour
+
+// dedupeWork refuses (409, journaled work.deduplicated) an ad-hoc submission
+// whose normalized prompt was already submitted within the window; force
+// overrides. Routine runs are deliberate reruns of a stable prompt and are
+// not deduplicated. The read is on the pool and the journal row is its own
+// transaction because a refusal must not roll it back; the race window is one
+// request and --force exists, so advisory is enough. The external_refs half
+// of the spec is skipped: the create body carries no external_refs today.
+func (s *Server) dedupeWork(ctx context.Context, req workRequest) error {
+	if req.Routine != "" || req.Force {
+		return nil
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return nil // createWorkTx rejects it with the better message
+	}
+	hash := promptHashOf(prompt)
+	dups, err := s.store.WorkByPromptHash(ctx, hash, s.now().UTC().Add(-dedupeWindow))
+	if err != nil {
+		return err
+	}
+	if len(dups) == 0 {
+		return nil
+	}
+	dup := dups[0]
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.Journal(ctx, "work.deduplicated", store.EntityWork, dup.ID, map[string]any{"prompt_hash": hash, "duplicate_of": dup.ID})
+	})
+	if err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "work deduplicated", "duplicate_of", dup.ID, "prompt_hash", hash)
+	return fmt.Errorf("duplicate of task %s (same prompt within 24h; use --force to submit anyway): %w", dup.ID[:8], store.ErrConflict)
+}
+
+// promptHashOf is the intake dedupe key: sha256 hex of the trimmed prompt.
+func promptHashOf(prompt string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(prompt)))
+	return hex.EncodeToString(sum[:])
+}
+
+// steerRequest is POST /api/v1/attempts/{id}/steer: one operator turn
+// injected into a running agent's session (M11 steer, DESIGN §22).
+type steerRequest struct {
+	Text string `json:"text"`
+}
+
+// steerAttempt queues the turn on the daemon; the worker's next heartbeat
+// (≤10 s) carries it to the attempt, which writes it to the live process's
+// stdin as a stream-json user message. The route is registered in
+// verifyRoutes beside the other M4+ target/attempt decisions.
+func (s *Server) steerAttempt(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var req steerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return 0, nil, err
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return 0, nil, badRequest("text is required")
+	}
+	if len(text) > protocol.MaxPromptBytes {
+		return 0, nil, badRequest("text exceeds %d bytes", protocol.MaxPromptBytes)
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		a, err := tx.GetAttempt(ctx, id)
+		if err != nil {
+			return err
+		}
+		t, err := tx.GetTarget(ctx, a.TargetID)
+		if err != nil {
+			return err
+		}
+		if t.State != model.Running {
+			return fmt.Errorf("target %s is %s, not running: %w", t.ID, t.State, store.ErrConflict)
+		}
+		return tx.EnqueueSteer(ctx, id, text)
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "steer queued", "attempt_id", id, "bytes", len(text))
+	return http.StatusAccepted, map[string]any{"queued": true}, nil
 }
 
 // titleFromPrompt is the prompt's first line, bounded, or the routine's name.

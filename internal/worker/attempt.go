@@ -121,10 +121,13 @@ type attempt struct {
 	ft       *ForgeToml
 
 	// cancelled is set by the heartbeat goroutine; stopReason is what it wants
-	// the process stopped for.
+	// the process stopped for. steerable says the live process was launched
+	// with stream-json stdin (the steer capability), so heartbeat-delivered
+	// operator turns may be written to it.
 	mu         sync.Mutex
 	process    *Process
 	stopReason string
+	steerable  bool
 }
 
 // Run executes the claim and reports to the daemon. It returns only when the
@@ -541,8 +544,8 @@ func (a *attempt) promptVersion() *protocol.PromptVersion {
 	if tpl == "" {
 		tpl = c.Prompt
 	}
-	h := promptHash(c.Mode, tpl, "", c.AllowedTools, c.Model, c.Effort)
-	return &protocol.PromptVersion{Hash: h, Routine: c.RoutineName, Generation: c.Generation, Mode: c.Mode, Template: tpl, RenderedExample: c.Prompt, ToolList: c.AllowedTools, Model: c.Model, Effort: c.Effort}
+	h := promptHash(c.Mode, tpl, c.SystemAppend, c.AllowedTools, c.Model, c.Effort)
+	return &protocol.PromptVersion{Hash: h, Routine: c.RoutineName, Generation: c.Generation, Mode: c.Mode, Template: tpl, RenderedExample: c.Prompt, SystemAppend: c.SystemAppend, ToolList: c.AllowedTools, Model: c.Model, Effort: c.Effort}
 }
 
 // runAgent is phase 6: launch, stream, wait.
@@ -574,9 +577,11 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	if c.ModeInfo != nil && len(c.ModeInfo.Schema) > 0 {
 		schema = string(c.ModeInfo.Schema)
 	}
+	steer := hasCapability(exec, CapSteer)
 	cmd, err := exec.Command(ctx, LaunchRequest{
 		Model: c.Model, MaxTurns: c.MaxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,
-		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, JSONSchema: schema, MaxBudgetUSD: c.MaxBudgetUSD, Effort: c.Effort, Env: a.env(),
+		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, JSONSchema: schema, MaxBudgetUSD: c.MaxBudgetUSD,
+		Effort: c.Effort, SystemAppend: c.SystemAppend, Env: a.env(),
 	})
 	if err != nil {
 		span.End(err, nil)
@@ -660,13 +665,14 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 		a.emitter.Emit(protocol.Event{Kind: protocol.KindStderr, Message: string(line)})
 		a.log.Log(a.ctx, logging.LevelTrace, "executor stderr", "line", string(line))
 	}
-	p, err := Launch(ctx, LaunchSpec{Cmd: cmd, Prompt: a.prompt(), Timeout: a.remaining(launch - 1), OutputPath: a.outputPath(), OnStdout: onLine, OnStderr: onErr})
+	p, err := Launch(ctx, LaunchSpec{Cmd: cmd, Prompt: a.prompt(), StreamInput: steer, Timeout: a.remaining(launch - 1), OutputPath: a.outputPath(), OnStdout: onLine, OnStderr: onErr})
 	if err != nil {
 		span.End(err, nil)
 		return ParseResult{}, ExitStatus{Code: -1}, err
 	}
 	a.mu.Lock()
 	a.process = p
+	a.steerable = steer
 	stop := a.stopReason
 	a.mu.Unlock()
 	if stop != "" {
@@ -810,6 +816,31 @@ func (a *attempt) heartbeat(ctx context.Context, hb protocol.HeartbeatRequest) {
 func (a *attempt) applyHeartbeat(resp *protocol.HeartbeatResponse) {
 	if resp.CancelRequested {
 		a.stop("cancelled")
+	}
+	if len(resp.Steer) > 0 {
+		a.deliverSteers(resp.Steer)
+	}
+}
+
+// deliverSteers writes queued operator turns to the live process's stdin
+// (DESIGN §22). A steer that cannot be delivered — no process, an executor
+// without the steer capability, the process already gone — is a visible
+// steer.dropped lifecycle event, never a silent loss. Bodies are never logged;
+// the transcript shows the turn through the executor's own stream.
+func (a *attempt) deliverSteers(texts []string) {
+	a.mu.Lock()
+	p, steerable := a.process, a.steerable
+	a.mu.Unlock()
+	for _, text := range texts {
+		if p == nil || !steerable {
+			a.emitter.Lifecycle("steer.dropped", map[string]any{"reason": "no steerable process", "bytes": len(text)})
+			continue
+		}
+		if err := p.WriteUser(text); err != nil {
+			a.emitter.Lifecycle("steer.dropped", map[string]any{"reason": shortError(err), "bytes": len(text)})
+			continue
+		}
+		a.emitter.Lifecycle("steer.delivered", map[string]any{"bytes": len(text)})
 	}
 }
 

@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"forge/internal/logging"
@@ -40,6 +43,9 @@ func (s *Server) register(r *http.Request) (int, any, error) {
 	}
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		if err := tx.Register(ctx, req); err != nil {
+			return err
+		}
+		if err := s.proposeForgeToml(ctx, tx, req.Repositories); err != nil {
 			return err
 		}
 		return tx.TouchWorker(ctx, req.WorkerID)
@@ -150,22 +156,111 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 	return s.claimTarget(ctx, tx, req, *pick.Work, *pick.Target)
 }
 
-// workRequirements is the capability-routing rule at the claim site: a verify
-// Work whose subject needs L2 UI verification runs only on a worker whose
-// browser capability is ready. Everything else needs nothing extra (M8 adds
-// sandbox, M10 runners, through the same seam).
+// workRequirements is the capability-routing rule at the claim site: a
+// require_sandbox routine runs only on a worker whose sandbox capability is
+// ready, and a verify Work whose subject needs L2 UI verification only on one
+// whose browser is ready. Everything else needs nothing extra (M10 runners
+// arrive through the same seam).
 func workRequirements(w store.Work) []string {
 	snap, err := snapshotRoutine(w)
 	if err != nil {
 		return nil
 	}
-	if snap.Mode != "verify" {
-		return nil
+	var reqs []string
+	if snap.RequireSandbox {
+		reqs = append(reqs, "sandbox")
 	}
-	if vo := verifyOfFromSnapshot(w.Snapshot); vo != nil && vo.UI {
-		return []string{"browser"}
+	if snap.Mode == "verify" {
+		if vo := verifyOfFromSnapshot(w.Snapshot); vo != nil && vo.UI {
+			reqs = append(reqs, "browser")
+		}
+	}
+	return reqs
+}
+
+// proposeForgeToml files one doc proposal per registered repository that has
+// no forge.toml (M11 bootstrap, DESIGN §22): a suggested skeleton with checks
+// guessed from the checkout. It fires at most once per repository — any
+// existing proposal for the target, whatever a human decided, suppresses a
+// new one — and only for checkouts the daemon can see (V0: daemon and worker
+// share a machine; an invisible path yields nothing to draft from).
+func (s *Server) proposeForgeToml(ctx context.Context, tx *store.Tx, repos []protocol.Repository) error {
+	rows, err := tx.Repositories(ctx)
+	if err != nil {
+		return err
+	}
+	// A worker already reported a forge.toml for these (the file may live
+	// off-disk of this daemon's view); never propose over one.
+	reported := map[string]bool{}
+	for _, row := range rows {
+		if row.ForgeToml != "" {
+			reported[row.Name] = true
+		}
+	}
+	for _, r := range repos {
+		if r.Name == "greenfield" || reported[r.Name] {
+			// The virtual greenfield repository is not a checkout.
+			continue
+		}
+		if info, err := os.Stat(r.Path); err != nil || !info.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(r.Path, "forge.toml")); err == nil {
+			continue
+		}
+		target := "repo:" + r.Name + "/forge.toml"
+		exists, err := tx.HasProposalForTarget(ctx, target)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		after, err := json.Marshal(map[string]string{"forge_toml": forgeTomlSkeleton(r.Path)})
+		if err != nil {
+			return fmt.Errorf("encode forge.toml skeleton: %w", err)
+		}
+		p := &store.Proposal{
+			Source: "daemon:register", Kind: model.ProposalDoc, Target: target, After: after,
+			Rationale:        fmt.Sprintf("repository %s has no forge.toml; without one Forge cannot run declared checks (L1). The skeleton guesses checks from the checkout.", r.Name),
+			VerificationPlan: "human reviews and commits forge.toml to the repository; forge_check validates the declared checks on the next attempt",
+		}
+		if err := tx.CreateProposal(ctx, p); err != nil {
+			return err
+		}
+		s.log.InfoContext(ctx, "forge.toml proposal created", "repository", r.Name, "proposal_id", p.ID)
 	}
 	return nil
+}
+
+// forgeTomlSkeleton drafts a forge.toml for a checkout: checks guessed from
+// package.json scripts (lint/build/test → npm run X) and go.mod (go test),
+// else an empty [checks] table for the human to fill.
+func forgeTomlSkeleton(path string) string {
+	var b strings.Builder
+	b.WriteString("# Proposed by Forge (M11 bootstrap): review, adjust, commit.\n[checks]\n")
+	declared := map[string]bool{}
+	if raw, err := os.ReadFile(filepath.Join(path, "package.json")); err == nil {
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if json.Unmarshal(raw, &pkg) == nil {
+			for _, name := range []string{"lint", "build", "test"} {
+				if _, ok := pkg.Scripts[name]; ok && !declared[name] {
+					fmt.Fprintf(&b, "%s = [\"npm\", \"run\", %q]\n", name, name)
+					declared[name] = true
+				}
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil && !declared["test"] {
+		b.WriteString("test = [\"go\", \"test\", \"./...\"]\n")
+		declared["test"] = true
+	}
+	if len(declared) == 0 {
+		b.WriteString("# declare checks: name = [\"cmd\", \"arg\", ...]\n")
+	}
+	return b.String()
 }
 
 // replayedClaim answers a retried claim whose first response was lost (DESIGN.md
@@ -264,6 +359,7 @@ func (s *Server) claimResponse(ctx context.Context, tx *store.Tx, w store.Work, 
 		MCPToken: mcpToken, Policy: protocol.Policy{RequireSandbox: snap.RequireSandbox, AllowHosts: s.allowHosts, GitConfig: s.gitConfig}, Snapshot: w.Snapshot,
 	}
 	claim.PromptTemplate, claim.Prompt = s.assembleClaimPrompt(ctx, tx, snap, t, a)
+	claim.SystemAppend = s.repoBrief(ctx, t.Repository)
 	claim.VerifyOf = verifyOfFromSnapshot(w.Snapshot)
 	claim.ModeInfo = s.claimModeInfo(ctx, tx, snap.Mode, t.Repository)
 	q, err := tx.LastAnswer(ctx, a.ID)
@@ -380,7 +476,11 @@ func (s *Server) heartbeat(r *http.Request) (int, any, error) {
 		if err != nil {
 			return err
 		}
-		resp = protocol.HeartbeatResponse{CancelRequested: cancel, LeaseExpiresAt: expires, LogLevels: s.currentLogLevels()}
+		steers, err := tx.TakeSteers(ctx, id)
+		if err != nil {
+			return err
+		}
+		resp = protocol.HeartbeatResponse{CancelRequested: cancel, LeaseExpiresAt: expires, LogLevels: s.currentLogLevels(), Steer: steers}
 		return tx.TouchWorker(ctx, a.WorkerID)
 	})
 	if err != nil {
@@ -500,6 +600,11 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 			out, err = s.lateCompletion(ctx, tx, a, req)
 			return err
 		}
+		if req.State == model.WaitingHuman {
+			if err := s.enforceAskBudget(ctx, tx, a, &req); err != nil {
+				return err
+			}
+		}
 		out, err = tx.Complete(ctx, id, req, s.modeRequiredLevel(a.Mode))
 		if err != nil {
 			return err
@@ -525,6 +630,43 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 	}
 	s.log.InfoContext(ctx, "attempt completed", "reported", req.State, "state", out.Target.State, "late", out.Late, "again", out.Again, "exit_code", req.ExitCode, "turns", req.NumTurns)
 	return http.StatusOK, protocol.CompleteResponse{State: out.Target.State, Late: out.Late}, nil
+}
+
+// enforceAskBudget is M11's max_questions rule (DESIGN §22): when a new
+// question would exceed the routine's budget, the report is rewritten to fail
+// the Target with ask_budget_exhausted before tx.Complete runs, so the
+// ordinary completion path records the failure and its facts. The refusal is
+// journaled on the Target. Auto and notify autonomy never report
+// waiting_human, so they are untouched by construction.
+func (s *Server) enforceAskBudget(ctx context.Context, tx *store.Tx, a *store.Attempt, req *protocol.CompleteRequest) error {
+	t, err := tx.GetTarget(ctx, a.TargetID)
+	if err != nil {
+		return err
+	}
+	w, err := tx.GetWork(ctx, t.WorkID)
+	if err != nil {
+		return err
+	}
+	snap, err := snapshotRoutine(*w)
+	if err != nil {
+		return err
+	}
+	if snap.MaxQuestions <= 0 {
+		return nil // no budget declared (follow-up Work snapshots, old rows)
+	}
+	asked, err := tx.QuestionCount(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if asked < snap.MaxQuestions {
+		return nil
+	}
+	if err := tx.Journal(ctx, "question.budget_exhausted", store.EntityTarget, t.ID, map[string]any{"attempt_id": a.ID, "asked": asked, "max": snap.MaxQuestions}); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "ask budget exhausted", "target_id", t.ID, "asked", asked, "max", snap.MaxQuestions)
+	req.State, req.FailureReason, req.Question = model.Failed, model.ReasonAskBudgetExhausted, nil
+	return nil
 }
 
 // sweptBefore recognises an attempt the sweeper closed: finished as

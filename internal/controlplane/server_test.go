@@ -136,7 +136,9 @@ func (h *harness) call(method, path string, body, out any, want int) []byte {
 
 func (h *harness) register(workerID string) {
 	h.t.Helper()
-	req := protocol.RegisterRequest{WorkerID: workerID, Name: "laptop", Version: "test", MaxConcurrent: 2, Executors: []string{"claude-code"}, Capabilities: map[string]string{"sandbox": "missing"},
+	// sandbox is ready: createRoutine sets require_sandbox, and M11's routing
+	// rule (workRequirements) skips such Work on a sandbox-missing worker.
+	req := protocol.RegisterRequest{WorkerID: workerID, Name: "laptop", Version: "test", MaxConcurrent: 2, Executors: []string{"claude-code"}, Capabilities: map[string]string{"sandbox": "ready"},
 		Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr", Project: "default"}}}
 	var resp protocol.RegisterResponse
 	h.call(http.MethodPost, "/api/v1/worker/register", req, &resp, http.StatusOK)

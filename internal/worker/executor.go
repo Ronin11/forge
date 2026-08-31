@@ -151,6 +151,12 @@ func (e *TemplateExecutor) Command(ctx context.Context, req LaunchRequest) (*exe
 	if e.Has(CapAppendSystemPrompt) && req.SystemAppend != "" {
 		args = append(args, "--append-system-prompt", req.SystemAppend)
 	}
+	if e.Has(CapSteer) {
+		// Steer (DESIGN §22): stdin carries stream-json user turns instead of
+		// a plain prompt; the launcher wraps the prompt and keeps stdin open
+		// (supervisor.go, LaunchSpec.StreamInput).
+		args = append(args, "--input-format", "stream-json")
+	}
 	// exec.Command, not CommandContext: the supervisor owns the deadline and
 	// kills the whole process group; CommandContext's Cancel would kill only
 	// the direct child. ctx is kept in the signature for executors that need it.
@@ -183,6 +189,17 @@ func render(arg string, vars map[string]string) string {
 		arg = strings.ReplaceAll(arg, "{{"+k+"}}", v)
 	}
 	return arg
+}
+
+// hasCapability reports a declared capability through the interface, so
+// callers outside the template executor never type-switch (STYLE.md §1).
+func hasCapability(e Executor, cap string) bool {
+	for _, c := range e.Capabilities() {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // Executors is the registry by name.

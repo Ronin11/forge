@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -165,13 +166,17 @@ func KillGroup(pid int, start int64, grace time.Duration) error {
 
 // LaunchSpec is everything needed to run an executor once.
 type LaunchSpec struct {
-	Cmd        *exec.Cmd         // Path, Args, Dir, Env prepared by the executor; Stdin/Stdout/Stderr must be nil
-	Prompt     string            // written to stdin, then stdin closed
-	Timeout    time.Duration     // the attempt's remaining time; the group is killed at the deadline
-	OutputPath string            // raw stdout+stderr mirror, created 0600; "" disables the mirror
-	MaxOutput  int64             // bytes of raw mirror before truncation (default 64 MiB)
-	OnStdout   func(line []byte) // called per stdout line (without newline); a line over MaxLineBytes is delivered cut to MaxLineBytes
-	OnStderr   func(line []byte)
+	Cmd    *exec.Cmd // Path, Args, Dir, Env prepared by the executor; Stdin/Stdout/Stderr must be nil
+	Prompt string    // written to stdin, then stdin closed (unless StreamInput)
+	// StreamInput is the steer capability's launch mode (DESIGN §22): the
+	// prompt is written as one stream-json user message and stdin stays open
+	// so later operator turns can be injected with WriteUser.
+	StreamInput bool
+	Timeout     time.Duration     // the attempt's remaining time; the group is killed at the deadline
+	OutputPath  string            // raw stdout+stderr mirror, created 0600; "" disables the mirror
+	MaxOutput   int64             // bytes of raw mirror before truncation (default 64 MiB)
+	OnStdout    func(line []byte) // called per stdout line (without newline); a line over MaxLineBytes is delivered cut to MaxLineBytes
+	OnStderr    func(line []byte)
 }
 
 // ExitStatus is everything the attempt records about how the executor ended.
@@ -194,7 +199,11 @@ type Process struct {
 	pid   int
 	start int64
 
+	// stdinMu serialises writes to stdinW: the initial prompt writer and
+	// WriteUser (steer turns) may run concurrently.
+	stdinMu        sync.Mutex
 	stdinW         *os.File
+	streamInput    bool
 	stdoutR        *os.File
 	stderrR        *os.File
 	mirror         *outputMirror
@@ -243,6 +252,7 @@ func Launch(ctx context.Context, spec LaunchSpec) (p *Process, err error) {
 	p = &Process{
 		cmd:            cmd,
 		stdinW:         stdinW,
+		streamInput:    spec.StreamInput,
 		stdoutR:        stdoutR,
 		stderrR:        stderrR,
 		mirror:         mirror,
@@ -338,14 +348,79 @@ func (p *Process) PIDStart() int64 { return p.start }
 // writeStdin delivers the prompt and closes stdin so an executor reading to EOF
 // starts. A child that exits without reading makes the write fail with EPIPE,
 // which is not an error worth reporting: the exit status says what happened.
+// Under StreamInput the prompt is wrapped as a stream-json user message and
+// stdin stays open for steer turns; closeParentEnds closes it at exit.
 func (p *Process) writeStdin(prompt string) {
 	defer p.pumps.Done()
-	if _, err := io.WriteString(p.stdinW, prompt); err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, fs.ErrClosed) {
+	data := []byte(prompt)
+	if p.streamInput {
+		var err error
+		if data, err = userMessageLine(prompt); err != nil {
+			p.recordErr(fmt.Errorf("encode prompt: %w", err))
+			return
+		}
+	}
+	p.stdinMu.Lock()
+	_, err := p.stdinW.Write(data)
+	p.stdinMu.Unlock()
+	if err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, fs.ErrClosed) {
 		p.recordErr(fmt.Errorf("write prompt: %w", err))
+	}
+	if p.streamInput {
+		return
 	}
 	if err := closeQuiet(p.stdinW); err != nil {
 		p.recordErr(fmt.Errorf("close stdin: %w", err))
 	}
+}
+
+// userMessageLine is one line of `--input-format stream-json`: the same user
+// message shape claude's stream-json output uses, newline-terminated.
+func userMessageLine(text string) ([]byte, error) {
+	type textBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var line struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string      `json:"role"`
+			Content []textBlock `json:"content"`
+		} `json:"message"`
+	}
+	line.Type, line.Message.Role = "user", "user"
+	line.Message.Content = []textBlock{{Type: "text", Text: text}}
+	b, err := json.Marshal(line)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// WriteUser injects one steer turn into the executor's stdin as a stream-json
+// user message. It refuses when the launch did not keep stdin open or the
+// process has already exited; a race with the exit surfaces as a write error,
+// which the caller reports as a dropped steer.
+func (p *Process) WriteUser(text string) error {
+	if !p.streamInput {
+		return errors.New("steer: stdin is not in stream-json mode")
+	}
+	p.mu.Lock()
+	exited := p.exitedFlag
+	p.mu.Unlock()
+	if exited {
+		return errors.New("steer: process has exited")
+	}
+	data, err := userMessageLine(text)
+	if err != nil {
+		return fmt.Errorf("steer: encode user turn: %w", err)
+	}
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	if _, err := p.stdinW.Write(data); err != nil {
+		return fmt.Errorf("steer: write user turn: %w", err)
+	}
+	return nil
 }
 
 // pump reads one stream line by line, honouring ReadLine's isPrefix so a line

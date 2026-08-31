@@ -28,9 +28,10 @@ const (
 func (s *Server) verifyRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST /api/v1/targets/{id}/approve", s.handle(s.approveTarget))
 	m.HandleFunc("POST /api/v1/targets/{id}/reject", s.handle(s.rejectTarget))
-	// M11 retry lives beside the other POST /targets/{id} decisions; the
-	// handler is in handlers_operator.go.
+	// M11 retry and steer live beside the other POST decisions; the handlers
+	// are in handlers_operator.go.
 	m.HandleFunc("POST /api/v1/targets/{id}/retry", s.handle(s.retryTarget))
+	m.HandleFunc("POST /api/v1/attempts/{id}/steer", s.handle(s.steerAttempt))
 	m.HandleFunc("GET /api/v1/verifications", s.handle(s.listVerifications))
 }
 

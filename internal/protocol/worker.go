@@ -80,6 +80,10 @@ type Claim struct {
 	Trigger        model.Trigger     `json:"trigger"`
 	LeaseExpiresAt time.Time         `json:"lease_expires_at"`
 	Integrate      bool              `json:"integrate"`
+	// SystemAppend is extra system-prompt text the daemon computed for this
+	// attempt (the repository brief, DESIGN §22); executors with the
+	// append_system_prompt capability pass it via --append-system-prompt.
+	SystemAppend string `json:"system_append,omitempty"`
 	// MCPToken is minted per attempt; forge mcp presents it and is narrowed to this
 	// attempt's routes. Only its hash is stored.
 	MCPToken string `json:"mcp_token"`
@@ -161,11 +165,15 @@ type HeartbeatRequest struct {
 	BaseCommit    string          `json:"base_commit,omitempty"`
 }
 
-// HeartbeatResponse returns the cancel flag and the new expiry.
+// HeartbeatResponse returns the cancel flag and the new expiry. Steer carries
+// queued operator turns (DESIGN §22): the daemon clears them on delivery and
+// the worker writes them to the live process's stdin as stream-json user
+// messages, so steering rides the existing heartbeat instead of a new channel.
 type HeartbeatResponse struct {
 	CancelRequested bool      `json:"cancel_requested"`
 	LeaseExpiresAt  time.Time `json:"lease_expires_at"`
 	LogLevels       string    `json:"log_levels,omitempty"`
+	Steer           []string  `json:"steer,omitempty"`
 }
 
 // PromptVersion links an attempt to the exact prompt configuration it ran with.

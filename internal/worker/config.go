@@ -82,7 +82,7 @@ func DefaultConfig(forgeHome, forgeBinary string) Config {
 					"--dangerously-skip-permissions", "--strict-mcp-config",
 					"--model", "{{model}}", "--max-turns", "{{max_turns}}", "--mcp-config", "{{mcp_config}}"},
 				Output:       "claude-stream-json",
-				Capabilities: []string{"allowed_tools", "builtin_tools", "json_schema", "resume", "max_budget_usd", "effort", "append_system_prompt"},
+				Capabilities: []string{"allowed_tools", "builtin_tools", "json_schema", "resume", "max_budget_usd", "effort", "append_system_prompt", "steer"},
 			},
 			"fake-claude": {
 				Command:      []string{forgeBinary, "fake-claude", "--fixture", "{{fixture}}", "--model", "{{model}}", "--max-turns", "{{max_turns}}", "--mcp-config", "{{mcp_config}}"},

@@ -36,7 +36,7 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry|tell [flags]")
 		return code
 	}
 	switch args[0] {
@@ -58,6 +58,8 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 		return runTaskReject(ctx, c, args[1:])
 	case "retry":
 		return runTaskRetry(ctx, c, args[1:])
+	case "tell":
+		return runTaskTell(ctx, c, args[1:])
 	}
 	fmt.Fprintf(c.stderr, "forge task: unknown subcommand %q\n", args[0])
 	return 2
@@ -77,6 +79,7 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	modelAlias := fs.String("model", "", "model alias (default haiku)")
 	integrate := fs.Bool("integrate", false, "queue for merge after success (M9)")
 	title := fs.String("title", "", "short title (default: the prompt's first line)")
+	force := fs.Bool("force", false, "submit even if an identical prompt was added within 24h")
 	wait := fs.Bool("wait", false, "wait for the task to finish and exit with its outcome")
 	asJSON := fs.Bool("json", false, "print the created task as JSON")
 	if code := c.parse(fs, args); code >= 0 {
@@ -110,7 +113,7 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	if err := cl.connect(ctx); err != nil {
 		return c.fail("task add", err)
 	}
-	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title}
+	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title, "force": *force}
 	var out taskView
 	// On a fresh home the daemon was auto-started moments ago and the worker
 	// registers repositories a beat later; "task add on a freshly initialised
@@ -496,6 +499,65 @@ func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action str
 		line += " (" + out.UnverifiedReason + ")"
 	}
 	fmt.Fprintln(c.stdout, line)
+	return 0
+}
+
+// runTaskTell is M11 steer (`forge task tell ID "…"`): inject one user turn
+// into the task's running attempt. The daemon queues it; the worker's next
+// heartbeat (≤10 s) writes it to the agent's stdin as a stream-json user
+// message. It refuses when no target of the task is running.
+func runTaskTell(ctx context.Context, c *cmdContext, args []string) int {
+	fs, lf := c.flags("task tell")
+	if code := c.parse(fs, args); code >= 0 {
+		return code
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(c.stderr, "usage: forge task tell ID \"text\"")
+		return 2
+	}
+	_, log, code := c.resolveLogging(lf, "cli.task")
+	if code >= 0 {
+		return code
+	}
+	cl := c.client(log)
+	if err := cl.connect(ctx); err != nil {
+		return c.fail("task tell", err)
+	}
+	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.fail("task tell", err)
+	}
+	var v taskView
+	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.fail("task tell", err)
+	}
+	var target *store.Target
+	states := make([]string, 0, len(v.Targets))
+	for i, t := range v.Targets {
+		states = append(states, t.Repository+"="+string(t.State))
+		if t.State == model.Running && target == nil {
+			target = &v.Targets[i]
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(c.stderr, "forge task tell: no target of task %s is running (%s)\n", short(id), strings.Join(states, ", "))
+		return 2
+	}
+	var attemptID string
+	for _, a := range v.Attempts {
+		if a.TargetID == target.ID && a.FinishedAt.IsZero() {
+			attemptID = a.ID
+		}
+	}
+	if attemptID == "" {
+		fmt.Fprintf(c.stderr, "forge task tell: target %s is running but has no open attempt\n", short(target.ID))
+		return 2
+	}
+	text := strings.Join(fs.Args()[1:], " ")
+	if err := cl.do(ctx, http.MethodPost, "/api/v1/attempts/"+attemptID+"/steer", map[string]string{"text": text}, nil); err != nil {
+		return c.fail("task tell", err)
+	}
+	fmt.Fprintf(c.stdout, "steer queued for attempt %s; the agent sees it on its next heartbeat (within ~10s)\n", short(attemptID))
 	return 0
 }
 

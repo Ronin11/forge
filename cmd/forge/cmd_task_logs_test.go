@@ -138,7 +138,9 @@ func apiDo(t *testing.T, home, method, path string, in, out any) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	// A 204 (an empty claim) has no body to decode; the claim poll loop below
+	// treats the zero value as "nothing yet" and keeps polling.
+	if out != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
 			t.Fatalf("%s %s: decode %q: %v", method, path, raw, err)
 		}

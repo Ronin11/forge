@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
+	"forge/internal/kb"
 	"forge/internal/model"
 	"forge/internal/store"
 )
@@ -98,6 +100,58 @@ func autonomyBlock(a model.Autonomy, checkpoints []string) string {
 		return "AUTONOMY: auto. Decide and proceed; never return needs_input. State assumptions in your summary."
 	}
 	return ""
+}
+
+// briefMaxBytes caps what a repository brief adds to every attempt's system
+// prompt (M11 repo briefs, DESIGN §22).
+const briefMaxBytes = 4 << 10
+
+// repoBrief renders the repository's kb brief for --append-system-prompt: the
+// newest indexed note whose title starts with "brief: <repo>" (explore keeps
+// note ids unique by suffixing the title, so a refresh is a new note). ""
+// when none exists; every failure degrades to no brief — a claim must never
+// fail on kb state.
+func (s *Server) repoBrief(ctx context.Context, repo string) string {
+	prefix := "brief: " + repo
+	notes, err := s.store.SearchKb(ctx, "brief "+repo, 20)
+	if err != nil {
+		s.log.WarnContext(ctx, "repo brief search", "repository", repo, "error", err)
+		return ""
+	}
+	var best *store.KbNote
+	for i := range notes {
+		if !strings.HasPrefix(notes[i].Title, prefix) {
+			continue
+		}
+		if best == nil || notes[i].Created.After(best.Created) {
+			best = &notes[i]
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	n, err := kb.Parse(best.Path)
+	if err != nil {
+		s.log.WarnContext(ctx, "repo brief unreadable", "note", best.ID, "error", err)
+		return ""
+	}
+	body := strings.TrimSpace(n.Body)
+	if body == "" {
+		return ""
+	}
+	head := fmt.Sprintf("REPOSITORY BRIEF for %s (kb note %s):\n", repo, best.ID)
+	return head + cutBytes(body, briefMaxBytes-len(head))
+}
+
+// cutBytes cuts s to at most n bytes without splitting a UTF-8 sequence.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // assembleClaimPrompt gathers assembly inputs from the claim's rows. It lives

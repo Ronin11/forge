@@ -87,7 +87,9 @@ func newVerifyHarness(t *testing.T, all []modes.Mode) *harness {
 func submitTask(h *harness, mode string) workCreated {
 	h.t.Helper()
 	var out workCreated
-	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: "do the thing", Repositories: []string{"equitizr"}, Mode: mode}, &out, http.StatusCreated)
+	// Force: the fixture resubmits one prompt on purpose; M11 intake dedupe
+	// would otherwise refuse the second submission.
+	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: "do the thing", Repositories: []string{"equitizr"}, Mode: mode, Force: true}, &out, http.StatusCreated)
 	return out
 }
 
