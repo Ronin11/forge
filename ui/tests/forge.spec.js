@@ -118,6 +118,19 @@ test.describe('task detail (succeeded)', () => {
   });
 });
 
+test.describe('task detail (waiting)', () => {
+  test('a waiting task exposes the answer form on its own page', async ({ page }) => {
+    const s = seed();
+    await page.goto('/tasks/' + s.waiting.work_id);
+    // The open question renders an inline answer form (same data-answer-form the
+    // human queue uses), so a question can be answered from the task page too.
+    const form = page.locator('form[data-answer-form]');
+    await expect(form).toBeVisible();
+    await expect(form.locator('input[name=answer]')).toBeVisible();
+    await expect(form.locator('button[type=submit]')).toHaveText(/Answer/);
+  });
+});
+
 test.describe('human queue', () => {
   test('question is shown, answerable, and the target goes pending', async ({ page }) => {
     const s = seed();
