@@ -123,6 +123,7 @@ func (p *poller) ingestOne(ctx context.Context, repo repoConfig, is issue, key s
 		Class:        repo.Class,
 		Autonomy:     repo.Autonomy,
 		Integrate:    repo.Integrate,
+		Model:        repo.Model,
 		Title:        fmt.Sprintf("issue #%d: %s", is.Number, truncate(is.Title, titleMax)),
 	}
 	workID, err := p.api.CreateTask(ctx, req)

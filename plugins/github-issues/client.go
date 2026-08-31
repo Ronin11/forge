@@ -27,6 +27,7 @@ type createTaskRequest struct {
 	Class        string   `json:"class"`
 	Autonomy     string   `json:"autonomy"`
 	Integrate    bool     `json:"integrate"`
+	Model        string   `json:"model,omitempty"`
 	Title        string   `json:"title"`
 }
 

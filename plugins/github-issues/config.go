@@ -37,6 +37,7 @@ type repoConfig struct {
 	Forge     string // registered Forge repository name
 	Label     string // only issues with this label; "" = every open issue
 	Mode      string
+	Model     string
 	Class     string
 	Autonomy  string
 	Integrate bool
@@ -66,6 +67,7 @@ func loadConfig(path string) (config, error) {
 			Forge     string `toml:"forge"`
 			Label     string `toml:"label"`
 			Mode      string `toml:"mode"`
+			Model     string `toml:"model"`
 			Class     string `toml:"class"`
 			Autonomy  string `toml:"autonomy"`
 			Integrate *bool  `toml:"integrate"`
@@ -94,6 +96,7 @@ func loadConfig(path string) (config, error) {
 			Forge:     r.Forge,
 			Label:     r.Label,
 			Mode:      orDefault(r.Mode, "implement"),
+			Model:     r.Model,
 			Class:     orDefault(r.Class, "normal"),
 			Autonomy:  orDefault(r.Autonomy, "auto"),
 			Integrate: r.Integrate != nil && *r.Integrate,

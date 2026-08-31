@@ -3,6 +3,12 @@
 # of `just check` — staticcheck/errcheck download toolchains, so they stay in
 # the full gate, not in per-attempt verification.
 
+# Integration (M9): the merge queue rebases a succeeded integrate=true task
+# onto this branch, re-runs the checks above, and gated-pushes the fast-forward
+# (constitution 10 — never forced, only to a branch listed here).
+integration_branch = "main"
+task_branches = "forge/*"
+
 [checks]
 fmt  = ["bash", "-c", "test -z \"$(gofmt -l cmd internal)\""]
 vet  = ["go", "vet", "./..."]
