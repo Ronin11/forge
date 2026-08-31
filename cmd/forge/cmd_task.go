@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -85,6 +87,17 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	_, log, code := c.resolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
+	}
+	// A path-form --repo (DESIGN §1.3) resolves to an absolute path here: the
+	// daemon's cwd is not the user's.
+	for i, r := range repos {
+		if strings.ContainsRune(r, os.PathSeparator) {
+			abs, err := filepath.Abs(r)
+			if err != nil {
+				return c.fail("task add", err)
+			}
+			repos[i] = abs
+		}
 	}
 	cl := c.client(log)
 	if err := cl.connect(ctx); err != nil {

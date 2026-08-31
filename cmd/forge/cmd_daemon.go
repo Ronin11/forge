@@ -21,8 +21,10 @@ import (
 	"forge/internal/controlplane"
 	"forge/internal/kb"
 	"forge/internal/logging"
+	"forge/internal/model"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
+	"forge/internal/protocol"
 	"forge/internal/store"
 	"forge/internal/tools"
 	"forge/internal/worker"
@@ -197,8 +199,9 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 	}()
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
-		ExecRestart: func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
-		Store:       st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
+		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
+		RegisterRepo: d.registerRepoOnTheFly,
+		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,
@@ -635,4 +638,36 @@ func (d *daemonProcess) nightlyPrune(ctx context.Context, st *store.Store) {
 			}
 		}
 	}
+}
+
+// registerRepoOnTheFly backs DESIGN §1.3: resolve --repo X as an absolute
+// checkout path or <projects_root>/X, validate it is a git checkout with an
+// origin, append it to worker.toml (the daemon owns bootstrap's files), and
+// hand back the entry for a provisional store row. The worker re-reads
+// worker.toml on its next registration tick and advertises it.
+func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath string) (protocol.Repository, error) {
+	var name, path string
+	if filepath.IsAbs(nameOrPath) {
+		path = filepath.Clean(nameOrPath)
+		name = filepath.Base(path)
+	} else {
+		if err := model.ValidateName(nameOrPath); err != nil {
+			return protocol.Repository{}, err
+		}
+		name = nameOrPath
+		path = filepath.Join(d.cfg.Repositories.ProjectsRoot, name)
+	}
+	if err := model.ValidateName(name); err != nil {
+		return protocol.Repository{}, err
+	}
+	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	r, err := (worker.Git{}).ValidateRepository(vctx, name, path, "")
+	if err != nil {
+		return protocol.Repository{}, err
+	}
+	if err := worker.AddRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name, r.Path); err != nil {
+		return protocol.Repository{}, err
+	}
+	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, Project: "default"}, nil
 }

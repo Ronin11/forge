@@ -279,10 +279,27 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	for _, repo := range registered {
 		known[repo.Name] = true
 	}
-	for _, repo := range repos {
-		if !known[repo] {
+	for i, repo := range repos {
+		if known[repo] {
+			continue
+		}
+		// Repositories on the fly (DESIGN §1.3): resolve a name under
+		// projects_root or an absolute path, append it to worker.toml, and
+		// record a provisional row; the worker advertises it on its next
+		// registration tick (≤30s) and scheduling proceeds from there.
+		if s.registerRepo == nil {
 			return workCreated{}, fmt.Errorf("repository %s is not registered: %w", repo, store.ErrNotFound)
 		}
+		rep, err := s.registerRepo(ctx, repo)
+		if err != nil {
+			return workCreated{}, fmt.Errorf("repository %s is not registered and could not be added (%v): %w", repo, err, store.ErrNotFound)
+		}
+		if err := tx.UpsertProvisionalRepository(ctx, rep); err != nil {
+			return workCreated{}, err
+		}
+		s.log.InfoContext(ctx, "repository registered on the fly", "repository", rep.Name, "path", rep.Path)
+		repos[i] = rep.Name
+		known[rep.Name] = true
 	}
 	project, err := tx.ProjectForRepository(ctx, repos[0])
 	if err != nil {

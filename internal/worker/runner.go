@@ -138,13 +138,14 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 				return nil, fmt.Errorf("repositories %s and %s resolve to the same path", name, other)
 			}
 		}
+		r.Project = rc.Project
 		repos[name] = r
 		log.InfoContext(ctx, "repository validated", "name", name, "path", r.Path, "origin", r.OriginIdentity)
 	}
 	if cfg.Greenfield.ProjectsRoot != "" {
 		// The virtual greenfield repository: not a checkout, never validated as
 		// one; attempts on it git-init their own directory (MODES.md §greenfield).
-		repos[greenfieldRepoName] = &Repository{Name: greenfieldRepoName, Path: cfg.Greenfield.ProjectsRoot, OriginIdentity: greenfieldOriginIdentity}
+		repos[greenfieldRepoName] = &Repository{Name: greenfieldRepoName, Path: cfg.Greenfield.ProjectsRoot, OriginIdentity: greenfieldOriginIdentity, Project: "default"}
 	}
 	executors, err := ExecutorsFromConfig(cfg.Executors)
 	if err != nil {
@@ -292,13 +293,10 @@ func (w *Worker) activeCount() int {
 }
 
 func (w *Worker) registerRequest() protocol.RegisterRequest {
-	repos := make([]protocol.Repository, 0, len(w.runner.repos))
-	for _, name := range w.cfg.RepositoryNames() {
-		r := w.runner.repos[name]
-		repos = append(repos, protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: r.BaseBranch, Project: w.cfg.Repositories[name].Project})
-	}
-	if w.cfg.Greenfield.ProjectsRoot != "" {
-		repos = append(repos, protocol.Repository{Name: greenfieldRepoName, Path: w.cfg.Greenfield.ProjectsRoot, OriginIdentity: greenfieldOriginIdentity, Project: "default"})
+	list := w.runner.repoList()
+	repos := make([]protocol.Repository, 0, len(list))
+	for _, r := range list {
+		repos = append(repos, protocol.Repository{Name: r.Name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: r.BaseBranch, Project: r.Project})
 	}
 	return protocol.RegisterRequest{
 		WorkerID: w.id, Name: w.cfg.Name, Version: w.version, MaxConcurrent: w.cfg.MaxConcurrent, Active: len(w.slots),
@@ -329,8 +327,41 @@ func (w *Worker) registerLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.refreshRepos(ctx)
 			w.register(ctx)
 		}
+	}
+}
+
+// refreshRepos re-reads worker.toml and validates repositories added since
+// start (DESIGN §1.3: the daemon appends on-the-fly registrations; the worker
+// advertises them on its next registration tick, ≤30s). Removals and edits of
+// existing entries still need a worker restart — only additions are live.
+func (w *Worker) refreshRepos(ctx context.Context) {
+	cfg, err := LoadConfig(w.cfg.Path())
+	if err != nil {
+		w.log.WarnContext(ctx, "refresh repositories: reload worker.toml", "error", err)
+		return
+	}
+	for _, name := range cfg.RepositoryNames() {
+		if name == greenfieldRepoName {
+			continue
+		}
+		if _, ok := w.runner.repo(name); ok {
+			continue
+		}
+		rc := cfg.Repositories[name]
+		r, err := w.runner.git.ValidateRepository(ctx, name, rc.Path, rc.BaseBranch)
+		if err != nil {
+			w.log.WarnContext(ctx, "refresh repositories: validate", "name", name, "error", err)
+			continue
+		}
+		r.Project = rc.Project
+		if err := w.runner.addRepo(r); err != nil {
+			w.log.WarnContext(ctx, "refresh repositories", "name", name, "error", err)
+			continue
+		}
+		w.log.InfoContext(ctx, "repository added on the fly", "name", name, "path", r.Path, "origin", r.OriginIdentity)
 	}
 }
 

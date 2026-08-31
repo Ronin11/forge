@@ -69,6 +69,8 @@ type Server struct {
 	// execRestart replaces this process with a new binary once the drain is
 	// idle; nil in processes that cannot (tests, or a server without listeners).
 	execRestart func(execPath string) error
+	// registerRepo backs DESIGN §1.3's repositories-on-the-fly; nil disables.
+	registerRepo func(ctx context.Context, nameOrPath string) (protocol.Repository, error)
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -110,6 +112,11 @@ type ServerOptions struct {
 	// lock and listener descriptors inherited (DESIGN.md §1.4); nil disables
 	// the drain body's exec form.
 	ExecRestart func(execPath string) error
+	// RegisterRepo resolves an unregistered --repo value (a name under
+	// projects_root, or an absolute checkout path) into a repository entry,
+	// appending it to worker.toml (DESIGN §1.3); nil disables on-the-fly
+	// registration and unknown repositories 404.
+	RegisterRepo func(ctx context.Context, nameOrPath string) (protocol.Repository, error)
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -146,7 +153,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
-		execRestart: o.ExecRestart, closed: make(chan struct{}), streamInterval: o.StreamInterval,
+		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
 	}
 	if s.streamInterval <= 0 {
 		s.streamInterval = time.Second

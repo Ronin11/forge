@@ -226,3 +226,34 @@ func WriteDefault(path, forgeHome, forgeBinary string) (written bool, err error)
 	}
 	return true, nil
 }
+
+// AddRepository appends [repositories.<name>] to worker.toml (DESIGN §1.3
+// "repositories on the fly": the daemon owns every file bootstrap writes; the
+// worker re-reads the file on its next registration tick). An existing entry
+// is an error — on-the-fly registration never rewrites what a human set.
+func AddRepository(cfgPath, name, repoPath string) error {
+	if err := model.ValidateName(name); err != nil {
+		return err
+	}
+	m := map[string]any{}
+	if _, err := toml.DecodeFile(cfgPath, &m); err != nil {
+		return fmt.Errorf("read %s: %w", cfgPath, err)
+	}
+	repos, ok := m["repositories"].(map[string]any)
+	if !ok || repos == nil {
+		repos = map[string]any{}
+	}
+	if _, exists := repos[name]; exists {
+		return fmt.Errorf("repository %s already in %s", name, cfgPath)
+	}
+	repos[name] = map[string]any{"path": repoPath}
+	m["repositories"] = repos
+	var b strings.Builder
+	if err := toml.NewEncoder(&b).Encode(m); err != nil {
+		return fmt.Errorf("encode %s: %w", cfgPath, err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", cfgPath, err)
+	}
+	return nil
+}

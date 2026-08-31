@@ -89,7 +89,7 @@ func (w *Worker) reconcileOne(ctx context.Context, m *Manifest, rep *ReconcileRe
 		return nil
 	}
 	// 2. Inspect and decide.
-	repo, ok := w.runner.repos[m.RepositoryName]
+	repo, ok := w.runner.repo(m.RepositoryName)
 	if !ok {
 		m.Lifecycle, m.RetentionReason = ManifestRetained, "repository no longer registered"
 		m.CleanupCommand = fmt.Sprintf("forge cleanup %s --confirm", model.ShortID(m.AttemptID))

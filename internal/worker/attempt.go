@@ -55,12 +55,55 @@ type Runner struct {
 	parsers   Parsers
 	manifests *ManifestStore
 	daemon    attemptDaemon
-	repos     map[string]*Repository
-	log       *slog.Logger
-	clock     func() time.Time
-	forgeBin  string
+	// reposMu guards repos: the register tick adds on-the-fly repositories
+	// (DESIGN §1.3) while claims and reconcile read concurrently.
+	reposMu  sync.RWMutex
+	repos    map[string]*Repository
+	log      *slog.Logger
+	clock    func() time.Time
+	forgeBin string
 	// repoLocks serialise git metadata operations per checkout.
 	repoLocks sync.Map // name → *sync.Mutex
+}
+
+// repo reads one repository under the lock.
+func (r *Runner) repo(name string) (*Repository, bool) {
+	r.reposMu.RLock()
+	defer r.reposMu.RUnlock()
+	rep, ok := r.repos[name]
+	return rep, ok
+}
+
+// repoList snapshots the repositories sorted by name (stable registration).
+func (r *Runner) repoList() []*Repository {
+	r.reposMu.RLock()
+	defer r.reposMu.RUnlock()
+	names := make([]string, 0, len(r.repos))
+	for n := range r.repos {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]*Repository, 0, len(names))
+	for _, n := range names {
+		out = append(out, r.repos[n])
+	}
+	return out
+}
+
+// addRepo adds an on-the-fly repository; a duplicate name or path is an error.
+func (r *Runner) addRepo(rep *Repository) error {
+	r.reposMu.Lock()
+	defer r.reposMu.Unlock()
+	if _, ok := r.repos[rep.Name]; ok {
+		return fmt.Errorf("repository %s already registered", rep.Name)
+	}
+	for other, existing := range r.repos {
+		if existing.Path == rep.Path {
+			return fmt.Errorf("repositories %s and %s resolve to the same path", rep.Name, other)
+		}
+	}
+	r.repos[rep.Name] = rep
+	return nil
 }
 
 // attempt is the state of one run of the Runner.
@@ -307,7 +350,7 @@ func (a *attempt) validate() error {
 	if err := model.ValidateName(c.RoutineName); err != nil {
 		return fmt.Errorf("routine: %w", err)
 	}
-	repo, ok := a.r.repos[c.Repository]
+	repo, ok := a.r.repo(c.Repository)
 	if !ok {
 		return fmt.Errorf("repository %s is not registered on this worker", c.Repository)
 	}

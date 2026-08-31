@@ -233,3 +233,28 @@ func (tx *Tx) ProjectForRepository(ctx context.Context, repo string) (*Project, 
 	p.Autonomy = model.Autonomy(autonomy.String)
 	return &p, nil
 }
+
+// UpsertProvisionalRepository records a repository the daemon registered on
+// the fly (DESIGN §1.3) before any worker advertises it: worker_id stays NULL
+// so scheduling waits for the worker's next registration tick, which fills it
+// via the usual Register upsert.
+func (tx *Tx) UpsertProvisionalRepository(ctx context.Context, r protocol.Repository) error {
+	if err := model.ValidateName(r.Name); err != nil {
+		return fmt.Errorf("repository: %w", err)
+	}
+	project := r.Project
+	if project == "" {
+		project = "default"
+	}
+	var projectID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM projects WHERE name = ?`, project).Scan(&projectID); err != nil {
+		return fmt.Errorf("read project %s: %w", project, err)
+	}
+	now := formatTime(tx.now)
+	if _, err := tx.Exec(ctx, `INSERT INTO repositories (name, project_id, path, origin_identity, base_branch, worker_id, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET path = excluded.path, origin_identity = excluded.origin_identity, updated_at = excluded.updated_at`,
+		r.Name, projectID, r.Path, r.OriginIdentity, nullString(r.BaseBranch), now, now, now); err != nil {
+		return fmt.Errorf("register repository %s on the fly: %w", r.Name, err)
+	}
+	return tx.Journal(ctx, "repository.registered", EntityDaemon, r.Name, map[string]any{"path": r.Path, "on_the_fly": true})
+}

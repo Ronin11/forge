@@ -55,6 +55,7 @@ type Repository struct {
 	OriginURL      string
 	OriginIdentity string // normalised, see NormalizeRemoteIdentity
 	BaseBranch     string // configured, may be ""
+	Project        string // advertised on registration; "" means default
 }
 
 // WorktreeState is what the filesystem and git's registry say about one worktree
