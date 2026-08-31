@@ -124,7 +124,15 @@ export async function seed(base, home) {
   const claimC = await runAttempt('ui-3', 'sess-ui-3', 'forge/ui-3', null,
     completeBody('waiting_human', 'lease-ui-3', {
       cleanup: { outcome: 'retained', reason: 'waiting for an answer' },
-      question: { text: 'Which branch should I target?', options: ['main', 'dev'] },
+      question: {
+        text: 'Which branch should I target?', options: ['main', 'dev'],
+        // Dynamic Human-queue actions: a same-origin link and a registered
+        // trigger render as a link and a button on the question card.
+        context: { actions: [
+          { label: 'Open the doc', url: '/kb/ui-test-brief' },
+          { label: 'Send test toast', trigger: 'notify_test' },
+        ] },
+      },
     }));
   const waitingDetail = await call('GET', `/api/v1/tasks/${waiting.work.id}`, undefined, 200);
   const questionID = waitingDetail.questions[0].id;
@@ -144,7 +152,7 @@ export async function seed(base, home) {
     verification_plan: 'Watch the next five ad-hoc runs for timeouts',
   }, 201);
   const propDecide = await call('POST', '/api/v1/proposals', {
-    kind: 'doc', target: 'kb:retro-findings',
+    kind: 'doc', target: 'kb:ui-test-brief',
     rationale: 'Fold the retro findings into one kb note',
     verification_plan: 'The note exists and links the problem attempts',
   }, 201);

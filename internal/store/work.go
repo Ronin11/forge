@@ -13,28 +13,34 @@ import (
 // Work is one invocation of a routine (or an ad-hoc task). Everything but
 // Priority and FinishedAt is frozen at creation.
 type Work struct {
-	ID           string            `json:"id"`
-	RoutineID    string            `json:"routine_id,omitempty"`
-	RoutineName  string            `json:"routine_name"`
-	Generation   int               `json:"generation"`
-	Title        string            `json:"title"`
-	Trigger      model.Trigger     `json:"trigger"`
-	Snapshot     json.RawMessage   `json:"snapshot"`
-	Priority     int               `json:"priority"`
-	BudgetClass  model.BudgetClass `json:"budget_class"`
-	Autonomy     model.Autonomy    `json:"autonomy"`
-	Integrate    bool              `json:"integrate"`
-	Paths        []string          `json:"paths,omitempty"`
-	Deps         []string          `json:"deps,omitempty"`
-	Tier         *int              `json:"tier,omitempty"`
-	Models       []string          `json:"models,omitempty"`
-	PlanBatchID  string            `json:"plan_batch_id,omitempty"`
-	PromptHash   string            `json:"prompt_hash,omitempty"`
-	ScheduledFor time.Time         `json:"scheduled_for,omitempty"`
-	SubmittedBy  string            `json:"submitted_by,omitempty"`
-	ExternalRefs json.RawMessage   `json:"external_refs,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	FinishedAt   time.Time         `json:"finished_at,omitempty"`
+	ID          string            `json:"id"`
+	RoutineID   string            `json:"routine_id,omitempty"`
+	RoutineName string            `json:"routine_name"`
+	Generation  int               `json:"generation"`
+	Title       string            `json:"title"`
+	Trigger     model.Trigger     `json:"trigger"`
+	Snapshot    json.RawMessage   `json:"snapshot"`
+	Priority    int               `json:"priority"`
+	BudgetClass model.BudgetClass `json:"budget_class"`
+	Autonomy    model.Autonomy    `json:"autonomy"`
+	Integrate   bool              `json:"integrate"`
+	Paths       []string          `json:"paths,omitempty"`
+	Deps        []string          `json:"deps,omitempty"`
+	Tier        *int              `json:"tier,omitempty"`
+	Models      []string          `json:"models,omitempty"`
+	PlanBatchID string            `json:"plan_batch_id,omitempty"`
+	// WorkflowRunID groups the Works one workflow run instantiated; Name and
+	// Step say which workflow and which step this Work is. A run's state is
+	// derived from its Works — there is no run row.
+	WorkflowRunID string          `json:"workflow_run_id,omitempty"`
+	WorkflowName  string          `json:"workflow_name,omitempty"`
+	WorkflowStep  string          `json:"workflow_step,omitempty"`
+	PromptHash    string          `json:"prompt_hash,omitempty"`
+	ScheduledFor  time.Time       `json:"scheduled_for,omitempty"`
+	SubmittedBy   string          `json:"submitted_by,omitempty"`
+	ExternalRefs  json.RawMessage `json:"external_refs,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	FinishedAt    time.Time       `json:"finished_at,omitempty"`
 }
 
 // Target is one repository within one Work.
@@ -80,9 +86,9 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 		}
 		open = append(open, e)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, prompt_hash, scheduled_for, submitted_by, external_refs, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.PromptHash), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), formatTime(w.CreatedAt))
+	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), formatTime(w.CreatedAt))
 	if err != nil {
 		return nil, fmt.Errorf("insert work: %w", err)
 	}
@@ -108,7 +114,11 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 	for i, t := range targets {
 		ids[i] = t.ID
 	}
-	if err := tx.Journal(ctx, "work.created", EntityWork, w.ID, map[string]any{"routine": w.RoutineName, "generation": w.Generation, "trigger": w.Trigger, "targets": ids, "repositories": repositories}); err != nil {
+	payload := map[string]any{"routine": w.RoutineName, "generation": w.Generation, "trigger": w.Trigger, "targets": ids, "repositories": repositories}
+	if w.WorkflowRunID != "" {
+		payload["workflow"], payload["workflow_run_id"], payload["workflow_step"] = w.WorkflowName, w.WorkflowRunID, w.WorkflowStep
+	}
+	if err := tx.Journal(ctx, "work.created", EntityWork, w.ID, payload); err != nil {
 		return nil, err
 	}
 	return targets, nil
@@ -182,7 +192,7 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 	return tx.Journal(ctx, "work.finished", EntityWork, workID, nil)
 }
 
-const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, prompt_hash, scheduled_for, submitted_by, external_refs, created_at, finished_at`
+const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, created_at, finished_at`
 
 // GetWork reads one Work.
 func (s *Store) GetWork(ctx context.Context, id string) (*Work, error) {
@@ -249,14 +259,15 @@ func scanWork(iter func(func(*sql.Rows) error) error) ([]Work, error) {
 	var out []Work
 	err := iter(func(rows *sql.Rows) error {
 		var w Work
-		var routineID, paths, deps, models, batch, hash, scheduled, submitted, refs, finished sql.NullString
+		var routineID, paths, deps, models, batch, wfRun, wfName, wfStep, hash, scheduled, submitted, refs, finished sql.NullString
 		var tier sql.NullInt64
 		var snapshot, created string
 		var integrate int
-		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &hash, &scheduled, &submitted, &refs, &created, &finished); err != nil {
+		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &scheduled, &submitted, &refs, &created, &finished); err != nil {
 			return fmt.Errorf("scan work: %w", err)
 		}
 		w.RoutineID, w.PlanBatchID, w.PromptHash, w.SubmittedBy = routineID.String, batch.String, hash.String, submitted.String
+		w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = wfRun.String, wfName.String, wfStep.String
 		w.Snapshot, w.Integrate = json.RawMessage(snapshot), integrate == 1
 		if refs.Valid {
 			w.ExternalRefs = json.RawMessage(refs.String)

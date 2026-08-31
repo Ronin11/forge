@@ -173,6 +173,13 @@ type workRequest struct {
 	// Force overrides intake dedupe (M11): submit even when an identical
 	// prompt was created within the window.
 	Force bool `json:"force"`
+
+	// Workflow stamps and prebuilt step edges, set only by runWorkflow —
+	// unexported so a request body can never forge them.
+	workflowRunID string
+	workflowName  string
+	workflowStep  string
+	stepEdges     []model.Edge
 }
 
 // workCreated is the 201 body.
@@ -324,6 +331,7 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		edges = append(edges, model.Edge{BlockedBy: id, On: model.OnSuccess})
 	}
+	edges = append(edges, req.stepEdges...)
 	rt.Repositories = repos
 	snapshot, err := json.Marshal(rt)
 	if err != nil {
@@ -335,6 +343,7 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	}
 	w.PromptHash = promptHashOf(rt.Prompt)
 	w.Trigger, w.Snapshot, w.Priority, w.BudgetClass = model.TriggerManual, snapshot, rt.Priority, rt.BudgetClass
+	w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = req.workflowRunID, req.workflowName, req.workflowStep
 	w.Autonomy = model.ResolveAutonomy(req.Autonomy, rt.Autonomy, "", project.Autonomy, "")
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
 	if w.Integrate && s.modeWritesNothing(rt.Mode) {

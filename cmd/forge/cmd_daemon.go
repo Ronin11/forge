@@ -223,6 +223,10 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
 		RegisterRepo: d.registerRepoOnTheFly,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
+		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
+		// (autoeval.go); when the binary is not in its checkout, auto-eval
+		// stays disabled and approvals use the force override.
+		Executable:    self,
 		RequiredLevel: func(string) int { return 1 },
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		// Attempt worktrees get conflict-resistant git options through the

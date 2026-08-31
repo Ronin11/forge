@@ -1,0 +1,33 @@
+{{template "head" .}}<div class="page-head"><h1>Workflows</h1><button class="btn primary" data-workflow-new>New workflow</button></div>
+<p id="editor-error" class="error" hidden></p>
+<table class="list"><thead><tr><th>Name</th><th>Gen</th><th>Steps</th><th>Schedule</th><th></th></tr></thead><tbody>
+{{range .Data.Workflows}}<tr><td>{{.Name}}</td><td>{{.Generation}}</td><td>{{join .StepNames " → "}}</td><td>{{.Schedule}}{{if and .Schedule (not .ScheduleEnabled)}} (off){{end}}</td><td class="actions"><button class="btn" data-workflow-edit="{{.Name}}">Edit</button> <button class="btn" data-action-post="/api/v1/workflows/{{.Name}}/run">Run</button> <a class="btn" href="/tasks?q=%22{{.Name}}:%22">Runs</a></td></tr>
+{{else}}<tr><td colspan="5" class="empty">No workflows — routines strung together. The New workflow button above, or <code>forge workflow add NAME --step lint=lint-all --step fix=fix-lint</code></td></tr>{{end}}
+</tbody></table>
+
+<dialog data-workflow-dialog>
+<form method="dialog" data-workflow-form>
+<h2 data-editor-title>New workflow</h2>
+<p class="dialog-error" hidden></p>
+<div class="form-grid">
+<label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
+<label>Schedule <input name="schedule" placeholder="cron, e.g. 0 3 * * *"></label>
+<label class="check"><input name="schedule_enabled" type="checkbox"> Schedule enabled</label>
+</div>
+<h3>Steps</h3>
+<div data-step-rows></div>
+<button type="button" class="btn" data-step-add>Add step</button>
+<p class="hint">A step with a blank <em>after</em> runs after the previous one; <code>none</code> makes it start immediately. Otherwise list earlier steps, comma-separated — <code>lint</code> waits for success, <code>lint:terminal</code> for any end, <code>lint!stack</code> starts on its unmerged branch.</p>
+<div class="dialog-actions"><button type="button" class="btn" data-editor-cancel>Cancel</button><button type="submit" class="btn primary" data-editor-save>Save</button></div>
+</form>
+</dialog>
+<template data-step-template>
+<div class="step-row">
+<input name="step-name" placeholder="step name" required pattern="[a-z0-9][a-z0-9-]{0,39}">
+<input name="step-routine" list="routine-names" placeholder="routine" required>
+<input name="step-after" placeholder="after (blank = previous)">
+<button type="button" class="btn" data-step-remove title="Remove step">×</button>
+</div>
+</template>
+<datalist id="routine-names">{{range .Data.Routines}}<option value="{{.}}">{{end}}</datalist>
+{{template "foot" .}}

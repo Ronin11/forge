@@ -64,6 +64,21 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return humanDuration(time.Duration(*us) * time.Microsecond)
 		},
 		"join": strings.Join,
+		// dict builds the argument for a shared partial ({{template "searchbar" dict …}}).
+		"dict": func(pairs ...any) (map[string]any, error) {
+			if len(pairs)%2 != 0 {
+				return nil, fmt.Errorf("dict: odd argument count")
+			}
+			m := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				k, ok := pairs[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict: key %v is not a string", pairs[i])
+				}
+				m[k] = pairs[i+1]
+			}
+			return m, nil
+		},
 		"trunc": func(s string) string {
 			if r := []rune(s); len(r) > 60 {
 				return string(r[:60]) + "…"
@@ -113,6 +128,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /tasks", u.tasks)
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /routines", u.routines)
+	u.mux.HandleFunc("GET /workflows", u.workflows)
 	u.mux.HandleFunc("GET /system", u.system)
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
@@ -305,7 +321,48 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "routines.html", "Routines", rs)
+	repos, err := u.store.Repositories(r.Context())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	names := make([]string, len(repos))
+	for i, rep := range repos {
+		names[i] = rep.Name
+	}
+	u.render(w, r, "routines.html", "Routines", map[string]any{"Routines": rs, "Repositories": names})
+}
+
+// workflows lists workflows with the add/edit dialog; routine names feed the
+// step editor's datalist. The API does the writing — app.js posts and reloads.
+func (u *UI) workflows(w http.ResponseWriter, r *http.Request) {
+	wfs, err := u.store.ListWorkflows(r.Context(), false)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	rs, err := u.store.ListRoutines(r.Context(), false)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	names := make([]string, len(rs))
+	for i, rt := range rs {
+		names[i] = rt.Name
+	}
+	type wfRow struct {
+		store.Workflow
+		StepNames []string
+	}
+	rows := make([]wfRow, 0, len(wfs))
+	for _, wf := range wfs {
+		row := wfRow{Workflow: wf, StepNames: make([]string, len(wf.Steps))}
+		for i, st := range wf.Steps {
+			row.StepNames[i] = st.Name
+		}
+		rows = append(rows, row)
+	}
+	u.render(w, r, "workflows.html", "Workflows", map[string]any{"Workflows": rows, "Routines": names})
 }
 
 func (u *UI) system(w http.ResponseWriter, r *http.Request) {
@@ -411,6 +468,7 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 	type row struct {
 		Question store.Question
 		Work     *store.Work
+		Actions  []QueueAction
 	}
 	rows := make([]row, 0, len(questions))
 	for _, q := range questions {
@@ -419,14 +477,24 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 			u.fail(w, r, err)
 			return
 		}
-		rows = append(rows, row{Question: q, Work: work})
+		rows = append(rows, row{Question: q, Work: work, Actions: questionActions(q.Context)})
 	}
 	proposals, err := u.store.ListProposals(r.Context(), model.ProposalProposed)
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "attention.html", "Human queue", map[string]any{"Questions": rows, "Proposals": proposals})
+	// proposalRow adds the "open the thing" link a card renders when the
+	// proposal's target has a page (a kb-note doc).
+	type proposalRow struct {
+		store.Proposal
+		OpenURL string
+	}
+	prows := make([]proposalRow, 0, len(proposals))
+	for _, p := range proposals {
+		prows = append(prows, proposalRow{Proposal: p, OpenURL: proposalOpenURL(p)})
+	}
+	u.render(w, r, "attention.html", "Human queue", map[string]any{"Questions": rows, "Proposals": prows})
 }
 
 // proposals lists every proposal with the decision buttons; the API does the

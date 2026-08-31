@@ -27,6 +27,9 @@ func (s *Server) RunSweeper(ctx context.Context, interval time.Duration, reflect
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Auto-eval runs its scoring in goroutines this loop owns; wait for them
+	// before returning so no eval outlives the sweeper (STYLE.md §3).
+	defer s.autoEvalWG.Wait()
 	for {
 		select {
 		case <-ctx.Done():
@@ -34,6 +37,7 @@ func (s *Server) RunSweeper(ctx context.Context, interval time.Duration, reflect
 		case <-ticker.C:
 			s.sweep(ctx)
 			s.checkABReverts(ctx, reflection)
+			s.sweepAutoEval(ctx)
 		}
 	}
 }

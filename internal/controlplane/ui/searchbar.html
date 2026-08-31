@@ -1,0 +1,13 @@
+{{define "searchbar"}}{{/*
+The one filter bar (GitHub-flavoured): free text plus key:value qualifiers,
+"-" negation, quoted values. Mode "client" filters [data-sf-item] elements on
+the page live (app.js) and mirrors the query into ?q=; mode "server" is a GET
+form for pages whose search runs in the daemon (Knowledge full-text). Keys is
+the comma-separated qualifier list this page understands — it drives the
+suggestion dropdown; values are scraped from the page's data-f-* attributes
+unless the page supplies them via .Values.
+*/}}<form class="searchbar" role="search" data-searchbar="{{.Mode}}"{{if eq .Mode "server"}} method="get" action="{{.Action}}"{{end}}>
+<input type="search" name="q" value="{{with .Query}}{{.}}{{end}}" placeholder="{{.Placeholder}}" aria-label="{{.Placeholder}}" autocomplete="off" autocapitalize="off" spellcheck="false" data-keys="{{.Keys}}"{{range $k, $v := .Values}} data-values-{{$k}}="{{$v}}"{{end}}>
+{{if eq .Mode "server"}}<button type="submit">Search</button>{{if .Query}}<a class="clear" href="{{.Action}}">Clear</a>{{end}}{{else}}<span class="sb-count" data-sb-count hidden></span>{{end}}
+<div class="sb-suggest" data-sb-suggest role="listbox" hidden></div>
+</form>{{end}}

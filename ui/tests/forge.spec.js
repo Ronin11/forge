@@ -90,6 +90,78 @@ test.describe('tasks', () => {
   });
 });
 
+test.describe('search bar', () => {
+  test('DSL filters rows, negation, repo qualifier, count, and ?q= sync', async ({ page }) => {
+    const s = seed();
+    const q = page.locator('.searchbar input[name=q]');
+    const row = (id) => page.locator(`tr[data-href="/tasks/${id}"]`);
+    await page.goto('/tasks');
+
+    // state qualifier: only the succeeded task remains, count reflects it, and
+    // the query lands in the URL so the filter is shareable.
+    await q.fill('state:succeeded');
+    await expect(row(s.succeeded.work_id)).toBeVisible();
+    await expect(row(s.failed.work_id)).toBeHidden();
+    await expect(page.locator('[data-sb-count]')).toHaveText('1/6');
+    await expect(page).toHaveURL(/q=state%3Asucceeded/);
+
+    // negation flips it.
+    await q.fill('-state:succeeded');
+    await expect(row(s.succeeded.work_id)).toBeHidden();
+    await expect(row(s.failed.work_id)).toBeVisible();
+
+    // free text matches the row's own text.
+    await q.fill('parser');
+    await expect(row(s.queue.a)).toBeVisible();
+    await expect(row(s.queue.b)).toBeHidden();
+
+    // repo: matches the target chips; a repo nothing lives in hides everything.
+    await q.fill('repo:demo');
+    await expect(row(s.succeeded.work_id)).toBeVisible();
+    await q.fill('repo:nope');
+    await expect(row(s.succeeded.work_id)).toBeHidden();
+    await expect(page.locator('[data-sb-count]')).toHaveText('0/6');
+
+    // clearing restores every row and drops ?q=.
+    await q.fill('');
+    await expect(row(s.succeeded.work_id)).toBeVisible();
+    await expect(page.locator('[data-sb-count]')).toBeHidden();
+  });
+
+  test('a ?q= deep link applies on load', async ({ page }) => {
+    const s = seed();
+    await page.goto('/tasks?q=state%3Afailed');
+    await expect(page.locator(`tr[data-href="/tasks/${s.failed.work_id}"]`)).toBeVisible();
+    await expect(page.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"]`)).toBeHidden();
+  });
+
+  test('suggestions offer keys then page-scraped values; "/" focuses the bar', async ({ page }) => {
+    await page.goto('/tasks');
+    // "/" focuses the input from anywhere outside a field.
+    await page.locator('body').press('/');
+    const q = page.locator('.searchbar input[name=q]');
+    await expect(q).toBeFocused();
+    // Focus offers the qualifier keys; choosing repo: then offers the repos
+    // actually on the page.
+    await page.locator('.sb-opt', { hasText: 'repo:' }).first().click();
+    await expect(q).toHaveValue('repo:');
+    const opt = page.locator('.sb-opt', { hasText: 'repo:demo' });
+    await expect(opt).toBeVisible();
+    await opt.click();
+    await expect(q).toHaveValue('repo:demo ');
+  });
+
+  test('knowledge search accepts tag: in the server-side query', async ({ page }) => {
+    const s = seed();
+    await page.goto('/kb');
+    const q = page.locator('.searchbar input[name=q]');
+    await q.fill('tag:brief');
+    await q.press('Enter');
+    await expect(page).toHaveURL(/q=tag%3Abrief/);
+    await expect(page.locator('tr', { hasText: s.kb.title })).toBeVisible();
+  });
+});
+
 test.describe('task detail (succeeded)', () => {
   test('attempt line, git line, result, facts, and a rendered timeline', async ({ page }) => {
     const s = seed();
@@ -145,6 +217,17 @@ test.describe('human queue', () => {
       // First run: the question is open on the human queue; answer it in place.
       await expect(card).toContainText('Which branch should I target?');
       await expect(card).toContainText('options: main, dev');
+      // The context actions render: the doc link routes into the UI, and the
+      // registered trigger button fires its endpoint and confirms in place.
+      await expect(card.locator('a[href="/kb/ui-test-brief"]')).toBeVisible();
+      const toast = card.locator('button[data-action-post="/api/v1/notify/test"]');
+      await toast.click();
+      await expect(toast).toContainText('✓');
+      // A doc proposal's target links straight to the note it covers.
+      const docCard = page.locator(`[data-proposal="${s.proposals.decide}"]`);
+      if ((await docCard.count()) > 0) {
+        await expect(docCard.locator('a[href="/kb/ui-test-brief"]')).toBeVisible();
+      }
       await card.locator('input[name=answer]').fill('main');
       await card.locator('button[type=submit]').click();
       // app.js reloads the page after the POST; the answered question leaves
@@ -327,5 +410,50 @@ test.describe('click-to-copy', () => {
     await expect(cmd).toHaveClass(/copied/); // visual feedback
     const clip = await page.evaluate(() => navigator.clipboard.readText());
     expect(clip).toBe(text);
+  });
+});
+
+test.describe('chat popout', () => {
+  // Runs last: sending files a real task, which would shift earlier tests'
+  // row counts. The unique prompt suffix dodges the 24h intake dedupe on retry.
+  test('routes a question to explore, a change to intake, and files the task', async ({ page }) => {
+    await page.goto('/');
+    await page.click('[data-chat-toggle]');
+    const pop = page.locator('[data-chat]');
+    await expect(pop).toBeVisible();
+    // The repo picker filled itself from the API.
+    await expect(pop.locator('option[value="demo"]')).toHaveCount(1);
+
+    // A question auto-routes to Ask (explore); an imperative flips to Change (intake).
+    const text = pop.locator('[data-chat-text]');
+    await text.fill('How does queue ordering decide priority?');
+    await expect(pop.locator('[data-chat-route="explore"]')).toHaveClass(/on/);
+    await text.fill('Add a retry button to the queue page');
+    await expect(pop.locator('[data-chat-route="intake"]')).toHaveClass(/on/);
+    // A manual override sticks while typing continues.
+    await pop.locator('[data-chat-route="explore"]').click();
+    await text.fill('Rename the demo readme please');
+    await expect(pop.locator('[data-chat-route="explore"]')).toHaveClass(/on/);
+    await pop.locator('[data-chat-route="intake"]').click();
+
+    const prompt = `Chat fixture: add a retry button (${Date.now()})`;
+    await text.fill(prompt);
+    await pop.locator('[data-chat-send]').click();
+    const link = pop.locator('[data-chat-status] a');
+    await expect(link).toBeVisible();
+    await expect(pop.locator('[data-chat-status]')).toContainText('Change filed as task');
+    // The link lands on the created task, titled from the prompt.
+    await link.click();
+    await expect(page).toHaveURL(/\/tasks\/[0-9a-hjkmnp-tv-z]+/i);
+    await expect(page.locator('h1')).toContainText('Task');
+    await expect(page.locator('p.meta').first()).toContainText('Chat fixture: add a retry button');
+  });
+
+  test('escape closes the popout and the toggle reopens it', async ({ page }) => {
+    await page.goto('/system'); // present even on the page without a search bar
+    await page.click('[data-chat-toggle]');
+    await expect(page.locator('[data-chat]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-chat]')).toBeHidden();
   });
 });

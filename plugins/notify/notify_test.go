@@ -173,6 +173,40 @@ func TestToggles(t *testing.T) {
 	}
 }
 
+func TestTestNotification(t *testing.T) {
+	// All toggles off: the explicit human request must still sound — that is
+	// its whole point.
+	n, rec, _ := newTestNotifier(&fakeAPI{}, config{})
+	ctx := context.Background()
+	n.handle(ctx, entry(1, "notify.test", "notify", `{"path":"/attention"}`))
+	if len(rec.calls) != 1 {
+		t.Fatalf("calls = %v", rec.calls)
+	}
+	args := rec.calls[0]
+	if urgencyOf(args) != "normal" || titleOf(args) != "Forge: test notification" {
+		t.Errorf("urgency/title wrong: %v", args)
+	}
+	if !strings.Contains(bodyOf(args), defaultUI+"/attention") {
+		t.Errorf("body = %q", bodyOf(args))
+	}
+	// The click hint is the thing under test: it must route to the asked page.
+	if h := hintOf(args); !strings.Contains(h, "xdg-open") || !strings.Contains(h, defaultUI+"/attention") {
+		t.Errorf("click hint = %q", h)
+	}
+
+	// A malformed or non-path payload still routes somewhere sane.
+	n.handle(ctx, entry(2, "notify.test", "notify", `{not json`))
+	n.handle(ctx, entry(3, "notify.test", "notify", `{"path":"https://evil.example"}`))
+	if len(rec.calls) != 3 {
+		t.Fatalf("calls = %d", len(rec.calls))
+	}
+	for _, args := range rec.calls[1:] {
+		if h := hintOf(args); !strings.Contains(h, defaultUI+"/attention") {
+			t.Errorf("fallback click hint = %q", h)
+		}
+	}
+}
+
 func TestFailureDebounce(t *testing.T) {
 	api := &fakeAPI{tasks: map[string]*taskDetail{wID: {Work: workView{ID: wID, RoutineName: "touch"}}}}
 	n, rec, clock := newTestNotifier(api, config{Failures: true})

@@ -1,11 +1,7 @@
 {{define "kb.html"}}{{template "head" .}}
 <h1>Knowledge</h1>
 <p class="sub">{{.Data.Total}} note{{if ne .Data.Total 1}}s{{end}} — briefs, audits, retros, and system-test grades.</p>
-<form class="kb-search" method="get" action="/kb">
-  <input type="search" name="q" value="{{.Data.Query}}" placeholder="Search notes…" autocomplete="off">
-  <button type="submit">Search</button>
-  {{if or .Data.Query .Data.Tag}}<a class="clear" href="/kb">Clear</a>{{end}}
-</form>
+{{template "searchbar" dict "Mode" "server" "Action" "/kb" "Query" .Data.Query "Placeholder" "Search notes — text, tag:name, type:audit" "Keys" "tag,type" "Values" (dict "tag" .Data.TagValues "type" .Data.TypeValues)}}
 {{if .Data.Tags}}<div class="kb-tags">
   {{range .Data.Tags}}<a href="/kb?tag={{.Tag}}" class="chip{{if eq .Tag $.Data.Tag}} on{{end}}">{{.Tag}} <span>{{.Count}}</span></a>{{end}}
 </div>{{end}}

@@ -192,6 +192,8 @@ func (n *notifier) handle(ctx context.Context, e journalEntry) {
 		if n.cfg.Proposals {
 			n.proposal(e)
 		}
+	case "notify.test":
+		n.test(e)
 	}
 	if n.cfg.Throttling {
 		n.checkThrottle(ctx)
@@ -293,6 +295,21 @@ func (n *notifier) proposal(e journalEntry) {
 		return
 	}
 	n.notify("normal", "Forge: new proposal", pl.Kind+": "+pl.Target+"\n"+n.ui+"/proposals", n.ui+"/proposals")
+}
+
+// test raises the toast a human explicitly asked for (POST /api/v1/notify/test)
+// to verify click-routing end to end, so it sits outside every toggle. The
+// payload path names the UI page the click should open; anything malformed
+// falls back to the Human queue.
+func (n *notifier) test(e journalEntry) {
+	var pl struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(e.Payload, &pl); err != nil || !strings.HasPrefix(pl.Path, "/") {
+		pl.Path = "/attention"
+	}
+	url := n.ui + pl.Path
+	n.notify("normal", "Forge: test notification", "clicking this should open "+url, url)
 }
 
 // checkThrottle reads the queue for a Work deferred with reason

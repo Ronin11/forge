@@ -242,35 +242,43 @@ func editRoutine(ctx context.Context, c *cmdContext, r store.Routine, from strin
 		}
 		return r, nil
 	}
-	editor := c.getenv("EDITOR")
-	if editor == "" {
-		return r, fmt.Errorf("$EDITOR is not set; use --from FILE.toml")
-	}
-	f, err := os.CreateTemp("", "forge-routine-*.toml")
-	if err != nil {
-		return r, err
-	}
-	path := f.Name()
-	defer func() {
-		if rerr := os.Remove(path); rerr != nil {
-			fmt.Fprintln(c.stderr, "forge routine edit: remove temp file:", rerr)
-		}
-	}()
-	if err := toml.NewEncoder(f).Encode(r); err != nil {
-		return r, err
-	}
-	if err := f.Close(); err != nil {
-		return r, err
-	}
-	cmd := exec.CommandContext(ctx, editor, path)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return r, fmt.Errorf("%s: %w", editor, err)
-	}
 	var edited store.Routine
-	if _, err := toml.DecodeFile(path, &edited); err != nil {
+	if err := editTOML(ctx, c, "forge-routine-*.toml", r, &edited); err != nil {
 		return r, err
 	}
 	edited.Name = r.Name
 	return edited, nil
+}
+
+// editTOML round-trips a value through $EDITOR as a TOML temp file.
+func editTOML(ctx context.Context, c *cmdContext, pattern string, in, out any) error {
+	editor := c.getenv("EDITOR")
+	if editor == "" {
+		return fmt.Errorf("$EDITOR is not set; use --from FILE.toml")
+	}
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	defer func() {
+		if rerr := os.Remove(path); rerr != nil {
+			fmt.Fprintln(c.stderr, "edit: remove temp file:", rerr)
+		}
+	}()
+	if err := toml.NewEncoder(f).Encode(in); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, editor, path)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", editor, err)
+	}
+	if _, err := toml.DecodeFile(path, out); err != nil {
+		return err
+	}
+	return nil
 }

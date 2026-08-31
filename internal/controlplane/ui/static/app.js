@@ -85,19 +85,61 @@ document.querySelectorAll('[data-answer-form]').forEach(function (form) {
 document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').forEach(function (btn) {
   btn.addEventListener('click', function () {
     var id = btn.dataset.proposalApprove || btn.dataset.proposalReject;
-    var action = btn.dataset.proposalApprove ? 'approve' : 'reject';
-    fetch('/api/v1/proposals/' + id + '/' + action, { method: 'POST' }).then(function (resp) {
-      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
-      window.location.reload();
-    }).catch(function (err) {
-      var msg = String(err.message || '').replace(/: (conflict|not found|draining)$/, '');
+    var approve = !!btn.dataset.proposalApprove;
+    var action = approve ? 'approve' : 'reject';
+
+    function refuse(msg) {
+      var clean = String(msg || '').replace(/: (conflict|not found|draining)$/, '');
       var box = document.getElementById('proposal-error');
       if (box) {
         box.hidden = false;
-        box.textContent = 'Refused: ' + msg;
+        box.textContent = 'Refused: ' + clean;
       } else {
-        window.alert('Refused: ' + msg);
+        window.alert('Refused: ' + clean);
       }
+    }
+
+    // post resolves to null on success (after reloading) or {status, error}.
+    function post(url) {
+      return fetch(url, { method: 'POST' }).then(function (resp) {
+        if (resp.ok) { window.location.reload(); return null; }
+        return resp.json().then(function (e) { return { status: resp.status, error: e.error || String(resp.status) }; });
+      });
+    }
+
+    post('/api/v1/proposals/' + id + '/' + action).then(function (fail) {
+      if (!fail) return;
+      // The eval gate refuses a routine/mode_prompt approval with no score
+      // (409). Offer the human the force override; the A/B auto-revert still
+      // guards the change.
+      if (approve && fail.status === 409 && fail.error.indexOf('eval score') !== -1) {
+        if (window.confirm('No eval score yet — approve anyway? The A/B auto-revert still guards a routine change.')) {
+          post('/api/v1/proposals/' + id + '/approve?force=true').then(function (f2) {
+            if (f2) refuse(f2.error);
+          }).catch(function (err) { refuse(err.message); });
+        }
+        return;
+      }
+      refuse(fail.error);
+    }).catch(function (err) { refuse(err.message); });
+  });
+});
+
+// Queue-item triggers: a [data-action-post] button fires its registered
+// daemon endpoint (e.g. the test toast) and confirms on the button itself —
+// no reload, the click changes nothing on the page.
+document.querySelectorAll('[data-action-post]').forEach(function (btn) {
+  var label = btn.textContent;
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    fetch(btn.dataset.actionPost, { method: 'POST' }).then(function (resp) {
+      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+      btn.textContent = label + ' ✓';
+    }).catch(function (err) {
+      window.alert('Action failed: ' + err.message);
+    }).then(function () {
+      btn.disabled = false;
+      window.setTimeout(function () { btn.textContent = label; }, 2000);
     });
   });
 });
@@ -167,6 +209,396 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
       if (e.key === 'Enter' || e.key === ' ') copy(e);
     });
   });
+})();
+
+// Search bar: GitHub-flavoured filtering. Free text ANDs, key:value qualifiers
+// (same key ORs, different keys AND), "-" negates, values may be quoted. In
+// client mode it live-filters every [data-sf-item] on the page against its
+// data-f-* attributes and mirrors the query into ?q= (shareable); in server
+// mode (Knowledge full-text) the form submits and only the suggestion dropdown
+// runs here. Suggestions: qualifier keys from data-keys, values scraped from
+// the page's own data-f-* attributes (so repo: offers exactly the repos shown)
+// unless the page supplies them via data-values-<key>. "/" focuses the bar.
+(function () {
+  var form = document.querySelector('[data-searchbar]');
+  if (!form) return;
+  var input = form.querySelector('input[name=q]');
+  var suggestBox = form.querySelector('[data-sb-suggest]');
+  var countEl = form.querySelector('[data-sb-count]');
+  var serverMode = form.dataset.searchbar === 'server';
+  var keys = (input.dataset.keys || '').split(',').filter(Boolean);
+  var items = Array.prototype.slice.call(document.querySelectorAll('[data-sf-item]'));
+
+  // --- parsing: [-]key:value | [-]"quoted phrase" | bare word ---
+  var TOKEN = /(-)?(?:([a-zA-Z][a-zA-Z0-9_-]*):)?("([^"]*)"?|[^\s"]+)/g;
+  function parse(q) {
+    var terms = [], quals = {}, m;
+    TOKEN.lastIndex = 0;
+    while ((m = TOKEN.exec(q))) {
+      var neg = !!m[1];
+      var key = m[2] ? m[2].toLowerCase() : '';
+      var val = (m[4] !== undefined ? m[4] : m[3]).toLowerCase();
+      if (key && keys.indexOf(key) >= 0) {
+        (quals[key] = quals[key] || []).push({ v: val, neg: neg });
+      } else {
+        var text = key ? key + ':' + val : val; // unknown key: plain text
+        if (text) terms.push({ v: text, neg: neg });
+      }
+    }
+    return { terms: terms, quals: quals };
+  }
+
+  // --- matching ---
+  function textOf(el) {
+    if (el._sfText === undefined) el._sfText = el.textContent.replace(/\s+/g, ' ').toLowerCase();
+    return el._sfText;
+  }
+  function declared(el, key) {
+    var raw = el.getAttribute('data-f-' + key);
+    return raw == null ? null : raw.toLowerCase().split(/\s+/).filter(Boolean);
+  }
+  function valMatch(el, key, v) {
+    var vals = declared(el, key);
+    if (vals === null) return textOf(el).indexOf(v) >= 0; // undeclared key: fall back to text
+    for (var i = 0; i < vals.length; i++) if (vals[i].indexOf(v) === 0) return true; // prefix: state:wait hits waiting_human
+    return false;
+  }
+  function matches(el, q) {
+    for (var i = 0; i < q.terms.length; i++) {
+      var has = textOf(el).indexOf(q.terms[i].v) >= 0;
+      if (q.terms[i].neg ? has : !has) return false;
+    }
+    for (var key in q.quals) {
+      var pos = [], negs = [];
+      q.quals[key].forEach(function (x) { (x.neg ? negs : pos).push(x.v); });
+      if (pos.length && !pos.some(function (v) { return valMatch(el, key, v); })) return false;
+      if (negs.some(function (v) { return valMatch(el, key, v); })) return false;
+    }
+    return true;
+  }
+
+  function apply() {
+    var active = input.value.trim() !== '';
+    var q = parse(input.value.trim());
+    items.forEach(function (el) { el._sfMatch = !active || matches(el, q); });
+    // An item containing a matching item stays visible (stats: a routine card
+    // around its rows).
+    items.forEach(function (el) {
+      var show = el._sfMatch;
+      if (!show) {
+        var kids = el.querySelectorAll('[data-sf-item]');
+        for (var i = 0; i < kids.length; i++) if (kids[i]._sfMatch) { show = true; break; }
+      }
+      el.hidden = !show;
+    });
+    if (countEl) {
+      countEl.hidden = !active;
+      if (active) {
+        var total = 0, shown = 0;
+        items.forEach(function (el) {
+          if (el.parentElement && el.parentElement.closest('[data-sf-item]')) return; // count top-level only
+          total++;
+          if (!el.hidden) shown++;
+        });
+        countEl.textContent = shown + '/' + total;
+      }
+    }
+    var params = new URLSearchParams(location.search);
+    if (active) params.set('q', input.value.trim()); else params.delete('q');
+    var qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+  }
+  var applyTimer = null;
+  function scheduleApply() {
+    if (serverMode) return;
+    window.clearTimeout(applyTimer);
+    applyTimer = window.setTimeout(apply, 120);
+  }
+
+  // --- suggestions ---
+  var current = [], sel = -1;
+  function valuesFor(key) {
+    var provided = input.getAttribute('data-values-' + key);
+    if (provided) return provided.split(/\s+/).filter(Boolean);
+    var seen = {}, out = [];
+    items.forEach(function (el) {
+      (declared(el, key) || []).forEach(function (v) { if (!seen[v]) { seen[v] = true; out.push(v); } });
+    });
+    return out.sort();
+  }
+  function tokenAt() {
+    var pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+    var before = input.value.slice(0, pos);
+    var start = before.lastIndexOf(' ') + 1;
+    return { start: start, end: pos, text: before.slice(start) };
+  }
+  function buildSuggestions() {
+    var t = tokenAt().text.replace(/^-/, '');
+    var list = [];
+    var colon = t.indexOf(':');
+    if (colon >= 0) {
+      var key = t.slice(0, colon).toLowerCase();
+      var part = t.slice(colon + 1).toLowerCase().replace(/^"/, '');
+      if (keys.indexOf(key) >= 0) {
+        valuesFor(key).forEach(function (v) {
+          if (v.indexOf(part) === 0) list.push({ label: key + ':' + v, insert: key + ':' + v + ' ' });
+        });
+      }
+    } else {
+      keys.forEach(function (k) {
+        if (!t || k.indexOf(t.toLowerCase()) === 0) list.push({ label: k + ':', insert: k + ':' });
+      });
+    }
+    current = list.slice(0, 12);
+    sel = -1;
+    renderSuggest();
+  }
+  function renderSuggest() {
+    suggestBox.textContent = '';
+    if (!current.length) { suggestBox.hidden = true; return; }
+    current.forEach(function (s, i) {
+      var el = document.createElement('div');
+      el.className = 'sb-opt' + (i === sel ? ' on' : '');
+      el.setAttribute('role', 'option');
+      el.setAttribute('aria-selected', i === sel ? 'true' : 'false');
+      el.textContent = s.label;
+      el.addEventListener('mousedown', function (e) { e.preventDefault(); accept(i); });
+      suggestBox.appendChild(el);
+    });
+    suggestBox.hidden = false;
+  }
+  function accept(i) {
+    var s = current[i];
+    if (!s) return;
+    var tok = tokenAt();
+    var neg = tok.text.charAt(0) === '-' ? '-' : '';
+    input.value = input.value.slice(0, tok.start) + neg + s.insert + input.value.slice(tok.end);
+    var caret = tok.start + neg.length + s.insert.length;
+    input.setSelectionRange(caret, caret);
+    input.focus();
+    buildSuggestions();
+    scheduleApply();
+  }
+
+  form.addEventListener('submit', function (e) { if (!serverMode) e.preventDefault(); });
+  input.addEventListener('input', function () { buildSuggestions(); scheduleApply(); });
+  input.addEventListener('focus', buildSuggestions);
+  input.addEventListener('click', buildSuggestions);
+  input.addEventListener('blur', function () { window.setTimeout(function () { suggestBox.hidden = true; }, 150); });
+  input.addEventListener('keydown', function (e) {
+    if (suggestBox.hidden) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = (sel + 1) % current.length; renderSuggest(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = (sel - 1 + current.length) % current.length; renderSuggest(); }
+    else if (e.key === 'Enter' && sel >= 0) { e.preventDefault(); accept(sel); }
+    else if (e.key === 'Tab' && current.length) { e.preventDefault(); accept(sel >= 0 ? sel : 0); }
+    else if (e.key === 'Escape') { suggestBox.hidden = true; }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    input.focus();
+    input.select();
+  });
+
+  if (!serverMode) {
+    var initial = new URLSearchParams(location.search).get('q');
+    if (initial) input.value = initial;
+    if (input.value.trim()) apply();
+  }
+})();
+
+// Routine and workflow editors: one <dialog> per page, filled from the API on
+// edit so the full object round-trips — the form only overwrites the fields it
+// shows, and PUT replaces every editable field, so advanced fields (paths,
+// models, allowed tools, …) survive an edit made here. POST creates, PUT with
+// ?generation= updates (a 409 means it changed under you — reopen to reload).
+(function () {
+  function openEditor(dialog, opts) {
+    var form = dialog.querySelector('form');
+    var errBox = form.querySelector('.dialog-error');
+    var saveBtn = form.querySelector('[data-editor-save]');
+
+    function refuse(msg) {
+      errBox.hidden = false;
+      errBox.textContent = 'Refused: ' + String(msg || '').replace(/: (conflict|not found|draining)$/, '');
+    }
+
+    form.querySelector('[data-editor-title]').textContent = opts.title;
+    form.querySelector('[name=name]').disabled = !!opts.current; // the name is the identity
+    errBox.hidden = true;
+    opts.fill();
+    dialog.showModal();
+
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      var body;
+      try { body = opts.collect(); } catch (err) { refuse(err.message); return; }
+      var url = opts.base, method = 'POST';
+      if (opts.current) {
+        url = opts.base + '/' + encodeURIComponent(opts.current.name) + '?generation=' + opts.current.generation;
+        method = 'PUT';
+      }
+      saveBtn.disabled = true;
+      fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+          window.location.reload();
+        })
+        .catch(function (err) { refuse(err.message); })
+        .then(function () { saveBtn.disabled = false; });
+    };
+    form.querySelector('[data-editor-cancel]').onclick = function () { dialog.close(); };
+  }
+
+  function fetchJSON(url) {
+    return fetch(url).then(function (resp) {
+      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+      return resp.json();
+    });
+  }
+  function pageError(err) {
+    var box = document.getElementById('editor-error');
+    if (box) { box.hidden = false; box.textContent = String(err.message || err); }
+  }
+
+  // --- routines ---
+  (function () {
+    var dialog = document.querySelector('[data-routine-dialog]');
+    if (!dialog) return;
+    var form = dialog.querySelector('form');
+    function field(n) { return form.querySelector('[name=' + n + ']'); }
+
+    function open(current) {
+      form.reset();
+      openEditor(dialog, {
+        title: current ? 'Edit routine ' + current.name : 'New routine',
+        base: '/api/v1/routines',
+        current: current,
+        fill: function () {
+          if (!current) return;
+          ['name', 'mode', 'model', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+            field(n).value = current[n] || '';
+          });
+          ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
+            field(n).value = current[n] || '';
+          });
+          field('max_budget_usd').value = current.max_budget_usd || '';
+          field('repositories').value = (current.repositories || []).join(', ');
+          ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
+            field(n).checked = !!current[n];
+          });
+        },
+        collect: function () {
+          var body = Object.assign({}, current);
+          ['name', 'mode', 'model', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+            body[n] = field(n).value.trim();
+          });
+          ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
+            body[n] = Number(field(n).value) || 0;
+          });
+          body.max_budget_usd = Number(field('max_budget_usd').value) || 0;
+          body.repositories = field('repositories').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+          ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
+            body[n] = field(n).checked;
+          });
+          return body;
+        },
+      });
+    }
+
+    var newBtn = document.querySelector('[data-routine-new]');
+    if (newBtn) newBtn.addEventListener('click', function () { open(null); });
+    document.querySelectorAll('[data-routine-edit]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        fetchJSON('/api/v1/routines/' + encodeURIComponent(btn.dataset.routineEdit)).then(open).catch(pageError);
+      });
+    });
+  })();
+
+  // --- workflows ---
+  (function () {
+    var dialog = document.querySelector('[data-workflow-dialog]');
+    if (!dialog) return;
+    var form = dialog.querySelector('form');
+    var rowsBox = form.querySelector('[data-step-rows]');
+    var template = document.querySelector('[data-step-template]');
+
+    function addRow(step) {
+      var row = template.content.firstElementChild.cloneNode(true);
+      if (step) {
+        row.querySelector('[name=step-name]').value = step.name || '';
+        row.querySelector('[name=step-routine]').value = step.routine || '';
+        row.querySelector('[name=step-after]').value = (step.after || []).map(function (e) {
+          return e.step + (e.on === 'terminal' ? ':terminal' : '') + (e.stack_on ? '!stack' : '');
+        }).join(', ');
+      }
+      row.querySelector('[data-step-remove]').addEventListener('click', function () { row.remove(); });
+      rowsBox.appendChild(row);
+    }
+
+    // after syntax: blank = previous step (server default), "none" = start
+    // immediately, else "step[:terminal][!stack]" comma-separated.
+    function parseAfter(text) {
+      text = text.trim();
+      if (text === '') return undefined;
+      if (text.toLowerCase() === 'none') return [];
+      return text.split(',').map(function (part) {
+        var edge = { step: part.trim() };
+        if (edge.step.slice(-6) === '!stack') { edge.stack_on = true; edge.step = edge.step.slice(0, -6).trim(); }
+        var colon = edge.step.indexOf(':');
+        if (colon >= 0) {
+          edge.on = edge.step.slice(colon + 1).trim();
+          edge.step = edge.step.slice(0, colon).trim();
+        }
+        return edge;
+      });
+    }
+
+    function open(current) {
+      form.reset();
+      rowsBox.textContent = '';
+      if (current) (current.steps || []).forEach(addRow); else addRow(null);
+      openEditor(dialog, {
+        title: current ? 'Edit workflow ' + current.name : 'New workflow',
+        base: '/api/v1/workflows',
+        current: current,
+        fill: function () {
+          if (!current) return;
+          form.querySelector('[name=name]').value = current.name;
+          form.querySelector('[name=schedule]').value = current.schedule || '';
+          form.querySelector('[name=schedule_enabled]').checked = !!current.schedule_enabled;
+        },
+        collect: function () {
+          var body = Object.assign({}, current);
+          body.name = form.querySelector('[name=name]').value.trim();
+          body.schedule = form.querySelector('[name=schedule]').value.trim();
+          body.schedule_enabled = form.querySelector('[name=schedule_enabled]').checked;
+          body.steps = Array.prototype.map.call(rowsBox.querySelectorAll('.step-row'), function (row) {
+            var step = {
+              name: row.querySelector('[name=step-name]').value.trim(),
+              routine: row.querySelector('[name=step-routine]').value.trim(),
+            };
+            var after = parseAfter(row.querySelector('[name=step-after]').value);
+            if (after !== undefined) step.after = after;
+            return step;
+          });
+          if (!body.steps.length) throw new Error('at least one step is required');
+          return body;
+        },
+      });
+    }
+
+    form.querySelector('[data-step-add]').addEventListener('click', function () { addRow(null); });
+    var newBtn = document.querySelector('[data-workflow-new]');
+    if (newBtn) newBtn.addEventListener('click', function () { open(null); });
+    document.querySelectorAll('[data-workflow-edit]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        fetchJSON('/api/v1/workflows/' + encodeURIComponent(btn.dataset.workflowEdit)).then(open).catch(pageError);
+      });
+    });
+  })();
 })();
 
 // Dashboard timeline: a live wall-clock view of everything active in a trailing
@@ -419,4 +851,117 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
   syncButtons();
   load();
   window.setInterval(function () { if (!hovering) load(); }, 10000);
+})();
+
+// Ask Forge: the top-right chat popout. A prompt is routed by intent — a
+// question runs read-only explore (the answer becomes a kb note); a change
+// request runs intake, which files it as an issue and hands off to implement.
+// The guess flips as you type; one click on Ask/Change overrides it. Either
+// way the send is one POST /api/v1/tasks with the chosen mode, so the daemon's
+// normal queue, budget, and dedupe rules all apply.
+(function () {
+  var pop = document.querySelector('[data-chat]');
+  var toggle = document.querySelector('[data-chat-toggle]');
+  if (!pop || !toggle) return;
+  var text = pop.querySelector('[data-chat-text]');
+  var repoSel = pop.querySelector('[data-chat-repo]');
+  var send = pop.querySelector('[data-chat-send]');
+  var hint = pop.querySelector('[data-chat-hint]');
+  var status = pop.querySelector('[data-chat-status]');
+  var routeBtns = Array.prototype.slice.call(pop.querySelectorAll('[data-chat-route]'));
+  var route = 'explore', overridden = false, reposLoaded = false;
+
+  var HINTS = {
+    explore: 'Ask: runs read-only explore — the answer lands in a knowledge note.',
+    intake: 'Change: runs intake — files the request, then hands off to implement.'
+  };
+  function setRoute(r, manual) {
+    route = r;
+    if (manual) overridden = true;
+    routeBtns.forEach(function (b) { b.classList.toggle('on', b.dataset.chatRoute === r); });
+    hint.textContent = HINTS[r];
+  }
+  var QUESTION = /^(what|why|how|where|when|who|which|is|are|was|were|does|do|did|can|could|should|would|will|explain)\b|\?\s*$/i;
+  function infer() {
+    if (!overridden) setRoute(QUESTION.test(text.value.trim()) ? 'explore' : 'intake', false);
+  }
+
+  function loadRepos() {
+    if (reposLoaded) return;
+    reposLoaded = true;
+    fetch('/api/v1/repositories').then(function (r) { return r.ok ? r.json() : []; }).then(function (repos) {
+      repoSel.textContent = '';
+      repos.forEach(function (r) {
+        var opt = document.createElement('option');
+        opt.value = r.name;
+        opt.textContent = r.name;
+        repoSel.appendChild(opt);
+      });
+      if (!repos.length) {
+        var none = document.createElement('option');
+        none.value = '';
+        none.textContent = 'no repositories';
+        repoSel.appendChild(none);
+        return;
+      }
+      var names = repos.map(function (r) { return r.name; });
+      var last = null;
+      try { last = window.localStorage.getItem('forge.chat.repo'); } catch (e) { /* storage blocked */ }
+      if (last && names.indexOf(last) >= 0) repoSel.value = last;
+      else if (names.indexOf('forge') >= 0) repoSel.value = 'forge'; // forge changes are the headline use
+    }).catch(function () { reposLoaded = false; });
+  }
+
+  function open() {
+    pop.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    loadRepos();
+    text.focus();
+  }
+  function close() {
+    pop.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+  toggle.addEventListener('click', function () { if (pop.hidden) open(); else close(); });
+  pop.querySelector('[data-chat-close]').addEventListener('click', close);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !pop.hidden) close(); });
+
+  routeBtns.forEach(function (b) {
+    b.addEventListener('click', function () { setRoute(b.dataset.chatRoute, true); });
+  });
+  text.addEventListener('input', function () { status.hidden = true; infer(); });
+
+  function submit() {
+    var prompt = text.value.trim();
+    if (!prompt || !repoSel.value) return;
+    send.disabled = true;
+    status.hidden = true;
+    try { window.localStorage.setItem('forge.chat.repo', repoSel.value); } catch (e) { /* storage blocked */ }
+    fetch('/api/v1/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt, repositories: [repoSel.value], mode: route })
+    }).then(function (resp) {
+      return resp.json().then(function (body) {
+        if (!resp.ok) throw new Error(body.error || String(resp.status));
+        status.hidden = false;
+        status.textContent = (route === 'explore' ? 'Question filed as task ' : 'Change filed as task ');
+        var a = document.createElement('a');
+        a.href = '/tasks/' + body.work.id;
+        a.textContent = body.work.id.slice(0, 8);
+        status.appendChild(a);
+        text.value = '';
+        overridden = false;
+      });
+    }).catch(function (err) {
+      status.hidden = false;
+      status.textContent = 'Refused: ' + err.message;
+    }).then(function () { send.disabled = false; });
+  }
+  send.addEventListener('click', submit);
+  text.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
+  });
+
+  setRoute('explore', false);
 })();

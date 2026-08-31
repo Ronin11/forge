@@ -68,6 +68,7 @@ func commands() map[string]command {
 		"worker":      {summary: "start the worker process", run: runWorker},
 		"task":        {summary: "add|list|show|cancel|answer tasks", run: runTask},
 		"routine":     {summary: "add|list|show|edit|run|enable|disable routines", run: runRoutine},
+		"workflow":    {summary: "routines strung together: add|list|show|edit|run|runs", run: runWorkflow},
 		"queue":       {summary: "show the priority queue", run: runQueue},
 		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
 		"kb":          {summary: "new|resolve|backlinks|links|graph|search|check|export notes", run: runKb},

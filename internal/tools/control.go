@@ -25,7 +25,7 @@ func (askTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
 		"question":{"type":"string"},
 		"options":{"type":"array","items":{"type":"string"}},
-		"context":{"type":"object","description":"anything the answerer should see"},
+		"context":{"type":"object","description":"anything the answerer should see; an actions array of {label, url} (a UI path to open, e.g. /kb/<id>) or {label, trigger} (registered triggers: notify_test sends a test desktop toast) renders as buttons on the Human queue card"},
 		"checkpoint":{"type":"string","description":"the declared checkpoint this question belongs to"}
 	},"required":["question"],"additionalProperties":false}`)
 }

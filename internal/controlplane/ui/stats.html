@@ -1,9 +1,10 @@
 {{template "head" .}}<h1>Stats <small>window {{.Data.Since}}</small></h1>
 <p class="meta">Window: <a href="/stats?since=1d">1d</a> · <a href="/stats?since=7d">7d</a> · <a href="/stats?since=30d">30d</a> — verified success is counted separately from self-reported.</p>
+{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter stats — text, routine:name, model:sonnet, runner:claude" "Keys" "routine,model,class,runner"}}
 {{with .Data.Report.Funnel}}<p class="meta">proposals (all-time): {{.Proposed}} proposed → {{.Approved}} approved → {{.Applied}} applied → {{.Reverted}} reverted ({{.Rejected}} rejected) · retro cost per applied {{deref $.Data.Report.CostPerApplied}}</p>{{end}}
 {{if not .Data.Report.Routines}}<p class="empty">No finished attempts in this window.</p>{{end}}
 {{range .Data.Report.Routines}}
-<section class="card">
+<section class="card" data-sf-item data-f-routine="{{.Routine}}">
 <h2>{{.Routine}} <small>{{.Runs}} run(s)</small></h2>
 <table class="list"><thead><tr><th></th><th>Runs</th><th>Verified ✓</th><th>Self-reported ✓</th><th>p50 total</th><th>p95 total</th><th>p50 agent</th><th>Tokens in/out per run</th><th>Cost/run</th><th>Cost/verified ✓</th><th>Turns</th><th>Top failure</th></tr></thead><tbody>
 {{template "statsRow" .}}
@@ -14,11 +15,11 @@
 {{if .Data.Report.Matrix}}<h2>Capability matrix</h2>
 <p class="meta">per model: verified success and the cost of each verified success, notional and in subscription-window points (M10 routing).</p>
 <table class="list" id="capability-matrix"><thead><tr><th>Model</th><th>Class</th><th>Runner</th><th>Runs</th><th>Verified ✓</th><th>Samples</th><th>$/verified ✓</th><th>5h/verified ✓</th><th>7d/verified ✓</th><th>Avg agent s</th></tr></thead><tbody>
-{{range .Data.Report.Matrix}}<tr><td>{{.Model}}</td><td>{{.Class}}</td><td>{{.Runner}}</td><td>{{.Runs}}</td><td>{{printf "%.0f%%" (mulf .VerifiedSuccessRate 100)}}</td><td>{{.Trials}}</td><td>{{if .CostPerVerifiedUSD}}{{printf "$%.4f" (dereff .CostPerVerifiedUSD)}}{{else}}-{{end}}</td><td>{{if .FiveHourPerVerified}}{{printf "%.4f" (dereff .FiveHourPerVerified)}}{{else}}-{{end}}</td><td>{{if .SevenDayPerVerified}}{{printf "%.4f" (dereff .SevenDayPerVerified)}}{{else}}-{{end}}</td><td>{{printf "%.1f" .AvgRunnerSeconds}}</td></tr>{{end}}
+{{range .Data.Report.Matrix}}<tr data-sf-item data-f-model="{{.Model}}" data-f-class="{{.Class}}" data-f-runner="{{.Runner}}"><td>{{.Model}}</td><td>{{.Class}}</td><td>{{.Runner}}</td><td>{{.Runs}}</td><td>{{printf "%.0f%%" (mulf .VerifiedSuccessRate 100)}}</td><td>{{.Trials}}</td><td>{{if .CostPerVerifiedUSD}}{{printf "$%.4f" (dereff .CostPerVerifiedUSD)}}{{else}}-{{end}}</td><td>{{if .FiveHourPerVerified}}{{printf "%.4f" (dereff .FiveHourPerVerified)}}{{else}}-{{end}}</td><td>{{if .SevenDayPerVerified}}{{printf "%.4f" (dereff .SevenDayPerVerified)}}{{else}}-{{end}}</td><td>{{printf "%.1f" .AvgRunnerSeconds}}</td></tr>{{end}}
 </tbody></table>{{end}}
 {{if .Data.Report.Runners}}<h2>Runner utilization</h2>
 <table class="list" id="runner-utilization"><thead><tr><th>Runner</th><th>Runs</th><th>Agent seconds</th><th>Notional $</th></tr></thead><tbody>
-{{range .Data.Report.Runners}}<tr><td>{{.Runner}}</td><td>{{.Runs}}</td><td>{{printf "%.1f" .TotalRunnerSeconds}}</td><td>{{printf "$%.4f" .TotalUSD}}</td></tr>{{end}}
+{{range .Data.Report.Runners}}<tr data-sf-item data-f-runner="{{.Runner}}"><td>{{.Runner}}</td><td>{{.Runs}}</td><td>{{printf "%.1f" .TotalRunnerSeconds}}</td><td>{{printf "$%.4f" .TotalUSD}}</td></tr>{{end}}
 </tbody></table>{{end}}
 {{if .Data.Report.Generations}}<h2>By generation</h2>
 <table class="list"><thead><tr><th>Routine@gen</th><th>Runs</th><th>Verified ✓</th><th>Self-reported ✓</th><th>p50 total</th><th>p95 total</th><th>p50 agent</th><th>Tokens in/out per run</th><th>Cost/run</th><th>Cost/verified ✓</th><th>Turns</th><th>Top failure</th></tr></thead><tbody>

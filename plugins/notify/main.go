@@ -2,7 +2,9 @@
 // DESIGN.md §22): it consumes the daemon's journal stream and raises one
 // notify-send notification per new question, target failure (debounced),
 // budget throttle onset, and new proposal, each behind a per-kind toggle in
-// <FORGE_PLUGIN_DIR>/notify.toml.
+// <FORGE_PLUGIN_DIR>/notify.toml. A notify.test journal entry (the UI's
+// "Send test toast" button, POST /api/v1/notify/test) always raises a toast,
+// outside the toggles — it exists to verify this chain end to end.
 //
 // Notifications are fire-and-forget yet clickable: each carries an
 // `omarchy-exec-argv` hint (a JSON ["xdg-open", <url>] the Omarchy shell runs

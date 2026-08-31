@@ -86,6 +86,27 @@ type Server struct {
 	closeOnce sync.Once
 	// streamInterval is the SSE endpoints' store poll cadence.
 	streamInterval time.Duration
+
+	// evalFn runs a mode's golden eval for auto-eval (autoeval.go); the real
+	// impl is s.runEval, replaced by a fake in tests. exe is the daemon binary,
+	// from which evalRoot discovers the checkout's evals/ and fixtures.
+	evalFn evalRunner
+	exe    string
+	// evalRootMu guards the lazily-computed, cached evalRoot discovery
+	// (evalRootDir, evalRootOK, evalRootDone).
+	evalRootMu   sync.Mutex
+	evalRootDir  string
+	evalRootOK   bool
+	evalRootDone bool
+	// autoEvalSem is the single-slot semaphore that keeps at most one eval
+	// running process-wide; autoEvalWG lets RunSweeper wait for its launched
+	// eval goroutines before returning (no fire-and-forget, STYLE.md §3).
+	autoEvalSem chan struct{}
+	autoEvalWG  sync.WaitGroup
+	// inflightMu guards inflightEval: proposal ids whose eval is running, so a
+	// slow eval is not launched twice across sweep ticks.
+	inflightMu   sync.Mutex
+	inflightEval map[string]bool
 }
 
 // ServerOptions are the inputs the server cannot derive itself.
@@ -153,6 +174,13 @@ type ServerOptions struct {
 	// dimension, DESIGN.md §21); a runner absent or with capacity ≤ 0 is
 	// unbounded (bounded only by worker slots).
 	RunnerCapacities map[string]int
+	// Executable is the daemon binary path (os.Executable); auto-eval walks up
+	// from it to the checkout's evals/ and testdata/fixtures/. Empty disables
+	// auto-eval discovery (tests inject EvalFn instead).
+	Executable string
+	// EvalFn overrides the auto-eval runner (autoeval.go); nil installs the
+	// real s.runEval. Tests inject a fake so the suite never runs eval.Run.
+	EvalFn func(ctx context.Context, mode string) (score float64, ok bool, err error)
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -197,6 +225,11 @@ func NewServer(o ServerOptions) (*Server, error) {
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop,
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
+		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
+	}
+	s.evalFn = o.EvalFn
+	if s.evalFn == nil {
+		s.evalFn = s.runEval
 	}
 	if s.streamInterval <= 0 {
 		s.streamInterval = time.Second
@@ -245,6 +278,13 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/v1/routines/{name}", s.handle(s.updateRoutine))
 	m.HandleFunc("DELETE /api/v1/routines/{name}", s.handle(s.archiveRoutine))
 	m.HandleFunc("POST /api/v1/routines/{name}/run", s.handle(s.runRoutine))
+	m.HandleFunc("GET /api/v1/workflows", s.handle(s.listWorkflows))
+	m.HandleFunc("POST /api/v1/workflows", s.handle(s.createWorkflow))
+	m.HandleFunc("GET /api/v1/workflows/{name}", s.handle(s.getWorkflow))
+	m.HandleFunc("PUT /api/v1/workflows/{name}", s.handle(s.updateWorkflow))
+	m.HandleFunc("DELETE /api/v1/workflows/{name}", s.handle(s.archiveWorkflow))
+	m.HandleFunc("POST /api/v1/workflows/{name}/run", s.handle(s.runWorkflow))
+	m.HandleFunc("GET /api/v1/workflows/{name}/runs", s.handle(s.workflowRuns))
 	for _, base := range []string{"/api/v1/work", "/api/v1/tasks"} {
 		m.HandleFunc("GET "+base, s.handle(s.listWork))
 		m.HandleFunc("POST "+base, s.handle(s.createWork))
@@ -255,6 +295,7 @@ func (s *Server) routes() {
 	s.proposalRoutes(m)
 	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
 	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
+	m.HandleFunc("POST /api/v1/notify/test", s.handle(s.notifyTest))
 	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))
 	m.HandleFunc("GET /api/v1/attempts/{id}/events", s.handle(s.getEvents))
 	m.HandleFunc("GET /api/v1/workers", s.handle(s.workers))

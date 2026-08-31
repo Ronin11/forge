@@ -1,7 +1,8 @@
 {{template "head" .}}<h1>Proposals</h1>
 <p class="meta">Reflection proposes; a human decides. Approve applies in the same transaction — a refused apply leaves the proposal proposed.</p>
+{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter proposals — text, status:proposed, kind:prompt, -status:rejected" "Keys" "status,kind,target,source"}}
 <table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th>Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
-{{range .Data}}<tr data-proposal="{{.ID}}">
+{{range .Data}}<tr data-proposal="{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
 <td><code>{{short .ID}}</code></td>
 <td><span class="state {{stateClass .Status}}">{{.Status}}</span></td>
 <td><span class="chip">{{.Kind}}</span></td>

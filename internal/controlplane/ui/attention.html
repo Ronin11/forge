@@ -1,17 +1,19 @@
 {{template "head" .}}<h1>Human queue</h1>
 {{if and (not .Data.Questions) (not .Data.Proposals)}}<p class="empty">Nothing is waiting on you.</p>{{end}}
+{{if or .Data.Questions .Data.Proposals}}{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter — text, type:question, kind:prompt, routine:name" "Keys" "type,kind,routine,target"}}{{end}}
 {{range .Data.Questions}}
-<div class="card question" data-question="{{.Question.ID}}">
+<div class="card question" data-question="{{.Question.ID}}" data-sf-item data-f-type="question" data-f-routine="{{.Work.RoutineName}}">
 <b>Question</b> from <a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> ({{.Work.RoutineName}}@{{.Work.Generation}}) · asked {{ago .Question.AskedAt}}
 <p>{{.Question.Text}}</p>
 {{if .Question.Options}}<p class="meta">options: {{join .Question.Options ", "}}</p>{{end}}
+{{if .Actions}}<p>{{range .Actions}}{{if .URL}}<a href="{{.URL}}">{{.Label}} →</a>{{else}}<button data-action-post="{{.Post}}">{{.Label}}</button>{{end}} {{end}}</p>{{end}}
 <form data-answer-form="{{.Question.ID}}"><input type="text" name="answer" placeholder="your answer" size="60" required> <button type="submit">Answer &amp; resume</button></form>
 <p class="meta">or: <code>forge task answer {{short .Work.ID}} "…"</code></p>
 </div>
 {{end}}
 {{range .Data.Proposals}}
-<div class="card proposal" data-proposal="{{.ID}}">
-<b>Proposal</b> <span class="chip">{{.Kind}}</span> {{.Target}} · proposed {{ago .CreatedAt}} · source {{.Source}}
+<div class="card proposal" data-proposal="{{.ID}}" data-sf-item data-f-type="proposal" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}">
+<b>Proposal</b> <span class="chip">{{.Kind}}</span> {{if .OpenURL}}<a href="{{.OpenURL}}">{{.Target}}</a>{{else}}{{.Target}}{{end}} · proposed {{ago .CreatedAt}} · source {{.Source}}
 <p>{{.Rationale}}</p>
 <p class="meta">verification plan: {{.VerificationPlan}}</p>
 <p><button data-proposal-approve="{{.ID}}">Approve</button> <button data-proposal-reject="{{.ID}}">Reject</button></p>

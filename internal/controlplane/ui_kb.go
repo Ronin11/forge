@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,22 +18,58 @@ import (
 	"forge/internal/store"
 )
 
+// parseKbQuery splits a search-bar query into free text and the qualifiers the
+// Knowledge page understands (tag:, type:), matching the client-side DSL: the
+// last tag:/type: wins, quotes around a value are shed, everything else is the
+// full-text query.
+func parseKbQuery(q string) (text, tag, typ string) {
+	var rest []string
+	for _, tok := range strings.Fields(q) {
+		key, val, ok := strings.Cut(tok, ":")
+		if ok {
+			val = strings.Trim(val, `"`)
+		}
+		switch {
+		case ok && strings.EqualFold(key, "tag"):
+			tag = val
+		case ok && strings.EqualFold(key, "type"):
+			typ = val
+		default:
+			rest = append(rest, tok)
+		}
+	}
+	return strings.Join(rest, " "), tag, typ
+}
+
 // kb is GET /kb: the Knowledge page — every note, or a full-text search when
-// ?q= is given, with the tag filter ?tag=.
+// ?q= is given. The query may carry tag:/type: qualifiers (the search-bar DSL);
+// the tag rail's ?tag= keeps working and a qualifier in q wins over it.
 func (u *UI) kb(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	text, qtag, qtype := parseKbQuery(query)
+	if qtag != "" {
+		tag = qtag
+	}
 	var notes []store.KbNote
 	var err error
-	if query != "" {
-		notes, err = u.store.SearchKb(ctx, query, 100)
+	if text != "" {
+		notes, err = u.store.SearchKb(ctx, text, 100)
 	} else {
 		notes, err = u.store.ListKbNotes(ctx, tag)
 	}
 	if err != nil {
 		u.fail(w, r, err)
 		return
+	}
+	// Qualifier filters the list form could not express: tag on a full-text
+	// result, and type always.
+	if tag != "" && text != "" {
+		notes = filterNotes(notes, func(n store.KbNote) bool { return slices.Contains(n.Tags, tag) })
+	}
+	if qtype != "" {
+		notes = filterNotes(notes, func(n store.KbNote) bool { return strings.HasPrefix(n.Type, qtype) })
 	}
 	// The tag rail: every tag in use, with counts, for one-click filtering.
 	all, err := u.store.ListKbNotes(ctx, "")
@@ -60,9 +97,42 @@ func (u *UI) kb(w http.ResponseWriter, r *http.Request) {
 		}
 		return tags[i].Tag < tags[j].Tag
 	})
+	// Suggestion values for the search bar: every tag and every note type.
+	tagNames := make([]string, len(tags))
+	for i, t := range tags {
+		tagNames[i] = t.Tag
+	}
+	types := map[string]bool{}
+	for _, n := range all {
+		if n.Type != "" {
+			types[n.Type] = true
+		}
+	}
+	typeNames := make([]string, 0, len(types))
+	for t := range types {
+		typeNames = append(typeNames, t)
+	}
+	sort.Strings(typeNames)
+	// An active ?tag= filter with no typed query shows up in the bar as its DSL
+	// form, so submitting keeps it.
+	if query == "" && tag != "" {
+		query = "tag:" + tag
+	}
 	u.render(w, r, "kb.html", "Knowledge", map[string]any{
 		"Notes": notes, "Query": query, "Tag": tag, "Tags": tags, "Total": len(all),
+		"TagValues": strings.Join(tagNames, " "), "TypeValues": strings.Join(typeNames, " "),
 	})
+}
+
+// filterNotes keeps the notes for which keep is true.
+func filterNotes(notes []store.KbNote, keep func(store.KbNote) bool) []store.KbNote {
+	out := notes[:0]
+	for _, n := range notes {
+		if keep(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // kbNoteView is one note rendered for reading.

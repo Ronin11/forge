@@ -1,1 +1,3 @@
-{{template "head" .}}<h1>Tasks</h1>{{template "taskTable" .Data}}{{template "foot" .}}
+{{template "head" .}}<h1>Tasks</h1>
+{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter tasks — text, repo:name, state:failed, -state:succeeded" "Keys" "repo,state,routine,class"}}
+{{template "taskTable" .Data}}{{template "foot" .}}

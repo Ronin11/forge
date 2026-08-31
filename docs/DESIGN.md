@@ -300,12 +300,35 @@ routine > repository `forge.toml [defaults]` > project. Whatever `MODES.md` call
 created_at, source)` keeps every generation so A/B comparisons (§12) and "what ran"
 questions have an exact answer. `source` is `edit` or `proposal:<id>`.
 
+### Workflow
+
+Routines strung together. `workflows(id, name UNIQUE, steps JSON, schedule,
+schedule_enabled, generation, next_due_at, archived_at)` with the same
+generation/409, archive, and snapshot (`workflow_generations`) machinery as
+routines. `steps` is an ordered list of `{name, routine, after: [{step, on,
+stack_on}]}`; `after` may only reference an *earlier* step (a DAG by
+construction), a step without `after` follows the previous one (a plain list is
+a chain; `after = []` makes an independent root), and steps reference routines
+by name — latest generation at instantiation time, the Work snapshot being the
+audit trail.
+
+A workflow is definition-layer only: `POST /api/v1/workflows/{name}/run`
+instantiates one Work per step in one transaction, with `after` becoming
+ordinary `work_dependencies` edges (§10.3) and each Work stamped with
+`workflow_run_id`/`workflow_name`/`workflow_step`. From there the queue,
+dependency, failure (`dependency_failed` → attention), and stacking machinery
+apply unchanged. A run has no state row — `GET .../runs` groups Works by run id
+and derives an aggregate. Data passing between steps beyond `stack_on` branches
+is deliberately out of scope.
+
 ### Work
 
 `work(id, routine_id NULL-able, routine_name, generation, title, trigger, snapshot
 JSON, priority, budget_class, autonomy, integrate, paths JSON, deps JSON, tier,
-models JSON, plan_batch_id, prompt_hash, scheduled_for, submitted_by, external_refs
-JSON, created_at, finished_at)`. `integrate`/`paths`/`deps`/`tier`/`models` are
+models JSON, plan_batch_id, workflow_run_id, workflow_name, workflow_step,
+prompt_hash, scheduled_for, submitted_by, external_refs
+JSON, created_at, finished_at)`. The three `workflow_*` columns stamp Works a
+workflow run instantiated (NULL otherwise). `integrate`/`paths`/`deps`/`tier`/`models` are
 frozen from the routine (or `task add --integrate/--paths/…`; ad-hoc default
 `integrate = false`) so `model.IsTerminal(state, work.integrate)` has a stable
 input; `plan_batch_id` comes from `plan` mode (§20); `prompt_hash` is what intake
