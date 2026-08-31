@@ -103,6 +103,7 @@ build-plugins:
     cd plugins/status-file && go build -o forge-status-file .
     cd plugins/notify && go build -o forge-notify .
     cd plugins/github-issues && go build -o forge-github-issues .
+    cd plugins/signal && go build -o forge-signal .
 
 # M12: golden eval cases through the fake executor (offline, no budget).
 eval-check: build

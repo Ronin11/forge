@@ -1,0 +1,11 @@
+[signal]
+account      = "+15551234567"
+recipient    = "+15559876543"
+default_repo = "equitizr"
+# signal_cli  = "signal-cli"
+# poll_seconds = 10
+# questions = true
+# failures = true
+# proposals = true
+# throttling = true
+# intake = true

@@ -1,0 +1,8 @@
+name = "signal"
+version = "0.1.0"
+description = "Bidirectional Signal bridge: sends notifications for new questions, target failures, and proposals, and turns your Signal messages into tasks (bare text) and question answers (/answer). Requires signal-cli with a registered/linked account set up out-of-band."
+build = ["go", "build", "-o", "forge-signal", "."]
+command = ["./forge-signal"]
+capabilities = ["events", "intake"]
+scopes = ["events:read", "work:read", "work:write"]
+restart = "always"
