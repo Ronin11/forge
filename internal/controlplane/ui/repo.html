@@ -1,0 +1,36 @@
+{{template "head" .}}
+{{$r := .Data.Repository}}
+<h1>{{$r.Name}} <span class="state {{stateClass .Data.State}}">{{.Data.State}}</span></h1>
+<p class="meta">project <b>{{$r.Project}}</b> · base {{if $r.BaseBranch}}{{$r.BaseBranch}}{{else}}default{{end}} · worker {{if $r.WorkerID}}{{short $r.WorkerID}}{{else}}none{{end}} · last seen {{ago $r.LastSeenAt}}</p>
+
+<div class="repo-controls">
+{{if .Data.Paused}}<button class="btn" data-repo-resume="{{$r.Name}}">Resume</button>{{else}}<button class="btn" data-repo-pause="{{$r.Name}}">Pause</button>{{end}}
+<button class="btn danger" data-repo-cancel="{{$r.Name}}">Cancel running</button>
+{{if $r.AppURL}}<a class="btn" href="{{$r.AppURL}}" target="_blank" rel="noopener">Open app ↗</a>{{end}}
+</div>
+<p id="repo-error" class="repo-error" hidden></p>
+
+<section class="cards">
+<div class="card"><h2>Location</h2>
+<dl class="kv">
+<dt>Path</dt><dd><code>{{$r.Path}}</code></dd>
+<dt>Origin</dt><dd>{{with originURL $r.OriginIdentity}}<a href="{{.}}" target="_blank" rel="noopener">{{$r.OriginIdentity}} ↗</a>{{else}}{{$r.OriginIdentity}}{{end}}</dd>
+<dt>App</dt><dd>
+<form class="repo-appurl" data-repo-app-url="{{$r.Name}}">
+<input type="url" name="url" value="{{$r.AppURL}}" placeholder="https://localhost:3000">
+<button class="btn" type="submit">Save</button>
+</form>
+</dd>
+</dl>
+</div>
+<div class="card"><h2>Checks</h2>
+{{if .Data.Checks}}<p>{{range .Data.Checks}}<span class="chip">{{.}}</span> {{end}}</p>{{else}}<p class="empty">No checks declared — add a <code>[checks]</code> table to forge.toml.</p>{{end}}
+</div>
+<div class="card"><h2>Retained worktrees <small>{{.Data.RetainedCount}}</small></h2>
+{{if .Data.Retained}}<ul class="attention">{{range .Data.Retained}}<li>{{.Reason}} <small>{{short .AttemptID}}</small> — <code>{{.CleanupCommand}}</code></li>{{end}}</ul>{{else}}<p class="empty">None kept on disk.</p>{{end}}
+</div>
+</section>
+
+<h2>Running</h2>{{if .Data.Running}}{{template "taskTable" .Data.Running}}{{else}}<p class="empty">Nothing running.</p>{{end}}
+<h2>Recent tasks</h2>{{if .Data.Recent}}{{template "taskTable" .Data.Recent}}{{else}}<p class="empty">No tasks yet — <code>forge task add "…" --repo {{$r.Name}}</code></p>{{end}}
+{{template "foot" .}}

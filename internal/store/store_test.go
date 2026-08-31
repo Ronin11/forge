@@ -63,7 +63,7 @@ func TestOpenMigratesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	var applied int
-	if err := again.queryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 1 {
+	if err := again.queryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 2 {
 		t.Errorf("applied migrations = %d, %v", applied, err)
 	}
 	if err := again.Close(); err != nil {

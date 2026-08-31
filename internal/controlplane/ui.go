@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -77,8 +78,19 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return fmt.Sprintf("$%.4f", *p)
 		},
 		"stateClass": func(s any) string { return "state-" + strings.ReplaceAll(fmt.Sprint(s), "_", "-") },
-		"mulf":       func(a, b float64) float64 { return a * b },
-		"dereff":     func(p *float64) float64 { return *p },
+		// originURL turns a github.com/…-style origin identity into a browsable
+		// https link; other forms (ssh remotes, bare paths) yield "" so the
+		// template shows the identity as plain text.
+		"originURL": func(origin string) string {
+			for _, host := range []string{"github.com/", "gitlab.com/", "bitbucket.org/"} {
+				if strings.HasPrefix(origin, host) {
+					return "https://" + origin
+				}
+			}
+			return ""
+		},
+		"mulf":   func(a, b float64) float64 { return a * b },
+		"dereff": func(p *float64) float64 { return *p },
 		"dur64": func(us int64) string {
 			if us == 0 {
 				return "-"
@@ -114,6 +126,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /system", u.system)
+	u.mux.HandleFunc("GET /repos/{name}", u.repo)
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
 	u.mux.HandleFunc("GET /proposals", u.proposals)
@@ -232,7 +245,60 @@ func (u *UI) dashboard(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions, "Proposals": proposals, "Runners": runners, "QueueDepth": pending})
+	repos, err := u.repoChips(ctx)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "dashboard.html", "Dashboard", map[string]any{"Recent": rows, "Running": running, "Attention": attention, "Workers": workers, "Questions": questions, "Proposals": proposals, "Runners": runners, "QueueDepth": pending, "Repositories": repos})
+}
+
+// repoChip is one launcher entry on the dashboard's repositories strip: the
+// name, its state, and where the chip links (the running app when set and the
+// repository is running, else its detail page).
+type repoChip struct {
+	Name   string
+	State  string
+	AppURL string
+	Href   string
+}
+
+func (u *UI) repoChips(ctx context.Context) ([]repoChip, error) {
+	repos, err := u.store.Repositories(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states, err := repositoryStates(ctx, u.store, u.clock())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]repoChip, 0, len(repos))
+	for _, r := range repos {
+		st := states[r.Name]
+		href := "/repos/" + r.Name
+		if st == "running" && r.AppURL != "" {
+			href = r.AppURL
+		}
+		out = append(out, repoChip{Name: r.Name, State: st, AppURL: r.AppURL, Href: href})
+	}
+	return out, nil
+}
+
+// repo is a repository's main page: state, controls (pause/resume, cancel
+// running, set app url), the local path and origin, declared checks, running and
+// recent tasks, and the retained-worktree cleanup hint.
+func (u *UI) repo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	detail, err := buildRepoDetail(r.Context(), u.store, u.clock(), name)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "repo.html", "Repository "+name, detail)
 }
 
 func (u *UI) tasks(w http.ResponseWriter, r *http.Request) {
@@ -336,7 +402,12 @@ func (u *UI) system(w http.ResponseWriter, r *http.Request) {
 		h := health[p.Name]
 		rows = append(rows, uiPlugin{Plugin: p, Running: h.Running, PID: h.PID, Restarts: h.Restarts, LastExit: h.LastExit})
 	}
-	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos, "Plugins": rows})
+	states, err := repositoryStates(ctx, u.store, u.clock())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos, "Plugins": rows, "RepoStates": states})
 }
 
 // uiPlugin is one System-page plugin row: the store row plus live health.

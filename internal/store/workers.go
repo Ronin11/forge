@@ -133,7 +133,10 @@ func scanWorkers(iter func(func(*sql.Rows) error) error, now time.Time) ([]Worke
 	return out, nil
 }
 
-// Repository is a registered checkout as the daemon knows it.
+// Repository is a registered checkout as the daemon knows it. Paused and AppURL
+// are the operator controls of the repository page: Paused stops the scheduler
+// from admitting the repository's targets, AppURL points at the repository's
+// running app. Both are preserved across a worker's re-registration.
 type Repository struct {
 	Name           string    `json:"name"`
 	Project        string    `json:"project"`
@@ -143,9 +146,11 @@ type Repository struct {
 	WorkerID       string    `json:"worker_id,omitempty"`
 	ForgeToml      string    `json:"forge_toml,omitempty"`
 	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
+	Paused         bool      `json:"paused"`
+	AppURL         string    `json:"app_url,omitempty"`
 }
 
-const repositoryColumns = `r.name, p.name, r.path, r.origin_identity, r.base_branch, r.worker_id, r.forge_toml, r.last_seen_at`
+const repositoryColumns = `r.name, p.name, r.path, r.origin_identity, r.base_branch, r.worker_id, r.forge_toml, r.last_seen_at, r.paused, r.app_url`
 
 // Repositories lists registered repositories by name.
 func (s *Store) Repositories(ctx context.Context) ([]Repository, error) {
@@ -157,15 +162,30 @@ func (tx *Tx) Repositories(ctx context.Context) ([]Repository, error) {
 	return scanRepositories(each(tx.Query(ctx, `SELECT `+repositoryColumns+` FROM repositories r JOIN projects p ON p.id = r.project_id ORDER BY r.name`)))
 }
 
+// Repository reads one registered repository by name; ErrNotFound for an
+// unknown one. The repository detail page and the operator writes use it.
+func (s *Store) Repository(ctx context.Context, name string) (*Repository, error) {
+	repos, err := scanRepositories(each(s.query(ctx, `SELECT `+repositoryColumns+` FROM repositories r JOIN projects p ON p.id = r.project_id WHERE r.name = ?`, name)))
+	if err != nil {
+		return nil, err
+	}
+	if len(repos) == 0 {
+		return nil, fmt.Errorf("repository %s: %w", name, ErrNotFound)
+	}
+	return &repos[0], nil
+}
+
 func scanRepositories(iter func(func(*sql.Rows) error) error) ([]Repository, error) {
 	var out []Repository
 	err := iter(func(rows *sql.Rows) error {
 		var r Repository
-		var base, worker, toml, seen sql.NullString
-		if err := rows.Scan(&r.Name, &r.Project, &r.Path, &r.OriginIdentity, &base, &worker, &toml, &seen); err != nil {
+		var base, worker, toml, seen, appURL sql.NullString
+		var paused int
+		if err := rows.Scan(&r.Name, &r.Project, &r.Path, &r.OriginIdentity, &base, &worker, &toml, &seen, &paused, &appURL); err != nil {
 			return fmt.Errorf("scan repository: %w", err)
 		}
-		r.BaseBranch, r.WorkerID, r.ForgeToml = base.String, worker.String, toml.String
+		r.BaseBranch, r.WorkerID, r.ForgeToml, r.AppURL = base.String, worker.String, toml.String, appURL.String
+		r.Paused = paused != 0
 		var err error
 		if r.LastSeenAt, err = parseTime(seen); err != nil {
 			return err
@@ -177,6 +197,48 @@ func scanRepositories(iter func(func(*sql.Rows) error) error) ([]Repository, err
 		return nil, fmt.Errorf("read repositories: %w", err)
 	}
 	return out, nil
+}
+
+// SetRepositoryPaused flips a repository's pause flag and journals the change;
+// ErrNotFound for an unknown repository. A paused repository's targets are not
+// admitted by the scheduler (the running work is left alone, like a budget
+// stop). The flag is a repository control, so the change is journaled under the
+// daemon entity, keyed by the repository name.
+func (tx *Tx) SetRepositoryPaused(ctx context.Context, name string, paused bool) error {
+	res, err := tx.Exec(ctx, `UPDATE repositories SET paused = ?, updated_at = ? WHERE name = ?`, boolInt(paused), formatTime(tx.now), name)
+	if err != nil {
+		return fmt.Errorf("set repository %s paused: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set repository %s paused: %w", name, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("repository %s: %w", name, ErrNotFound)
+	}
+	kind := "repository.resumed"
+	if paused {
+		kind = "repository.paused"
+	}
+	return tx.Journal(ctx, kind, EntityDaemon, name, map[string]any{"paused": paused})
+}
+
+// SetRepositoryAppURL records (or clears, with "") the repository's running-app
+// URL and journals it; ErrNotFound for an unknown repository. The caller has
+// already validated the value is empty or an http(s) URL.
+func (tx *Tx) SetRepositoryAppURL(ctx context.Context, name, url string) error {
+	res, err := tx.Exec(ctx, `UPDATE repositories SET app_url = ?, updated_at = ? WHERE name = ?`, url, formatTime(tx.now), name)
+	if err != nil {
+		return fmt.Errorf("set repository %s app_url: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set repository %s app_url: %w", name, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("repository %s: %w", name, ErrNotFound)
+	}
+	return tx.Journal(ctx, "repository.app_url_set", EntityDaemon, name, map[string]any{"app_url": url})
 }
 
 // Project is a grouping of repositories with defaults.

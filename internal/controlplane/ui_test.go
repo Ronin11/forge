@@ -71,6 +71,8 @@ func TestUIPagesRender(t *testing.T) {
 		"/tasks/" + work.ID:     {"inventory@1", "claimed", "fetch", "1ms"},
 		"/routines":             {"inventory", "list files"},
 		"/system":               {"laptop", "github.com/x/equitizr", "sandbox=ready"},
+		"/repos/equitizr":       {"equitizr", "Location", "Pause", "Checks"},
+		"/repos/does-not-exist": {"not found"},
 		"/static/style.css":     {"nav.top"},
 		"/static/app.js":        {"data-timeline"},
 		"/tasks/does-not-exist": {"not found"},

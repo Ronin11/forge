@@ -18,6 +18,9 @@ tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08
 .state-running,.state-claimed,.state-preparing,.state-verifying,.state-merging{color:var(--run);border-color:var(--run)}
 .state-waiting-human,.state-proposed{color:var(--wait);border-color:var(--wait)}
 .state-approved{color:var(--run);border-color:var(--run)}
+.state-paused{color:var(--wait);border-color:var(--wait)}
+.state-idle{color:var(--muted);border-color:var(--line)}
+.state-errored{color:var(--bad);border-color:var(--bad)}
 .state-applied{color:var(--ok);border-color:var(--ok)}
 .state-rejected,.state-reverted{color:var(--bad);border-color:var(--bad)}
 .chip{display:inline-block;font-size:.75rem;padding:0 .4rem;border:1px solid var(--line);border-radius:4px;margin:0 .1rem}
@@ -78,6 +81,21 @@ tr[draggable]{background:var(--card)}
 .kb-linkcol h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 .5rem}
 .kb-link{font-size:.85rem;margin:.25rem 0}
 .kb-link .lt{display:inline-block;min-width:5.5rem;color:var(--muted);font-size:.68rem;text-transform:uppercase}
+
+/* Repository controls */
+.btn{display:inline-block;font:inherit;font-size:.8rem;padding:.25rem .7rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
+.btn:hover{border-color:var(--muted)}
+.btn.small{font-size:.72rem;padding:.1rem .45rem}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.repo-controls{display:flex;gap:.5rem;align-items:center;margin:.4rem 0 .6rem;flex-wrap:wrap}
+.repo-error{color:var(--bad);margin:.2rem 0}
+.repo-appurl{display:flex;gap:.4rem;align-items:center}
+.repo-appurl input{flex:1;min-width:12rem;padding:.25rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);font:inherit}
+.repos-strip{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 1rem;align-items:center}
+.repo-launch{display:inline-flex;align-items:center;gap:.15rem}
+.repo-chip{display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .5rem;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--fg);text-decoration:none;font-size:.8rem}
+.repo-chip:hover{border-color:var(--muted)}
+.repo-app{color:var(--run);text-decoration:none;font-size:.8rem}
 
 /* Click-to-copy forge commands */
 code.cmd-copy{cursor:pointer;user-select:all;background:rgba(128,128,128,.12);border:1px solid var(--line);border-radius:4px;padding:.05em .4em;transition:background .12s,border-color .12s}

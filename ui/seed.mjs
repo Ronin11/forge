@@ -161,6 +161,10 @@ export async function seed(base, home) {
      '| a | b |', '| - | - |', '| 1 | 2 |', ''].join('\n'));
   await call('POST', '/api/v1/kb/reindex', {}, 200);
 
+  // Repository controls: give the demo repository a running-app URL so its page
+  // and the dashboard strip render an "Open app" link (M12+ repository controls).
+  await call('POST', '/api/v1/repositories/demo/app-url', { url: 'http://127.0.0.1:5173' }, 200);
+
   // Refresh last_seen so the workers card still shows "connected" (90s window)
   // when the browser tests run.
   await worker('POST', '/api/v1/worker/register', registerBody(), 200);
@@ -173,5 +177,6 @@ export async function seed(base, home) {
     queue: { a: qa.work.id, b: qb.work.id, c: qc.work.id },
     proposals: { keep: propKeep.id, decide: propDecide.id },
     kb: { id: 'ui-test-brief', title: 'UI Test Brief' },
+    repo: { name: 'demo', app_url: 'http://127.0.0.1:5173' },
   };
 }

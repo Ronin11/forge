@@ -258,6 +258,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/attempts/{id}/events", s.handle(s.getEvents))
 	m.HandleFunc("GET /api/v1/workers", s.handle(s.workers))
 	m.HandleFunc("GET /api/v1/repositories", s.handle(s.repositories))
+	s.repoRoutes(m)
 	m.HandleFunc("GET /api/v1/attention", s.handle(s.attention))
 }
 

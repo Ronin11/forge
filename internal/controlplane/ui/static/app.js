@@ -101,6 +101,48 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
   });
 });
 
+// Repository controls: pause/resume, cancel-running, and the app-url form POST
+// to the API and reload — the same pattern as the proposal decision buttons.
+(function () {
+  function fail(err) {
+    var box = document.getElementById('repo-error');
+    if (box) {
+      box.hidden = false;
+      box.textContent = 'Refused: ' + err.message;
+    } else {
+      window.alert('Refused: ' + err.message);
+    }
+  }
+  function post(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    }).then(function (resp) {
+      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+      window.location.reload();
+    }).catch(fail);
+  }
+  function bind(attr, action) {
+    document.querySelectorAll('[' + attr + ']').forEach(function (btn) {
+      var name = btn.getAttribute(attr);
+      btn.addEventListener('click', function () {
+        post('/api/v1/repositories/' + encodeURIComponent(name) + '/' + action);
+      });
+    });
+  }
+  bind('data-repo-pause', 'pause');
+  bind('data-repo-resume', 'resume');
+  bind('data-repo-cancel', 'cancel-running');
+  document.querySelectorAll('[data-repo-app-url]').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var url = form.querySelector('[name=url]').value;
+      post('/api/v1/repositories/' + encodeURIComponent(form.dataset.repoAppUrl) + '/app-url', { url: url });
+    });
+  });
+})();
+
 // Dashboard usage gauges: one per window, target line, filled from the API so
 // the page and `forge usage` can never disagree.
 (function () {

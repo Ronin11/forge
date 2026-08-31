@@ -865,14 +865,20 @@ func (s *Server) workers(r *http.Request) (int, any, error) {
 }
 
 func (s *Server) repositories(r *http.Request) (int, any, error) {
-	repos, err := s.store.Repositories(r.Context())
+	ctx := r.Context()
+	repos, err := s.store.Repositories(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
-	if repos == nil {
-		repos = []store.Repository{}
+	states, err := repositoryStates(ctx, s.store, s.now())
+	if err != nil {
+		return 0, nil, err
 	}
-	return http.StatusOK, repos, nil
+	out := make([]repoSummary, 0, len(repos))
+	for _, repo := range repos {
+		out = append(out, repoSummary{Repository: repo, State: states[repo.Name]})
+	}
+	return http.StatusOK, out, nil
 }
 
 // attention is GET /api/v1/attention: what needs a human — open questions and

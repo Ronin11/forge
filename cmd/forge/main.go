@@ -67,6 +67,7 @@ func commands() map[string]command {
 		"daemon":      {summary: "start|stop|restart|status|logs|log-level", run: runDaemon},
 		"worker":      {summary: "start the worker process", run: runWorker},
 		"task":        {summary: "add|list|show|cancel|answer tasks", run: runTask},
+		"repo":        {summary: "list|show|pause|resume|cancel|set-app-url repositories", run: runRepo},
 		"routine":     {summary: "add|list|show|edit|run|enable|disable routines", run: runRoutine},
 		"queue":       {summary: "show the priority queue", run: runQueue},
 		"cleanup":     {summary: "preview or remove a retained worktree", run: runCleanup},
