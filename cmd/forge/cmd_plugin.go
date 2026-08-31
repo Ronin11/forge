@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -148,8 +149,25 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 		}
 		return 0
 	}
+	kind := "first_party"
 	src, err := findRepoPluginDir(name)
 	if err != nil {
+		// Third-party: the directory already sits under <home>/plugins —
+		// register it in place, no copy (M7 smoke 4).
+		local := filepath.Join(c.forgeHome, "plugins", name)
+		if _, serr := os.Stat(filepath.Join(local, "plugin.toml")); serr == nil {
+			m, lerr := plugin.Load(local)
+			if lerr != nil {
+				return c.fail("plugin install", lerr)
+			}
+			if len(m.Build) > 0 {
+				fmt.Fprintf(c.stdout, "building %s: %s\n", name, strings.Join(m.Build, " "))
+				if berr := runPluginBuild(ctx, c, local, m.Build); berr != nil {
+					return c.fail("plugin install", berr)
+				}
+			}
+			return finishPluginInstall(ctx, c, log, name, "third_party")
+		}
 		return c.fail("plugin install", err)
 	}
 	dst := filepath.Join(c.forgeHome, "plugins", name)
@@ -180,12 +198,17 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
 		return c.fail("plugin install", fmt.Errorf("copy %s: %w", src, err))
 	}
+	return finishPluginInstall(ctx, c, log, name, kind)
+}
+
+// finishPluginInstall registers the on-disk plugin with the daemon.
+func finishPluginInstall(ctx context.Context, c *cmdContext, log *slog.Logger, name, kind string) int {
 	cl := c.client(log)
 	if err := cl.connect(ctx); err != nil {
 		return c.fail("plugin install", err)
 	}
 	var row pluginRow
-	body := map[string]string{"name": name, "kind": "first_party"}
+	body := map[string]string{"name": name, "kind": kind}
 	if err := cl.do(ctx, http.MethodPost, "/api/v1/plugins/install", body, &row); err != nil {
 		return c.fail("plugin install", err)
 	}

@@ -74,7 +74,8 @@ step4() {
   say "4. third-party echo-tools plugin: enable, run-mode task calls the tool, span exists; remove"
   rm -rf "$HOME/.forge/plugins/echo-tools"
   run cp -r plugins/examples/echo-tools "$HOME/.forge/plugins/echo-tools"
-  run $FORGE plugin enable echo-tools
+  run $FORGE plugin install echo-tools
+  run $FORGE plugin enable echo-tools --yes
   run $FORGE daemon restart   # tools aggregation picks up enabled plugins at start
   sleep 3
   cat > .scratch/m7-echo-routine.toml <<'EOF'
