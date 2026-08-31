@@ -591,8 +591,38 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     var form = dialog.querySelector('form');
     function field(n) { return form.querySelector('[name=' + n + ']'); }
 
+    // Role templates: fill the New-routine form from a built-in starting point.
+    var tplSelect = form.querySelector('[data-routine-template]');
+    var tplRow = form.querySelector('[data-template-row]');
+    var tplDesc = form.querySelector('[data-template-desc]');
+    var templates = [];
+    if (tplSelect) {
+      fetchJSON('/api/v1/routine-templates').then(function (list) {
+        templates = list || [];
+        templates.forEach(function (t) {
+          var o = document.createElement('option');
+          o.value = t.key; o.textContent = t.role;
+          tplSelect.appendChild(o);
+        });
+      }).catch(function () {});
+      tplSelect.addEventListener('change', function () {
+        var t = templates.filter(function (x) { return x.key === tplSelect.value; })[0];
+        tplDesc.textContent = t ? t.description : '';
+        if (!t) return;
+        if (!field('name').value) field('name').value = t.key;
+        field('mode').value = t.mode;
+        field('model').value = t.model;
+        field('budget_class').value = t.budget_class;
+        field('prompt').value = t.prompt;
+        field('integrate').checked = !!t.integrate;
+      });
+    }
+
     function open(current) {
       form.reset();
+      if (tplRow) tplRow.hidden = !!current;
+      if (tplSelect) tplSelect.value = '';
+      if (tplDesc) tplDesc.textContent = '';
       openEditor(dialog, {
         title: current ? 'Edit routine ' + current.name : 'New routine',
         base: '/api/v1/routines',

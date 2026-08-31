@@ -678,6 +678,22 @@ test.describe('icons', () => {
   });
 });
 
+test.describe('routine templates', () => {
+  test('a role template fills the New-routine form', async ({ page }) => {
+    seed();
+    await page.goto('/routines');
+    await page.locator('[data-routine-new]').click();
+    const dialog = page.locator('[data-routine-dialog]');
+    await expect(dialog.locator('[data-routine-template]')).toBeVisible();
+    // Pick the Programmer template; the form fills from it.
+    await dialog.locator('[data-routine-template]').selectOption('programmer');
+    await expect(dialog.locator('[name=mode]')).toHaveValue('implement');
+    await expect(dialog.locator('[name=model]')).toHaveValue('sonnet');
+    await expect(dialog.locator('[name=prompt]')).toHaveValue(/careful programmer/);
+    await expect(dialog.locator('[name=integrate]')).toBeChecked();
+  });
+});
+
 test.describe('responsive', () => {
   const sizes = [
     { name: 'phone', w: 390, h: 844 },

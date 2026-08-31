@@ -308,6 +308,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
+	m.HandleFunc("GET /api/v1/routine-templates", s.handle(s.listRoutineTemplates))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))
 	m.HandleFunc("GET /api/v1/routines/{name}", s.handle(s.getRoutine))
 	m.HandleFunc("PUT /api/v1/routines/{name}", s.handle(s.updateRoutine))
