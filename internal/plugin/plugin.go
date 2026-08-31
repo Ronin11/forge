@@ -143,6 +143,19 @@ func Load(dir string) (*Manifest, error) {
 	return &m, nil
 }
 
+// LoadFromRoots loads the named plugin from the first root that holds it,
+// searching in Discover's order so the same earlier-root-wins rule decides
+// which copy a caller resolving one plugin by name gets.
+func LoadFromRoots(roots []string, name string) (*Manifest, error) {
+	for _, root := range roots {
+		dir := filepath.Join(root, name)
+		if _, err := os.Stat(filepath.Join(dir, "plugin.toml")); err == nil {
+			return Load(dir)
+		}
+	}
+	return nil, fmt.Errorf("plugin %s: no plugin.toml under any discovery root", name)
+}
+
 // Discover loads every valid manifest under the given roots (first-party
 // repo plugins, then <home>/plugins), sorted by name; an invalid manifest is
 // reported through onErr and skipped, never fatal.
