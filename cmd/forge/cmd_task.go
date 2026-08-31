@@ -92,8 +92,29 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	}
 	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title}
 	var out taskView
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/tasks", body, &out); err != nil {
-		return c.fail("task add", err)
+	// On a fresh home the daemon was auto-started moments ago and the worker
+	// registers repositories a beat later; "task add on a freshly initialised
+	// machine must work with no other setup" (DESIGN §1), so an unregistered
+	// repository is retried briefly instead of failed (M6 smoke 7).
+	deadline := time.Now().Add(20 * time.Second)
+	waited := false
+	for {
+		err := cl.do(ctx, http.MethodPost, "/api/v1/tasks", body, &out)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "is not registered") || time.Now().After(deadline) {
+			return c.fail("task add", err)
+		}
+		if !waited {
+			fmt.Fprintln(c.stderr, "waiting for the worker to register repositories…")
+			waited = true
+		}
+		select {
+		case <-ctx.Done():
+			return c.fail("task add", ctx.Err())
+		case <-time.After(time.Second):
+		}
 	}
 	if *asJSON {
 		c.printJSON(out)
