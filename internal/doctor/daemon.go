@@ -138,6 +138,16 @@ func capabilityChecks(w store.Worker) []Check {
 				c.Hint = "forge init --with-browser installs Playwright under <home>/deps"
 			}
 			out = append(out, c)
+		case name == "sandbox":
+			// require_sandbox routines (default true) are not routed to a
+			// sandbox:missing worker, so a missing sandbox is a failure, not
+			// a nice-to-have (M8 smoke 6).
+			c := Check{Name: w.Name + ".sandbox", Status: StatusOK, Detail: value}
+			if value != "ready" {
+				c.Status = StatusFail
+				c.Hint = "install bubblewrap (bwrap) on the worker's PATH"
+			}
+			out = append(out, c)
 		}
 	}
 	return out

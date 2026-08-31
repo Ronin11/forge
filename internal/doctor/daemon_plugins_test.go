@@ -44,3 +44,25 @@ func TestPluginChecks(t *testing.T) {
 		t.Errorf("plugin.down hint = %q, want the logs command", down.Hint)
 	}
 }
+
+// A sandbox:missing worker is a doctor failure: require_sandbox routines
+// (default true) cannot route to it (M8 smoke 6).
+func TestCapabilitySandbox(t *testing.T) {
+	w := store.Worker{Name: "local", Capabilities: map[string]string{"sandbox": "missing"}}
+	var found *Check
+	for _, c := range capabilityChecks(w) {
+		if c.Name == "local.sandbox" {
+			cc := c
+			found = &cc
+		}
+	}
+	if found == nil || found.Status != StatusFail || found.Hint == "" {
+		t.Fatalf("sandbox check = %+v", found)
+	}
+	w.Capabilities["sandbox"] = "ready"
+	for _, c := range capabilityChecks(w) {
+		if c.Name == "local.sandbox" && c.Status != StatusOK {
+			t.Errorf("ready sandbox = %+v", c)
+		}
+	}
+}
