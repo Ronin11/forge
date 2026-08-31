@@ -20,6 +20,7 @@ const EMPTY_CHECKS = [
   { path: '/routines', wants: ['No routines'] },
   { path: '/stats', wants: ['No finished attempts in this window.'] },
   { path: '/system', wants: ['No repositories advertised'] },
+  { path: '/kb', wants: ['No notes yet'] },
 ];
 
 async function waitForHealthz(timeoutMs) {

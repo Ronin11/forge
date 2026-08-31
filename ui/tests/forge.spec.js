@@ -242,3 +242,33 @@ test.describe('proposals', () => {
     await expect(card).toContainText('forge proposal approve');
   });
 });
+
+test.describe('knowledge base', () => {
+  test('lists a seeded note, filters by tag, and renders its markdown', async ({ page }) => {
+    const s = seed();
+    await page.goto('/kb');
+    await expect(page.locator('h1')).toContainText('Knowledge');
+
+    // The seeded note is listed with its tag chips.
+    const row = page.locator('tr', { hasText: s.kb.title });
+    await expect(row).toBeVisible();
+    await expect(row.locator('.chip', { hasText: 'ui-test' })).toBeVisible();
+
+    // The tag rail filters to it.
+    await page.click('.kb-tags a.chip:has-text("brief")');
+    await expect(page).toHaveURL(/tag=brief/);
+    await expect(page.locator('tr', { hasText: s.kb.title })).toBeVisible();
+
+    // Open the note; goldmark rendered real structure, not escaped text.
+    await page.click(`a[href="/kb/${s.kb.id}"]`);
+    await expect(page).toHaveURL(new RegExp(`/kb/${s.kb.id}$`));
+    const body = page.locator('.kb-body');
+    await expect(body.locator('h2', { hasText: 'Overview' })).toBeVisible();
+    await expect(body.locator('ul li').first()).toContainText('first item');
+    await expect(body.locator('ul li code').first()).toHaveText('inline code');
+    await expect(body.locator('strong', { hasText: 'seeded' })).toBeVisible();
+    await expect(body.locator('table td', { hasText: '1' })).toBeVisible();
+    // The [[wiki link]] became an internal /kb link.
+    await expect(body.locator(`a[href="/kb/${s.kb.id}"]`)).toBeVisible();
+  });
+});

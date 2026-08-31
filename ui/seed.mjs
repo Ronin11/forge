@@ -4,7 +4,7 @@
 // complete — to leave tasks in rich states. No worker process and no executor run;
 // the daemon's own spawned worker advertises no repositories, so it can never claim
 // these tasks (scheduler.Pick skips repositories another worker advertises).
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 
 export const WORKER_ID = '0123456789abcdef0123456789abcdef';
@@ -149,6 +149,18 @@ export async function seed(base, home) {
     verification_plan: 'The note exists and links the problem attempts',
   }, 201);
 
+  // Seed one kb note as a file (notes are Markdown on disk) and reindex it, so
+  // the Knowledge page has real content with headings, a list, code, a table,
+  // and a [[wiki link]] to exercise the goldmark renderer.
+  mkdirSync(path.join(home, 'kb'), { recursive: true });
+  writeFileSync(path.join(home, 'kb', 'ui-test-brief.md'),
+    ['---', 'id: ui-test-brief', 'title: "UI Test Brief"', 'type: note',
+     'created: 2026-01-01T00:00:00Z', 'tags: [ui-test, brief]', '---', '',
+     '## Overview', '', 'A **seeded** note linking to [[ui-test-brief]] with:', '',
+     '- first item with `inline code`', '- second item', '', '## Table', '',
+     '| a | b |', '| - | - |', '| 1 | 2 |', ''].join('\n'));
+  await call('POST', '/api/v1/kb/reindex', {}, 200);
+
   // Refresh last_seen so the workers card still shows "connected" (90s window)
   // when the browser tests run.
   await worker('POST', '/api/v1/worker/register', registerBody(), 200);
@@ -160,5 +172,6 @@ export async function seed(base, home) {
     waiting: { work_id: waiting.work.id, attempt_id: claimC.attempt_id, question_id: questionID },
     queue: { a: qa.work.id, b: qb.work.id, c: qc.work.id },
     proposals: { keep: propKeep.id, decide: propDecide.id },
+    kb: { id: 'ui-test-brief', title: 'UI Test Brief' },
   };
 }
