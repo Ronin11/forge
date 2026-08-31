@@ -279,7 +279,7 @@ func Decide(now time.Time, u Usage, class model.BudgetClass, cfg BudgetConfig) (
 			return false, "over_target:" + e.w.Window
 		}
 		hrs := max(e.w.ResetsAt.Sub(now).Hours(), 0)
-		if e.w.Utilization+e.w.Rate1h*hrs > e.target {
+		if cfg.ForecastPacing && e.w.Utilization+e.w.Rate1h*hrs > e.target {
 			return false, "forecast_over_target:" + e.w.Window
 		}
 	}

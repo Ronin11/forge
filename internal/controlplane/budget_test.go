@@ -13,7 +13,10 @@ import (
 	"forge/internal/store"
 )
 
-var budgetCfg = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97}
+var budgetCfg = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: true}
+
+// cfgNoPacing relaxes the forecast rule: current headroom alone gates normal work.
+var cfgNoPacing = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: false}
 
 func bctx() context.Context { return context.Background() }
 
@@ -184,6 +187,9 @@ func TestDecide(t *testing.T) {
 		{"over target backlog", noon, budgetCfg, Usage{FiveHour: dwin(noon, "five_hour", 0.92, 0, 2, 0.5), SevenDay: noSeven}, model.ClassBacklog, false, "over_target:five_hour"},
 		{"forecast over five_hour", noon, budgetCfg, Usage{FiveHour: dwin(noon, "five_hour", 0.5, 0.2, 3, 0.5), SevenDay: noSeven}, model.ClassNormal, false, "forecast_over_target:five_hour"},
 		{"forecast over seven_day", noon, budgetCfg, Usage{FiveHour: clearFive, SevenDay: dwin(noon, "seven_day", 0.5, 0.005, 100, 0.5)}, model.ClassNormal, false, "forecast_over_target:seven_day"},
+		// With forecast pacing off, the same spike admits — only current utilization gates.
+		{"forecast spike admits without pacing", noon, cfgNoPacing, Usage{FiveHour: dwin(noon, "five_hour", 0.5, 0.2, 3, 0.5), SevenDay: noSeven}, model.ClassNormal, true, ""},
+		{"over target still blocks without pacing", noon, cfgNoPacing, Usage{FiveHour: dwin(noon, "five_hour", 0.92, 0, 2, 0.5), SevenDay: noSeven}, model.ClassNormal, false, "over_target:five_hour"},
 		{"quiet hours blocks normal", noon, cfgQuiet, Usage{FiveHour: dwin(noon, "five_hour", 0.75, 0, 1, 0.9), SevenDay: noSeven}, model.ClassNormal, false, "quiet_hours"},
 		{"quiet hours blocks backlog", noon, cfgQuiet, Usage{FiveHour: dwin(noon, "five_hour", 0.75, 0, 1, 0.9), SevenDay: noSeven}, model.ClassBacklog, false, "quiet_hours"},
 		{"quiet hours spares interactive", noon, cfgQuiet, Usage{FiveHour: dwin(noon, "five_hour", 0.75, 0, 1, 0.9), SevenDay: noSeven}, model.ClassInteractive, true, ""},

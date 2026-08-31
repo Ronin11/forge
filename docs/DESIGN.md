@@ -1076,6 +1076,7 @@ seven_day_target    = 0.90
 five_hour_hard_stop = 0.97
 seven_day_hard_stop = 0.97
 daily_usd_cap       = 25.0          # optional; gates all admission (a runner's own cap, §21, gates that runner only)
+forecast_pacing     = true          # default; false = admit on current headroom only, ignore the burn-rate forecast
 [budget.quiet_hours]                # optional, local time
 start = "09:00"
 end = "18:00"
@@ -1093,8 +1094,12 @@ In order, per window (both windows must admit):
    would strand the subject in `verifying`. Rule 1 still applies to it.
 3. Quiet hours: non-interactive classes admit only while `u < target − reserve`
    (`quiet_hours`).
-4. `normal` → admit iff `u < target` and the 1 h-rate forecast at reset ≤ `target`
-   (`forecast_over_target`). When there are no samples yet, admit.
+4. `normal` → admit iff `u < target` and, when `forecast_pacing` is on (the
+   default), the 1 h-rate forecast at reset ≤ `target` (`forecast_over_target`) —
+   the forecast spreads work across the window so a burst does not overshoot by the
+   reset. With `forecast_pacing = false`, only current utilization gates: a transient
+   end-of-session spike no longer blocks new work (worst case a burst overshoots and
+   is cut at the reset, to be restarted). When there are no samples yet, admit.
 5. `backlog` → admit iff `normal` would admit **and** `u < target · f`
    (`ahead_of_burn_down_line`). This is burn-down: early in a window the line is low
    and backlog waits; as the reset nears the line rises to the target and backlog is
