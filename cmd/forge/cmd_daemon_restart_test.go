@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,5 +118,39 @@ func TestDaemonLogsFollow(t *testing.T) {
 	cancel()
 	if code := <-done; code != 0 {
 		t.Errorf("daemon logs -f exit = %d (stderr %q)", code, errOut.String())
+	}
+}
+
+// The lock fd must be CLOEXEC in a running daemon (children never inherit
+// it — M6 smoke 6 wedged auto-start on a worker-inherited lock) and cleared
+// only for the exec.
+func TestSetCloexec(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	get := func() uintptr {
+		flags, _, e := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFD, 0)
+		if e != 0 {
+			t.Fatalf("F_GETFD: %v", e)
+		}
+		return flags
+	}
+	if err := setCloexec(f.Fd(), true); err != nil {
+		t.Fatal(err)
+	}
+	if get()&syscall.FD_CLOEXEC == 0 {
+		t.Error("cloexec not set")
+	}
+	if err := setCloexec(f.Fd(), false); err != nil {
+		t.Fatal(err)
+	}
+	if get()&syscall.FD_CLOEXEC != 0 {
+		t.Error("cloexec not cleared")
 	}
 }

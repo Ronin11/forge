@@ -109,6 +109,8 @@ step8() {
   sleep 3
   run curl -s http://127.0.0.1:7340/api/v1/workers
   run $FORGE doctor
+  run $FORGE daemon stop || true
+  sleep 1
   run $FORGE init --yes --service
   run systemctl --user status forge --no-pager
   run systemctl --user stop forge forge-worker

@@ -139,9 +139,14 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		d.lock = l
 	}
 	defer func() { err = errors.Join(err, d.lock.Release()) }()
-	// Keep the descriptor across exec (drain restart) — clear FD_CLOEXEC.
-	if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, d.lock.File().Fd(), syscall.F_SETFD, 0); e != 0 {
-		return fmt.Errorf("clear cloexec on lock: %v", e)
+	// The lock must NOT leak into children: the worker inherits every
+	// non-CLOEXEC descriptor, and an inherited lock fd keeps the flock held
+	// after a daemon kill -9, wedging auto-start until the worker exits
+	// (found by M6 smoke 6). Set FD_CLOEXEC here — the fd may arrive from
+	// the CLI hand-off or a previous exec without it — and clear it only at
+	// exec time, in execRestart, where surviving the exec is the point.
+	if err := setCloexec(d.lock.File().Fd(), true); err != nil {
+		return fmt.Errorf("set cloexec on lock: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

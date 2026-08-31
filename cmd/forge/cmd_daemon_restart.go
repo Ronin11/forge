@@ -55,10 +55,11 @@ func (d *daemonProcess) listeners(ctx context.Context) (unixL, tcpL net.Listener
 	return unixL, tcpL, nil
 }
 
-// execRestart replaces this process with execPath, inheriting the lock (its
-// FD_CLOEXEC was cleared at startup) and both listener descriptors so no
-// request, connection, or lock is dropped (DESIGN.md §1.4). On success it
-// never returns.
+// execRestart replaces this process with execPath, inheriting the lock and
+// both listener descriptors so no request, connection, or lock is dropped
+// (DESIGN.md §1.4). The lock fd is CLOEXEC for its whole life (children must
+// never inherit it — M6 smoke 6) except here, cleared just before the exec.
+// On success it never returns.
 func (d *daemonProcess) execRestart(execPath string, unixL, tcpL net.Listener) error {
 	ul, ok := unixL.(*net.UnixListener)
 	if !ok {
@@ -76,10 +77,12 @@ func (d *daemonProcess) execRestart(execPath string, unixL, tcpL net.Listener) e
 	if err != nil {
 		return errors.Join(fmt.Errorf("dup tcp listener: %w", err), uf.Close())
 	}
-	// The dups are born close-on-exec; they must survive it.
-	for _, f := range []*os.File{uf, tf} {
-		if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_SETFD, 0); e != 0 {
-			return errors.Join(fmt.Errorf("clear cloexec on fd %d: %v", f.Fd(), e), uf.Close(), tf.Close())
+	// The listener dups are born close-on-exec and the lock is deliberately
+	// kept close-on-exec (children must never inherit it); all three must
+	// survive this one exec.
+	for _, f := range []*os.File{uf, tf, d.lock.File()} {
+		if err := setCloexec(f.Fd(), false); err != nil {
+			return errors.Join(fmt.Errorf("clear cloexec on fd %d: %w", f.Fd(), err), uf.Close(), tf.Close())
 		}
 	}
 	argv, env := restartExecSpec(execPath, d.c.forgeHome, os.Environ(), logging.Environ(d.handler), d.lock.File().Fd(), uf.Fd(), tf.Fd())
@@ -164,4 +167,23 @@ func runDaemonRestart(ctx context.Context, c *cmdContext, args []string) int {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// setCloexec flips FD_CLOEXEC on one descriptor. The lock fd keeps it set for
+// its whole life except across the exec restart; listener dups clear it there
+// too.
+func setCloexec(fd uintptr, on bool) error {
+	flags, _, e := syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_GETFD, 0)
+	if e != 0 {
+		return fmt.Errorf("F_GETFD: %v", e)
+	}
+	if on {
+		flags |= syscall.FD_CLOEXEC
+	} else {
+		flags &^= syscall.FD_CLOEXEC
+	}
+	if _, _, e := syscall.Syscall(syscall.SYS_FCNTL, fd, syscall.F_SETFD, flags); e != 0 {
+		return fmt.Errorf("F_SETFD: %v", e)
+	}
+	return nil
 }
