@@ -158,12 +158,18 @@ func (n *notifier) startCursor(ctx context.Context) int64 {
 			}
 			continue
 		}
-		for _, e := range entries {
-			cursor = e.ID
-		}
-		if len(entries) < 1000 {
+		if len(entries) == 0 {
 			break
 		}
+		last := entries[len(entries)-1].ID
+		if last <= cursor {
+			break // no progress — avoid a loop if the server ever caps oddly
+		}
+		// Page until the journal is exhausted: the endpoint caps the limit
+		// (below the 1000 asked), so "fewer than asked" does NOT mean the end
+		// — that mistake stopped at the cap and replayed everything after it
+		// as stale notifications on start/restart.
+		cursor = last
 	}
 	n.log.Info("journal cursor at tail", "cursor", cursor)
 	return cursor

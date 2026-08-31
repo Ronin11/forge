@@ -252,15 +252,18 @@ func (p *plugin) startCursor(ctx context.Context) int64 {
 			}
 			continue
 		}
+		if len(entries) == 0 {
+			break
+		}
 		for _, e := range entries {
 			cursor = e.ID
 			if relevant(e.Kind) && p.now().Sub(e.Time) <= failureWindow {
 				p.noteEntry(ctx, e)
 			}
 		}
-		if len(entries) < 1000 {
-			break
-		}
+		// Page until the journal is exhausted: the endpoint caps the limit
+		// below the 1000 asked, so "fewer than asked" is not the end (that
+		// mistake stopped at the cap and rescanned only a prefix of history).
 	}
 	p.log.Info("journal cursor at tail", "cursor", cursor)
 	return cursor
