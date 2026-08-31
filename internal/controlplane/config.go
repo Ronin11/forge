@@ -24,6 +24,7 @@ type Config struct {
 	Repositories RepositoriesConfig `toml:"repositories"`
 	Retention    RetentionConfig    `toml:"retention"`
 	Reflection   ReflectionConfig   `toml:"reflection"`
+	Backup       BackupConfig       `toml:"backup"`
 
 	path string
 }
@@ -86,6 +87,11 @@ type ReflectionConfig struct {
 	Margin float64 `toml:"margin"` // relative regression tolerance; default 0.20
 }
 
+// BackupConfig tunes the nightly backup loop (DESIGN.md §23).
+type BackupConfig struct {
+	Keep int `toml:"keep"` // archives retained under <home>/backups; default 7
+}
+
 // DefaultConfig is what bootstrap writes; userHome seeds the projects root.
 func DefaultConfig(home, userHome string) Config {
 	return Config{
@@ -97,6 +103,7 @@ func DefaultConfig(home, userHome string) Config {
 		Repositories: RepositoriesConfig{ProjectsRoot: filepath.Join(userHome, "Projects")},
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
+		Backup:       BackupConfig{Keep: 7},
 	}
 }
 
@@ -161,6 +168,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Reflection.Margin <= 0 || c.Reflection.Margin >= 1 {
 		return fmt.Errorf("[reflection] margin must be in (0, 1)")
+	}
+	if c.Backup.Keep < 1 {
+		return fmt.Errorf("[backup] keep must be ≥ 1")
 	}
 	return c.Log.Validate()
 }

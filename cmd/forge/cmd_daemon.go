@@ -38,10 +38,12 @@ func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge daemon start|stop|restart|status|logs|log-level [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge daemon start|stop|restart|status|logs|log-level|rollback [flags]")
 		return code
 	}
 	switch args[0] {
+	case "rollback":
+		return runDaemonRollback(ctx, c, args[1:])
 	case "start":
 		return runDaemonStart(ctx, c, args[1:])
 	case "stop":
@@ -116,6 +118,9 @@ func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
 	if err := d.run(ctx, *lockFD); err != nil {
 		log.ErrorContext(ctx, "daemon exited with error", "error", err)
 		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		if _, serr := os.Stat(filepath.Join(home, prevDirName, prevBinName)); serr == nil {
+			fmt.Fprintln(c.stderr, "forge daemon: a last-known-good binary and database snapshot exist; if this version keeps failing before serving, run 'forge daemon rollback'")
+		}
 		return 1
 	}
 	return 0
@@ -265,12 +270,23 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		return err
 	}
 	d.log.InfoContext(ctx, "daemon started", "pid", pid, "version", version, "restarted", journalKind == "daemon.restarted", "socket", d.state.Socket, "http", d.cfg.HTTP.Listen, "log_file", filepath.Join(opts(d).File.Dir, "daemon.log"))
+	// Post-start self-check (§23): bootstrap ran and the listeners are bound;
+	// prove the store answers before claiming health. Only then refresh the
+	// last-known-good snapshot — a failure to record it degrades rollback,
+	// not the daemon.
+	if err := d.selfCheck(ctx, st); err != nil {
+		return err
+	}
+	if err := captureLastKnownGood(ctx, st, home, self); err != nil {
+		d.log.WarnContext(ctx, "record last known good", "error", err)
+	}
 
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
 	g.Go(func() error { <-gctx.Done(); sup.Wait(); return nil })
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
 	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
+	g.Go(func() error { d.nightlyBackup(gctx, st); return nil })
 	g.Go(func() error { logging.WatchSIGUSR1(d.handler, d.log, nil).Run(gctx); return nil })
 	g.Go(func() error { return d.ensureWorker(gctx, self) })
 	err = g.Wait()

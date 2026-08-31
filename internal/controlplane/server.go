@@ -191,6 +191,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/daemon/drain", s.handle(s.drain))
 	s.streamRoutes(m)
 	s.doctorRoutes(m)
+	s.healthRoutes(m)
 	s.pluginRoutes(m) // includes GET /api/v1/journal (JSON and SSE modes)
 
 	m.HandleFunc("POST /api/v1/worker/register", s.handle(s.register))

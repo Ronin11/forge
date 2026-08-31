@@ -19,6 +19,7 @@ func (s *Server) proposalRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/proposals/{id}", s.handle(s.getProposal))
 	m.HandleFunc("POST /api/v1/proposals/{id}/approve", s.handle(s.approveProposal))
 	m.HandleFunc("POST /api/v1/proposals/{id}/reject", s.handle(s.rejectProposal))
+	m.HandleFunc("POST /api/v1/proposals/{id}/eval", s.handle(s.recordProposalEval))
 }
 
 func (s *Server) listProposals(r *http.Request) (int, any, error) {
@@ -107,6 +108,12 @@ func (s *Server) approveProposal(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
+	// The eval gate of DESIGN.md §23: a routine or mode_prompt proposal is a
+	// prompt change, and a prompt change without a measured eval score is a
+	// guess. The other kinds carry their own verification at apply time.
+	if resolved.EvalScore == nil && (resolved.Kind == model.ProposalRoutine || resolved.Kind == model.ProposalModePrompt) {
+		return 0, nil, fmt.Errorf("proposal has no eval score; run forge eval and record it: %w", store.ErrConflict)
+	}
 	var p *store.Proposal
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
 		var err error
@@ -173,4 +180,39 @@ func (s *Server) rejectProposal(r *http.Request) (int, any, error) {
 	}
 	s.log.InfoContext(ctx, "proposal rejected", "proposal_id", p.ID, "kind", p.Kind)
 	return http.StatusOK, rejectResponse{Proposal: p, Reason: req.Reason}, nil
+}
+
+// evalScoreRequest is POST /api/v1/proposals/{id}/eval: `forge eval
+// --record-proposal` posting the summary score before an approval.
+type evalScoreRequest struct {
+	Score *float64 `json:"score"`
+}
+
+func (s *Server) recordProposalEval(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	resolved, err := s.resolveProposal(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var req evalScoreRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return 0, nil, err
+	}
+	if req.Score == nil {
+		return 0, nil, badRequest("score is required")
+	}
+	var p *store.Proposal
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		var werr error
+		p, werr = tx.SetProposalEvalScore(ctx, resolved.ID, *req.Score)
+		return proposalWriteError(werr)
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "proposal eval score recorded", "proposal_id", p.ID, "score", *req.Score)
+	return http.StatusOK, p, nil
 }

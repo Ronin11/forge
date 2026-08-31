@@ -78,6 +78,9 @@ func commands() map[string]command {
 		"retro":       {summary: "emit the reflection data pack as JSON", run: runRetro},
 		"mcp":         {summary: "per-attempt MCP server over stdio (loaded by the agent)", run: runMCP},
 		"plugin":      {summary: "list|install|uninstall|enable|disable|logs|status plugins", run: runPlugin},
+		"backup":      {summary: "write a backup archive via the running daemon", run: runBackup},
+		"restore":     {summary: "restore a backup archive into a fresh FORGE_HOME", run: runRestore},
+		"eval":        {summary: "run golden eval cases on the fake executor and score them", run: runEval},
 	}
 }
 

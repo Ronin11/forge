@@ -1,0 +1,12 @@
+# Golden case: the commit fixture writes a file and commits it; the run must
+# succeed and carry a change claim.
+name = "commit"
+mode = "run"
+prompt = "Create FORGE_SMOKE.txt with today's date and commit it. Do not push."
+fixture = "commit"
+repo_fixture = "git-basic"
+
+[expect]
+state = "succeeded"
+min_claims = 1
+verified = true

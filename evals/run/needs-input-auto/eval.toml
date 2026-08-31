@@ -1,0 +1,12 @@
+# Golden case: a question under autonomy auto is an ambiguity failure, never a
+# silent stall (DESIGN.md ambiguity_at_auto).
+name = "needs-input-auto"
+mode = "run"
+prompt = "Improve the README."
+fixture = "needs-input"
+repo_fixture = "git-basic"
+autonomy = "auto"
+
+[expect]
+state = "failed"
+failure_reason = "ambiguity_at_auto"

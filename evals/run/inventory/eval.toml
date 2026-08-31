@@ -1,0 +1,11 @@
+# Golden case: a read-only inventory run must succeed with a verified claim.
+name = "inventory"
+mode = "run"
+prompt = "List the files in this repository and summarise what it is."
+fixture = "inventory"
+repo_fixture = "git-basic"
+
+[expect]
+state = "succeeded"
+min_claims = 1
+verified = true

@@ -1,0 +1,9 @@
+# Golden case: the failing fixture (exit 1, error result) must land as failed.
+name = "failing"
+mode = "run"
+prompt = "Run the test suite and report the results."
+fixture = "failing"
+repo_fixture = "git-basic"
+
+[expect]
+state = "failed"

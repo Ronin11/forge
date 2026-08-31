@@ -94,10 +94,14 @@ lines:
     @printf "UI (tmpl/js/css): "; (find internal -path '*/ui/*' -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) 2>/dev/null | xargs cat 2>/dev/null || true) | wc -l
 
 # The gate.
-check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-check ui-test lines
+check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-check ui-test lines eval-check
     @echo "check: green"
 
 # Build first-party plugin binaries (M7). The installer runs each manifest's
 # build argv; this is the developer convenience for the same step.
 build-plugins:
     cd plugins/status-file && go build -o forge-status-file .
+
+# M12: golden eval cases through the fake executor (offline, no budget).
+eval-check: build
+    ./scripts/eval-check.sh

@@ -81,9 +81,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		if applied[m.id] {
 			continue
 		}
+		// An existing database (one with at least one applied migration) is
+		// backed up before each pending migration touches it (DESIGN.md §23);
+		// a fresh database has nothing to lose.
+		if len(applied) > 0 {
+			if err := s.preMigrationSnapshot(ctx, m.id); err != nil {
+				return err
+			}
+		}
 		if err := s.applyMigration(ctx, m); err != nil {
 			return err
 		}
+		applied[m.id] = true
 		s.log.InfoContext(ctx, "migration applied", "id", m.id)
 	}
 	s.schemaVersion = migrations[len(migrations)-1].id
