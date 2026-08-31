@@ -163,7 +163,7 @@ func TestAttemptForTargetSkipsFinished(t *testing.T) {
 	ctx := context.Background()
 	id := model.NewID()
 	if err := st.Write(ctx, func(tx *Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, executor, model, model_alias, mode, autonomy, finished_at, created_at, updated_at) VALUES (?, 'tgt1', 'w', 'cr1', 'e', 'm', 'haiku', 'run', 'auto', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, mode, autonomy, finished_at, created_at, updated_at) VALUES (?, 'tgt1', 'w', 'cr1', 'h', 'e', 'm', 'haiku', 'run', 'auto', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id); err != nil {
 			return err
 		}
 		a, err := tx.attemptForTarget(ctx, "tgt1")
