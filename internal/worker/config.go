@@ -339,3 +339,31 @@ func AddRepository(cfgPath, name, repoPath, baseBranch string) error {
 	}
 	return nil
 }
+
+// RemoveRepository drops a repository from worker.toml's [repositories] table
+// (the inverse of AddRepository); a name that is not present is not an error.
+// The worker re-reads worker.toml on refresh, so the repository stops being
+// advertised. Used by repository archival, which then deletes the checkout.
+func RemoveRepository(cfgPath, name string) error {
+	m := map[string]any{}
+	if _, err := toml.DecodeFile(cfgPath, &m); err != nil {
+		return fmt.Errorf("read %s: %w", cfgPath, err)
+	}
+	repos, ok := m["repositories"].(map[string]any)
+	if !ok || repos == nil {
+		return nil
+	}
+	if _, exists := repos[name]; !exists {
+		return nil
+	}
+	delete(repos, name)
+	m["repositories"] = repos
+	var b strings.Builder
+	if err := toml.NewEncoder(&b).Encode(m); err != nil {
+		return fmt.Errorf("encode %s: %w", cfgPath, err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", cfgPath, err)
+	}
+	return nil
+}

@@ -199,6 +199,7 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
   bind('data-repo-pause', 'pause');
   bind('data-repo-resume', 'resume');
   bind('data-repo-cancel', 'cancel-running');
+  bind('data-repo-restore', 'restore');
   document.querySelectorAll('[data-repo-app-url]').forEach(function (form) {
     form.addEventListener('submit', function (e) {
       e.preventDefault();
@@ -206,6 +207,40 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       post('/api/v1/repositories/' + encodeURIComponent(form.dataset.repoAppUrl) + '/app-url', { url: url });
     });
   });
+  // Archive deletes the checkout — confirm first.
+  document.querySelectorAll('[data-repo-archive]').forEach(function (btn) {
+    var name = btn.getAttribute('data-repo-archive');
+    btn.addEventListener('click', function () {
+      if (!window.confirm('Archive "' + name + '"? Its checkout is deleted from disk to free space; the metadata (facts, attempts, notes) is kept and it can be restored from its origin.')) return;
+      post('/api/v1/repositories/' + encodeURIComponent(name) + '/archive');
+    });
+  });
+  // Add-repo dialog: clone a URL or link a local path.
+  var dialog = document.querySelector('[data-repo-dialog]');
+  if (dialog) {
+    var form = dialog.querySelector('form');
+    var errBox = form.querySelector('.dialog-error');
+    var addBtn = document.querySelector('[data-repo-add]');
+    if (addBtn) addBtn.addEventListener('click', function () { form.reset(); errBox.hidden = true; dialog.showModal(); });
+    form.querySelector('[data-repo-cancel]').onclick = function () { dialog.close(); };
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      var body = {
+        url: form.querySelector('[name=url]').value.trim(),
+        path: form.querySelector('[name=path]').value.trim(),
+        name: form.querySelector('[name=name]').value.trim(),
+      };
+      var saveBtn = form.querySelector('[data-repo-save]');
+      saveBtn.disabled = true;
+      fetch('/api/v1/repositories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          window.location.reload();
+        })
+        .catch(function (err) { errBox.hidden = false; errBox.textContent = 'Refused: ' + String(err.message || err).replace(/: (conflict|not found|draining)$/, ''); })
+        .then(function () { saveBtn.disabled = false; });
+    };
+  }
 })();
 
 // Dashboard usage gauges: one per window, target line, filled from the API so

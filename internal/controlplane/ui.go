@@ -166,6 +166,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /settings", u.settingsGeneral)
 	u.mux.HandleFunc("GET /settings/plugins", u.settingsPlugins)
 	u.mux.HandleFunc("GET /system", u.system)
+	u.mux.HandleFunc("GET /repos", u.repos)
 	u.mux.HandleFunc("GET /repos/{name}", u.repo)
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
@@ -528,6 +529,23 @@ func (u *UI) workflows(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	u.render(w, r, "workflows.html", "Workflows", map[string]any{"Workflows": rows, "Routines": names})
+}
+
+// repos is the Repos page: every registered repository (archived included),
+// with add / pause / archive / restore controls.
+func (u *UI) repos(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	repos, err := u.store.Repositories(ctx)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	states, err := repositoryStates(ctx, u.store, u.clock())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, r, "repos.html", "Repos", map[string]any{"Repositories": repos, "RepoStates": states})
 }
 
 func (u *UI) system(w http.ResponseWriter, r *http.Request) {

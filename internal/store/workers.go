@@ -148,9 +148,12 @@ type Repository struct {
 	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
 	Paused         bool      `json:"paused"`
 	AppURL         string    `json:"app_url,omitempty"`
+	Archived       bool      `json:"archived"`
+	ArchivedAt     time.Time `json:"archived_at,omitempty"`
+	OriginURL      string    `json:"origin_url,omitempty"` // raw clone URL, captured at archive for Restore
 }
 
-const repositoryColumns = `r.name, p.name, r.path, r.origin_identity, r.base_branch, r.worker_id, r.forge_toml, r.last_seen_at, r.paused, r.app_url`
+const repositoryColumns = `r.name, p.name, r.path, r.origin_identity, r.base_branch, r.worker_id, r.forge_toml, r.last_seen_at, r.paused, r.app_url, r.archived, r.archived_at, r.origin_url`
 
 // Repositories lists registered repositories by name.
 func (s *Store) Repositories(ctx context.Context) ([]Repository, error) {
@@ -179,16 +182,22 @@ func scanRepositories(iter func(func(*sql.Rows) error) error) ([]Repository, err
 	var out []Repository
 	err := iter(func(rows *sql.Rows) error {
 		var r Repository
-		var base, worker, toml, seen, appURL sql.NullString
-		var paused int
-		if err := rows.Scan(&r.Name, &r.Project, &r.Path, &r.OriginIdentity, &base, &worker, &toml, &seen, &paused, &appURL); err != nil {
+		var base, worker, toml, seen, appURL, archivedAt, originURL sql.NullString
+		var paused, archived int
+		if err := rows.Scan(&r.Name, &r.Project, &r.Path, &r.OriginIdentity, &base, &worker, &toml, &seen, &paused, &appURL, &archived, &archivedAt, &originURL); err != nil {
 			return fmt.Errorf("scan repository: %w", err)
 		}
-		r.BaseBranch, r.WorkerID, r.ForgeToml, r.AppURL = base.String, worker.String, toml.String, appURL.String
+		r.BaseBranch, r.WorkerID, r.ForgeToml, r.AppURL, r.OriginURL = base.String, worker.String, toml.String, appURL.String, originURL.String
 		r.Paused = paused != 0
+		r.Archived = archived != 0
 		var err error
 		if r.LastSeenAt, err = parseTime(seen); err != nil {
 			return err
+		}
+		if archivedAt.Valid && archivedAt.String != "" {
+			if r.ArchivedAt, err = parseTime(archivedAt); err != nil {
+				return err
+			}
 		}
 		out = append(out, r)
 		return nil
@@ -239,6 +248,35 @@ func (tx *Tx) SetRepositoryAppURL(ctx context.Context, name, url string) error {
 		return fmt.Errorf("repository %s: %w", name, ErrNotFound)
 	}
 	return tx.Journal(ctx, "repository.app_url_set", EntityDaemon, name, map[string]any{"app_url": url})
+}
+
+// SetRepositoryArchived flips a repository's archived flag and journals it;
+// ErrNotFound for an unknown repository. Archiving keeps the row (and every
+// fact/attempt/kb note that references the repository by name) while the caller
+// deletes the checkout and drops it from worker.toml; originURL is the raw clone
+// URL captured before deletion so Restore can re-clone. Unarchiving clears both.
+func (tx *Tx) SetRepositoryArchived(ctx context.Context, name string, archived bool, originURL string) error {
+	at := ""
+	if archived {
+		at = formatTime(tx.now)
+	}
+	res, err := tx.Exec(ctx, `UPDATE repositories SET archived = ?, archived_at = ?, origin_url = ?, updated_at = ? WHERE name = ?`,
+		boolInt(archived), at, originURL, formatTime(tx.now), name)
+	if err != nil {
+		return fmt.Errorf("set repository %s archived: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set repository %s archived: %w", name, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("repository %s: %w", name, ErrNotFound)
+	}
+	kind := "repository.unarchived"
+	if archived {
+		kind = "repository.archived"
+	}
+	return tx.Journal(ctx, kind, EntityDaemon, name, map[string]any{"archived": archived, "origin_url": originURL})
 }
 
 // Project is a grouping of repositories with defaults.

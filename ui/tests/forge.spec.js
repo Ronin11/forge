@@ -400,6 +400,22 @@ test.describe('repositories', () => {
   });
 });
 
+test.describe('repos page', () => {
+  test('lists repos, opens the add dialog, and shows archive controls', async ({ page }) => {
+    seed();
+    await page.goto('/repos');
+    await expect(page.locator('h1')).toHaveText('Repos');
+    // The seeded demo repo is listed with an Archive control.
+    const row = page.locator('tr', { hasText: 'demo' }).first();
+    await expect(row).toBeVisible();
+    await expect(row.locator('[data-repo-archive="demo"]')).toBeVisible();
+    // The + button opens the add dialog with url and path fields.
+    await page.locator('[data-repo-add]').click();
+    await expect(page.locator('[data-repo-dialog] input[name=url]')).toBeVisible();
+    await expect(page.locator('[data-repo-dialog] input[name=path]')).toBeVisible();
+  });
+});
+
 test.describe('settings', () => {
   test('General fills the health panel and applies a log level; Plugins page has the install form', async ({ page }) => {
     await page.goto('/settings');

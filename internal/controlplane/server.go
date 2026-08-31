@@ -82,6 +82,11 @@ type Server struct {
 	execRestart func(execPath string) error
 	// registerRepo backs DESIGN §1.3's repositories-on-the-fly; nil disables.
 	registerRepo func(ctx context.Context, nameOrPath string) (protocol.Repository, error)
+	// addRepo/archiveRepo/restoreRepo back the Repos page (POST /api/v1/
+	// repositories and its archive/restore); nil disables those routes.
+	addRepo     func(ctx context.Context, path, url, name string) (protocol.Repository, error)
+	archiveRepo func(ctx context.Context, name, path string) (originURL string, err error)
+	restoreRepo func(ctx context.Context, name, originURL string) (protocol.Repository, error)
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -152,6 +157,12 @@ type ServerOptions struct {
 	// appending it to worker.toml (DESIGN §1.3); nil disables on-the-fly
 	// registration and unknown repositories 404.
 	RegisterRepo func(ctx context.Context, nameOrPath string) (protocol.Repository, error)
+	// AddRepo (clone-if-URL then register), ArchiveRepo (drop from worker.toml
+	// and delete the checkout, returning its clone URL), and RestoreRepo
+	// (re-clone from a saved URL) back the Repos page; nil disables each route.
+	AddRepo     func(ctx context.Context, path, url, name string) (protocol.Repository, error)
+	ArchiveRepo func(ctx context.Context, name, path string) (originURL string, err error)
+	RestoreRepo func(ctx context.Context, name, originURL string) (protocol.Repository, error)
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -234,7 +245,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
-		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
+		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
 	s.evalFn = o.EvalFn

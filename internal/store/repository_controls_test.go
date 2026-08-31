@@ -123,3 +123,39 @@ func TestSetRepositoryAppURLUnknown(t *testing.T) {
 		t.Fatalf("unknown repository = %v, want ErrNotFound", err)
 	}
 }
+
+func TestSetRepositoryArchivedRoundTrip(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	registerDemo(t, st)
+
+	if r := repoByName(t, st, "demo"); r.Archived {
+		t.Fatalf("new repository should not be archived: %+v", r)
+	}
+	if err := st.Write(ctx, func(tx *Tx) error {
+		return tx.SetRepositoryArchived(ctx, "demo", true, "https://example.com/demo.git")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := repoByName(t, st, "demo")
+	if !r.Archived || r.OriginURL != "https://example.com/demo.git" || r.ArchivedAt.IsZero() {
+		t.Fatalf("archived state not recorded: %+v", r)
+	}
+	// Unarchiving clears the flag, the timestamp, and the saved URL.
+	if err := st.Write(ctx, func(tx *Tx) error {
+		return tx.SetRepositoryArchived(ctx, "demo", false, "")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := repoByName(t, st, "demo"); r.Archived || r.OriginURL != "" || !r.ArchivedAt.IsZero() {
+		t.Fatalf("unarchive did not clear: %+v", r)
+	}
+}
+
+func TestSetRepositoryArchivedUnknown(t *testing.T) {
+	st := openTest(t)
+	err := st.Write(context.Background(), func(tx *Tx) error { return tx.SetRepositoryArchived(context.Background(), "nope", true, "") })
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}

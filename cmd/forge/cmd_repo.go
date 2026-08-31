@@ -49,7 +49,7 @@ func runRepo(ctx context.Context, c *cmdContext, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge repo list|show|pause|resume|cancel|set-app-url [flags]")
+		fmt.Fprintln(c.stderr, "usage: forge repo list|show|add|archive|restore|pause|resume|cancel|set-app-url [flags]")
 		return code
 	}
 	switch args[0] {
@@ -65,6 +65,12 @@ func runRepo(ctx context.Context, c *cmdContext, args []string) int {
 		return runRepoAction(ctx, c, args[1:], "cancel-running")
 	case "set-app-url":
 		return runRepoSetAppURL(ctx, c, args[1:])
+	case "add":
+		return runRepoAdd(ctx, c, args[1:])
+	case "archive":
+		return runRepoAction(ctx, c, args[1:], "archive")
+	case "restore":
+		return runRepoAction(ctx, c, args[1:], "restore")
 	}
 	fmt.Fprintf(c.stderr, "forge repo: unknown subcommand %q\n", args[0])
 	return 2
@@ -215,5 +221,41 @@ func runRepoSetAppURL(ctx context.Context, c *cmdContext, args []string) int {
 	} else {
 		fmt.Fprintf(c.stdout, "repository %s: app url set to %s\n", repo.Name, repo.AppURL)
 	}
+	return 0
+}
+
+// runRepoAdd registers a repository: a remote URL is cloned into projects_root,
+// a local path (or bare name) links an existing checkout. --name overrides a
+// clone's directory name.
+func runRepoAdd(ctx context.Context, c *cmdContext, args []string) int {
+	fs, lf := c.flags("repo add")
+	name := fs.String("name", "", "repository name (clone directory); defaults to the URL's basename")
+	if code := c.parse(fs, args); code >= 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(c.stderr, "usage: forge repo add PATH_OR_URL [--name NAME]")
+		return 2
+	}
+	_, log, code := c.resolveLogging(lf, "cli.repo")
+	if code >= 0 {
+		return code
+	}
+	cl := c.client(log)
+	if err := cl.connect(ctx); err != nil {
+		return c.fail("repo add", err)
+	}
+	arg := fs.Arg(0)
+	body := map[string]string{"name": *name}
+	if strings.Contains(arg, "://") || (strings.Contains(arg, "@") && strings.Contains(arg, ":")) {
+		body["url"] = arg
+	} else {
+		body["path"] = arg
+	}
+	var repo store.Repository
+	if err := cl.do(ctx, http.MethodPost, "/api/v1/repositories", body, &repo); err != nil {
+		return c.fail("repo add", err)
+	}
+	fmt.Fprintf(c.stdout, "repository %s added at %s\n", repo.Name, repo.Path)
 	return 0
 }

@@ -222,6 +222,9 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	srv, err := controlplane.NewServer(controlplane.ServerOptions{
 		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
 		RegisterRepo: d.registerRepoOnTheFly,
+		AddRepo:      d.addRepo,
+		ArchiveRepo:  d.archiveRepo,
+		RestoreRepo:  d.restoreRepo,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
@@ -828,6 +831,113 @@ func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath str
 		return protocol.Repository{}, err
 	}
 	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: base, Project: "default"}, nil
+}
+
+// addRepo backs the Repos page's "+" (POST /api/v1/repositories): a remote URL
+// is cloned into ProjectsRoot/<name> first, a local path (or bare name) is
+// registered as-is. Either way it ends in registerRepoOnTheFly, so the worker
+// picks it up on its next refresh.
+func (d *daemonProcess) addRepo(ctx context.Context, path, url, name string) (protocol.Repository, error) {
+	if url == "" {
+		if path == "" {
+			return protocol.Repository{}, fmt.Errorf("a local path or a remote URL is required")
+		}
+		return d.registerRepoOnTheFly(ctx, path)
+	}
+	n := name
+	if n == "" {
+		n = repoNameFromURL(url)
+	}
+	if err := model.ValidateName(n); err != nil {
+		return protocol.Repository{}, fmt.Errorf("repository name %q (from %q): %w", n, url, err)
+	}
+	dest := filepath.Join(d.cfg.Repositories.ProjectsRoot, n)
+	if _, err := os.Stat(dest); err == nil {
+		return protocol.Repository{}, fmt.Errorf("%s already exists — pick a different name or add it by path", dest)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if out, err := exec.CommandContext(cctx, "git", "clone", url, dest).CombinedOutput(); err != nil {
+		return protocol.Repository{}, fmt.Errorf("clone %s: %w: %s", url, err, strings.TrimSpace(string(out)))
+	}
+	return d.registerRepoOnTheFly(ctx, dest)
+}
+
+// archiveRepo captures the checkout's clone URL (for a later Restore), drops the
+// repository from worker.toml so the worker stops advertising it, then deletes
+// the checkout to free disk. The store row and its metadata are kept by the
+// caller. Returns the captured URL.
+func (d *daemonProcess) archiveRepo(ctx context.Context, name, path string) (string, error) {
+	originURL := ""
+	if out, err := exec.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin").Output(); err == nil {
+		originURL = strings.TrimSpace(string(out))
+	}
+	if err := worker.RemoveRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name); err != nil {
+		return "", err
+	}
+	if err := safeRemoveCheckout(path); err != nil {
+		return "", err
+	}
+	return originURL, nil
+}
+
+// restoreRepo re-clones an archived repository from its saved URL back into
+// ProjectsRoot/<name> and re-registers it.
+func (d *daemonProcess) restoreRepo(ctx context.Context, name, originURL string) (protocol.Repository, error) {
+	if originURL == "" {
+		return protocol.Repository{}, fmt.Errorf("repository %s has no saved origin URL to restore from", name)
+	}
+	dest := filepath.Join(d.cfg.Repositories.ProjectsRoot, name)
+	if _, err := os.Stat(dest); err == nil {
+		return protocol.Repository{}, fmt.Errorf("%s already exists on disk", dest)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if out, err := exec.CommandContext(cctx, "git", "clone", originURL, dest).CombinedOutput(); err != nil {
+		return protocol.Repository{}, fmt.Errorf("clone %s: %w: %s", originURL, err, strings.TrimSpace(string(out)))
+	}
+	return d.registerRepoOnTheFly(ctx, dest)
+}
+
+// repoNameFromURL derives a repository name from a clone URL: the last path
+// segment with any .git suffix and trailing slash removed.
+func repoNameFromURL(url string) string {
+	u := strings.TrimRight(strings.TrimSpace(url), "/")
+	u = strings.TrimSuffix(u, ".git")
+	if i := strings.LastIndexAny(u, "/:"); i >= 0 {
+		u = u[i+1:]
+	}
+	return u
+}
+
+// safeRemoveCheckout deletes a repository checkout, refusing paths that would be
+// catastrophic to rm -rf: a non-absolute path, a symlink, a filesystem root or
+// a home directory, or anything that is not itself a git checkout (has .git).
+func safeRemoveCheckout(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("refuse to delete non-absolute checkout path %q", path)
+	}
+	clean := filepath.Clean(path)
+	if clean == "/" || clean == filepath.Dir(clean) {
+		return fmt.Errorf("refuse to delete %q", clean)
+	}
+	if home, err := os.UserHomeDir(); err == nil && clean == filepath.Clean(home) {
+		return fmt.Errorf("refuse to delete home directory %q", clean)
+	}
+	fi, err := os.Lstat(clean)
+	if err != nil {
+		return fmt.Errorf("stat checkout %s: %w", clean, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to delete symlinked checkout %q", clean)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("checkout %q is not a directory", clean)
+	}
+	if _, err := os.Stat(filepath.Join(clean, ".git")); err != nil {
+		return fmt.Errorf("refuse to delete %q: not a git checkout (no .git)", clean)
+	}
+	return os.RemoveAll(clean)
 }
 
 // detectBaseBranch names the branch attempts on an on-the-fly repository

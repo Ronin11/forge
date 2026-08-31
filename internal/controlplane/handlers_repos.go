@@ -18,7 +18,10 @@ import (
 // detail read, pause/resume, cancel-running, and the running-app URL. They are
 // operator routes (both listeners), mapped by fail() like the other writes.
 func (s *Server) repoRoutes(m *http.ServeMux) {
+	m.HandleFunc("POST /api/v1/repositories", s.handle(s.addRepository))
 	m.HandleFunc("GET /api/v1/repositories/{name}", s.handle(s.getRepository))
+	m.HandleFunc("POST /api/v1/repositories/{name}/archive", s.handle(s.archiveRepository))
+	m.HandleFunc("POST /api/v1/repositories/{name}/restore", s.handle(s.restoreRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/pause", s.handle(s.pauseRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/resume", s.handle(s.resumeRepository))
 	m.HandleFunc("POST /api/v1/repositories/{name}/cancel-running", s.handle(s.cancelRepositoryRunning))
@@ -391,4 +394,149 @@ func validateAppURL(raw string) error {
 		return fmt.Errorf("app url must include a host")
 	}
 	return nil
+}
+
+// addRepoRequest is POST /api/v1/repositories: give a local path (or bare name
+// under projects_root) or a remote URL to clone. name overrides the clone's
+// directory name.
+type addRepoRequest struct {
+	Path string `json:"path"`
+	URL  string `json:"url"`
+	Name string `json:"name"`
+}
+
+// addRepository clones (if a URL) and registers a repository; the worker picks
+// it up on its next refresh, so the created row appears a beat later. The daemon
+// hook does the filesystem work; a nil hook (e.g. under test) disables the route.
+func (s *Server) addRepository(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	if s.addRepo == nil {
+		return 0, nil, badRequest("adding repositories is not available in this process")
+	}
+	var req addRepoRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return 0, nil, err
+	}
+	req.Path, req.URL, req.Name = strings.TrimSpace(req.Path), strings.TrimSpace(req.URL), strings.TrimSpace(req.Name)
+	if req.Path == "" && req.URL == "" {
+		return 0, nil, badRequest("a local path or a remote url is required")
+	}
+	repo, err := s.addRepo(ctx, req.Path, req.URL, req.Name)
+	if err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	s.log.InfoContext(ctx, "repository added", "repository", repo.Name, "path", repo.Path, "cloned", req.URL != "")
+	return http.StatusCreated, repo, nil
+}
+
+// archiveRepository frees disk without losing history: it deletes the checkout
+// and drops the repository from worker.toml while keeping the row and every
+// fact/attempt/kb note about it. It refuses while work is running — deleting the
+// checkout would break that attempt's linked worktrees.
+func (s *Server) archiveRepository(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	if s.archiveRepo == nil {
+		return 0, nil, badRequest("archiving repositories is not available in this process")
+	}
+	name, err := repoName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	repo, err := s.store.Repository(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	if repo.Archived {
+		return 0, nil, badRequest("repository %s is already archived", name)
+	}
+	active, err := s.repositoryHasActiveWork(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	if active {
+		return 0, nil, badRequest("repository %s has running work; cancel it first", name)
+	}
+	originURL, err := s.archiveRepo(ctx, name, repo.Path)
+	if err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.SetRepositoryArchived(ctx, name, true, originURL) }); err != nil {
+		return 0, nil, err
+	}
+	updated, err := s.store.Repository(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "repository archived", "repository", name, "has_origin", originURL != "")
+	return http.StatusOK, updated, nil
+}
+
+// restoreRepository re-clones an archived repository from its saved origin URL
+// and re-registers it.
+func (s *Server) restoreRepository(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	if s.restoreRepo == nil {
+		return 0, nil, badRequest("restoring repositories is not available in this process")
+	}
+	name, err := repoName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	repo, err := s.store.Repository(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	if !repo.Archived {
+		return 0, nil, badRequest("repository %s is not archived", name)
+	}
+	if _, err := s.restoreRepo(ctx, name, repo.OriginURL); err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.SetRepositoryArchived(ctx, name, false, "") }); err != nil {
+		return 0, nil, err
+	}
+	updated, err := s.store.Repository(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "repository restored", "repository", name)
+	return http.StatusOK, updated, nil
+}
+
+// repositoryHasActiveWork reports whether any target of the repository is in an
+// active (claimed/running/…) state — the guard archival needs.
+func (s *Server) repositoryHasActiveWork(ctx context.Context, name string) (bool, error) {
+	works, err := s.store.ListWork(ctx, 200)
+	if err != nil {
+		return false, err
+	}
+	ids := make([]string, len(works))
+	for i, w := range works {
+		ids[i] = w.ID
+	}
+	byWork, err := s.store.TargetsForWorks(ctx, ids)
+	if err != nil {
+		return false, err
+	}
+	for _, ts := range byWork {
+		var mine []store.Target
+		for _, t := range ts {
+			if t.Repository == name {
+				mine = append(mine, t)
+			}
+		}
+		if anyActiveTarget(mine) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
