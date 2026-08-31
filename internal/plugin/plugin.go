@@ -158,6 +158,11 @@ func Discover(roots []string, onErr func(dir string, err error)) []*Manifest {
 				continue
 			}
 			dir := filepath.Join(root, e.Name())
+			if _, serr := os.Stat(filepath.Join(dir, "plugin.toml")); serr != nil {
+				// Not a plugin (plugins/examples/, scratch dirs): silently
+				// skipped — only an invalid manifest is worth reporting.
+				continue
+			}
 			m, err := Load(dir)
 			if err != nil {
 				if onErr != nil {

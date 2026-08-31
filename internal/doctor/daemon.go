@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/plugin"
 	"forge/internal/store"
 )
 
@@ -31,6 +32,8 @@ type DaemonInput struct {
 	RetainedCount   int       // rows in retained_worktrees
 	FiveHourSample  *store.RateLimitSample
 	SevenDaySample  *store.RateLimitSample
+	Plugins         []store.Plugin        // installed plugin rows
+	PluginHealth    []plugin.PluginHealth // the supervisor's live state
 }
 
 // Daemon runs every daemon-side check over one gathered input.
@@ -38,7 +41,40 @@ func Daemon(in DaemonInput) []Check {
 	checks := []Check{daemonInfo(in), schema(in)}
 	checks = append(checks, workers(in)...)
 	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in))
+	checks = append(checks, plugins(in)...)
 	return checks
+}
+
+// plugins reports each enabled plugin: ok while its process runs, fail when
+// it is down (the supervisor is backing off, or restart=never gave up).
+// Disabled plugins are configuration, not health, and are skipped.
+func plugins(in DaemonInput) []Check {
+	byName := map[string]plugin.PluginHealth{}
+	for _, h := range in.PluginHealth {
+		byName[h.Name] = h
+	}
+	var out []Check
+	for _, p := range in.Plugins {
+		if !p.Enabled {
+			continue
+		}
+		h := byName[p.Name]
+		if h.Running {
+			out = append(out, Check{Name: "plugin." + p.Name, Status: StatusOK,
+				Detail: fmt.Sprintf("running (pid %d), %d restarts", h.PID, h.Restarts)})
+			continue
+		}
+		detail := "enabled but not running"
+		if h.LastExit != "" {
+			detail += ", last exit: " + h.LastExit
+		}
+		if h.Restarts > 0 {
+			detail += fmt.Sprintf(" (%d restarts)", h.Restarts)
+		}
+		out = append(out, Check{Name: "plugin." + p.Name, Status: StatusFail, Detail: detail,
+			Hint: "forge plugin logs " + p.Name + " — restarts back off up to 60 s; a daemon restart or re-enable starts fresh"})
+	}
+	return out
 }
 
 func daemonInfo(in DaemonInput) Check {

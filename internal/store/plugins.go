@@ -45,7 +45,7 @@ func (tx *Tx) UninstallPlugin(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("uninstall plugin %s: %w", name, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, aerr := res.RowsAffected(); aerr != nil || n == 0 {
 		return fmt.Errorf("plugin %s: %w", name, ErrNotFound)
 	}
 	return tx.Journal(ctx, "plugin.uninstalled", EntityPlugin, name, nil)
@@ -74,7 +74,7 @@ func (tx *Tx) DisablePlugin(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("disable plugin %s: %w", name, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, aerr := res.RowsAffected(); aerr != nil || n == 0 {
 		return fmt.Errorf("plugin %s: %w", name, ErrNotFound)
 	}
 	return tx.Journal(ctx, "plugin.disabled", EntityPlugin, name, nil)
@@ -88,7 +88,7 @@ func (tx *Tx) AckPluginCursor(ctx context.Context, name string, cursor int64) er
 	if err != nil {
 		return fmt.Errorf("ack plugin %s cursor: %w", name, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, aerr := res.RowsAffected(); aerr != nil || n == 0 {
 		// Either unknown, or a stale ack below the stored cursor; distinguish.
 		if _, gerr := tx.getPlugin(ctx, name); gerr != nil {
 			return gerr

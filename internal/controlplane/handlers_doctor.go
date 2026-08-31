@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"forge/internal/doctor"
+	"forge/internal/plugin"
 )
 
 // doctorRoutes registers GET /api/v1/doctor: the daemon-side checks `forge
@@ -41,6 +42,14 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
+	plugins, err := s.store.Plugins(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	var pluginHealth []plugin.PluginHealth
+	if s.pluginHealth != nil {
+		pluginHealth = s.pluginHealth()
+	}
 	var startedAt time.Time
 	if s.home != "" {
 		if st, err := ReadState(s.home); err == nil && st != nil {
@@ -51,6 +60,7 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 		Version: s.version, SchemaVersion: s.store.SchemaVersion(), StartedAt: startedAt, Now: now,
 		Workers: workers, Repositories: repos, KbLastIndexedAt: kbAt, RetainedCount: retained,
 		FiveHourSample: fiveHour, SevenDaySample: sevenDay,
+		Plugins: plugins, PluginHealth: pluginHealth,
 	})
 	return http.StatusOK, checks, nil
 }

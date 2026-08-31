@@ -24,6 +24,7 @@ import (
 	"forge/internal/model"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
+	"forge/internal/plugin"
 	"forge/internal/protocol"
 	"forge/internal/store"
 	"forge/internal/tools"
@@ -190,6 +191,15 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 	}
 	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
+	// The errgroup context is created before the server so plugin processes
+	// (and their supervision goroutines) are bound to the daemon's lifetime,
+	// and tools plugins can register their tools before the registry freezes
+	// at NewServer.
+	g, gctx := errgroup.WithContext(ctx)
+	sup, startPlugin, err := d.startPlugins(gctx, st, toolRegistry)
+	if err != nil {
+		return err
+	}
 	unixL, tcpL, err := d.listeners(ctx)
 	if err != nil {
 		return err
@@ -211,6 +221,9 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		AllowHosts:    d.cfg.Sandbox.AllowHosts,
 		KbDir:         d.cfg.KB.Path,
 		Tools:         toolRegistry,
+		PluginHealth:  sup.Health,
+		PluginStart:   startPlugin,
+		PluginStop:    func(name string) { sup.Stop(name) },
 		SetLogLevels: func(spec string) error {
 			levels, err := logging.ParseLevels(spec, slog.LevelInfo)
 			if err != nil {
@@ -228,6 +241,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return err
 	}
+	ui.SetPluginHealth(sup.Health)
 	srv.MountUI(ui)
 	pid := os.Getpid()
 	pidStart, err := controlplane.ProcStart(pid)
@@ -252,8 +266,8 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	}
 	d.log.InfoContext(ctx, "daemon started", "pid", pid, "version", version, "restarted", journalKind == "daemon.restarted", "socket", d.state.Socket, "http", d.cfg.HTTP.Listen, "log_file", filepath.Join(opts(d).File.Dir, "daemon.log"))
 
-	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
+	g.Go(func() error { <-gctx.Done(); sup.Wait(); return nil })
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
 	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
@@ -559,6 +573,98 @@ func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {
 	}
 	fmt.Fprintln(c.stdout, out.Levels)
 	return 0
+}
+
+// startPlugins brings the plugin runtime up (DESIGN.md §17): discover
+// manifests under <home>/plugins (first-party repo directories are install
+// sources, never run sources), start every enabled plugin under the
+// supervisor with a freshly minted token — the plain token lives only in the
+// child's environment; only its hash rests in the store, refreshed here so a
+// daemon restart invalidates old tokens — and bridge tools plugins into the
+// registry before it freezes at NewServer. It returns the supervisor and the
+// hook the enable handler uses to (re)start one plugin at runtime.
+func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *tools.Registry) (*plugin.Supervisor, func(name, token string) error, error) {
+	home := d.c.forgeHome
+	pluginsDir := filepath.Join(home, "plugins")
+	logsDir := filepath.Join(home, "logs", "plugins")
+	if err := os.MkdirAll(logsDir, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create plugin logs dir: %w", err)
+	}
+	log := d.handler.For("daemon.plugins")
+	sup := plugin.NewSupervisor(plugin.SupervisorOptions{LogFor: d.handler.For})
+	// bridges is filled here, before the server exists, and only read by the
+	// runtime start hook afterwards.
+	bridges := map[string]*controlplane.PluginTools{}
+	launch := func(ctx context.Context, m *plugin.Manifest, token string) error {
+		f, err := os.OpenFile(filepath.Join(logsDir, m.Name+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return fmt.Errorf("open plugin log: %w", err)
+		}
+		env := worker.PassthroughEnv(os.Environ(), append(logging.Environ(d.handler),
+			"FORGE_SOCKET="+filepath.Join(home, controlplane.SocketFile),
+			"FORGE_TOKEN="+token,
+			"FORGE_PLUGIN_DIR="+m.Dir)...)
+		spec := plugin.Spec{Manifest: m, Env: env, LogSink: f}
+		if m.Has(plugin.CapTools) {
+			if b := bridges[m.Name]; b != nil {
+				spec.OnStdio = b.Attach
+			}
+		}
+		return sup.Start(ctx, spec)
+	}
+	manifests := plugin.Discover([]string{pluginsDir}, func(dir string, err error) {
+		log.WarnContext(ctx, "invalid plugin manifest", "dir", dir, "error", err)
+	})
+	byName := map[string]*plugin.Manifest{}
+	for _, m := range manifests {
+		byName[m.Name] = m
+	}
+	rows, err := st.Plugins(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		m := byName[row.Name]
+		if m == nil {
+			log.WarnContext(ctx, "enabled plugin has no manifest under <home>/plugins; not started", "plugin", row.Name)
+			continue
+		}
+		token, hash, err := plugin.NewToken()
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := st.Write(ctx, func(tx *store.Tx) error {
+			_, werr := tx.EnablePlugin(ctx, row.Name, hash)
+			return werr
+		}); err != nil {
+			return nil, nil, fmt.Errorf("refresh plugin token: %w", err)
+		}
+		if m.Has(plugin.CapTools) {
+			bridges[m.Name] = controlplane.NewPluginTools(m.Name, d.handler.For("plugin."+m.Name))
+		}
+		if err := launch(ctx, m, token); err != nil {
+			log.WarnContext(ctx, "plugin did not start", "plugin", m.Name, "error", err)
+		}
+	}
+	for name, b := range bridges {
+		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := controlplane.RegisterPluginTools(wctx, reg, b)
+		cancel()
+		if err != nil {
+			log.WarnContext(ctx, "plugin tools not registered", "plugin", name, "error", err)
+		}
+	}
+	startPlugin := func(name, token string) error {
+		m, err := plugin.Load(filepath.Join(pluginsDir, name))
+		if err != nil {
+			return err
+		}
+		return launch(ctx, m, token)
+	}
+	return sup, startPlugin, nil
 }
 
 // kbReindexLoop keeps the kb index in step with the files: on start, every five

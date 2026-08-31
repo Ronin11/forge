@@ -4,3 +4,4 @@
 *.sqlite3*
 /ui/node_modules/
 /ui/test-results/
+/plugins/status-file/forge-status-file

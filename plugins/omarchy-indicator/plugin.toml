@@ -1,0 +1,13 @@
+name = "omarchy-indicator"
+version = "0.1.0"
+description = "Omarchy bar widget for the Forge status file (pure QML; no daemon process)"
+
+# This plugin has no process of its own: the QML in this directory is
+# installed into ~/.config/omarchy/plugins/ronin.forge/ by
+# `forge plugin install omarchy-indicator` and consumes the status file
+# that the status-file plugin maintains. The command below satisfies the
+# manifest contract and exits immediately if ever supervised.
+command = ["true"]
+restart = "never"
+capabilities = ["events"]
+scopes = ["events:read"]

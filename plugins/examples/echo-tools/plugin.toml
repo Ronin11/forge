@@ -1,0 +1,7 @@
+name = "echo-tools"
+version = "0.1.0"
+description = "Throwaway third-party MCP plugin for the M7 smoke: one tool, ping."
+command = ["python3", "echo_tools.py"]
+capabilities = ["tools"]
+scopes = ["tools:provide"]
+restart = "on-failure"

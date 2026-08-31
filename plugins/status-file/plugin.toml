@@ -1,0 +1,8 @@
+name = "status-file"
+version = "0.1.0"
+description = "Maintains ~/.local/state/forge/status.json from the journal stream for bars and status lines to read."
+command = ["./forge-status-file"]
+build = ["go", "build", "-o", "forge-status-file", "."]
+capabilities = ["events"]
+scopes = ["events:read", "work:read", "usage:read"]
+restart = "always"

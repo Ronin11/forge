@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "ronin.forge",
+  "name": "Forge",
+  "version": "0.1.0",
+  "author": "Nate Ashby",
+  "license": "MIT",
+  "description": "Forge daemon state, running attempts, human queue, and budget windows in a native Omarchy bar panel.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Forge",
+    "description": "One bar icon and one panel: daemon state, running attempts, items that need you, queue counts, and both budget windows.",
+    "category": "AI",
+    "aliases": ["forge"],
+    "allowMultiple": false,
+    "defaults": {
+      "statusFile": "~/.local/state/forge/status.json",
+      "staleAfterSec": 30
+    },
+    "schema": [
+      { "key": "statusFile", "type": "path", "label": "Status file", "defaultValue": "~/.local/state/forge/status.json", "description": "The status file the Forge status-file plugin maintains." },
+      { "key": "staleAfterSec", "type": "integer", "label": "Stale after (seconds)", "min": 5, "max": 600, "step": 5, "defaultValue": 30, "description": "Treat the daemon as down when the status file is older than this." }
+    ]
+  }
+}

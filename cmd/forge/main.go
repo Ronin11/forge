@@ -77,6 +77,7 @@ func commands() map[string]command {
 		"stats":       {summary: "per-routine outcomes, durations, tokens, cost", run: runStats},
 		"retro":       {summary: "emit the reflection data pack as JSON", run: runRetro},
 		"mcp":         {summary: "per-attempt MCP server over stdio (loaded by the agent)", run: runMCP},
+		"plugin":      {summary: "list|install|uninstall|enable|disable|logs|status plugins", run: runPlugin},
 	}
 }
 

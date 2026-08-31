@@ -96,3 +96,8 @@ lines:
 # The gate.
 check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-check ui-test lines
     @echo "check: green"
+
+# Build first-party plugin binaries (M7). The installer runs each manifest's
+# build argv; this is the developer convenience for the same step.
+build-plugins:
+    cd plugins/status-file && go build -o forge-status-file .

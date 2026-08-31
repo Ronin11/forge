@@ -21,6 +21,7 @@ import (
 	"forge/internal/logging"
 	"forge/internal/model"
 	"forge/internal/modes"
+	"forge/internal/plugin"
 	"forge/internal/protocol"
 	"forge/internal/store"
 	"forge/internal/tools"
@@ -58,6 +59,9 @@ type Server struct {
 	tools             *tools.Registry
 	kbDir             string
 	modes             *modes.Registry
+	pluginHealth      func() []plugin.PluginHealth
+	pluginStart       func(name, token string) error
+	pluginStop        func(name string)
 
 	// draining refuses new claims and operator writes once set; heartbeats,
 	// events, and completions keep flowing so running attempts finish (§1.4).
@@ -120,6 +124,15 @@ type ServerOptions struct {
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
+	// PluginHealth reports the supervisor's live plugin state for GET
+	// /api/v1/plugins, doctor, and the System page; nil means no supervisor.
+	PluginHealth func() []plugin.PluginHealth
+	// PluginStart (re)starts an enabled plugin's process with the freshly
+	// minted token; nil means enable only records state (the next daemon
+	// start runs it).
+	PluginStart func(name, token string) error
+	// PluginStop stops a disabled plugin's process; nil is a no-op.
+	PluginStop func(name string)
 }
 
 // NewServer wires the routes. It does not listen; Serve does.
@@ -153,6 +166,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
 		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
+		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop,
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, closed: make(chan struct{}), streamInterval: o.StreamInterval,
 	}
 	if s.streamInterval <= 0 {
@@ -177,8 +191,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/daemon/drain", s.handle(s.drain))
 	s.streamRoutes(m)
 	s.doctorRoutes(m)
-	s.pluginRoutes(m)
-	m.HandleFunc("GET /api/v1/journal", s.handle(s.journal))
+	s.pluginRoutes(m) // includes GET /api/v1/journal (JSON and SSE modes)
 
 	m.HandleFunc("POST /api/v1/worker/register", s.handle(s.register))
 	m.HandleFunc("POST /api/v1/worker/claim", s.handle(s.claim))
@@ -260,6 +273,20 @@ func (s *Server) Handler() http.Handler {
 			}
 			s.log.DebugContext(ctx, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "duration_us", time.Since(start).Microseconds(), "remote", r.RemoteAddr, "transport", transport)
 		}()
+		// A plugin bearer token is scope-checked on every transport — plugins
+		// connect over the unix socket (DESIGN.md §17). Requests without a
+		// bearer, with the worker token, or with an unknown token keep the
+		// rules below exactly.
+		if p := s.pluginForRequest(r); p != nil {
+			if !pluginAuthorized(p, r.Method, r.URL.Path) {
+				s.journalPluginDenied(ctx, p.Name, r.URL.Path)
+				s.log.WarnContext(ctx, "plugin denied", "plugin", p.Name, "method", r.Method, "path", r.URL.Path)
+				writeJSON(ctx, s.log, sw, http.StatusForbidden, protocol.Error{Error: "outside plugin scopes"})
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), pluginCtxKey{}, p))
+			ctx = r.Context()
+		}
 		if transport == transportTCP && requiresToken(r.Method, r.URL.Path) && !s.tokenOK(r) {
 			// Tool routes also accept the attempt's own MCP token, which only
 			// the handler can verify (the attempt id is in the query or body),

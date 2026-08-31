@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"forge/internal/model"
+	"forge/internal/plugin"
 	"forge/internal/stats"
 	"forge/internal/store"
 )
@@ -27,7 +28,14 @@ type UI struct {
 	clock func() time.Time
 	tmpl  *template.Template
 	mux   *http.ServeMux
+	// pluginHealth is the supervisor's live view for the System page; nil
+	// (tests, a UI without a daemon) renders installed rows as not running.
+	pluginHealth func() []plugin.PluginHealth
 }
+
+// SetPluginHealth wires the supervisor's live state into the System page; the
+// daemon calls it once at startup.
+func (u *UI) SetPluginHealth(fn func() []plugin.PluginHealth) { u.pluginHealth = fn }
 
 // NewUI parses the embedded templates once; a template error is a startup error.
 func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, error) {
@@ -286,7 +294,32 @@ func (u *UI) system(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos})
+	plugins, err := u.store.Plugins(ctx)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	health := map[string]plugin.PluginHealth{}
+	if u.pluginHealth != nil {
+		for _, h := range u.pluginHealth() {
+			health[h.Name] = h
+		}
+	}
+	rows := make([]uiPlugin, 0, len(plugins))
+	for _, p := range plugins {
+		h := health[p.Name]
+		rows = append(rows, uiPlugin{Plugin: p, Running: h.Running, PID: h.PID, Restarts: h.Restarts, LastExit: h.LastExit})
+	}
+	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos, "Plugins": rows})
+}
+
+// uiPlugin is one System-page plugin row: the store row plus live health.
+type uiPlugin struct {
+	store.Plugin
+	Running  bool
+	PID      int
+	Restarts int
+	LastExit string
 }
 
 // stats renders the same report the API and CLI serve (stats.Load is the one
