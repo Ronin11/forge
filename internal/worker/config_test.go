@@ -14,7 +14,7 @@ func TestAddRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
-	if err := AddRepository(path, "myrepo", repo); err != nil {
+	if err := AddRepository(path, "myrepo", repo, "main"); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -24,10 +24,13 @@ func TestAddRepository(t *testing.T) {
 	if got := cfg.Repositories["myrepo"].Path; got != repo {
 		t.Errorf("path = %q, want %q", got, repo)
 	}
-	if err := AddRepository(path, "myrepo", repo); err == nil {
+	if got := cfg.Repositories["myrepo"].BaseBranch; got != "main" {
+		t.Errorf("base_branch = %q, want main", got)
+	}
+	if err := AddRepository(path, "myrepo", repo, ""); err == nil {
 		t.Error("duplicate accepted")
 	}
-	if err := AddRepository(path, "bad name!", repo); err == nil {
+	if err := AddRepository(path, "bad name!", repo, ""); err == nil {
 		t.Error("invalid name accepted")
 	}
 }

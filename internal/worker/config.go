@@ -231,7 +231,7 @@ func WriteDefault(path, forgeHome, forgeBinary string) (written bool, err error)
 // "repositories on the fly": the daemon owns every file bootstrap writes; the
 // worker re-reads the file on its next registration tick). An existing entry
 // is an error — on-the-fly registration never rewrites what a human set.
-func AddRepository(cfgPath, name, repoPath string) error {
+func AddRepository(cfgPath, name, repoPath, baseBranch string) error {
 	if err := model.ValidateName(name); err != nil {
 		return err
 	}
@@ -246,7 +246,11 @@ func AddRepository(cfgPath, name, repoPath string) error {
 	if _, exists := repos[name]; exists {
 		return fmt.Errorf("repository %s already in %s", name, cfgPath)
 	}
-	repos[name] = map[string]any{"path": repoPath}
+	entry := map[string]any{"path": repoPath}
+	if baseBranch != "" {
+		entry["base_branch"] = baseBranch
+	}
+	repos[name] = entry
 	m["repositories"] = repos
 	var b strings.Builder
 	if err := toml.NewEncoder(&b).Encode(m); err != nil {

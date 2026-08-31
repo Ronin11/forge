@@ -666,8 +666,25 @@ func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath str
 	if err != nil {
 		return protocol.Repository{}, err
 	}
-	if err := worker.AddRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name, r.Path); err != nil {
+	// A checkout without refs/remotes/origin/HEAD (common) leaves resolve_base
+	// with nothing to fall back to (M6 smoke 7), so detect the base branch
+	// now: origin/HEAD when set, else the checkout's current branch.
+	base := detectBaseBranch(vctx, r.Path)
+	if err := worker.AddRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name, r.Path, base); err != nil {
 		return protocol.Repository{}, err
 	}
-	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, Project: "default"}, nil
+	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: base, Project: "default"}, nil
+}
+
+// detectBaseBranch names the branch attempts on an on-the-fly repository
+// resolve against: origin's HEAD when the clone recorded it, else whatever
+// branch the checkout is on; "" lets resolve_base try its own fallbacks.
+func detectBaseBranch(ctx context.Context, path string) string {
+	if out, err := exec.CommandContext(ctx, "git", "-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD").Output(); err == nil {
+		return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", path, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
