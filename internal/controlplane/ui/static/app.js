@@ -1170,3 +1170,86 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     maybeWiden(new URLSearchParams(location.search).get('q') || '');
   }
 })();
+
+// --- Settings: General (daemon health + log level) and Plugins management ---
+(function () {
+  function setErr(id, msg) {
+    var box = document.getElementById(id);
+    if (box) { box.hidden = !msg; box.textContent = msg ? String(msg) : ''; }
+  }
+  function humanDur(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var d = Math.floor(sec / 86400); sec -= d * 86400;
+    var h = Math.floor(sec / 3600); sec -= h * 3600;
+    var m = Math.floor(sec / 60);
+    if (d) return d + 'd ' + h + 'h';
+    if (h) return h + 'h ' + m + 'm';
+    if (m) return m + 'm';
+    return sec + 's';
+  }
+  function humanBytes(n) {
+    if (!n) return '—';
+    var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+  }
+
+  // General page: fill the health panel + log-level input from the API.
+  var general = document.querySelector('[data-settings-general]');
+  if (general) {
+    var hget = function (k) { return general.querySelector('[data-h="' + k + '"]'); };
+    fetch('/api/v1/health').then(function (r) { return r.json(); }).then(function (h) {
+      hget('daemon').textContent = h.daemon;
+      hget('version').textContent = h.version;
+      hget('schema').textContent = h.schema;
+      hget('uptime').textContent = humanDur(h.uptime_s);
+      var wk = h.worker || {};
+      hget('worker').textContent = wk.registered
+        ? (wk.connected ? 'connected' : 'registered, offline') + ' · ' + (wk.active_attempts || 0) + '/' + (wk.max_concurrent || 0) + ' slots'
+        : 'none registered';
+      hget('disk').textContent = humanBytes(h.disk_free_bytes);
+      hget('backup').textContent = (h.backup && h.backup.age_s != null) ? humanDur(h.backup.age_s) + ' ago' : 'never';
+    }).catch(function (e) { setErr('settings-error', 'Health unavailable: ' + e.message); });
+
+    var form = document.querySelector('[data-loglevel-form]');
+    var input = document.querySelector('[data-loglevel-input]');
+    fetch('/api/v1/log-level').then(function (r) { return r.json(); }).then(function (b) { input.value = b.levels || ''; }).catch(function () {});
+    if (form) form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      fetch('/api/v1/log-level', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ levels: input.value.trim() }) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          return resp.json().then(function (b) { input.value = b.levels || ''; setErr('settings-error', ''); });
+        })
+        .catch(function (err) { setErr('settings-error', 'Refused: ' + err.message); });
+    });
+  }
+
+  // Plugins page: enable/disable/uninstall/install, each posting then reloading.
+  function pluginAction(url, method, confirmMsg) {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    fetch(url, { method: method }).then(function (resp) {
+      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+      window.location.reload();
+    }).catch(function (err) { setErr('plugin-error', 'Refused: ' + err.message); });
+  }
+  document.querySelectorAll('[data-plugin-enable]').forEach(function (b) {
+    b.addEventListener('click', function () { pluginAction('/api/v1/plugins/' + encodeURIComponent(b.dataset.pluginEnable) + '/enable', 'POST'); });
+  });
+  document.querySelectorAll('[data-plugin-disable]').forEach(function (b) {
+    b.addEventListener('click', function () { pluginAction('/api/v1/plugins/' + encodeURIComponent(b.dataset.pluginDisable) + '/disable', 'POST'); });
+  });
+  document.querySelectorAll('[data-plugin-uninstall]').forEach(function (b) {
+    b.addEventListener('click', function () { pluginAction('/api/v1/plugins/' + encodeURIComponent(b.dataset.pluginUninstall), 'DELETE', 'Uninstall plugin "' + b.dataset.pluginUninstall + '"?'); });
+  });
+  var installForm = document.querySelector('[data-plugin-install-form]');
+  if (installForm) installForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var name = installForm.querySelector('[name=name]').value.trim();
+    fetch('/api/v1/plugins/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+        window.location.reload();
+      }).catch(function (err) { setErr('plugin-error', 'Refused: ' + err.message); });
+  });
+})();

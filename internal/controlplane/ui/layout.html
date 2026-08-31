@@ -12,7 +12,7 @@
 <a href="/routines" {{if eq .Active "routines.html"}}class="active"{{end}}>Routines</a>
 <a href="/workflows" {{if eq .Active "workflows.html"}}class="active"{{end}}>Workflows</a>
 <a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}>Stats</a>
-<a href="/system" {{if eq .Active "system.html"}}class="active"{{end}}>System</a>
+<a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}>Settings</a>
 <button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false">✳ Ask Forge</button>
 </nav><main>{{end}}
 {{define "foot"}}</main>
@@ -31,6 +31,11 @@
 <p class="chat-status meta" data-chat-status hidden></p>
 </div>
 <script src="/static/app.js"></script></body></html>{{end}}
+{{define "settingsNav"}}<div class="tabs" data-settings-nav>
+<a href="/settings"{{if eq .Active "settings.html"}} class="on"{{end}}>General</a>
+<a href="/system"{{if eq .Active "system.html"}} class="on"{{end}}>System</a>
+<a href="/settings/plugins"{{if eq .Active "settings-plugins.html"}} class="on"{{end}}>Plugins</a>
+</div>{{end}}
 {{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}</td><td><span class="state {{stateClass .State}}">{{.State}}</span></td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} <span class="state {{stateClass .State}}">{{.State}}</span></span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
 {{define "taskRowList"}}{{range .}}{{template "taskRow" .}}{{end}}{{end}}
 {{define "taskTable"}}<table class="list"><thead><tr><th>Task</th><th>State</th><th>Routine</th><th>Repositories</th><th>Class</th><th>Priority</th><th>Created</th></tr></thead><tbody data-task-rows>

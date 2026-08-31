@@ -143,6 +143,8 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /workflows", u.workflows)
+	u.mux.HandleFunc("GET /settings", u.settingsGeneral)
+	u.mux.HandleFunc("GET /settings/plugins", u.settingsPlugins)
 	u.mux.HandleFunc("GET /system", u.system)
 	u.mux.HandleFunc("GET /repos/{name}", u.repo)
 	u.mux.HandleFunc("GET /queue", u.queue)
@@ -542,6 +544,37 @@ func (u *UI) system(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, r, "system.html", "System", map[string]any{"Workers": workers, "Repositories": repos, "Plugins": rows, "RepoStates": states})
+}
+
+// settingsGeneral is the Settings hub landing page. The daemon health panel and
+// the log-level control are filled and driven client-side (GET /api/v1/health,
+// GET|POST /api/v1/log-level), so the handler is a thin shell.
+func (u *UI) settingsGeneral(w http.ResponseWriter, r *http.Request) {
+	u.render(w, r, "settings.html", "Settings", nil)
+}
+
+// settingsPlugins is the dedicated plugin-management page: the installed
+// plugins with their health, enable/disable/uninstall controls, and an install
+// form. Same plugin gathering as the System page.
+func (u *UI) settingsPlugins(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	plugins, err := u.store.Plugins(ctx)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	health := map[string]plugin.PluginHealth{}
+	if u.pluginHealth != nil {
+		for _, h := range u.pluginHealth() {
+			health[h.Name] = h
+		}
+	}
+	rows := make([]uiPlugin, 0, len(plugins))
+	for _, p := range plugins {
+		h := health[p.Name]
+		rows = append(rows, uiPlugin{Plugin: p, Running: h.Running, PID: h.PID, Restarts: h.Restarts, LastExit: h.LastExit})
+	}
+	u.render(w, r, "settings-plugins.html", "Settings", map[string]any{"Plugins": rows})
 }
 
 // uiPlugin is one System-page plugin row: the store row plus live health.

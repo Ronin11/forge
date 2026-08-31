@@ -1,6 +1,12 @@
 {{template "head" .}}
 <h1>Dashboard</h1>
-{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter tasks and attention — text, repo:name, state:running" "Keys" "repo,state,routine,class,type"}}
+<div class="dash-head">
+<div class="dash-head-search">{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter tasks and attention — text, repo:name, state:running" "Keys" "repo,state,routine,class,type"}}</div>
+<section class="gauges" data-usage hidden>
+<div class="gauge" data-window="five_hour"><h2>5-hour window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>
+<div class="gauge" data-window="seven_day"><h2>7-day window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>
+</section>
+</div>
 <section class="tl" data-timeline-live>
 <h2>Timeline</h2>
 <div class="tl-controls">
@@ -10,10 +16,6 @@
 <div class="tl-axis" aria-hidden="true"></div>
 <div class="tl-lanes" role="list"></div>
 <p class="tl-empty empty">No activity in this window.</p>
-</section>
-<section class="gauges" data-usage hidden>
-<div class="gauge" data-window="five_hour"><h2>5-hour window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>
-<div class="gauge" data-window="seven_day"><h2>7-day window</h2><div class="bar"><div class="fill"></div><div class="target"></div></div><p class="meta"></p></div>
 </section>
 {{if .Data.Repositories}}<section class="repos-strip">{{range .Data.Repositories}}<span class="repo-launch"><a class="repo-chip" href="{{.Href}}"><span class="state {{stateClass .State}}">{{.State}}</span> {{.Name}}</a>{{if .AppURL}}<a class="repo-app" href="{{.AppURL}}" target="_blank" rel="noopener" title="Open app">↗</a>{{end}}</span>{{end}}</section>{{end}}
 <section class="cards">

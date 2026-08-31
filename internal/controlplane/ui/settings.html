@@ -1,0 +1,27 @@
+{{template "head" .}}<h1>Settings</h1>
+{{template "settingsNav" .}}
+<p id="settings-error" class="error" hidden></p>
+
+<section class="card" data-settings-general>
+<h2>Daemon</h2>
+<dl class="kv" data-health>
+<dt>Status</dt><dd data-h="daemon">…</dd>
+<dt>Version</dt><dd data-h="version">…</dd>
+<dt>Schema</dt><dd data-h="schema">…</dd>
+<dt>Uptime</dt><dd data-h="uptime">…</dd>
+<dt>Worker</dt><dd data-h="worker">…</dd>
+<dt>Disk free</dt><dd data-h="disk">…</dd>
+<dt>Last backup</dt><dd data-h="backup">…</dd>
+</dl>
+<p><button class="btn" data-action-post="/api/v1/backup">Back up now</button></p>
+</section>
+
+<section class="card">
+<h2>Logging</h2>
+<p class="meta">Log-level spec, e.g. <code>info</code> or <code>debug,controlplane=debug</code>. Applies live to the daemon.</p>
+<form class="settings-row" data-loglevel-form>
+<input name="levels" placeholder="info" size="40" data-loglevel-input>
+<button class="btn primary" type="submit">Apply</button>
+</form>
+</section>
+{{template "foot" .}}

@@ -37,7 +37,12 @@ ul.attention li{margin:.2rem 0}
 .grip{cursor:grab;color:var(--muted);user-select:none}
 tr[draggable]{background:var(--card)}
 .card.question form{margin:.4rem 0}
-.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:1rem}
+.dash-head{display:flex;gap:1rem;align-items:stretch;flex-wrap:wrap;margin-bottom:1rem}
+.dash-head-search{flex:1 1 22rem;min-width:0;display:flex;align-items:flex-start}
+.dash-head-search .searchbar{width:100%;margin:0}
+.dash-head .gauges{flex:0 1 22rem;margin:0}
+.gauges{display:flex;flex-direction:column;gap:.5rem}
+.gauge h2{font-size:.8rem;margin:0 0 .1rem}
 .gauge{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.6rem .9rem}
 .gauge .bar{position:relative;height:.8rem;background:var(--bg);border:1px solid var(--line);border-radius:999px;overflow:visible;margin:.4rem 0}
 .gauge .fill{height:100%;border-radius:999px;background:var(--ok)}.gauge .fill.warn{background:var(--warn)}.gauge .fill.bad{background:var(--bad)}
@@ -160,6 +165,8 @@ code.cmd-copy.copied::after{content:"copied \2713";margin-left:.5em;color:var(--
 .btn:focus-visible{outline:2px solid var(--run);outline-offset:1px}
 td.actions{white-space:nowrap;text-align:right}
 .error{color:var(--bad)}
+.settings-row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
+.settings-row input{font:inherit;padding:.35rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);flex:1 1 12rem;min-width:0}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;min-width:min(44rem,90vw);max-height:90vh}
 dialog::backdrop{background:rgba(0,0,0,.4)}
 dialog h2{margin:.2rem 0 .8rem}

@@ -30,7 +30,7 @@ test.describe('dashboard', () => {
     const s = seed();
     await page.goto('/');
     const nav = page.locator('nav.top');
-    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Routines', 'Stats', 'System']) {
+    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Routines', 'Stats', 'Settings']) {
       await expect(nav.getByText(name, { exact: true })).toBeVisible();
     }
     const workers = page.locator('.card', { hasText: 'Workers' });
@@ -397,6 +397,28 @@ test.describe('repositories', () => {
     }
     await expect(page.locator('h1 .state.state-paused')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('button[data-repo-resume="demo"]')).toBeVisible();
+  });
+});
+
+test.describe('settings', () => {
+  test('General fills the health panel and applies a log level; Plugins page has the install form', async ({ page }) => {
+    await page.goto('/settings');
+    // Sub-nav tabs.
+    for (const t of ['General', 'System', 'Plugins']) {
+      await expect(page.locator('[data-settings-nav]').getByText(t, { exact: true })).toBeVisible();
+    }
+    // The daemon health panel fills from /api/v1/health (version stops being the … placeholder).
+    const version = page.locator('[data-h="version"]');
+    await expect(version).not.toHaveText('…', { timeout: 10_000 });
+    // Apply a log level and see it round-trip into the input.
+    const input = page.locator('[data-loglevel-input]');
+    await input.fill('debug');
+    await page.locator('[data-loglevel-form] button[type=submit]').click();
+    await expect(input).toHaveValue('debug', { timeout: 10_000 });
+
+    // Plugins tab: the install form is present.
+    await page.locator('[data-settings-nav]').getByText('Plugins', { exact: true }).click();
+    await expect(page.locator('[data-plugin-install-form] input[name=name]')).toBeVisible();
   });
 });
 
