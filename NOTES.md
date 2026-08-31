@@ -214,3 +214,7 @@ Newest entries at the bottom of each section. Dates are absolute.
 - `TestServeShutsDownOnCancel` can flake under full-package `-race` load (5s graceful-shutdown deadline exceeded once, passes alone and on rerun); widen the deadline if it recurs.
 
 - **A/B revert nuance**: the auto-revert restores generation N-1, which is usually the last human-approved snapshot but could itself be proposal-applied if two routine proposals were approved back-to-back without K runs between them; walking back to the last `edit`/human-source generation is a possible refinement.
+
+- **daemon status shows worker pid 0** after an exec-restart or when the worker was adopted rather than spawned (the pid is only recorded at spawn); derive it from the data-dir lock holder in M7.
+- **service install with a daemon-spawned worker running**: the old worker holds the data-dir lock, so forge-worker.service flaps until that worker exits (hand-over: kill the old worker, reset-failed, start the unit). init --service could offer this hand-over.
+- **smoke-m6.sh step 5 journal check** reads only the first page of /api/v1/journal; page to the tail (the daemon.draining/daemon.restarted rows are there — verified by hand).
