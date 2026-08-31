@@ -62,4 +62,9 @@ func TestSafeRemoveCheckout(t *testing.T) {
 	if err := safeRemoveCheckout("/"); err == nil {
 		t.Error("root should be refused")
 	}
+	// A checkout that is already gone is a no-op, not an error (so a repo whose
+	// checkout was deleted by hand can still be archived).
+	if err := safeRemoveCheckout(filepath.Join(dir, "vanished")); err != nil {
+		t.Errorf("missing checkout should be a no-op: %v", err)
+	}
 }

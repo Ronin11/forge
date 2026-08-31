@@ -939,6 +939,9 @@ func safeRemoveCheckout(path string) error {
 		return fmt.Errorf("refuse to delete home directory %q", clean)
 	}
 	fi, err := os.Lstat(clean)
+	if os.IsNotExist(err) {
+		return nil // already gone (e.g. a manually deleted checkout) — nothing to remove
+	}
 	if err != nil {
 		return fmt.Errorf("stat checkout %s: %w", clean, err)
 	}
