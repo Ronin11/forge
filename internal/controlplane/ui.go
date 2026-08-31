@@ -67,6 +67,31 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return humanDuration(time.Duration(*us) * time.Microsecond)
 		},
 		"join": strings.Join,
+		// causeLabel and causeFwd render a provenance cause (DESIGN.md §3) as a
+		// backward ("planned by") and forward ("planned") phrase for the task
+		// strip and the Work view.
+		"causeLabel": func(c model.Cause) string {
+			switch c {
+			case model.CausePlanTask:
+				return "planned by"
+			case model.CauseVerify:
+				return "verify of"
+			case model.CauseFollowUp:
+				return "follow-up of"
+			}
+			return "caused by"
+		},
+		"causeFwd": func(c model.Cause) string {
+			switch c {
+			case model.CausePlanTask:
+				return "planned"
+			case model.CauseVerify:
+				return "verify"
+			case model.CauseFollowUp:
+				return "follow-up"
+			}
+			return ""
+		},
 		// dict builds the argument for a shared partial ({{template "searchbar" dict …}}).
 		"dict": func(pairs ...any) (map[string]any, error) {
 			if len(pairs)%2 != 0 {
@@ -174,6 +199,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /tasks", u.tasks)
 	u.mux.HandleFunc("GET /tasks/rows", u.taskRowsFragment)
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
+	u.mux.HandleFunc("GET /work/{id}", u.work)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /workflows", u.workflows)
 	u.mux.HandleFunc("GET /settings", u.settingsGeneral)
@@ -492,7 +518,42 @@ func (u *UI) task(w http.ResponseWriter, r *http.Request) {
 		views = append(views, tv)
 	}
 	state := model.DeriveWorkState(model.WorkInputs{Targets: targetStates(targets), Integrate: work.Integrate})
-	u.render(w, r, "task.html", "Task "+work.ID[:8], map[string]any{"Work": work, "State": state, "Targets": views, "Questions": questions})
+	// Provenance strip (DESIGN.md §3): one lineage lookup feeds the breadcrumb,
+	// the backward cause/deps, and the forward children/blocked links.
+	var strip provStrip
+	if ld, err := computeLineage(ctx, u.store, work.ID); err == nil {
+		strip = ld.strip(work.ID)
+	}
+	u.render(w, r, "task.html", "Task "+work.ID[:8], map[string]any{"Work": work, "State": state, "Targets": views, "Questions": questions, "Lineage": strip})
+}
+
+// work is the /work/{id} view: one provenance tree with the root's rollups. Any
+// member id canonicalizes (302) to the root's URL.
+func (u *UI) work(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ld, err := computeLineage(ctx, u.store, r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.PathValue("id") != ld.RootID {
+		http.Redirect(w, r, "/work/"+ld.RootID, http.StatusFound)
+		return
+	}
+	var targetIDs []string
+	for _, ts := range ld.Targets {
+		for _, t := range ts {
+			targetIDs = append(targetIDs, t.ID)
+		}
+	}
+	attempts, err := u.store.AttemptsForTargets(ctx, targetIDs)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	tree, roll := ld.buildTree(attempts)
+	root := ld.byID[ld.RootID]
+	u.render(w, r, "work.html", "Work "+ld.RootID[:8], map[string]any{"Root": root, "State": ld.State[ld.RootID], "Tree": tree, "Rollup": roll})
 }
 
 func (u *UI) routines(w http.ResponseWriter, r *http.Request) {

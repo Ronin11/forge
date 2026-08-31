@@ -238,3 +238,26 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 @keyframes fw-strike{0%,30%{transform:rotate(-30deg)}42%,52%{transform:rotate(0)}70%{transform:rotate(-33deg)}100%{transform:rotate(-30deg)}}
 @keyframes fw-flash{0%,40%{opacity:0}45%,56%{opacity:1}64%,100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.fw-hammer,.fw-spark{animation:none}.fw-spark{opacity:1}}
+/* Provenance strip (task detail) and the /work tree. */
+.prov{padding:.6rem .8rem;font-size:.85rem}
+.prov-crumb{color:var(--muted);margin-bottom:.4rem}.prov-crumb a{color:var(--muted);text-decoration:none}.prov-crumb a:hover{color:var(--fg)}.prov-crumb .prov-t{color:var(--fg)}.prov-crumb .prov-sep{color:var(--muted);margin:0 .15rem}
+.prov-flow{display:flex;flex-wrap:wrap;gap:.4rem 1.5rem}
+.prov-back,.prov-fwd{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem}
+.prov-dir{color:var(--muted);font-weight:600;margin-right:.15rem}
+.prov-back{border-left:2px solid var(--line);padding-left:.5rem}
+.prov-fwd{border-left:2px solid var(--run);padding-left:.5rem}
+.chip.cause{color:var(--fg);text-decoration:none}.chip.cause:hover{border-color:var(--fg)}
+.chip.dep{color:var(--wait);border-color:var(--wait);text-decoration:none}
+.chip.part{color:var(--muted);text-decoration:none;font-size:.7rem}.chip.part:hover{color:var(--fg);border-color:var(--fg)}
+.prov-view{display:inline-block;margin-top:.4rem;font-size:.8rem;text-decoration:none;color:var(--run)}
+.wrollup .wroll-nums{display:flex;flex-wrap:wrap;gap:.3rem 1.4rem;margin-bottom:.5rem}.wrollup .wroll-nums span{color:var(--muted)}.wrollup .wroll-nums b{color:var(--fg);font-variant-numeric:tabular-nums}
+.wroll-states{display:flex;flex-wrap:wrap;gap:.3rem}.wroll-states .chip{display:inline-flex;align-items:center;gap:.25rem}
+.wtree .wnode{margin:.1rem 0}
+.wtree .wrow{font-size:.85rem;padding:.15rem 0;cursor:default}
+.wtree summary.wrow{cursor:pointer}
+.wtree summary.wrow::-webkit-details-marker{color:var(--muted)}
+.wtree .wid{text-decoration:none;font-variant-numeric:tabular-nums}
+.wtree .wtitle{color:var(--fg)}
+.wtree .wmeta{color:var(--muted)}
+.wtree .wkids{padding-left:1.1rem;border-left:1px solid var(--line);margin-left:.35rem}
+.wtree .wrow.leaf{padding-left:1.2rem}

@@ -47,7 +47,7 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 			t.Fatalf("insert work %s: %v", id, err)
 		}
 	}
-	work("planwork00000000000000000000000a", "", `{}`)                                  // plan root
+	work("planwork00000000000000000000000a", "", `{}`)                                 // plan root
 	work("planchild0000000000000000000000b", "planwork00000000000000000000000a", `{}`) // plan child
 	work("subject000000000000000000000000c", "", `{}`)                                 // verify subject
 	// The verify subject's target and attempt: the follow-up links to the

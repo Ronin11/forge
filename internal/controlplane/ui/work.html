@@ -1,0 +1,23 @@
+{{template "head" .}}
+{{$root := .Data.Root}}{{$roll := .Data.Rollup}}
+<h1>Work {{short $root.ID}} {{template "stateChip" .Data.State}}</h1>
+<p class="meta">{{$root.Title}} · routine <b>{{$root.RoutineName}}@{{$root.Generation}}</b> · {{$root.Trigger}}{{if $root.SubmittedBy}} · by {{$root.SubmittedBy}}{{end}}{{if $root.WorkflowName}} · workflow {{$root.WorkflowName}}{{end}} · created {{ago $root.CreatedAt}}</p>
+<section class="card wrollup">
+<div class="wroll-nums">
+<span><b>{{printf "$%.4f" $roll.Cost}}</b> cost</span>
+<span><b>{{$roll.Attempts}}</b> attempts</span>
+<span><b>{{$roll.TokensIn}}/{{$roll.TokensOut}}</b> tokens in/out</span>
+<span><b>±{{$roll.FilesChanged}}</b> files <small>(+{{$roll.Insertions}}/-{{$roll.Deletions}})</small></span>
+</div>
+<div class="wroll-states">{{range $roll.States}}<span class="chip">{{template "stateChip" .State}} {{.N}}</span> {{end}}</div>
+</section>
+<section class="card wtree">
+{{template "workNode" .Data.Tree}}
+</section>
+{{template "foot" .}}
+
+{{define "workNode"}}{{if .Children}}<details open class="wnode"><summary class="wrow">{{template "workRowInner" .Row}}</summary>
+<div class="wkids">{{range .Children}}{{template "workNode" .}}{{end}}</div>
+</details>{{else}}<div class="wnode"><div class="wrow leaf">{{template "workRowInner" .Row}}</div></div>{{end}}{{end}}
+
+{{define "workRowInner"}}<a href="/tasks/{{.Work.ID}}" class="wid">{{short .Work.ID}}</a>{{if .Work.Cause}} <span class="chip cause">{{causeFwd .Work.Cause}}</span>{{end}} <span class="wtitle">{{.Work.Title}}</span> {{template "stateChip" .State}}{{if .IsPlan}} <span class="chip">plan batch</span>{{end}}{{if .Work.WorkflowName}} <span class="chip">workflow {{.Work.WorkflowName}}</span>{{end}}{{range .Repos}} <span class="chip">{{.}}</span>{{end}}{{range .BlockedBy}} <span class="chip dep">blocked by {{short .}}</span>{{end}} <span class="meta wmeta">{{if .Cost}}{{deref .Cost}} · {{end}}{{.Duration}} · {{ago .Work.CreatedAt}}</span>{{end}}
