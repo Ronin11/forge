@@ -10,6 +10,7 @@ package all
 import (
 	"forge/internal/modes"
 	"forge/internal/modes/audit"
+	"forge/internal/modes/curate"
 	"forge/internal/modes/docs"
 	"forge/internal/modes/explore"
 	"forge/internal/modes/greenfield"
@@ -27,6 +28,7 @@ import (
 func All() []modes.Mode {
 	return []modes.Mode{
 		audit.New(),
+		curate.New(),
 		docs.New(),
 		explore.New(),
 		greenfield.New(),

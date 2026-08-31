@@ -5,3 +5,4 @@
 /ui/node_modules/
 /ui/test-results/
 /plugins/status-file/forge-status-file
+/plugins/notify/forge-notify

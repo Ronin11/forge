@@ -771,3 +771,44 @@ func (s *Server) attention(r *http.Request) (int, any, error) {
 	}
 	return http.StatusOK, attention{Questions: qs, Proposals: ps}, nil
 }
+
+// retryRequest is POST /api/v1/targets/{id}/retry's optional body. Model is
+// M11's model-override knob; the schema cannot record a per-target override
+// yet, so a non-empty value is refused (store.ErrModelOverride → 400).
+type retryRequest struct {
+	Model string `json:"model"`
+}
+
+// retryTarget is M11's "forge task retry": a failed, unverified, or cancelled
+// Target goes back to pending for a fresh attempt. The state rule lives in
+// model.Transition; an ineligible state maps to 409 like the other target
+// decisions. Registered in verifyRoutes beside approve and reject.
+func (s *Server) retryTarget(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var req retryRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			return 0, nil, err
+		}
+	}
+	var target *store.Target
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		target, err = tx.RetryTarget(ctx, id, req.Model)
+		return err
+	})
+	if errors.Is(err, store.ErrModelOverride) {
+		return 0, nil, badRequest("%v", err)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "target retried", "target_id", id)
+	return http.StatusOK, target, nil
+}

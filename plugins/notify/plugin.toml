@@ -1,0 +1,8 @@
+name = "notify"
+version = "0.1.0"
+description = "Sends desktop notifications via notify-send for new questions, target failures, budget throttling, and new proposals."
+command = ["./forge-notify"]
+build = ["go", "build", "-o", "forge-notify", "."]
+capabilities = ["events"]
+scopes = ["events:read", "work:read"]
+restart = "always"

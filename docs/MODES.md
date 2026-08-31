@@ -297,6 +297,24 @@ Data pack in → kb retro note + proposals out. Tools only.
 - **Checkpoints:** none. **Budget class:** `backlog`. **Autonomy:** `auto`.
   **Writes:** `KbOnly` (+ proposals).
 
+### `curate`
+
+Kb hygiene: superseded retro notes and stale hypotheses → one summary note. Tools only.
+
+- **Prompt outline:** find superseded retro notes and stale hypotheses with
+  `forge_kb_search`; read each candidate with `forge_kb_note` and check its links with
+  `forge_kb_backlinks` / `forge_kb_links` before retiring it; write exactly one
+  summary note via `forge_kb_new` with a `supersedes` link to every source note.
+  Never delete notes; never propose. Runs monthly as `backlog` (`DESIGN.md` §22).
+- **Tools:** `--tools ""` (no built-ins); `forge_kb_search`, `forge_kb_note`,
+  `forge_kb_new`, `forge_kb_backlinks`, `forge_kb_links`, `forge_note_progress`,
+  `forge_usage`.
+- **Result:** envelope + `note_id` (the summary note; empty when nothing needed
+  consolidating), `superseded[]` (the note ids it supersedes).
+- **Verification:** L0, `Writes() == KbOnly` — like `retro`, the worktree is only a
+  cwd; nothing may be written there.
+- **Checkpoints:** none. **Budget class:** `backlog`. **Autonomy:** `auto`.
+
 ## Checkpoint mechanics
 
 A checkpoint is a named point in a mode's prompt. Its effect depends on autonomy:

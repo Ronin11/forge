@@ -36,6 +36,12 @@ var transitions = map[State][]State{
 	QueuedForMerge: {Merging, Cancelled},
 	Merging:        {Merged, Conflict, Unverified, QueuedForMerge, Cancelled},
 	Conflict:       {QueuedForMerge, Cancelled},
+	// M11 retry (forge task retry, DESIGN.md §22): a terminal, non-merged
+	// Target may go back to pending for a fresh attempt. Exactly these three;
+	// merged stays terminal, and succeeded is already the accepted outcome.
+	Failed:     {Pending},
+	Unverified: {Pending},
+	Cancelled:  {Pending},
 }
 
 // The merging edges: merged (pushed); conflict (rebase failed and integrate mode

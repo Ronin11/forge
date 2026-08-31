@@ -30,6 +30,7 @@ var wantTable = map[string]struct {
 	"review":     {model.L0, model.WritesNone, model.ClassNormal, model.AutonomyAuto, nil, "findings", []string{"verdict", "findings"}},
 	"verify":     {model.L0, model.WritesNone, model.ClassNormal, model.AutonomyAuto, nil, "claims_checked", []string{"verdict"}},
 	"audit":      {model.L0, model.WritesKbOnly, model.ClassBacklog, model.AutonomyAuto, nil, "note_id", nil},
+	"curate":     {model.L0, model.WritesKbOnly, model.ClassBacklog, model.AutonomyAuto, nil, "note_id", nil},
 	"maintain":   {model.L1, model.WritesRepo, model.ClassBacklog, "", nil, "commits", nil},
 	"docs":       {model.L1, model.WritesDocsOnly, model.ClassBacklog, "", nil, "docs_updated", nil},
 	"explore":    {model.L0, model.WritesKbOnly, model.ClassBacklog, model.AutonomyAuto, nil, "sources", nil},

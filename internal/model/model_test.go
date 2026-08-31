@@ -50,6 +50,10 @@ func TestTransitionTable(t *testing.T) {
 		QueuedForMerge: {Merging, Cancelled},
 		Merging:        {Merged, Conflict, Unverified, QueuedForMerge, Cancelled},
 		Conflict:       {QueuedForMerge, Cancelled},
+		// M11 retry edges: terminal, non-merged → pending.
+		Failed:     {Pending},
+		Unverified: {Pending},
+		Cancelled:  {Pending},
 	}
 	for _, from := range all {
 		for _, to := range all {
