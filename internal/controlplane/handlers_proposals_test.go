@@ -13,7 +13,7 @@ func createProposalVia(h *harness, target string) store.Proposal {
 	h.t.Helper()
 	var p store.Proposal
 	h.call(http.MethodPost, "/api/v1/proposals", map[string]any{
-		"kind": "process", "target": target,
+		"kind": "process", "target": target, "after": map[string]any{"priority": 40},
 		"rationale": "trim the timeout", "verification_plan": "watch the next 5 runs",
 	}, &p, http.StatusCreated)
 	return p
@@ -106,13 +106,13 @@ func TestProposalApproveAtomic(t *testing.T) {
 		default:
 			t.Errorf("status after approve = %s", out.Status)
 		}
-	case http.StatusConflict:
+	default:
+		// Any refused apply (404 unknown routine, 409 conflict, 400 bad after)
+		// must roll the whole approval back — never approved-but-unapplied.
 		var out store.Proposal
 		h.call(http.MethodGet, "/api/v1/proposals/"+p.ID, nil, &out, http.StatusOK)
 		if out.Status != model.ProposalProposed || out.DecidedBy != "" {
-			t.Errorf("after refused apply = %s decided by %q, want proposed and undecided", out.Status, out.DecidedBy)
+			t.Errorf("after refused apply (%d) = %s decided by %q, want proposed and undecided", status, out.Status, out.DecidedBy)
 		}
-	default:
-		t.Fatalf("approve = %d %s", status, raw)
 	}
 }

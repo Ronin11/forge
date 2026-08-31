@@ -470,7 +470,7 @@ func TestLoadFunnel(t *testing.T) {
 
 	// One applied proposal, one still proposed.
 	f.write(func(tx *store.Tx) error {
-		p := &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", Rationale: "r", VerificationPlan: "v"}
+		p := &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", After: []byte(`{"priority":40}`), Rationale: "r", VerificationPlan: "v"}
 		if err := tx.CreateProposal(ctx(), p); err != nil {
 			return err
 		}

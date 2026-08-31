@@ -139,7 +139,7 @@ export async function seed(base, home) {
   // and one the browser test decides — reject is terminal whatever the apply
   // engine does with a kind, so a retry stays green.
   const propKeep = await call('POST', '/api/v1/proposals', {
-    kind: 'process', target: 'routine:ad-hoc',
+    kind: 'process', target: 'routine:ad-hoc', after: { priority: 40 },
     rationale: 'Lower the ad-hoc timeout: p95 sits far below it',
     verification_plan: 'Watch the next five ad-hoc runs for timeouts',
   }, 201);

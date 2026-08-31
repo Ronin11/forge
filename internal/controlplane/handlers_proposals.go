@@ -112,7 +112,7 @@ func (s *Server) approveProposal(r *http.Request) (int, any, error) {
 	// prompt change, and a prompt change without a measured eval score is a
 	// guess. The other kinds carry their own verification at apply time.
 	if resolved.EvalScore == nil && (resolved.Kind == model.ProposalRoutine || resolved.Kind == model.ProposalModePrompt) {
-		return 0, nil, fmt.Errorf("proposal has no eval score; run forge eval and record it: %w", store.ErrConflict)
+		return 0, nil, fmt.Errorf("no eval score yet — run `forge eval --record-proposal %s` first: %w", model.ShortID(resolved.ID), store.ErrConflict)
 	}
 	var p *store.Proposal
 	err = s.store.Write(ctx, func(tx *store.Tx) error {

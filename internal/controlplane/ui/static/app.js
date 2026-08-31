@@ -90,12 +90,13 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
       if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
       window.location.reload();
     }).catch(function (err) {
+      var msg = String(err.message || '').replace(/: (conflict|not found|draining)$/, '');
       var box = document.getElementById('proposal-error');
       if (box) {
         box.hidden = false;
-        box.textContent = 'Refused: ' + err.message;
+        box.textContent = 'Refused: ' + msg;
       } else {
-        window.alert('Refused: ' + err.message);
+        window.alert('Refused: ' + msg);
       }
     });
   });

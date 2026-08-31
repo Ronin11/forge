@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"forge/internal/model"
@@ -43,6 +44,18 @@ func (tx *Tx) CreateProposal(ctx context.Context, p *Proposal) error {
 	}
 	if targetsConstitution(p.Target) {
 		return fmt.Errorf("proposal targets the constitution: %w", ErrConflict)
+	}
+	// A proposal that applies a concrete change must carry it: an empty `after`
+	// makes the proposal unapplyable, so approving it later dead-ends on
+	// "after is required". Doc proposals are the exception (apply just records
+	// them). This is the create-time guard against advisory-only routine/etc.
+	// proposals (an early retro filed some before its prompt required `after`).
+	switch p.Kind {
+	case model.ProposalRoutine, model.ProposalModePrompt, model.ProposalProcess, model.ProposalTool, model.ProposalCode:
+		a := strings.TrimSpace(string(p.After))
+		if a == "" || a == "null" || a == "{}" {
+			return fmt.Errorf("proposal of kind %s requires a concrete 'after' (the change to apply)", p.Kind)
+		}
 	}
 	p.ID = model.NewID()
 	p.Status = model.ProposalProposed

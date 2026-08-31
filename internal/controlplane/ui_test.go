@@ -41,7 +41,7 @@ func TestUIPagesRender(t *testing.T) {
 		if err := tx.CreateRoutine(ctx, r); err != nil {
 			return err
 		}
-		if err := tx.CreateProposal(ctx, &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory",
+		if err := tx.CreateProposal(ctx, &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", After: []byte(`{"priority":40}`),
 			Rationale: "Trim the timeout", VerificationPlan: "watch the next 5 runs"}); err != nil {
 			return err
 		}

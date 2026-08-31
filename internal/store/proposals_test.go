@@ -127,3 +127,27 @@ func TestUpdateRoutineFromRecordsSource(t *testing.T) {
 		t.Errorf("source = %q", source)
 	}
 }
+
+// A change-applying proposal must carry a concrete `after` at creation, so an
+// approval never dead-ends later on "after is required".
+func TestProposalRequiresAfter(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	for _, kind := range []model.ProposalKind{model.ProposalRoutine, model.ProposalModePrompt, model.ProposalProcess} {
+		p := &Proposal{Source: "retro", Kind: kind, Target: "routine:inventory", Rationale: "r", VerificationPlan: "v"}
+		if err := st.Write(ctx, func(tx *Tx) error { return tx.CreateProposal(ctx, p) }); err == nil {
+			t.Errorf("kind %s with no after was accepted", kind)
+		}
+	}
+	// A doc proposal with no after is fine (apply just records it).
+	doc := &Proposal{Source: "retro", Kind: model.ProposalDoc, Target: "kb:note", Rationale: "r", VerificationPlan: "v"}
+	if err := st.Write(ctx, func(tx *Tx) error { return tx.CreateProposal(ctx, doc) }); err != nil {
+		t.Errorf("doc proposal without after rejected: %v", err)
+	}
+	// A routine proposal WITH a concrete after is accepted.
+	ok := &Proposal{Source: "retro", Kind: model.ProposalRoutine, Target: "routine:inventory",
+		After: json.RawMessage(`{"max_turns":8}`), Rationale: "r", VerificationPlan: "v"}
+	if err := st.Write(ctx, func(tx *Tx) error { return tx.CreateProposal(ctx, ok) }); err != nil {
+		t.Errorf("routine proposal with after rejected: %v", err)
+	}
+}
