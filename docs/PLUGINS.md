@@ -135,3 +135,58 @@ reverses the install, including the `shell.json` edit.
 A committed reference copy of the throwaway MCP plugin the M7 smoke uses
 (`SMOKE.md` §M7 step 4): copy it to `~/.forge/plugins/echo-tools`, enable it,
 and its `ping` tool surfaces as `echo-tools_ping`. See its README.
+
+## `github-issues` — GitHub issues as Forge tasks
+
+A first-party `intake` + `annotate` plugin (Go, `plugins/github-issues/`).
+GitHub is the inbox, Forge is the worker: it polls configured repositories for
+open issues and, per new issue, creates a Forge task — an implement-mode task
+by default — linked back to the issue via `external_refs`; then it watches
+those tasks and comments the outcome on the issue when they finish.
+
+It runs the host's `gh` CLI for every GitHub call and never handles a token
+itself — `gh` authenticates through the passed-through XDG environment. Forge
+calls go over `FORGE_SOCKET` with `FORGE_TOKEN`.
+
+### Config — `<FORGE_PLUGIN_DIR>/github-issues.toml`
+
+```toml
+poll_seconds = 60          # default 60, minimum 15
+[[repo]]
+github    = "Ronin11/forge"   # owner/name; the GitHub repository
+forge     = "forge"           # the registered Forge repository name
+label     = "forge"           # only issues with this label; "" = every open issue
+mode      = "implement"       # default "implement"
+class     = "normal"          # default "normal"
+autonomy  = "auto"            # default "auto"
+integrate = false             # default false
+comment   = true              # default true — comment on the issue on pickup + finish
+done_label = "forge:done"     # optional; added when the task finishes (best-effort)
+```
+
+Each `[[repo]]` needs `github` (owner/name) and `forge`; anything else takes
+its default. An absent config file makes the plugin idle (it logs
+`no github-issues.toml; nothing to poll` and heartbeats) rather than crash.
+Ingest and comment state is kept in `<FORGE_PLUGIN_DIR>/state.json` (atomic
+write, 0600), keyed `"<github>#<number>"`, so restarts neither re-create tasks
+nor re-comment outcomes.
+
+### The intake → implement → comment loop
+
+Every `poll_seconds` (and once on start):
+
+1. **Ingest.** For each repo, `gh issue list` the open issues (filtered to
+   `label`). For each issue not already tracked, `POST /api/v1/tasks` with the
+   prompt built from the issue (the issue body is the acceptance criteria),
+   `POST …/external-refs` a `{kind:"issue", id:"<github>#<n>", …}` ref, and —
+   when `comment` — post a pickup comment. Only after the task is created is
+   the issue recorded, so a create failure retries next cycle and a later
+   best-effort step never duplicates the task.
+2. **Reconcile.** For each ingested task, `GET /api/v1/tasks/<id>`; when it
+   reaches a terminal state (succeeded, failed, unverified, partial,
+   cancelled, merged, conflict) it comments the outcome (with the fix branch
+   and the task URL), best-effort adds `done_label`, and marks the entry done
+   so it never comments again.
+
+Opening a PR from the fix branch is a natural future option; this plugin only
+comments the outcome and does not open PRs.
