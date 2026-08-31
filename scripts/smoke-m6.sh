@@ -95,7 +95,7 @@ step7() {
   sleep 1
   H=.scratch/m6home
   rm -rf "$H"; mkdir -p "$H"
-  FORGE_HOME=$PWD/$H run env FORGE_HOME=$PWD/$H $FORGE task add "Read-only: say hi in one short sentence." --repo equitizr --model haiku --wait
+  FORGE_HOME=$PWD/$H run env FORGE_HOME=$PWD/$H $FORGE task add "Read-only: say hi in one short sentence." --repo equitizr --model haiku --autonomy auto --wait
   run ls "$H"
   env FORGE_HOME=$PWD/$H $FORGE daemon stop || true
   sleep 1

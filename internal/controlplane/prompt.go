@@ -59,7 +59,14 @@ func assemblePrompt(in promptInput) (template, rendered string) {
 		t.WriteString(block)
 		t.WriteString("\n\n")
 	}
-	t.WriteString(strings.ReplaceAll(in.RoutinePrompt, "{{repo}}", in.Repository))
+	if in.RoutinePrompt != "" {
+		// The label matters: every preamble ends with a "## Result" format
+		// section, and an unlabeled task line after it reads as trailing
+		// noise — haiku attempts repeatedly answered "no task was provided"
+		// (M6 smoke 6/7) with the task sitting right there.
+		t.WriteString("YOUR TASK (the routine prompt):\n")
+		t.WriteString(strings.ReplaceAll(in.RoutinePrompt, "{{repo}}", in.Repository))
+	}
 	template = t.String()
 
 	var c strings.Builder
