@@ -27,7 +27,8 @@ EOF
 step1() {
   say "1. plugin list shows both; enable status-file; file appears <=5s, updates <=1s after task add"
   run $FORGE plugin list
-  run $FORGE plugin enable status-file
+  run $FORGE plugin install status-file --force
+  run $FORGE plugin enable status-file --yes
   rm -f "$STATUS"
   for i in $(seq 1 25); do [ -f "$STATUS" ] && break; sleep 0.2; done
   if [ -f "$STATUS" ]; then echo "status file appeared after ~$((i / 5)).$((i % 5 * 2))s" | tee -a "$LOG"; else echo "FAIL: no status file within 5s" | tee -a "$LOG"; fi

@@ -164,18 +164,21 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return c.fail("plugin install", err)
 	}
-	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
-		return c.fail("plugin install", fmt.Errorf("copy %s: %w", src, err))
-	}
-	m, err := plugin.Load(dst)
+	m, err := plugin.Load(src)
 	if err != nil {
 		return c.fail("plugin install", err)
 	}
 	if len(m.Build) > 0 {
+		// Build in the SOURCE checkout: first-party Go plugins are part of the
+		// repo module and cannot build from the copied dir (no go.mod there —
+		// M7 smoke 1). The built binary ships with the copy.
 		fmt.Fprintf(c.stdout, "building %s: %s\n", name, strings.Join(m.Build, " "))
-		if err := runPluginBuild(ctx, c, dst, m.Build); err != nil {
+		if err := runPluginBuild(ctx, c, src, m.Build); err != nil {
 			return c.fail("plugin install", err)
 		}
+	}
+	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
+		return c.fail("plugin install", fmt.Errorf("copy %s: %w", src, err))
 	}
 	cl := c.client(log)
 	if err := cl.connect(ctx); err != nil {
