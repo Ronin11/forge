@@ -161,12 +161,13 @@ func TestRetryTargetNotFound(t *testing.T) {
 func TestAttemptForTargetSkipsFinished(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()
+	target := retryWork(t, st, false, []model.State{model.Claimed, model.Failed}, TransitionOptions{Actor: "test", Reason: model.ReasonExitNonzero})
 	id := model.NewID()
 	if err := st.Write(ctx, func(tx *Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, mode, autonomy, finished_at, created_at, updated_at) VALUES (?, 'tgt1', 'w', 'cr1', 'h', 'e', 'm', 'haiku', 'run', 'auto', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO attempts (id, target_id, worker_id, claim_request_id, mcp_token_hash, executor, model, model_alias, mode, autonomy, finished_at, created_at, updated_at) VALUES (?, ?, 'w', 'cr1', 'h', 'e', 'm', 'haiku', 'run', 'auto', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id, target.ID); err != nil {
 			return err
 		}
-		a, err := tx.attemptForTarget(ctx, "tgt1")
+		a, err := tx.attemptForTarget(ctx, target.ID)
 		if err != nil {
 			return err
 		}
@@ -176,7 +177,7 @@ func TestAttemptForTargetSkipsFinished(t *testing.T) {
 		if _, err := tx.Exec(ctx, `UPDATE attempts SET finished_at = NULL WHERE id = ?`, id); err != nil {
 			return err
 		}
-		a, err = tx.attemptForTarget(ctx, "tgt1")
+		a, err = tx.attemptForTarget(ctx, target.ID)
 		if err != nil {
 			return err
 		}
