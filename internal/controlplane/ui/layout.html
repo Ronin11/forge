@@ -7,7 +7,7 @@
 <a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
 <a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}><svg class="i"><use href="#i-queue"/></svg> Queue</a>
 <a href="/attention" {{if eq .Active "attention.html"}}class="active"{{end}}><svg class="i"><use href="#i-human"/></svg> Human Queue</a>
-<a href="/proposals" {{if eq .Active "proposals.html"}}class="active"{{end}}><svg class="i"><use href="#i-proposals"/></svg> Proposals</a>
+<a href="/proposals" {{if or (eq .Active "proposals.html") (eq .Active "proposal-detail.html")}}class="active"{{end}}><svg class="i"><use href="#i-proposals"/></svg> Proposals</a>
 <a href="/kb" {{if or (eq .Active "kb.html") (eq .Active "kbnote.html")}}class="active"{{end}}><svg class="i"><use href="#i-knowledge"/></svg> Knowledge</a>
 <a href="/routines" {{if eq .Active "routines.html"}}class="active"{{end}}><svg class="i"><use href="#i-routines"/></svg> Routines</a>
 <a href="/workflows" {{if eq .Active "workflows.html"}}class="active"{{end}}><svg class="i"><use href="#i-workflows"/></svg> Workflows</a>

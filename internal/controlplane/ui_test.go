@@ -30,6 +30,7 @@ func TestUIPagesRender(t *testing.T) {
 	}()
 	workerID := "0123456789abcdef0123456789abcdef"
 	var work *store.Work
+	var prop *store.Proposal
 	if err := st.Write(ctx, func(tx *store.Tx) error {
 		if err := tx.EnsureProject(ctx, "default"); err != nil {
 			return err
@@ -42,8 +43,9 @@ func TestUIPagesRender(t *testing.T) {
 		if err := tx.CreateRoutine(ctx, r); err != nil {
 			return err
 		}
-		if err := tx.CreateProposal(ctx, &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", After: []byte(`{"priority":40}`),
-			Rationale: "Trim the timeout", VerificationPlan: "watch the next 5 runs"}); err != nil {
+		prop = &store.Proposal{Source: "manual", Kind: model.ProposalProcess, Target: "routine:inventory", After: []byte(`{"priority":40}`),
+			Rationale: "Trim the timeout", VerificationPlan: "watch the next 5 runs"}
+		if err := tx.CreateProposal(ctx, prop); err != nil {
 			return err
 		}
 		if err := tx.CreateWorkflow(ctx, &store.Workflow{Name: "nightly", Steps: []store.WorkflowStep{{Name: "scan", Routine: "inventory"}, {Name: "fix", Routine: "inventory"}}}); err != nil {
@@ -100,8 +102,9 @@ func TestUIPagesRender(t *testing.T) {
 			"Verify notify click-routing", `<a href="/kb/setup-guide">Open the doc →</a>`,
 			`<button data-rpc="notify.test">Send test toast</button>`,
 			`<a href="/kb/setup-guide">kb:setup-guide</a>`},
-		"/proposals": {"Proposals", "routine:inventory", "Trim the timeout", "Approve", `data-searchbar="client"`, `data-f-status="proposed"`},
-		"/kb":        {"Knowledge", `data-searchbar="server"`, `data-keys="tag,type"`},
+		"/proposals":            {"Proposals", "routine:inventory", "Trim the timeout", "Approve", `data-searchbar="client"`, `data-f-status="proposed"`},
+		"/proposals/" + prop.ID: {"Proposal", "Trim the timeout", "Verification plan", "watch the next 5 runs", "Decision history", "proposal.created", "<h2>After</h2>", "priority"},
+		"/kb":                   {"Knowledge", `data-searchbar="server"`, `data-keys="tag,type"`},
 	} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {

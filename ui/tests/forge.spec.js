@@ -466,6 +466,22 @@ test.describe('proposals', () => {
   });
 });
 
+test.describe('proposal detail', () => {
+  test('the id links to a detail page with rationale, decision history, and actions', async ({ page }) => {
+    const s = seed();
+    await page.goto('/proposals');
+    // Click the proposal id link to drill in.
+    await page.locator(`tr[data-proposal="${s.proposals.keep}"] a`).first().click();
+    await expect(page).toHaveURL(new RegExp('/proposals/' + s.proposals.keep));
+    await expect(page.locator('h1')).toContainText('Proposal');
+    await expect(page.getByText('Verification plan')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Decision history' })).toBeVisible();
+    // A still-proposed proposal shows the approve action and its created event.
+    await expect(page.locator('[data-proposal-approve]')).toBeVisible();
+    await expect(page.getByText('proposal.created')).toBeVisible();
+  });
+});
+
 test.describe('knowledge base', () => {
   test('lists a seeded note, filters by tag, and renders its markdown', async ({ page }) => {
     const s = seed();

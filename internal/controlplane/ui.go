@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -127,6 +128,18 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 		},
 		"mulf":   func(a, b float64) float64 { return a * b },
 		"dereff": func(p *float64) float64 { return *p },
+		// prettyJSON indents a raw JSON value for the proposal detail page's
+		// before/after and outcome blocks; malformed or empty yields the raw text.
+		"prettyJSON": func(raw json.RawMessage) string {
+			if len(raw) == 0 {
+				return ""
+			}
+			var buf bytes.Buffer
+			if err := json.Indent(&buf, raw, "", "  "); err != nil {
+				return string(raw)
+			}
+			return buf.String()
+		},
 		"dur64": func(us int64) string {
 			if us == 0 {
 				return "-"
@@ -171,6 +184,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /queue", u.queue)
 	u.mux.HandleFunc("GET /attention", u.attention)
 	u.mux.HandleFunc("GET /proposals", u.proposals)
+	u.mux.HandleFunc("GET /proposals/{id}", u.proposal)
 	u.mux.HandleFunc("GET /kb", u.kb)
 	u.mux.HandleFunc("GET /kb/{id}", u.kbNote)
 	u.mux.HandleFunc("GET /stats", u.stats)
@@ -719,6 +733,32 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 // proposals lists every proposal with the decision buttons; the API does the
 // writing (POST approve applies in the same transaction), app.js only posts
 // and reloads.
+// proposal is the proposal detail page: the full record, its before/after and
+// A/B outcome, and the decision history from the journal.
+func (u *UI) proposal(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	p, err := u.store.GetProposal(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	history, err := u.store.JournalForEntity(ctx, store.EntityProposal, id)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	title := "Proposal " + id
+	if len(id) > 8 {
+		title = "Proposal " + id[:8]
+	}
+	u.render(w, r, "proposal-detail.html", title, map[string]any{"Proposal": p, "History": history})
+}
+
 func (u *UI) proposals(w http.ResponseWriter, r *http.Request) {
 	ps, err := u.store.ListProposals(r.Context(), "")
 	if err != nil {

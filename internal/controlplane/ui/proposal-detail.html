@@ -1,0 +1,19 @@
+{{template "head" .}}{{$p := .Data.Proposal}}
+<div class="page-head"><h1>Proposal {{short $p.ID}} {{template "stateChip" $p.Status}}</h1><a class="btn" href="/proposals">← All proposals</a></div>
+<p class="meta"><span class="chip">{{$p.Kind}}</span> {{$p.Target}} · source {{$p.Source}} · created {{ago $p.CreatedAt}}{{if $p.DecidedBy}} · decided by {{$p.DecidedBy}} {{ago $p.DecidedAt}}{{end}}{{if $p.EvalScore}} · eval {{deref $p.EvalScore}}{{end}}{{if $p.AppliedRef}} · applied <code>{{$p.AppliedRef}}</code>{{end}}</p>
+{{if eq (printf "%s" $p.Status) "proposed"}}<p><button data-proposal-approve="{{$p.ID}}">Approve</button> <button data-proposal-reject="{{$p.ID}}">Reject</button></p>{{end}}
+<p id="proposal-error" class="error" hidden></p>
+
+<section class="card"><h2>Rationale</h2><p>{{$p.Rationale}}</p></section>
+<section class="card"><h2>Verification plan</h2><p>{{$p.VerificationPlan}}</p></section>
+{{with prettyJSON $p.Before}}<section class="card"><h2>Before</h2><pre class="result">{{.}}</pre></section>{{end}}
+{{with prettyJSON $p.After}}<section class="card"><h2>After</h2><pre class="result">{{.}}</pre></section>{{end}}
+{{with prettyJSON $p.OutcomeMetrics}}<section class="card"><h2>A/B outcome (reverted)</h2><pre class="result">{{.}}</pre></section>{{end}}
+{{with prettyJSON $p.ExternalRefs}}<section class="card"><h2>External refs</h2><pre class="result">{{.}}</pre></section>{{end}}
+
+<h2>Decision history</h2>
+<table class="list"><thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead><tbody>
+{{range .Data.History}}<tr><td title="{{.Time}}">{{ago .Time}}</td><td><span class="chip">{{.Kind}}</span></td><td><code>{{printf "%s" .Payload}}</code></td></tr>
+{{else}}<tr><td colspan="3" class="empty">No recorded history.</td></tr>{{end}}
+</tbody></table>
+{{template "foot" .}}
