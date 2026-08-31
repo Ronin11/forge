@@ -170,6 +170,11 @@ type workRequest struct {
 	Paths        []string          `json:"paths"`
 	Integrate    bool              `json:"integrate"`
 	Title        string            `json:"title"`
+	// MaxTurns and TimeoutSeconds override the ad-hoc defaults (haiku/30 turns/
+	// 1800s) for an ad-hoc task; ignored when a routine is named. Pointers so
+	// "unset" is distinct from 0.
+	MaxTurns       *int `json:"max_turns"`
+	TimeoutSeconds *int `json:"timeout_seconds"`
 	// Force overrides intake dedupe (M11): submit even when an identical
 	// prompt was created within the window.
 	Force bool `json:"force"`
@@ -259,6 +264,12 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		if req.Model != "" {
 			rt.Model = req.Model
+		}
+		if req.MaxTurns != nil && *req.MaxTurns > 0 {
+			rt.MaxTurns = *req.MaxTurns
+		}
+		if req.TimeoutSeconds != nil && *req.TimeoutSeconds > 0 {
+			rt.TimeoutSeconds = *req.TimeoutSeconds
 		}
 		w = store.Work{RoutineName: adHocRoutineName}
 	}

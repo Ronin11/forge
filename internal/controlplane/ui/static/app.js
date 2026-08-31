@@ -1164,6 +1164,10 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
         integrate: field('integrate').checked,
         repositories: field('repositories').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
       };
+      var mt = parseInt(field('max_turns').value, 10);
+      if (mt > 0) body.max_turns = mt;
+      var to = parseInt(field('timeout_seconds').value, 10);
+      if (to > 0) body.timeout_seconds = to;
       saveBtn.disabled = true;
       fetch('/api/v1/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (resp) {

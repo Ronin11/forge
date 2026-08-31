@@ -20,6 +20,8 @@
 <label>Mode <input name="mode" value="run"></label>
 <label>Model <input name="model" value="haiku"></label>
 <label>Class <select name="class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
+<label>Max turns <input name="max_turns" type="number" min="1" placeholder="30"></label>
+<label>Timeout (s) <input name="timeout_seconds" type="number" min="1" placeholder="1800"></label>
 <label class="check"><input type="checkbox" name="integrate"> Integrate (merge on success)</label>
 </div>
 <div class="dialog-actions"><button type="button" class="btn" data-task-cancel>Cancel</button><button type="submit" class="btn primary" data-task-save>Create task</button></div>

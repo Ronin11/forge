@@ -82,7 +82,7 @@ func TestUIPagesRender(t *testing.T) {
 	for path, want := range map[string][]string{
 		"/":                              {"Dashboard", "laptop", "inventory", `data-searchbar="client"`, "data-chat-toggle", `data-chat-route="explore"`},
 		"/tasks":                         {"New task", "data-task-scope", ">Open<", ">Closed<", `data-searchbar="client"`, "data-task-more"},
-		"/tasks?scope=all":               {"inventory run", "equitizr", "running", `data-searchbar="client"`, `data-f-repo="equitizr`, `data-keys="repo,state,routine,class"`, "New task", `data-task-dialog`},
+		"/tasks?scope=all":               {"inventory run", "equitizr", "running", `data-searchbar="client"`, `data-f-repo="equitizr`, `data-keys="repo,state,routine,class"`, "New task", `data-task-dialog`, `name="max_turns"`, `name="timeout_seconds"`},
 		"/tasks/rows?scope=all&offset=0": {`data-href="/tasks/`, "equitizr", "<tr"},
 		"/tasks/" + work.ID:              {"inventory@1", "claimed", "fetch", "1ms"},
 		"/routines":                      {"inventory", "list files", "data-routine-new", `data-routine-edit="inventory"`, `data-action-post="/api/v1/routines/inventory/run"`},
