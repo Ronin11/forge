@@ -23,7 +23,11 @@ func TestUIProvenanceViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	var root, planned, verified *store.Work
 	if err := st.Write(ctx, func(tx *store.Tx) error {
@@ -64,8 +68,13 @@ func TestUIProvenanceViews(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		return string(b)
 	}
 
@@ -100,7 +109,9 @@ func TestUIProvenanceViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/work/"+root.ID {
 		t.Errorf("/work/%s = %d %q, want 302 → /work/%s", verified.ID[:8], resp.StatusCode, resp.Header.Get("Location"), root.ID[:8])
 	}

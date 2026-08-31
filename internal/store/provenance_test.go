@@ -30,7 +30,11 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	db.SetMaxOpenConns(1)
 	ctx := context.Background()
 	// Everything before provenance.
