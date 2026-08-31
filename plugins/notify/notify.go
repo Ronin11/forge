@@ -297,7 +297,7 @@ func (n *notifier) proposal(e journalEntry) {
 	n.notify("normal", "Forge: new proposal", pl.Kind+": "+pl.Target+"\n"+n.ui+"/proposals", n.ui+"/proposals")
 }
 
-// test raises the toast a human explicitly asked for (POST /api/v1/notify/test)
+// test raises the toast a human explicitly asked for (the notify.test RPC)
 // to verify click-routing end to end, so it sits outside every toggle. The
 // payload path names the UI page the click should open; anything malformed
 // falls back to the Human queue.

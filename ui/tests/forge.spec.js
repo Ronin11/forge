@@ -220,9 +220,9 @@ test.describe('human queue', () => {
       await expect(card).toContainText('Which branch should I target?');
       await expect(card).toContainText('options: main, dev');
       // The context actions render: the doc link routes into the UI, and the
-      // registered trigger button fires its endpoint and confirms in place.
+      // registered RPC action button fires its method and confirms in place.
       await expect(card.locator('a[href="/kb/ui-test-brief"]')).toBeVisible();
-      const toast = card.locator('button[data-action-post="/api/v1/notify/test"]');
+      const toast = card.locator('button[data-rpc="notify.test"]');
       await toast.click();
       await expect(toast).toContainText('✓');
       // A doc proposal's target links straight to the note it covers.

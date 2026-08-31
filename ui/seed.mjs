@@ -126,11 +126,11 @@ export async function seed(base, home) {
       cleanup: { outcome: 'retained', reason: 'waiting for an answer' },
       question: {
         text: 'Which branch should I target?', options: ['main', 'dev'],
-        // Dynamic Human-queue actions: a same-origin link and a registered
-        // trigger render as a link and a button on the question card.
+        // Dynamic Human-queue actions: a same-origin link and a registered RPC
+        // method render as a link and an action button on the question card.
         context: { actions: [
           { label: 'Open the doc', url: '/kb/ui-test-brief' },
-          { label: 'Send test toast', trigger: 'notify_test' },
+          { label: 'Send test toast', rpc: 'notify.test' },
         ] },
       },
     }));

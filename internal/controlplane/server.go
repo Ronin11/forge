@@ -295,7 +295,7 @@ func (s *Server) routes() {
 	s.proposalRoutes(m)
 	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
 	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
-	m.HandleFunc("POST /api/v1/notify/test", s.handle(s.notifyTest))
+	m.HandleFunc("POST /api/v1/rpc/{method}", s.handle(s.rpc))
 	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))
 	m.HandleFunc("GET /api/v1/attempts/{id}/events", s.handle(s.getEvents))
 	m.HandleFunc("GET /api/v1/workers", s.handle(s.workers))

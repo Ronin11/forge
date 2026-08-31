@@ -66,7 +66,7 @@ func TestUIPagesRender(t *testing.T) {
 			return err
 		}
 		_, err = tx.CreateQuestion(ctx, a, protocol.QuestionRequest{Text: "Verify notify click-routing",
-			Context: json.RawMessage(`{"actions":[{"label":"Open the doc","url":"/kb/setup-guide"},{"label":"Send test toast","trigger":"notify_test"},{"label":"evil","url":"https://evil.example"}]}`)})
+			Context: json.RawMessage(`{"actions":[{"label":"Open the doc","url":"/kb/setup-guide"},{"label":"Send test toast","rpc":"notify.test"},{"label":"evil","url":"https://evil.example"}]}`)})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestUIPagesRender(t *testing.T) {
 		"/stats?since=1d":       {"Stats", "window 1d", "2 proposed", `data-searchbar="client"`},
 		"/attention": {"Human Queue", "Trim the timeout", "forge proposal approve", `data-searchbar="client"`, `data-f-type="proposal"`,
 			"Verify notify click-routing", `<a href="/kb/setup-guide">Open the doc →</a>`,
-			`<button data-action-post="/api/v1/notify/test">Send test toast</button>`,
+			`<button data-rpc="notify.test">Send test toast</button>`,
 			`<a href="/kb/setup-guide">kb:setup-guide</a>`},
 		"/proposals": {"Proposals", "routine:inventory", "Trim the timeout", "Approve", `data-searchbar="client"`, `data-f-status="proposed"`},
 		"/kb":        {"Knowledge", `data-searchbar="server"`, `data-keys="tag,type"`},

@@ -125,14 +125,14 @@ document.querySelectorAll('[data-proposal-approve], [data-proposal-reject]').for
   });
 });
 
-// Queue-item triggers: a [data-action-post] button fires its registered
-// daemon endpoint (e.g. the test toast) and confirms on the button itself —
-// no reload, the click changes nothing on the page.
-document.querySelectorAll('[data-action-post]').forEach(function (btn) {
+// A fire-and-confirm button: POST somewhere, tick the button on success, alert
+// on failure, and revert after a moment. The page never reloads — the click
+// changes nothing on it. Backs two families of button below.
+function bindFireButton(btn, url, opts) {
   var label = btn.textContent;
   btn.addEventListener('click', function () {
     btn.disabled = true;
-    fetch(btn.dataset.actionPost, { method: 'POST' }).then(function (resp) {
+    fetch(url, opts()).then(function (resp) {
       if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
       btn.textContent = label + ' ✓';
     }).catch(function (err) {
@@ -141,6 +141,28 @@ document.querySelectorAll('[data-action-post]').forEach(function (btn) {
       btn.disabled = false;
       window.setTimeout(function () { btn.textContent = label; }, 2000);
     });
+  });
+}
+
+// REST resource actions: a [data-action-post] button POSTs to a full resource
+// URL (run a routine, run a workflow). The URL names a real, audited endpoint.
+document.querySelectorAll('[data-action-post]').forEach(function (btn) {
+  bindFireButton(btn, btn.dataset.actionPost, function () { return { method: 'POST' }; });
+});
+
+// RPC links: a [data-rpc] button fires a registered daemon action by NAME —
+// POST /api/v1/rpc/<method> with the optional [data-rpc-args] JSON body. This
+// is for small, side-effect-safe triggers (the test toast, queue-card actions
+// an agent asked for) that would otherwise each need a bespoke endpoint; the
+// method name is the whole contract, validated against the server registry.
+document.querySelectorAll('[data-rpc]').forEach(function (btn) {
+  bindFireButton(btn, '/api/v1/rpc/' + encodeURIComponent(btn.dataset.rpc), function () {
+    var opts = { method: 'POST' };
+    if (btn.dataset.rpcArgs) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = btn.dataset.rpcArgs;
+    }
+    return opts;
   });
 });
 

@@ -17,14 +17,15 @@ func TestQuestionActions(t *testing.T) {
 		"not json":  {"{", nil},
 		"no acts":   {`{"note":"x"}`, nil},
 		"link":      {`{"actions":[{"label":"Open doc","url":"/kb/setup"}]}`, []QueueAction{{Label: "Open doc", URL: "/kb/setup"}}},
-		"trigger":   {`{"actions":[{"label":"Send test toast","trigger":"notify_test"}]}`, []QueueAction{{Label: "Send test toast", Post: "/api/v1/notify/test"}}},
+		"rpc":       {`{"actions":[{"label":"Send test toast","rpc":"notify.test"}]}`, []QueueAction{{Label: "Send test toast", RPC: "notify.test"}}},
+		"rpc args":  {`{"actions":[{"label":"Toast tasks","rpc":"notify.test","args":{"path":"/tasks"}}]}`, []QueueAction{{Label: "Toast tasks", RPC: "notify.test", Args: `{"path":"/tasks"}`}}},
 		"absolute":  {`{"actions":[{"label":"evil","url":"https://evil.example"}]}`, nil},
 		"schemeles": {`{"actions":[{"label":"evil","url":"//evil.example"}]}`, nil},
-		"unknown":   {`{"actions":[{"label":"x","trigger":"approve_everything"}]}`, nil},
+		"unknown":   {`{"actions":[{"label":"x","rpc":"approve.everything"}]}`, nil},
 		"no label":  {`{"actions":[{"url":"/kb/setup"}]}`, nil},
-		"both set":  {`{"actions":[{"label":"x","url":"/kb/a","trigger":"notify_test"}]}`, []QueueAction{{Label: "x", URL: "/kb/a"}}},
-		"mixed": {`{"actions":[{"label":"a","url":"/tasks/1"},{"label":"bad","url":"http://x"},{"label":"b","trigger":"notify_test"}]}`,
-			[]QueueAction{{Label: "a", URL: "/tasks/1"}, {Label: "b", Post: "/api/v1/notify/test"}}},
+		"both set":  {`{"actions":[{"label":"x","url":"/kb/a","rpc":"notify.test"}]}`, []QueueAction{{Label: "x", URL: "/kb/a"}}},
+		"mixed": {`{"actions":[{"label":"a","url":"/tasks/1"},{"label":"bad","url":"http://x"},{"label":"b","rpc":"notify.test"}]}`,
+			[]QueueAction{{Label: "a", URL: "/tasks/1"}, {Label: "b", RPC: "notify.test"}}},
 	} {
 		got := questionActions(json.RawMessage(tc.context))
 		if len(got) != len(tc.want) {
