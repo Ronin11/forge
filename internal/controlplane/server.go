@@ -144,6 +144,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/log-level", s.handle(s.getLogLevel))
 	m.HandleFunc("POST /api/v1/log-level", s.handle(s.setLogLevel))
 	m.HandleFunc("POST /api/v1/daemon/drain", s.handle(s.drain))
+	s.streamRoutes(m)
+	s.doctorRoutes(m)
 	m.HandleFunc("GET /api/v1/journal", s.handle(s.journal))
 
 	m.HandleFunc("POST /api/v1/worker/register", s.handle(s.register))
