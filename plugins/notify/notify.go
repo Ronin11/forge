@@ -197,7 +197,7 @@ func (n *notifier) handle(ctx context.Context, e journalEntry) {
 // list; a failed lookup degrades to a generic notification, never silence —
 // a waiting agent is exactly when the human must hear about it.
 func (n *notifier) question(ctx context.Context, e journalEntry) {
-	title, body := "Forge: question", "a task is waiting for an answer\n"+n.ui
+	title, body, url := "Forge: question", "a task is waiting for an answer\n"+n.ui, n.ui
 	if att, err := n.api.Attention(ctx); err == nil {
 		for _, q := range att.Questions {
 			if q.ID != e.EntityID {
@@ -212,13 +212,14 @@ func (n *notifier) question(ctx context.Context, e journalEntry) {
 			} else {
 				title = "Forge: a task asks"
 			}
-			body = q.Text + "\n" + n.ui + "/tasks/" + q.WorkID
+			url = n.ui + "/tasks/" + q.WorkID
+			body = q.Text + "\n" + url
 			break
 		}
 	} else if ctx.Err() == nil {
 		n.log.Warn("read attention for question", "question_id", e.EntityID, "err", err)
 	}
-	n.notify("normal", title, body)
+	n.notify("normal", title, body, url)
 }
 
 // failure notifies a target.transition to failed or unverified, at most once
@@ -265,10 +266,12 @@ func (n *notifier) failure(ctx context.Context, e journalEntry) {
 		body += fmt.Sprintf("; %d more failures suppressed", n.suppressed)
 		n.suppressed = 0
 	}
+	url := n.ui
 	if pl.WorkID != "" {
-		body += "\n" + n.ui + "/tasks/" + pl.WorkID
+		url = n.ui + "/tasks/" + pl.WorkID
+		body += "\n" + url
 	}
-	n.notify("normal", title, body)
+	n.notify("normal", title, body, url)
 	n.lastFailureSent = now
 }
 
@@ -283,7 +286,7 @@ func (n *notifier) proposal(e journalEntry) {
 		n.log.Debug("skip malformed proposal.created", "journal_id", e.ID)
 		return
 	}
-	n.notify("normal", "Forge: new proposal", pl.Kind+": "+pl.Target+"\n"+n.ui+"/proposals")
+	n.notify("normal", "Forge: new proposal", pl.Kind+": "+pl.Target+"\n"+n.ui+"/proposals", n.ui+"/proposals")
 }
 
 // checkThrottle reads the queue for a Work deferred with reason
@@ -311,7 +314,7 @@ func (n *notifier) checkThrottle(ctx context.Context) {
 		}
 	}
 	if active && !n.throttled {
-		n.notify("critical", "Forge: budget hard stop", "work is deferred until the window resets\n"+n.ui)
+		n.notify("critical", "Forge: budget hard stop", "work is deferred until the window resets\n"+n.ui, n.ui)
 	}
 	n.throttled = active
 }
@@ -320,8 +323,19 @@ func (n *notifier) checkThrottle(ctx context.Context) {
 // (see the package comment in main.go): -a Forge, an urgency, title, body
 // with the URL on its last line. A send failure is logged, never fatal — a
 // missed notification must not kill the plugin.
-func (n *notifier) notify(urgency, title, body string) {
-	if err := n.send("-a", "Forge", "-u", urgency, title, body); err != nil {
+func (n *notifier) notify(urgency, title, body, url string) {
+	args := []string{"-a", "Forge", "-u", urgency}
+	if url != "" {
+		// Omarchy runs this argv (safe positional exec, no shell) when the
+		// toast is clicked, routing to the right UI page. It is carried as
+		// notification data, so it survives a shell restart and needs no live
+		// sender — unlike a libnotify --action, whose sender must stay alive.
+		if argv, err := json.Marshal([]string{"xdg-open", url}); err == nil {
+			args = append(args, "--hint=string:omarchy-exec-argv:"+string(argv))
+		}
+	}
+	args = append(args, title, body)
+	if err := n.send(args...); err != nil {
 		n.log.Warn("notify-send failed", "title", title, "err", err)
 	}
 }

@@ -22,6 +22,28 @@ func (r *recorder) send(args ...string) error {
 	return nil
 }
 
+// The notify-send argv is: -a Forge -u <urgency> [--hint=…] <title> <body>.
+// title and body are always the last two; the hint (when present) carries the
+// omarchy-exec-argv click route. Helpers keep the assertions index-free.
+func titleOf(args []string) string { return args[len(args)-2] }
+func bodyOf(args []string) string  { return args[len(args)-1] }
+func urgencyOf(args []string) string {
+	for i, a := range args {
+		if a == "-u" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+func hintOf(args []string) string {
+	for _, a := range args {
+		if strings.HasPrefix(a, "--hint=string:omarchy-exec-argv:") {
+			return strings.TrimPrefix(a, "--hint=string:omarchy-exec-argv:")
+		}
+	}
+	return ""
+}
+
 // fakeAPI implements forgeAPI in memory; no daemon is ever spun up.
 type fakeAPI struct {
 	tasks     map[string]*taskDetail
@@ -110,14 +132,18 @@ func TestQuestionNotificationContent(t *testing.T) {
 		t.Fatalf("calls = %v", rec.calls)
 	}
 	args := rec.calls[0]
-	if args[0] != "-a" || args[1] != "Forge" || args[2] != "-u" || args[3] != "normal" {
+	if args[0] != "-a" || args[1] != "Forge" || urgencyOf(args) != "normal" {
 		t.Errorf("fixed args wrong: %v", args)
 	}
-	if args[4] != "Forge: inventory asks" {
-		t.Errorf("title = %q", args[4])
+	if titleOf(args) != "Forge: inventory asks" {
+		t.Errorf("title = %q", titleOf(args))
 	}
-	if !strings.Contains(args[5], "which branch?") || !strings.Contains(args[5], defaultUI+"/tasks/"+wID) {
-		t.Errorf("body = %q", args[5])
+	if !strings.Contains(bodyOf(args), "which branch?") || !strings.Contains(bodyOf(args), defaultUI+"/tasks/"+wID) {
+		t.Errorf("body = %q", bodyOf(args))
+	}
+	// Clicking the toast routes to the task via the omarchy-exec-argv hint.
+	if h := hintOf(args); !strings.Contains(h, defaultUI+"/tasks/"+wID) || !strings.Contains(h, "xdg-open") {
+		t.Errorf("click hint = %q", h)
 	}
 }
 
@@ -127,8 +153,8 @@ func TestQuestionAttentionFailureDegrades(t *testing.T) {
 	if len(rec.calls) != 1 {
 		t.Fatalf("a question with no attention data must still notify: %v", rec.calls)
 	}
-	if rec.calls[0][4] != "Forge: question" {
-		t.Errorf("title = %q", rec.calls[0][4])
+	if titleOf(rec.calls[0]) != "Forge: question" {
+		t.Errorf("title = %q", titleOf(rec.calls[0]))
 	}
 }
 
@@ -170,16 +196,16 @@ func TestFailureDebounce(t *testing.T) {
 	if len(rec.calls) != 2 {
 		t.Fatalf("failure after the window: %d notifications", len(rec.calls))
 	}
-	if body := rec.calls[1][5]; !strings.Contains(body, "2 more failures suppressed") {
+	if body := bodyOf(rec.calls[1]); !strings.Contains(body, "2 more failures suppressed") {
 		t.Errorf("coalesced body = %q", body)
 	}
-	if title := rec.calls[1][4]; title != "Forge: touch failed" {
+	if title := titleOf(rec.calls[1]); title != "Forge: touch failed" {
 		t.Errorf("title = %q", title)
 	}
 	// The count resets once reported.
 	clock.advance(failureDebounce)
 	fail(5)
-	if body := rec.calls[2][5]; strings.Contains(body, "suppressed") {
+	if body := bodyOf(rec.calls[2]); strings.Contains(body, "suppressed") {
 		t.Errorf("count not reset: %q", body)
 	}
 }
@@ -190,8 +216,8 @@ func TestUnverifiedCountsAsFailure(t *testing.T) {
 	if len(rec.calls) != 1 {
 		t.Fatalf("calls = %v", rec.calls)
 	}
-	if !strings.Contains(rec.calls[0][5], "checks_failed") || !strings.Contains(rec.calls[0][5], shortID(tID)) {
-		t.Errorf("body = %q", rec.calls[0][5])
+	if !strings.Contains(bodyOf(rec.calls[0]), "checks_failed") || !strings.Contains(bodyOf(rec.calls[0]), shortID(tID)) {
+		t.Errorf("body = %q", bodyOf(rec.calls[0]))
 	}
 }
 
@@ -217,7 +243,7 @@ func TestThrottleEdge(t *testing.T) {
 	if len(rec.calls) != 1 {
 		t.Fatalf("throttle onset: %d notifications", len(rec.calls))
 	}
-	if args := rec.calls[0]; args[3] != "critical" || args[4] != "Forge: budget hard stop" {
+	if args := rec.calls[0]; urgencyOf(args) != "critical" || titleOf(args) != "Forge: budget hard stop" {
 		t.Errorf("throttle notification = %v", args)
 	}
 	// Still throttled: no repeat, even past the check interval.

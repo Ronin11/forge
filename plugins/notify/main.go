@@ -4,11 +4,13 @@
 // budget throttle onset, and new proposal, each behind a per-kind toggle in
 // <FORGE_PLUGIN_DIR>/notify.toml.
 //
-// Notifications are fire-and-forget: notify-send actions only work while a
-// client stays connected to receive the activation, so no --action is passed;
-// every notification carries `-a Forge`, an urgency, and the task URL in its
-// body, and the Omarchy shell renders it. Opening the task is one click on
-// the URL rather than an action button.
+// Notifications are fire-and-forget yet clickable: each carries an
+// `omarchy-exec-argv` hint (a JSON ["xdg-open", <url>] the Omarchy shell runs
+// on click, as safe positional args, no shell) routing to the right UI page —
+// a question or failure to its task, a proposal to /proposals, a throttle to
+// the dashboard. The hint is carried as notification data, so it survives a
+// shell restart and needs no live sender, unlike a libnotify --action. The
+// URL is also in the body as a fallback. `-a Forge` and an urgency as before.
 package main
 
 import (
