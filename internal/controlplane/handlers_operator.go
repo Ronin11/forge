@@ -178,6 +178,11 @@ type workRequest struct {
 	// Force overrides intake dedupe (M11): submit even when an identical
 	// prompt was created within the window.
 	Force bool `json:"force"`
+	// CausedBy chains this submission's intent explicitly to an existing Work
+	// (DESIGN.md §3 "Provenance"): the store makes it the caused_by parent and
+	// inherits its root. Empty leaves the Work a root. For CLI/plugins/future
+	// callers; a manual or routine run leaves it unset.
+	CausedBy string `json:"caused_by"`
 
 	// Workflow stamps and prebuilt step edges, set only by runWorkflow —
 	// unexported so a request body can never forge them.
@@ -343,6 +348,15 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		edges = append(edges, model.Edge{BlockedBy: id, On: model.OnSuccess})
 	}
 	edges = append(edges, req.stepEdges...)
+	if req.CausedBy != "" {
+		if err := model.ValidateID(req.CausedBy); err != nil {
+			return workCreated{}, badRequest("caused_by: %v", err)
+		}
+		if _, err := tx.GetWork(ctx, req.CausedBy); err != nil {
+			return workCreated{}, err
+		}
+		w.CausedByWorkID, w.Cause = req.CausedBy, model.CauseFollowUp
+	}
 	rt.Repositories = repos
 	snapshot, err := json.Marshal(rt)
 	if err != nil {

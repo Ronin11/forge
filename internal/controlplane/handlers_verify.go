@@ -374,7 +374,7 @@ func (s *Server) verifyFollowUps(ctx context.Context, tx *store.Tx, a *store.Att
 		Branch: a.Branch, Head: req.Git.Head, Class: w.BudgetClass, Priority: w.Priority, UI: ft.Verify.UI,
 	}
 	for _, spec := range mode.FollowUps(env, fc) {
-		if err := s.createFollowUp(ctx, tx, spec); err != nil {
+		if err := s.createFollowUp(ctx, tx, w, spec); err != nil {
 			return fmt.Errorf("follow-up of %s: %w", a.ID, err)
 		}
 	}
@@ -384,8 +384,10 @@ func (s *Server) verifyFollowUps(ctx context.Context, tx *store.Tx, a *store.Att
 // createFollowUp freezes one WorkSpec as routine-less Work (routine_id NULL,
 // generation 0, trigger dependency) with a Routine-shaped snapshot; a VerifyOf
 // spec carries the subject link in the snapshot under "verify_of", which the
-// claim builder reads back with verifyOfFromSnapshot.
-func (s *Server) createFollowUp(ctx context.Context, tx *store.Tx, spec modes.WorkSpec) error {
+// claim builder reads back with verifyOfFromSnapshot. subject is the Work whose
+// run produced this follow-up: it becomes the caused_by parent so the audit
+// link is a first-class column, not only attempt-granular snapshot JSON.
+func (s *Server) createFollowUp(ctx context.Context, tx *store.Tx, subject *store.Work, spec modes.WorkSpec) error {
 	if err := model.ValidateName(spec.Mode); err != nil {
 		return fmt.Errorf("mode: %w", err)
 	}
@@ -428,9 +430,14 @@ func (s *Server) createFollowUp(ctx context.Context, tx *store.Tx, spec modes.Wo
 	if title == "" {
 		title = titleFromPrompt(spec.Prompt, spec.Mode)
 	}
+	cause := model.CauseFollowUp
+	if verifyOf != nil {
+		cause = model.CauseVerify
+	}
 	work := &store.Work{
 		RoutineName: spec.Mode, Title: title, Trigger: model.TriggerDependency, Snapshot: snap,
 		Priority: spec.Priority, BudgetClass: class, Autonomy: autonomy, SubmittedBy: "daemon",
+		CausedByWorkID: subject.ID, Cause: cause,
 	}
 	if _, err := tx.CreateWork(ctx, work, []string{spec.Repository}, nil); err != nil {
 		return err
