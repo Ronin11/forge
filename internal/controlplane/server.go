@@ -104,6 +104,10 @@ type Server struct {
 	// decider model so its Work resumes.
 	attentionCfg AttentionConfig
 	quietHours   QuietHoursConfig
+	// supervisionCfg drives the supervisor adjudication seam (supervision.go):
+	// child-initiated budget negotiation and the watchdog that reaps (or, in
+	// shadow mode, would-reap) wedged or spinning attempts.
+	supervisionCfg SupervisionConfig
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -195,6 +199,10 @@ type ServerOptions struct {
 	// (WaitActiveMinutes 0), so tests and a bare daemon never auto-answer.
 	Attention  AttentionConfig
 	QuietHours QuietHoursConfig
+	// Supervision tunes the supervisor adjudication seam (supervision.go); a
+	// disabled Supervision (Enabled=false) never runs the watchdog and makes
+	// forge_request_budget always continue.
+	Supervision SupervisionConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -280,7 +288,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
-		attentionCfg: o.Attention, quietHours: o.QuietHours,
+		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision,
 		closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}

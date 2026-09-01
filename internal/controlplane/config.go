@@ -27,6 +27,7 @@ type Config struct {
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
+	Supervision  SupervisionConfig  `toml:"supervision"`
 
 	// Runners, Models, and Routing (M10, DESIGN.md §21) ship as embedded
 	// defaults merged under config.toml by LoadConfig; bootstrap does not write
@@ -144,6 +145,52 @@ type AttentionConfig struct {
 // autoDecideOn reports whether auto-decision is enabled (nil default is true).
 func (a AttentionConfig) autoDecideOn() bool { return a.AutoDecide == nil || *a.AutoDecide }
 
+// SupervisionConfig tunes the supervisor adjudication seam (NOTES.md): the
+// child-initiated budget negotiation (forge_request_budget) and the
+// supervisor-initiated watchdog that sweeps running attempts for silence, spin,
+// and budget cliffs, adjudicating each on a cheapest-first policy ladder with an
+// opus decider for the ambiguous middle.
+type SupervisionConfig struct {
+	// Enabled turns the whole seam on; default true (nil). When false the
+	// watchdog never runs and forge_request_budget always continues (no grant).
+	Enabled *bool `toml:"enabled"`
+	// EnforceKill gates whether a watchdog kill actually cancels the attempt.
+	// Default FALSE — shadow mode: a kill decision is journaled as
+	// attempt.would_reap with full evidence but nothing is cancelled, so the
+	// policy can be observed before it is trusted. Grants act regardless.
+	EnforceKill bool `toml:"enforce_kill"`
+	// HardCeilingTurns is the outer turn limit no auto-decision may exceed;
+	// at or past it the attempt is killed. Default 200.
+	HardCeilingTurns int `toml:"hard_ceiling_turns"`
+	// SoftTurns is the per-attempt soft turn budget: a child nearing it asks
+	// for more, and crossing ~80% of it earns a proactive nudge. Default 80.
+	SoftTurns int `toml:"soft_turns"`
+	// SilenceMinutes is how long without any ingested event marks a true hang.
+	// Default 5.
+	SilenceMinutes int `toml:"silence_minutes"`
+	// SpinWindowTurns is the rolling tool-call window the spin detector scores
+	// signature dominance over. Default 25.
+	SpinWindowTurns int `toml:"spin_window_turns"`
+	// MaxAutoExtensions caps how many grants an attempt may draw before the
+	// policy forces a human/kill rather than riding to the hard ceiling.
+	// Default 3.
+	MaxAutoExtensions int `toml:"max_auto_extensions"`
+	// DeciderModel is the strong model the ambiguous middle escalates to;
+	// default opus.
+	DeciderModel string `toml:"decider_model"`
+}
+
+// enabledOn reports whether the seam is enabled (nil default is true).
+func (s SupervisionConfig) enabledOn() bool { return s.Enabled == nil || *s.Enabled }
+
+// decider returns the configured decider model, defaulting to opus.
+func (s SupervisionConfig) decider() string {
+	if s.DeciderModel == "" {
+		return "opus"
+	}
+	return s.DeciderModel
+}
+
 // DefaultConfig is what bootstrap writes; userHome seeds the projects root.
 func DefaultConfig(home, userHome string) Config {
 	return Config{
@@ -158,6 +205,7 @@ func DefaultConfig(home, userHome string) Config {
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 		Backup:       BackupConfig{Keep: 7},
 		Attention:    AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"},
+		Supervision:  SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"},
 	}
 }
 
@@ -274,6 +322,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Attention.WaitActiveMinutes < 1 || c.Attention.WaitQuietMinutes < 1 {
 		return fmt.Errorf("[attention] wait_active_minutes and wait_quiet_minutes must be ≥ 1")
+	}
+	if sv := c.Supervision; sv.enabledOn() {
+		if sv.SoftTurns < 1 || sv.HardCeilingTurns < 1 {
+			return fmt.Errorf("[supervision] soft_turns and hard_ceiling_turns must be ≥ 1")
+		}
+		if sv.HardCeilingTurns < sv.SoftTurns {
+			return fmt.Errorf("[supervision] hard_ceiling_turns must not be below soft_turns")
+		}
+		if sv.SilenceMinutes < 1 {
+			return fmt.Errorf("[supervision] silence_minutes must be ≥ 1")
+		}
+		if sv.SpinWindowTurns < 1 {
+			return fmt.Errorf("[supervision] spin_window_turns must be ≥ 1")
+		}
+		if sv.MaxAutoExtensions < 0 {
+			return fmt.Errorf("[supervision] max_auto_extensions must be ≥ 0")
+		}
 	}
 	if err := c.validateModels(); err != nil {
 		return err

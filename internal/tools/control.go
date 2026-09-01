@@ -74,6 +74,65 @@ func (askTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
 	})
 }
 
+// requestBudgetTool lets a working agent negotiate more budget when it nears a
+// soft limit instead of dying at the turn cliff (NOTES.md). The handler routes
+// to the supervisor adjudicator's child-initiated path, which records the ask
+// and its decision on the extension ledger and returns the decision inline; a
+// grant is actuated on the attempt's next heartbeat.
+type requestBudgetTool struct{}
+
+func (requestBudgetTool) Name() string { return "forge_request_budget" }
+func (requestBudgetTool) Description() string {
+	return "Request more budget when nearing a soft limit (turns, seconds, tokens, or usd) instead of stopping. Give a concrete reason describing the remaining work. The supervisor decides against your live progress and history: returns {decision: granted|denied, granted_amount, message}. A grant takes effect shortly; on a denial, wrap up and finish."
+}
+func (requestBudgetTool) Where() string { return WhereDaemon }
+func (requestBudgetTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{
+		"dimension":{"type":"string","enum":["turns","seconds","tokens","usd"],"description":"which budget to extend"},
+		"amount":{"type":"number","description":"how much more you are asking for"},
+		"reason":{"type":"string","description":"concrete description of the remaining work justifying the ask"}
+	},"required":["dimension","amount","reason"],"additionalProperties":false}`)
+}
+
+func (requestBudgetTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
+	var in struct {
+		Dimension string  `json:"dimension"`
+		Amount    float64 `json:"amount"`
+		Reason    string  `json:"reason"`
+	}
+	if err := decodeInput(req.Input, &in); err != nil {
+		return nil, err
+	}
+	switch in.Dimension {
+	case store.BudgetTurns, store.BudgetSeconds, store.BudgetTokens, store.BudgetUSD:
+	default:
+		return nil, BadInput("dimension %q: want turns, seconds, tokens, or usd", in.Dimension)
+	}
+	if in.Amount <= 0 {
+		return nil, BadInput("amount must be > 0")
+	}
+	if in.Reason == "" {
+		return nil, BadInput("reason is required")
+	}
+	if req.Deps.Adjudicate == nil {
+		return nil, BadInput("budget negotiation is unavailable")
+	}
+	// GetAttempt validates the attempt exists before adjudicating against it.
+	if _, err := req.Deps.Store.GetAttempt(ctx, req.AttemptID); err != nil {
+		return nil, err
+	}
+	out, err := req.Deps.Adjudicate(ctx, req.AttemptID, in.Dimension, in.Amount, in.Reason)
+	if err != nil {
+		return nil, err
+	}
+	return respond(map[string]any{
+		"schema_version": SchemaVersion,
+		"decision":       out.Decision,
+		"granted_amount": out.GrantedAmount,
+		"message":        out.Message,
+	})
+}
+
 type noteProgressTool struct{}
 
 func (noteProgressTool) Name() string { return "forge_note_progress" }

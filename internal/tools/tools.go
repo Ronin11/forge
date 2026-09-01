@@ -68,6 +68,10 @@ type Deps struct {
 	KbDir  string
 	Clock  func() time.Time
 	Logger *slog.Logger
+	// Adjudicate routes a forge_request_budget call to the supervisor
+	// adjudicator's child-initiated path (supervision.go); nil disables the tool
+	// (it reports the seam is unavailable). The daemon injects s.AdjudicateBudgetRequest.
+	Adjudicate func(ctx context.Context, attemptID, dimension string, amount float64, reason string) (store.BudgetOutcome, error)
 }
 
 // InputError is a tool input the caller got wrong; the handler maps it to 400
@@ -130,7 +134,7 @@ func Defaults() *Registry {
 		usageTool{}, attemptTool{}, eventsTool{}, promptVersionTool{}, queueTool{},
 		statsTool{}, retroPackTool{},
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
-		askTool{}, noteProgressTool{}, proposeTool{},
+		askTool{}, noteProgressTool{}, requestBudgetTool{}, proposeTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

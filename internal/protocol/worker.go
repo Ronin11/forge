@@ -188,6 +188,20 @@ type HeartbeatResponse struct {
 	LeaseExpiresAt  time.Time `json:"lease_expires_at"`
 	LogLevels       string    `json:"log_levels,omitempty"`
 	Steer           []string  `json:"steer,omitempty"`
+	// GrantedBudget carries a supervisor-adjudicated budget extension the worker
+	// applies to the attempt's effective budget (NOTES.md "Actuation"); nil when
+	// nothing was granted since the last heartbeat. Nudge is an optional message
+	// the worker delivers to the live agent alongside (e.g. "you have more
+	// budget, keep going" at ~80% of a soft slot, or the reason for a grant).
+	GrantedBudget *GrantedBudget `json:"granted_budget,omitempty"`
+	Nudge         string         `json:"nudge,omitempty"`
+}
+
+// GrantedBudget is a budget extension along one dimension, delivered on the
+// heartbeat and applied by the worker to the attempt's effective budget.
+type GrantedBudget struct {
+	Dimension string  `json:"dimension"` // turns | seconds | tokens | usd
+	Amount    float64 `json:"amount"`
 }
 
 // PromptVersion links an attempt to the exact prompt configuration it ran with.

@@ -128,6 +128,14 @@ type attempt struct {
 	process    *Process
 	stopReason string
 	steerable  bool
+	// grantedTurns and grantedTime accumulate supervisor-adjudicated budget
+	// extensions delivered on the heartbeat (NOTES.md "Actuation"). A live CLI's
+	// --max-turns is fixed at launch, so a grant is actuated two ways: the nudge
+	// is streamed to the running agent so it keeps going, and these totals raise
+	// the enforced budget for the remainder — grantedTime extends the deadline
+	// remaining() computes, grantedTurns raises MaxTurns on a subsequent launch.
+	grantedTurns int
+	grantedTime  time.Duration
 }
 
 // Run executes the claim and reports to the daemon. It returns only when the
@@ -526,6 +534,10 @@ func (a *attempt) remaining(launches int) time.Duration {
 	if a.manifest != nil && launches > 0 {
 		total -= time.Duration(a.manifest.ElapsedBeforeUS) * time.Microsecond
 	}
+	// A supervisor-adjudicated seconds grant extends the enforced deadline.
+	a.mu.Lock()
+	total += a.grantedTime
+	a.mu.Unlock()
 	if total < time.Second {
 		total = time.Second
 	}
@@ -591,8 +603,17 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 		schema = string(c.ModeInfo.Schema)
 	}
 	steer := hasCapability(exec, CapSteer)
+	// A supervisor-adjudicated turns grant raises this launch's MaxTurns (the
+	// live CLI's --max-turns is fixed once launched, so a grant applies from the
+	// next launch onward; the paired nudge keeps the current process going).
+	maxTurns := c.MaxTurns
+	a.mu.Lock()
+	if maxTurns > 0 {
+		maxTurns += a.grantedTurns
+	}
+	a.mu.Unlock()
 	cmd, err := exec.Command(ctx, LaunchRequest{
-		Model: c.Model, MaxTurns: c.MaxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,
+		Model: c.Model, MaxTurns: maxTurns, Repo: c.Repository, Worktree: m.WorktreePath, MCPConfig: mcpConfig,
 		SessionID: sessionID, Fixture: fixture, AllowedTools: c.AllowedTools, JSONSchema: schema, MaxBudgetUSD: c.MaxBudgetUSD,
 		Effort: c.Effort, SystemAppend: c.SystemAppend, Env: a.env(),
 	})
@@ -830,9 +851,32 @@ func (a *attempt) applyHeartbeat(resp *protocol.HeartbeatResponse) {
 	if resp.CancelRequested {
 		a.stop("cancelled")
 	}
+	if resp.GrantedBudget != nil {
+		a.applyGrant(*resp.GrantedBudget)
+	}
+	if resp.Nudge != "" {
+		a.deliverSteers([]string{resp.Nudge})
+	}
 	if len(resp.Steer) > 0 {
 		a.deliverSteers(resp.Steer)
 	}
+}
+
+// applyGrant raises the attempt's effective budget from a heartbeat-delivered
+// grant. Turns accumulate for a subsequent launch's MaxTurns; a seconds grant
+// extends the deadline remaining() enforces. Token/usd grants are recorded for
+// audit via the lifecycle event but carry no local enforcement knob. The
+// paired nudge (applyHeartbeat) is what reaches the live process.
+func (a *attempt) applyGrant(g protocol.GrantedBudget) {
+	a.mu.Lock()
+	switch g.Dimension {
+	case "turns":
+		a.grantedTurns += int(g.Amount)
+	case "seconds":
+		a.grantedTime += time.Duration(g.Amount) * time.Second
+	}
+	a.mu.Unlock()
+	a.emitter.Lifecycle("budget.granted", map[string]any{"dimension": g.Dimension, "amount": g.Amount})
 }
 
 // deliverSteers writes queued operator turns to the live process's stdin

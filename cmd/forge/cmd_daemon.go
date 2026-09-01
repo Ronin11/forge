@@ -239,6 +239,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		ModelCall:    d.modelCall,
 		Attention:    d.cfg.Attention,
 		QuietHours:   d.cfg.Budget.QuietHours,
+		Supervision:  d.cfg.Supervision,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval

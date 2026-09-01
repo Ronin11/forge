@@ -610,6 +610,19 @@ func (s *Server) heartbeat(r *http.Request) (int, any, error) {
 			return err
 		}
 		resp = protocol.HeartbeatResponse{CancelRequested: cancel, LeaseExpiresAt: expires, LogLevels: s.currentLogLevels(), Steer: steers}
+		// Deliver any supervisor-adjudicated budget grant on this heartbeat. The
+		// grants ride the journal (audit == queue, like steers); the newest one
+		// wins for the response's single slot, and its bounded amount is what the
+		// worker applies to the effective budget.
+		grants, err := tx.TakeBudgetGrants(ctx, id)
+		if err != nil {
+			return err
+		}
+		if len(grants) > 0 {
+			g := grants[len(grants)-1]
+			resp.GrantedBudget = &protocol.GrantedBudget{Dimension: g.Dimension, Amount: g.Amount}
+			resp.Nudge = g.Nudge
+		}
 		return tx.TouchWorker(ctx, a.WorkerID)
 	})
 	if err != nil {
