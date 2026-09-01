@@ -7,9 +7,9 @@ import (
 	"net/http"
 
 	"forge/internal/core/model"
+	"forge/internal/core/modes"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
-	"forge/internal/modes"
 )
 
 // Follow-up Work defaults where a WorkSpec leaves fields unset; the verify

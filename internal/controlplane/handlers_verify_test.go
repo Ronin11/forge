@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/modes"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
-	"forge/internal/modes"
 )
 
 // fakeMode is the smallest modes.Mode the verification flow needs.

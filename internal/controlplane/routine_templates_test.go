@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/modes"
-	modesall "forge/internal/modes/all"
+	"forge/internal/core/modes"
+	modesall "forge/internal/core/modes/all"
 )
 
 // Every shipped role template must name a real mode, a model, a valid class,
