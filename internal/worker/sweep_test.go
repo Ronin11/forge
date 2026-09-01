@@ -53,12 +53,17 @@ func escapee(t *testing.T, tag string) (*exec.Cmd, int) {
 	return cmd, pid
 }
 
-// waitGone polls until pid is gone, so a test never depends on a sleep.
+// waitGone polls until pid is dead, so a test never depends on a sleep. A
+// process the test itself started stays visible as a zombie until it is
+// reaped, which is dead for every purpose these tests care about.
 func waitGone(t *testing.T, pid int, within time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return true
+		}
+		if _, state, err := procStat(pid); err != nil || state == 'Z' {
 			return true
 		}
 		time.Sleep(20 * time.Millisecond)

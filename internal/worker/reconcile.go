@@ -68,6 +68,17 @@ func (w *Worker) reconcileOne(ctx context.Context, m *Manifest, rep *ReconcileRe
 			}
 			rep.Orphans++
 		}
+		// The group kill cannot reach a descendant that left the group; the
+		// environment markers can (sweep.go). A crashed worker's attempt is
+		// exactly the case where those survive unnoticed.
+		swept, serr := Sweep(AttemptEnv, m.AttemptID, killGrace)
+		if serr != nil {
+			log.WarnContext(ctx, "sweep leftover attempt processes", "error", serr)
+		}
+		if swept > 0 {
+			log.WarnContext(ctx, "killed processes the attempt left running", "processes", swept)
+			rep.Orphans += swept
+		}
 		m.ProcessActive = false
 		if err := w.runner.manifests.Write(m); err != nil {
 			return err

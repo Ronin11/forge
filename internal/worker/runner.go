@@ -299,6 +299,17 @@ func (w *Worker) Run(ctx context.Context) error {
 	if n := w.activeCount(); n > 0 {
 		w.log.WarnContext(ctx, "attempts still active at shutdown; reconcile will finish them", "count", n)
 	}
+	// Nothing a worker started outlives it (DESIGN.md §7.2). Each attempt
+	// sweeps its own strays as it ends; this is the backstop for the ones that
+	// could not finish inside the shutdown timeout, and for anything their
+	// sweep could not see because it was still being forked.
+	n, err := Sweep(WorkerEnv, w.id, killGrace)
+	if err != nil {
+		w.log.WarnContext(ctx, "sweep leftover attempt processes at shutdown", "error", err)
+	}
+	if n > 0 {
+		w.log.WarnContext(ctx, "killed processes attempts left running", "processes", n)
+	}
 	return nil
 }
 
