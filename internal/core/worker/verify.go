@@ -3,7 +3,10 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -86,6 +89,10 @@ type CheckResult struct {
 	Failing    []string `json:"failing_tests,omitempty"`
 }
 
+// checkTailBytes is how much of a check's output Forge keeps: the tail, which
+// is where a test runner puts its failures.
+const checkTailBytes = 64 << 10
+
 // RunChecks runs every declared check in the worktree, in name order, each in
 // its own process group with a timeout, and returns all results — Forge's own
 // measurement, never the agent's claim.
@@ -123,18 +130,15 @@ func runCheck(ctx context.Context, worktree, name string, argv []string, timeout
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	start := time.Now()
-	outb, err := cmd.CombinedOutput()
+	tail, err := runCheckProcess(cmd)
 	res.DurationUS = time.Since(start).Microseconds()
-	tail := string(outb)
-	if len(tail) > 64<<10 {
-		tail = tail[len(tail)-64<<10:]
-	}
 	res.OutputTail = tail
 	if err == nil {
 		res.Passed = true
 		return res
 	}
-	if exit, ok := err.(*exec.ExitError); ok {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
 		res.ExitCode = exit.ExitCode()
 	} else {
 		res.ExitCode = -1
@@ -143,6 +147,88 @@ func runCheck(ctx context.Context, worktree, name string, argv []string, timeout
 	res.Failing = failingTests(tail)
 	return res
 }
+
+// runCheckProcess runs one check and returns the tail of its output and the
+// command's own error. Output goes to a pipe this function owns rather than to
+// CombinedOutput's buffer, because of what a build does every day: a check that
+// backgrounds a server (`npm run preview &`) hands that server the same
+// stdout, and CombinedOutput would then wait for the server rather than for
+// the check. Once the check has exited, its process group is killed, so the
+// server does not outlive it either; a failure to do so is reported in the
+// output tail, where an operator reading the check will see it, and never
+// turns a passing check into a failing one.
+func runCheckProcess(cmd *exec.Cmd) (string, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return "", fmt.Errorf("output pipe: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw
+	if err := cmd.Start(); err != nil {
+		return "", errors.Join(fmt.Errorf("start %s: %w", cmd.Path, err), pw.Close(), pr.Close())
+	}
+	pid := cmd.Process.Pid
+	pidStart, startErr := ProcessStart(pid)
+	// The child owns the write end now; the parent's copy would hide the EOF.
+	notes := pw.Close()
+	tail := &tailWriter{max: checkTailBytes}
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		if _, err := io.Copy(tail, pr); err != nil && !errors.Is(err, fs.ErrClosed) {
+			tail.note(fmt.Errorf("read check output: %w", err))
+		}
+	}()
+	waitErr := cmd.Wait()
+	if startErr != nil {
+		notes = errors.Join(notes, startErr)
+	} else if err := KillGroup(pid, pidStart, killGrace); err != nil {
+		notes = errors.Join(notes, err)
+	}
+	// The group is gone, so the pipe reaches EOF; the grace is for the case
+	// where the kill could not happen (an identity that changed under us).
+	timer := time.NewTimer(drainGrace)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+		notes = errors.Join(notes, closeQuiet(pr))
+		<-drained
+	}
+	notes = errors.Join(notes, closeQuiet(pr))
+	if notes != nil {
+		tail.note(notes)
+	}
+	return tail.string(), waitErr
+}
+
+// tailWriter keeps the last max bytes written to it: the tail is all Forge
+// records of a check, so nothing longer is held in memory.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) > w.max {
+		p = p[len(p)-w.max:]
+	}
+	w.buf = append(w.buf, p...)
+	if excess := len(w.buf) - w.max; excess > 0 {
+		w.buf = append(w.buf[:0], w.buf[excess:]...)
+	}
+	return n, nil
+}
+
+// note appends one Forge-attributed line to the output, for what happened
+// around the check rather than inside it.
+func (w *tailWriter) note(err error) {
+	if _, werr := w.Write([]byte("\n[forge] " + err.Error() + "\n")); werr != nil {
+		panic("worker: tailWriter.Write returned an error")
+	}
+}
+
+func (w *tailWriter) string() string { return string(w.buf) }
 
 // failingTests extracts test names from the formats Forge recognises; unknown
 // output yields nothing rather than a guess.

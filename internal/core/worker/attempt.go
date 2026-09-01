@@ -164,6 +164,9 @@ func (r *Runner) Run(ctx context.Context, claim *protocol.Claim) {
 	go func() { defer hbWG.Done(); a.heartbeatLoop(hbCtx) }()
 
 	req := a.execute(ctx, start, launches)
+	// Nothing an attempt started outlives it (DESIGN.md §5.6): the checks of
+	// the verify phase spawn processes too, and this is after the last of them.
+	a.sweepStrays(ctx, "attempt end")
 
 	stopHB()
 	hbWG.Wait()
@@ -546,6 +549,9 @@ func (a *attempt) remaining(launches int) time.Duration {
 
 func (a *attempt) env() []string {
 	extra := []string{"FORGE_HOME=" + filepath.Dir(a.r.cfg.DataDir), "FORGE_ARTIFACTS=" + a.artifactsDir()}
+	// Every descendant inherits the markers, which is how sweepStrays finds
+	// the ones that left the launch's process group (sweep.go).
+	extra = append(extra, ProcessTags(a.r.workerID, a.claim.AttemptID)...)
 	if len(a.claim.Policy.GitConfig) > 0 {
 		extra = append(extra, GitConfigEnv(a.claim.Policy.GitConfig)...)
 	}
@@ -722,6 +728,12 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	a.heartbeat(ctx, protocol.HeartbeatRequest{State: model.Running, Phase: "agent", PID: p.PID(), PIDStart: p.PIDStart()})
 	a.emitter.Lifecycle("agent started", map[string]any{"pid": p.PID(), "launch": launch})
 	exit := p.Wait()
+	// The executor is gone; what it started is not necessarily. Its process
+	// group goes first (exact and cheap), then the markers catch escapees.
+	if err := KillGroup(p.PID(), p.PIDStart(), killGrace); err != nil {
+		a.log.WarnContext(ctx, "kill the launch's process group after exit", "error", err)
+	}
+	a.sweepStrays(ctx, "agent exit")
 	result := parser.Result()
 	m.ProcessActive, m.Lifecycle, m.SessionID = false, ManifestExited, result.SessionID
 	m.ElapsedBeforeUS, m.NextSeq = a.emitter.Elapsed(), a.emitter.NextSeq()
@@ -793,6 +805,20 @@ func (a *attempt) cleanup(ctx context.Context, state model.State, git protocol.G
 	m.Lifecycle = ManifestCleaned
 	a.writeManifest(ctx, m)
 	return protocol.Cleanup{Outcome: "removed", Reason: "removed"}
+}
+
+// sweepStrays kills whatever the attempt started and left running: a browser
+// that called setsid, a preview server a build backgrounded. `when` names the
+// moment for the operator reading the timeline.
+func (a *attempt) sweepStrays(ctx context.Context, when string) {
+	n, err := Sweep(AttemptEnv, a.claim.AttemptID, killGrace)
+	if err != nil {
+		a.log.WarnContext(ctx, "sweep leftover attempt processes", "when", when, "error", err)
+	}
+	if n > 0 {
+		a.log.InfoContext(ctx, "killed processes the attempt left running", "when", when, "processes", n)
+		a.emitter.Lifecycle("leftover processes killed", map[string]any{"when": when, "processes": n})
+	}
 }
 
 func (a *attempt) cleanupCommand() string {
