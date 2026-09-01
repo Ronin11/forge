@@ -33,12 +33,12 @@ test:
 
 # End-to-end integration tests: a real daemon, the worker child it spawns, and
 # the store, driven over the HTTP-on-unix-socket API with the fake-claude
-# executor (internal/eval/integration_test.go). Hermetic — a temporary
+# executor (internal/core/eval/integration_test.go). Hermetic — a temporary
 # FORGE_HOME per case, no network, no `claude`, no budget. Behind the
 # `integration` build tag so `just check` keeps its runtime; run this whenever
 # the daemon/worker/store contract or the lifecycle states change.
 test-integration:
-    go test -tags integration -race -count=1 -run 'TestIntegration' ./internal/eval/...
+    go test -tags integration -race -count=1 -run 'TestIntegration' ./internal/core/eval/...
 
 # Benchmarks on the event path and the stats query with a regression threshold
 # recorded in bench/threshold.txt (added in M1 with the first benchmark).

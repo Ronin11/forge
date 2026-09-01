@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"forge/internal/core/eval"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
-	"forge/internal/eval"
 )
 
 // evalRunner runs the golden eval for a mode and returns its summary score in

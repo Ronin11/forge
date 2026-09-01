@@ -12,7 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"forge/internal/eval"
+	"forge/internal/core/eval"
 )
 
 func runEval(ctx context.Context, c *cmdContext, args []string) int {
