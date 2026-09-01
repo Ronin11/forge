@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -88,7 +89,7 @@ type Usage struct {
 // window name to that window's samples, oldest first (SamplesSince order);
 // facts feed calibration and DailyUSD; queuedRoutines carries one routine name
 // per queued Work; factsByRoutine feeds the per-routine median deltas.
-func ComputeUsage(now time.Time, cfg BudgetConfig, samples map[string][]store.RateLimitSample, facts []store.AttemptFacts, queuedRoutines []string, factsByRoutine map[string][]store.AttemptFacts) Usage {
+func ComputeUsage(now time.Time, cfg config.BudgetConfig, samples map[string][]store.RateLimitSample, facts []store.AttemptFacts, queuedRoutines []string, factsByRoutine map[string][]store.AttemptFacts) Usage {
 	u := Usage{
 		TokensPerPoint: tokensPerPoint(facts),
 		DailyUSD:       dailyUSD(now, facts),
@@ -239,7 +240,7 @@ func median(xs []float64) float64 {
 
 // Decide is THE admission rule, §10.2's ordered list, pure and table-tested.
 // Both windows must admit; a window with no samples yet admits.
-func Decide(now time.Time, u Usage, class model.BudgetClass, cfg BudgetConfig) (admit bool, reason string) {
+func Decide(now time.Time, u Usage, class model.BudgetClass, cfg config.BudgetConfig) (admit bool, reason string) {
 	windows := []struct {
 		w        WindowUsage
 		target   float64
@@ -303,7 +304,7 @@ func Decide(now time.Time, u Usage, class model.BudgetClass, cfg BudgetConfig) (
 // the configured local-time window; [start, end) may wrap midnight. An
 // unconfigured section never matches; the HH:MM format is validated at config
 // load, so a parse failure here just disables the gate.
-func inQuietHours(now time.Time, q QuietHoursConfig) bool {
+func inQuietHours(now time.Time, q config.QuietHoursConfig) bool {
 	if q.Start == "" || q.End == "" {
 		return false
 	}
@@ -328,7 +329,7 @@ func inQuietHours(now time.Time, q QuietHoursConfig) bool {
 // Usage always loads fresh for the API and CLI.
 type BudgetPolicy struct {
 	store *store.Store
-	cfg   BudgetConfig
+	cfg   config.BudgetConfig
 	clock func() time.Time
 
 	// mu guards cached and cachedAt (the Decide-side usage cache).
@@ -338,7 +339,7 @@ type BudgetPolicy struct {
 }
 
 // NewBudgetPolicy builds the M3 policy; a nil clock means time.Now.
-func NewBudgetPolicy(st *store.Store, cfg BudgetConfig, clock func() time.Time) *BudgetPolicy {
+func NewBudgetPolicy(st *store.Store, cfg config.BudgetConfig, clock func() time.Time) *BudgetPolicy {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -347,7 +348,7 @@ func NewBudgetPolicy(st *store.Store, cfg BudgetConfig, clock func() time.Time) 
 
 // Config is the policy's validated [budget] section, exposed for the usage
 // report (the usageReporter capability).
-func (p *BudgetPolicy) Config() BudgetConfig { return p.cfg }
+func (p *BudgetPolicy) Config() config.BudgetConfig { return p.cfg }
 
 // Decide loads (or reuses) Usage and applies the pure rule. The SchedulerPolicy
 // seam carries no context, so the load runs on Background; when the store
@@ -451,7 +452,7 @@ type budgetReset struct {
 // sample (prev; a nil or absent entry journals nothing for the first incoming
 // sample) and the incoming batch, including changes within the batch. unspent
 // is the window's target minus the last utilization before the reset.
-func budgetResets(cfg BudgetConfig, prev map[string]*store.RateLimitSample, incoming []store.RateLimitSample) []budgetReset {
+func budgetResets(cfg config.BudgetConfig, prev map[string]*store.RateLimitSample, incoming []store.RateLimitSample) []budgetReset {
 	targets := map[string]float64{"five_hour": cfg.FiveHourTarget, "seven_day": cfg.SevenDayTarget}
 	last := map[string]*store.RateLimitSample{}
 	for w, s := range prev {

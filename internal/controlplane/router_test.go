@@ -1,13 +1,14 @@
 package controlplane
 
 import (
+	"forge/internal/core/config"
 	"math"
 	mrand "math/rand/v2"
 	"testing"
 )
 
-func testModels() map[string]ModelInfo {
-	return map[string]ModelInfo{
+func testModels() map[string]config.ModelInfo {
+	return map[string]config.ModelInfo{
 		"haiku":  {Alias: "haiku", ID: "h", Runner: "claude", Class: "small", MaxTier: 3},
 		"sonnet": {Alias: "sonnet", ID: "s", Runner: "claude", Class: "mid", MaxTier: 3},
 		"opus":   {Alias: "opus", ID: "o", Runner: "claude", Class: "frontier", MaxTier: 3},
@@ -23,7 +24,7 @@ func baseInput() RouteInput {
 		AllModels:          []string{"haiku", "kimi", "opus", "sonnet"},
 		RunnerReady:        func(string) bool { return true },
 		RunnerFree:         func(string) bool { return true },
-		Weights:            Weights{USD: 1},
+		Weights:            config.Weights{USD: 1},
 		MinVerifiedSuccess: 0.6,
 		MinSamples:         5,
 		Explore:            0.1,
@@ -179,7 +180,7 @@ func TestRouteScoreOrdering(t *testing.T) {
 	if dec, _ := Route(in); dec.Chosen != "haiku" {
 		t.Errorf("usd-weighted should pick haiku, got %q", dec.Chosen)
 	}
-	in.Weights = Weights{RunnerSeconds: 1}
+	in.Weights = config.Weights{RunnerSeconds: 1}
 	if dec, _ := Route(in); dec.Chosen != "opus" {
 		t.Errorf("runner-seconds-weighted should pick opus, got %q", dec.Chosen)
 	}

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"forge/internal/core/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,7 @@ import (
 func TestPrune(t *testing.T) {
 	dataDir := t.TempDir()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	ret := RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90}
+	ret := config.RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90}
 	out := filepath.Join(dataDir, "output")
 	if err := os.MkdirAll(out, 0o700); err != nil {
 		t.Fatal(err)

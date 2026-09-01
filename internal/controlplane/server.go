@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
@@ -56,9 +57,9 @@ type Engine struct {
 	home             string
 	requiredLevel    func(mode string) int
 	resolveModel     func(alias string) (string, bool)
-	modelInfo        func(alias string) (ModelInfo, bool)
+	modelInfo        func(alias string) (config.ModelInfo, bool)
 	modelAliases     []string
-	routing          RoutingConfig
+	routing          config.RoutingConfig
 	runnerCapacities map[string]int
 	setLogLevels     func(spec string) error
 	logLevels        func() string
@@ -95,12 +96,12 @@ type Engine struct {
 	// attention + quietHours drive the fuzzy Human Queue sweep (attention.go):
 	// a non-critical question past its time-of-day SLA is auto-decided by the
 	// decider model so its Work resumes.
-	attentionCfg AttentionConfig
-	quietHours   QuietHoursConfig
+	attentionCfg config.AttentionConfig
+	quietHours   config.QuietHoursConfig
 	// supervisionCfg drives the supervisor adjudication seam (supervision.go):
 	// child-initiated budget negotiation and the watchdog that reaps (or, in
 	// shadow mode, would-reap) wedged or spinning attempts.
-	supervisionCfg SupervisionConfig
+	supervisionCfg config.SupervisionConfig
 
 	// evalFn runs a mode's golden eval for auto-eval (autoeval.go); the real
 	// impl is s.runEval, replaced by a fake in tests. exe is the daemon binary,
@@ -213,12 +214,12 @@ type ServerOptions struct {
 	// Attention tunes the fuzzy Human Queue sweep; QuietHours (from [budget])
 	// splits active vs quiet burndown. Zero Attention disables auto-decision
 	// (WaitActiveMinutes 0), so tests and a bare daemon never auto-answer.
-	Attention  AttentionConfig
-	QuietHours QuietHoursConfig
+	Attention  config.AttentionConfig
+	QuietHours config.QuietHoursConfig
 	// Supervision tunes the supervisor adjudication seam (supervision.go); a
 	// disabled Supervision (Enabled=false) never runs the watchdog and makes
 	// forge_request_budget always continue.
-	Supervision SupervisionConfig
+	Supervision config.SupervisionConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -236,14 +237,14 @@ type ServerOptions struct {
 	// configured plugin_dirs (DESIGN.md §17), so an out-of-tree plugin can be
 	// installed and started. Empty falls back to just <home>/plugins.
 	PluginRoots []string
-	// ModelInfo resolves an alias to its M10 routing info (runner, class,
+	// config.ModelInfo resolves an alias to its M10 routing info (runner, class,
 	// price); nil disables routing so a claim uses the routine's single model
 	// (the M1 path). ModelAliases is the sorted alias set the router considers
 	// when a routine gives a tier but no explicit models list. Routing is the
-	// [routing] policy. cmd/forge wires all three from the loaded Config.
-	ModelInfo    func(alias string) (ModelInfo, bool)
+	// [routing] policy. cmd/forge wires all three from the loaded config.Config.
+	ModelInfo    func(alias string) (config.ModelInfo, bool)
 	ModelAliases []string
-	Routing      RoutingConfig
+	Routing      config.RoutingConfig
 	// RunnerCapacities is each runner's capacity (a second scheduler slot
 	// dimension, DESIGN.md §21); a runner absent or with capacity ≤ 0 is
 	// unbounded (bounded only by worker slots).

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/store"
 )
 
@@ -21,7 +22,7 @@ import (
 // cliff) and delivering the one-time proactive soft-budget nudge. It returns
 // when ctx is done. A disabled seam never runs.
 func (s *Engine) RunSupervision(ctx context.Context, interval time.Duration) {
-	if !s.supervisionCfg.enabledOn() {
+	if !s.supervisionCfg.EnabledOn() {
 		s.log.InfoContext(ctx, "supervision watchdog disabled")
 		return
 	}
@@ -74,7 +75,7 @@ func (s *Engine) sweepSupervision(ctx context.Context) {
 
 // detectTrigger reports whether an attempt warrants adjudication this tick, and
 // which signal fired. It only gates; classifyBudget makes the actual decision.
-func detectTrigger(cfg SupervisionConfig, ev supervisionEvidence) string {
+func detectTrigger(cfg config.SupervisionConfig, ev supervisionEvidence) string {
 	switch {
 	case ev.Silent:
 		return "silence"

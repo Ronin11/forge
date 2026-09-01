@@ -13,7 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/config"
 	"forge/internal/core/doctor"
 	"forge/internal/core/worker"
 )
@@ -49,7 +49,7 @@ func runInit(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(c.stdout, "  %-4s %-6s %s\n", ch.Status, strings.TrimPrefix(ch.Name, "binary."), ch.Detail)
 	}
 
-	cfg, err := controlplane.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv)
+	cfg, err := config.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv)
 	if err != nil {
 		return c.fail("init", err)
 	}
@@ -190,7 +190,7 @@ func initKbPath(c *cmdContext, current string) int {
 		return 0
 	}
 	cfgPath := filepath.Join(c.forgeHome, "config.toml")
-	if _, err := controlplane.WriteDefaultConfig(cfgPath, c.forgeHome, c.userHome); err != nil {
+	if _, err := config.WriteDefaultConfig(cfgPath, c.forgeHome, c.userHome); err != nil {
 		return c.fail("init", err)
 	}
 	if err := mergeTomlFile(cfgPath, func(m map[string]any) {

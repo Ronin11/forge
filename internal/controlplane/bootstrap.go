@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"forge/internal/core/config"
 	"forge/internal/core/store"
 )
 
@@ -65,7 +66,7 @@ func Bootstrap(ctx context.Context, st *store.Store, o BootstrapOptions) (*Boots
 	} else if err != nil {
 		return nil, fmt.Errorf("stat token: %w", err)
 	}
-	if written, err := WriteDefaultConfig(filepath.Join(o.Home, "config.toml"), o.Home, o.UserHome); err != nil {
+	if written, err := config.WriteDefaultConfig(filepath.Join(o.Home, "config.toml"), o.Home, o.UserHome); err != nil {
 		return nil, err
 	} else if written {
 		rep.Created = append(rep.Created, filepath.Join(o.Home, "config.toml"))

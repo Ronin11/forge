@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -13,7 +14,7 @@ import (
 // every interval, it fails Targets whose lease lapsed and records their facts.
 // Each tick also runs the A/B auto-revert check over applied proposals
 // (ab.go), with the configured K and margin. It returns when ctx is done.
-func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflection ReflectionConfig) {
+func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflection config.ReflectionConfig) {
 	var extended int
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		n, err := tx.ExtendLeases(ctx)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -26,8 +27,8 @@ func TestParseAttentionDecision(t *testing.T) {
 }
 
 func TestAttentionDeadline(t *testing.T) {
-	cfg := AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}
-	quiet := QuietHoursConfig{Start: "22:00", End: "06:00"}
+	cfg := config.AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}
+	quiet := config.QuietHoursConfig{Start: "22:00", End: "06:00"}
 	asked := time.Date(2026, 8, 30, 22, 0, 0, 0, time.UTC)
 	q := func(crit string) store.Question {
 		return store.Question{Criticality: crit, AskedAt: asked}
@@ -56,7 +57,7 @@ func TestAttentionDeadline(t *testing.T) {
 	}
 	// auto_decide off disables the whole mechanism.
 	off := false
-	if _, ok := attentionDeadline(q("normal"), active, AttentionConfig{AutoDecide: &off, WaitActiveMinutes: 240, WaitQuietMinutes: 20}, quiet); ok {
+	if _, ok := attentionDeadline(q("normal"), active, config.AttentionConfig{AutoDecide: &off, WaitActiveMinutes: 240, WaitQuietMinutes: 20}, quiet); ok {
 		t.Error("auto_decide off should not auto-decide")
 	}
 }
@@ -68,7 +69,7 @@ func TestSweepAutoDecides(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.createRoutine("inventory")
-	h.srv.attentionCfg = AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}
+	h.srv.attentionCfg = config.AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}
 
 	var calls int
 	var sawText string

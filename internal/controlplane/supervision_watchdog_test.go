@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -68,7 +69,7 @@ func TestSweepShadowDoesNotCancel(t *testing.T) {
 	work := h.run("inventory")
 	c := h.runningAttempt("req-1")
 
-	h.srv.supervisionCfg = SupervisionConfig{HardCeilingTurns: 5, SoftTurns: 4, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, EnforceKill: false}
+	h.srv.supervisionCfg = config.SupervisionConfig{HardCeilingTurns: 5, SoftTurns: 4, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, EnforceKill: false}
 	// 6 turns at the current clock (recent → not silent), past the ceiling of 5.
 	h.seedUsage(c.AttemptID, 6, h.clock.Now())
 
@@ -91,7 +92,7 @@ func TestSweepEnforceReaps(t *testing.T) {
 	work := h.run("inventory")
 	c := h.runningAttempt("req-1")
 
-	h.srv.supervisionCfg = SupervisionConfig{HardCeilingTurns: 5, SoftTurns: 4, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, EnforceKill: true}
+	h.srv.supervisionCfg = config.SupervisionConfig{HardCeilingTurns: 5, SoftTurns: 4, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, EnforceKill: true}
 	h.seedUsage(c.AttemptID, 6, h.clock.Now())
 
 	h.srv.sweepSupervision(context.Background())

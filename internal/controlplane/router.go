@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"fmt"
+	"forge/internal/core/config"
 	"math"
 	mrand "math/rand/v2"
 	"sort"
@@ -41,15 +42,15 @@ type RouteInput struct {
 	TargetID  string
 	Routine   string
 	Tier      int
-	Allowlist []string             // routine.Models; empty means "all models with max_tier ≥ tier"
-	Models    map[string]ModelInfo // every configured alias → its info
-	AllModels []string             // sorted configured aliases (candidate set when Allowlist empty)
+	Allowlist []string                    // routine.Models; empty means "all models with max_tier ≥ tier"
+	Models    map[string]config.ModelInfo // every configured alias → its info
+	AllModels []string                    // sorted configured aliases (candidate set when Allowlist empty)
 
 	RunnerReady func(runner string) bool // runner:<name> == ready
 	RunnerFree  func(runner string) bool // a runner slot is free
 	Evidence    func(alias string) ModelEvidence
 
-	Weights            Weights
+	Weights            config.Weights
 	MinVerifiedSuccess float64
 	MinSamples         int
 	Explore            float64
@@ -104,8 +105,10 @@ func wilsonLowerBound(s, n int) float64 {
 	return lb
 }
 
-// Score is the weighted cost-vector estimate the router minimises.
-func (w Weights) Score(v CostVector) float64 {
+// weightScore is the weighted cost-vector estimate the router minimises
+// (a free function: Weights lives in core/config, so it cannot carry the
+// router's method).
+func weightScore(w config.Weights, v CostVector) float64 {
 	return w.USD*v.USD + w.FiveHour*v.FiveHour + w.SevenDay*v.SevenDay + w.RunnerSeconds*v.RunnerSeconds
 }
 
@@ -130,7 +133,7 @@ func Route(in RouteInput) (RoutingDecision, bool) {
 		ev := in.Evidence(alias)
 		c.Successes, c.Trials = ev.Successes, ev.Trials
 		c.WilsonLB = wilsonLowerBound(ev.Successes, ev.Trials)
-		c.Score = in.Weights.Score(ev.Estimate)
+		c.Score = weightScore(in.Weights, ev.Estimate)
 		switch {
 		case in.RunnerReady != nil && !in.RunnerReady(info.Runner):
 			c.Reason = "runner " + info.Runner + " not ready"

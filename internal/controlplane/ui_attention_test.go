@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -76,7 +77,7 @@ func TestUIAttentionCountdownAndMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A 4-hour active wait; no quiet hours → the queue shows "~4h…" remaining.
-	ui.SetAttention(AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}, QuietHoursConfig{})
+	ui.SetAttention(config.AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"}, config.QuietHoursConfig{})
 	srv := httptest.NewServer(ui.Handler())
 	defer srv.Close()
 

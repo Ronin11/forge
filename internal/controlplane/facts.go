@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -31,7 +32,7 @@ type FactsInput struct {
 	// Model is the chosen model's resolved routing info (M10, DESIGN.md §21):
 	// its class and price drive the notional usd term. Zero (empty ID) when the
 	// alias resolved to a bare id with no routing metadata.
-	Model ModelInfo
+	Model config.ModelInfo
 }
 
 // ComputeFacts is the one function that turns an attempt into its facts row
@@ -351,7 +352,7 @@ func computeBudget(f *store.AttemptFacts, a store.Attempt, samples []store.RateL
 // the model carries a price and the attempt reported tokens, on subscription or
 // api alike (the subscription figure is notional, the billing tells the reader
 // which). runner_seconds is the agent phase's wall seconds.
-func computeCostVector(f *store.AttemptFacts, a store.Attempt, info ModelInfo) {
+func computeCostVector(f *store.AttemptFacts, a store.Attempt, info config.ModelInfo) {
 	p := info.Price
 	if (p.Input != 0 || p.Output != 0 || p.CacheRead != 0 || p.CacheWrite != 0) && (a.Usage.InputTokens != 0 || a.Usage.OutputTokens != 0 || a.Usage.CacheReadTokens != 0 || a.Usage.CacheCreationTokens != 0) {
 		usd := (float64(a.Usage.InputTokens)*p.Input +

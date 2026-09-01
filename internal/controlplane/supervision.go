@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/store"
 )
 
@@ -149,7 +150,7 @@ func snapshotGrowth(r store.BudgetRequest) int {
 // the unambiguous cases and flags escalate for the ambiguous middle. It is a
 // pure function of config + evidence + optional ask, so the ladder is unit
 // tested directly.
-func classifyBudget(cfg SupervisionConfig, ev supervisionEvidence, ask *budgetAsk) budgetVerdict {
+func classifyBudget(cfg config.SupervisionConfig, ev supervisionEvidence, ask *budgetAsk) budgetVerdict {
 	ceiling := cfg.HardCeilingTurns
 	// 1. Over the hard ceiling: nothing auto may exceed it.
 	if ceiling > 0 && ev.RunningTurns >= ceiling {
@@ -190,7 +191,7 @@ func classifyBudget(cfg SupervisionConfig, ev supervisionEvidence, ask *budgetAs
 
 // boundedGrant caps a grant so it can never blow past the hard ceiling and, for
 // turns, never exceed one soft slot per grant.
-func boundedGrant(cfg SupervisionConfig, ev supervisionEvidence, ask *budgetAsk) float64 {
+func boundedGrant(cfg config.SupervisionConfig, ev supervisionEvidence, ask *budgetAsk) float64 {
 	amt := ask.Amount
 	if ask.Dimension == store.BudgetTurns {
 		if cfg.SoftTurns > 0 && amt > float64(cfg.SoftTurns) {
@@ -220,7 +221,7 @@ func (s *Engine) adjudicate(ctx context.Context, ev supervisionEvidence, ask *bu
 	if s.modelCall == nil {
 		return budgetVerdict{Action: store.BudgetContinue, DecidedBy: "policy", Rationale: "ambiguous; no decider configured — continue"}
 	}
-	deciderModel := s.supervisionCfg.decider()
+	deciderModel := s.supervisionCfg.Decider()
 	system, user := s.supervisionPrompt(ev, ask)
 	raw, err := s.modelCall(ctx, system, user, deciderModel)
 	if err != nil {

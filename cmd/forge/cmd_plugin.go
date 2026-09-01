@@ -14,7 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/config"
 	"forge/internal/core/plugin"
 )
 
@@ -485,7 +485,7 @@ func runPluginStatus(ctx context.Context, c *cmdContext, args []string) int {
 // is discovered. A missing configured root is warned through log (may be nil).
 func (c *cmdContext) pluginDiscoveryRoots(ctx context.Context, log *slog.Logger) []string {
 	roots := []string{filepath.Join(c.forgeHome, "plugins")}
-	if cfg, err := controlplane.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv); err == nil {
+	if cfg, err := config.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv); err == nil {
 		roots = cfg.PluginRoots(c.forgeHome, func(dir string, err error) {
 			if log != nil {
 				log.WarnContext(ctx, "configured plugin_dir missing or unreadable; skipped", "dir", dir, "error", err)

@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/store"
 )
 
-func testSupervisionCfg() SupervisionConfig {
-	return SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"}
+func testSupervisionCfg() config.SupervisionConfig {
+	return config.SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"}
 }
 
 // TestClassifyBudget drives the deterministic ladder directly: the pure policy

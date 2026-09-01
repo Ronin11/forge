@@ -8,15 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
 
-var budgetCfg = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: true}
+var budgetCfg = config.BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: true}
 
 // cfgNoPacing relaxes the forecast rule: current headroom alone gates normal work.
-var cfgNoPacing = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: false}
+var cfgNoPacing = config.BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: false}
 
 func bctx() context.Context { return context.Background() }
 
@@ -159,15 +160,15 @@ func TestDecide(t *testing.T) {
 	cfgCap := budgetCfg
 	cfgCap.DailyUSDCap = 25
 	cfgQuiet := budgetCfg
-	cfgQuiet.QuietHours = QuietHoursConfig{Start: "09:00", End: "18:00", Reserve: 0.2}
+	cfgQuiet.QuietHours = config.QuietHoursConfig{Start: "09:00", End: "18:00", Reserve: 0.2}
 	cfgWrap := budgetCfg
-	cfgWrap.QuietHours = QuietHoursConfig{Start: "22:00", End: "06:00", Reserve: 0.2}
+	cfgWrap.QuietHours = config.QuietHoursConfig{Start: "22:00", End: "06:00", Reserve: 0.2}
 	clearFive := dwin(noon, "five_hour", 0.3, 0.05, 2, 0.5)
 	noSeven := dwin(noon, "seven_day", -1, 0, 0, 0)
 	cases := []struct {
 		name   string
 		now    time.Time
-		cfg    BudgetConfig
+		cfg    config.BudgetConfig
 		u      Usage
 		class  model.BudgetClass
 		admit  bool

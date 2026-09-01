@@ -1,4 +1,4 @@
-package controlplane
+package config
 
 import (
 	"fmt"
@@ -142,8 +142,8 @@ type AttentionConfig struct {
 	Model string `toml:"model"`
 }
 
-// autoDecideOn reports whether auto-decision is enabled (nil default is true).
-func (a AttentionConfig) autoDecideOn() bool { return a.AutoDecide == nil || *a.AutoDecide }
+// AutoDecideOn reports whether auto-decision is enabled (nil default is true).
+func (a AttentionConfig) AutoDecideOn() bool { return a.AutoDecide == nil || *a.AutoDecide }
 
 // SupervisionConfig tunes the supervisor adjudication seam (NOTES.md): the
 // child-initiated budget negotiation (forge_request_budget) and the
@@ -180,11 +180,11 @@ type SupervisionConfig struct {
 	DeciderModel string `toml:"decider_model"`
 }
 
-// enabledOn reports whether the seam is enabled (nil default is true).
-func (s SupervisionConfig) enabledOn() bool { return s.Enabled == nil || *s.Enabled }
+// EnabledOn reports whether the seam is enabled (nil default is true).
+func (s SupervisionConfig) EnabledOn() bool { return s.Enabled == nil || *s.Enabled }
 
-// decider returns the configured decider model, defaulting to opus.
-func (s SupervisionConfig) decider() string {
+// Decider returns the configured decider model, defaulting to opus.
+func (s SupervisionConfig) Decider() string {
 	if s.DeciderModel == "" {
 		return "opus"
 	}
@@ -323,7 +323,7 @@ func (c *Config) Validate() error {
 	if c.Attention.WaitActiveMinutes < 1 || c.Attention.WaitQuietMinutes < 1 {
 		return fmt.Errorf("[attention] wait_active_minutes and wait_quiet_minutes must be ≥ 1")
 	}
-	if sv := c.Supervision; sv.enabledOn() {
+	if sv := c.Supervision; sv.EnabledOn() {
 		if sv.SoftTurns < 1 || sv.HardCeilingTurns < 1 {
 			return fmt.Errorf("[supervision] soft_turns and hard_ceiling_turns must be ≥ 1")
 		}

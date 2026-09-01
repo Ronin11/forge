@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"forge/internal/core/config"
 	"io"
 	"log/slog"
 	"os"
@@ -18,7 +19,7 @@ import (
 // and are never touched here.
 type PruneInput struct {
 	DataDir   string
-	Retention RetentionConfig
+	Retention config.RetentionConfig
 	Now       time.Time
 	Delete    bool // false = dry run
 	Logger    *slog.Logger

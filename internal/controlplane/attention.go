@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -27,7 +28,7 @@ import (
 // A process without a decider (modelCall nil) or with auto-decision off never
 // runs — questions block for a human as before.
 func (s *Engine) RunAttention(ctx context.Context, interval time.Duration) {
-	if s.modelCall == nil || !s.attentionCfg.autoDecideOn() {
+	if s.modelCall == nil || !s.attentionCfg.AutoDecideOn() {
 		s.log.InfoContext(ctx, "attention auto-decision disabled")
 		return
 	}
@@ -47,7 +48,7 @@ func (s *Engine) RunAttention(ctx context.Context, interval time.Duration) {
 // answered one is never re-decided), and auto-decide each past its deadline.
 // Per-question failures are logged and left open for the next tick.
 func (s *Engine) sweepAttention(ctx context.Context) {
-	if s.modelCall == nil || !s.attentionCfg.autoDecideOn() {
+	if s.modelCall == nil || !s.attentionCfg.AutoDecideOn() {
 		return
 	}
 	qs, err := s.store.OpenQuestions(ctx)
@@ -75,12 +76,12 @@ func (s *Engine) questionDeadline(q store.Question, now time.Time) (time.Time, b
 // quiet hours, when no one is watching; low criticality burns down at the quiet
 // wait even during active hours. Shared by the sweep and the Human Queue UI so
 // the countdown the operator sees is the deadline the sweep acts on.
-func attentionDeadline(q store.Question, now time.Time, cfg AttentionConfig, quiet QuietHoursConfig) (time.Time, bool) {
+func attentionDeadline(q store.Question, now time.Time, cfg config.AttentionConfig, quiet config.QuietHoursConfig) (time.Time, bool) {
 	crit := model.Criticality(q.Criticality)
 	if crit == "" {
 		crit = model.CriticalityNormal
 	}
-	if !crit.AutoDecidable() || !cfg.autoDecideOn() {
+	if !crit.AutoDecidable() || !cfg.AutoDecideOn() {
 		return time.Time{}, false
 	}
 	wait := cfg.WaitActiveMinutes

@@ -105,7 +105,7 @@ func (s *Engine) evidencePayload(ev supervisionEvidence, v budgetVerdict, reason
 // child-facing outcome. A grant is queued for the worker via the heartbeat; a
 // kill or continue reads to the child as a denial (the watchdog owns the reap).
 func (s *Engine) AdjudicateBudgetRequest(ctx context.Context, attemptID, dimension string, amount float64, reason string) (store.BudgetOutcome, error) {
-	if !s.supervisionCfg.enabledOn() {
+	if !s.supervisionCfg.EnabledOn() {
 		return store.BudgetOutcome{Decision: "denied", Message: "supervision is disabled; proceed within your current budget"}, nil
 	}
 	ev, err := s.assembleEvidence(ctx, attemptID)

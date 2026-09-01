@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/config"
 	"forge/internal/core/worker"
 )
 
@@ -32,7 +33,7 @@ func runPrune(ctx context.Context, c *cmdContext, args []string) int {
 	if err != nil {
 		return c.fail("prune", err)
 	}
-	dcfg, err := controlplane.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv)
+	dcfg, err := config.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv)
 	if err != nil {
 		return c.fail("prune", err)
 	}

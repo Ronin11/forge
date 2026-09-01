@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"forge/internal/core/config"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -15,7 +16,7 @@ import (
 // is active.
 type usageReporter interface {
 	Usage(ctx context.Context) (Usage, error)
-	Config() BudgetConfig
+	Config() config.BudgetConfig
 }
 
 // usageResponse is GET /api/v1/usage's wire shape.

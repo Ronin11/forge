@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"forge/internal/core/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,7 @@ func TestPluginDirsResolution(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := LoadConfig(path, home, userHome, func(string) string { return "" })
+	c, err := config.LoadConfig(path, home, userHome, func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestPluginRootsWarnsOnMissing(t *testing.T) {
 	home := t.TempDir()
 	present := t.TempDir()
 	missing := filepath.Join(t.TempDir(), "gone")
-	c := &Config{PluginDirs: []string{present, missing}}
+	c := &config.Config{PluginDirs: []string{present, missing}}
 
 	var warned []string
 	roots := c.PluginRoots(home, func(dir string, err error) {
@@ -66,7 +67,7 @@ func TestPluginRootsWarnsOnMissing(t *testing.T) {
 // A config with no plugin_dirs yields exactly the built-in root.
 func TestPluginRootsDefault(t *testing.T) {
 	home := t.TempDir()
-	c := &Config{}
+	c := &config.Config{}
 	roots := c.PluginRoots(home, func(dir string, err error) {
 		t.Errorf("unexpected warn: %s: %v", dir, err)
 	})

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
 	"forge/internal/core/stats"
@@ -39,8 +40,8 @@ type UI struct {
 	// attention + quietHours let the Human Queue show each non-critical
 	// question's countdown to auto-decision (the same deadline the sweep acts
 	// on). Zero attention (tests, a bare UI) shows no countdown.
-	attentionCfg AttentionConfig
-	quietHours   QuietHoursConfig
+	attentionCfg config.AttentionConfig
+	quietHours   config.QuietHoursConfig
 }
 
 // SetPluginHealth wires the supervisor's live state into the System page; the
@@ -49,7 +50,7 @@ func (u *UI) SetPluginHealth(fn func() []plugin.PluginHealth) { u.pluginHealth =
 
 // SetAttention wires the fuzzy Human Queue's SLA into the UI so the queue shows
 // each non-critical question's countdown; the daemon calls it once at startup.
-func (u *UI) SetAttention(cfg AttentionConfig, quiet QuietHoursConfig) {
+func (u *UI) SetAttention(cfg config.AttentionConfig, quiet config.QuietHoursConfig) {
 	u.attentionCfg, u.quietHours = cfg, quiet
 }
 

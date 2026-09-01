@@ -4,17 +4,38 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
 
+// loadConfigFrom mirrors core/config's test helper (test helpers do not
+// export across packages): a temp FORGE_HOME with the given config.toml.
+func loadConfigFrom(t *testing.T, toml string) *config.Config {
+	t.Helper()
+	home := t.TempDir()
+	path := filepath.Join(home, "config.toml")
+	if toml != "" {
+		if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := config.LoadConfig(path, home, home, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	return c
+}
+
 // routingConfig builds a config with kimi (devbox, cheaper) and haiku (claude),
 // so an unproven-but-cheaper kimi routes first and gates out after failures.
-func routingConfig(t *testing.T) *Config {
+func routingConfig(t *testing.T) *config.Config {
 	return loadConfigFrom(t, `
 [runners.devbox]
 kind = "openai-compatible"
@@ -66,7 +87,7 @@ func newRoutingHarness(t *testing.T) *harness {
 	return &harness{t: t, st: st, srv: srv, http: hs, clock: clock, leases: map[string]string{}}
 }
 
-func runnerCapacitiesForTest(cfg *Config) map[string]int {
+func runnerCapacitiesForTest(cfg *config.Config) map[string]int {
 	out := map[string]int{}
 	for name, r := range cfg.Runners {
 		if r.Capacity > 0 {

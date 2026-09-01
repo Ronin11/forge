@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -35,7 +36,7 @@ func TestComputeFactsCostVector(t *testing.T) {
 			{Time: now, Window: "seven_day", Utilization: 0.42, ResetsAt: now.Add(48 * time.Hour), SourceAttempt: "a2"},
 		},
 		Now:   now,
-		Model: ModelInfo{Alias: "kimi", ID: "kimi-k2", Runner: "devbox", Class: "mid", Price: Price{Input: 2.0, Output: 6.0}},
+		Model: config.ModelInfo{Alias: "kimi", ID: "kimi-k2", Runner: "devbox", Class: "mid", Price: config.Price{Input: 2.0, Output: 6.0}},
 	}
 	f := ComputeFacts(in)
 	// usd = (1e6*2 + 2e6*6) / 1e6 = 2 + 12 = 14.
@@ -65,7 +66,7 @@ func TestComputeFactsCostVectorNoPrice(t *testing.T) {
 		Target:  store.Target{ID: "t3", Repository: "app", State: model.Failed},
 		Work:    store.Work{ID: "w3", RoutineName: "route", Trigger: model.TriggerManual},
 		Project: "default", Now: now,
-		Model: ModelInfo{Alias: "kimi"}, // no price
+		Model: config.ModelInfo{Alias: "kimi"}, // no price
 	}
 	f := ComputeFacts(in)
 	if f.USD != nil {

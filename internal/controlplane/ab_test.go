@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -154,7 +155,7 @@ func TestABRevertOnRateRegression(t *testing.T) {
 	f.fact(2, false, 1.0, base.Add(1*time.Hour))
 	f.fact(2, false, 1.0, base.Add(2*time.Hour))
 
-	f.srv.checkABReverts(actx(), ReflectionConfig{K: 2, Margin: 0.2})
+	f.srv.checkABReverts(actx(), config.ReflectionConfig{K: 2, Margin: 0.2})
 
 	r, err := f.st.GetRoutine(actx(), "inventory")
 	if err != nil {
@@ -183,7 +184,7 @@ func TestABRevertOnCostRegression(t *testing.T) {
 	f.fact(2, true, 2.0, base.Add(1*time.Hour))
 	f.fact(2, true, 2.0, base.Add(2*time.Hour))
 
-	f.srv.checkABReverts(actx(), ReflectionConfig{K: 2, Margin: 0.2})
+	f.srv.checkABReverts(actx(), config.ReflectionConfig{K: 2, Margin: 0.2})
 
 	status, o := f.outcome(p)
 	if status != model.ProposalReverted {
@@ -202,14 +203,14 @@ func TestABNoRevert(t *testing.T) {
 	f.fact(1, true, 1.0, base.Add(-1*time.Hour))
 	// Fewer than K runs on the new generation: nothing happens yet.
 	f.fact(2, true, 1.0, base.Add(1*time.Hour))
-	f.srv.checkABReverts(actx(), ReflectionConfig{K: 2, Margin: 0.2})
+	f.srv.checkABReverts(actx(), config.ReflectionConfig{K: 2, Margin: 0.2})
 	if status, _ := f.outcome(p); status != model.ProposalApplied {
 		t.Fatalf("proposal status with < K runs = %s, want applied", status)
 	}
 
 	// K runs, no regression on either measure: still nothing.
 	f.fact(2, true, 1.0, base.Add(2*time.Hour))
-	f.srv.checkABReverts(actx(), ReflectionConfig{K: 2, Margin: 0.2})
+	f.srv.checkABReverts(actx(), config.ReflectionConfig{K: 2, Margin: 0.2})
 	if status, _ := f.outcome(p); status != model.ProposalApplied {
 		t.Fatalf("proposal status without regression = %s, want applied", status)
 	}

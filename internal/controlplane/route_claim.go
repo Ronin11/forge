@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/config"
 	"forge/internal/core/store"
 )
 
@@ -32,12 +33,12 @@ type routeChoice struct {
 
 // modelInfoFor resolves an alias, using the config-backed table when wired and
 // falling back to the plain resolveModel seam (M1) otherwise.
-func (s *Engine) modelInfoFor(alias string) (ModelInfo, bool) {
+func (s *Engine) modelInfoFor(alias string) (config.ModelInfo, bool) {
 	if s.modelInfo != nil {
 		return s.modelInfo(alias)
 	}
 	id, ok := s.resolveModel(alias)
-	return ModelInfo{Alias: alias, ID: id}, ok
+	return config.ModelInfo{Alias: alias, ID: id}, ok
 }
 
 // routeClaim decides the model for a claim. Routing engages only when the model
@@ -114,8 +115,8 @@ func (s *Engine) routeClaim(ctx context.Context, worker store.Worker, w store.Wo
 }
 
 // modelTable is the full alias→info map the router filters over.
-func (s *Engine) modelTable() map[string]ModelInfo {
-	out := make(map[string]ModelInfo, len(s.modelAliases))
+func (s *Engine) modelTable() map[string]config.ModelInfo {
+	out := make(map[string]config.ModelInfo, len(s.modelAliases))
 	for _, a := range s.modelAliases {
 		if info, ok := s.modelInfoFor(a); ok {
 			out[a] = info
@@ -167,7 +168,7 @@ func (s *Engine) runnerCap(runner string) int {
 
 // executorFor is the executor a chosen model runs under: the model's own
 // executor when it declares one, else the routine's.
-func executorFor(info ModelInfo, snap store.Routine) string {
+func executorFor(info config.ModelInfo, snap store.Routine) string {
 	if info.Executor != "" {
 		return info.Executor
 	}
@@ -216,7 +217,7 @@ func groupFactsByModel(facts []store.AttemptFacts) map[string][]store.AttemptFac
 // estimateVector is the p50 cost vector over facts rows, falling back to the
 // configured price (input+output, a monotone ordering proxy) for the usd term
 // when no rows carry a usd figure.
-func estimateVector(rows []store.AttemptFacts, price Price) CostVector {
+func estimateVector(rows []store.AttemptFacts, price config.Price) CostVector {
 	usd := p50OfPtr(rows, func(f store.AttemptFacts) *float64 { return f.USD })
 	if usd == nil {
 		proxy := price.Input + price.Output

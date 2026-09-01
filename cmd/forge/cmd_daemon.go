@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/config"
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
 	"forge/internal/core/logging"
@@ -95,7 +96,7 @@ func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintln(c.stderr, "forge daemon:", err)
 		return 1
 	}
-	cfg, err := controlplane.LoadConfig(filepath.Join(home, "config.toml"), home, c.userHome, c.getenv)
+	cfg, err := config.LoadConfig(filepath.Join(home, "config.toml"), home, c.userHome, c.getenv)
 	if err != nil {
 		fmt.Fprintln(c.stderr, "forge daemon:", err)
 		return 1
@@ -132,7 +133,7 @@ func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
 // daemonProcess is one running daemon.
 type daemonProcess struct {
 	c       *cmdContext
-	cfg     *controlplane.Config
+	cfg     *config.Config
 	handler *logging.Handler
 	log     *slog.Logger
 	lock    *controlplane.Lock
@@ -1033,7 +1034,7 @@ func resolveClaude() (string, error) {
 
 // runnerCapacities extracts each runner's capacity for the scheduler's
 // runner-slot dimension (DESIGN.md §21); a capacity ≤ 0 stays unbounded.
-func runnerCapacities(cfg *controlplane.Config) map[string]int {
+func runnerCapacities(cfg *config.Config) map[string]int {
 	out := map[string]int{}
 	for name, r := range cfg.Runners {
 		if r.Capacity > 0 {
