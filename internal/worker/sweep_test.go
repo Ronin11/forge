@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,10 +30,9 @@ func escapee(t *testing.T, tag string) (*exec.Cmd, int) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		_ = cmd.Wait()
-	})
+	// The group, not the process: the point of this helper is the child that
+	// left it. What the kill leaves unreaped goes when the test binary exits.
+	t.Cleanup(func() { killQuiet(t, -cmd.Process.Pid) })
 	pid := 0
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && pid == 0 {
@@ -49,8 +49,27 @@ func escapee(t *testing.T, tag string) (*exec.Cmd, int) {
 	if pid == 0 {
 		t.Fatal("the escaped process never reported its pid")
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	t.Cleanup(func() { killQuiet(t, pid) })
 	return cmd, pid
+}
+
+// killQuiet kills pid — or its process group, when pid is negative — in a test
+// cleanup; a process that is already gone is the outcome the caller wanted.
+func killQuiet(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		t.Logf("cleanup: kill %d: %v", pid, err)
+	}
+}
+
+// reapQuiet waits for a process the test started so the cleanup leaves no
+// zombie behind; dying of a signal is what these tests arrange for.
+func reapQuiet(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	var exit *exec.ExitError
+	if err := cmd.Wait(); err != nil && !errors.As(err, &exit) {
+		t.Logf("cleanup: wait for %d: %v", cmd.Process.Pid, err)
+	}
 }
 
 // waitGone polls until pid is dead, so a test never depends on a sleep. A

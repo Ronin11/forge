@@ -45,7 +45,7 @@ func leakedPID(t *testing.T, pidFile string) int {
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(pidFile); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-				t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+				t.Cleanup(func() { killQuiet(t, pid) })
 				return pid
 			}
 		}
@@ -81,8 +81,8 @@ func TestWorkerShutdownKillsLeftoverProcesses(t *testing.T) {
 	}
 	pid := child.Process.Pid
 	t.Cleanup(func() {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		_ = child.Wait()
+		killQuiet(t, pid)
+		reapQuiet(t, child)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,8 +109,8 @@ func TestReconcileKillsLeftoverProcessesOfACrashedWorker(t *testing.T) {
 	}
 	pid := stray.Process.Pid
 	t.Cleanup(func() {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		_ = stray.Wait()
+		killQuiet(t, pid)
+		reapQuiet(t, stray)
 	})
 
 	if err := w.reconcile(context.Background()); err != nil {
