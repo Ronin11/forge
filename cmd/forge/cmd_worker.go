@@ -9,7 +9,7 @@ import (
 	"syscall"
 
 	"forge/internal/core/logging"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // runWorker is `forge worker start`: the long-lived worker process, run by the

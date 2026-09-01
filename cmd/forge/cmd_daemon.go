@@ -26,12 +26,12 @@ import (
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
+	"forge/internal/core/worker"
 	"forge/internal/integrator"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
 	"forge/internal/plugin"
 	"forge/internal/tools"
-	"forge/internal/worker"
 )
 
 func runDaemon(ctx context.Context, c *cmdContext, args []string) int {

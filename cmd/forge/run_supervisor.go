@@ -26,7 +26,7 @@ import (
 
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // runSupervisor tracks every running app. It is the daemon's, wired into the

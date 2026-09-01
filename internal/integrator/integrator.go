@@ -27,7 +27,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/store"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // Tuning of the loop. The per-command git timeout is generous because a

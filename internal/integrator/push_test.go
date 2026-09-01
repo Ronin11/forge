@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 func TestAllowedPushBranch(t *testing.T) {

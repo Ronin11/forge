@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // MustExtend returns the envelope schema with extraProps — a JSON object of

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // runCleanup is the worker-local `forge cleanup ATTEMPT [--confirm]`: preview a

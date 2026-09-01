@@ -7,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // ErrPushRefused wraps every push-policy refusal (constitution 10): callers

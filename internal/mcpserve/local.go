@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // gitTimeout caps each git command a local tool runs; every command here reads

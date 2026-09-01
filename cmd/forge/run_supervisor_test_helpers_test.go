@@ -3,7 +3,7 @@ package main
 import (
 	"syscall"
 
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 func syscallKill0(pid int) error { return syscall.Kill(pid, 0) }

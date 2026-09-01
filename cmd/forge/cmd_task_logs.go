@@ -12,7 +12,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/store"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // runTaskLogs prints a task's timeline — journal rows and attempt events —

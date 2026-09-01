@@ -21,7 +21,7 @@ import (
 	"forge/internal/controlplane"
 	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // cliClient is the thin client every operator command uses: it connects over

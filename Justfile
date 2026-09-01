@@ -71,7 +71,7 @@ boundary:
         "$(go list ./internal/controlplane/... 2>/dev/null || true)" \
         '^$' '^$'; \
     check "worker may not reach controlplane or store" \
-        "$(go list ./internal/worker/... 2>/dev/null || true)" \
+        "$(go list ./internal/core/worker/... 2>/dev/null || true)" \
         '^forge/internal/(controlplane|core/store)(/|$)' '^$'; \
     check "model imports nothing of forge" \
         "$(go list ./internal/core/model/... 2>/dev/null || true)" \

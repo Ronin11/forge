@@ -14,8 +14,8 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/worker"
 	"forge/internal/doctor"
-	"forge/internal/worker"
 )
 
 // runInit is the optional interactive half of setup (DESIGN.md §1.3): report

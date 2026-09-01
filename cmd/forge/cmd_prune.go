@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"forge/internal/controlplane"
-	"forge/internal/worker"
+	"forge/internal/core/worker"
 )
 
 // runPrune applies the retention policy to raw output and artifacts (rows are
