@@ -215,7 +215,13 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 	verdict := map[string]any{"l0_envelope": hasEnvelope, "l0_scope": string(scope)}
 
 	// L0.2: changes[] ⊆ changed paths in git and changed paths ⊆ changes[].
+	// A new_project build writes hundreds of files at once and reports them as a
+	// coarse summary, so exactness there measures the summary, not the work: the
+	// diffs are still recorded but never fail (VERIFICATION.md §L0). Greenfield
+	// is an L2 mode, verified against its declared checks.
 	if hasEnvelope && env != nil {
+		exact := scope != model.WritesNewProject
+		verdict["l0_changes_exact"] = exact
 		changed := map[string]bool{}
 		for _, p := range git.ChangedPaths {
 			changed[p] = true
@@ -236,7 +242,7 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 		sort.Strings(missing)
 		sort.Strings(undeclared)
 		verdict["l0_claimed_not_changed"], verdict["l0_changed_not_claimed"] = missing, undeclared
-		if len(missing) > 0 || len(undeclared) > 0 {
+		if exact && (len(missing) > 0 || len(undeclared) > 0) {
 			fail("l0:changes_mismatch")
 		}
 	}
