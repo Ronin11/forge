@@ -273,6 +273,10 @@ type QuestionRequest struct {
 	Options    []string        `json:"options,omitempty"`
 	Context    json.RawMessage `json:"context,omitempty"`
 	Checkpoint string          `json:"checkpoint,omitempty"`
+	// Criticality gates auto-decision: critical always blocks for a human,
+	// normal (the default) and low may be auto-decided after their SLA lapses
+	// (model.Criticality). Empty means normal.
+	Criticality string `json:"criticality,omitempty"`
 }
 
 // CompleteResponse tells the worker the daemon's view, including whether this was

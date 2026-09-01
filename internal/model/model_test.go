@@ -228,3 +228,25 @@ func TestDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestCriticality(t *testing.T) {
+	cases := []struct {
+		c     Criticality
+		valid bool
+		auto  bool
+	}{
+		{CriticalityCritical, true, false},
+		{CriticalityNormal, true, true},
+		{CriticalityLow, true, true},
+		{"", false, false},
+		{"urgent", false, false},
+	}
+	for _, tc := range cases {
+		if got := tc.c.Valid(); got != tc.valid {
+			t.Errorf("%q.Valid() = %v, want %v", tc.c, got, tc.valid)
+		}
+		if got := tc.c.AutoDecidable(); got != tc.auto {
+			t.Errorf("%q.AutoDecidable() = %v, want %v", tc.c, got, tc.auto)
+		}
+	}
+}

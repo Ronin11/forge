@@ -323,6 +323,31 @@ func (a Autonomy) Valid() bool {
 // AllowsQuestions reports whether an attempt at this level may pause for a human.
 func (a Autonomy) AllowsQuestions() bool { return a == AutonomyAsk || a == AutonomyCheckpoint }
 
+// Criticality is how urgently a Question needs a human. Only critical always
+// blocks for a person; normal and low may be auto-decided once their
+// time-of-day SLA lapses (the attention sweep, DESIGN.md §10.4). Agent-declared,
+// default normal.
+type Criticality string
+
+const (
+	CriticalityCritical Criticality = "critical"
+	CriticalityNormal   Criticality = "normal"
+	CriticalityLow      Criticality = "low"
+)
+
+// Valid reports whether c is a known criticality.
+func (c Criticality) Valid() bool {
+	switch c {
+	case CriticalityCritical, CriticalityNormal, CriticalityLow:
+		return true
+	}
+	return false
+}
+
+// AutoDecidable reports whether a Question at this criticality may be auto-decided
+// after its wait lapses; critical never is.
+func (c Criticality) AutoDecidable() bool { return c == CriticalityNormal || c == CriticalityLow }
+
 // ResolveAutonomy is the precedence chain: Work submit override > routine >
 // repository forge.toml > project > mode default. Empty means "not set".
 func ResolveAutonomy(submit, routine, repository, project, mode Autonomy) Autonomy {

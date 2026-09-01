@@ -20,10 +20,20 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := migrations[len(migrations)-1]
-	if last.id != "01M1CJ8P0V6KQY3W2E9R7T4B5N_work_provenance" {
-		t.Fatalf("provenance is not the last migration: %s", last.id)
+	// Locate the provenance migration by id (later migrations may sort after
+	// it); the backfill is driven by applying everything strictly before it,
+	// then it.
+	idx := -1
+	for i, m := range migrations {
+		if m.id == "01M1CJ8P0V6KQY3W2E9R7T4B5N_work_provenance" {
+			idx = i
+			break
+		}
 	}
+	if idx < 0 {
+		t.Fatal("provenance migration not found")
+	}
+	last := migrations[idx]
 	path := filepath.Join(t.TempDir(), "forge.sqlite3")
 	dsn := "file:" + path + "?" + url.Values{"_pragma": {"foreign_keys(1)"}}.Encode()
 	db, err := sql.Open("sqlite", dsn)
@@ -38,7 +48,7 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	ctx := context.Background()
 	// Everything before provenance.
-	for _, m := range migrations[:len(migrations)-1] {
+	for _, m := range migrations[:idx] {
 		if _, err := db.ExecContext(ctx, m.sql); err != nil {
 			t.Fatalf("apply %s: %v", m.id, err)
 		}
