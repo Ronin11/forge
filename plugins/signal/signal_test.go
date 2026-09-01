@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
+	"path/filepath"
 	"testing"
 )
 
@@ -62,5 +64,35 @@ func TestEnvelopeQuoteParse(t *testing.T) {
 	}
 	if e.Envelope.DataMessage.Quote.ID != 1788219856709 || e.Envelope.DataMessage.Message != "main" {
 		t.Fatalf("parsed %+v", e)
+	}
+}
+
+func TestPendingBoundAndPersist(t *testing.T) {
+	dir := t.TempDir()
+	nb := func() *bridge {
+		return &bridge{pending: map[int64]pendingQ{}, stateFile: filepath.Join(dir, "pending.json"), log: slog.New(slog.DiscardHandler)}
+	}
+	b := nb()
+	for i := int64(1); i <= pendingCap+50; i++ {
+		b.rememberQuestion(i, "q", "w")
+	}
+	if len(b.pending) != pendingCap {
+		t.Fatalf("bounded size = %d, want %d", len(b.pending), pendingCap)
+	}
+	if _, ok := b.pending[1]; ok {
+		t.Error("oldest entry should have been evicted")
+	}
+	// Persisted → a fresh bridge reloads it.
+	b2 := nb()
+	b2.loadPending()
+	if len(b2.pending) != pendingCap {
+		t.Fatalf("reloaded size = %d", len(b2.pending))
+	}
+	// takePending removes and returns.
+	if _, ok := b2.takePending(pendingCap + 50); !ok {
+		t.Fatal("takePending missed a known entry")
+	}
+	if _, ok := b2.pending[pendingCap+50]; ok {
+		t.Error("takePending did not remove the entry")
 	}
 }

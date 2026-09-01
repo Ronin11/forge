@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,6 +69,10 @@ func run(log *slog.Logger) error {
 		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account, dir: stableDir(), mu: &sync.Mutex{}},
 		cfg: cfg, log: log, seen: map[string]bool{}, pending: map[int64]pendingQ{},
 	}
+	if dir := os.Getenv("FORGE_PLUGIN_DIR"); dir != "" {
+		b.stateFile = filepath.Join(dir, "pending.json")
+		b.loadPending()
+	}
 	log.Info("signal starting", "account", cfg.Account, "recipient", cfg.Recipient, "intake", cfg.Intake)
 
 	errc := make(chan error, 2)
@@ -93,10 +98,20 @@ type bridge struct {
 	seen map[string]bool // question ids already sent (dedup across replayed events)
 	// pending maps a sent question-notification timestamp to the question it
 	// asked, so a Signal *reply* to that message answers it — no /answer <id>.
-	pending map[int64]pendingQ
+	// Bounded and persisted (stateFile) so it neither grows without limit nor is
+	// lost across a restart.
+	pending   map[int64]pendingQ
+	stateFile string
 }
 
-type pendingQ struct{ questionID, workID string }
+type pendingQ struct {
+	QuestionID string `json:"q"`
+	WorkID     string `json:"w"`
+}
+
+// pendingCap bounds the question→reply map so it never grows without limit;
+// oldest (smallest timestamp) entries are evicted first.
+const pendingCap = 200
 
 // send is the one place a Signal message leaves; a failure is logged, not fatal.
 // It returns the sent-message timestamp so a question can be matched to a reply.
@@ -230,9 +245,7 @@ func (b *bridge) onQuestion(ctx context.Context) {
 		short := shortID(q.WorkID)
 		ts := b.send(ctx, fmt.Sprintf("Forge needs input on task %s:\n%s\n%s/tasks/%s\nReply to this message with your answer (or /answer %s <text>).", short, q.Text, b.cfg.UI, q.WorkID, short))
 		if ts != 0 {
-			b.mu.Lock()
-			b.pending[ts] = pendingQ{questionID: q.ID, workID: q.WorkID}
-			b.mu.Unlock()
+			b.rememberQuestion(ts, q.ID, q.WorkID)
 		}
 	}
 }
@@ -320,23 +333,24 @@ func (b *bridge) command(ctx context.Context, text string, quoteID int64) {
 	if text == "" {
 		return
 	}
-	// A reply to a question notification answers that question directly.
+	// A reply always means "answer" — never a new task. If it matches a known
+	// question, answer it; if not, say so rather than filing a stray task.
 	if quoteID != 0 {
-		b.mu.Lock()
-		pq, ok := b.pending[quoteID]
-		b.mu.Unlock()
-		if ok {
-			if err := b.api.AnswerQuestion(ctx, pq.questionID, text); err != nil {
-				b.send(ctx, "Answer failed: "+errMessage(err))
-				return
-			}
-			b.mu.Lock()
-			delete(b.pending, quoteID)
-			delete(b.seen, pq.questionID)
-			b.mu.Unlock()
-			b.send(ctx, "Answered task "+shortID(pq.workID)+".")
+		pq, ok := b.takePending(quoteID)
+		if !ok {
+			b.send(ctx, "That question isn't open anymore. Reply to a current one, or send a new request as a fresh message (not a reply).")
 			return
 		}
+		if err := b.api.AnswerQuestion(ctx, pq.QuestionID, text); err != nil {
+			b.rememberQuestion(quoteID, pq.QuestionID, pq.WorkID) // put it back to retry
+			b.send(ctx, "Answer failed: "+errMessage(err))
+			return
+		}
+		b.mu.Lock()
+		delete(b.seen, pq.QuestionID)
+		b.mu.Unlock()
+		b.send(ctx, "Answered task "+shortID(pq.WorkID)+".")
+		return
 	}
 	if !strings.HasPrefix(text, "/") {
 		b.fileTask(ctx, text)
@@ -434,6 +448,74 @@ func stableDir() string {
 		return h
 	}
 	return "/"
+}
+
+// rememberQuestion records a sent question notification's timestamp → question,
+// evicts the oldest entries past the cap, and persists the map.
+func (b *bridge) rememberQuestion(ts int64, questionID, workID string) {
+	b.mu.Lock()
+	b.pending[ts] = pendingQ{QuestionID: questionID, WorkID: workID}
+	for len(b.pending) > pendingCap {
+		oldest, first := int64(0), true
+		for k := range b.pending {
+			if first || k < oldest {
+				oldest, first = k, false
+			}
+		}
+		delete(b.pending, oldest)
+	}
+	b.savePendingLocked()
+	b.mu.Unlock()
+}
+
+// takePending removes and returns the question a reply's quote refers to.
+func (b *bridge) takePending(quoteID int64) (pendingQ, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pq, ok := b.pending[quoteID]
+	if ok {
+		delete(b.pending, quoteID)
+		b.savePendingLocked()
+	}
+	return pq, ok
+}
+
+// savePendingLocked writes the map to stateFile (caller holds b.mu); JSON keys
+// are strings, so the millisecond timestamps are stringified.
+func (b *bridge) savePendingLocked() {
+	if b.stateFile == "" {
+		return
+	}
+	m := make(map[string]pendingQ, len(b.pending))
+	for k, v := range b.pending {
+		m[strconv.FormatInt(k, 10)] = v
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(b.stateFile, data, 0o600); err != nil {
+		b.log.Warn("save pending", "err", err)
+	}
+}
+
+// loadPending restores the map from stateFile on start (best effort).
+func (b *bridge) loadPending() {
+	data, err := os.ReadFile(b.stateFile)
+	if err != nil {
+		return
+	}
+	var m map[string]pendingQ
+	if json.Unmarshal(data, &m) != nil {
+		return
+	}
+	b.mu.Lock()
+	for k, v := range m {
+		if ts, perr := strconv.ParseInt(k, 10, 64); perr == nil {
+			b.pending[ts] = v
+		}
+	}
+	b.mu.Unlock()
 }
 
 func shortID(id string) string {
