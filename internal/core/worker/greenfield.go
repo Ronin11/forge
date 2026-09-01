@@ -140,6 +140,37 @@ func (a *attempt) greenfieldMove(result json.RawMessage) {
 		refuse(err.Error())
 		return
 	}
+	// Flatten if the agent built in a subdirectory named after the project: when
+	// dest/<slug>/ is the only non-hidden directory, move its contents up.
+	nested := filepath.Join(dest, slug)
+	if stat, err := os.Stat(nested); err == nil && stat.IsDir() {
+		entries, err := os.ReadDir(dest)
+		if err == nil {
+			nonHiddenDirs := 0
+			for _, e := range entries {
+				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+					nonHiddenDirs++
+				}
+			}
+			if nonHiddenDirs == 1 {
+				nestedEntries, err := os.ReadDir(nested)
+				if err == nil {
+					allMoved := true
+					for _, ne := range nestedEntries {
+						src := filepath.Join(nested, ne.Name())
+						dst := filepath.Join(dest, ne.Name())
+						if err := os.Rename(src, dst); err != nil {
+							allMoved = false
+							break
+						}
+					}
+					if allMoved {
+						os.Remove(nested)
+					}
+				}
+			}
+		}
+	}
 	m.WorktreePath = dest
 	a.writeManifest(a.ctx, m)
 	a.emitter.Lifecycle("greenfield project moved", map[string]any{"moved_to": dest})
