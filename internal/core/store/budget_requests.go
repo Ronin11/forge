@@ -202,19 +202,24 @@ type RunningAttempt struct {
 	TargetID  string
 	WorkID    string
 	StartedAt time.Time
+	// MaxTurns is the work snapshot's per-task turn budget (0 when unset):
+	// the supervisor scales its soft-budget nudge and cliff trigger to it so
+	// small-budget tasks are governed before their executor's --max-turns.
+	MaxTurns int
 }
 
 // RunningAttempts lists the attempts whose target is still running (not yet
 // finished), oldest first — the sweep set for the supervisor watchdog.
 func (s *Store) RunningAttempts(ctx context.Context) ([]RunningAttempt, error) {
 	var out []RunningAttempt
-	err := each(s.query(ctx, `SELECT a.id, a.target_id, t.work_id, a.started_at
-		FROM attempts a JOIN targets t ON t.id = a.target_id
+	err := each(s.query(ctx, `SELECT a.id, a.target_id, t.work_id, a.started_at,
+		COALESCE(json_extract(w.snapshot, '$.max_turns'), 0)
+		FROM attempts a JOIN targets t ON t.id = a.target_id JOIN work w ON w.id = t.work_id
 		WHERE a.finished_at IS NULL AND t.state = 'running'
 		ORDER BY a.started_at`))(func(rows *sql.Rows) error {
 		var ra RunningAttempt
 		var started sql.NullString
-		if err := rows.Scan(&ra.ID, &ra.TargetID, &ra.WorkID, &started); err != nil {
+		if err := rows.Scan(&ra.ID, &ra.TargetID, &ra.WorkID, &started, &ra.MaxTurns); err != nil {
 			return fmt.Errorf("scan running attempt: %w", err)
 		}
 		t, err := parseTime(started)

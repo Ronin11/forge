@@ -80,6 +80,11 @@ type supervisionEvidence struct {
 	SilenceFor     time.Duration
 	Ledger         []store.BudgetRequest
 	Now            time.Time
+	// MaxTurns is the task's own turn budget (0 when unset). The watchdog
+	// scales the soft-budget nudge and the cliff trigger to it: at 30- or
+	// 70-turn budgets a nudge pinned to the global soft_turns (~80) can
+	// never fire before the executor's --max-turns kills the launch.
+	MaxTurns int
 }
 
 // assembleEvidence gathers the live signals for one attempt. It never

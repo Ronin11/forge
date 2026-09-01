@@ -253,6 +253,12 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 	m.SessionID = result.SessionID
 
 	// Outcome of the process.
+	a.mu.Lock()
+	effMaxTurns := c.MaxTurns
+	if effMaxTurns > 0 {
+		effMaxTurns += a.grantedTurns
+	}
+	a.mu.Unlock()
 	state, reason := model.Succeeded, model.FailureReason("")
 	switch {
 	case a.stopped() == "cancelled":
@@ -261,6 +267,12 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 		state, reason = model.Failed, model.ReasonLeaseExpired
 	case exit.TimedOut:
 		state, reason = model.Failed, model.ReasonTimeout
+	case (exit.Code != 0 || result.IsError) && effMaxTurns > 0 && result.NumTurns >= effMaxTurns:
+		// The executor died on its own --max-turns cliff. Report it as the
+		// budget, not a generic nonzero exit: the daemon lands a cliff exit
+		// that left commits as a reviewable partial (store.Complete), instead
+		// of `failed` burying finished work on a retained branch.
+		state, reason = model.Failed, model.ReasonBudgetExceeded
 	case exit.Code != 0 || result.IsError:
 		state, reason = model.Failed, model.ReasonExitNonzero
 	}

@@ -289,6 +289,17 @@ func (tx *Tx) Complete(ctx context.Context, attemptID string, req protocol.Compl
 		}
 		t, err = tx.Transition(ctx, t.ID, model.WaitingHuman, TransitionOptions{Actor: actor})
 	case model.Failed, model.Cancelled:
+		if req.State == model.Failed && req.FailureReason == model.ReasonBudgetExceeded && req.Git.Commits > 0 {
+			// A max-turns cliff that left commits is unfinished-but-real
+			// work, not a failure: land it as a reviewable partial so the
+			// retained branch surfaces for hand review (or `forge task
+			// retry`) instead of `failed` burying it.
+			if t, err = tx.Transition(ctx, t.ID, model.Verifying, TransitionOptions{Actor: actor}); err != nil {
+				return nil, err
+			}
+			t, err = tx.Transition(ctx, t.ID, model.Unverified, TransitionOptions{UnverifiedReason: "budget_cliff", Actor: actor, Retained: req.Cleanup.Outcome == "retained"})
+			break
+		}
 		t, err = tx.Transition(ctx, t.ID, req.State, TransitionOptions{Reason: req.FailureReason, Actor: actor, Retained: req.Cleanup.Outcome == "retained"})
 	case model.Succeeded:
 		if t, err = tx.Transition(ctx, t.ID, model.Verifying, TransitionOptions{Actor: actor}); err != nil {

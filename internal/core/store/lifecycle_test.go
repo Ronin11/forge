@@ -237,6 +237,41 @@ func TestCompleteUnverifiedAndVerifyingWait(t *testing.T) {
 	}
 }
 
+// A max-turns cliff exit that left commits lands as a reviewable partial
+// (unverified, budget_cliff, retained); the same exit with nothing committed
+// stays a plain failure.
+func TestCompleteBudgetCliffLandsPartial(t *testing.T) {
+	f := newFixture(t)
+	_, target := f.newWork(model.ClassNormal)
+	a := f.claim(target, "r1")
+	f.run(a.ID, "lease-r1")
+	f.write(func(tx *Tx) error {
+		_, err := tx.Complete(ctx(), a.ID, protocol.CompleteRequest{
+			LeaseToken: "lease-r1", State: model.Failed, FailureReason: model.ReasonBudgetExceeded,
+			Git:     protocol.GitOutcome{Head: "abc", Commits: 3},
+			Cleanup: protocol.Cleanup{Outcome: "retained", Reason: "unpushed commits"}, FinishedAt: f.now}, 1)
+		return err
+	})
+	tg := must(f.s.GetTarget(ctx(), target.ID))
+	if tg.State != model.Unverified || tg.UnverifiedReason != "budget_cliff" || !tg.Retained {
+		t.Errorf("cliff-with-commits target = %+v", tg)
+	}
+
+	_, target2 := f.newWork(model.ClassNormal)
+	a2 := f.claim(target2, "r2")
+	f.run(a2.ID, "lease-r2")
+	f.write(func(tx *Tx) error {
+		_, err := tx.Complete(ctx(), a2.ID, protocol.CompleteRequest{
+			LeaseToken: "lease-r2", State: model.Failed, FailureReason: model.ReasonBudgetExceeded,
+			FinishedAt: f.now}, 1)
+		return err
+	})
+	tg2 := must(f.s.GetTarget(ctx(), target2.ID))
+	if tg2.State != model.Failed || tg2.FailureReason != model.ReasonBudgetExceeded {
+		t.Errorf("cliff-without-commits target = %+v", tg2)
+	}
+}
+
 func TestSweepExpiredLeasesAndLateCompletion(t *testing.T) {
 	f := newFixture(t)
 	_, target := f.newWork(model.ClassNormal)

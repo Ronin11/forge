@@ -52,6 +52,7 @@ func (s *Engine) sweepSupervision(ctx context.Context) {
 			s.log.ErrorContext(ctx, "supervision: assemble evidence", "attempt_id", ra.ID, "error", err)
 			continue
 		}
+		ev.MaxTurns = ra.MaxTurns
 		s.maybeNudge(ctx, ra.ID, ev)
 		// A prior kill decision already stands (shadow mode leaves the attempt
 		// running); don't re-adjudicate it every tick.
@@ -83,19 +84,35 @@ func detectTrigger(cfg config.SupervisionConfig, ev supervisionEvidence) string 
 		return "spin"
 	case cfg.HardCeilingTurns > 0 && ev.RunningTurns >= cfg.HardCeilingTurns-cliffMargin:
 		return "cliff"
+	case ev.MaxTurns > 0 && ev.RunningTurns >= ev.MaxTurns-cliffMargin:
+		// The task's own --max-turns is a cliff too: the executor dies there
+		// whatever the global ceiling says, so adjudicate before it does.
+		return "cliff"
 	default:
 		return ""
 	}
+}
+
+// softTurnBudget is the nudge's reference budget: the global soft_turns capped
+// by the task's own max_turns — at a 30- or 70-turn task budget, a nudge pinned
+// to the global ~80 can never fire before the executor's --max-turns.
+func softTurnBudget(cfg config.SupervisionConfig, ev supervisionEvidence) int {
+	soft := cfg.SoftTurns
+	if ev.MaxTurns > 0 && ev.MaxTurns < soft {
+		soft = ev.MaxTurns
+	}
+	return soft
 }
 
 // maybeNudge delivers the one-time proactive nudge once an attempt crosses
 // ~80% of its soft turn budget: a plain steer telling the agent to request more
 // budget or wrap up. Idempotent via the attempt.budget_nudged journal marker.
 func (s *Engine) maybeNudge(ctx context.Context, attemptID string, ev supervisionEvidence) {
-	if s.supervisionCfg.SoftTurns <= 0 {
+	soft := softTurnBudget(s.supervisionCfg, ev)
+	if soft <= 0 {
 		return
 	}
-	threshold := int(nudgeSoftFraction * float64(s.supervisionCfg.SoftTurns))
+	threshold := int(nudgeSoftFraction * float64(soft))
 	if ev.RunningTurns < threshold {
 		return
 	}
@@ -104,11 +121,11 @@ func (s *Engine) maybeNudge(ctx context.Context, attemptID string, ev supervisio
 		if err != nil || done {
 			return err
 		}
-		text := fmt.Sprintf("You are at %d of your ~%d soft turn budget. If you need more, call forge_request_budget with a concrete reason; otherwise start wrapping up.", ev.RunningTurns, s.supervisionCfg.SoftTurns)
+		text := fmt.Sprintf("You are at %d of your ~%d soft turn budget. If you need more, call forge_request_budget with a concrete reason; otherwise start wrapping up.", ev.RunningTurns, soft)
 		if err := tx.EnqueueSteer(ctx, attemptID, text); err != nil {
 			return err
 		}
-		return tx.Journal(ctx, "attempt.budget_nudged", store.EntityAttempt, attemptID, map[string]any{"running_turns": ev.RunningTurns, "soft_turns": s.supervisionCfg.SoftTurns})
+		return tx.Journal(ctx, "attempt.budget_nudged", store.EntityAttempt, attemptID, map[string]any{"running_turns": ev.RunningTurns, "soft_turns": soft})
 	})
 	if err != nil {
 		s.log.ErrorContext(ctx, "supervision: proactive nudge", "attempt_id", attemptID, "error", err)
