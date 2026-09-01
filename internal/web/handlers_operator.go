@@ -938,7 +938,7 @@ func (s *Server) repositories(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	states, err := repositoryStates(ctx, s.store, s.now())
+	states, err := RepositoryStates(ctx, s.store, s.now())
 	if err != nil {
 		return 0, nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -37,27 +38,27 @@ func TestAttentionDeadline(t *testing.T) {
 	night := time.Date(2026, 8, 30, 23, 0, 0, 0, time.UTC)  // inside quiet hours
 
 	// Active hours use the long wait; quiet hours use the short one.
-	if d, ok := attentionDeadline(q("normal"), active, cfg, quiet); !ok || !d.Equal(asked.Add(240*time.Minute)) {
+	if d, ok := engine.AttentionDeadline(q("normal"), active, cfg, quiet); !ok || !d.Equal(asked.Add(240*time.Minute)) {
 		t.Errorf("normal active = %v %v", d, ok)
 	}
-	if d, ok := attentionDeadline(q("normal"), night, cfg, quiet); !ok || !d.Equal(asked.Add(20*time.Minute)) {
+	if d, ok := engine.AttentionDeadline(q("normal"), night, cfg, quiet); !ok || !d.Equal(asked.Add(20*time.Minute)) {
 		t.Errorf("normal quiet = %v %v", d, ok)
 	}
 	// low burns down at the quiet wait even during active hours.
-	if d, ok := attentionDeadline(q("low"), active, cfg, quiet); !ok || !d.Equal(asked.Add(20*time.Minute)) {
+	if d, ok := engine.AttentionDeadline(q("low"), active, cfg, quiet); !ok || !d.Equal(asked.Add(20*time.Minute)) {
 		t.Errorf("low active = %v %v", d, ok)
 	}
 	// Empty criticality defaults to normal (auto-decidable).
-	if _, ok := attentionDeadline(q(""), active, cfg, quiet); !ok {
+	if _, ok := engine.AttentionDeadline(q(""), active, cfg, quiet); !ok {
 		t.Error("empty criticality should auto-decide")
 	}
 	// critical never auto-decides.
-	if _, ok := attentionDeadline(q("critical"), active, cfg, quiet); ok {
+	if _, ok := engine.AttentionDeadline(q("critical"), active, cfg, quiet); ok {
 		t.Error("critical should not auto-decide")
 	}
 	// auto_decide off disables the whole mechanism.
 	off := false
-	if _, ok := attentionDeadline(q("normal"), active, config.AttentionConfig{AutoDecide: &off, WaitActiveMinutes: 240, WaitQuietMinutes: 20}, quiet); ok {
+	if _, ok := engine.AttentionDeadline(q("normal"), active, config.AttentionConfig{AutoDecide: &off, WaitActiveMinutes: 240, WaitQuietMinutes: 20}, quiet); ok {
 		t.Error("auto_decide off should not auto-decide")
 	}
 }

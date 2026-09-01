@@ -36,6 +36,7 @@ import (
 	"forge/internal/tools"
 	"forge/internal/tools/pluginbridge"
 	"forge/internal/web"
+	webui "forge/internal/web/ui"
 )
 
 func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
@@ -291,13 +292,13 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 		return r.Path, true
 	})
-	ui, err := web.NewUI(st, d.handler.For("web.ui"), nil)
+	ui, err := webui.NewUI(st, d.handler.For("web.ui"), nil)
 	if err != nil {
 		return err
 	}
 	ui.SetPluginHealth(sup.Health)
 	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
-	srv.MountUI(ui)
+	srv.MountRoot(ui.Handler())
 	pid := os.Getpid()
 	pidStart, err := daemon.ProcStart(pid)
 	if err != nil {

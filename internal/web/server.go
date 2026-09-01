@@ -777,3 +777,8 @@ func (s *Server) journal(r *http.Request) (int, any, error) {
 	}
 	return http.StatusOK, entries, nil
 }
+
+// MountRoot mounts the server-rendered UI (or any root handler) at "/". The
+// ui package imports web for its shared read-path surface, so the server
+// takes a plain http.Handler here rather than importing ui back.
+func (s *Server) MountRoot(h http.Handler) { s.mux.Handle("/", h) }

@@ -1,4 +1,4 @@
-package web
+package ui
 
 import (
 	"bytes"
@@ -22,9 +22,10 @@ import (
 	"forge/internal/core/plugin"
 	"forge/internal/core/stats"
 	"forge/internal/core/store"
+	"forge/internal/web"
 )
 
-//go:embed ui/*.html ui/static/*
+//go:embed *.html static/*
 var uiFS embed.FS
 
 // UI serves the operator pages: html/template over the store, one stylesheet,
@@ -207,12 +208,12 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return &d
 		},
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(uiFS, "ui/*.html")
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(uiFS, "*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse ui templates: %w", err)
 	}
 	u := &UI{store: st, log: log, clock: clock, tmpl: tmpl, mux: http.NewServeMux()}
-	static, err := fs.Sub(uiFS, "ui/static")
+	static, err := fs.Sub(uiFS, "static")
 	if err != nil {
 		return nil, fmt.Errorf("ui static: %w", err)
 	}
@@ -241,10 +242,6 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 
 // Handler is the page mux.
 func (u *UI) Handler() http.Handler { return u.mux }
-
-// MountUI serves the pages from the API server's mux; API routes are more
-// specific than "/" so they keep winning.
-func (s *Server) MountUI(u *UI) { s.mux.Handle("/", u.Handler()) }
 
 func humanDuration(d time.Duration) string {
 	switch {
@@ -379,7 +376,7 @@ func (u *UI) repoChips(ctx context.Context) ([]repoChip, error) {
 	if err != nil {
 		return nil, err
 	}
-	states, err := repositoryStates(ctx, u.store, u.clock())
+	states, err := web.RepositoryStates(ctx, u.store, u.clock())
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +397,7 @@ func (u *UI) repoChips(ctx context.Context) ([]repoChip, error) {
 // recent tasks, and the retained-worktree cleanup hint.
 func (u *UI) repo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	detail, err := buildRepoDetail(r.Context(), u.store, u.clock(), name)
+	detail, err := web.BuildRepoDetail(r.Context(), u.store, u.clock(), name)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -552,8 +549,8 @@ func (u *UI) task(w http.ResponseWriter, r *http.Request) {
 	// Provenance strip (DESIGN.md §3): one lineage lookup feeds the breadcrumb,
 	// the backward cause/deps, and the forward children/blocked links.
 	var strip provStrip
-	if ld, err := computeLineage(ctx, u.store, work.ID); err == nil {
-		strip = ld.strip(work.ID)
+	if ld, err := web.ComputeLineage(ctx, u.store, work.ID); err == nil {
+		strip = lineageStrip(ld, work.ID)
 	}
 	u.render(w, r, "task.html", "Task "+work.ID[:8], map[string]any{"Work": work, "State": state, "Targets": views, "Questions": questions, "Lineage": strip})
 }
@@ -562,7 +559,7 @@ func (u *UI) task(w http.ResponseWriter, r *http.Request) {
 // member id canonicalizes (302) to the root's URL.
 func (u *UI) work(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	ld, err := computeLineage(ctx, u.store, r.PathValue("id"))
+	ld, err := web.ComputeLineage(ctx, u.store, r.PathValue("id"))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -582,8 +579,8 @@ func (u *UI) work(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
-	tree, roll := ld.buildTree(attempts)
-	root := ld.byID[ld.RootID]
+	tree, roll := lineageBuildTree(ld, attempts)
+	root := ld.ByID[ld.RootID]
 	u.render(w, r, "work.html", "Work "+ld.RootID[:8], map[string]any{"Root": root, "State": ld.State[ld.RootID], "Tree": tree, "Rollup": roll})
 }
 
@@ -646,7 +643,7 @@ func (u *UI) repos(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
-	states, err := repositoryStates(ctx, u.store, u.clock())
+	states, err := web.RepositoryStates(ctx, u.store, u.clock())
 	if err != nil {
 		u.fail(w, r, err)
 		return
@@ -682,7 +679,7 @@ func (u *UI) system(w http.ResponseWriter, r *http.Request) {
 		h := health[p.Name]
 		rows = append(rows, uiPlugin{Plugin: p, Running: h.Running, PID: h.PID, Restarts: h.Restarts, LastExit: h.LastExit})
 	}
-	states, err := repositoryStates(ctx, u.store, u.clock())
+	states, err := web.RepositoryStates(ctx, u.store, u.clock())
 	if err != nil {
 		u.fail(w, r, err)
 		return
@@ -737,7 +734,7 @@ func (u *UI) stats(w http.ResponseWriter, r *http.Request) {
 	if since == "" {
 		since = "7d"
 	}
-	dur, err := parseSince(since)
+	dur, err := web.ParseSince(since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -808,7 +805,7 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 			u.fail(w, r, err)
 			return
 		}
-		deadline, auto := attentionDeadline(q, now, u.attentionCfg, u.quietHours)
+		deadline, auto := engine.AttentionDeadline(q, now, u.attentionCfg, u.quietHours)
 		rows = append(rows, row{Question: q, Work: work, Actions: questionActions(q.Context), AutoDecide: auto, Deadline: deadline})
 	}
 	// Most urgent first: auto-deciding questions by soonest deadline, then the

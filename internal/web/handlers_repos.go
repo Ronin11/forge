@@ -77,9 +77,9 @@ func activeTargetState(s model.State) bool {
 	return false
 }
 
-// repositoryStates derives every repository's state in one pass; the list
+// RepositoryStates derives every repository's state in one pass; the list
 // endpoint and the System page share it so they never disagree.
-func repositoryStates(ctx context.Context, st *store.Store, now time.Time) (map[string]string, error) {
+func RepositoryStates(ctx context.Context, st *store.Store, now time.Time) (map[string]string, error) {
 	repos, err := st.Repositories(ctx)
 	if err != nil {
 		return nil, err
@@ -142,10 +142,10 @@ type repoSummary struct {
 	State string `json:"state"`
 }
 
-// repoDetail is GET /api/v1/repositories/{name}: the repository, its state, the
+// RepoDetail is GET /api/v1/repositories/{name}: the repository, its state, the
 // tasks that touch it (running and recent), its retained worktrees, and the
 // checks its forge.toml declares.
-type repoDetail struct {
+type RepoDetail struct {
 	Repository    store.Repository         `json:"repository"`
 	State         string                   `json:"state"`
 	Running       []workSummary            `json:"running"`
@@ -157,9 +157,9 @@ type repoDetail struct {
 	AppURL        string                   `json:"app_url,omitempty"`
 }
 
-// buildRepoDetail assembles the repository detail; the API handler and the UI
+// BuildRepoDetail assembles the repository detail; the API handler and the UI
 // page both call it so the shape has one home. ErrNotFound for an unknown one.
-func buildRepoDetail(ctx context.Context, st *store.Store, now time.Time, name string) (*repoDetail, error) {
+func BuildRepoDetail(ctx context.Context, st *store.Store, now time.Time, name string) (*RepoDetail, error) {
 	repo, err := st.Repository(ctx, name)
 	if err != nil {
 		return nil, err
@@ -209,7 +209,7 @@ func buildRepoDetail(ctx context.Context, st *store.Store, now time.Time, name s
 		retained = []store.RetainedWorktree{}
 	}
 	checks := checksFromForgeToml(repo.ForgeToml)
-	return &repoDetail{
+	return &RepoDetail{
 		Repository: *repo, State: repoState(repo.Paused, connected, repoTargets, now),
 		Running: running, Recent: recent, RetainedCount: len(retained), Retained: retained,
 		Checks: checks, Paused: repo.Paused, AppURL: repo.AppURL,
@@ -262,7 +262,7 @@ func (s *Server) getRepository(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	detail, err := buildRepoDetail(r.Context(), s.store, s.now(), name)
+	detail, err := BuildRepoDetail(r.Context(), s.store, s.now(), name)
 	if err != nil {
 		return 0, nil, err
 	}

@@ -34,9 +34,9 @@ var rpcMethods = map[string]rpcFunc{
 	"notify.test": rpcNotifyTest,
 }
 
-// rpcKnown reports whether a method name is registered — the queue action
+// RPCKnown reports whether a method name is registered — the queue action
 // builder uses it so a card can only ever carry a real method.
-func rpcKnown(method string) bool {
+func RPCKnown(method string) bool {
 	_, ok := rpcMethods[method]
 	return ok
 }

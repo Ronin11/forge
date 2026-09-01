@@ -53,7 +53,7 @@ func (s *Server) retroPack(r *http.Request) (int, any, error) {
 // statsQuery builds the window ending now from ?since and the optional
 // dimension filters both endpoints share.
 func (s *Server) statsQuery(r *http.Request) (stats.Query, error) {
-	window, err := parseSince(r.URL.Query().Get("since"))
+	window, err := ParseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		return stats.Query{}, err
 	}
@@ -65,9 +65,9 @@ func (s *Server) statsQuery(r *http.Request) (stats.Query, error) {
 	}, nil
 }
 
-// parseSince reads ?since=: a positive integer with an h (hours) or d (days)
+// ParseSince reads ?since=: a positive integer with an h (hours) or d (days)
 // suffix — "24h", "1d", "7d". Empty means the one-week default.
-func parseSince(raw string) (time.Duration, error) {
+func ParseSince(raw string) (time.Duration, error) {
 	if raw == "" {
 		return defaultStatsWindow, nil
 	}

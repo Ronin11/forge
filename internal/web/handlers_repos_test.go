@@ -21,7 +21,7 @@ func TestRepositoryControls(t *testing.T) {
 	}
 
 	// Detail: a pending target is not active, so the repository is idle.
-	var d repoDetail
+	var d RepoDetail
 	h.call(http.MethodGet, "/api/v1/repositories/equitizr", nil, &d, http.StatusOK)
 	if d.Repository.Name != "equitizr" || d.State != "idle" || d.Paused {
 		t.Fatalf("detail = %+v", d)
@@ -78,7 +78,7 @@ func TestRepositoryAppURL(t *testing.T) {
 	if repo.AppURL != "https://localhost:3000" {
 		t.Fatalf("app url = %q", repo.AppURL)
 	}
-	var d repoDetail
+	var d RepoDetail
 	h.call(http.MethodGet, "/api/v1/repositories/equitizr", nil, &d, http.StatusOK)
 	if d.AppURL != "https://localhost:3000" {
 		t.Fatalf("detail app url = %q", d.AppURL)
@@ -86,7 +86,7 @@ func TestRepositoryAppURL(t *testing.T) {
 	// Empty clears it (the detail read confirms; the response omits an empty
 	// app_url by omitempty, so re-read rather than trust a reused struct).
 	h.call(http.MethodPost, "/api/v1/repositories/equitizr/app-url", map[string]string{"url": ""}, nil, http.StatusOK)
-	var after repoDetail
+	var after RepoDetail
 	h.call(http.MethodGet, "/api/v1/repositories/equitizr", nil, &after, http.StatusOK)
 	if after.AppURL != "" {
 		t.Fatalf("clear app url = %q", after.AppURL)

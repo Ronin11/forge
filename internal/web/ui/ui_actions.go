@@ -1,4 +1,4 @@
-package web
+package ui
 
 // The Human queue's dynamic actions: each card carries the click that starts
 // what the human actually has to do — a link (open the doc a proposal covers,
@@ -14,6 +14,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/store"
+	"forge/internal/web"
 )
 
 // QueueAction is one click on a Human-queue card: a link (URL set) or an
@@ -62,7 +63,7 @@ func questionActions(raw json.RawMessage) []QueueAction {
 		case a.URL != "" && strings.HasPrefix(a.URL, "/") && !strings.HasPrefix(a.URL, "//"):
 			out = append(out, QueueAction{Label: label, URL: a.URL})
 		case a.URL == "" && a.RPC != "":
-			if rpcKnown(a.RPC) {
+			if web.RPCKnown(a.RPC) {
 				out = append(out, QueueAction{Label: label, RPC: a.RPC, Args: string(a.Args)})
 			}
 		}
