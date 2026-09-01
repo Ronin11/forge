@@ -125,6 +125,7 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 	}
 	git := Git{}
 	repos := map[string]*Repository{}
+	var validationErrors []error
 	for _, name := range cfg.RepositoryNames() {
 		if name == greenfieldRepoName {
 			// The name is reserved for the virtual repository ([greenfield]
@@ -134,7 +135,9 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 		rc := cfg.Repositories[name]
 		r, err := git.ValidateRepository(ctx, name, rc.Path, rc.BaseBranch)
 		if err != nil {
-			return nil, err
+			log.WarnContext(ctx, "repository validation failed; skipping", "name", name, "error", err)
+			validationErrors = append(validationErrors, fmt.Errorf("repository %s: %w", name, err))
+			continue
 		}
 		for other, existing := range repos {
 			if existing.Path == r.Path {
@@ -144,6 +147,10 @@ func New(ctx context.Context, o WorkerOptions) (w *Worker, err error) {
 		r.Project = rc.Project
 		repos[name] = r
 		log.InfoContext(ctx, "repository validated", "name", name, "path", r.Path, "origin", r.OriginIdentity)
+	}
+	if len(repos) == 0 && cfg.Greenfield.ProjectsRoot == "" {
+		// No valid repositories and no greenfield: worker cannot accept any work.
+		return nil, fmt.Errorf("no valid repositories configured; validation errors: %w", errors.Join(validationErrors...))
 	}
 	if cfg.Greenfield.ProjectsRoot != "" {
 		// The virtual greenfield repository: not a checkout, never validated as
