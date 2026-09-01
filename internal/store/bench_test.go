@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // BenchmarkInsertEvents is the event-ingestion path: one 100-event batch per

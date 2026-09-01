@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // TestQuestionCriticality covers the agent-declared criticality: an empty value

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // UpsertPromptVersion records a prompt configuration once; the hash is the key.

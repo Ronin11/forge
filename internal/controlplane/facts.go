@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 	"forge/internal/store"
 )
 

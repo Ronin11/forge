@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // gitOutputLimit bounds what one git command may hand back: large enough for any

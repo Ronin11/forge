@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // registerDemo registers a worker advertising one repository, the fixture the

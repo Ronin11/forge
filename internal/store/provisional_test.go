@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // A provisional row (registered on the fly, DESIGN §1.3) has no worker; the

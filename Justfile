@@ -77,7 +77,7 @@ boundary:
         "$(go list ./internal/core/model/... 2>/dev/null || true)" \
         '^forge/' '^$'; \
     check "protocol imports nothing of forge but model" \
-        "$(go list ./internal/protocol/... 2>/dev/null || true)" \
+        "$(go list ./internal/core/protocol/... 2>/dev/null || true)" \
         '^forge/' '^forge/internal/core/model$'; \
     echo "boundary: ok"
 

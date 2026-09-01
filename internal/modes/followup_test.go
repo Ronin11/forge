@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // The verify prompt must carry the subject's claims: the verify session

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 	"forge/internal/store"
 )
 

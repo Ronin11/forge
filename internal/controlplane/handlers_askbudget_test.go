@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // The ask budget (routines.max_questions, default 3): three questions pass,

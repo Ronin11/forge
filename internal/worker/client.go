@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Client is the worker's view of the daemon: a thin HTTP client over the Unix

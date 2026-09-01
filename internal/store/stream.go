@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // JournalForWorkSince returns the journal rows that tell one Work's story —

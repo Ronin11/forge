@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/logging"
-	"forge/internal/protocol"
 )
 
 // forgeBin is the freshly built binary every attempt test launches as the

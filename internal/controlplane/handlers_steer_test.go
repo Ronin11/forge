@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // runningAttempt drives one ad-hoc task to a running Target and returns its claim.

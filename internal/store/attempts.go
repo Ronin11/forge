@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Attempt is one execution of a Target.

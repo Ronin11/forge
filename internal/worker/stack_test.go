@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // A stacked claim (DESIGN.md §20) cuts its worktree at the dependency's

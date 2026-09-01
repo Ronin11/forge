@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Question is raised by an attempt and pauses its Target.

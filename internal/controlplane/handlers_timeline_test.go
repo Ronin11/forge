@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // TestTimelineEndpoint drives one attempt to completion, then asserts the

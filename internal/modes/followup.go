@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // VerifyWork is the one home for the verify Work an L2 mode's FollowUps

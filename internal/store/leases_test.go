@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // A claim with globs takes the path lease; the lease survives the running

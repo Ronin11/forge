@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // TestRunningAttemptLiveProgress checks that the task view surfaces a running

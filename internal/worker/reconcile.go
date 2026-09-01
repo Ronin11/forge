@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/logging"
-	"forge/internal/protocol"
 	"log/slog"
 )
 

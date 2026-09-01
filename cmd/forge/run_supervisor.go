@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 	"forge/internal/store"
 	"forge/internal/worker"
 )

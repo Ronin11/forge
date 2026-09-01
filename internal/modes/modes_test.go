@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
-	"forge/internal/protocol"
 )
 
 // want is MODES.md's per-mode table; the test fails when an implementation

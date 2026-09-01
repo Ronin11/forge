@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // TestApplyGrant checks the worker actuation of a heartbeat-delivered budget

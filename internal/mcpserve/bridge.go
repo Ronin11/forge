@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // schemaVersion is the version stamped on every tools request/response body.

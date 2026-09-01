@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // postTestEvents stores a small worker batch on the attempt.

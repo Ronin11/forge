@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // bareAttempt wires an attempt around a Runner without launching an agent, so

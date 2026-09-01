@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // stubDaemon serves mux on the home's unix socket so the CLI client connects

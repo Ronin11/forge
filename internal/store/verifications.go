@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Verification is one verifications row (DESIGN.md §3 "Verification, Artifact"):

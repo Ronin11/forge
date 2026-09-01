@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // InsertEvents stores a batch with one prepared statement, ignoring duplicates

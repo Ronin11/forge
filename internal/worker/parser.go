@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // MaxLine is the per-line byte cap of every parser (DESIGN.md §7.5). A longer

@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 	"forge/internal/store"
 )
 

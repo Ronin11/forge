@@ -364,3 +364,63 @@ box + devices on one private mesh (100.x / MagicDNS), works across subnets, NAT,
 and cellular, encrypted+authenticated, no port-forward/reverse-proxy. Then set
 the signal plugin's `ui` to the tailnet name and revert the 0.0.0.0 bind to
 loopback so nothing is LAN-exposed. (Nate: "make note, not quite necessary yet.")
+
+## TODO: reinforcement/tuning of the auto-decision policy
+The fuzzy Human-Queue auto-decision (criticality + time-of-day SLA + strong-model
+decider) ships with sane defaults, but the right thresholds are operator-specific
+and only findable through trial + error + logging. So: log every auto-decision
+with its inputs (question, task context), the decider's rationale, AND the
+eventual outcome — did the human later override it? did the resulting work
+succeed/verify? — so we can later tune the policy (thresholds, SLA curve) or
+train a classifier / RL the criticality+SLA from real data. The audit trail is
+the training set. Don't hardcode one person's definition of "critical".
+
+## Supervisor adjudication seam (design locked 2026-08-31; build after #1 live-progress lands)
+
+Make odd loops/hallucinations non-fatal; turn the max_turns cliff into governed
+negotiation. ONE decision point:
+  adjudicate(attempt, evidence, request?) -> { continue | extend(N,dim) | kill(reason) }
+
+Triggers (both feed the same seam):
+- Child-initiated: forge_request_budget(dimension, amount, reason) MCP tool.
+  dimension in {turns, seconds, tokens, usd}. Called when nearing a SOFT phase budget.
+- Supervisor-initiated watchdog (sweep running attempts ~30-60s), reading #1's live signals:
+  - silence: no ingested event for T (~5m) -> true hang.
+  - spin: over rolling window of K turns, tool-signature entropy collapses (same
+    tool+args-hash dominating) OR no new file/commit AND phase not advancing.
+  - cliff: within margin of a soft phase budget or the hard ceiling.
+
+Evidence handed to the adjudicator (KEY: full history, per operator):
+- phase + age, turns vs soft budget vs hard ceiling, tokens/cost.
+- artifact growth: files changed / commits since last check.
+- tool-signature histogram over recent window.
+- ** THE FULL EXTENSION LEDGER: every prior request on this attempt — dimension,
+  amount asked, granted/denied, reason, AND the progress metrics AT THE TIME of
+  that request ** so "asked 3x, files unchanged since first ask" = kill.
+- the child's current request (reason+amount) if child-initiated.
+
+Policy ladder (cheapest first):
+1. Deterministic: over hard ceiling -> kill (or escalate human if critical);
+   CLEAR diminishing-returns / spin -> KILL EARLY (do NOT ride to the ceiling,
+   per operator); evident progress + under ceiling + reasonable ask -> grant bounded.
+2. Ambiguous middle -> opus decider (reuse fuzzy-HQ modelCall) with the FULL
+   evidence incl. the extension ledger -> {continue|extend N|kill} + rationale.
+3. Hard outer ceiling: decider cannot exceed without a human (Human Queue, critical).
+   Also a max_auto_extensions cap: force human/kill before the hard limit.
+
+Actuation: grant -> raise effective budget, delivered via existing heartbeat/steer
+channel (+ proactive nudge at ~80% of a soft slot). kill -> cancel + requeue with
+journaled reason, respecting retry policy.
+
+Audit: journal every decision (attempt.budget_granted / _denied / .reaped) with
+evidence + rationale + decided_by (policy | auto:opus). Mirrors question.auto_answered.
+
+Store: new table attempt_budget_requests(attempt_id, seq, dimension, amount, reason,
+decision, granted_amount, progress_snapshot json, decided_by, rationale, at);
+passed in full to every adjudicate call.
+
+Config: [supervision] enabled, soft phase budgets (per mode/phase), hard_ceiling_turns,
+silence_minutes, spin_window_turns, max_auto_extensions, decider_model=opus.
+
+Reuses: #1 live-progress fields (evidence), modelCall (decider), heartbeat/steer
+(actuation), fuzzy-HQ criticality + Human Queue (human escalation).

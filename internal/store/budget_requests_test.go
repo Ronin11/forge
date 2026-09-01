@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // spanEvent builds a tool_use span_start event the way the worker's parser

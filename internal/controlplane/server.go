@@ -20,10 +20,10 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/logging"
 	"forge/internal/modes"
 	"forge/internal/plugin"
-	"forge/internal/protocol"
 	"forge/internal/store"
 	"forge/internal/tools"
 )

@@ -16,7 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // ForgeToml is the optional file inside a repository (DESIGN.md §3).

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // TestAttemptRefusesSandboxRequiredWithoutBwrap is the worker-side belt and

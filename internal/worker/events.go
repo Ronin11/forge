@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Batch limits (DESIGN.md §8): flush every 500 ms, or at 100 events, or at

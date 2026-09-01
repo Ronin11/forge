@@ -19,8 +19,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/logging"
-	"forge/internal/protocol"
 )
 
 // Loop cadences (DESIGN.md §7.2).

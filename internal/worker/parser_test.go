@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // feed runs every line of stream through p and returns all events in order,

@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 	"forge/internal/store"
 )
 

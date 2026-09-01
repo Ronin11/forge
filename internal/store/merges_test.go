@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // integratePastVerify walks an integrating Target to queued_for_merge the way

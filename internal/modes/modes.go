@@ -11,7 +11,7 @@ import (
 	"sort"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // Mode is the contract every mode implements (MODES.md).

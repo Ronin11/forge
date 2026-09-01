@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/modes"
 	"forge/internal/modes/schema"
-	"forge/internal/protocol"
 )
 
 //go:embed preamble.md

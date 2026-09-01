@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/logging"
-	"forge/internal/protocol"
 )
 
 // attemptDaemon is the slice of the daemon an attempt uses, so tests can drive

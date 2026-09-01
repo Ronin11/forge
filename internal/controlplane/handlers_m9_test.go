@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/modes"
 	planmode "forge/internal/modes/plan"
-	"forge/internal/protocol"
 	"forge/internal/store"
 )
 

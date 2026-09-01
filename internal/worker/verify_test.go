@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // mkEnv builds an envelope claiming exactly the given changed paths.

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/protocol"
+	"forge/internal/core/protocol"
 )
 
 // usageAttrs builds the attrs a "usage" metric carries, matching what the
