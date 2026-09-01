@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"forge/internal/model"
 	"forge/internal/protocol"
 	"forge/internal/store"
 )
@@ -18,7 +19,7 @@ type askTool struct{}
 
 func (askTool) Name() string { return "forge_ask" }
 func (askTool) Description() string {
-	return "Record a question for a human without blocking: end the turn after calling; the answer arrives in a resumed session. Allowed only at autonomy ask or checkpoint."
+	return "Record a question for a human without blocking: end the turn after calling; the answer arrives in a resumed session. Allowed only at autonomy ask or checkpoint. Set criticality: critical always blocks for a human, normal (default) and low may be auto-decided by a strong model once the time-of-day wait lapses."
 }
 func (askTool) Where() string { return WhereDaemon }
 func (askTool) InputSchema() json.RawMessage {
@@ -26,22 +27,27 @@ func (askTool) InputSchema() json.RawMessage {
 		"question":{"type":"string"},
 		"options":{"type":"array","items":{"type":"string"}},
 		"context":{"type":"object","description":"anything the answerer should see; an actions array of {label, url} (a UI path to open, e.g. /kb/<id>) or {label, trigger} (registered triggers: notify_test sends a test desktop toast) renders as buttons on the Human queue card"},
-		"checkpoint":{"type":"string","description":"the declared checkpoint this question belongs to"}
+		"checkpoint":{"type":"string","description":"the declared checkpoint this question belongs to"},
+		"criticality":{"type":"string","enum":["critical","normal","low"],"description":"critical always blocks for a human; normal (default) and low may be auto-decided by a strong model once the time-of-day SLA lapses"}
 	},"required":["question"],"additionalProperties":false}`)
 }
 
 func (askTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
 	var in struct {
-		Question   string          `json:"question"`
-		Options    []string        `json:"options"`
-		Context    json.RawMessage `json:"context"`
-		Checkpoint string          `json:"checkpoint"`
+		Question    string          `json:"question"`
+		Options     []string        `json:"options"`
+		Context     json.RawMessage `json:"context"`
+		Checkpoint  string          `json:"checkpoint"`
+		Criticality string          `json:"criticality"`
 	}
 	if err := decodeInput(req.Input, &in); err != nil {
 		return nil, err
 	}
 	if in.Question == "" {
 		return nil, BadInput("question is required")
+	}
+	if in.Criticality != "" && !model.Criticality(in.Criticality).Valid() {
+		return nil, BadInput("criticality %q: want critical, normal, or low", in.Criticality)
 	}
 	if !req.Attempt.Autonomy.AllowsQuestions() {
 		return nil, BadInput("autonomy %s does not allow questions", req.Attempt.Autonomy)
@@ -55,7 +61,7 @@ func (askTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
 		// CreateQuestion records the Question only; the Target stays where it
 		// is (running). The transition to waiting_human happens when the
 		// worker completes with an open Question (DESIGN.md §4.1).
-		q, err = tx.CreateQuestion(ctx, a, protocol.QuestionRequest{Text: in.Question, Options: in.Options, Context: in.Context, Checkpoint: in.Checkpoint})
+		q, err = tx.CreateQuestion(ctx, a, protocol.QuestionRequest{Text: in.Question, Options: in.Options, Context: in.Context, Checkpoint: in.Checkpoint, Criticality: in.Criticality})
 		return err
 	})
 	if err != nil {
