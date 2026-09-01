@@ -98,6 +98,24 @@ func TestVerifyScopesAndLevels(t *testing.T) {
 			wantPass: true, wantLevel: 1,
 		},
 		{
+			name: "new_project coarse changes skip L0.2 exactness", env: mkEnv("cmd/app", "internal/"),
+			git: protocol.GitOutcome{Commits: 1, ChangedPaths: []string{
+				"cmd/app/main.go", "internal/store/store.go", "go.mod", "README.md",
+			}},
+			scope:    model.WritesNewProject,
+			wantPass: true, wantLevel: 1,
+			wantVerdict: `"l0_changes_exact":false`,
+		},
+		{
+			name: "same coarse changes under repo scope still mismatch", env: mkEnv("cmd/app", "internal/"),
+			git: protocol.GitOutcome{Commits: 1, ChangedPaths: []string{
+				"cmd/app/main.go", "internal/store/store.go", "go.mod", "README.md",
+			}},
+			scope:    model.WritesRepo,
+			wantPass: false, wantLevel: 0, wantReason: "l0:changes_mismatch",
+			wantVerdict: `"l0_claimed_not_changed":["cmd/app","internal/"]`,
+		},
+		{
 			name:     "claim without evidence fails L0",
 			env:      &ResultEnvelope{SchemaVersion: 1, Claims: []ResultClaim{{Claim: "it works", Evidence: " "}}},
 			scope:    model.WritesRepo,

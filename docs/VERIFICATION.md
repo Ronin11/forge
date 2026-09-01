@@ -42,7 +42,11 @@ Checks, all of which must hold:
 2. `changes[]` ⊆ changed paths in Git and changed paths ⊆ `changes[]`, where "changed
    paths in Git" is `git diff --name-status <base>..HEAD` ∪ the porcelain status
    entries of the worktree (committed and uncommitted alike; paths compared after
-   cleaning; renames appear as delete + add).
+   cleaning; renames appear as delete + add). Exempt under the `NewProject` scope: a
+   greenfield build writes hundreds of files at once and reports them as a coarse
+   summary, so both diffs are still recorded in the verdict (with
+   `l0_changes_exact: false`) but neither fails — greenfield is an L2 mode, verified
+   against its declared checks.
 3. Write scope:
    - `None` → worktree clean, `git_commits == 0`, `changes[]` empty.
    - `KbOnly` → same as `None` for the worktree (kb writes happen through the tool).
