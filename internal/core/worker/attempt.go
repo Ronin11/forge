@@ -801,6 +801,13 @@ func (a *attempt) cleanup(ctx context.Context, state model.State, git protocol.G
 		if d.Inconsistent {
 			m.Lifecycle = ManifestInconsistent
 		}
+		// Detach the retained worktree's HEAD: a linked worktree pins its
+		// checked-out branch, which blocks `git checkout <branch>` in the
+		// registered repo long after the attempt finished. Detaching keeps
+		// the exact commit and every dirty file while freeing the ref.
+		if _, derr := a.r.git.Run(ctx, m.WorktreePath, "checkout", "--detach"); derr != nil {
+			a.log.WarnContext(ctx, "detach retained worktree", "error", derr)
+		}
 		a.writeManifest(ctx, m)
 		return protocol.Cleanup{Outcome: "retained", Reason: d.Reason, Command: d.Command}
 	}

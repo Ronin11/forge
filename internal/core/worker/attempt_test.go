@@ -209,6 +209,15 @@ func TestAttemptCommitIsRetainedWithUnpushedCommits(t *testing.T) {
 	if err != nil || !strings.Contains(branches, "forge/demo-"+c.AttemptID[:8]) {
 		t.Errorf("branch missing: %q %v", branches, err)
 	}
+	// Retention detaches the worktree's HEAD so the branch is checkout-able
+	// in the registered repo; the commit and files stay put.
+	wt := filepath.Join(f.dataDir, "worktrees", c.AttemptID)
+	if head, err := f.git.g.Run(context.Background(), wt, "symbolic-ref", "-q", "HEAD"); err == nil && strings.TrimSpace(head) != "" {
+		t.Errorf("retained worktree still holds its branch ref: %q", head)
+	}
+	if out, err := f.git.g.Run(context.Background(), f.git.checkout, "checkout", "forge/demo-"+c.AttemptID[:8]); err != nil {
+		t.Errorf("branch not checkout-able in the registered repo: %v (%s)", err, out)
+	}
 	if _, err := os.Stat(filepath.Join(f.dataDir, "worktrees", c.AttemptID, "FORGE_SMOKE.txt")); err != nil {
 		t.Error("retained worktree lost the file")
 	}
