@@ -97,6 +97,78 @@ func TestRetryTargetFromTerminalStates(t *testing.T) {
 	}
 }
 
+func TestReverifyTargetFromUnverified(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	target := retryWork(t, s, false,
+		[]model.State{model.Claimed, model.Preparing, model.Running, model.Verifying, model.Unverified},
+		TransitionOptions{Actor: "test", UnverifiedReason: "verify_attempt_failed"})
+	var got *Target
+	err := s.Write(ctx, func(tx *Tx) error {
+		var err error
+		got, err = tx.ReverifyTarget(ctx, target.ID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("ReverifyTarget: %v", err)
+	}
+	if got.State != model.Verifying || got.UnverifiedReason != "" || !got.FinishedAt.IsZero() {
+		t.Errorf("returned target = %+v", got)
+	}
+	fresh, err := s.GetTarget(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.State != model.Verifying || fresh.UnverifiedReason != "" || !fresh.FinishedAt.IsZero() {
+		t.Errorf("stored target = %+v", fresh)
+	}
+	w, err := s.GetWork(ctx, target.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.FinishedAt.IsZero() {
+		t.Errorf("work still finished at %v", w.FinishedAt)
+	}
+	rows, err := s.JournalForEntity(ctx, EntityTarget, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.Kind == "target.reverified" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no target.reverified journal row")
+	}
+}
+
+func TestReverifyTargetRefusals(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		path []model.State
+	}{
+		{"failed", []model.State{model.Claimed, model.Failed}},
+		{"succeeded", []model.State{model.Claimed, model.Preparing, model.Running, model.Verifying, model.Succeeded}},
+		{"cancelled", []model.State{model.Cancelled}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := openTest(t)
+			target := retryWork(t, s, false, c.path, TransitionOptions{Actor: "test"})
+			err := s.Write(ctx, func(tx *Tx) error {
+				_, err := tx.ReverifyTarget(ctx, target.ID)
+				return err
+			})
+			if !errors.Is(err, model.ErrTransition) {
+				t.Fatalf("ReverifyTarget from %s: err = %v, want ErrTransition", c.name, err)
+			}
+		})
+	}
+}
+
 func TestRetryTargetRefusals(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {

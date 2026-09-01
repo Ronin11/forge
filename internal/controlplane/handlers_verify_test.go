@@ -272,3 +272,67 @@ func TestVerifyFlowL3ApproveAndReject(t *testing.T) {
 		t.Errorf("summary after reject = %+v", a)
 	}
 }
+
+// TestReverifyEndpoint: an unverified subject goes back to verifying with a
+// fresh verify follow-up, and the new verdict decides it — without the
+// subject ever re-running.
+func TestReverifyEndpoint(t *testing.T) {
+	h := newVerifyHarness(t, []modes.Mode{buildMode(), fakeMode{name: "verify", level: model.L0, writes: model.WritesNone}})
+	h.register(testWorkerID)
+	submitTask(h, "build")
+	c := h.mustClaim("r1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 7)
+	if done := completeSubject(h, c); done.State != model.Verifying {
+		t.Fatalf("subject complete = %+v", done)
+	}
+	// First verify fails its verdict: subject lands unverified.
+	vc := h.mustClaim("r2")
+	h.heartbeat(vc, model.Preparing, 0)
+	h.heartbeat(vc, model.Running, 8)
+	completeVerdict(h, vc, "fail", nil)
+	if tg := h.target(c.TargetID); tg.State != model.Unverified {
+		t.Fatalf("subject after fail verdict = %+v", tg)
+	}
+
+	var got store.Target
+	h.call(http.MethodPost, "/api/v1/targets/"+c.TargetID+"/reverify", nil, &got, http.StatusOK)
+	if got.ID != c.TargetID || got.State != model.Verifying || got.UnverifiedReason != "" {
+		t.Fatalf("reverified target = %+v", got)
+	}
+
+	// A fresh verify Work exists, claimable, linked to the same subject attempt.
+	vc2 := h.mustClaim("r3")
+	if vc2.Mode != "verify" || vc2.VerifyOf == nil || vc2.VerifyOf.AttemptID != c.AttemptID || vc2.VerifyOf.Head != subjectHead {
+		t.Fatalf("second verify claim = %+v verify_of = %+v", vc2, vc2.VerifyOf)
+	}
+	h.heartbeat(vc2, model.Preparing, 0)
+	h.heartbeat(vc2, model.Running, 6)
+	completeVerdict(h, vc2, "pass", nil)
+	if tg := h.target(c.TargetID); tg.State != model.Succeeded {
+		t.Fatalf("subject after reverify pass = %+v", tg)
+	}
+}
+
+// TestReverifyEndpointRefusals: only an unverified target may reverify.
+func TestReverifyEndpointRefusals(t *testing.T) {
+	h := newVerifyHarness(t, []modes.Mode{buildMode(), fakeMode{name: "verify", level: model.L0, writes: model.WritesNone}})
+	h.register(testWorkerID)
+	submitTask(h, "build")
+	c := h.mustClaim("r1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 7)
+	// verifying, not unverified: 409.
+	if done := completeSubject(h, c); done.State != model.Verifying {
+		t.Fatalf("subject complete = %+v", done)
+	}
+	if status, body := h.do(http.MethodPost, "/api/v1/targets/"+c.TargetID+"/reverify", nil, nil, ""); status != http.StatusConflict {
+		t.Fatalf("reverify of a verifying target = %d %s, want 409", status, body)
+	}
+	if status, body := h.do(http.MethodPost, "/api/v1/targets/ffffffffffffffffffffffffffffffff/reverify", nil, nil, ""); status != http.StatusNotFound {
+		t.Fatalf("unknown target = %d %s, want 404", status, body)
+	}
+	if status, body := h.do(http.MethodPost, "/api/v1/targets/not-an-id/reverify", nil, nil, ""); status != http.StatusBadRequest {
+		t.Fatalf("invalid id = %d %s, want 400", status, body)
+	}
+}

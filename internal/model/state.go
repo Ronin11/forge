@@ -39,8 +39,11 @@ var transitions = map[State][]State{
 	// M11 retry (forge task retry, DESIGN.md §22): a terminal, non-merged
 	// Target may go back to pending for a fresh attempt. Exactly these three;
 	// merged stays terminal, and succeeded is already the accepted outcome.
+	// unverified → verifying is `forge task reverify`: the completed work is
+	// re-checked by a fresh verify attempt without re-running the subject —
+	// the recovery when the verifier, not the subject, is what failed.
 	Failed:     {Pending},
-	Unverified: {Pending},
+	Unverified: {Pending, Verifying},
 	Cancelled:  {Pending},
 }
 

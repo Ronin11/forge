@@ -52,7 +52,7 @@ func TestTransitionTable(t *testing.T) {
 		Conflict:       {QueuedForMerge, Cancelled},
 		// M11 retry edges: terminal, non-merged → pending.
 		Failed:     {Pending},
-		Unverified: {Pending},
+		Unverified: {Pending, Verifying},
 		Cancelled:  {Pending},
 	}
 	for _, from := range all {

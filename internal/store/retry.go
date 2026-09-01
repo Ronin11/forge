@@ -50,3 +50,30 @@ func (tx *Tx) RetryTarget(ctx context.Context, targetID, modelAlias string) (*Ta
 	t.FinishedAt = time.Time{}
 	return t, nil
 }
+
+// ReverifyTarget moves an unverified Target back to verifying so a fresh
+// verify attempt re-checks the existing work without re-running it — the
+// recovery for verify_attempt_failed, where the verifier rather than the
+// subject is what failed. The caller creates the new verify Work in the same
+// transaction; this performs only the audited transition and the reset.
+func (tx *Tx) ReverifyTarget(ctx context.Context, targetID string) (*Target, error) {
+	t, err := tx.Transition(ctx, targetID, model.Verifying, TransitionOptions{Actor: "human"})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE targets SET unverified_reason = NULL, finished_at = NULL, updated_at = ? WHERE id = ?`,
+		formatTime(tx.now), targetID); err != nil {
+		return nil, fmt.Errorf("reset target %s for reverify: %w", targetID, err)
+	}
+	// The unverified outcome finished the Work; reopen it so the subject shows
+	// as live again while its verification is pending.
+	if _, err := tx.Exec(ctx, `UPDATE work SET finished_at = NULL WHERE id = ?`, t.WorkID); err != nil {
+		return nil, fmt.Errorf("reopen work %s for reverify: %w", t.WorkID, err)
+	}
+	if err := tx.Journal(ctx, "target.reverified", EntityTarget, targetID, map[string]any{"work_id": t.WorkID}); err != nil {
+		return nil, err
+	}
+	t.UnverifiedReason = ""
+	t.FinishedAt = time.Time{}
+	return t, nil
+}

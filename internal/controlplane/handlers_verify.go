@@ -31,6 +31,7 @@ func (s *Server) verifyRoutes(m *http.ServeMux) {
 	// M11 retry and steer live beside the other POST decisions; the handlers
 	// are in handlers_operator.go.
 	m.HandleFunc("POST /api/v1/targets/{id}/retry", s.handle(s.retryTarget))
+	m.HandleFunc("POST /api/v1/targets/{id}/reverify", s.handle(s.reverifyTarget))
 	m.HandleFunc("POST /api/v1/targets/{id}/requeue", s.handle(s.requeueTarget))
 	m.HandleFunc("POST /api/v1/attempts/{id}/steer", s.handle(s.steerAttempt))
 	m.HandleFunc("GET /api/v1/verifications", s.handle(s.listVerifications))
@@ -114,6 +115,82 @@ func (s *Server) decideTarget(r *http.Request, approve bool) (int, any, error) {
 		return 0, nil, err
 	}
 	s.log.InfoContext(ctx, "target decided", "target_id", id, "approved", approve, "by", req.By, "state", target.State)
+	return http.StatusOK, target, nil
+}
+
+// reverifyTarget is `forge task reverify`: an unverified Target goes back to
+// verifying and a fresh verify follow-up is created from its stored result
+// envelope — the completed work is re-checked without re-running the subject.
+// The recovery for verify_attempt_failed (the verifier, not the subject, ran
+// out of budget), and a second opinion on any other unverified outcome.
+func (s *Server) reverifyTarget(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if s.modes == nil {
+		return 0, nil, fmt.Errorf("no mode registry: %w", store.ErrConflict)
+	}
+	var target *store.Target
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		t, err := tx.GetTarget(ctx, id)
+		if err != nil {
+			return err
+		}
+		if t.State != model.Unverified {
+			return fmt.Errorf("target %s is %s, not unverified: %w", id, t.State, store.ErrConflict)
+		}
+		a, err := s.store.AttemptForTarget(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if a == nil {
+			return fmt.Errorf("target %s has no attempt: %w", id, store.ErrConflict)
+		}
+		mode := s.modes.Get(a.Mode)
+		if mode == nil {
+			return fmt.Errorf("mode %q unknown: %w", a.Mode, store.ErrConflict)
+		}
+		env := decodeEnvelope(a.Result)
+		if env == nil {
+			return fmt.Errorf("attempt %s left no parseable result envelope to verify: %w", a.ID, store.ErrConflict)
+		}
+		w, err := tx.GetWork(ctx, t.WorkID)
+		if err != nil {
+			return err
+		}
+		ft := s.repoForgeToml(ctx, tx, t.Repository)
+		fc := modes.FollowUpContext{
+			AttemptID: a.ID, TargetID: t.ID, WorkID: w.ID, Repository: t.Repository,
+			Branch: a.Branch, Head: a.HeadCommit, Class: w.BudgetClass, Priority: w.Priority, UI: ft.Verify.UI,
+		}
+		var specs []modes.WorkSpec
+		for _, spec := range mode.FollowUps(env, fc) {
+			if spec.VerifyOf != nil {
+				specs = append(specs, spec)
+			}
+		}
+		if len(specs) == 0 {
+			return fmt.Errorf("mode %q produces no verify follow-up: %w", a.Mode, store.ErrConflict)
+		}
+		if target, err = tx.ReverifyTarget(ctx, t.ID); err != nil {
+			return err
+		}
+		for _, spec := range specs {
+			if err := s.createFollowUp(ctx, tx, w, spec); err != nil {
+				return fmt.Errorf("verify follow-up of %s: %w", a.ID, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "target reverified", "target_id", id)
 	return http.StatusOK, target, nil
 }
 
