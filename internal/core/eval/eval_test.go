@@ -140,11 +140,11 @@ func TestScore(t *testing.T) {
 // the fixture. This is the eval engine's own eval — every shipped case must
 // pass, scoring 1.0.
 func TestRunGoldenCases(t *testing.T) {
-	casesDir, err := filepath.Abs("../../evals")
+	casesDir, err := filepath.Abs("../../../evals")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixturesDir, err := filepath.Abs("../../testdata/fixtures")
+	fixturesDir, err := filepath.Abs("../../../testdata/fixtures")
 	if err != nil {
 		t.Fatal(err)
 	}

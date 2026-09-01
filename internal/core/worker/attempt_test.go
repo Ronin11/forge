@@ -102,7 +102,7 @@ func newRunnerFixture(t *testing.T, fixture string) *runnerFixture {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	fixtures, err := filepath.Abs("../../testdata/fixtures")
+	fixtures, err := filepath.Abs("../../../testdata/fixtures")
 	if err != nil {
 		t.Fatal(err)
 	}

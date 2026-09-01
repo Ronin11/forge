@@ -107,7 +107,7 @@ func startIntegration(t *testing.T, fixtureName, repoForgeToml string) *intHarne
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 	t.Cleanup(cancel)
-	fixture, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fixtures", fixtureName))
+	fixture, err := filepath.Abs(filepath.Join("..", "..", "..", "testdata", "fixtures", fixtureName))
 	if err != nil {
 		t.Fatal(err)
 	}

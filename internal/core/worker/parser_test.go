@@ -54,7 +54,7 @@ func newClaudeParser(t *testing.T, agentSpan string) OutputParser {
 }
 
 func TestClaudeStreamSample(t *testing.T) {
-	stream, err := os.ReadFile("../../.scratch/claude-stream.jsonl")
+	stream, err := os.ReadFile("../../../.scratch/claude-stream.jsonl")
 	if err != nil {
 		t.Skipf("sample stream unavailable: %v", err)
 	}
