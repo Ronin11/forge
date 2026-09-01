@@ -71,9 +71,21 @@ func execServiceRunner(ctx context.Context, name string, args ...string) (string
 	return strings.TrimSpace(string(out)), err
 }
 
+// environmentLines renders the [Service] Environment= lines. PATH is captured
+// from the installing shell: user units started at boot get systemd's stock
+// PATH (/usr/local/bin:/usr/bin), which misses version managers like mise, so
+// the worker cannot find the agent executor's binary until it is baked in.
+func environmentLines(home, path string) string {
+	lines := "Environment=FORGE_HOME=" + home
+	if path != "" {
+		lines += "\nEnvironment=PATH=" + path
+	}
+	return lines
+}
+
 // forgeUnit is forge.service: the daemon in the foreground under systemd.
 // KillMode=process because the detached worker is not this unit's to kill.
-func forgeUnit(binary, home string) string {
+func forgeUnit(binary, home, path string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Forge daemon
 
@@ -82,15 +94,15 @@ Type=simple
 ExecStart=%s daemon start --foreground
 KillMode=process
 Restart=on-failure
-Environment=FORGE_HOME=%s
+%s
 
 [Install]
 WantedBy=default.target
-`, binary, home)
+`, binary, environmentLines(home, path))
 }
 
 // workerUnit is forge-worker.service: same shape, ordered after the daemon.
-func workerUnit(binary, home string) string {
+func workerUnit(binary, home, path string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Forge worker
 After=forge.service
@@ -100,11 +112,11 @@ Type=simple
 ExecStart=%s worker start
 KillMode=process
 Restart=on-failure
-Environment=FORGE_HOME=%s
+%s
 
 [Install]
 WantedBy=default.target
-`, binary, home)
+`, binary, environmentLines(home, path))
 }
 
 // serviceInstall writes both units, reloads systemd, and enables them now. It
@@ -115,8 +127,8 @@ func serviceInstall(ctx context.Context, c *cmdContext, unitDir, binary string, 
 		return c.fail("service install", fmt.Errorf("create %s: %w", unitDir, err))
 	}
 	units := map[string]string{
-		"forge.service":        forgeUnit(binary, c.forgeHome),
-		"forge-worker.service": workerUnit(binary, c.forgeHome),
+		"forge.service":        forgeUnit(binary, c.forgeHome, c.getenv("PATH")),
+		"forge-worker.service": workerUnit(binary, c.forgeHome, c.getenv("PATH")),
 	}
 	for _, name := range []string{"forge.service", "forge-worker.service"} {
 		path := filepath.Join(unitDir, name)

@@ -37,7 +37,7 @@ func serviceTestContext(t *testing.T, env map[string]string) (*cmdContext, *stri
 
 func TestServiceInstallWritesUnits(t *testing.T) {
 	unitDir := filepath.Join(t.TempDir(), "systemd", "user")
-	c, out := serviceTestContext(t, map[string]string{"USER": "tester"})
+	c, out := serviceTestContext(t, map[string]string{"USER": "tester", "PATH": "/home/tester/.local/bin:/usr/bin"})
 	runner := &stubRunner{linger: "Linger=no"}
 	if code := serviceInstall(context.Background(), c, unitDir, "/opt/forge/forge", runner.run); code != 0 {
 		t.Fatalf("install = %d\n%s", code, out.String())
@@ -52,6 +52,7 @@ ExecStart=/opt/forge/forge daemon start --foreground
 KillMode=process
 Restart=on-failure
 Environment=FORGE_HOME=/home/tester/.forge
+Environment=PATH=/home/tester/.local/bin:/usr/bin
 
 [Install]
 WantedBy=default.target
@@ -66,6 +67,7 @@ ExecStart=/opt/forge/forge worker start
 KillMode=process
 Restart=on-failure
 Environment=FORGE_HOME=/home/tester/.forge
+Environment=PATH=/home/tester/.local/bin:/usr/bin
 
 [Install]
 WantedBy=default.target
