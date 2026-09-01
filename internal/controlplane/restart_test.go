@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/daemon"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -114,7 +115,7 @@ func TestDrainExecWaitsForInflight(t *testing.T) {
 }
 
 // dupFD duplicates a listener's descriptor into an fd nothing else owns, the
-// shape ListenerFromFD sees after an exec.
+// shape daemon.ListenerFromFD sees after an exec.
 func dupFD(t *testing.T, f *os.File) uintptr {
 	t.Helper()
 	fd, err := syscall.Dup(int(f.Fd()))
@@ -141,7 +142,7 @@ func TestListenerAdoptionTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adopted, err := ListenerFromFD(dupFD(t, f), "http")
+	adopted, err := daemon.ListenerFromFD(dupFD(t, f), "http")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestListenerAdoptionTCP(t *testing.T) {
 func TestListenerAdoptionUnix(t *testing.T) {
 	h := newHarness(t, "")
 	home := t.TempDir()
-	l, err := ListenSocket(home)
+	l, err := daemon.ListenSocket(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,14 +184,14 @@ func TestListenerAdoptionUnix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adopted, err := ListenerFromFD(dupFD(t, f), SocketFile)
+	adopted, err := daemon.ListenerFromFD(dupFD(t, f), daemon.SocketFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(home, SocketFile)
+	sock := filepath.Join(home, daemon.SocketFile)
 	if _, err := os.Stat(sock); err != nil {
 		t.Fatalf("socket file gone after adoption: %v", err)
 	}

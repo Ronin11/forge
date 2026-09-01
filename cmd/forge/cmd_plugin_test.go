@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/protocol"
 )
 
@@ -30,7 +30,7 @@ func stubDaemon(t *testing.T, home string, mux *http.ServeMux) {
 			t.Error(err)
 		}
 	})
-	l, err := net.Listen("unix", filepath.Join(home, controlplane.SocketFile))
+	l, err := net.Listen("unix", filepath.Join(home, daemon.SocketFile))
 	if err != nil {
 		t.Fatal(err)
 	}

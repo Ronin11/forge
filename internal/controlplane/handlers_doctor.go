@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"forge/internal/core/daemon"
 	"forge/internal/core/doctor"
 	"forge/internal/core/plugin"
 )
@@ -53,7 +54,7 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 	}
 	var startedAt time.Time
 	if s.home != "" {
-		if st, err := ReadState(s.home); err == nil && st != nil {
+		if st, err := daemon.ReadState(s.home); err == nil && st != nil {
 			startedAt = st.StartedAt
 		}
 	}

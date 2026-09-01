@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/doctor"
 )
 
@@ -63,18 +63,18 @@ func localChecks(c *cmdContext) []doctor.Check {
 	checks := doctor.Binaries(exec.LookPath, binaryVersion)
 	checks = append(checks,
 		doctor.Home(home),
-		doctor.Token(filepath.Join(home, controlplane.TokenFile)),
-		doctor.DB(filepath.Join(home, controlplane.DBFile)),
+		doctor.Token(filepath.Join(home, daemon.TokenFile)),
+		doctor.DB(filepath.Join(home, daemon.DBFile)),
 	)
 	if _, err := os.Stat(home); err == nil {
 		facts := doctor.DaemonFacts{}
-		if _, err := os.Stat(filepath.Join(home, controlplane.SocketFile)); err == nil {
+		if _, err := os.Stat(filepath.Join(home, daemon.SocketFile)); err == nil {
 			facts.SocketExists = true
 		}
-		if held, err := controlplane.IsLocked(home); err == nil {
+		if held, err := daemon.IsLocked(home); err == nil {
 			facts.LockHeld = held
 		}
-		if st, err := controlplane.ReadState(home); err == nil && st != nil {
+		if st, err := daemon.ReadState(home); err == nil && st != nil {
 			facts.StateExists, facts.PID, facts.PIDAlive = true, st.PID, st.Alive()
 		}
 		checks = append(checks, doctor.Socket(facts), doctor.Lock(facts), doctor.Disk(home))
@@ -103,7 +103,7 @@ func binaryVersion(name string) string {
 // daemonChecks asks the daemon for its side of the table over a plain socket
 // dial — no auto-start, no lock taking.
 func daemonChecks(ctx context.Context, home string) ([]doctor.Check, error) {
-	sock := filepath.Join(home, controlplane.SocketFile)
+	sock := filepath.Join(home, daemon.SocketFile)
 	if _, err := os.Stat(sock); err != nil {
 		return nil, fmt.Errorf("no socket: %w", err)
 	}

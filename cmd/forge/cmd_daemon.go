@@ -22,6 +22,7 @@ import (
 
 	"forge/internal/controlplane"
 	"forge/internal/core/config"
+	"forge/internal/core/daemon"
 	"forge/internal/core/engine"
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
@@ -85,7 +86,7 @@ func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
 		if err := cl.connect(ctx); err != nil {
 			return c.fail("daemon start", err)
 		}
-		st, err := controlplane.ReadState(c.forgeHome)
+		st, err := daemon.ReadState(c.forgeHome)
 		if err != nil || st == nil {
 			return c.fail("daemon start", fmt.Errorf("daemon answered but daemon.json is missing"))
 		}
@@ -137,8 +138,8 @@ type daemonProcess struct {
 	cfg     *config.Config
 	handler *logging.Handler
 	log     *slog.Logger
-	lock    *controlplane.Lock
-	state   controlplane.DaemonState
+	lock    *daemon.Lock
+	state   daemon.DaemonState
 	// stopPlugins reaps the plugin children (set once they start); execRestart
 	// calls it before syscall.Exec so plugins never orphan across the restart.
 	stopPlugins func()
@@ -148,10 +149,10 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	home := d.c.forgeHome
 	// The lock: inherited from the CLI, or taken now.
 	if lockFD >= 0 {
-		d.lock = controlplane.LockFromFD(uintptr(lockFD))
+		d.lock = daemon.LockFromFD(uintptr(lockFD))
 	} else {
-		l, lerr := controlplane.TryLock(home)
-		if errors.Is(lerr, controlplane.ErrLocked) {
+		l, lerr := daemon.TryLock(home)
+		if errors.Is(lerr, daemon.ErrLocked) {
 			return fmt.Errorf("another forge daemon owns %s", home)
 		}
 		if lerr != nil {
@@ -172,7 +173,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	st, err := store.Open(ctx, filepath.Join(home, controlplane.DBFile), store.Options{Logger: d.handler.For("store")})
+	st, err := store.Open(ctx, filepath.Join(home, daemon.DBFile), store.Options{Logger: d.handler.For("store")})
 	if err != nil {
 		return err
 	}
@@ -182,7 +183,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return fmt.Errorf("resolve forge binary: %w", err)
 	}
-	report, err := controlplane.Bootstrap(ctx, st, controlplane.BootstrapOptions{
+	report, err := daemon.Bootstrap(ctx, st, daemon.BootstrapOptions{
 		Home: home, UserHome: d.c.userHome, Logger: d.handler.For("daemon.bootstrap"),
 		WriteWorkerConfig: func(path string) (bool, error) { return worker.WriteDefault(path, home, self) },
 		ModeSeeds:         modes.Seeds(all.All()),
@@ -190,7 +191,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
-	token, err := controlplane.ReadToken(home)
+	token, err := daemon.ReadToken(home)
 	if err != nil {
 		return err
 	}
@@ -297,19 +298,19 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
 	srv.MountUI(ui)
 	pid := os.Getpid()
-	pidStart, err := controlplane.ProcStart(pid)
+	pidStart, err := daemon.ProcStart(pid)
 	if err != nil {
 		return err
 	}
-	d.state = controlplane.DaemonState{PID: pid, PIDStart: pidStart, Version: version, SchemaVersion: st.SchemaVersion(), Socket: filepath.Join(home, controlplane.SocketFile), HTTP: d.cfg.HTTP.Listen, StartedAt: time.Now().UTC(), State: "running"}
-	if err := controlplane.WriteState(home, d.state); err != nil {
+	d.state = daemon.DaemonState{PID: pid, PIDStart: pidStart, Version: version, SchemaVersion: st.SchemaVersion(), Socket: filepath.Join(home, daemon.SocketFile), HTTP: d.cfg.HTTP.Listen, StartedAt: time.Now().UTC(), State: "running"}
+	if err := daemon.WriteState(home, d.state); err != nil {
 		return err
 	}
 	// After §1.4's exec the image is new but the process is the same; the
 	// journal says so, and daemon.json (written running above) replaces the
 	// draining state the old image left behind.
 	journalKind := "daemon.started"
-	if d.c.getenv(controlplane.EnvRestarted) == "1" {
+	if d.c.getenv(daemon.EnvRestarted) == "1" {
 		journalKind = "daemon.restarted"
 	}
 	if err := st.Write(ctx, func(tx *store.Tx) error {
@@ -426,7 +427,7 @@ func (d *daemonProcess) ensureWorker(ctx context.Context, self string) error {
 		return err
 	}
 	d.state.WorkerPID = cmd.Process.Pid
-	if err := controlplane.WriteState(home, d.state); err != nil {
+	if err := daemon.WriteState(home, d.state); err != nil {
 		return err
 	}
 	d.log.InfoContext(ctx, "worker spawned", "pid", cmd.Process.Pid)
@@ -459,7 +460,7 @@ func runDaemonStop(ctx context.Context, c *cmdContext, args []string) int {
 	if code >= 0 {
 		return code
 	}
-	st, err := controlplane.ReadState(c.forgeHome)
+	st, err := daemon.ReadState(c.forgeHome)
 	if err != nil {
 		return c.fail("daemon stop", err)
 	}
@@ -502,11 +503,11 @@ func runDaemonStatus(ctx context.Context, c *cmdContext, args []string) int {
 	if code >= 0 {
 		return code
 	}
-	st, err := controlplane.ReadState(c.forgeHome)
+	st, err := daemon.ReadState(c.forgeHome)
 	if err != nil {
 		return c.fail("daemon status", err)
 	}
-	locked, err := controlplane.IsLocked(c.forgeHome)
+	locked, err := daemon.IsLocked(c.forgeHome)
 	if err != nil {
 		return c.fail("daemon status", err)
 	}
@@ -668,7 +669,7 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 			return fmt.Errorf("open plugin log: %w", err)
 		}
 		env := worker.PassthroughEnv(os.Environ(), append(logging.Environ(d.handler),
-			"FORGE_SOCKET="+filepath.Join(home, controlplane.SocketFile),
+			"FORGE_SOCKET="+filepath.Join(home, daemon.SocketFile),
 			"FORGE_TOKEN="+token,
 			"FORGE_PLUGIN_DIR="+m.Dir)...)
 		spec := plugin.Spec{Manifest: m, Env: env, LogSink: f}

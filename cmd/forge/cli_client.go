@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
 	"forge/internal/core/worker"
@@ -40,7 +40,7 @@ type cliClient struct {
 }
 
 func (c *cmdContext) client(log *slog.Logger) *cliClient {
-	sock := filepath.Join(c.forgeHome, controlplane.SocketFile)
+	sock := filepath.Join(c.forgeHome, daemon.SocketFile)
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", sock)
@@ -75,25 +75,25 @@ func (cl *cliClient) connect(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("systemctl --user start forge: %w: %s", err, strings.TrimSpace(string(out)))
 		}
-		if err := controlplane.WaitForSocket(ctx, home, 10*time.Second); err != nil {
+		if err := daemon.WaitForSocket(ctx, home, 10*time.Second); err != nil {
 			return err
 		}
 		return cl.tryHandshake(ctx, 2*time.Second)
 	}
 	// Step 3: the lock.
-	lock, err := controlplane.TryLock(home)
-	if errors.Is(err, controlplane.ErrLocked) {
+	lock, err := daemon.TryLock(home)
+	if errors.Is(err, daemon.ErrLocked) {
 		cl.log.DebugContext(ctx, "daemon lock held; waiting for the socket")
-		if werr := controlplane.WaitForSocket(ctx, home, 10*time.Second); werr != nil {
-			st, serr := controlplane.ReadState(home)
+		if werr := daemon.WaitForSocket(ctx, home, 10*time.Second); werr != nil {
+			st, serr := daemon.ReadState(home)
 			if serr != nil {
 				return errors.Join(werr, serr)
 			}
 			if st != nil && !st.Alive() {
-				return fmt.Errorf("daemon lock is held but daemon.json names dead pid %d — remove %s if no forge daemon is running", st.PID, filepath.Join(home, controlplane.LockFile))
+				return fmt.Errorf("daemon lock is held but daemon.json names dead pid %d — remove %s if no forge daemon is running", st.PID, filepath.Join(home, daemon.LockFile))
 			}
 			if st != nil {
-				return fmt.Errorf("daemon pid %d is running but %s is missing — run 'forge daemon restart'", st.PID, filepath.Join(home, controlplane.SocketFile))
+				return fmt.Errorf("daemon pid %d is running but %s is missing — run 'forge daemon restart'", st.PID, filepath.Join(home, daemon.SocketFile))
 			}
 			return werr
 		}
@@ -109,7 +109,7 @@ func (cl *cliClient) connect(ctx context.Context) error {
 	if err := lock.Release(); err != nil {
 		return err
 	}
-	if err := controlplane.WaitForSocket(ctx, home, 5*time.Second); err != nil {
+	if err := daemon.WaitForSocket(ctx, home, 5*time.Second); err != nil {
 		return fmt.Errorf("daemon started but did not answer: %w (see %s)", err, filepath.Join(home, "logs", "daemon.stdio.log"))
 	}
 	return cl.tryHandshake(ctx, 2*time.Second)
@@ -117,7 +117,7 @@ func (cl *cliClient) connect(ctx context.Context) error {
 
 // spawnDaemon starts `forge daemon start --foreground` detached with the lock
 // fd inherited (auto-start step 4) and waits for daemon.json to show its pid.
-func (cl *cliClient) spawnDaemon(ctx context.Context, lock *controlplane.Lock) error {
+func (cl *cliClient) spawnDaemon(ctx context.Context, lock *daemon.Lock) error {
 	home := cl.c.forgeHome
 	self, err := os.Executable()
 	if err != nil {
@@ -126,7 +126,7 @@ func (cl *cliClient) spawnDaemon(ctx context.Context, lock *controlplane.Lock) e
 	if err := os.MkdirAll(filepath.Join(home, "logs"), 0o700); err != nil {
 		return fmt.Errorf("create logs dir: %w", err)
 	}
-	if err := os.Remove(filepath.Join(home, controlplane.SocketFile)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(home, daemon.SocketFile)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale socket: %w", err)
 	}
 	stdio, err := os.OpenFile(filepath.Join(home, "logs", "daemon.stdio.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -153,7 +153,7 @@ func (cl *cliClient) spawnDaemon(ctx context.Context, lock *controlplane.Lock) e
 	cl.log.InfoContext(ctx, "daemon spawned", "pid", pid)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		st, err := controlplane.ReadState(home)
+		st, err := daemon.ReadState(home)
 		if err == nil && st != nil && st.PID == pid {
 			return nil
 		}

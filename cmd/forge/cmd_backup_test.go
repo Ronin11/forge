@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
@@ -25,7 +26,7 @@ func makeArchive(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
 	seedHome := t.TempDir()
-	st, err := store.Open(ctx, filepath.Join(seedHome, controlplane.DBFile), store.Options{})
+	st, err := store.Open(ctx, filepath.Join(seedHome, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestRestoreRoundTrip(t *testing.T) {
 	if !strings.Contains(out.String(), "daemon start") {
 		t.Errorf("restore output lacks next steps: %q", out.String())
 	}
-	st, err := store.Open(context.Background(), filepath.Join(home, controlplane.DBFile), store.Options{})
+	st, err := store.Open(context.Background(), filepath.Join(home, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestRestoreRefusesNonEmptyHome(t *testing.T) {
 		t.Errorf("stderr = %q", errOut.String())
 	}
 	// The occupied home is untouched.
-	if _, err := os.Stat(filepath.Join(home, controlplane.DBFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, daemon.DBFile)); !os.IsNotExist(err) {
 		t.Errorf("restore into a refused home still wrote the db: %v", err)
 	}
 }

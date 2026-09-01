@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
@@ -119,10 +120,10 @@ func (s *Server) waitInflightIdle(ctx context.Context, timeout time.Duration) {
 // markStateDraining rewrites daemon.json's state so `daemon status` agrees with
 // the handshake; a missing file is left missing.
 func (s *Server) markStateDraining() error {
-	st, err := ReadState(s.home)
+	st, err := daemon.ReadState(s.home)
 	if err != nil || st == nil {
 		return err
 	}
 	st.State = "draining"
-	return WriteState(s.home, *st)
+	return daemon.WriteState(s.home, *st)
 }

@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
 )
@@ -31,24 +31,24 @@ func (d *daemonProcess) listeners(ctx context.Context) (unixL, tcpL net.Listener
 		if perr != nil || fd < 0 {
 			return nil, true, fmt.Errorf("%s=%q: want a descriptor number", key, raw)
 		}
-		l, lerr := controlplane.ListenerFromFD(uintptr(fd), name)
+		l, lerr := daemon.ListenerFromFD(uintptr(fd), name)
 		return l, true, lerr
 	}
-	unixL, ok, err := adopt(controlplane.EnvSockFD, controlplane.SocketFile)
+	unixL, ok, err := adopt(daemon.EnvSockFD, daemon.SocketFile)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !ok {
-		if unixL, err = controlplane.ListenSocket(d.c.forgeHome); err != nil {
+		if unixL, err = daemon.ListenSocket(d.c.forgeHome); err != nil {
 			return nil, nil, err
 		}
 	}
-	tcpL, ok, err = adopt(controlplane.EnvHTTPFD, "http")
+	tcpL, ok, err = adopt(daemon.EnvHTTPFD, "http")
 	if err != nil {
 		return nil, nil, errors.Join(err, unixL.Close())
 	}
 	if !ok {
-		if tcpL, err = controlplane.ListenTCP(ctx, d.cfg.HTTP.Listen); err != nil {
+		if tcpL, err = daemon.ListenTCP(ctx, d.cfg.HTTP.Listen); err != nil {
 			return nil, nil, errors.Join(err, unixL.Close())
 		}
 	}
@@ -106,7 +106,7 @@ func (d *daemonProcess) execRestart(execPath string, unixL, tcpL net.Listener) e
 // would leave a second restart reading the first one's numbers.
 func restartExecSpec(execPath, home string, base, logEnv []string, lockFD, sockFD, httpFD uintptr) (argv, env []string) {
 	argv = []string{execPath, "daemon", "start", "--foreground", "--lock-fd", strconv.Itoa(int(lockFD))}
-	drop := map[string]bool{"FORGE_HOME": true, controlplane.EnvSockFD: true, controlplane.EnvHTTPFD: true, controlplane.EnvRestarted: true}
+	drop := map[string]bool{"FORGE_HOME": true, daemon.EnvSockFD: true, daemon.EnvHTTPFD: true, daemon.EnvRestarted: true}
 	for _, kv := range logEnv {
 		if k, _, ok := strings.Cut(kv, "="); ok {
 			drop[k] = true
@@ -122,9 +122,9 @@ func restartExecSpec(execPath, home string, base, logEnv []string, lockFD, sockF
 	env = append(env, logEnv...)
 	env = append(env,
 		"FORGE_HOME="+home,
-		controlplane.EnvSockFD+"="+strconv.Itoa(int(sockFD)),
-		controlplane.EnvHTTPFD+"="+strconv.Itoa(int(httpFD)),
-		controlplane.EnvRestarted+"=1")
+		daemon.EnvSockFD+"="+strconv.Itoa(int(sockFD)),
+		daemon.EnvHTTPFD+"="+strconv.Itoa(int(httpFD)),
+		daemon.EnvRestarted+"=1")
 	return argv, env
 }
 

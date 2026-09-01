@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -75,7 +76,7 @@ const logsTestWorker = "0123456789abcdef0123456789abcdef"
 func streamHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(home, controlplane.DBFile), store.Options{})
+	st, err := store.Open(context.Background(), filepath.Join(home, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,7 @@ func streamHome(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unixL, err := controlplane.ListenSocket(home)
+	unixL, err := daemon.ListenSocket(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func apiDo(t *testing.T, home, method, path string, in, out any) int {
 	t.Helper()
 	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
-		return d.DialContext(ctx, "unix", filepath.Join(home, controlplane.SocketFile))
+		return d.DialContext(ctx, "unix", filepath.Join(home, daemon.SocketFile))
 	}}, Timeout: 10 * time.Second}
 	var body io.Reader
 	if in != nil {

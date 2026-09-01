@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
@@ -66,7 +67,7 @@ func (s *Server) health(r *http.Request) (int, any, error) {
 		body.Daemon = "draining"
 	}
 	if s.home != "" {
-		if st, err := ReadState(s.home); err == nil && st != nil && !st.StartedAt.IsZero() {
+		if st, err := daemon.ReadState(s.home); err == nil && st != nil && !st.StartedAt.IsZero() {
 			body.UptimeS = now.Sub(st.StartedAt).Seconds()
 		}
 		if path, mtime, err := LatestBackup(filepath.Join(s.home, "backups")); err == nil && path != "" {
@@ -186,7 +187,7 @@ func WriteBackupArchive(ctx context.Context, st *store.Store, in BackupInputs) (
 			err = errors.Join(err, fmt.Errorf("remove staging %s: %w", staging, rerr))
 		}
 	}()
-	if err := st.BackupInto(ctx, filepath.Join(staging, DBFile)); err != nil {
+	if err := st.BackupInto(ctx, filepath.Join(staging, daemon.DBFile)); err != nil {
 		return "", err
 	}
 	for _, name := range []string{"config.toml", "worker.toml"} {

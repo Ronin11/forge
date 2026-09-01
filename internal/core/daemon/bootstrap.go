@@ -1,4 +1,4 @@
-package controlplane
+package daemon
 
 import (
 	"context"

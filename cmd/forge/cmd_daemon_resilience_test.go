@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
 func TestCaptureLastKnownGood(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	st, err := store.Open(ctx, filepath.Join(home, controlplane.DBFile), store.Options{})
+	st, err := store.Open(ctx, filepath.Join(home, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func rollbackContext(home string) (*cmdContext, *strings.Builder, *strings.Build
 
 func TestRollbackRefusesRunningDaemon(t *testing.T) {
 	home := t.TempDir()
-	lock, err := controlplane.TryLock(home)
+	lock, err := daemon.TryLock(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRollbackRestoresDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The "broken" current database the new version mangled.
-	dbPath := filepath.Join(home, controlplane.DBFile)
+	dbPath := filepath.Join(home, daemon.DBFile)
 	if err := os.WriteFile(dbPath, []byte("not sqlite at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}

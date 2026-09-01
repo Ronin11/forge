@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
@@ -161,7 +162,7 @@ func runDaemonRollback(ctx context.Context, c *cmdContext, args []string) int {
 		return code
 	}
 	home := c.forgeHome
-	locked, err := controlplane.IsLocked(home)
+	locked, err := daemon.IsLocked(home)
 	if err != nil {
 		return c.fail("daemon rollback", err)
 	}
@@ -174,7 +175,7 @@ func runDaemonRollback(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(c.stderr, "forge daemon rollback: no last-known-good snapshot at %s (a healthy daemon start records one)\n", goodDB)
 		return 1
 	}
-	dbPath := filepath.Join(home, controlplane.DBFile)
+	dbPath := filepath.Join(home, daemon.DBFile)
 	ts := c.now().UTC().Format("20060102T150405Z")
 	if _, err := os.Stat(dbPath); err == nil {
 		broken := dbPath + ".broken-" + ts

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"forge/internal/core/daemon"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,8 +11,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"forge/internal/controlplane"
 )
 
 // envValues collects every value a key has in an environment slice.
@@ -48,14 +47,14 @@ func TestRestartExecSpec(t *testing.T) {
 		}
 	}
 	singles := map[string]string{
-		"PATH":                    "/usr/bin",
-		"INVOCATION_ID":           "abc",
-		"FORGE_HOME":              "/home/x/.forge",
-		controlplane.EnvSockFD:    "5",
-		controlplane.EnvHTTPFD:    "6",
-		controlplane.EnvRestarted: "1",
-		"FORGE_LOG_LEVEL":         "debug",
-		"FORGE_LOG_FORMAT":        "json",
+		"PATH":              "/usr/bin",
+		"INVOCATION_ID":     "abc",
+		"FORGE_HOME":        "/home/x/.forge",
+		daemon.EnvSockFD:    "5",
+		daemon.EnvHTTPFD:    "6",
+		daemon.EnvRestarted: "1",
+		"FORGE_LOG_LEVEL":   "debug",
+		"FORGE_LOG_FORMAT":  "json",
 	}
 	for key, want := range singles {
 		got := envValues(env, key)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"forge/internal/core/daemon"
 	"forge/internal/core/store"
 )
 
@@ -55,7 +56,7 @@ func TestHealthEndpoint(t *testing.T) {
 func homeServer(t *testing.T) (*store.Store, string, *httptest.Server) {
 	t.Helper()
 	home := t.TempDir()
-	st, err := store.Open(context.Background(), filepath.Join(home, DBFile), store.Options{})
+	st, err := store.Open(context.Background(), filepath.Join(home, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,12 +151,12 @@ func TestBackupArchiveRestoresIntoFreshHome(t *testing.T) {
 	if err := UnpackBackup(archive, fresh); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{DBFile, "config.toml", "worker.toml", "plugins.json", filepath.Join("kb", "note.md"), filepath.Join("modes", "run.md")} {
+	for _, name := range []string{daemon.DBFile, "config.toml", "worker.toml", "plugins.json", filepath.Join("kb", "note.md"), filepath.Join("modes", "run.md")} {
 		if _, err := os.Stat(filepath.Join(fresh, name)); err != nil {
 			t.Errorf("restored home lacks %s: %v", name, err)
 		}
 	}
-	restored, err := store.Open(ctx, filepath.Join(fresh, DBFile), store.Options{})
+	restored, err := store.Open(ctx, filepath.Join(fresh, daemon.DBFile), store.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
