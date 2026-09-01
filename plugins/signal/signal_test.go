@@ -40,3 +40,27 @@ func TestConfigDefaultsAndToggles(t *testing.T) {
 		t.Fatalf("defaults wrong: %+v", cfg)
 	}
 }
+
+func TestParseSendTimestamp(t *testing.T) {
+	if got := parseSendTimestamp("1788219856709\n"); got != 1788219856709 {
+		t.Errorf("got %d", got)
+	}
+	if got := parseSendTimestamp("no number here"); got != 0 {
+		t.Errorf("want 0, got %d", got)
+	}
+	// A small integer (not a ms timestamp) is ignored.
+	if got := parseSendTimestamp("42"); got != 0 {
+		t.Errorf("small int should be ignored, got %d", got)
+	}
+}
+
+func TestEnvelopeQuoteParse(t *testing.T) {
+	line := `{"envelope":{"source":"+15551234567","dataMessage":{"message":"main","quote":{"id":1788219856709,"author":"+1"}}}}`
+	var e envelope
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Envelope.DataMessage.Quote.ID != 1788219856709 || e.Envelope.DataMessage.Message != "main" {
+		t.Fatalf("parsed %+v", e)
+	}
+}

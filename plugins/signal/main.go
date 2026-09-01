@@ -66,7 +66,7 @@ func run(log *slog.Logger) error {
 	b := &bridge{
 		api: newClient(socket, token),
 		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account, dir: stableDir(), mu: &sync.Mutex{}},
-		cfg: cfg, log: log, seen: map[string]bool{},
+		cfg: cfg, log: log, seen: map[string]bool{}, pending: map[int64]pendingQ{},
 	}
 	log.Info("signal starting", "account", cfg.Account, "recipient", cfg.Recipient, "intake", cfg.Intake)
 
@@ -89,14 +89,23 @@ type bridge struct {
 	sig  signalCLI
 	cfg  config
 	log  *slog.Logger
+	mu   sync.Mutex
 	seen map[string]bool // question ids already sent (dedup across replayed events)
+	// pending maps a sent question-notification timestamp to the question it
+	// asked, so a Signal *reply* to that message answers it — no /answer <id>.
+	pending map[int64]pendingQ
 }
 
+type pendingQ struct{ questionID, workID string }
+
 // send is the one place a Signal message leaves; a failure is logged, not fatal.
-func (b *bridge) send(ctx context.Context, msg string) {
-	if err := b.sig.send(ctx, b.cfg.Recipient, msg); err != nil && ctx.Err() == nil {
+// It returns the sent-message timestamp so a question can be matched to a reply.
+func (b *bridge) send(ctx context.Context, msg string) int64 {
+	ts, err := b.sig.send(ctx, b.cfg.Recipient, msg)
+	if err != nil && ctx.Err() == nil {
 		b.log.Warn("signal send", "err", err)
 	}
+	return ts
 }
 
 // ---- outbound: journal -> Signal ----
@@ -219,7 +228,12 @@ func (b *bridge) onQuestion(ctx context.Context) {
 		}
 		b.seen[q.ID] = true
 		short := shortID(q.WorkID)
-		b.send(ctx, fmt.Sprintf("Forge needs input on task %s:\n%s\n%s/tasks/%s\nReply: /answer %s <your answer>", short, q.Text, b.cfg.UI, q.WorkID, short))
+		ts := b.send(ctx, fmt.Sprintf("Forge needs input on task %s:\n%s\n%s/tasks/%s\nReply to this message with your answer (or /answer %s <text>).", short, q.Text, b.cfg.UI, q.WorkID, short))
+		if ts != 0 {
+			b.mu.Lock()
+			b.pending[ts] = pendingQ{questionID: q.ID, workID: q.WorkID}
+			b.mu.Unlock()
+		}
 	}
 }
 
@@ -293,18 +307,36 @@ func (b *bridge) runInbound(ctx context.Context) error {
 				b.log.Info("ignoring message from non-recipient", "from", m.From)
 				continue
 			}
-			b.command(ctx, m.Text)
+			b.command(ctx, m.Text, m.QuoteID)
 		}
 	}
 	return ctx.Err()
 }
 
-// command interprets one inbound message: a /-command, or a bare request that
-// becomes a task.
-func (b *bridge) command(ctx context.Context, text string) {
+// command interprets one inbound message: a reply to a question (answers it), a
+// /-command, or a bare request that becomes a task.
+func (b *bridge) command(ctx context.Context, text string, quoteID int64) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
+	}
+	// A reply to a question notification answers that question directly.
+	if quoteID != 0 {
+		b.mu.Lock()
+		pq, ok := b.pending[quoteID]
+		b.mu.Unlock()
+		if ok {
+			if err := b.api.AnswerQuestion(ctx, pq.questionID, text); err != nil {
+				b.send(ctx, "Answer failed: "+errMessage(err))
+				return
+			}
+			b.mu.Lock()
+			delete(b.pending, quoteID)
+			delete(b.seen, pq.questionID)
+			b.mu.Unlock()
+			b.send(ctx, "Answered task "+shortID(pq.workID)+".")
+			return
+		}
 	}
 	if !strings.HasPrefix(text, "/") {
 		b.fileTask(ctx, text)

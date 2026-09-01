@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,25 +31,37 @@ type signalCLI struct {
 
 // send delivers one message to a recipient. A failure is returned, never fatal —
 // a missed message must not kill the plugin.
-func (s signalCLI) send(ctx context.Context, recipient, message string) error {
+func (s signalCLI) send(ctx context.Context, recipient, message string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, s.bin, "-a", s.account, "send", "-m", message, recipient)
 	cmd.Dir = s.dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("signal-cli send: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, fmt.Errorf("signal-cli send: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return nil
+	return parseSendTimestamp(stdout.String()), nil
+}
+
+// parseSendTimestamp pulls the sent-message id (a millisecond timestamp) that
+// signal-cli prints on stdout; 0 if none is found (send still succeeded).
+func parseSendTimestamp(out string) int64 {
+	for _, f := range strings.Fields(out) {
+		if n, err := strconv.ParseInt(f, 10, 64); err == nil && n > 1_000_000_000_000 {
+			return n
+		}
+	}
+	return 0
 }
 
 // incoming is one received text message.
 type incoming struct {
-	From string
-	Text string
+	From    string
+	Text    string
+	QuoteID int64 // the timestamp of the message this one replies to (0 if not a reply)
 }
 
 // envelope is the slice of signal-cli's `-o json receive` output this plugin
@@ -59,6 +72,9 @@ type envelope struct {
 		SourceNumber string `json:"sourceNumber"`
 		DataMessage  struct {
 			Message string `json:"message"`
+			Quote   struct {
+				ID int64 `json:"id"`
+			} `json:"quote"`
 		} `json:"dataMessage"`
 	} `json:"envelope"`
 }
@@ -107,7 +123,7 @@ func (s signalCLI) receive(ctx context.Context, timeout time.Duration) ([]incomi
 		if from == "" {
 			from = e.Envelope.SourceNumber
 		}
-		msgs = append(msgs, incoming{From: from, Text: text})
+		msgs = append(msgs, incoming{From: from, Text: text, QuoteID: e.Envelope.DataMessage.Quote.ID})
 	}
 	return msgs, sc.Err()
 }
