@@ -141,23 +141,33 @@ func (a *attempt) greenfieldMove(result json.RawMessage) {
 		return
 	}
 	// Flatten if the agent built in a subdirectory named after the project: when
-	// dest/ contains only dest/<slug>/, move its contents up one level.
-	entries, err := os.ReadDir(dest)
-	if err == nil && len(entries) == 1 && entries[0].IsDir() && entries[0].Name() == slug {
-		nested := filepath.Join(dest, slug)
-		nestedEntries, err := os.ReadDir(nested)
+	// dest/<slug>/ is the only non-hidden directory, move its contents up.
+	nested := filepath.Join(dest, slug)
+	if stat, err := os.Stat(nested); err == nil && stat.IsDir() {
+		entries, err := os.ReadDir(dest)
 		if err == nil {
-			allMoved := true
-			for _, ne := range nestedEntries {
-				src := filepath.Join(nested, ne.Name())
-				dst := filepath.Join(dest, ne.Name())
-				if err := os.Rename(src, dst); err != nil {
-					allMoved = false
-					break
+			nonHiddenDirs := 0
+			for _, e := range entries {
+				if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+					nonHiddenDirs++
 				}
 			}
-			if allMoved {
-				os.Remove(nested)
+			if nonHiddenDirs == 1 {
+				nestedEntries, err := os.ReadDir(nested)
+				if err == nil {
+					allMoved := true
+					for _, ne := range nestedEntries {
+						src := filepath.Join(nested, ne.Name())
+						dst := filepath.Join(dest, ne.Name())
+						if err := os.Rename(src, dst); err != nil {
+							allMoved = false
+							break
+						}
+					}
+					if allMoved {
+						os.Remove(nested)
+					}
+				}
 			}
 		}
 	}
