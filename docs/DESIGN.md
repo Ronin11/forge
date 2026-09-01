@@ -13,7 +13,8 @@ runtimes, React UI) are not.
 
 Companion documents: `CONSTITUTION.md` (fixed principles), `STYLE.md` (code standard),
 `MODES.md` (each mode's prompt, tools, schema, checkpoints), `VERIFICATION.md`
-(levels L0–L3 and how each is decided).
+(levels L0–L3 and how each is decided), `MODULARIZATION.md` (the planned split of the
+single module into core / tools / web / tui, and the dependency direction it fixes).
 
 ## 1. Shape
 
