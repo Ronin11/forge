@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"forge/internal/controlplane"
 	"forge/internal/core/daemon"
 	"forge/internal/core/store"
+	"forge/internal/web"
 )
 
 // Names under <home>/prev: what a rollback restores.
@@ -85,7 +85,7 @@ func (d *daemonProcess) nightlyBackup(ctx context.Context, st *store.Store) {
 	log := d.handler.For("daemon.backup")
 	dir := filepath.Join(d.c.forgeHome, "backups")
 	write := func() {
-		archive, err := controlplane.WriteBackupArchive(ctx, st, controlplane.BackupInputs{
+		archive, err := web.WriteBackupArchive(ctx, st, web.BackupInputs{
 			Home: d.c.forgeHome, KbDir: d.cfg.KB.Path, OutDir: dir,
 		})
 		if err != nil {
@@ -97,13 +97,13 @@ func (d *daemonProcess) nightlyBackup(ctx context.Context, st *store.Store) {
 		}); err != nil {
 			log.WarnContext(ctx, "journal backup", "error", err)
 		}
-		removed, err := controlplane.PruneBackups(dir, d.cfg.Backup.Keep)
+		removed, err := web.PruneBackups(dir, d.cfg.Backup.Keep)
 		if err != nil {
 			log.WarnContext(ctx, "prune backups", "error", err)
 		}
 		log.InfoContext(ctx, "nightly backup written", "archive", filepath.Base(archive), "pruned", len(removed))
 	}
-	if _, mtime, err := controlplane.LatestBackup(dir); err != nil {
+	if _, mtime, err := web.LatestBackup(dir); err != nil {
 		log.WarnContext(ctx, "read backups", "error", err)
 	} else if mtime.IsZero() || !sameUTCDay(mtime, time.Now()) {
 		write()

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/controlplane"
 	"forge/internal/core/daemon"
 	"forge/internal/core/store"
+	"forge/internal/web"
 )
 
 // restoreContext is a cmdContext whose home the test controls.
@@ -46,7 +46,7 @@ func makeArchive(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(seedHome, "config.toml"), []byte("# config\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	archive, err := controlplane.WriteBackupArchive(ctx, st, controlplane.BackupInputs{Home: seedHome, OutDir: t.TempDir()})
+	archive, err := web.WriteBackupArchive(ctx, st, web.BackupInputs{Home: seedHome, OutDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

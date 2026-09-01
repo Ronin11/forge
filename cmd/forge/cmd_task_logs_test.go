@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/controlplane"
 	"forge/internal/core/daemon"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
+	"forge/internal/web"
 )
 
 func TestReadSSE(t *testing.T) {
@@ -88,7 +88,7 @@ func streamHome(t *testing.T) string {
 	if err := st.Write(context.Background(), func(tx *store.Tx) error { return tx.EnsureProject(context.Background(), "default") }); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := controlplane.NewServer(controlplane.ServerOptions{Store: st, Version: version, StreamInterval: 20 * time.Millisecond})
+	srv, err := web.NewServer(web.ServerOptions{Store: st, Version: version, StreamInterval: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

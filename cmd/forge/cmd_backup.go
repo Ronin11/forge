@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"forge/internal/controlplane"
+	"forge/internal/web"
 )
 
 func runBackup(ctx context.Context, c *cmdContext, args []string) int {
@@ -88,7 +88,7 @@ func runRestore(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(c.stderr, "forge restore: %s is not empty; restore only into a fresh FORGE_HOME (point FORGE_HOME at a new directory, or move the old home aside)\n", home)
 		return 1
 	}
-	if err := controlplane.UnpackBackup(archive, home); err != nil {
+	if err := web.UnpackBackup(archive, home); err != nil {
 		return c.fail("restore", err)
 	}
 	fmt.Fprintf(c.stdout, "restored %s into %s\n", filepath.Base(archive), home)

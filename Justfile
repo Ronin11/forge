@@ -47,17 +47,17 @@ bench:
 
 # Layering, proved by go list (MODULARIZATION.md §7). Fails closed: a rule whose
 # path matches no packages is itself a failure, so a `git mv` cannot silently
-# evaporate a rule. The tree table mirrors §3 on today's layout — controlplane
-# is `web` (the ceiling: may reach anything), every other internal tree is
-# `core` (may not reach controlplane) — plus the three finer rules that predate
-# it: worker never imports controlplane or store (one SQLite writer); model and
+# evaporate a rule. The tree table mirrors §3 on today's layout — internal/web
+# holds `web` (the ceiling: may reach anything), every other internal tree is
+# `core` (may not reach web) — plus the three finer rules that predate
+# it: worker never imports web or store (one SQLite writer); model and
 # protocol import nothing of Forge (protocol may see model). grep is not run
 # with -q so a SIGPIPE cannot turn a violation into a pass under pipefail.
 #
 #   tree   packages                                 may reach
-#   core   internal/* except controlplane, tools    core
+#   core   internal/* except web, tools           core
 #   tools  internal/tools                           core tools
-#   web    internal/controlplane                    core tools web
+#   web    internal/web                             core tools web
 boundary:
     @check() { desc="$1"; list="$2"; deny="$3"; allow="$4"; \
         if [ -z "$list" ]; then echo "boundary: $desc: rule matches no packages (fail closed)"; exit 1; fi; \
@@ -66,24 +66,24 @@ boundary:
             if [ -n "$bad" ]; then echo "boundary: $desc: $p imports:"; echo "$bad"; exit 1; fi; \
         done; }; \
     check "core may not reach web or tools" \
-        "$(go list ./internal/... 2>/dev/null | grep -vE '^forge/internal/(controlplane|tools)' || true)" \
-        '^forge/internal/(controlplane|tools)(/|$)' '^$'; \
+        "$(go list ./internal/... 2>/dev/null | grep -vE '^forge/internal/(web|tools)' || true)" \
+        '^forge/internal/(web|tools)(/|$)' '^$'; \
     check "tools may reach core and tools only" \
         "$(go list ./internal/tools/... 2>/dev/null || true)" \
-        '^forge/internal/controlplane(/|$)' '^$'; \
+        '^forge/internal/web(/|$)' '^$'; \
     check "web tree present" \
-        "$(go list ./internal/controlplane/... 2>/dev/null || true)" \
+        "$(go list ./internal/web/... 2>/dev/null || true)" \
         '^$' '^$'; \
-    check "worker may not reach controlplane or store" \
+    check "worker may not reach web or store" \
         "$(go list ./internal/core/worker/... 2>/dev/null || true)" \
-        '^forge/internal/(controlplane|core/store)(/|$)' '^$'; \
+        '^forge/internal/(web|core/store)(/|$)' '^$'; \
     check "model imports nothing of forge" \
         "$(go list ./internal/core/model/... 2>/dev/null || true)" \
         '^forge/' '^$'; \
     check "protocol imports nothing of forge but model" \
         "$(go list ./internal/core/protocol/... 2>/dev/null || true)" \
         '^forge/' '^forge/internal/core/model$'; \
-    engfiles=$(grep -l '^func (s \*Engine)' internal/controlplane/*.go 2>/dev/null || true); \
+    engfiles=$(grep -l '^func (s \*Engine)' internal/web/*.go 2>/dev/null || true); \
     if [ -z "$engfiles" ]; then echo "boundary: no Engine method files found (fail closed)"; exit 1; fi; \
     bad=$(echo "$engfiles" | xargs grep -l '"net/http"' 2>/dev/null || true); \
     if [ -n "$bad" ]; then echo "boundary: Engine methods defined in files importing net/http:"; echo "$bad"; exit 1; fi; \

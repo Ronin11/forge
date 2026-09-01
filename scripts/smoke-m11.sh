@@ -99,7 +99,7 @@ step4() {
 
 step5() {
   say "5. the fourth question at max_questions=3 fails with ask_budget_exhausted"
-  echo "covered deterministically by 'go test ./internal/controlplane' (TestAskBudgetExhausted);" | tee -a "$LOG"
+  echo "covered deterministically by 'go test ./internal/web' (TestAskBudgetExhausted);" | tee -a "$LOG"
   echo "a real run needs an agent that asks four times, which haiku will not do on demand reliably." | tee -a "$LOG"
   curl -s "$API/journal?since=0&limit=1000" | grep -c "question.budget_exhausted" | tee -a "$LOG" || true
 }

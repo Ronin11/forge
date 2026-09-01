@@ -20,7 +20,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"forge/internal/controlplane"
 	"forge/internal/core/config"
 	"forge/internal/core/daemon"
 	"forge/internal/core/engine"
@@ -36,6 +35,7 @@ import (
 	"forge/internal/core/worker"
 	"forge/internal/tools"
 	"forge/internal/tools/pluginbridge"
+	"forge/internal/web"
 )
 
 func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
@@ -230,7 +230,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			}
 		}
 	}()
-	srv, err := controlplane.NewServer(controlplane.ServerOptions{
+	srv, err := web.NewServer(web.ServerOptions{
 		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
 		RegisterRepo: d.registerRepoOnTheFly,
 		AddRepo:      d.addRepo,
@@ -244,7 +244,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		Attention:    d.cfg.Attention,
 		QuietHours:   d.cfg.Budget.QuietHours,
 		Supervision:  d.cfg.Supervision,
-		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
+		Store:        st, Policy: policy, Logger: d.handler.For("web.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
 		// stays disabled and approvals use the force override.
@@ -291,7 +291,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 		return r.Path, true
 	})
-	ui, err := controlplane.NewUI(st, d.handler.For("controlplane.ui"), nil)
+	ui, err := web.NewUI(st, d.handler.For("web.ui"), nil)
 	if err != nil {
 		return err
 	}
