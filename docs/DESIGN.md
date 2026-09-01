@@ -82,8 +82,10 @@ daemon is not running, a command starts it (§1.2) and proceeds. `forge task add
   from `logging.Environ`; `FORGE_SOCKET`/`FORGE_TOKEN`/`FORGE_PLUGIN_DIR` for
   plugins; `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` for
   executors and git; `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` for sandboxed
-  executors). The worker token is never passed to an executor. Nothing else leaks
-  from the parent.
+  executors; `FORGE_ATTEMPT`/`FORGE_WORKER`, the sweep markers of §5.6, for an
+  attempt's children). The worker token is never passed to an executor. Nothing
+  else leaks from the parent — the markers in particular are always set, never
+  inherited, so a Forge running under Forge never adopts the outer attempt's.
 - **Transport.** The same API on two listeners: a Unix socket `<home>/forge.sock`
   (mode 0600, directory 0700; filesystem permissions are the auth) for the CLI,
   worker, MCP server, and plugins; and `127.0.0.1:7340` for the browser. One mux,
@@ -668,6 +670,19 @@ Each numbered step is a phase span (§8) unless noted. The worker records
    Events are batched (§8). Cancel/timeout/lease-loss/shutdown → SIGTERM the group,
    wait 5 s, SIGKILL, with the pid identity re-verified before each signal.
 
+   **Nothing an attempt starts outlives it.** A natural exit is swept too: the
+   launch's group is signalled once the executor is reaped, and then every process
+   whose environment carries `FORGE_ATTEMPT=<attempt id>` — the marker Forge puts in
+   every environment it hands a child of an attempt, alongside
+   `FORGE_WORKER=<worker id>` — is SIGTERMed by group, waited 5 s, SIGKILLed. The
+   environment is what catches a descendant that left the group: a headless browser
+   calls `setsid`, and a preview server a build backgrounded is handed to init when
+   its shell exits. The sweep runs again at the end of the attempt (after the step 8
+   checks, which spawn processes of their own), in reconcile for a crashed worker's
+   attempt (§7.3), and, scoped by `FORGE_WORKER`, when the worker shuts down (§7.2).
+   The worker's own process, pid 1, and the worker's own process group are never
+   signalled, so a Forge running under Forge cannot kill itself.
+
    The **heartbeat goroutine runs from claim until `complete` returns** — not only
    during this phase: L1 checks in step 8 can take minutes against a 30 s lease. Each
    heartbeat (every 10 s) renews the lease, carries the current phase, and returns
@@ -784,7 +799,9 @@ stripped, GitHub compared case-insensitively); check the executor commands exist
   again by the worker, so `forge cleanup` can act on them while the worker runs.
 - Shutdown (SIGINT/SIGTERM): stop claiming, send cancel to every active attempt,
   wait up to 30 s, report what can be reported; whatever remains is handled by
-  reconcile on the next start.
+  reconcile on the next start. Last of all, every process tagged
+  `FORGE_WORKER=<worker id>` is swept (§5.6) — an attempt that could not finish in
+  time must not leave a browser or a dev server behind in the worker's unit.
 
 ### 7.3 Reconcile
 
@@ -795,7 +812,8 @@ in this process:
 1. If the manifest records a pid and `/proc/<pid>/stat` shows the same start time,
    the process is an orphan of a crashed worker: SIGTERM its group, wait 5 s, SIGKILL.
    If the pid is alive with a *different* start time it is someone else's process —
-   never signalled; the manifest is marked `inconsistent` and reported.
+   never signalled; the manifest is marked `inconsistent` and reported. Either way the
+   attempt's `FORGE_ATTEMPT` sweep (§5.6) follows, for what left that group.
 2. Inspect Git exactly as in §5.7 and apply §6.
 3. `GET /api/v1/attempts/{id}` to learn what the control plane believes. A manifest
    marked `resumable` whose Target is still `waiting_human`/`pending` is left alone
