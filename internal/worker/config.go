@@ -14,8 +14,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"forge/internal/core/logging"
 	"forge/internal/core/model"
-	"forge/internal/logging"
 )
 
 // Config is ~/.forge/worker.toml after defaults and validation. Nothing else in

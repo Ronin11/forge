@@ -17,7 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 )
 
 // fakeMeta is DESIGN.md §7.4's meta.toml, field for field. Unknown keys are

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 )
 
 func testSandbox(t *testing.T, writePaths ...string) *Sandbox {

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/logging"
 	"log/slog"
 )
 

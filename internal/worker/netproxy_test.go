@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 )
 
 // deniedRecorder collects onDenied callbacks; the proxy calls them from its

@@ -9,7 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 )
 
 // Config is <home>/config.toml: everything the daemon reads at start. Sections

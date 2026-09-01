@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 )
 
 // version is set by the linker (`-X main.version=...`); "dev" otherwise. It is the

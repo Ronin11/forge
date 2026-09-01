@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/logging"
 )
 
 // steerLine is the wire shape WriteUser and StreamInput produce.

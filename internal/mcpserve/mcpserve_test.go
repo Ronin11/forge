@@ -16,8 +16,8 @@ import (
 	"sync"
 	"testing"
 
+	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
-	"forge/internal/logging"
 )
 
 // rpcReply decodes any response line the transport writes.

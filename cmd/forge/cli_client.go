@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
-	"forge/internal/logging"
 	"forge/internal/worker"
 )
 

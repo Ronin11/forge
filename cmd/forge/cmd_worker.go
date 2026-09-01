@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"forge/internal/logging"
+	"forge/internal/core/logging"
 	"forge/internal/worker"
 )
 
