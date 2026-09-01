@@ -60,6 +60,10 @@ type Attempt struct {
 	OutputBytes       int64               `json:"output_bytes"`
 	OutputTruncated   bool                `json:"output_truncated"`
 	CreatedAt         time.Time           `json:"created_at"`
+	// Progress is the live in-flight tally, attached by the task view for a
+	// running attempt and nil otherwise (a completed attempt reads its
+	// authoritative totals from the columns above).
+	Progress *AttemptProgress `json:"progress,omitempty"`
 }
 
 const attemptColumns = `id, target_id, worker_id, claim_request_id, executor, model, model_alias, runner, escalated_from, routing, effort, mode, autonomy, worktree_path, branch, base_branch, base_commit, stack_base_commit, head_commit, pid, pid_start, session_id, prompt_version_hash, launches, started_at, finished_at, exit_code, failure_reason, unverified_reason, is_error, result_text, result, num_turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, git_dirty, git_commits, git_files_changed, git_insertions, git_deletions, git_pushed, verification_level, verification_passed, cleanup_outcome, cleanup_reason, cleanup_command, output_path, output_bytes, output_truncated, created_at`

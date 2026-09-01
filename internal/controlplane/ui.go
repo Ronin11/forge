@@ -526,6 +526,15 @@ func (u *UI) task(w http.ResponseWriter, r *http.Request) {
 	views := make([]targetView, 0, len(targets))
 	for _, t := range targets {
 		tv := targetView{Target: t, Attempts: attempts[t.ID]}
+		// Attach the live progress tally to each unfinished attempt so the page
+		// can show a running attempt's phase, last-event age, and turns/tokens.
+		for i := range tv.Attempts {
+			if !tv.Attempts[i].FinishedAt.IsZero() {
+				if p, err := u.store.AttemptProgress(ctx, tv.Attempts[i].ID); err == nil {
+					tv.Attempts[i].Progress = p
+				}
+			}
+		}
 		if n := len(tv.Attempts); n > 0 {
 			last := tv.Attempts[n-1]
 			if evs, err := u.store.Events(ctx, last.ID, false, 200); err == nil {

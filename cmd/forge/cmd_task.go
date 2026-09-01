@@ -318,13 +318,21 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 		}
 		fmt.Fprintln(c.stdout, line)
 	}
+	now := time.Now()
 	for _, a := range v.Attempts {
-		line := fmt.Sprintf("  attempt %s  launches %d  turns %d  tokens in/out %d/%d", short(a.ID), a.Launches, a.NumTurns, a.Usage.InputTokens, a.Usage.OutputTokens)
-		if a.CostUSD != nil {
-			line += fmt.Sprintf("  cost $%.4f", *a.CostUSD)
-		}
-		if a.Cleanup.Outcome != "" {
-			line += "  cleanup=" + a.Cleanup.Outcome + " (" + a.Cleanup.Reason + ")"
+		var line string
+		if a.FinishedAt.IsZero() {
+			// A running attempt has no authoritative totals yet; show the live
+			// tally the daemon accrues from events, heartbeats, and progress notes.
+			line = liveAttemptLine(a, now)
+		} else {
+			line = fmt.Sprintf("  attempt %s  launches %d  turns %d  tokens in/out %d/%d", short(a.ID), a.Launches, a.NumTurns, a.Usage.InputTokens, a.Usage.OutputTokens)
+			if a.CostUSD != nil {
+				line += fmt.Sprintf("  cost $%.4f", *a.CostUSD)
+			}
+			if a.Cleanup.Outcome != "" {
+				line += "  cleanup=" + a.Cleanup.Outcome + " (" + a.Cleanup.Reason + ")"
+			}
 		}
 		fmt.Fprintln(c.stdout, line)
 		if a.Branch != "" {
@@ -345,6 +353,48 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(c.stdout, "  question %s  %s  (%s)\n", short(q.ID), q.Text, state)
 	}
 	return 0
+}
+
+// liveAttemptLine renders a running attempt's live progress: the turn/token
+// tally, latest heartbeat phase and its age, the last-event age, and the most
+// recent forge_note_progress note. Fields absent from the tally are omitted, so
+// a just-claimed attempt with nothing reported yet still reads as running.
+func liveAttemptLine(a store.Attempt, now time.Time) string {
+	p := a.Progress
+	if p == nil {
+		p = &store.AttemptProgress{}
+	}
+	state := "running"
+	if p.State != "" {
+		state = string(p.State)
+	}
+	line := fmt.Sprintf("  attempt %s  %s  turns %d  tokens in/out %s/%s", short(a.ID), state, p.RunningTurns, humanCount(p.TokensIn), humanCount(p.TokensOut))
+	if p.Phase != "" {
+		line += fmt.Sprintf("  phase %s · %s", p.Phase, ago(p.PhaseAt, now))
+	}
+	if !p.LastEventAt.IsZero() {
+		line += "  last event " + ago(p.LastEventAt, now) + " ago"
+	}
+	if p.Note != "" {
+		note := p.Note
+		if r := []rune(note); len(r) > 60 {
+			note = string(r[:60]) + "…"
+		}
+		line += fmt.Sprintf("  note: %q", note)
+	}
+	return line
+}
+
+// humanCount renders a token count compactly: 180, 152k, 3.4m.
+func humanCount(n int64) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
+	}
 }
 
 func firstLines(s string, n int) string {
