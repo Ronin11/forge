@@ -65,7 +65,7 @@ func run(log *slog.Logger) error {
 
 	b := &bridge{
 		api: newClient(socket, token),
-		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account, mu: &sync.Mutex{}},
+		sig: signalCLI{bin: cfg.SignalCLI, account: cfg.Account, dir: stableDir(), mu: &sync.Mutex{}},
 		cfg: cfg, log: log, seen: map[string]bool{},
 	}
 	log.Info("signal starting", "account", cfg.Account, "recipient", cfg.Recipient, "intake", cfg.Intake)
@@ -394,6 +394,15 @@ func (b *bridge) status(ctx context.Context) {
 }
 
 // ---- helpers ----
+
+// stableDir is a working directory for signal-cli that will not vanish under it
+// (the plugin's own CWD can be unlinked by a reinstall); the user home, else "/".
+func stableDir() string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return h
+	}
+	return "/"
+}
 
 func shortID(id string) string {
 	if len(id) > 8 {

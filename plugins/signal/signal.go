@@ -22,7 +22,10 @@ import (
 type signalCLI struct {
 	bin     string
 	account string
-	mu      *sync.Mutex
+	dir     string // a stable working directory: signal-cli (GraalVM native) fails
+	// with "could not determine current working directory" if it inherits a CWD
+	// that has been unlinked (e.g. the plugin dir swapped out by a reinstall).
+	mu *sync.Mutex
 }
 
 // send delivers one message to a recipient. A failure is returned, never fatal —
@@ -33,6 +36,7 @@ func (s signalCLI) send(ctx context.Context, recipient, message string) error {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, s.bin, "-a", s.account, "send", "-m", message, recipient)
+	cmd.Dir = s.dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -77,6 +81,7 @@ func (s signalCLI) receive(ctx context.Context, timeout time.Duration) ([]incomi
 		secs = 1
 	}
 	cmd := exec.CommandContext(cctx, s.bin, "-a", s.account, "-o", "json", "receive", "-t", fmt.Sprintf("%d", secs))
+	cmd.Dir = s.dir
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
