@@ -353,3 +353,14 @@ Newest entries at the bottom of each section. Dates are absolute.
   carry the model's *class*, not the routine tier, so the matrix rows are per-model with
   the class shown as the capability axis (tier is a routine property, not an attempt one).
 - No new third-party dependencies.
+
+## External access (future — not urgent)
+Reaching Forge from a phone/off-network: current setup binds the daemon to
+0.0.0.0:7340 (config.toml [http] listen) + a ufw allow for the LAN, but the
+phone's WiFi is a different subnet (10.0.10.x) from the wired box (10.0.0.6/24),
+so it needs a broad ufw rule and relies on the router routing between subnets.
+The clean answer when we want robust external access: **Tailscale** — puts the
+box + devices on one private mesh (100.x / MagicDNS), works across subnets, NAT,
+and cellular, encrypted+authenticated, no port-forward/reverse-proxy. Then set
+the signal plugin's `ui` to the tailnet name and revert the 0.0.0.0 bind to
+loopback so nothing is LAN-exposed. (Nate: "make note, not quite necessary yet.")

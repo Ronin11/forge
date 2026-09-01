@@ -2,7 +2,10 @@
 @media(prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ebeae5;--muted:#9a9993;--line:#2c2c2a;--card:#1c1c1a}}
 body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
 input,select,textarea{max-width:100%;box-sizing:border-box}
-nav.top{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:center;padding:.6rem 1.2rem;border-bottom:1px solid var(--line);background:var(--card)}
+nav.top{display:flex;gap:1.2rem;align-items:center;padding:.6rem 1.2rem;border-bottom:1px solid var(--line);background:var(--card)}
+.nav-links{display:flex;flex:1;align-items:center;gap:1.2rem}
+.nav-toggle{display:none;background:none;border:0;color:var(--fg);cursor:pointer;padding:.2rem;margin-left:auto}
+.nav-toggle .i{width:22px;height:22px}
 nav.top a{color:var(--muted);text-decoration:none}nav.top a.active,nav.top a:hover{color:var(--fg)}nav.top .brand{font-weight:700;color:var(--fg)}
 main{max-width:1200px;margin:0 auto;padding:1rem 1.2rem}
 h1{font-size:1.4rem;margin:.4rem 0 1rem}h2{font-size:1.05rem;margin:1rem 0 .5rem}h3{font-size:.95rem;margin:.8rem 0 .3rem}
@@ -200,11 +203,20 @@ dialog h2{margin:.2rem 0 .8rem}
 dialog{max-width:min(40rem,95vw);box-sizing:border-box}
 
 /* --- Responsive: keep everything inside the viewport on phones/tablets --- */
+/* Nav collapses to a hamburger + vertical popout once the links stop fitting. */
+@media (max-width:900px){
+  nav.top{position:relative;gap:.6rem}
+  .nav-toggle{display:inline-flex;align-items:center}
+  .nav-links{display:none;position:absolute;top:100%;left:0;right:0;flex-direction:column;align-items:stretch;gap:.1rem;background:var(--card);border-bottom:1px solid var(--line);box-shadow:0 8px 20px rgba(0,0,0,.18);padding:.4rem .8rem;z-index:60}
+  .nav-links.open{display:flex}
+  .nav-links a{padding:.55rem .3rem;border-radius:6px}
+  .nav-links a:hover{background:rgba(127,127,127,.1)}
+  .chat-toggle{margin-left:0;justify-content:flex-start;margin-top:.3rem}
+}
 @media (max-width:760px){
   main{padding:.8rem}
   h1{font-size:1.25rem;margin:.3rem 0 .8rem}
   /* Nav wraps instead of forcing a sideways scroll of the whole page. */
-  nav.top{gap:.5rem .9rem;padding:.5rem .8rem}
   td.prompt{max-width:16rem}
   /* One column for card grids. */
   .cards{grid-template-columns:1fr}

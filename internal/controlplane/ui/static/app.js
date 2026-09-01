@@ -1379,3 +1379,24 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
   refresh();
   window.setInterval(refresh, 3000); // live state while transitioning
 })();
+
+// --- Mobile nav: hamburger toggles the vertical link popout ---
+(function () {
+  var toggle = document.querySelector('[data-nav-toggle]');
+  var links = document.querySelector('[data-nav-links]');
+  if (!toggle || !links) return;
+  function setOpen(open) {
+    links.classList.toggle('open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  toggle.addEventListener('click', function (e) {
+    e.stopPropagation();
+    setOpen(!links.classList.contains('open'));
+  });
+  // Close when a link is chosen, on Escape, or on an outside click.
+  links.addEventListener('click', function (e) { if (e.target.closest('a')) setOpen(false); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });
+  document.addEventListener('click', function (e) {
+    if (links.classList.contains('open') && !links.contains(e.target) && !toggle.contains(e.target)) setOpen(false);
+  });
+})();

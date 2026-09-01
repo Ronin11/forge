@@ -3,6 +3,8 @@
 <title>{{.Title}} · Forge</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"></head>
 <body>{{template "iconSprite"}}<nav class="top">
 <a class="brand" href="/"><svg class="i i-brand"><use href="#i-anvil"/></svg> Forge</a>
+<button type="button" class="nav-toggle" data-nav-toggle aria-label="Menu" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
+<div class="nav-links" data-nav-links>
 <a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}><svg class="i"><use href="#i-dashboard"/></svg> Dashboard</a>
 <a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html") (eq .Active "work.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
 <a href="/queue" {{if eq .Active "queue.html"}}class="active"{{end}}><svg class="i"><use href="#i-queue"/></svg> Queue</a>
@@ -15,6 +17,7 @@
 <a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}><svg class="i"><use href="#i-stats"/></svg> Stats</a>
 <a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}><svg class="i"><use href="#i-system"/></svg> Settings</a>
 <button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false"><svg class="i"><use href="#i-hammer"/></svg> Ask Forge</button>
+</div>
 </nav><main>{{end}}
 
 {{define "stateChip"}}<span class="state {{stateClass .}}">{{$ic := stateIcon .}}{{if $ic}}<svg class="i i-pill"><use href="#{{$ic}}"/></svg>{{end}}{{.}}</span>{{end}}
@@ -24,6 +27,7 @@
 {{define "emptyAnvil"}}<svg class="i-empty" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8c2.5 0 4-1.5 4-2h15v4c0 1.5-2 2.5-4.5 2.5H14v4h3v3H7v-3h3v-4H8.5C5 12.5 2 10.5 2 8z" stroke="var(--muted)" stroke-width="1.2"/><path d="M11 2.6l.7 1.4M14.5 1.8v1.6M17.6 2.8l-.7 1.3" stroke="var(--warn)" stroke-width="1.2"/></svg>{{end}}
 
 {{define "iconSprite"}}<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
 <symbol id="i-anvil" viewBox="0 0 24 24"><path d="M2 8c2.5 0 4-1.5 4-2h15v4c0 1.5-2 2.5-4.5 2.5H14v4h3v3H7v-3h3v-4H8.5C5 12.5 2 10.5 2 8z"/></symbol>
 <symbol id="i-hammer" viewBox="0 0 24 24"><path d="M13.16 4.34 19.66 10.84 16.84 13.66 10.34 7.16z"/><path d="M4.5 19.5 12.9 11.1"/></symbol>
 <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>

@@ -694,6 +694,35 @@ test.describe('routine templates', () => {
   });
 });
 
+test.describe('mobile nav', () => {
+  test('hamburger toggles a vertical menu; links navigate and close it', async ({ page }) => {
+    seed();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    const toggle = page.locator('[data-nav-toggle]');
+    const links = page.locator('[data-nav-links]');
+    // On mobile the hamburger shows and the links are collapsed.
+    await expect(toggle).toBeVisible();
+    await expect(links).toBeHidden();
+    // Open it → the vertical list appears with the nav links.
+    await toggle.click();
+    await expect(links).toBeVisible();
+    await expect(links.getByText('Routines', { exact: true })).toBeVisible();
+    // Choosing a link navigates and closes the menu.
+    await links.getByText('Routines', { exact: true }).click();
+    await expect(page).toHaveURL(/\/routines/);
+    await expect(links).toBeHidden();
+  });
+
+  test('on desktop the links are inline and the hamburger is hidden', async ({ page }) => {
+    seed();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/');
+    await expect(page.locator('[data-nav-toggle]')).toBeHidden();
+    await expect(page.locator('[data-nav-links]')).toBeVisible();
+  });
+});
+
 test.describe('responsive', () => {
   const sizes = [
     { name: 'phone', w: 390, h: 844 },
