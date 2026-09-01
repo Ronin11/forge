@@ -975,7 +975,7 @@ one.
 
 ### 9.2 AttemptFacts
 
-One immutable row per attempt, computed by `controlplane/facts.Compute` from the
+One immutable row per attempt, computed by `web.ComputeFacts` from the
 attempt row, its events, samples, questions, and the Work — once, when the Target
 becomes terminal (or, for a lease-expired attempt, when the sweeper closes it; a late
 completion updates only git/cleanup columns in `attempts`, never facts).
@@ -1064,7 +1064,7 @@ gauge per window with the target line.
 
 ### 10.2 Admission policy
 
-One home: `controlplane/budget.Decide(now, Usage, class, cfg) Decision{Admit bool,
+One home: `engine/budget.Decide(now, Usage, class, cfg) Decision{Admit bool,
 Reason string}`, pure and table-tested. Evaluated at claim time (claim *is*
 admission) and, for display, when listing the queue.
 
@@ -1127,7 +1127,7 @@ at each reset boundary the scheduler records `target − u_at_reset` as the
 
 ### 10.3 Priority queue
 
-`controlplane/queue.Order(works) []Entry` — one ordered list of every non-terminal
+`engine/queue.Order(works) []Entry` — one ordered list of every non-terminal
 Work: sort by `priority DESC, class rank (interactive > normal > backlog), created_at
 ASC`. Each entry is `eligible`, `blocked` (with the unsatisfied dependencies), or
 `deferred` (with the budget reason). Defaults: human-submitted Work is `interactive`
@@ -1301,7 +1301,7 @@ the process-level shape.
 
 - **Components.** One per process: `daemon`, `worker`, `mcp`, `plugin.<name>`, and
   the one-shot CLI commands (`cli.<command>`). Inside a process, package loggers
-  are dotted (`controlplane.http`, `controlplane.scheduler`, `store`, `worker.git`,
+  are dotted (`web.http`, `engine.scheduler`, `store`, `worker.git`,
   `worker.supervisor`, `worker.parser`, `tools.<name>`).
 - **Sinks.** stderr at the operator's levels (`--log-level`, `--log-format`, `-v`,
   `-vv`; `FORGE_LOG_LEVEL`, `FORGE_LOG_FORMAT`; `[log]` in `<home>/config.toml` and
@@ -1314,7 +1314,7 @@ the process-level shape.
   `<component>.stdio.log`, never to the structured log. `forge mcp`, plugins, and
   one-shot commands have no file sink of their own; a plugin's stderr is captured
   by the daemon into `logs/plugins/<name>.log`.
-- **Correlation.** `controlplane.http` middleware generates `request_id` and puts it
+- **Correlation.** `web.http` middleware generates `request_id` and puts it
   in the request context; the worker's attempt runner builds the attempt context
   with `attempt_id`, `target_id`, `work_id` once, at claim, and every phase and tool
   span adds `span_id`; `forge mcp` gets the attempt from its flag and stamps it on

@@ -15,6 +15,27 @@ Nothing here is a behaviour change. Every step is a move, a rename, or a mechani
 type split. The HTTP API, the SQLite schema, the plugin wire contract, and the command
 tree are all invariant across the whole migration.
 
+**Status (2026-09-01): stages 0–7 executed**, `just check` green at every commit.
+Deviations from the letter of the plan, each argued in its commit message:
+
+- Stage 2: `Server` **embeds** `*Engine` rather than holding the named `eng` field —
+  promotion is what keeps every handler body and the ~30 direct test call sites
+  compiling untouched. The named field lands when `Engine` is extracted to
+  `core/engine` (below).
+- Stage 5: `ui` **imports** `web` (a legal web→web edge) rather than the reverse —
+  the shared read-path surface (repo/lineage view builders) is woven through the JSON
+  handlers, so it was exported in place instead of moved; `Server.MountRoot` replaces
+  `MountUI` and `cmd/forge` wires the two. `AttentionDeadline` moved to `core/engine`.
+- Stage 6: the backup machinery moved from `web/handlers_health.go` to
+  `core/engine/backup.go` (it was the one tui→web production edge); `plugin_omarchy.go`
+  followed `cmd_plugin` into `tui`; the build version travels on `tui.Context.Version`.
+
+**Still open, by design:** the deep cut of the `Engine` type and its method files
+(`apply`, `prompt`, `route_claim`, `autoeval`, `ab`, `sweeper`, `attention`,
+`supervision*`, `facts`, `handlers_plan`, drain's non-HTTP half) out of `web` into
+`core/engine` — that is the embed→named-field conversion this plan defers; and §6.3's
+DTO promotion into `protocol`, recorded as the one linter exception.
+
 ---
 
 ## 1. What is actually here today

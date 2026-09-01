@@ -159,7 +159,7 @@ type Server struct {
 type ServerOptions struct {
 	Store         *store.Store
 	Policy        engine.SchedulerPolicy // engine.AdmitAll in M1
-	Logger        *slog.Logger           // component "controlplane.http"
+	Logger        *slog.Logger           // component "web.http"
 	Clock         func() time.Time       // defaults to time.Now
 	Version       string                 // reported by the handshake
 	Token         string                 // the worker token; required on TCP for worker/tool routes

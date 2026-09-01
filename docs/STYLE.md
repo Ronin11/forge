@@ -11,7 +11,7 @@ Code should be obvious on first read, boring on second read, and still correct a
 - `Executor`, `OutputParser`, `Tool`, `Mode`, `SchedulerPolicy`, `VerificationCheck`, and
   `Store` are interfaces. An interface with one consumer lives in that consumer's
   package (`Executor`, `OutputParser` in `worker`; `SchedulerPolicy`, `Store` in
-  `controlplane`); one with several consumers lives in the package named for the
+  `web`); one with several consumers lives in the package named for the
   concept, which imports only `model`/`protocol` (`Mode` in `modes`, `Tool` in
   `tools`, `VerificationCheck` in `verify`). Next to each is a registry type with
   `Register(name, impl)` and `Lookup(name)`.
@@ -26,7 +26,7 @@ Code should be obvious on first read, boring on second read, and still correct a
 - Core packages never type-switch on concrete implementations. If a caller needs to
   know a capability, the interface exposes it (`Capabilities() []string`), not the type.
 - Registries are values passed explicitly (constructed in `cmd/forge`, handed to
-  `worker.New`, `controlplane.New`). There is no package-level registry.
+  `worker.New`, `web.NewServer`). There is no package-level registry.
 
 ## 2. DRY at the level of concepts, not lines
 
@@ -37,8 +37,8 @@ Code should be obvious on first read, boring on second read, and still correct a
   - ID and short-ID formats → `model.NewID`, `model.ShortID`.
   - Branch naming → `model.BranchName`.
   - The cleanup / retain decision → `worker.DecideCleanup` (pure function).
-  - The budget admission decision → `controlplane/budget.Decide` (pure function).
-  - Queue ordering → `controlplane/queue.Order` (pure function).
+  - The budget admission decision → `engine/budget.Decide` (pure function).
+  - Queue ordering → `engine/queue.Order` (pure function).
   - Every SQL statement → `internal/store`.
   - Every wire type → `internal/protocol`.
 - Prefer a pure function over a method when the decision depends only on its inputs.
@@ -90,10 +90,10 @@ Code should be obvious on first read, boring on second read, and still correct a
   `cleanup.go`), never `utils.go`, `misc.go`, `helpers.go`.
 - **Packages** own a concept. `internal/model` (state machines, IDs, pure rules);
   `internal/protocol` (wire types only, no logic beyond validation); `internal/store`
-  (SQLite; all SQL lives here); `internal/controlplane` (http, scheduler, budget, queue,
+  (SQLite; all SQL lives here); `internal/web` (http + server-rendered ui) over `internal/core/{engine,config,daemon}` (scheduler, budget, queue,
   ui); `internal/worker` (config, git, worktree, manifest, executor, parser, supervisor,
   reconcile); `internal/tools`; `internal/modes`; `internal/verify`; `internal/kb`.
-  The worker package never imports controlplane or store — `just boundary` proves
+  The worker package never imports web or store — `just boundary` proves
   it. `model` imports nothing from Forge; `protocol` imports only `model`.
 - **Configuration** is parsed once into a struct with defaults applied and validated
   at load time; the rest of the program never sees a raw map.
@@ -174,7 +174,7 @@ never evidence of what happened and nothing reads logs to decide anything.
 - **One mechanism.** `log/slog` via `internal/logging`. No `log.Printf`, no
   `fmt.Fprintln(os.Stderr, …)` outside CLI output, no `slog.Default()`. Every package
   gets its logger from `handler.For("<component>")` — dotted names (`store`,
-  `worker.git`, `controlplane.http`, `plugin.<name>`) — passed in at construction,
+  `worker.git`, `web.http`, `plugin.<name>`) — passed in at construction,
   never fetched from a global. The `component` attribute is on every line.
 - **Levels:** `trace` (a custom level below debug: SQL statements, HTTP bodies, raw
   executor lines), `debug` (state changes, decisions with their inputs), `info` (what
