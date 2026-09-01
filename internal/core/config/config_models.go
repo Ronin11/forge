@@ -97,19 +97,22 @@ func defaultRunners() map[string]RunnerConfig {
 // classed `mid` (the workhorse between small haiku and frontier opus — see
 // NOTES.md M10); opus is `frontier`; haiku is `small`. max_tier 3 lets any
 // routine tier reach any of them. IDs match defaultResolveModel (server.go).
+// CacheWrite is the 1-hour-TTL rate (2× input): the claude-code executor
+// caches at the 1h TTL, and pricing writes at the 5m rate (1.25× input) is
+// what doctor's notional-vs-reported drift was measuring.
 func defaultModels() map[string]ModelConfig {
 	return map[string]ModelConfig{
 		"haiku": {
 			Runner: "claude", ID: "claude-haiku-4-5-20251001", Class: "small", MaxTier: 3,
-			Context: 200_000, Price: Price{Input: 1.00, Output: 5.00, CacheRead: 0.10, CacheWrite: 1.25},
+			Context: 200_000, Price: Price{Input: 1.00, Output: 5.00, CacheRead: 0.10, CacheWrite: 2.00},
 		},
 		"sonnet": {
 			Runner: "claude", ID: "claude-sonnet-4-5", Class: "mid", MaxTier: 3,
-			Context: 200_000, Price: Price{Input: 3.00, Output: 15.00, CacheRead: 0.30, CacheWrite: 3.75},
+			Context: 200_000, Price: Price{Input: 3.00, Output: 15.00, CacheRead: 0.30, CacheWrite: 6.00},
 		},
 		"opus": {
 			Runner: "claude", ID: "claude-opus-4-1", Class: "frontier", MaxTier: 3,
-			Context: 200_000, Price: Price{Input: 15.00, Output: 75.00, CacheRead: 1.50, CacheWrite: 18.75},
+			Context: 200_000, Price: Price{Input: 15.00, Output: 75.00, CacheRead: 1.50, CacheWrite: 30.00},
 		},
 	}
 }
