@@ -1,0 +1,8 @@
+# The human-question path: the first script stops at line 3 with a synthesised
+# needs_input result ("Which one?"), and the resume script — replayed under the
+# same session id once the question is answered — finishes read-only, so the
+# answered attempt verifies cleanly (empty changes[], no declared checks).
+exit_code = 0
+delay_ms = 2
+resume_script = "resume.jsonl"
+needs_input_at = 3
