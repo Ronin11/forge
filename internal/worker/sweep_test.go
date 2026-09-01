@@ -136,6 +136,10 @@ func TestSweepLeavesOtherTagsAlone(t *testing.T) {
 	if err := syscall.Kill(escaped, 0); err != nil {
 		t.Errorf("a process tagged with another attempt was signalled: %v", err)
 	}
+	// Neither an empty value nor the prefix of a longer one may match.
+	if n, err := Sweep(AttemptEnv, "", time.Second); err != nil || n != 0 {
+		t.Errorf("sweep of an empty tag = %d, %v", n, err)
+	}
 	// The prefix of a longer value must not match either.
 	if n, err := Sweep(AttemptEnv, theirs[:8], 100*time.Millisecond); err != nil || n != 0 {
 		t.Errorf("sweep of a tag prefix = %d, %v", n, err)

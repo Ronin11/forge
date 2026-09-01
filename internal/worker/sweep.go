@@ -38,6 +38,12 @@ func ProcessTags(workerID, attemptID string) []string {
 // signalled: when Forge runs under Forge the worker itself carries the outer
 // attempt's markers. It returns how many tagged processes it found.
 func Sweep(key, value string, grace time.Duration) (int, error) {
+	if value == "" {
+		// An empty marker would match every process Forge tagged with an
+		// empty id — which is nothing, but the rule belongs here, not in the
+		// callers that hold an id they have not validated yet.
+		return 0, nil
+	}
 	marker := []byte(key + "=" + value)
 	found, err := taggedProcesses(marker)
 	if err != nil || len(found) == 0 {
