@@ -1081,6 +1081,11 @@ forecast_pacing     = false         # default; true = also defer when the burn-r
 start = "09:00"
 end = "18:00"
 reserve = 0.20
+[attention]                         # the fuzzy Human Queue (§10.4)
+auto_decide         = true          # default; false = every question blocks for a human
+wait_active_minutes = 240           # burndown wait during active hours
+wait_quiet_minutes  = 20            # shorter wait during [budget.quiet_hours]
+model               = "opus"        # the decider (a strong model)
 ```
 
 In order, per window (both windows must admit):
@@ -1147,6 +1152,26 @@ the last 24 h (informational, no acknowledgement — they age out); Work that en
 `partial`/`failed`/`unverified` in the last 24 h; retained worktrees. Each row: what,
 from which attempt/routine, waiting since, and the action. `forge task answer <task>
 "…"`, `forge proposal approve|reject <id>`, `forge task approve|reject <task>` (L3).
+
+**Fuzzy questions (time-aware auto-decision).** A Question carries a `criticality ∈
+{critical, normal, low}` (agent-declared via `forge_ask`, default `normal`). A
+`critical` question blocks for a human forever; a non-critical one **burns down** on
+a time-of-day-aware SLA and, once past it, a strong model (`opus`) decides so the
+Work resumes — the operator's "err on the side of action", with the budget policy as
+the backstop. The deadline is `asked_at + wait`, where `wait` is `wait_active_minutes`
+by default and `wait_quiet_minutes` during `[budget.quiet_hours]` (unset → always
+active); `low` burns down at the quiet wait even in active hours. Every 60 s the
+attention sweep (a sibling of the lease sweeper, §14) reads the open questions, and
+for each non-critical one past its deadline calls the decider with the question, its
+options, and the task's context, expecting `{"answer", "rationale"}`. It records the
+answer through the normal answer path (`answered_by = "auto:<model>"`), journalling a
+distinct `question.auto_answered` with the criticality, deadline, answer, and
+rationale. A failed model call leaves the question open (retried next tick); a human
+answer that lands first wins. The Human Queue shows each non-critical question's
+countdown ("Forge decides in ~1h 40m") and marks `critical` items "needs you"; the
+task page and queue mark an auto-answered question "decided by Forge (opus)" with its
+rationale, distinct from a human answer. Configured in `[attention]`
+(`auto_decide` default true).
 
 ## 11. Knowledge base
 
