@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
@@ -149,8 +150,8 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 	if err != nil {
 		return nil, err
 	}
-	order := Order(QueueInput{Work: work, Targets: groupTargets(targets), Edges: edges, Deferred: s.deferred, FinishedStates: finished})
-	pick := Pick(PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active,
+	order := engine.Order(engine.QueueInput{Work: work, Targets: groupTargets(targets), Edges: edges, Deferred: s.deferred, FinishedStates: finished})
+	pick := engine.Pick(engine.PickInput{Order: order, Worker: *worker, Repositories: byName, Concurrency: concurrency, Active: active,
 		Requirements: workRequirements, Leases: toPathLeases(leases), Edges: edges, MaxStackDepth: s.maxStackDepth, LeaseExempt: s.leaseExempt})
 	// A path_lease skip starts the lease_wait_us clock (facts): journal the
 	// first refusal per Target, inside this transaction.
@@ -162,7 +163,7 @@ func (s *Server) claimTx(ctx context.Context, tx *store.Tx, req protocol.ClaimRe
 		}
 	}
 	if pick.Target == nil {
-		s.log.DebugContext(ctx, "nothing to claim", "worker_id", req.WorkerID, "open_work", len(work), "skipped", SortedSkips(pick.Skipped))
+		s.log.DebugContext(ctx, "nothing to claim", "worker_id", req.WorkerID, "open_work", len(work), "skipped", engine.SortedSkips(pick.Skipped))
 		return nil, nil
 	}
 	return s.claimTarget(ctx, tx, req, *worker, *pick.Work, *pick.Target, edges)
@@ -198,10 +199,10 @@ func (s *Server) modeWritesNothing(mode string) bool {
 }
 
 // toPathLeases adapts the store rows to the scheduler's input type.
-func toPathLeases(rows []store.PathLease) []PathLease {
-	out := make([]PathLease, len(rows))
+func toPathLeases(rows []store.PathLease) []engine.PathLease {
+	out := make([]engine.PathLease, len(rows))
 	for i, l := range rows {
-		out[i] = PathLease{TargetID: l.TargetID, Repository: l.Repository, Globs: l.Globs}
+		out[i] = engine.PathLease{TargetID: l.TargetID, Repository: l.Repository, Globs: l.Globs}
 	}
 	return out
 }
@@ -381,7 +382,7 @@ func (s *Server) claimTarget(ctx context.Context, tx *store.Tx, req protocol.Cla
 		EscalatedFrom: choice.EscalatedFrom, Routing: choice.RoutingJSON, Effort: snap.Effort, Mode: snap.Mode, Autonomy: w.Autonomy,
 	}
 	if !s.leaseExempt(w) {
-		params.Globs = EffectiveGlobs(w.Paths, w.Deps)
+		params.Globs = engine.EffectiveGlobs(w.Paths, w.Deps)
 	}
 	if stack != nil {
 		params.StackBase = stack.Commit
@@ -491,7 +492,7 @@ func (s *Server) stackBase(ctx context.Context, tx *store.Tx, w store.Work, t st
 		if da == nil || da.HeadCommit == "" || da.Branch == "" {
 			return nil, fmt.Errorf("stack base of %s: dependency %s has no recorded branch head", w.ID, dep)
 		}
-		return &protocol.StackBase{WorkID: dep, Branch: da.Branch, Commit: da.HeadCommit, Depth: StackDepth(w.ID, edges)}, nil
+		return &protocol.StackBase{WorkID: dep, Branch: da.Branch, Commit: da.HeadCommit, Depth: engine.StackDepth(w.ID, edges)}, nil
 	}
 	return nil, nil
 }
@@ -515,7 +516,7 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// deferred adapts the policy to Order's question ("is this class deferred?").
+// deferred adapts the policy to engine.Order's question ("is this class deferred?").
 func (s *Server) deferred(class model.BudgetClass) (bool, string) {
 	admit, reason := s.policy.Decide(class)
 	return !admit, reason
@@ -530,7 +531,7 @@ func groupTargets(ts []store.Target) map[string][]store.Target {
 }
 
 // finishedStates derives the state of every dependency that is no longer open
-// (Order only sees open Work). Reads go through the pool: finished Work is,
+// (engine.Order only sees open Work). Reads go through the pool: finished Work is,
 // by definition, not being changed by the transaction in progress.
 func (s *Server) finishedStates(ctx context.Context, open []store.Work, edges []model.Edge) (map[string]model.WorkState, error) {
 	openIDs := make(map[string]bool, len(open))
@@ -556,7 +557,7 @@ func (s *Server) finishedStates(ctx context.Context, open []store.Work, edges []
 		if err != nil {
 			return nil, err
 		}
-		out[w.ID] = model.DeriveWorkState(model.WorkInputs{Targets: targetStates(ts), Integrate: w.Integrate})
+		out[w.ID] = model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: w.Integrate})
 	}
 	return out, nil
 }

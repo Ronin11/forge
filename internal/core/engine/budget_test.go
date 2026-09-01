@@ -1,8 +1,7 @@
-package controlplane
+package engine
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"path/filepath"
 	"testing"
@@ -352,92 +351,21 @@ func TestBudgetResets(t *testing.T) {
 		sample(now.Add(-time.Minute), "five_hour", 0.5, resetsA),
 		sample(now, "five_hour", 0.05, resetsB),
 	}
-	got := budgetResets(budgetCfg, prev, batch)
+	got := BudgetResets(budgetCfg, prev, batch)
 	if len(got) != 1 || got[0].Window != "five_hour" || !near(got[0].Unspent, 0.9-0.5) || !got[0].PrevResetsAt.Equal(resetsA) || !got[0].NewResetsAt.Equal(resetsB) {
 		t.Errorf("in-batch boundary = %+v", got)
 	}
 	// A stored previous sample against one incoming sample.
 	prevSample := sample(now.Add(-time.Hour), "five_hour", 0.8, resetsA)
-	got = budgetResets(budgetCfg, map[string]*store.RateLimitSample{"five_hour": &prevSample}, []store.RateLimitSample{sample(now, "five_hour", 0.1, resetsB)})
+	got = BudgetResets(budgetCfg, map[string]*store.RateLimitSample{"five_hour": &prevSample}, []store.RateLimitSample{sample(now, "five_hour", 0.1, resetsB)})
 	if len(got) != 1 || !near(got[0].Unspent, 0.9-0.8) {
 		t.Errorf("stored boundary = %+v", got)
 	}
 	// Same resets_at, and no prior sample at all: nothing.
-	if got := budgetResets(budgetCfg, map[string]*store.RateLimitSample{"five_hour": &prevSample}, []store.RateLimitSample{sample(now, "five_hour", 0.9, resetsA)}); len(got) != 0 {
+	if got := BudgetResets(budgetCfg, map[string]*store.RateLimitSample{"five_hour": &prevSample}, []store.RateLimitSample{sample(now, "five_hour", 0.9, resetsA)}); len(got) != 0 {
 		t.Errorf("no boundary = %+v", got)
 	}
-	if got := budgetResets(budgetCfg, prev, []store.RateLimitSample{sample(now, "seven_day", 0.1, resetsB)}); len(got) != 0 {
+	if got := BudgetResets(budgetCfg, prev, []store.RateLimitSample{sample(now, "seven_day", 0.1, resetsB)}); len(got) != 0 {
 		t.Errorf("first-ever sample journals nothing: %+v", got)
-	}
-}
-
-func TestJournalBudgetResets(t *testing.T) {
-	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	clock := func() time.Time { return now }
-	st := budgetStore(t, clock)
-	resetsA := now.Add(time.Hour)
-	resetsB := now.Add(6 * time.Hour)
-	err := st.Write(bctx(), func(tx *store.Tx) error {
-		return tx.InsertSamples(bctx(), []store.RateLimitSample{sample(now.Add(-time.Hour), "five_hour", 0.8, resetsA)})
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := NewServer(ServerOptions{Store: st, Policy: NewBudgetPolicy(st, budgetCfg, clock)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	incoming := []store.RateLimitSample{sample(now, "five_hour", 0.1, resetsB)}
-	err = st.Write(bctx(), func(tx *store.Tx) error {
-		if err := srv.journalBudgetResets(bctx(), tx, incoming); err != nil {
-			return err
-		}
-		return tx.InsertSamples(bctx(), incoming)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, err := st.JournalForEntity(bctx(), store.EntityDaemon, "budget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Kind != "budget.reset" {
-		t.Fatalf("journal = %+v", entries)
-	}
-	var payload budgetReset
-	if err := json.Unmarshal(entries[0].Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Window != "five_hour" || !near(payload.Unspent, 0.9-0.8) || !payload.PrevResetsAt.Equal(resetsA) || !payload.NewResetsAt.Equal(resetsB) {
-		t.Errorf("payload = %+v", payload)
-	}
-	// A first-ever seven_day sample has no prior boundary to journal.
-	err = st.Write(bctx(), func(tx *store.Tx) error {
-		first := []store.RateLimitSample{sample(now, "seven_day", 0.2, resetsB)}
-		if err := srv.journalBudgetResets(bctx(), tx, first); err != nil {
-			return err
-		}
-		return tx.InsertSamples(bctx(), first)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Without the budget policy (AdmitAll lacks the capability) nothing is journaled.
-	plain, err := NewServer(ServerOptions{Store: st, Policy: AdmitAll{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = st.Write(bctx(), func(tx *store.Tx) error {
-		return plain.journalBudgetResets(bctx(), tx, []store.RateLimitSample{sample(now.Add(time.Minute), "five_hour", 0.05, now.Add(11*time.Hour))})
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, err = st.JournalForEntity(bctx(), store.EntityDaemon, "budget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("journal grew unexpectedly: %+v", entries)
 	}
 }

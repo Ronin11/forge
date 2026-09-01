@@ -1,4 +1,4 @@
-package controlplane
+package engine
 
 import (
 	"fmt"
@@ -118,7 +118,7 @@ func weightScore(w config.Weights, v CostVector) float64 {
 func Route(in RouteInput) (RoutingDecision, bool) {
 	rng := in.Rand
 	if rng == nil {
-		rng = mrand.New(mrand.NewPCG(seedFromID(in.TargetID), 0x10))
+		rng = mrand.New(mrand.NewPCG(SeedFromID(in.TargetID), 0x10))
 	}
 	aliases := candidateAliases(in)
 	dec := RoutingDecision{Tier: in.Tier}
@@ -225,9 +225,9 @@ func candidateAliases(in RouteInput) []string {
 	return out
 }
 
-// seedFromID turns a target id (hex) into a stable uint64 seed so exploration
+// SeedFromID turns a target id (hex) into a stable uint64 seed so exploration
 // is reproducible per target.
-func seedFromID(id string) uint64 {
+func SeedFromID(id string) uint64 {
 	var h uint64 = 1469598103934665603 // FNV-1a offset basis
 	for i := 0; i < len(id); i++ {
 		h ^= uint64(id[i])

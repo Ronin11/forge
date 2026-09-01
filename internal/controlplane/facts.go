@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -112,7 +113,7 @@ func computeWriteSet(f *store.AttemptFacts, w store.Work, a store.Attempt) {
 	matched := 0
 	for _, p := range touched {
 		for _, g := range w.Paths {
-			if PathMatchesGlob(g, p) {
+			if engine.PathMatchesGlob(g, p) {
 				matched++
 				break
 			}

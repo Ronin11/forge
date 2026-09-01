@@ -22,6 +22,7 @@ import (
 
 	"forge/internal/controlplane"
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
 	"forge/internal/core/logging"
@@ -203,7 +204,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			d.log.WarnContext(ctx, "script tool not registered", "tool", t.Name(), "error", err)
 		}
 	}
-	policy := controlplane.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
+	policy := engine.NewBudgetPolicy(st, d.cfg.Budget, time.Now)
 	// The errgroup context is created before the server so plugin processes
 	// (and their supervision goroutines) are bound to the daemon's lifetime,
 	// and tools plugins can register their tools before the registry freezes
@@ -811,7 +812,7 @@ func (d *daemonProcess) nightlyPrune(ctx context.Context, st *store.Store) {
 				log.WarnContext(ctx, "nightly prune: worker config", "error", err)
 				continue
 			}
-			rep, err := controlplane.Prune(ctx, controlplane.PruneInput{DataDir: wcfg.DataDir, Retention: d.cfg.Retention, Now: time.Now(), Delete: true, Logger: log})
+			rep, err := engine.Prune(ctx, engine.PruneInput{DataDir: wcfg.DataDir, Retention: d.cfg.Retention, Now: time.Now(), Delete: true, Logger: log})
 			if err != nil {
 				log.WarnContext(ctx, "nightly prune", "error", err)
 				continue

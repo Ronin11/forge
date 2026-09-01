@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/store"
 )
 
@@ -89,11 +90,11 @@ func (s *Engine) routeClaim(ctx context.Context, worker store.Worker, w store.Wo
 		if !runnerReady(worker, info.Runner) || !s.runnerFree(ctx, tx, info.Runner) {
 			return nil, nil
 		}
-		dec := RoutingDecision{Chosen: alias, Tier: tier, Why: fmt.Sprintf("escalated from %s to ladder rung %d (%s)", prevAlias, rung, alias)}
+		dec := engine.RoutingDecision{Chosen: alias, Tier: tier, Why: fmt.Sprintf("escalated from %s to ladder rung %d (%s)", prevAlias, rung, alias)}
 		return &routeChoice{Alias: alias, ModelID: info.ID, Runner: info.Runner, Executor: executorFor(info, snap), EscalatedFrom: prevAlias, RoutingJSON: mustJSON(dec)}, nil
 	}
 
-	in := RouteInput{
+	in := engine.RouteInput{
 		TargetID: t.ID, Routine: w.RoutineName, Tier: tier, Allowlist: allowlist,
 		Models: s.modelTable(), AllModels: s.modelAliases,
 		RunnerReady: func(r string) bool { return runnerReady(worker, r) },
@@ -101,9 +102,9 @@ func (s *Engine) routeClaim(ctx context.Context, worker store.Worker, w store.Wo
 		Evidence:    s.buildEvidence(ctx, w.RoutineName),
 		Weights:     s.routing.Weights, MinVerifiedSuccess: s.routing.MinVerifiedSuccess,
 		MinSamples: s.routing.MinSamples, Explore: s.routing.Explore,
-		Rand: mrand.New(mrand.NewPCG(seedFromID(t.ID), 0x10)),
+		Rand: mrand.New(mrand.NewPCG(engine.SeedFromID(t.ID), 0x10)),
 	}
-	dec, ok := Route(in)
+	dec, ok := engine.Route(in)
 	if !ok {
 		return nil, nil
 	}
@@ -178,7 +179,7 @@ func executorFor(info config.ModelInfo, snap store.Routine) string {
 // buildEvidence returns the router's per-model evidence function for one
 // routine: p50 cost vector and verified-success record from facts, falling
 // back from routine+model to model-wide facts to the configured price proxy.
-func (s *Engine) buildEvidence(ctx context.Context, routine string) func(string) ModelEvidence {
+func (s *Engine) buildEvidence(ctx context.Context, routine string) func(string) engine.ModelEvidence {
 	until := s.now().Add(time.Hour)
 	since := s.now().Add(-routingWindow)
 	routineFacts, err := s.store.FactsSince(ctx, since, until, routine)
@@ -191,9 +192,9 @@ func (s *Engine) buildEvidence(ctx context.Context, routine string) func(string)
 	}
 	byRoutineModel := groupFactsByModel(routineFacts)
 	byModel := groupFactsByModel(globalFacts)
-	return func(alias string) ModelEvidence {
+	return func(alias string) engine.ModelEvidence {
 		info, _ := s.modelInfoFor(alias)
-		ev := ModelEvidence{}
+		ev := engine.ModelEvidence{}
 		rows := byRoutineModel[alias]
 		if len(rows) == 0 {
 			rows = byModel[alias]
@@ -217,13 +218,13 @@ func groupFactsByModel(facts []store.AttemptFacts) map[string][]store.AttemptFac
 // estimateVector is the p50 cost vector over facts rows, falling back to the
 // configured price (input+output, a monotone ordering proxy) for the usd term
 // when no rows carry a usd figure.
-func estimateVector(rows []store.AttemptFacts, price config.Price) CostVector {
+func estimateVector(rows []store.AttemptFacts, price config.Price) engine.CostVector {
 	usd := p50OfPtr(rows, func(f store.AttemptFacts) *float64 { return f.USD })
 	if usd == nil {
 		proxy := price.Input + price.Output
 		usd = &proxy
 	}
-	v := CostVector{USD: *usd}
+	v := engine.CostVector{USD: *usd}
 	if d := p50OfPtr(rows, func(f store.AttemptFacts) *float64 { return f.FiveHourDelta }); d != nil {
 		v.FiveHour = *d
 	}

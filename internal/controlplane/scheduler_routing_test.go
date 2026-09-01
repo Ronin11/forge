@@ -4,28 +4,29 @@ import (
 	"encoding/json"
 	"testing"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
 
 // A verify Work whose subject has UI=true needs a browser-ready worker; the
-// requirements rule (workRequirements) and Pick's capability matching decide
+// requirements rule (workRequirements) and engine.Pick's capability matching decide
 // together at the claim site.
 func TestPickBrowserRouting(t *testing.T) {
 	snap := json.RawMessage(`{"mode":"verify","executor":"fake-claude","model":"haiku","verify_of":{"attempt_id":"0123456789abcdef0123456789abcdef","branch":"b","head":"h","ui":true}}`)
 	w := store.Work{ID: "v", Priority: 50, BudgetClass: model.ClassNormal, Snapshot: snap}
 	targets := map[string][]store.Target{"v": {{ID: "tv", WorkID: "v", Repository: "app", State: model.Pending}}}
-	order := Order(QueueInput{Work: []store.Work{w}, Targets: targets})
+	order := engine.Order(engine.QueueInput{Work: []store.Work{w}, Targets: targets})
 	repos := map[string]store.Repository{"app": {Name: "app", WorkerID: "w1"}}
 
 	missing := store.Worker{ID: "w1", Capabilities: map[string]string{"browser": "missing"}}
-	pick := Pick(PickInput{Order: order, Worker: missing, Repositories: repos, Requirements: workRequirements})
+	pick := engine.Pick(engine.PickInput{Order: order, Worker: missing, Repositories: repos, Requirements: workRequirements})
 	if pick.Target != nil || pick.Skipped["tv"] != "worker lacks capability browser" {
 		t.Errorf("browser:missing worker: %+v", pick)
 	}
 
 	ready := store.Worker{ID: "w1", Capabilities: map[string]string{"browser": "ready"}}
-	pick = Pick(PickInput{Order: order, Worker: ready, Repositories: repos, Requirements: workRequirements})
+	pick = engine.Pick(engine.PickInput{Order: order, Worker: ready, Repositories: repos, Requirements: workRequirements})
 	if pick.Target == nil || pick.Target.ID != "tv" {
 		t.Errorf("browser:ready worker should pick tv: %+v", pick)
 	}

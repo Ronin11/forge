@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -54,7 +55,7 @@ func computeLineage(ctx context.Context, st *store.Store, anyID string) (*lineag
 	}
 	state := make(map[string]model.WorkState, len(works))
 	for _, x := range works {
-		state[x.ID] = model.DeriveWorkState(model.WorkInputs{Targets: targetStates(targets[x.ID]), Integrate: x.Integrate})
+		state[x.ID] = model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(targets[x.ID]), Integrate: x.Integrate})
 	}
 	// Depth is caused_by hops from the root, memoized. caused_by never cycles
 	// (a parent exists before its child), so the walk terminates.

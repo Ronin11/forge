@@ -1,4 +1,4 @@
-package controlplane
+package engine
 
 import (
 	"compress/gzip"

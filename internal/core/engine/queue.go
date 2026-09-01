@@ -1,4 +1,4 @@
-package controlplane
+package engine
 
 import (
 	"sort"
@@ -50,7 +50,7 @@ func Order(in QueueInput) []QueueEntry {
 		edgesByWork[e.Work] = append(edgesByWork[e.Work], e)
 	}
 	for _, w := range in.Work {
-		ts := targetStates(in.Targets[w.ID])
+		ts := TargetStates(in.Targets[w.ID])
 		states[w.ID] = model.DeriveWorkState(model.WorkInputs{Targets: ts, Integrate: w.Integrate})
 	}
 	for _, w := range in.Work {
@@ -70,7 +70,7 @@ func Order(in QueueInput) []QueueEntry {
 			}
 			deferred, reason = in.Deferred(class)
 		}
-		e.State = model.DeriveWorkState(model.WorkInputs{Targets: targetStates(e.Targets), Integrate: w.Integrate, Blocked: blocked, Deferred: deferred})
+		e.State = model.DeriveWorkState(model.WorkInputs{Targets: TargetStates(e.Targets), Integrate: w.Integrate, Blocked: blocked, Deferred: deferred})
 		switch {
 		case e.State == model.WorkBlocked && len(deps.FailedDeps) > 0:
 			e.Reason, e.FailedOn, e.Waiting = "dependency_failed", deps.FailedDeps, deps.Waiting
@@ -99,7 +99,7 @@ func Order(in QueueInput) []QueueEntry {
 	return entries
 }
 
-func targetStates(ts []store.Target) []model.State {
+func TargetStates(ts []store.Target) []model.State {
 	out := make([]model.State, len(ts))
 	for i, t := range ts {
 		out[i] = t.State

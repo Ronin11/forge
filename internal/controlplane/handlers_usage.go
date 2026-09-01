@@ -5,25 +5,26 @@ import (
 	"net/http"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
 
-// usageReporter is the capability a SchedulerPolicy exposes when it can report
+// usageReporter is the capability a engine.SchedulerPolicy exposes when it can report
 // budget usage (STYLE.md §1: a needed capability is an interface the caller
-// checks, never a type switch on implementations). *BudgetPolicy implements it;
-// AdmitAll does not, and the usage endpoint answers 501 until the budget policy
+// checks, never a type switch on implementations). *engine.BudgetPolicy implements it;
+// engine.AdmitAll does not, and the usage endpoint answers 501 until the budget policy
 // is active.
 type usageReporter interface {
-	Usage(ctx context.Context) (Usage, error)
+	Usage(ctx context.Context) (engine.Usage, error)
 	Config() config.BudgetConfig
 }
 
 // usageResponse is GET /api/v1/usage's wire shape.
 type usageResponse struct {
-	SchemaVersion int         `json:"schema_version"`
-	Usage         Usage       `json:"usage"`
-	Config        usageConfig `json:"config"`
+	SchemaVersion int          `json:"schema_version"`
+	Usage         engine.Usage `json:"usage"`
+	Config        usageConfig  `json:"config"`
 }
 
 // usageConfig echoes the [budget] thresholds so clients can render usage
@@ -85,7 +86,7 @@ func (s *Server) journalBudgetResets(ctx context.Context, tx *store.Tx, samples 
 		}
 		prev[w] = p
 	}
-	for _, b := range budgetResets(rp.Config(), prev, samples) {
+	for _, b := range engine.BudgetResets(rp.Config(), prev, samples) {
 		if err := tx.Journal(ctx, "budget.reset", store.EntityDaemon, "budget", b); err != nil {
 			return err
 		}

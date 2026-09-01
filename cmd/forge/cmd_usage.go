@@ -3,16 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"forge/internal/core/engine"
 	"net/http"
 	"time"
-
-	"forge/internal/controlplane"
 )
 
 // usageView mirrors GET /api/v1/usage (handlers_usage.go's usageResponse).
 type usageView struct {
-	SchemaVersion int                `json:"schema_version"`
-	Usage         controlplane.Usage `json:"usage"`
+	SchemaVersion int          `json:"schema_version"`
+	Usage         engine.Usage `json:"usage"`
 	Config        struct {
 		FiveHourTarget   float64 `json:"five_hour_target"`
 		SevenDayTarget   float64 `json:"seven_day_target"`
@@ -74,7 +73,7 @@ func runUsage(ctx context.Context, c *cmdContext, args []string) int {
 
 // printUsageWindow renders one window block; a window with no samples yet says
 // so instead of printing zeros that look like data.
-func printUsageWindow(c *cmdContext, w controlplane.WindowUsage, target float64, now time.Time) {
+func printUsageWindow(c *cmdContext, w engine.WindowUsage, target float64, now time.Time) {
 	fmt.Fprintln(c.stdout, w.Window)
 	if w.Utilization < 0 {
 		fmt.Fprintln(c.stdout, "  no samples yet")

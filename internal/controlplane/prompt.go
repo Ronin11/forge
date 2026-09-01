@@ -119,11 +119,11 @@ func autonomyBlock(a model.Autonomy, checkpoints []string) string {
 		if len(checkpoints) > 0 {
 			list = "one of these checkpoints: " + strings.Join(checkpoints, ", ")
 		}
-		return "AUTONOMY: checkpoint. Decide small ambiguities yourself and proceed. Only at " + list + " or a genuinely blocking ambiguity, " + envelope
+		return "AUTONOMY: checkpoint. engine.Decide small ambiguities yourself and proceed. Only at " + list + " or a genuinely blocking ambiguity, " + envelope
 	case model.AutonomyNotify:
-		return "AUTONOMY: notify. Decide and proceed; call forge_note_progress at each checkpoint; never return needs_input. State assumptions in your summary."
+		return "AUTONOMY: notify. engine.Decide and proceed; call forge_note_progress at each checkpoint; never return needs_input. State assumptions in your summary."
 	case model.AutonomyAuto:
-		return "AUTONOMY: auto. Decide and proceed; never return needs_input. State assumptions in your summary."
+		return "AUTONOMY: auto. engine.Decide and proceed; never return needs_input. State assumptions in your summary."
 	}
 	return ""
 }

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"forge/internal/controlplane"
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/worker"
 )
 
@@ -37,7 +37,7 @@ func runPrune(ctx context.Context, c *cmdContext, args []string) int {
 	if err != nil {
 		return c.fail("prune", err)
 	}
-	rep, err := controlplane.Prune(ctx, controlplane.PruneInput{
+	rep, err := engine.Prune(ctx, engine.PruneInput{
 		DataDir: wcfg.DataDir, Retention: dcfg.Retention, Now: c.now(), Delete: *confirm, Logger: log,
 	})
 	if err != nil {

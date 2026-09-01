@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -554,7 +555,7 @@ func (s *Server) listWork(r *http.Request) (int, any, error) {
 		if ts == nil {
 			ts = []store.Target{}
 		}
-		out = append(out, workSummary{Work: wk, State: model.DeriveWorkState(model.WorkInputs{Targets: targetStates(ts), Integrate: wk.Integrate}), Targets: ts})
+		out = append(out, workSummary{Work: wk, State: model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: wk.Integrate}), Targets: ts})
 	}
 	return http.StatusOK, out, nil
 }
@@ -613,7 +614,7 @@ func (s *Server) workDetail(ctx context.Context, id string) (int, any, error) {
 	if qs == nil {
 		qs = []store.Question{}
 	}
-	state := model.DeriveWorkState(model.WorkInputs{Targets: targetStates(ts), Integrate: wk.Integrate})
+	state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: wk.Integrate})
 	return http.StatusOK, workDetail{Work: *wk, State: state, Targets: ts, Attempts: attempts, Questions: qs}, nil
 }
 
@@ -748,7 +749,7 @@ func (s *Server) moveWork(ctx context.Context, id, before string) (int, any, err
 	if err != nil {
 		return 0, nil, err
 	}
-	if before != "" && Violates(order, edges, id, before) {
+	if before != "" && engine.Violates(order, edges, id, before) {
 		return 0, nil, fmt.Errorf("moving %s above %s would put it before a task it is blocked by: %w", id[:8], before[:8], store.ErrConflict)
 	}
 	priority := 0
@@ -795,7 +796,7 @@ type queueItem struct {
 }
 
 // loadQueue is the read-only twin of claimTx's view, for display.
-func (s *Server) loadQueue(ctx context.Context) ([]QueueEntry, error) {
+func (s *Server) loadQueue(ctx context.Context) ([]engine.QueueEntry, error) {
 	work, err := s.store.OpenWork(ctx)
 	if err != nil {
 		return nil, err
@@ -820,7 +821,7 @@ func (s *Server) loadQueue(ctx context.Context) ([]QueueEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Order(QueueInput{Work: work, Targets: targets, Edges: edges, Deferred: s.deferred, FinishedStates: finished, Leases: toPathLeases(leases), LeaseExempt: s.leaseExempt}), nil
+	return engine.Order(engine.QueueInput{Work: work, Targets: targets, Edges: edges, Deferred: s.deferred, FinishedStates: finished, Leases: toPathLeases(leases), LeaseExempt: s.leaseExempt}), nil
 }
 
 func (s *Server) queue(r *http.Request) (int, any, error) {

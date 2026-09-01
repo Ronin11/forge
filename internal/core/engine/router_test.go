@@ -1,4 +1,4 @@
-package controlplane
+package engine
 
 import (
 	"forge/internal/core/config"
@@ -131,7 +131,7 @@ func TestRouteExploreDeterminism(t *testing.T) {
 		in.Allowlist = []string{"kimi"}
 		in.Explore = 0.5
 		in.Evidence = func(string) ModelEvidence { return ModelEvidence{Estimate: CostVector{USD: 1}} } // 0 trials
-		in.Rand = mrand.New(mrand.NewPCG(seedFromID(in.TargetID), 0x10))
+		in.Rand = mrand.New(mrand.NewPCG(SeedFromID(in.TargetID), 0x10))
 		return in
 	}
 	first := explored(Route(build()))

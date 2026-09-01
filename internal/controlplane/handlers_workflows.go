@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -243,7 +244,7 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 		if ts == nil {
 			ts = []store.Target{}
 		}
-		state := model.DeriveWorkState(model.WorkInputs{Targets: targetStates(ts), Integrate: wk.Integrate})
+		state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: wk.Integrate})
 		run.Works = append(run.Works, workSummary{Work: wk, State: state, Targets: ts})
 	}
 	out := make([]workflowRun, 0, len(byRun))

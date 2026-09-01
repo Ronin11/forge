@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
@@ -51,7 +52,7 @@ const shutdownGrace = 5 * time.Second
 // method may import net/http (the boundary recipe checks).
 type Engine struct {
 	store            *store.Store
-	policy           SchedulerPolicy
+	policy           engine.SchedulerPolicy
 	log              *slog.Logger
 	now              func() time.Time
 	home             string
@@ -157,13 +158,13 @@ type Server struct {
 // ServerOptions are the inputs the server cannot derive itself.
 type ServerOptions struct {
 	Store         *store.Store
-	Policy        SchedulerPolicy       // AdmitAll in M1
-	Logger        *slog.Logger          // component "controlplane.http"
-	Clock         func() time.Time      // defaults to time.Now
-	Version       string                // reported by the handshake
-	Token         string                // the worker token; required on TCP for worker/tool routes
-	RequiredLevel func(mode string) int // verification level a mode requires; nil means 1 for every mode
-	Home          string                // for daemon.json's state field on drain; "" skips the file
+	Policy        engine.SchedulerPolicy // engine.AdmitAll in M1
+	Logger        *slog.Logger           // component "controlplane.http"
+	Clock         func() time.Time       // defaults to time.Now
+	Version       string                 // reported by the handshake
+	Token         string                 // the worker token; required on TCP for worker/tool routes
+	RequiredLevel func(mode string) int  // verification level a mode requires; nil means 1 for every mode
+	Home          string                 // for daemon.json's state field on drain; "" skips the file
 	// ResolveModel turns an alias into an executor model id. Nil installs M1's
 	// fixed table; M10's routing replaces it through this seam.
 	ResolveModel func(alias string) (id string, ok bool)
@@ -264,7 +265,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		return nil, fmt.Errorf("server: store is required")
 	}
 	if o.Policy == nil {
-		o.Policy = AdmitAll{}
+		o.Policy = engine.AdmitAll{}
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 )
 
@@ -141,7 +142,7 @@ func (s *Server) assistantStatus(ctx context.Context) string {
 	}
 	running, waiting, failed := 0, 0, 0
 	for _, w := range works {
-		switch model.DeriveWorkState(model.WorkInputs{Targets: targetStates(byWork[w.ID]), Integrate: w.Integrate}) {
+		switch model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(byWork[w.ID]), Integrate: w.Integrate}) {
 		case model.WorkRunning, model.WorkMerging:
 			running++
 		case model.WorkPending, model.WorkBlocked, model.WorkWaitingHuman:

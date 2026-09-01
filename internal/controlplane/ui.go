@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
 	"forge/internal/core/stats"
@@ -195,11 +196,11 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 		// routing decodes an attempt's stored routing decision (M10) for the
 		// task-detail page; nil (rendered as {{with}} skips) when absent or
 		// unreadable, so a pre-M10 attempt shows nothing.
-		"routing": func(raw json.RawMessage) *RoutingDecision {
+		"routing": func(raw json.RawMessage) *engine.RoutingDecision {
 			if len(raw) == 0 {
 				return nil
 			}
-			var d RoutingDecision
+			var d engine.RoutingDecision
 			if json.Unmarshal(raw, &d) != nil {
 				return nil
 			}
@@ -305,7 +306,7 @@ func (u *UI) taskRows(ctx context.Context, works []store.Work) ([]taskRow, error
 	rows := make([]taskRow, 0, len(works))
 	for _, w := range works {
 		ts := targets[w.ID]
-		rows = append(rows, taskRow{Work: w, State: model.DeriveWorkState(model.WorkInputs{Targets: targetStates(ts), Integrate: w.Integrate}), Targets: ts})
+		rows = append(rows, taskRow{Work: w, State: model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: w.Integrate}), Targets: ts})
 	}
 	return rows, nil
 }
@@ -547,7 +548,7 @@ func (u *UI) task(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, tv)
 	}
-	state := model.DeriveWorkState(model.WorkInputs{Targets: targetStates(targets), Integrate: work.Integrate})
+	state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(targets), Integrate: work.Integrate})
 	// Provenance strip (DESIGN.md §3): one lineage lookup feeds the breadcrumb,
 	// the backward cause/deps, and the forward children/blocked links.
 	var strip provStrip
@@ -753,7 +754,7 @@ func (u *UI) stats(w http.ResponseWriter, r *http.Request) {
 // queueRows loads the queue in the one true order (controlplane/queue.Order),
 // without budget deferral (the UI shows a "deferred" state only when the API
 // exposes it; M3's budget policy feeds the API, and this page mirrors it).
-func (u *UI) queueRows(ctx context.Context) ([]QueueEntry, error) {
+func (u *UI) queueRows(ctx context.Context) ([]engine.QueueEntry, error) {
 	works, err := u.store.OpenWork(ctx)
 	if err != nil {
 		return nil, err
@@ -770,7 +771,7 @@ func (u *UI) queueRows(ctx context.Context) ([]QueueEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Order(QueueInput{Work: works, Targets: targets, Edges: edges}), nil
+	return engine.Order(engine.QueueInput{Work: works, Targets: targets, Edges: edges}), nil
 }
 
 // queue is the drag-and-drop priority page.

@@ -2,7 +2,7 @@
 // admission policy of §10.2. ComputeUsage and Decide are pure (STYLE.md §2: the
 // budget admission decision has exactly one home); BudgetPolicy adapts them to
 // the SchedulerPolicy seam from live store reads with a short cache.
-package controlplane
+package engine
 
 import (
 	"context"
@@ -264,7 +264,7 @@ func Decide(now time.Time, u Usage, class model.BudgetClass, cfg config.BudgetCo
 	}
 	// 3. Quiet hours: non-interactive classes admit only while u < target −
 	// reserve for both windows.
-	if inQuietHours(now, cfg.QuietHours) {
+	if InQuietHours(now, cfg.QuietHours) {
 		for _, e := range windows {
 			if e.w.Utilization >= 0 && e.w.Utilization >= e.target-cfg.QuietHours.Reserve {
 				return false, "quiet_hours"
@@ -300,11 +300,11 @@ func Decide(now time.Time, u Usage, class model.BudgetClass, cfg config.BudgetCo
 	return true, ""
 }
 
-// inQuietHours reports whether now's clock time (in its own location) falls in
+// InQuietHours reports whether now's clock time (in its own location) falls in
 // the configured local-time window; [start, end) may wrap midnight. An
 // unconfigured section never matches; the HH:MM format is validated at config
 // load, so a parse failure here just disables the gate.
-func inQuietHours(now time.Time, q config.QuietHoursConfig) bool {
+func InQuietHours(now time.Time, q config.QuietHoursConfig) bool {
 	if q.Start == "" || q.End == "" {
 		return false
 	}
@@ -439,30 +439,30 @@ func (p *BudgetPolicy) queuedRoutines(ctx context.Context) ([]string, error) {
 	return queued, nil
 }
 
-// budgetReset is the payload of a "budget.reset" journal row: the durable
+// BudgetReset is the payload of a "budget.reset" journal row: the durable
 // unspent_at_reset metric of §10.2, written at sample ingestion.
-type budgetReset struct {
+type BudgetReset struct {
 	Window       string    `json:"window"`
 	Unspent      float64   `json:"unspent"`
 	PrevResetsAt time.Time `json:"prev_resets_at"`
 	NewResetsAt  time.Time `json:"new_resets_at"`
 }
 
-// budgetResets detects resets_at changes per window between the latest stored
+// BudgetResets detects resets_at changes per window between the latest stored
 // sample (prev; a nil or absent entry journals nothing for the first incoming
 // sample) and the incoming batch, including changes within the batch. unspent
 // is the window's target minus the last utilization before the reset.
-func budgetResets(cfg config.BudgetConfig, prev map[string]*store.RateLimitSample, incoming []store.RateLimitSample) []budgetReset {
+func BudgetResets(cfg config.BudgetConfig, prev map[string]*store.RateLimitSample, incoming []store.RateLimitSample) []BudgetReset {
 	targets := map[string]float64{"five_hour": cfg.FiveHourTarget, "seven_day": cfg.SevenDayTarget}
 	last := map[string]*store.RateLimitSample{}
 	for w, s := range prev {
 		last[w] = s
 	}
-	var out []budgetReset
+	var out []BudgetReset
 	for i := range incoming {
 		s := incoming[i]
 		if p := last[s.Window]; p != nil && !p.ResetsAt.Equal(s.ResetsAt) {
-			out = append(out, budgetReset{Window: s.Window, Unspent: targets[s.Window] - p.Utilization, PrevResetsAt: p.ResetsAt, NewResetsAt: s.ResetsAt})
+			out = append(out, BudgetReset{Window: s.Window, Unspent: targets[s.Window] - p.Utilization, PrevResetsAt: p.ResetsAt, NewResetsAt: s.ResetsAt})
 		}
 		last[s.Window] = &incoming[i]
 	}

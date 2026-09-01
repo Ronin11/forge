@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -56,7 +57,7 @@ func moveFixture(t *testing.T) (*httptest.Server, map[string]string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(ServerOptions{Store: st, Policy: AdmitAll{}, Logger: slog.New(slog.DiscardHandler), Version: "t", Token: "tok", TransportOverride: "unix", Clock: time.Now})
+	srv, err := NewServer(ServerOptions{Store: st, Policy: engine.AdmitAll{}, Logger: slog.New(slog.DiscardHandler), Version: "t", Token: "tok", TransportOverride: "unix", Clock: time.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestMoveBeforeEnforcesDependencies(t *testing.T) {
 		t.Fatalf("after move = %s", got)
 	}
 	// Tail move: A to the end — but A is B's dependency, and the tail is after
-	// B, so the guard must refuse it too… Violates only checks `before`; a tail
+	// B, so the guard must refuse it too… engine.Violates only checks `before`; a tail
 	// move below a dependant is caught by the same rule via reload. Document
 	// current behaviour: tail move is allowed (B simply stays blocked).
 	if code, _ := patchMove(t, ts, ids["A"], ""); code != 200 {

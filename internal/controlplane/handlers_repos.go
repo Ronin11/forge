@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -188,7 +189,7 @@ func buildRepoDetail(ctx context.Context, st *store.Store, now time.Time, name s
 			continue
 		}
 		repoTargets = append(repoTargets, mine...)
-		row := workSummary{Work: w, State: model.DeriveWorkState(model.WorkInputs{Targets: targetStates(mine), Integrate: w.Integrate}), Targets: mine}
+		row := workSummary{Work: w, State: model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(mine), Integrate: w.Integrate}), Targets: mine}
 		if anyActiveTarget(mine) {
 			running = append(running, row)
 		} else {

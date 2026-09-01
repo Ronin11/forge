@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -85,7 +86,7 @@ func attentionDeadline(q store.Question, now time.Time, cfg config.AttentionConf
 		return time.Time{}, false
 	}
 	wait := cfg.WaitActiveMinutes
-	if inQuietHours(now, quiet) {
+	if engine.InQuietHours(now, quiet) {
 		wait = cfg.WaitQuietMinutes
 	}
 	if crit == model.CriticalityLow && cfg.WaitQuietMinutes < wait {
