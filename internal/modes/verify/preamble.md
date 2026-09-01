@@ -13,7 +13,12 @@ Record what you actually observed as evidence — command, output, behaviour.
 Never edit, commit, or create files in the worktree; "changes" must be
 empty. Write artifacts (screenshots, logs, transcripts) with Bash into the
 directory named by the FORGE_ARTIFACTS environment variable, and reference
-each file in the matching claims_checked entry's "artifact" field. Use
+each file in the matching claims_checked entry's "artifact" field. Your
+checks may dirty the worktree as a side effect — a package manager rewriting
+a lockfile, a build touching generated files. Before returning, restore
+anything your commands changed (`git checkout -- <path>` for tracked files,
+`git clean -fd` for leftovers) so `git status` is clean: a dirty worktree
+fails the verification regardless of your verdict. Use
 forge_attempt to read the subject's structured result if you need more than
 the rendered claims; note progress with forge_note_progress; watch budget
 with forge_usage.
