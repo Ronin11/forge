@@ -20,10 +20,19 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := migrations[len(migrations)-1]
-	if last.id != "01M1CJ8P0V6KQY3W2E9R7T4B5N_work_provenance" {
-		t.Fatalf("provenance is not the last migration: %s", last.id)
+	// The provenance migration is no longer necessarily the last one; find it by
+	// id so its backfill can be driven against exactly the schema that preceded it.
+	provIdx := -1
+	for i, m := range migrations {
+		if m.id == "01M1CJ8P0V6KQY3W2E9R7T4B5N_work_provenance" {
+			provIdx = i
+			break
+		}
 	}
+	if provIdx < 0 {
+		t.Fatalf("provenance migration not found")
+	}
+	provMig := migrations[provIdx]
 	path := filepath.Join(t.TempDir(), "forge.sqlite3")
 	dsn := "file:" + path + "?" + url.Values{"_pragma": {"foreign_keys(1)"}}.Encode()
 	db, err := sql.Open("sqlite", dsn)
@@ -38,7 +47,7 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	ctx := context.Background()
 	// Everything before provenance.
-	for _, m := range migrations[:len(migrations)-1] {
+	for _, m := range migrations[:provIdx] {
 		if _, err := db.ExecContext(ctx, m.sql); err != nil {
 			t.Fatalf("apply %s: %v", m.id, err)
 		}
@@ -64,7 +73,7 @@ func TestMigrationBackfillProvenance(t *testing.T) {
 	}
 	work("verifywork0000000000000000000f00", "", `{"verify_of":{"attempt_id":"attempt000000000000000000000000e"}}`)
 
-	if _, err := db.ExecContext(ctx, last.sql); err != nil {
+	if _, err := db.ExecContext(ctx, provMig.sql); err != nil {
 		t.Fatalf("apply provenance migration: %v", err)
 	}
 

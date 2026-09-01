@@ -596,6 +596,11 @@ func (s *Server) heartbeat(r *http.Request) (int, any, error) {
 		if err != nil {
 			return err
 		}
+		// Surface the reported state/phase on the live progress tally so the task
+		// view can show what the running attempt is doing right now.
+		if err := tx.RecordHeartbeatProgress(ctx, id, req.State, req.Phase); err != nil {
+			return err
+		}
 		cancel, expires, err := tx.Heartbeat(ctx, t.ID, req.LeaseToken)
 		if err != nil {
 			return err
@@ -650,6 +655,13 @@ func (s *Server) postEvents(r *http.Request) (int, any, error) {
 			return err
 		}
 		inserted = n
+		// Refresh the live progress tally (turns/tokens/last-event/note) from the
+		// events just landed, so a running attempt's task view is current.
+		if n > 0 {
+			if err := tx.RecomputeAttemptProgress(ctx, id); err != nil {
+				return err
+			}
+		}
 		// A resets_at change against the latest stored sample is a window reset;
 		// journal its unspent headroom before the new samples land (§10.2).
 		if err := s.journalBudgetResets(ctx, tx, samples); err != nil {

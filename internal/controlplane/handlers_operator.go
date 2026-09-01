@@ -591,6 +591,18 @@ func (s *Server) workDetail(ctx context.Context, id string) (int, any, error) {
 	for _, t := range ts {
 		attempts = append(attempts, byTarget[t.ID]...)
 	}
+	// Attach the live progress tally to each unfinished attempt so the task view
+	// (CLI and UI) can render running turns/tokens, phase, and the latest note.
+	for i := range attempts {
+		if !attempts[i].FinishedAt.IsZero() {
+			continue
+		}
+		p, err := s.store.AttemptProgress(ctx, attempts[i].ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		attempts[i].Progress = p
+	}
 	qs, err := s.store.QuestionsForWork(ctx, id)
 	if err != nil {
 		return 0, nil, err

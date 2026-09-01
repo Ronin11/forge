@@ -113,6 +113,11 @@ func (noteProgressTool) Call(ctx context.Context, req Request) (json.RawMessage,
 		if _, err := tx.InsertEvents(ctx, req.AttemptID, protocol.SourceControl, []protocol.Event{ev}); err != nil {
 			return err
 		}
+		// Refresh the live progress tally so the note (and its checkpoint) surfaces
+		// on the running attempt's task view.
+		if err := tx.RecomputeAttemptProgress(ctx, req.AttemptID); err != nil {
+			return err
+		}
 		return tx.Journal(ctx, "attempt.progress", store.EntityAttempt, req.AttemptID, map[string]any{"seq": seq, "checkpoint": in.Checkpoint})
 	})
 	if err != nil {
