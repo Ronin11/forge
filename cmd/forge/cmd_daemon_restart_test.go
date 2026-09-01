@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"forge/internal/core/daemon"
+	"forge/internal/tui"
 	"io"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestDaemonLogsFollow(t *testing.T) {
 	}
 	pr, pw := io.Pipe()
 	var errOut strings.Builder
-	c := &cmdContext{stdout: pw, stderr: &errOut, getenv: func(string) string { return "" }, forgeHome: home, userHome: home, now: time.Now}
+	c := &tui.Context{Stdout: pw, Stderr: &errOut, Getenv: func(string) string { return "" }, ForgeHome: home, UserHome: home, Now: time.Now}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan int, 1)

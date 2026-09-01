@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -51,12 +51,12 @@ func TestInitYes(t *testing.T) {
 	}
 
 	var out strings.Builder
-	c := &cmdContext{
-		stdout: &out, stderr: &out,
-		getenv:    func(string) string { return "" },
-		forgeHome: home, userHome: userHome, now: time.Now,
+	c := &Context{
+		Stdout: &out, Stderr: &out,
+		Getenv:    func(string) string { return "" },
+		ForgeHome: home, UserHome: userHome, Now: time.Now,
 	}
-	if code := runInit(context.Background(), c, []string{"--yes"}); code != 0 {
+	if code := RunInit(context.Background(), c, []string{"--yes"}); code != 0 {
 		t.Fatalf("init --yes = %d\n%s", code, out.String())
 	}
 	got := out.String()
@@ -99,12 +99,12 @@ func TestInitYesSkipsRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	c := &cmdContext{
-		stdout: &out, stderr: &out,
-		getenv:    func(string) string { return "" },
-		forgeHome: home, userHome: userHome, now: time.Now,
+	c := &Context{
+		Stdout: &out, Stderr: &out,
+		Getenv:    func(string) string { return "" },
+		ForgeHome: home, UserHome: userHome, Now: time.Now,
 	}
-	if code := runInit(context.Background(), c, []string{"--yes"}); code != 0 {
+	if code := RunInit(context.Background(), c, []string{"--yes"}); code != 0 {
 		t.Fatalf("init --yes = %d\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "nothing new to register") {

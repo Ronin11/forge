@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -24,13 +24,13 @@ func (s *stubRunner) run(_ context.Context, name string, args ...string) (string
 	return "", nil
 }
 
-func serviceTestContext(t *testing.T, env map[string]string) (*cmdContext, *strings.Builder) {
+func serviceTestContext(t *testing.T, env map[string]string) (*Context, *strings.Builder) {
 	t.Helper()
 	var out strings.Builder
-	c := &cmdContext{
-		stdout: &out, stderr: &out,
-		getenv:    func(k string) string { return env[k] },
-		forgeHome: "/home/tester/.forge", userHome: "/home/tester", now: time.Now,
+	c := &Context{
+		Stdout: &out, Stderr: &out,
+		Getenv:    func(k string) string { return env[k] },
+		ForgeHome: "/home/tester/.forge", UserHome: "/home/tester", Now: time.Now,
 	}
 	return c, &out
 }
@@ -149,8 +149,8 @@ func TestServiceUninstallRemovesUnits(t *testing.T) {
 func TestServiceUsage(t *testing.T) {
 	c, _ := serviceTestContext(t, nil)
 	var errOut strings.Builder
-	c.stderr = &errOut
-	if code := runService(context.Background(), c, []string{"bogus"}); code != 2 {
+	c.Stderr = &errOut
+	if code := RunService(context.Background(), c, []string{"bogus"}); code != 2 {
 		t.Errorf("bogus subcommand = %d, want 2", code)
 	}
 	if !strings.Contains(errOut.String(), "install|uninstall|status") {

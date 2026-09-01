@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,18 +34,19 @@ import (
 	"forge/internal/core/worker"
 	"forge/internal/tools"
 	"forge/internal/tools/pluginbridge"
+	"forge/internal/tui"
 	"forge/internal/web"
 	webui "forge/internal/web/ui"
 )
 
-func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
+func runDaemon(ctx context.Context, c *tui.Context, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		// --help on a parent command is a request, not a mistake.
 		code := 2
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge daemon start|stop|restart|status|logs|log-level|rollback [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge daemon start|stop|restart|status|logs|log-level|rollback [flags]")
 		return code
 	}
 	switch args[0] {
@@ -65,69 +65,69 @@ func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
 	case "log-level":
 		return runDaemonLogLevel(ctx, c, args[1:])
 	}
-	fmt.Fprintf(c.stderr, "forge daemon: unknown subcommand %q\n", args[0])
+	fmt.Fprintf(c.Stderr, "forge daemon: unknown subcommand %q\n", args[0])
 	return 2
 }
 
 // runDaemonStart is the daemon itself with --foreground, or a detached spawn
 // through the auto-start path otherwise.
-func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon start")
+func runDaemonStart(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon start")
 	foreground := fs.Bool("foreground", false, "run in this process (what the detached form and systemd use)")
 	lockFD := fs.Int("lock-fd", -1, "inherited daemon.lock descriptor (internal: set by the auto-start spawn)")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if !*foreground {
-		_, log, code := c.resolveLogging(lf, "cli.daemon")
+		_, log, code := c.ResolveLogging(lf, "cli.daemon")
 		if code >= 0 {
 			return code
 		}
-		cl := c.client(log)
-		cl.tolerateMismatch = true
-		if err := cl.connect(ctx); err != nil {
-			return c.fail("daemon start", err)
+		cl := c.Client(log)
+		cl.TolerateMismatch = true
+		if err := cl.Connect(ctx); err != nil {
+			return c.Fail("daemon start", err)
 		}
-		st, err := daemon.ReadState(c.forgeHome)
+		st, err := daemon.ReadState(c.ForgeHome)
 		if err != nil || st == nil {
-			return c.fail("daemon start", fmt.Errorf("daemon answered but daemon.json is missing"))
+			return c.Fail("daemon start", fmt.Errorf("daemon answered but daemon.json is missing"))
 		}
-		fmt.Fprintf(c.stdout, "daemon running (pid %d, %s)\n", st.PID, st.Version)
+		fmt.Fprintf(c.Stdout, "daemon running (pid %d, %s)\n", st.PID, st.Version)
 		return 0
 	}
-	home := c.forgeHome
+	home := c.ForgeHome
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		fmt.Fprintln(c.Stderr, "forge daemon:", err)
 		return 1
 	}
-	cfg, err := config.LoadConfig(filepath.Join(home, "config.toml"), home, c.userHome, c.getenv)
+	cfg, err := config.LoadConfig(filepath.Join(home, "config.toml"), home, c.UserHome, c.Getenv)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		fmt.Fprintln(c.Stderr, "forge daemon:", err)
 		return 1
 	}
-	opts, err := logging.Resolve(lf, c.getenv, cfg.Log, home)
+	opts, err := logging.Resolve(lf, c.Getenv, cfg.Log, home)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		fmt.Fprintln(c.Stderr, "forge daemon:", err)
 		return 2
 	}
 	sink, err := logging.OpenFileSink("daemon", opts.File)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		fmt.Fprintln(c.Stderr, "forge daemon:", err)
 		return 1
 	}
 	defer func() {
 		if err := sink.Close(); err != nil {
-			fmt.Fprintln(c.stderr, "forge daemon: close log:", err)
+			fmt.Fprintln(c.Stderr, "forge daemon: close log:", err)
 		}
 	}()
-	handler := logging.New(c.stderr, opts, sink)
+	handler := logging.New(c.Stderr, opts, sink)
 	log := handler.For("daemon")
 	d := &daemonProcess{c: c, cfg: cfg, handler: handler, log: log}
 	if err := d.run(ctx, *lockFD); err != nil {
 		log.ErrorContext(ctx, "daemon exited with error", "error", err)
-		fmt.Fprintln(c.stderr, "forge daemon:", err)
+		fmt.Fprintln(c.Stderr, "forge daemon:", err)
 		if _, serr := os.Stat(filepath.Join(home, prevDirName, prevBinName)); serr == nil {
-			fmt.Fprintln(c.stderr, "forge daemon: a last-known-good binary and database snapshot exist; if this version keeps failing before serving, run 'forge daemon rollback'")
+			fmt.Fprintln(c.Stderr, "forge daemon: a last-known-good binary and database snapshot exist; if this version keeps failing before serving, run 'forge daemon rollback'")
 		}
 		return 1
 	}
@@ -136,7 +136,7 @@ func runDaemonStart(ctx context.Context, c *cmdContext, args []string) int {
 
 // daemonProcess is one running daemon.
 type daemonProcess struct {
-	c       *cmdContext
+	c       *tui.Context
 	cfg     *config.Config
 	handler *logging.Handler
 	log     *slog.Logger
@@ -148,7 +148,7 @@ type daemonProcess struct {
 }
 
 func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
-	home := d.c.forgeHome
+	home := d.c.ForgeHome
 	// The lock: inherited from the CLI, or taken now.
 	if lockFD >= 0 {
 		d.lock = daemon.LockFromFD(uintptr(lockFD))
@@ -186,7 +186,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		return fmt.Errorf("resolve forge binary: %w", err)
 	}
 	report, err := daemon.Bootstrap(ctx, st, daemon.BootstrapOptions{
-		Home: home, UserHome: d.c.userHome, Logger: d.handler.For("daemon.bootstrap"),
+		Home: home, UserHome: d.c.UserHome, Logger: d.handler.For("daemon.bootstrap"),
 		WriteWorkerConfig: func(path string) (bool, error) { return worker.WriteDefault(path, home, self) },
 		ModeSeeds:         modes.Seeds(all.All()),
 	})
@@ -312,7 +312,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	// journal says so, and daemon.json (written running above) replaces the
 	// draining state the old image left behind.
 	journalKind := "daemon.started"
-	if d.c.getenv(daemon.EnvRestarted) == "1" {
+	if d.c.Getenv(daemon.EnvRestarted) == "1" {
 		journalKind = "daemon.restarted"
 	}
 	if err := st.Write(ctx, func(tx *store.Tx) error {
@@ -356,7 +356,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 }
 
 func opts(d *daemonProcess) logging.Options {
-	o, err := logging.Resolve(&logging.Flags{}, d.c.getenv, d.cfg.Log, d.c.forgeHome)
+	o, err := logging.Resolve(&logging.Flags{}, d.c.Getenv, d.cfg.Log, d.c.ForgeHome)
 	if err != nil {
 		// Config was validated at load; this cannot fail, but never hide it.
 		d.log.Warn("resolve logging options", "error", err)
@@ -367,8 +367,8 @@ func opts(d *daemonProcess) logging.Options {
 // ensureWorker starts a worker unless one owns the data dir or systemd does
 // (DESIGN.md §1.1); it stops the one it spawned when the daemon stops.
 func (d *daemonProcess) ensureWorker(ctx context.Context, self string) error {
-	home := d.c.forgeHome
-	if d.c.getenv("INVOCATION_ID") != "" {
+	home := d.c.ForgeHome
+	if d.c.Getenv("INVOCATION_ID") != "" {
 		if out, err := exec.CommandContext(ctx, "systemctl", "--user", "start", "forge-worker").CombinedOutput(); err != nil {
 			d.log.WarnContext(ctx, "systemctl start forge-worker", "error", err, "output", strings.TrimSpace(string(out)))
 		}
@@ -451,23 +451,23 @@ func (d *daemonProcess) ensureWorker(ctx context.Context, self string) error {
 	return nil
 }
 
-func runDaemonStop(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon stop")
+func runDaemonStop(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon stop")
 	force := fs.Bool("force", false, "SIGKILL instead of SIGTERM; reconcile cleans up later")
 	keepWorker := fs.Bool("keep-worker", false, "leave the spawned worker running")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, _, code := c.resolveLogging(lf, "cli.daemon")
+	_, _, code := c.ResolveLogging(lf, "cli.daemon")
 	if code >= 0 {
 		return code
 	}
-	st, err := daemon.ReadState(c.forgeHome)
+	st, err := daemon.ReadState(c.ForgeHome)
 	if err != nil {
-		return c.fail("daemon stop", err)
+		return c.Fail("daemon stop", err)
 	}
 	if st == nil || !st.Alive() {
-		fmt.Fprintln(c.stdout, "daemon is not running")
+		fmt.Fprintln(c.Stdout, "daemon is not running")
 		return 0
 	}
 	sig := syscall.SIGTERM
@@ -475,174 +475,130 @@ func runDaemonStop(ctx context.Context, c *cmdContext, args []string) int {
 		sig = syscall.SIGKILL
 	}
 	if err := syscall.Kill(st.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return c.fail("daemon stop", err)
+		return c.Fail("daemon stop", err)
 	}
 	if *keepWorker && st.WorkerPID != 0 {
-		fmt.Fprintf(c.stdout, "leaving worker %d running\n", st.WorkerPID)
+		fmt.Fprintf(c.Stdout, "leaving worker %d running\n", st.WorkerPID)
 	}
 	deadline := time.Now().Add(35 * time.Second)
 	for st.Alive() && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if st.Alive() {
-		return c.fail("daemon stop", fmt.Errorf("daemon %d did not exit; try --force", st.PID))
+		return c.Fail("daemon stop", fmt.Errorf("daemon %d did not exit; try --force", st.PID))
 	}
 	if *keepWorker || st.WorkerPID == 0 {
-		fmt.Fprintf(c.stdout, "daemon %d stopped\n", st.PID)
+		fmt.Fprintf(c.Stdout, "daemon %d stopped\n", st.PID)
 		return 0
 	}
-	fmt.Fprintf(c.stdout, "daemon %d stopped\n", st.PID)
+	fmt.Fprintf(c.Stdout, "daemon %d stopped\n", st.PID)
 	return 0
 }
 
-func runDaemonStatus(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon status")
+func runDaemonStatus(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon status")
 	asJSON := fs.Bool("json", false, "print daemon.json")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, log, code := c.resolveLogging(lf, "cli.daemon")
+	_, log, code := c.ResolveLogging(lf, "cli.daemon")
 	if code >= 0 {
 		return code
 	}
-	st, err := daemon.ReadState(c.forgeHome)
+	st, err := daemon.ReadState(c.ForgeHome)
 	if err != nil {
-		return c.fail("daemon status", err)
+		return c.Fail("daemon status", err)
 	}
-	locked, err := daemon.IsLocked(c.forgeHome)
+	locked, err := daemon.IsLocked(c.ForgeHome)
 	if err != nil {
-		return c.fail("daemon status", err)
+		return c.Fail("daemon status", err)
 	}
 	if *asJSON {
-		c.printJSON(map[string]any{"state": st, "lock_held": locked, "alive": st.Alive()})
+		c.PrintJSON(map[string]any{"state": st, "lock_held": locked, "alive": st.Alive()})
 		return 0
 	}
 	switch {
 	case st == nil && !locked:
-		fmt.Fprintln(c.stdout, "daemon: not running")
+		fmt.Fprintln(c.Stdout, "daemon: not running")
 		return 1
 	case st != nil && st.Alive():
-		cl := c.client(log)
-		cl.noAutoStart, cl.tolerateMismatch = true, true
+		cl := c.Client(log)
+		cl.NoAutoStart, cl.TolerateMismatch = true, true
 		hs := "socket not answering"
-		if err := cl.connect(ctx); err == nil {
+		if err := cl.Connect(ctx); err == nil {
 			hs = "socket ok"
 		}
-		fmt.Fprintf(c.stdout, "daemon: running (pid %d, %s, %s, worker pid %d, since %s, %s)\n", st.PID, st.Version, st.State, st.WorkerPID, st.StartedAt.Local().Format(time.RFC3339), hs)
+		fmt.Fprintf(c.Stdout, "daemon: running (pid %d, %s, %s, worker pid %d, since %s, %s)\n", st.PID, st.Version, st.State, st.WorkerPID, st.StartedAt.Local().Format(time.RFC3339), hs)
 		return 0
 	default:
 		pid := 0
 		if st != nil {
 			pid = st.PID
 		}
-		fmt.Fprintf(c.stdout, "daemon: stale state (pid %d not running, lock held: %v)\n", pid, locked)
+		fmt.Fprintf(c.Stdout, "daemon: stale state (pid %d not running, lock held: %v)\n", pid, locked)
 		return 1
 	}
 }
 
-func runDaemonLogs(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon logs")
+func runDaemonLogs(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon logs")
 	n := fs.Int("n", 50, "lines to show")
 	follow := fs.Bool("f", false, "keep printing as the daemon logs (Ctrl-C exits)")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	if _, _, code := c.resolveLogging(lf, "cli.daemon"); code >= 0 {
+	if _, _, code := c.ResolveLogging(lf, "cli.daemon"); code >= 0 {
 		return code
 	}
-	path := filepath.Join(c.forgeHome, "logs", "daemon.log")
+	path := filepath.Join(c.ForgeHome, "logs", "daemon.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return c.fail("daemon logs", err)
+		return c.Fail("daemon logs", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) > *n {
 		lines = lines[len(lines)-*n:]
 	}
 	for _, l := range lines {
-		fmt.Fprintln(c.stdout, l)
+		fmt.Fprintln(c.Stdout, l)
 	}
 	if !*follow {
 		return 0
 	}
-	if err := tailFile(ctx, c.stdout, path, int64(len(data))); err != nil {
-		return c.fail("daemon logs", err)
+	if err := tui.TailFile(ctx, c.Stdout, path, int64(len(data))); err != nil {
+		return c.Fail("daemon logs", err)
 	}
 	return 0
 }
 
-// tailFile follows path from offset, polling its size every 500 ms and copying
-// what appeared; a shrink (rotation) restarts from the top of the new file.
-// It returns nil when ctx ends — Ctrl-C is how the human leaves.
-func tailFile(ctx context.Context, out io.Writer, path string, offset int64) error {
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(500 * time.Millisecond):
-		}
-		fi, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if fi.Size() < offset {
-			offset = 0
-		}
-		if fi.Size() == offset {
-			continue
-		}
-		n, err := copyFrom(out, path, offset)
-		offset += n
-		if err != nil {
-			return err
-		}
-	}
-}
-
-// copyFrom copies path's bytes from offset to out and reports how many.
-func copyFrom(out io.Writer, path string, offset int64) (n int64, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { err = errors.Join(err, f.Close()) }()
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("seek %s: %w", path, err)
-	}
-	n, err = io.Copy(out, f)
-	return n, err
-}
-
-func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon log-level")
-	if code := c.parse(fs, args); code >= 0 {
+func runDaemonLogLevel(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon log-level")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, log, code := c.resolveLogging(lf, "cli.daemon")
+	_, log, code := c.ResolveLogging(lf, "cli.daemon")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	cl.noAutoStart = true
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("daemon log-level", err)
+	cl := c.Client(log)
+	cl.NoAutoStart = true
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("daemon log-level", err)
 	}
 	var out struct {
 		Levels string `json:"levels"`
 	}
 	if fs.NArg() == 0 {
-		if err := cl.do(ctx, http.MethodGet, "/api/v1/log-level", nil, &out); err != nil {
-			return c.fail("daemon log-level", err)
+		if err := cl.Do(ctx, http.MethodGet, "/api/v1/log-level", nil, &out); err != nil {
+			return c.Fail("daemon log-level", err)
 		}
-		fmt.Fprintln(c.stdout, out.Levels)
+		fmt.Fprintln(c.Stdout, out.Levels)
 		return 0
 	}
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/log-level", map[string]string{"levels": fs.Arg(0)}, &out); err != nil {
-		return c.fail("daemon log-level", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/log-level", map[string]string{"levels": fs.Arg(0)}, &out); err != nil {
+		return c.Fail("daemon log-level", err)
 	}
-	fmt.Fprintln(c.stdout, out.Levels)
+	fmt.Fprintln(c.Stdout, out.Levels)
 	return 0
 }
 
@@ -655,7 +611,7 @@ func runDaemonLogLevel(ctx context.Context, c *cmdContext, args []string) int {
 // registry before it freezes at NewServer. It returns the supervisor and the
 // hook the enable handler uses to (re)start one plugin at runtime.
 func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *tools.Registry) (*plugin.Supervisor, func(name, token string) error, error) {
-	home := d.c.forgeHome
+	home := d.c.ForgeHome
 	logsDir := filepath.Join(home, "logs", "plugins")
 	if err := os.MkdirAll(logsDir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create plugin logs dir: %w", err)
@@ -810,7 +766,7 @@ func (d *daemonProcess) nightlyPrune(ctx context.Context, st *store.Store) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			wcfg, err := worker.LoadConfig(filepath.Join(d.c.forgeHome, "worker.toml"))
+			wcfg, err := worker.LoadConfig(filepath.Join(d.c.ForgeHome, "worker.toml"))
 			if err != nil {
 				log.WarnContext(ctx, "nightly prune: worker config", "error", err)
 				continue
@@ -859,7 +815,7 @@ func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath str
 	// with nothing to fall back to (M6 smoke 7), so detect the base branch
 	// now: origin/HEAD when set, else the checkout's current branch.
 	base := detectBaseBranch(vctx, r.Path)
-	if err := worker.AddRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name, r.Path, base); err != nil {
+	if err := worker.AddRepository(filepath.Join(d.c.ForgeHome, "worker.toml"), name, r.Path, base); err != nil {
 		return protocol.Repository{}, err
 	}
 	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: base, Project: "default"}, nil
@@ -904,7 +860,7 @@ func (d *daemonProcess) archiveRepo(ctx context.Context, name, path string) (str
 	if out, err := exec.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin").Output(); err == nil {
 		originURL = strings.TrimSpace(string(out))
 	}
-	if err := worker.RemoveRepository(filepath.Join(d.c.forgeHome, "worker.toml"), name); err != nil {
+	if err := worker.RemoveRepository(filepath.Join(d.c.ForgeHome, "worker.toml"), name); err != nil {
 		return "", err
 	}
 	if err := safeRemoveCheckout(path); err != nil {

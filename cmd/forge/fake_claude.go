@@ -18,6 +18,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/core/logging"
+	"forge/internal/tui"
 )
 
 // fakeMeta is DESIGN.md §7.4's meta.toml, field for field. Unknown keys are
@@ -190,58 +191,58 @@ func scanFakeArgs(args []string) []string {
 // runFakeClaude is the test executor of DESIGN.md §7.4: it stands in for `claude`
 // behind the same template executor so the worker's launch, parse, and sandbox
 // paths are exercised by a real child process without spending budget.
-func runFakeClaude(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("fake-claude")
+func runFakeClaude(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("fake-claude")
 	var fixture, resume string
 	fs.StringVar(&fixture, "fixture", "", "fixture directory (default $FORGE_FAKE_FIXTURE)")
 	fs.StringVar(&resume, "resume", "", "session id to resume: replays resume_script under this id")
-	if code := c.parse(fs, scanFakeArgs(args)); code >= 0 {
+	if code := c.Parse(fs, scanFakeArgs(args)); code >= 0 {
 		return code
 	}
 	if fixture == "" {
-		fixture = c.getenv("FORGE_FAKE_FIXTURE")
+		fixture = c.Getenv("FORGE_FAKE_FIXTURE")
 	}
 	if fixture == "" {
-		fmt.Fprintln(c.stderr, "forge fake-claude: --fixture or FORGE_FAKE_FIXTURE is required")
+		fmt.Fprintln(c.Stderr, "forge fake-claude: --fixture or FORGE_FAKE_FIXTURE is required")
 		return 2
 	}
-	_, log, err := c.logger(lf, logging.Config{}, "cli.fake-claude")
+	_, log, err := c.Logger(lf, logging.Config{}, "cli.fake-claude")
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge fake-claude:", err)
+		fmt.Fprintln(c.Stderr, "forge fake-claude:", err)
 		return 2
 	}
 	fx, err := loadFixture(fixture, resume != "")
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge fake-claude:", err)
+		fmt.Fprintln(c.Stderr, "forge fake-claude:", err)
 		return 2
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge fake-claude: resolve cwd:", err)
+		fmt.Fprintln(c.Stderr, "forge fake-claude: resolve cwd:", err)
 		return 1
 	}
 	session := resume
 	if session == "" {
 		if session, err = newUUID(); err != nil {
-			fmt.Fprintln(c.stderr, "forge fake-claude: new session id:", err)
+			fmt.Fprintln(c.Stderr, "forge fake-claude: new session id:", err)
 			return 1
 		}
 	}
 	// The real CLI reads its prompt from stdin to EOF before it answers; a worker
 	// that forgot to close stdin must hang here exactly as it would with claude.
-	// cmdContext carries no stdin, so this is the one place os.Stdin is read.
+	// tui.Context carries no stdin, so this is the one place os.Stdin is read.
 	prompt, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge fake-claude: read prompt:", err)
+		fmt.Fprintln(c.Stderr, "forge fake-claude: read prompt:", err)
 		return 1
 	}
 	// One stderr line at start so the worker's stderr capture is exercised.
-	fmt.Fprintf(c.stderr, "fake-claude: fixture %s\n", fx.name)
+	fmt.Fprintf(c.Stderr, "fake-claude: fixture %s\n", fx.name)
 	log.DebugContext(ctx, "replaying fixture", "fixture", fx.name, "lines", len(fx.lines),
 		"resumed", fx.resumed, "prompt_bytes", len(prompt))
 	r := &fakeReplay{
-		out:     c.stdout,
-		getenv:  c.getenv,
+		out:     c.Stdout,
+		getenv:  c.Getenv,
 		cwd:     cwd,
 		session: session,
 		fx:      fx,
@@ -250,7 +251,7 @@ func runFakeClaude(ctx context.Context, c *cmdContext, args []string) int {
 	}
 	code, err := r.run(ctx)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge fake-claude:", err)
+		fmt.Fprintln(c.Stderr, "forge fake-claude:", err)
 	}
 	return code
 }

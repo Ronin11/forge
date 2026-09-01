@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// runRepo against a stub daemon exercises the list/show/pause/resume paths and
+// RunRepo against a stub daemon exercises the list/show/pause/resume paths and
 // their table output, mirroring the plugin CLI harness.
 func TestRepoCLI(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "forge-home")
@@ -44,7 +44,7 @@ func TestRepoCLI(t *testing.T) {
 	ctx := context.Background()
 
 	c, out, _ := pluginCmdContext(t, home, "")
-	if code := runRepo(ctx, c, []string{"list"}); code != 0 {
+	if code := RunRepo(ctx, c, []string{"list"}); code != 0 {
 		t.Fatalf("repo list exit = %d\n%s", code, out.String())
 	}
 	if s := out.String(); !strings.Contains(s, "demo") || !strings.Contains(s, "idle") || !strings.Contains(s, "github.com/x/demo") {
@@ -52,7 +52,7 @@ func TestRepoCLI(t *testing.T) {
 	}
 
 	c, out, _ = pluginCmdContext(t, home, "")
-	if code := runRepo(ctx, c, []string{"show", "demo"}); code != 0 {
+	if code := RunRepo(ctx, c, []string{"show", "demo"}); code != 0 {
 		t.Fatalf("repo show exit = %d\n%s", code, out.String())
 	}
 	if s := out.String(); !strings.Contains(s, "repository demo") || !strings.Contains(s, "retained worktrees: 2") || !strings.Contains(s, "lint, test") || !strings.Contains(s, "https://localhost:3000") {
@@ -60,7 +60,7 @@ func TestRepoCLI(t *testing.T) {
 	}
 
 	c, out, _ = pluginCmdContext(t, home, "")
-	if code := runRepo(ctx, c, []string{"pause", "demo"}); code != 0 || !strings.Contains(out.String(), "paused true") {
+	if code := RunRepo(ctx, c, []string{"pause", "demo"}); code != 0 || !strings.Contains(out.String(), "paused true") {
 		t.Fatalf("repo pause = %d %q", code, out.String())
 	}
 	if !paused {
@@ -68,12 +68,12 @@ func TestRepoCLI(t *testing.T) {
 	}
 
 	c, out, _ = pluginCmdContext(t, home, "")
-	if code := runRepo(ctx, c, []string{"resume", "demo"}); code != 0 || !strings.Contains(out.String(), "paused false") {
+	if code := RunRepo(ctx, c, []string{"resume", "demo"}); code != 0 || !strings.Contains(out.String(), "paused false") {
 		t.Fatalf("repo resume = %d %q", code, out.String())
 	}
 
 	c, out, _ = pluginCmdContext(t, home, "")
-	if code := runRepo(ctx, c, []string{"cancel", "demo"}); code != 0 || !strings.Contains(out.String(), "cancelled 3 running") {
+	if code := RunRepo(ctx, c, []string{"cancel", "demo"}); code != 0 || !strings.Contains(out.String(), "cancelled 3 running") {
 		t.Fatalf("repo cancel = %d %q", code, out.String())
 	}
 }

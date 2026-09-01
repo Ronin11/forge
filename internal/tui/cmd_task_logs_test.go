@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -63,9 +63,11 @@ func TestFormatStreamLines(t *testing.T) {
 }
 
 func TestTaskLogsUsage(t *testing.T) {
-	code, stdout, stderr := run([]string{"task", "logs"}, nil)
-	if code != 2 || stdout != "" || !strings.Contains(stderr, "usage: forge task logs") {
-		t.Errorf("task logs without ID = %d %q %q", code, stdout, stderr)
+	var out, errOut strings.Builder
+	c := &Context{Stdout: &out, Stderr: &errOut, Getenv: func(string) string { return "" }, ForgeHome: t.TempDir(), Now: time.Now}
+	code := RunTask(context.Background(), c, []string{"logs"})
+	if code != 2 || out.String() != "" || !strings.Contains(errOut.String(), "usage: forge task logs") {
+		t.Errorf("task logs without ID = %d %q %q", code, out.String(), errOut.String())
 	}
 }
 
@@ -88,7 +90,7 @@ func streamHome(t *testing.T) string {
 	if err := st.Write(context.Background(), func(tx *store.Tx) error { return tx.EnsureProject(context.Background(), "default") }); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := web.NewServer(web.ServerOptions{Store: st, Version: version, StreamInterval: 20 * time.Millisecond})
+	srv, err := web.NewServer(web.ServerOptions{Store: st, Version: "dev", StreamInterval: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,11 +154,15 @@ func apiDo(t *testing.T, home, method, path string, in, out any) int {
 	return resp.StatusCode
 }
 
-// runHome dispatches one CLI command against the test home.
+// runHome runs one task subcommand against the test home (every call here is
+// `forge task …`; main's dispatch table lives with main).
 func runHome(home string, args []string) (code int, stdout, stderr string) {
 	var out, errOut strings.Builder
-	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(string) string { return "" }, forgeHome: home, userHome: home, now: time.Now}
-	code = dispatch(context.Background(), commands(), c, args)
+	c := &Context{Stdout: &out, Stderr: &errOut, Getenv: func(string) string { return "" }, ForgeHome: home, UserHome: home, Now: time.Now, Version: "dev"}
+	if len(args) == 0 || args[0] != "task" {
+		panic("runHome: only task subcommands are exercised here")
+	}
+	code = RunTask(context.Background(), c, args[1:])
 	return code, out.String(), errOut.String()
 }
 

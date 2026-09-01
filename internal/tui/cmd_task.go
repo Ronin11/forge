@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -29,14 +29,14 @@ type taskView struct {
 	Questions []store.Question `json:"questions"`
 }
 
-func runTask(ctx context.Context, c *cmdContext, args []string) int {
+func RunTask(ctx context.Context, c *Context, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		// --help on a parent command is a request, not a mistake.
 		code := 2
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry|reverify|requeue|tell [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge task add|list|show|logs|cancel|answer|approve|reject|retry|reverify|requeue|tell [flags]")
 		return code
 	}
 	switch args[0] {
@@ -65,12 +65,12 @@ func runTask(ctx context.Context, c *cmdContext, args []string) int {
 	case "tell":
 		return runTaskTell(ctx, c, args[1:])
 	}
-	fmt.Fprintf(c.stderr, "forge task: unknown subcommand %q\n", args[0])
+	fmt.Fprintf(c.Stderr, "forge task: unknown subcommand %q\n", args[0])
 	return 2
 }
 
-func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task add")
+func runTaskAdd(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task add")
 	var repos, after, paths multiFlag
 	fs.Var(&repos, "repo", "repository name or path (repeatable)")
 	fs.Var(&after, "after", "task id this task waits for (repeatable)")
@@ -86,19 +86,19 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	force := fs.Bool("force", false, "submit even if an identical prompt was added within 24h")
 	wait := fs.Bool("wait", false, "wait for the task to finish and exit with its outcome")
 	asJSON := fs.Bool("json", false, "print the created task as JSON")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if prompt == "" && *routine == "" {
-		fmt.Fprintln(c.stderr, "forge task add: a prompt is required (or --routine)")
+		fmt.Fprintln(c.Stderr, "forge task add: a prompt is required (or --routine)")
 		return 2
 	}
 	if len(repos) == 0 && *routine == "" {
-		fmt.Fprintln(c.stderr, "forge task add: --repo is required without --routine")
+		fmt.Fprintln(c.Stderr, "forge task add: --repo is required without --routine")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
@@ -108,14 +108,14 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 		if strings.ContainsRune(r, os.PathSeparator) {
 			abs, err := filepath.Abs(r)
 			if err != nil {
-				return c.fail("task add", err)
+				return c.Fail("task add", err)
 			}
 			repos[i] = abs
 		}
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task add", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task add", err)
 	}
 	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title, "force": *force}
 	var out taskView
@@ -126,31 +126,31 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 	deadline := time.Now().Add(20 * time.Second)
 	waited := false
 	for {
-		err := cl.do(ctx, http.MethodPost, "/api/v1/tasks", body, &out)
+		err := cl.Do(ctx, http.MethodPost, "/api/v1/tasks", body, &out)
 		if err == nil {
 			break
 		}
 		if !strings.Contains(err.Error(), "is not registered") || time.Now().After(deadline) {
-			return c.fail("task add", err)
+			return c.Fail("task add", err)
 		}
 		if !waited {
-			fmt.Fprintln(c.stderr, "waiting for the worker to register repositories…")
+			fmt.Fprintln(c.Stderr, "waiting for the worker to register repositories…")
 			waited = true
 		}
 		select {
 		case <-ctx.Done():
-			return c.fail("task add", ctx.Err())
+			return c.Fail("task add", ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
 	if *asJSON {
-		c.printJSON(out)
+		c.PrintJSON(out)
 	} else {
 		state := string(out.State)
 		if state == "" {
 			state = "pending"
 		}
-		fmt.Fprintf(c.stdout, "task %s created (%s, %d target(s))\n", short(out.Work.ID), state, len(out.Targets))
+		fmt.Fprintf(c.Stdout, "task %s created (%s, %d target(s))\n", short(out.Work.ID), state, len(out.Targets))
 	}
 	if !*wait {
 		return 0
@@ -163,7 +163,7 @@ func runTaskAdd(ctx context.Context, c *cmdContext, args []string) int {
 // waiting_human and conflict pause the Work without ending it, so every
 // journal row triggers one state read. The stream reconnects across a daemon
 // drain-restart (DESIGN.md §1.4).
-func waitForTask(ctx context.Context, c *cmdContext, cl *cliClient, id string) int {
+func waitForTask(ctx context.Context, c *Context, cl *cliClient, id string) int {
 	last := model.WorkState("")
 	exit := -1
 	report := func(state model.WorkState) bool {
@@ -171,7 +171,7 @@ func waitForTask(ctx context.Context, c *cmdContext, cl *cliClient, id string) i
 			return false
 		}
 		if state != last {
-			fmt.Fprintf(c.stderr, "task %s: %s\n", short(id), state)
+			fmt.Fprintf(c.Stderr, "task %s: %s\n", short(id), state)
 			last = state
 		}
 		switch state {
@@ -190,7 +190,7 @@ func waitForTask(ctx context.Context, c *cmdContext, cl *cliClient, id string) i
 	}
 	hooks := streamHooks{onJournal: func(store.JournalEntry) bool {
 		var v taskView
-		if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
 			return false // transient (a restart in flight); the stream carries on
 		}
 		return report(v.State)
@@ -200,39 +200,39 @@ func waitForTask(ctx context.Context, c *cmdContext, cl *cliClient, id string) i
 		return exit
 	}
 	if err != nil {
-		return c.fail("task add --wait", err)
+		return c.Fail("task add --wait", err)
 	}
 	if report(state) {
 		return exit
 	}
-	return c.fail("task add --wait", fmt.Errorf("stream ended in state %q", state))
+	return c.Fail("task add --wait", fmt.Errorf("stream ended in state %q", state))
 }
 
-func runTaskList(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task list")
+func runTaskList(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task list")
 	state := fs.String("state", "", "only tasks in this state")
 	limit := fs.Int("limit", 50, "how many")
 	asJSON := fs.Bool("json", false, "JSON output")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task list", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task list", err)
 	}
 	var out []taskView
-	if err := cl.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/tasks?limit=%d", *limit), nil, &out); err != nil {
-		return c.fail("task list", err)
+	if err := cl.Do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/tasks?limit=%d", *limit), nil, &out); err != nil {
+		return c.Fail("task list", err)
 	}
 	if *asJSON {
-		c.printJSON(out)
+		c.PrintJSON(out)
 		return 0
 	}
-	tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+	tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tSTATE\tROUTINE\tREPOS\tCLASS\tPRIO\tAGE\tTITLE")
 	now := time.Now()
 	for _, t := range out {
@@ -246,7 +246,7 @@ func runTaskList(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", short(t.Work.ID), t.State, t.Work.RoutineName, strings.Join(repos, ","), t.Work.BudgetClass, t.Work.Priority, ago(t.Work.CreatedAt, now), t.Work.Title)
 	}
 	if err := tw.Flush(); err != nil {
-		return c.fail("task list", err)
+		return c.Fail("task list", err)
 	}
 	return 0
 }
@@ -257,7 +257,7 @@ func resolveTaskID(ctx context.Context, cl *cliClient, prefix string) (string, e
 		return prefix, nil
 	}
 	var out []taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks?limit=200", nil, &out); err != nil {
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks?limit=200", nil, &out); err != nil {
 		return "", err
 	}
 	var matches []string
@@ -275,38 +275,38 @@ func resolveTaskID(ctx context.Context, cl *cliClient, prefix string) (string, e
 	return "", fmt.Errorf("%q matches %d tasks; be more specific", prefix, len(matches))
 }
 
-func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task show")
+func runTaskShow(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task show")
 	asJSON := fs.Bool("json", false, "JSON output")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task show ID")
+		fmt.Fprintln(c.Stderr, "usage: forge task show ID")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task show", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task show", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task show", err)
+		return c.Fail("task show", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task show", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task show", err)
 	}
 	if *asJSON {
-		c.printJSON(v)
+		c.PrintJSON(v)
 		return 0
 	}
-	fmt.Fprintf(c.stdout, "task %s  %s  routine %s@%d  class %s  priority %d  autonomy %s\n", v.Work.ID, v.State, v.Work.RoutineName, v.Work.Generation, v.Work.BudgetClass, v.Work.Priority, v.Work.Autonomy)
-	fmt.Fprintf(c.stdout, "title: %s\n", v.Work.Title)
+	fmt.Fprintf(c.Stdout, "task %s  %s  routine %s@%d  class %s  priority %d  autonomy %s\n", v.Work.ID, v.State, v.Work.RoutineName, v.Work.Generation, v.Work.BudgetClass, v.Work.Priority, v.Work.Autonomy)
+	fmt.Fprintf(c.Stdout, "title: %s\n", v.Work.Title)
 	for _, t := range v.Targets {
 		line := fmt.Sprintf("  target %s  %s  %s", short(t.ID), t.Repository, t.State)
 		if t.FailureReason != "" {
@@ -318,7 +318,7 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 		if t.Retained {
 			line += "  retained"
 		}
-		fmt.Fprintln(c.stdout, line)
+		fmt.Fprintln(c.Stdout, line)
 	}
 	now := time.Now()
 	for _, a := range v.Attempts {
@@ -336,15 +336,15 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 				line += "  cleanup=" + a.Cleanup.Outcome + " (" + a.Cleanup.Reason + ")"
 			}
 		}
-		fmt.Fprintln(c.stdout, line)
+		fmt.Fprintln(c.Stdout, line)
 		if a.Branch != "" {
-			fmt.Fprintf(c.stdout, "    branch %s  base %s  head %s  commits %d  pushed %v\n", a.Branch, short(a.BaseCommit), short(a.HeadCommit), a.Git.Commits, a.Git.Pushed)
+			fmt.Fprintf(c.Stdout, "    branch %s  base %s  head %s  commits %d  pushed %v\n", a.Branch, short(a.BaseCommit), short(a.HeadCommit), a.Git.Commits, a.Git.Pushed)
 		}
 		if a.ResultText != "" {
-			fmt.Fprintf(c.stdout, "    result: %s\n", strings.TrimSpace(firstLines(a.ResultText, 6)))
+			fmt.Fprintf(c.Stdout, "    result: %s\n", strings.TrimSpace(firstLines(a.ResultText, 6)))
 		}
 		if a.Cleanup.Command != "" {
-			fmt.Fprintf(c.stdout, "    cleanup: %s\n", a.Cleanup.Command)
+			fmt.Fprintf(c.Stdout, "    cleanup: %s\n", a.Cleanup.Command)
 		}
 	}
 	for _, q := range v.Questions {
@@ -352,7 +352,7 @@ func runTaskShow(ctx context.Context, c *cmdContext, args []string) int {
 		if !q.AnsweredAt.IsZero() {
 			state = "answered: " + q.Answer
 		}
-		fmt.Fprintf(c.stdout, "  question %s  %s  (%s)\n", short(q.ID), q.Text, state)
+		fmt.Fprintf(c.Stdout, "  question %s  %s  (%s)\n", short(q.ID), q.Text, state)
 	}
 	return 0
 }
@@ -407,59 +407,59 @@ func firstLines(s string, n int) string {
 	return strings.Join(lines, "\n    ")
 }
 
-func runTaskCancel(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task cancel")
-	if code := c.parse(fs, args); code >= 0 {
+func runTaskCancel(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task cancel")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task cancel ID")
+		fmt.Fprintln(c.Stderr, "usage: forge task cancel ID")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task cancel", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task cancel", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task cancel", err)
+		return c.Fail("task cancel", err)
 	}
-	if err := cl.do(ctx, http.MethodDelete, "/api/v1/tasks/"+id, nil, nil); err != nil {
-		return c.fail("task cancel", err)
+	if err := cl.Do(ctx, http.MethodDelete, "/api/v1/tasks/"+id, nil, nil); err != nil {
+		return c.Fail("task cancel", err)
 	}
-	fmt.Fprintf(c.stdout, "task %s cancel requested\n", short(id))
+	fmt.Fprintf(c.Stdout, "task %s cancel requested\n", short(id))
 	return 0
 }
 
-func runTaskAnswer(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task answer")
+func runTaskAnswer(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task answer")
 	question := fs.String("question", "", "question id when the task has several open")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(c.stderr, "usage: forge task answer ID \"answer\"")
+		fmt.Fprintln(c.Stderr, "usage: forge task answer ID \"answer\"")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task answer", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task answer", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task answer", err)
+		return c.Fail("task answer", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task answer", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task answer", err)
 	}
 	var open []store.Question
 	for _, q := range v.Questions {
@@ -469,60 +469,60 @@ func runTaskAnswer(ctx context.Context, c *cmdContext, args []string) int {
 	}
 	switch len(open) {
 	case 0:
-		fmt.Fprintln(c.stderr, "forge task answer: no open question")
+		fmt.Fprintln(c.Stderr, "forge task answer: no open question")
 		return 2
 	case 1:
 	default:
-		fmt.Fprintf(c.stderr, "forge task answer: %d open questions; pick one with --question\n", len(open))
+		fmt.Fprintf(c.Stderr, "forge task answer: %d open questions; pick one with --question\n", len(open))
 		return 2
 	}
 	answer := strings.Join(fs.Args()[1:], " ")
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/questions/"+open[0].ID+"/answer", map[string]string{"answer": answer, "by": "human"}, nil); err != nil {
-		return c.fail("task answer", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/questions/"+open[0].ID+"/answer", map[string]string{"answer": answer, "by": "human"}, nil); err != nil {
+		return c.Fail("task answer", err)
 	}
-	fmt.Fprintf(c.stdout, "answered %s; task %s re-queued\n", short(open[0].ID), short(v.Work.ID))
+	fmt.Fprintf(c.Stdout, "answered %s; task %s re-queued\n", short(open[0].ID), short(v.Work.ID))
 	return 0
 }
 
-func runTaskApprove(ctx context.Context, c *cmdContext, args []string) int {
+func runTaskApprove(ctx context.Context, c *Context, args []string) int {
 	return runTaskDecide(ctx, c, args, "approve")
 }
 
-func runTaskReject(ctx context.Context, c *cmdContext, args []string) int {
+func runTaskReject(ctx context.Context, c *Context, args []string) int {
 	return runTaskDecide(ctx, c, args, "reject")
 }
 
 // runTaskDecide is L3 (VERIFICATION.md): find the task's verifying Target and
 // post the human's decision; approve → succeeded, reject → unverified with
 // reason human_rejected.
-func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action string) int {
-	fs, lf := c.flags("task " + action)
-	if code := c.parse(fs, args); code >= 0 {
+func runTaskDecide(ctx context.Context, c *Context, args []string, action string) int {
+	fs, lf := c.Flags("task " + action)
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if (action == "approve" && fs.NArg() != 1) || (action == "reject" && fs.NArg() < 2) {
 		if action == "approve" {
-			fmt.Fprintln(c.stderr, "usage: forge task approve ID")
+			fmt.Fprintln(c.Stderr, "usage: forge task approve ID")
 		} else {
-			fmt.Fprintln(c.stderr, "usage: forge task reject ID \"reason\"")
+			fmt.Fprintln(c.Stderr, "usage: forge task reject ID \"reason\"")
 		}
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task "+action, err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task "+action, err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task "+action, err)
+		return c.Fail("task "+action, err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task "+action, err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task "+action, err)
 	}
 	var target *store.Target
 	states := make([]string, 0, len(v.Targets))
@@ -533,7 +533,7 @@ func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action str
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(c.stderr, "forge task %s: no target of task %s is verifying (%s)\n", action, short(id), strings.Join(states, ", "))
+		fmt.Fprintf(c.Stderr, "forge task %s: no target of task %s is verifying (%s)\n", action, short(id), strings.Join(states, ", "))
 		return 2
 	}
 	body := map[string]string{"by": "human"}
@@ -541,8 +541,8 @@ func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action str
 		body["reason"] = strings.Join(fs.Args()[1:], " ")
 	}
 	var out store.Target
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/"+action, body, &out); err != nil {
-		return c.fail("task "+action, err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/"+action, body, &out); err != nil {
+		return c.Fail("task "+action, err)
 	}
 	verb := "approved"
 	if action == "reject" {
@@ -552,7 +552,7 @@ func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action str
 	if out.UnverifiedReason != "" {
 		line += " (" + out.UnverifiedReason + ")"
 	}
-	fmt.Fprintln(c.stdout, line)
+	fmt.Fprintln(c.Stdout, line)
 	return 0
 }
 
@@ -560,30 +560,30 @@ func runTaskDecide(ctx context.Context, c *cmdContext, args []string, action str
 // into the task's running attempt. The daemon queues it; the worker's next
 // heartbeat (≤10 s) writes it to the agent's stdin as a stream-json user
 // message. It refuses when no target of the task is running.
-func runTaskTell(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task tell")
-	if code := c.parse(fs, args); code >= 0 {
+func runTaskTell(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task tell")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(c.stderr, "usage: forge task tell ID \"text\"")
+		fmt.Fprintln(c.Stderr, "usage: forge task tell ID \"text\"")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task tell", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task tell", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task tell", err)
+		return c.Fail("task tell", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task tell", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task tell", err)
 	}
 	var target *store.Target
 	states := make([]string, 0, len(v.Targets))
@@ -594,7 +594,7 @@ func runTaskTell(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(c.stderr, "forge task tell: no target of task %s is running (%s)\n", short(id), strings.Join(states, ", "))
+		fmt.Fprintf(c.Stderr, "forge task tell: no target of task %s is running (%s)\n", short(id), strings.Join(states, ", "))
 		return 2
 	}
 	var attemptID string
@@ -604,49 +604,49 @@ func runTaskTell(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if attemptID == "" {
-		fmt.Fprintf(c.stderr, "forge task tell: target %s is running but has no open attempt\n", short(target.ID))
+		fmt.Fprintf(c.Stderr, "forge task tell: target %s is running but has no open attempt\n", short(target.ID))
 		return 2
 	}
 	text := strings.Join(fs.Args()[1:], " ")
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/attempts/"+attemptID+"/steer", map[string]string{"text": text}, nil); err != nil {
-		return c.fail("task tell", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/attempts/"+attemptID+"/steer", map[string]string{"text": text}, nil); err != nil {
+		return c.Fail("task tell", err)
 	}
-	fmt.Fprintf(c.stdout, "steer queued for attempt %s; the agent sees it on its next heartbeat (within ~10s)\n", short(attemptID))
+	fmt.Fprintf(c.Stdout, "steer queued for attempt %s; the agent sees it on its next heartbeat (within ~10s)\n", short(attemptID))
 	return 0
 }
 
 // runTaskRetry is M11: find the task's failed, unverified, or cancelled
 // Target and post it back to pending for a fresh attempt. --model is refused
 // here because the daemon cannot record a per-target model override yet.
-func runTaskRetry(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task retry")
+func runTaskRetry(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task retry")
 	modelAlias := fs.String("model", "", "model alias override for the new attempt (not supported yet)")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task retry ID [--model M]")
+		fmt.Fprintln(c.Stderr, "usage: forge task retry ID [--model M]")
 		return 2
 	}
 	if *modelAlias != "" {
-		fmt.Fprintln(c.stderr, "forge task retry: model override not supported yet")
+		fmt.Fprintln(c.Stderr, "forge task retry: model override not supported yet")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task retry", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task retry", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task retry", err)
+		return c.Fail("task retry", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task retry", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task retry", err)
 	}
 	var target *store.Target
 	states := make([]string, 0, len(v.Targets))
@@ -660,14 +660,14 @@ func runTaskRetry(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(c.stderr, "forge task retry: no target of task %s is failed, unverified, or cancelled (%s)\n", short(id), strings.Join(states, ", "))
+		fmt.Fprintf(c.Stderr, "forge task retry: no target of task %s is failed, unverified, or cancelled (%s)\n", short(id), strings.Join(states, ", "))
 		return 2
 	}
 	var out store.Target
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/retry", nil, &out); err != nil {
-		return c.fail("task retry", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/retry", nil, &out); err != nil {
+		return c.Fail("task retry", err)
 	}
-	fmt.Fprintf(c.stdout, "target %s (%s) retried → %s\n", short(out.ID), out.Repository, out.State)
+	fmt.Fprintf(c.Stdout, "target %s (%s) retried → %s\n", short(out.ID), out.Repository, out.State)
 	return 0
 }
 
@@ -675,30 +675,30 @@ func runTaskRetry(ctx context.Context, c *cmdContext, args []string) int {
 // re-check it: back to verifying with a fresh verify follow-up, without
 // re-running the subject. The recovery when the verifier, not the subject,
 // failed (unverified_reason verify_attempt_failed).
-func runTaskReverify(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task reverify")
-	if code := c.parse(fs, args); code >= 0 {
+func runTaskReverify(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task reverify")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task reverify ID")
+		fmt.Fprintln(c.Stderr, "usage: forge task reverify ID")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task reverify", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task reverify", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task reverify", err)
+		return c.Fail("task reverify", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task reverify", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task reverify", err)
 	}
 	var target *store.Target
 	states := make([]string, 0, len(v.Targets))
@@ -709,44 +709,44 @@ func runTaskReverify(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(c.stderr, "forge task reverify: no target of task %s is unverified (%s)\n", short(id), strings.Join(states, ", "))
+		fmt.Fprintf(c.Stderr, "forge task reverify: no target of task %s is unverified (%s)\n", short(id), strings.Join(states, ", "))
 		return 2
 	}
 	var out store.Target
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/reverify", nil, &out); err != nil {
-		return c.fail("task reverify", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/reverify", nil, &out); err != nil {
+		return c.Fail("task reverify", err)
 	}
-	fmt.Fprintf(c.stdout, "target %s (%s) reverifying — a fresh verify task will re-check the existing work\n", short(out.ID), out.Repository)
+	fmt.Fprintf(c.Stdout, "target %s (%s) reverifying — a fresh verify task will re-check the existing work\n", short(out.ID), out.Repository)
 	return 0
 }
 
 // runTaskRequeue is M9's conflict resolution hand-off (DESIGN.md §4.1): after
 // the human fixed the retained state, the conflicted Target re-enters the
 // merge queue.
-func runTaskRequeue(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task requeue")
-	if code := c.parse(fs, args); code >= 0 {
+func runTaskRequeue(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task requeue")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task requeue ID")
+		fmt.Fprintln(c.Stderr, "usage: forge task requeue ID")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task requeue", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task requeue", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task requeue", err)
+		return c.Fail("task requeue", err)
 	}
 	var v taskView
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
-		return c.fail("task requeue", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/tasks/"+id, nil, &v); err != nil {
+		return c.Fail("task requeue", err)
 	}
 	var target *store.Target
 	states := make([]string, 0, len(v.Targets))
@@ -757,13 +757,13 @@ func runTaskRequeue(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(c.stderr, "forge task requeue: no target of task %s is in conflict (%s)\n", short(id), strings.Join(states, ", "))
+		fmt.Fprintf(c.Stderr, "forge task requeue: no target of task %s is in conflict (%s)\n", short(id), strings.Join(states, ", "))
 		return 2
 	}
 	var out store.Target
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/requeue", nil, &out); err != nil {
-		return c.fail("task requeue", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/targets/"+target.ID+"/requeue", nil, &out); err != nil {
+		return c.Fail("task requeue", err)
 	}
-	fmt.Fprintf(c.stdout, "target %s (%s) requeued -> %s\n", short(out.ID), out.Repository, out.State)
+	fmt.Fprintf(c.Stdout, "target %s (%s) requeued -> %s\n", short(out.ID), out.Repository, out.State)
 	return 0
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"forge/internal/tui"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 
 func run(args []string, env map[string]string) (code int, stdout, stderr string) {
 	var out, errOut strings.Builder
-	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(k string) string { return env[k] }, forgeHome: "/tmp/forge-test-home", userHome: "/tmp/forge-test-user", now: time.Now}
+	c := &tui.Context{Stdout: &out, Stderr: &errOut, Getenv: func(k string) string { return env[k] }, ForgeHome: "/tmp/forge-test-home", UserHome: "/tmp/forge-test-user", Now: time.Now}
 	code = dispatch(context.Background(), commands(), c, args)
 	return code, out.String(), errOut.String()
 }
@@ -54,7 +55,7 @@ func TestDispatch(t *testing.T) {
 				t.Errorf("unexpected stderr %q", stderr)
 			}
 			if c.wantCode == 2 && stdout != "" {
-				t.Errorf("usage error wrote to stdout: %q", stdout)
+				t.Errorf("usage error wrote to Stdout: %q", stdout)
 			}
 		})
 	}

@@ -1,7 +1,7 @@
 // forge eval runs the golden cases under evals/ through the fake-claude
 // executor and scores them (DESIGN.md §23); --record-proposal posts the
 // summary score onto a proposal so it can be approved.
-package main
+package tui
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 	"forge/internal/core/eval"
 )
 
-func runEval(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("eval")
+func RunEval(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("eval")
 	mode := fs.String("mode", "", "mode whose cases run (required)")
 	modelAlias := fs.String("model", "haiku", "model alias submitted with each case")
 	cases := fs.String("cases", "evals", "cases directory (holds <mode>/<case>/eval.toml)")
@@ -25,36 +25,36 @@ func runEval(ctx context.Context, c *cmdContext, args []string) int {
 	timeout := fs.Int("timeout", 120, "seconds each case may take")
 	recordProposal := fs.String("record-proposal", "", "proposal id to record the summary score on")
 	asJSON := fs.Bool("json", false, "JSON report")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if *mode == "" {
-		fmt.Fprintln(c.stderr, "forge eval: --mode is required")
+		fmt.Fprintln(c.Stderr, "forge eval: --mode is required")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.eval")
+	_, log, code := c.ResolveLogging(lf, "cli.eval")
 	if code >= 0 {
 		return code
 	}
 	forgeBin, err := os.Executable()
 	if err != nil {
-		return c.fail("eval", fmt.Errorf("resolve forge binary: %w", err))
+		return c.Fail("eval", fmt.Errorf("resolve forge binary: %w", err))
 	}
 	casesDir, err := filepath.Abs(*cases)
 	if err != nil {
-		return c.fail("eval", err)
+		return c.Fail("eval", err)
 	}
 	fixturesDir, err := filepath.Abs(*fixtures)
 	if err != nil {
-		return c.fail("eval", err)
+		return c.Fail("eval", err)
 	}
 	workDir, err := os.MkdirTemp("", "forge-eval-")
 	if err != nil {
-		return c.fail("eval", err)
+		return c.Fail("eval", err)
 	}
 	defer func() {
 		if rerr := os.RemoveAll(workDir); rerr != nil {
-			fmt.Fprintln(c.stderr, "forge eval: clean work dir:", rerr)
+			fmt.Fprintln(c.Stderr, "forge eval: clean work dir:", rerr)
 		}
 	}()
 	rep, err := eval.Run(ctx, eval.Options{
@@ -63,13 +63,13 @@ func runEval(ctx context.Context, c *cmdContext, args []string) int {
 		WorkDir: workDir, Timeout: time.Duration(*timeout) * time.Second, Logger: log,
 	})
 	if err != nil {
-		return c.fail("eval", err)
+		return c.Fail("eval", err)
 	}
 	failed := 0
 	if *asJSON {
-		c.printJSON(rep)
+		c.PrintJSON(rep)
 	} else {
-		tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+		tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "CASE\tPASS\tSTATE\tTURNS\tCOST\tDETAILS")
 		for _, r := range rep.Cases {
 			pass := "ok"
@@ -79,7 +79,7 @@ func runEval(ctx context.Context, c *cmdContext, args []string) int {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t$%.4f\t%s\n", r.Name, pass, r.State, r.Turns, r.CostUSD, r.Details)
 		}
 		if err := tw.Flush(); err != nil {
-			return c.fail("eval", err)
+			return c.Fail("eval", err)
 		}
 	}
 	for _, r := range rep.Cases {
@@ -88,17 +88,17 @@ func runEval(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	if !*asJSON {
-		fmt.Fprintf(c.stdout, "score: %d/%d passed = %.2f\n", len(rep.Cases)-failed, len(rep.Cases), rep.Score)
+		fmt.Fprintf(c.Stdout, "score: %d/%d passed = %.2f\n", len(rep.Cases)-failed, len(rep.Cases), rep.Score)
 	}
 	if *recordProposal != "" {
-		cl := c.client(log)
-		if err := cl.connect(ctx); err != nil {
-			return c.fail("eval", err)
+		cl := c.Client(log)
+		if err := cl.Connect(ctx); err != nil {
+			return c.Fail("eval", err)
 		}
-		if err := cl.do(ctx, http.MethodPost, "/api/v1/proposals/"+*recordProposal+"/eval", map[string]float64{"score": rep.Score}, nil); err != nil {
-			return c.fail("eval", err)
+		if err := cl.Do(ctx, http.MethodPost, "/api/v1/proposals/"+*recordProposal+"/eval", map[string]float64{"score": rep.Score}, nil); err != nil {
+			return c.Fail("eval", err)
 		}
-		fmt.Fprintf(c.stdout, "recorded eval score %.2f on proposal %s\n", rep.Score, short(*recordProposal))
+		fmt.Fprintf(c.Stdout, "recorded eval score %.2f on proposal %s\n", rep.Score, short(*recordProposal))
 	}
 	if failed > 0 {
 		return 1

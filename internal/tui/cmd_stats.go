@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -17,30 +17,30 @@ type statsEnvelope struct {
 	Report        *stats.Report `json:"report"`
 }
 
-// runStats prints the DESIGN.md §9.4 report: one table per routine with its
+// RunStats prints the DESIGN.md §9.4 report: one table per routine with its
 // generation rows indented, and the previous-window deltas where known.
-func runStats(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("stats")
+func RunStats(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("stats")
 	since := fs.String("since", "7d", "window: <N>h hours or <N>d days")
 	routine := fs.String("routine", "", "limit to one routine")
 	repository := fs.String("repository", "", "limit to one repository")
 	project := fs.String("project", "", "limit to one project")
 	mode := fs.String("mode", "", "limit to one mode")
 	asJSON := fs.Bool("json", false, "JSON output")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "forge stats: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(c.Stderr, "forge stats: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.stats")
+	_, log, code := c.ResolveLogging(lf, "cli.stats")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("stats", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("stats", err)
 	}
 	v := url.Values{}
 	v.Set("since", *since)
@@ -50,15 +50,15 @@ func runStats(ctx context.Context, c *cmdContext, args []string) int {
 		}
 	}
 	var out statsEnvelope
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/stats?"+v.Encode(), nil, &out); err != nil {
-		return c.fail("stats", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/stats?"+v.Encode(), nil, &out); err != nil {
+		return c.Fail("stats", err)
 	}
 	if *asJSON {
-		c.printJSON(out)
+		c.PrintJSON(out)
 		return 0
 	}
 	if err := printStats(c, out.Report); err != nil {
-		return c.fail("stats", err)
+		return c.Fail("stats", err)
 	}
 	return 0
 }
@@ -66,22 +66,22 @@ func runStats(ctx context.Context, c *cmdContext, args []string) int {
 // printStats renders the report. Each routine gets a header line and a table:
 // the all-generations rollup row first, then one indented row per generation;
 // the proposal funnel closes the report.
-func printStats(c *cmdContext, r *stats.Report) error {
+func printStats(c *Context, r *stats.Report) error {
 	if r == nil {
-		fmt.Fprintln(c.stdout, "no attempts in the window")
+		fmt.Fprintln(c.Stdout, "no attempts in the window")
 		return nil
 	}
 	if len(r.Routines) == 0 {
-		fmt.Fprintln(c.stdout, "no attempts in the window")
+		fmt.Fprintln(c.Stdout, "no attempts in the window")
 	} else {
-		fmt.Fprintf(c.stdout, "window %s → %s  (%d runs)\n", r.Query.Since.Format(time.RFC3339), r.Query.Until.Format(time.RFC3339), r.TotalRuns)
+		fmt.Fprintf(c.Stdout, "window %s → %s  (%d runs)\n", r.Query.Since.Format(time.RFC3339), r.Query.Until.Format(time.RFC3339), r.TotalRuns)
 		byRoutine := map[string][]stats.RoutineStats{}
 		for _, g := range r.Generations {
 			byRoutine[g.Routine] = append(byRoutine[g.Routine], g)
 		}
 		for _, rt := range r.Routines {
-			fmt.Fprintf(c.stdout, "\n%s\n", rt.Routine)
-			tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintf(c.Stdout, "\n%s\n", rt.Routine)
+			tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 			fmt.Fprintln(tw, "  GEN\tRUNS\tVERIFIED\tSELF\tP50\tP95\tTOK IN/OUT\tCOST/RUN\tTOP FAILURE\tPREV")
 			statsRow(tw, "all", rt, r.Prev)
 			for _, g := range byRoutine[rt.Routine] {
@@ -98,7 +98,7 @@ func printStats(c *cmdContext, r *stats.Report) error {
 		if r.CostPerApplied != nil {
 			line += fmt.Sprintf("; retro cost per applied $%.4f", *r.CostPerApplied)
 		}
-		fmt.Fprintln(c.stdout, line)
+		fmt.Fprintln(c.Stdout, line)
 	}
 	return nil
 }

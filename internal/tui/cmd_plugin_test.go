@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func stubDaemon(t *testing.T, home string, mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /api/v1/handshake", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(protocol.Handshake{Version: version, SchemaVersion: "test", State: "running", PID: 1}); err != nil {
+		if err := json.NewEncoder(w).Encode(protocol.Handshake{Version: "dev", SchemaVersion: "test", State: "running", PID: 1}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -50,12 +50,12 @@ func stubDaemon(t *testing.T, home string, mux *http.ServeMux) {
 	})
 }
 
-func pluginCmdContext(t *testing.T, home, stdin string) (*cmdContext, *strings.Builder, *strings.Builder) {
+func pluginCmdContext(t *testing.T, home, stdin string) (*Context, *strings.Builder, *strings.Builder) {
 	t.Helper()
 	var out, errOut strings.Builder
-	c := &cmdContext{
-		stdin: strings.NewReader(stdin), stdout: &out, stderr: &errOut,
-		getenv: func(string) string { return "" }, forgeHome: home, userHome: t.TempDir(), now: time.Now,
+	c := &Context{
+		Stdin: strings.NewReader(stdin), Stdout: &out, Stderr: &errOut,
+		Getenv: func(string) string { return "" }, ForgeHome: home, UserHome: t.TempDir(), Now: time.Now, Version: "dev",
 	}
 	return c, &out, &errOut
 }
@@ -84,7 +84,7 @@ func TestPluginEnablePromptsForScopes(t *testing.T) {
 
 	// Declined: the prompt answers "n" and nothing is enabled.
 	c, out, _ := pluginCmdContext(t, home, "n\n")
-	if code := runPlugin(context.Background(), c, []string{"enable", "testp"}); code != 1 {
+	if code := RunPlugin(context.Background(), c, []string{"enable", "testp"}); code != 1 {
 		t.Fatalf("declined enable exit = %d, want 1\n%s", code, out.String())
 	}
 	if enabled.Load() {
@@ -96,7 +96,7 @@ func TestPluginEnablePromptsForScopes(t *testing.T) {
 
 	// Approved with "y".
 	c, out, _ = pluginCmdContext(t, home, "y\n")
-	if code := runPlugin(context.Background(), c, []string{"enable", "testp"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"enable", "testp"}); code != 0 {
 		t.Fatalf("enable exit = %d\n%s", code, out.String())
 	}
 	if !enabled.Load() {
@@ -112,7 +112,7 @@ func TestPluginEnablePromptsForScopes(t *testing.T) {
 	// --yes skips the prompt entirely (empty stdin).
 	enabled.Store(false)
 	c, out, _ = pluginCmdContext(t, home, "")
-	if code := runPlugin(context.Background(), c, []string{"enable", "testp", "--yes"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"enable", "testp", "--yes"}); code != 0 {
 		t.Fatalf("--yes enable exit = %d\n%s", code, out.String())
 	}
 	if !enabled.Load() {
@@ -130,7 +130,7 @@ func TestPluginStatusTable(t *testing.T) {
 	mux.HandleFunc("GET /api/v1/plugins", func(w http.ResponseWriter, _ *http.Request) { writeRow(t, w, rows) })
 	stubDaemon(t, home, mux)
 	c, out, _ := pluginCmdContext(t, home, "")
-	if code := runPlugin(context.Background(), c, []string{"status"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"status"}); code != 0 {
 		t.Fatalf("status exit = %d\n%s", code, out.String())
 	}
 	for _, want := range []string{"alpha", "42", "beta", "exit status 1"} {
@@ -154,7 +154,7 @@ func TestPluginUninstallRemovesFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, out, _ := pluginCmdContext(t, home, "")
-	if code := runPlugin(context.Background(), c, []string{"uninstall", "testp"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"uninstall", "testp"}); code != 0 {
 		t.Fatalf("uninstall exit = %d\n%s", code, out.String())
 	}
 	if !deleted.Load() {
@@ -175,7 +175,7 @@ func TestPluginLogsTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, out, _ := pluginCmdContext(t, home, "")
-	if code := runPlugin(context.Background(), c, []string{"logs", "testp", "-n", "2"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"logs", "testp", "-n", "2"}); code != 0 {
 		t.Fatalf("logs exit = %d", code)
 	}
 	if got := out.String(); got != "two\nthree\n" {
@@ -237,7 +237,7 @@ func TestPluginListDiscoversConfiguredDir(t *testing.T) {
 	}
 
 	c, out, _ := pluginCmdContext(t, home, "")
-	if code := runPlugin(context.Background(), c, []string{"list"}); code != 0 {
+	if code := RunPlugin(context.Background(), c, []string{"list"}); code != 0 {
 		t.Fatalf("plugin list exit = %d\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "foo") || !strings.Contains(out.String(), "available") {

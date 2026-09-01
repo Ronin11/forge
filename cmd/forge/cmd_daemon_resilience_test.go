@@ -10,6 +10,7 @@ import (
 
 	"forge/internal/core/daemon"
 	"forge/internal/core/store"
+	"forge/internal/tui"
 )
 
 func TestCaptureLastKnownGood(t *testing.T) {
@@ -55,9 +56,9 @@ func TestCaptureLastKnownGood(t *testing.T) {
 	}
 }
 
-func rollbackContext(home string) (*cmdContext, *strings.Builder, *strings.Builder) {
+func rollbackContext(home string) (*tui.Context, *strings.Builder, *strings.Builder) {
 	var out, errOut strings.Builder
-	c := &cmdContext{stdout: &out, stderr: &errOut, getenv: func(string) string { return "" }, forgeHome: home, userHome: home, now: time.Now}
+	c := &tui.Context{Stdout: &out, Stderr: &errOut, Getenv: func(string) string { return "" }, ForgeHome: home, UserHome: home, Now: time.Now}
 	return c, &out, &errOut
 }
 

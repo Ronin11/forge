@@ -15,6 +15,7 @@ import (
 	"forge/internal/core/daemon"
 	"forge/internal/core/logging"
 	"forge/internal/core/protocol"
+	"forge/internal/tui"
 )
 
 // listeners builds the socket and TCP listeners, adopting descriptors
@@ -23,7 +24,7 @@ import (
 // unlinked or re-created, so clients see no gap.
 func (d *daemonProcess) listeners(ctx context.Context) (unixL, tcpL net.Listener, err error) {
 	adopt := func(key, name string) (net.Listener, bool, error) {
-		raw := d.c.getenv(key)
+		raw := d.c.Getenv(key)
 		if raw == "" {
 			return nil, false, nil
 		}
@@ -39,7 +40,7 @@ func (d *daemonProcess) listeners(ctx context.Context) (unixL, tcpL net.Listener
 		return nil, nil, err
 	}
 	if !ok {
-		if unixL, err = daemon.ListenSocket(d.c.forgeHome); err != nil {
+		if unixL, err = daemon.ListenSocket(d.c.ForgeHome); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -91,7 +92,7 @@ func (d *daemonProcess) execRestart(execPath string, unixL, tcpL net.Listener) e
 			return errors.Join(fmt.Errorf("clear cloexec on fd %d: %w", f.Fd(), err), uf.Close(), tf.Close())
 		}
 	}
-	argv, env := restartExecSpec(execPath, d.c.forgeHome, os.Environ(), logging.Environ(d.handler), d.lock.File().Fd(), uf.Fd(), tf.Fd())
+	argv, env := restartExecSpec(execPath, d.c.ForgeHome, os.Environ(), logging.Environ(d.handler), d.lock.File().Fd(), uf.Fd(), tf.Fd())
 	if err := syscall.Exec(execPath, argv, env); err != nil {
 		return errors.Join(fmt.Errorf("exec %s: %w", execPath, err), uf.Close(), tf.Close())
 	}
@@ -131,27 +132,27 @@ func restartExecSpec(execPath, home string, base, logEnv []string, lockFD, sockF
 // runDaemonRestart is DESIGN.md §1.4: ask the daemon to drain and then exec
 // this CLI's own binary, and wait until the handshake answers with the new
 // version. The pid never changes — exec replaces the image in place.
-func runDaemonRestart(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("daemon restart")
+func runDaemonRestart(ctx context.Context, c *tui.Context, args []string) int {
+	fs, lf := c.Flags("daemon restart")
 	timeout := fs.Int("timeout", 30, "seconds the daemon waits for in-flight requests before exec")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, log, code := c.resolveLogging(lf, "cli.daemon")
+	_, log, code := c.ResolveLogging(lf, "cli.daemon")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	cl.tolerateMismatch = true
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("daemon restart", err)
+	cl := c.Client(log)
+	cl.TolerateMismatch = true
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("daemon restart", err)
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return c.fail("daemon restart", fmt.Errorf("resolve forge binary: %w", err))
+		return c.Fail("daemon restart", fmt.Errorf("resolve forge binary: %w", err))
 	}
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/daemon/drain", map[string]any{"exec": self, "timeout_seconds": *timeout}, nil); err != nil {
-		return c.fail("daemon restart", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/daemon/drain", map[string]any{"exec": self, "timeout_seconds": *timeout}, nil); err != nil {
+		return c.Fail("daemon restart", err)
 	}
 	// The listener descriptors survive the exec, so polling just works; the
 	// new image is recognised by its version with the state back to running
@@ -160,16 +161,16 @@ func runDaemonRestart(ctx context.Context, c *cmdContext, args []string) int {
 	deadline := time.Now().Add(wait)
 	for {
 		var h protocol.Handshake
-		if err := cl.do(ctx, http.MethodGet, "/api/v1/handshake", nil, &h); err == nil && h.Version == version && h.State == "running" {
-			fmt.Fprintf(c.stdout, "daemon restarted (pid %d)\n", h.PID)
+		if err := cl.Do(ctx, http.MethodGet, "/api/v1/handshake", nil, &h); err == nil && h.Version == version && h.State == "running" {
+			fmt.Fprintf(c.Stdout, "daemon restarted (pid %d)\n", h.PID)
 			return 0
 		}
 		if time.Now().After(deadline) {
-			return c.fail("daemon restart", fmt.Errorf("daemon did not come back as %s within %s; check 'forge daemon status' and the daemon log", version, wait))
+			return c.Fail("daemon restart", fmt.Errorf("daemon did not come back as %s within %s; check 'forge daemon status' and the daemon log", version, wait))
 		}
 		select {
 		case <-ctx.Done():
-			return c.fail("daemon restart", ctx.Err())
+			return c.Fail("daemon restart", ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

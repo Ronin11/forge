@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -18,44 +18,44 @@ import (
 // runTaskLogs prints a task's timeline — journal rows and attempt events —
 // from GET /api/v1/tasks/{id}/stream: everything so far and exit, or with -f
 // follow until the task is terminal, reconnecting from the last id.
-func runTaskLogs(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("task logs")
+func runTaskLogs(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("task logs")
 	follow := fs.Bool("f", false, "follow until the task is terminal")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge task logs [-f] ID")
+		fmt.Fprintln(c.Stderr, "usage: forge task logs [-f] ID")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.task")
+	_, log, code := c.ResolveLogging(lf, "cli.task")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("task logs", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("task logs", err)
 	}
 	id, err := resolveTaskID(ctx, cl, fs.Arg(0))
 	if err != nil {
-		return c.fail("task logs", err)
+		return c.Fail("task logs", err)
 	}
 	hooks := streamHooks{
 		onJournal: func(e store.JournalEntry) bool {
-			fmt.Fprintln(c.stdout, formatJournalLine(e))
+			fmt.Fprintln(c.Stdout, formatJournalLine(e))
 			return false
 		},
 		onEvent: func(e attemptStreamEvent) bool {
-			fmt.Fprintln(c.stdout, formatEventLine(e))
+			fmt.Fprintln(c.Stdout, formatEventLine(e))
 			return false
 		},
 	}
 	state, err := followWork(ctx, cl, id, *follow, hooks)
 	if err != nil {
-		return c.fail("task logs", err)
+		return c.Fail("task logs", err)
 	}
 	if *follow && state != "" {
-		fmt.Fprintf(c.stderr, "task %s: %s\n", short(id), state)
+		fmt.Fprintf(c.Stderr, "task %s: %s\n", short(id), state)
 	}
 	return 0
 }

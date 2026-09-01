@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -26,12 +26,12 @@ func fakeBinDir(t *testing.T, names ...string) string {
 	return dir
 }
 
-func doctorTestContext(t *testing.T, home string) (*cmdContext, *strings.Builder) {
+func doctorTestContext(t *testing.T, home string) (*Context, *strings.Builder) {
 	t.Helper()
 	var out strings.Builder
-	return &cmdContext{
-		stdout: &out, stderr: &out, getenv: os.Getenv,
-		forgeHome: home, userHome: t.TempDir(), now: time.Now,
+	return &Context{
+		Stdout: &out, Stderr: &out, Getenv: os.Getenv,
+		ForgeHome: home, UserHome: t.TempDir(), Now: time.Now,
 	}, &out
 }
 
@@ -48,7 +48,7 @@ func TestDoctorLocal(t *testing.T) {
 
 	// A world-readable token is the failure that flips the exit code.
 	c, out := doctorTestContext(t, home)
-	if code := runDoctor(context.Background(), c, nil); code != 1 {
+	if code := RunDoctor(context.Background(), c, nil); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "chmod 600 "+token) {
@@ -63,7 +63,7 @@ func TestDoctorLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, out = doctorTestContext(t, home)
-	if code := runDoctor(context.Background(), c, nil); code != 0 {
+	if code := RunDoctor(context.Background(), c, nil); code != 0 {
 		t.Fatalf("exit = %d, want 0\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "daemon not reachable") {
@@ -72,7 +72,7 @@ func TestDoctorLocal(t *testing.T) {
 
 	// --json emits the merged list.
 	c, out = doctorTestContext(t, home)
-	if code := runDoctor(context.Background(), c, []string{"--json"}); code != 0 {
+	if code := RunDoctor(context.Background(), c, []string{"--json"}); code != 0 {
 		t.Fatalf("--json exit = %d\n%s", code, out.String())
 	}
 	var checks []doctor.Check
@@ -97,7 +97,7 @@ func TestDoctorMissingRequiredBinaryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, out := doctorTestContext(t, home)
-	if code := runDoctor(context.Background(), c, nil); code != 1 {
+	if code := RunDoctor(context.Background(), c, nil); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s", code, out.String())
 	}
 	if !strings.Contains(out.String(), "FAIL  binary.claude") {

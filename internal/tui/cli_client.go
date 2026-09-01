@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -28,19 +29,19 @@ import (
 // the socket, auto-starts the daemon when needed (DESIGN.md §1.2), checks the
 // handshake, and speaks JSON.
 type cliClient struct {
-	c       *cmdContext
+	c       *Context
 	log     *slog.Logger
 	http    *http.Client
 	baseURL string
-	// noAutoStart commands (daemon status, version…) never spawn a daemon.
-	noAutoStart bool
-	// tolerateMismatch commands (daemon restart|stop|status|logs, doctor) warn
-	// instead of exiting on a version mismatch: they are the cure.
-	tolerateMismatch bool
+	// NoAutoStart commands (daemon status, cl.c.Version…) never spawn a daemon.
+	NoAutoStart bool
+	// TolerateMismatch commands (daemon restart|stop|status|logs, doctor) warn
+	// instead of exiting on a cl.c.Version mismatch: they are the cure.
+	TolerateMismatch bool
 }
 
-func (c *cmdContext) client(log *slog.Logger) *cliClient {
-	sock := filepath.Join(c.forgeHome, daemon.SocketFile)
+func (c *Context) Client(log *slog.Logger) *cliClient {
+	sock := filepath.Join(c.ForgeHome, daemon.SocketFile)
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", sock)
@@ -49,12 +50,12 @@ func (c *cmdContext) client(log *slog.Logger) *cliClient {
 }
 
 // errMismatch is returned when the daemon and CLI versions differ.
-var errMismatch = errors.New("version mismatch")
+var errMismatch = errors.New("cl.c.Version mismatch")
 
 // connect implements the auto-start steps and returns once a handshake
 // succeeded (or the mismatch line was printed).
-func (cl *cliClient) connect(ctx context.Context) error {
-	home := cl.c.forgeHome
+func (cl *cliClient) Connect(ctx context.Context) error {
+	home := cl.c.ForgeHome
 	// The home must exist before the lock file can (a fresh box); bootstrap
 	// proper runs in the daemon.
 	if err := os.MkdirAll(home, 0o700); err != nil {
@@ -65,12 +66,12 @@ func (cl *cliClient) connect(ctx context.Context) error {
 	} else if errors.Is(err, errMismatch) {
 		return err
 	}
-	if cl.noAutoStart {
+	if cl.NoAutoStart {
 		return fmt.Errorf("daemon is not running (start it with 'forge daemon start')")
 	}
 	// Step 2: systemd owns the default home.
-	unit := filepath.Join(cl.c.userHome, ".config", "systemd", "user", "forge.service")
-	if _, err := os.Stat(unit); err == nil && (cl.c.getenv("FORGE_HOME") == "" || home == filepath.Join(cl.c.userHome, ".forge")) {
+	unit := filepath.Join(cl.c.UserHome, ".config", "systemd", "user", "forge.service")
+	if _, err := os.Stat(unit); err == nil && (cl.c.Getenv("FORGE_HOME") == "" || home == filepath.Join(cl.c.UserHome, ".forge")) {
 		out, err := exec.CommandContext(ctx, "systemctl", "--user", "start", "forge").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("systemctl --user start forge: %w: %s", err, strings.TrimSpace(string(out)))
@@ -118,7 +119,7 @@ func (cl *cliClient) connect(ctx context.Context) error {
 // spawnDaemon starts `forge daemon start --foreground` detached with the lock
 // fd inherited (auto-start step 4) and waits for daemon.json to show its pid.
 func (cl *cliClient) spawnDaemon(ctx context.Context, lock *daemon.Lock) error {
-	home := cl.c.forgeHome
+	home := cl.c.ForgeHome
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve forge binary: %w", err)
@@ -178,15 +179,15 @@ func (cl *cliClient) tryHandshake(ctx context.Context, wait time.Duration) error
 	deadline := time.Now().Add(wait)
 	for {
 		var h protocol.Handshake
-		err := cl.do(ctx, http.MethodGet, "/api/v1/handshake", nil, &h)
+		err := cl.Do(ctx, http.MethodGet, "/api/v1/handshake", nil, &h)
 		if err == nil {
-			if h.Version != version {
-				line := fmt.Sprintf("forge: daemon is %s, this CLI is %s — run 'forge daemon restart'", h.Version, version)
-				if cl.tolerateMismatch {
-					fmt.Fprintln(cl.c.stderr, line+" (continuing)")
+			if h.Version != cl.c.Version {
+				line := fmt.Sprintf("forge: daemon is %s, this CLI is %s — run 'forge daemon restart'", h.Version, cl.c.Version)
+				if cl.TolerateMismatch {
+					fmt.Fprintln(cl.c.Stderr, line+" (continuing)")
 					return nil
 				}
-				fmt.Fprintln(cl.c.stderr, line)
+				fmt.Fprintln(cl.c.Stderr, line)
 				return errMismatch
 			}
 			return nil
@@ -207,7 +208,7 @@ func (cl *cliClient) tryHandshake(ctx context.Context, wait time.Duration) error
 }
 
 // do is one JSON request over the socket.
-func (cl *cliClient) do(ctx context.Context, method, path string, in, out any) (err error) {
+func (cl *cliClient) Do(ctx context.Context, method, path string, in, out any) (err error) {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -326,37 +327,37 @@ func readSSE(br *bufio.Reader) (sseEvent, error) {
 }
 
 // fail prints one line and returns the exit code for the error kind.
-func (c *cmdContext) fail(command string, err error) int {
+func (c *Context) Fail(command string, err error) int {
 	var se *worker.StatusError
 	switch {
 	case errors.Is(err, errMismatch):
 		return 1
 	case errors.As(err, &se):
-		fmt.Fprintf(c.stderr, "forge %s: %s\n", command, se.Message)
+		fmt.Fprintf(c.Stderr, "forge %s: %s\n", command, se.Message)
 		if se.Status == 400 || se.Status == 404 {
 			return 2
 		}
 		return 1
 	default:
-		fmt.Fprintf(c.stderr, "forge %s: %v\n", command, err)
+		fmt.Fprintf(c.Stderr, "forge %s: %v\n", command, err)
 		return 1
 	}
 }
 
 // printJSON is the --json output every list/show command supports.
-func (c *cmdContext) printJSON(v any) {
-	enc := json.NewEncoder(c.stdout)
+func (c *Context) PrintJSON(v any) {
+	enc := json.NewEncoder(c.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintln(c.stderr, "forge: encode output:", err)
+		fmt.Fprintln(c.Stderr, "forge: encode output:", err)
 	}
 }
 
 // resolveLogging is the common tail of every command's flag parsing.
-func (c *cmdContext) resolveLogging(lf *logging.Flags, component string) (*logging.Handler, *slog.Logger, int) {
-	h, log, err := c.logger(lf, logging.Config{}, component)
+func (c *Context) ResolveLogging(lf *logging.Flags, component string) (*logging.Handler, *slog.Logger, int) {
+	h, log, err := c.Logger(lf, logging.Config{}, component)
 	if err != nil {
-		fmt.Fprintln(c.stderr, "forge:", err)
+		fmt.Fprintln(c.Stderr, "forge:", err)
 		return nil, nil, 2
 	}
 	return h, log, -1
@@ -385,4 +386,48 @@ func ago(t time.Time, now time.Time) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// TailFile follows path from offset, polling its size every 500 ms and copying
+// what appeared; a shrink (rotation) restarts from the top of the new file.
+// It returns nil when ctx ends — Ctrl-C is how the human leaves.
+func TailFile(ctx context.Context, out io.Writer, path string, offset int64) error {
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if fi.Size() < offset {
+			offset = 0
+		}
+		if fi.Size() == offset {
+			continue
+		}
+		n, err := copyFrom(out, path, offset)
+		offset += n
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// copyFrom copies path's bytes from offset to out and reports how many.
+func copyFrom(out io.Writer, path string, offset int64) (n int64, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("seek %s: %w", path, err)
+	}
+	n, err = io.Copy(out, f)
+	return n, err
 }

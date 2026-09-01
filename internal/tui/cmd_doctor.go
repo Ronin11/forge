@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -16,26 +16,26 @@ import (
 	"forge/internal/core/doctor"
 )
 
-// runDoctor is `forge doctor`: the local checks always, plus GET
+// RunDoctor is `forge doctor`: the local checks always, plus GET
 // /api/v1/doctor merged in when the socket answers. It never auto-starts the
 // daemon (DESIGN.md §1.2's exclusion list), so the probe is a plain dial on
 // the socket, not the shared auto-starting client.
-func runDoctor(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("doctor")
+func RunDoctor(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("doctor")
 	asJSON := fs.Bool("json", false, "JSON output")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "forge doctor: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(c.Stderr, "forge doctor: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.doctor")
+	_, log, code := c.ResolveLogging(lf, "cli.doctor")
 	if code >= 0 {
 		return code
 	}
 	checks := localChecks(c)
-	remote, err := daemonChecks(ctx, c.forgeHome)
+	remote, err := daemonChecks(ctx, c.ForgeHome)
 	switch {
 	case err != nil:
 		log.DebugContext(ctx, "daemon not reachable", "error", err)
@@ -45,7 +45,7 @@ func runDoctor(ctx context.Context, c *cmdContext, args []string) int {
 		checks = append(checks, remote...)
 	}
 	if *asJSON {
-		c.printJSON(checks)
+		c.PrintJSON(checks)
 	} else {
 		printChecks(c, checks)
 	}
@@ -58,8 +58,8 @@ func runDoctor(ctx context.Context, c *cmdContext, args []string) int {
 // localChecks runs everything that works with the daemon down. Probes with a
 // single home elsewhere (flock, daemon.json) are gathered here and handed to
 // the doctor package's decision functions.
-func localChecks(c *cmdContext) []doctor.Check {
-	home := c.forgeHome
+func localChecks(c *Context) []doctor.Check {
+	home := c.ForgeHome
 	checks := doctor.Binaries(exec.LookPath, binaryVersion)
 	checks = append(checks,
 		doctor.Home(home),
@@ -139,15 +139,15 @@ func daemonChecks(ctx context.Context, home string) ([]doctor.Check, error) {
 
 // printChecks renders the aligned table: STATUS NAME DETAIL, with the fix hint
 // on its own line under any row that is not ok.
-func printChecks(c *cmdContext, checks []doctor.Check) {
+func printChecks(c *Context, checks []doctor.Check) {
 	nameWidth := 0
 	for _, ch := range checks {
 		nameWidth = max(nameWidth, len(ch.Name))
 	}
 	for _, ch := range checks {
-		fmt.Fprintf(c.stdout, "%-4s  %-*s  %s\n", strings.ToUpper(ch.Status), nameWidth, ch.Name, ch.Detail)
+		fmt.Fprintf(c.Stdout, "%-4s  %-*s  %s\n", strings.ToUpper(ch.Status), nameWidth, ch.Name, ch.Detail)
 		if ch.Status != doctor.StatusOK && ch.Hint != "" {
-			fmt.Fprintf(c.stdout, "      %-*s  hint: %s\n", nameWidth, "", ch.Hint)
+			fmt.Fprintf(c.Stdout, "      %-*s  hint: %s\n", nameWidth, "", ch.Hint)
 		}
 	}
 }

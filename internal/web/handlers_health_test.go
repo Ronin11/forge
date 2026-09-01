@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"forge/internal/core/daemon"
+	"forge/internal/core/engine"
 	"forge/internal/core/store"
 )
 
@@ -140,7 +141,7 @@ func TestBackupArchiveRestoresIntoFreshHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := t.TempDir()
-	archive, err := WriteBackupArchive(ctx, st, BackupInputs{Home: home, OutDir: out})
+	archive, err := engine.WriteBackupArchive(ctx, st, engine.BackupInputs{Home: home, OutDir: out})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestBackupArchiveRestoresIntoFreshHome(t *testing.T) {
 	if err := os.MkdirAll(fresh, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := UnpackBackup(archive, fresh); err != nil {
+	if err := engine.UnpackBackup(archive, fresh); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{daemon.DBFile, "config.toml", "worker.toml", "plugins.json", filepath.Join("kb", "note.md"), filepath.Join("modes", "run.md")} {
@@ -176,13 +177,13 @@ func TestBackupArchiveRestoresIntoFreshHome(t *testing.T) {
 
 func TestPruneBackupsAndLatest(t *testing.T) {
 	dir := t.TempDir()
-	if path, mtime, err := LatestBackup(dir); err != nil || path != "" || !mtime.IsZero() {
-		t.Errorf("LatestBackup on empty dir = %q %v %v", path, mtime, err)
+	if path, mtime, err := engine.LatestBackup(dir); err != nil || path != "" || !mtime.IsZero() {
+		t.Errorf("engine.LatestBackup on empty dir = %q %v %v", path, mtime, err)
 	}
 	names := []string{
-		backupPrefix + "20260828T000000Z.tar.gz",
-		backupPrefix + "20260829T000000Z.tar.gz",
-		backupPrefix + "20260830T000000Z.tar.gz",
+		engine.BackupPrefix + "20260828T000000Z.tar.gz",
+		engine.BackupPrefix + "20260829T000000Z.tar.gz",
+		engine.BackupPrefix + "20260830T000000Z.tar.gz",
 		"unrelated.txt",
 	}
 	for _, n := range names {
@@ -190,23 +191,23 @@ func TestPruneBackupsAndLatest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	path, _, err := LatestBackup(dir)
+	path, _, err := engine.LatestBackup(dir)
 	if err != nil || filepath.Base(path) != names[2] {
-		t.Errorf("LatestBackup = %q %v", path, err)
+		t.Errorf("engine.LatestBackup = %q %v", path, err)
 	}
-	removed, err := PruneBackups(dir, 2)
+	removed, err := engine.PruneBackups(dir, 2)
 	if err != nil || len(removed) != 1 || filepath.Base(removed[0]) != names[0] {
-		t.Fatalf("PruneBackups = %v %v", removed, err)
+		t.Fatalf("engine.PruneBackups = %v %v", removed, err)
 	}
 	for i, n := range names[1:] {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 			t.Errorf("survivor %d (%s) gone: %v", i, n, err)
 		}
 	}
-	if _, err := PruneBackups(dir, 0); err == nil {
+	if _, err := engine.PruneBackups(dir, 0); err == nil {
 		t.Error("keep 0 accepted")
 	}
-	if removed, err := PruneBackups(filepath.Join(dir, "missing"), 3); err != nil || removed != nil {
+	if removed, err := engine.PruneBackups(filepath.Join(dir, "missing"), 3); err != nil || removed != nil {
 		t.Errorf("prune of a missing dir = %v %v", removed, err)
 	}
 }
@@ -222,11 +223,11 @@ func TestUnpackBackupRefusesEscapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(dir, "t.tar.gz")
-	if err := tarGzDir(staging, archive); err != nil {
+	if err := engine.TarGzDir(staging, archive); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	if err := UnpackBackup(archive, home); err != nil {
+	if err := engine.UnpackBackup(archive, home); err != nil {
 		t.Fatalf("benign archive refused: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "ok.txt")); err != nil {

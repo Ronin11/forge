@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"forge/internal/core/daemon"
+	"forge/internal/core/engine"
 	"forge/internal/core/store"
-	"forge/internal/web"
+	"forge/internal/tui"
 )
 
 // Names under <home>/prev: what a rollback restores.
@@ -83,10 +84,10 @@ func copyBinary(src, dst string) (err error) {
 // on start when today has none yet) and prunes past [backup] keep.
 func (d *daemonProcess) nightlyBackup(ctx context.Context, st *store.Store) {
 	log := d.handler.For("daemon.backup")
-	dir := filepath.Join(d.c.forgeHome, "backups")
+	dir := filepath.Join(d.c.ForgeHome, "backups")
 	write := func() {
-		archive, err := web.WriteBackupArchive(ctx, st, web.BackupInputs{
-			Home: d.c.forgeHome, KbDir: d.cfg.KB.Path, OutDir: dir,
+		archive, err := engine.WriteBackupArchive(ctx, st, engine.BackupInputs{
+			Home: d.c.ForgeHome, KbDir: d.cfg.KB.Path, OutDir: dir,
 		})
 		if err != nil {
 			log.WarnContext(ctx, "nightly backup", "error", err)
@@ -97,13 +98,13 @@ func (d *daemonProcess) nightlyBackup(ctx context.Context, st *store.Store) {
 		}); err != nil {
 			log.WarnContext(ctx, "journal backup", "error", err)
 		}
-		removed, err := web.PruneBackups(dir, d.cfg.Backup.Keep)
+		removed, err := engine.PruneBackups(dir, d.cfg.Backup.Keep)
 		if err != nil {
 			log.WarnContext(ctx, "prune backups", "error", err)
 		}
 		log.InfoContext(ctx, "nightly backup written", "archive", filepath.Base(archive), "pruned", len(removed))
 	}
-	if _, mtime, err := web.LatestBackup(dir); err != nil {
+	if _, mtime, err := engine.LatestBackup(dir); err != nil {
 		log.WarnContext(ctx, "read backups", "error", err)
 	} else if mtime.IsZero() || !sameUTCDay(mtime, time.Now()) {
 		write()
@@ -143,63 +144,63 @@ Limits (deliberate):
   - kb/, modes/, and config files are untouched; use forge restore for those
 `
 
-func runDaemonRollback(ctx context.Context, c *cmdContext, args []string) int {
+func runDaemonRollback(ctx context.Context, c *tui.Context, args []string) int {
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
-			fmt.Fprint(c.stdout, rollbackHelp)
+			fmt.Fprint(c.Stdout, rollbackHelp)
 			return 0
 		}
 	}
-	fs, lf := c.flags("daemon rollback")
-	if code := c.parse(fs, args); code >= 0 {
+	fs, lf := c.Flags("daemon rollback")
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "forge daemon rollback: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(c.Stderr, "forge daemon rollback: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	if _, _, code := c.resolveLogging(lf, "cli.daemon"); code >= 0 {
+	if _, _, code := c.ResolveLogging(lf, "cli.daemon"); code >= 0 {
 		return code
 	}
-	home := c.forgeHome
+	home := c.ForgeHome
 	locked, err := daemon.IsLocked(home)
 	if err != nil {
-		return c.fail("daemon rollback", err)
+		return c.Fail("daemon rollback", err)
 	}
 	if locked {
-		fmt.Fprintln(c.stderr, "forge daemon rollback: the daemon is running; stop it first (forge daemon stop)")
+		fmt.Fprintln(c.Stderr, "forge daemon rollback: the daemon is running; stop it first (forge daemon stop)")
 		return 1
 	}
 	goodDB := filepath.Join(home, prevDirName, prevDBName)
 	if _, err := os.Stat(goodDB); err != nil {
-		fmt.Fprintf(c.stderr, "forge daemon rollback: no last-known-good snapshot at %s (a healthy daemon start records one)\n", goodDB)
+		fmt.Fprintf(c.Stderr, "forge daemon rollback: no last-known-good snapshot at %s (a healthy daemon start records one)\n", goodDB)
 		return 1
 	}
 	dbPath := filepath.Join(home, daemon.DBFile)
-	ts := c.now().UTC().Format("20060102T150405Z")
+	ts := c.Now().UTC().Format("20060102T150405Z")
 	if _, err := os.Stat(dbPath); err == nil {
 		broken := dbPath + ".broken-" + ts
 		if err := os.Rename(dbPath, broken); err != nil {
-			return c.fail("daemon rollback", err)
+			return c.Fail("daemon rollback", err)
 		}
-		fmt.Fprintf(c.stdout, "current database moved aside: %s\n", broken)
+		fmt.Fprintf(c.Stdout, "current database moved aside: %s\n", broken)
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
-			return c.fail("daemon rollback", err)
+			return c.Fail("daemon rollback", err)
 		}
 	}
 	if err := copyBinary(goodDB, dbPath); err != nil {
-		return c.fail("daemon rollback", err)
+		return c.Fail("daemon rollback", err)
 	}
 	if err := os.Chmod(dbPath, 0o600); err != nil {
-		return c.fail("daemon rollback", err)
+		return c.Fail("daemon rollback", err)
 	}
 	goodBin := filepath.Join(home, prevDirName, prevBinName)
-	fmt.Fprintf(c.stdout, "database restored from %s\n", goodDB)
+	fmt.Fprintf(c.Stdout, "database restored from %s\n", goodDB)
 	if _, err := os.Stat(goodBin); err == nil {
-		fmt.Fprintf(c.stdout, "previous binary: %s — run it directly or copy it over your forge binary yourself; rollback never overwrites binaries\n", goodBin)
+		fmt.Fprintf(c.Stdout, "previous binary: %s — run it directly or copy it over your forge binary yourself; rollback never overwrites binaries\n", goodBin)
 	}
-	fmt.Fprintln(c.stdout, "next: forge daemon start (with the binary you trust)")
+	fmt.Fprintln(c.Stdout, "next: forge daemon start (with the binary you trust)")
 	return 0
 }

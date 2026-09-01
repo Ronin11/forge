@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -12,14 +12,14 @@ import (
 	"forge/internal/core/store"
 )
 
-func runWorkflow(ctx context.Context, c *cmdContext, args []string) int {
+func RunWorkflow(ctx context.Context, c *Context, args []string) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		// --help on a parent command is a request, not a mistake.
 		code := 2
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.stderr, "usage: forge workflow add|list|show|edit|run|runs|enable|disable NAME [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge workflow add|list|show|edit|run|runs|enable|disable NAME [flags]")
 		return code
 	}
 	sub, rest := args[0], args[1:]
@@ -31,37 +31,37 @@ func runWorkflow(ctx context.Context, c *cmdContext, args []string) int {
 	case "show", "run", "runs", "enable", "disable", "edit":
 		return runWorkflowNamed(ctx, c, sub, rest)
 	}
-	fmt.Fprintf(c.stderr, "forge workflow: unknown subcommand %q\n", sub)
+	fmt.Fprintf(c.Stderr, "forge workflow: unknown subcommand %q\n", sub)
 	return 2
 }
 
-func runWorkflowAdd(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("workflow add")
+func runWorkflowAdd(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("workflow add")
 	var steps multiFlag
 	fs.Var(&steps, "step", "NAME=ROUTINE, repeatable; steps chain in order (use --from for a DAG)")
 	from := fs.String("from", "", "TOML file with the full workflow (steps, schedule)")
 	schedule := fs.String("schedule", "", "cron schedule")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.stderr, "usage: forge workflow add NAME --step lint=lint-all --step fix=fix-lint [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge workflow add NAME --step lint=lint-all --step fix=fix-lint [flags]")
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.workflow")
+	_, log, code := c.ResolveLogging(lf, "cli.workflow")
 	if code >= 0 {
 		return code
 	}
 	wf := store.Workflow{Name: fs.Arg(0)}
 	if *from != "" {
 		if _, err := toml.DecodeFile(*from, &wf); err != nil {
-			return c.fail("workflow add", err)
+			return c.Fail("workflow add", err)
 		}
 	}
 	for _, s := range steps {
 		name, routine, ok := strings.Cut(s, "=")
 		if !ok {
-			fmt.Fprintf(c.stderr, "forge workflow add: --step %q: want NAME=ROUTINE\n", s)
+			fmt.Fprintf(c.Stderr, "forge workflow add: --step %q: want NAME=ROUTINE\n", s)
 			return 2
 		}
 		wf.Steps = append(wf.Steps, store.WorkflowStep{Name: name, Routine: routine})
@@ -71,41 +71,41 @@ func runWorkflowAdd(ctx context.Context, c *cmdContext, args []string) int {
 		wf.Schedule = *schedule
 	}
 	wf.ScheduleEnabled = wf.Schedule != ""
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("workflow add", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("workflow add", err)
 	}
 	var out store.Workflow
-	if err := cl.do(ctx, http.MethodPost, "/api/v1/workflows", wf, &out); err != nil {
-		return c.fail("workflow add", err)
+	if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflows", wf, &out); err != nil {
+		return c.Fail("workflow add", err)
 	}
-	fmt.Fprintf(c.stdout, "workflow %s created with %d step(s) (generation %d)\n", out.Name, len(out.Steps), out.Generation)
+	fmt.Fprintf(c.Stdout, "workflow %s created with %d step(s) (generation %d)\n", out.Name, len(out.Steps), out.Generation)
 	return 0
 }
 
-func runWorkflowList(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("workflow list")
+func runWorkflowList(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("workflow list")
 	asJSON := fs.Bool("json", false, "JSON output")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
-	_, log, code := c.resolveLogging(lf, "cli.workflow")
+	_, log, code := c.ResolveLogging(lf, "cli.workflow")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("workflow list", err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("workflow list", err)
 	}
 	var out []store.Workflow
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/workflows", nil, &out); err != nil {
-		return c.fail("workflow list", err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflows", nil, &out); err != nil {
+		return c.Fail("workflow list", err)
 	}
 	if *asJSON {
-		c.printJSON(out)
+		c.PrintJSON(out)
 		return 0
 	}
-	tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+	tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tGEN\tSTEPS\tSCHEDULE")
 	for _, wf := range out {
 		names := make([]string, len(wf.Steps))
@@ -119,7 +119,7 @@ func runWorkflowList(ctx context.Context, c *cmdContext, args []string) int {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", wf.Name, wf.Generation, strings.Join(names, " → "), sched)
 	}
 	if err := tw.Flush(); err != nil {
-		return c.fail("workflow list", err)
+		return c.Fail("workflow list", err)
 	}
 	return 0
 }
@@ -139,43 +139,43 @@ type workflowRunRow struct {
 	Works     []taskView `json:"works"`
 }
 
-func runWorkflowNamed(ctx context.Context, c *cmdContext, sub string, args []string) int {
-	fs, lf := c.flags("workflow " + sub)
+func runWorkflowNamed(ctx context.Context, c *Context, sub string, args []string) int {
+	fs, lf := c.Flags("workflow " + sub)
 	asJSON := fs.Bool("json", false, "JSON output")
 	var repos multiFlag
 	fs.Var(&repos, "repo", "narrow a run to these repositories (run only)")
 	from := fs.String("from", "", "apply a TOML file instead of $EDITOR (edit only)")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintf(c.stderr, "usage: forge workflow %s NAME\n", sub)
+		fmt.Fprintf(c.Stderr, "usage: forge workflow %s NAME\n", sub)
 		return 2
 	}
 	name := fs.Arg(0)
-	_, log, code := c.resolveLogging(lf, "cli.workflow")
+	_, log, code := c.ResolveLogging(lf, "cli.workflow")
 	if code >= 0 {
 		return code
 	}
-	cl := c.client(log)
-	if err := cl.connect(ctx); err != nil {
-		return c.fail("workflow "+sub, err)
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("workflow "+sub, err)
 	}
 	var wf store.Workflow
-	if err := cl.do(ctx, http.MethodGet, "/api/v1/workflows/"+name, nil, &wf); err != nil {
-		return c.fail("workflow "+sub, err)
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflows/"+name, nil, &wf); err != nil {
+		return c.Fail("workflow "+sub, err)
 	}
 	switch sub {
 	case "show":
 		if *asJSON {
-			c.printJSON(wf)
+			c.PrintJSON(wf)
 			return 0
 		}
 		var b strings.Builder
 		if err := toml.NewEncoder(&b).Encode(wf); err != nil {
-			return c.fail("workflow show", err)
+			return c.Fail("workflow show", err)
 		}
-		fmt.Fprint(c.stdout, b.String())
+		fmt.Fprint(c.Stdout, b.String())
 		return 0
 	case "run":
 		var out workflowRunView
@@ -183,24 +183,24 @@ func runWorkflowNamed(ctx context.Context, c *cmdContext, sub string, args []str
 		if len(repos) > 0 {
 			body["repositories"] = []string(repos)
 		}
-		if err := cl.do(ctx, http.MethodPost, "/api/v1/workflows/"+name+"/run", body, &out); err != nil {
-			return c.fail("workflow run", err)
+		if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflows/"+name+"/run", body, &out); err != nil {
+			return c.Fail("workflow run", err)
 		}
-		fmt.Fprintf(c.stdout, "run %s created from %s@%d: %d task(s)\n", short(out.RunID), name, wf.Generation, len(out.Works))
+		fmt.Fprintf(c.Stdout, "run %s created from %s@%d: %d task(s)\n", short(out.RunID), name, wf.Generation, len(out.Works))
 		for _, w := range out.Works {
-			fmt.Fprintf(c.stdout, "  %s  %s\n", short(w.Work.ID), w.Work.Title)
+			fmt.Fprintf(c.Stdout, "  %s  %s\n", short(w.Work.ID), w.Work.Title)
 		}
 		return 0
 	case "runs":
 		var out []workflowRunRow
-		if err := cl.do(ctx, http.MethodGet, "/api/v1/workflows/"+name+"/runs", nil, &out); err != nil {
-			return c.fail("workflow runs", err)
+		if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflows/"+name+"/runs", nil, &out); err != nil {
+			return c.Fail("workflow runs", err)
 		}
 		if *asJSON {
-			c.printJSON(out)
+			c.PrintJSON(out)
 			return 0
 		}
-		tw := tabwriter.NewWriter(c.stdout, 0, 4, 2, ' ', 0)
+		tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "RUN\tSTATE\tCREATED\tSTEPS")
 		for _, run := range out {
 			steps := make([]string, len(run.Works))
@@ -210,29 +210,29 @@ func runWorkflowNamed(ctx context.Context, c *cmdContext, sub string, args []str
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", short(run.RunID), run.State, run.CreatedAt, strings.Join(steps, " "))
 		}
 		if err := tw.Flush(); err != nil {
-			return c.fail("workflow runs", err)
+			return c.Fail("workflow runs", err)
 		}
 		return 0
 	case "enable", "disable":
 		wf.ScheduleEnabled = sub == "enable"
 		if wf.ScheduleEnabled && wf.Schedule == "" {
-			fmt.Fprintln(c.stderr, "forge workflow enable: the workflow has no schedule")
+			fmt.Fprintln(c.Stderr, "forge workflow enable: the workflow has no schedule")
 			return 2
 		}
-		if err := cl.do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/workflows/%s?generation=%d", name, wf.Generation), wf, &wf); err != nil {
-			return c.fail("workflow "+sub, err)
+		if err := cl.Do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/workflows/%s?generation=%d", name, wf.Generation), wf, &wf); err != nil {
+			return c.Fail("workflow "+sub, err)
 		}
-		fmt.Fprintf(c.stdout, "workflow %s schedule %sd (generation %d)\n", name, sub, wf.Generation)
+		fmt.Fprintf(c.Stdout, "workflow %s schedule %sd (generation %d)\n", name, sub, wf.Generation)
 		return 0
 	case "edit":
 		edited, err := editWorkflow(ctx, c, wf, *from)
 		if err != nil {
-			return c.fail("workflow edit", err)
+			return c.Fail("workflow edit", err)
 		}
-		if err := cl.do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/workflows/%s?generation=%d", name, wf.Generation), edited, &edited); err != nil {
-			return c.fail("workflow edit", err)
+		if err := cl.Do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/workflows/%s?generation=%d", name, wf.Generation), edited, &edited); err != nil {
+			return c.Fail("workflow edit", err)
 		}
-		fmt.Fprintf(c.stdout, "workflow %s updated (generation %d)\n", name, edited.Generation)
+		fmt.Fprintf(c.Stdout, "workflow %s updated (generation %d)\n", name, edited.Generation)
 		return 0
 	}
 	return 2
@@ -240,7 +240,7 @@ func runWorkflowNamed(ctx context.Context, c *cmdContext, sub string, args []str
 
 // editWorkflow opens the workflow as TOML in $EDITOR (or reads --from) and
 // returns the result; the generation the user saw goes back for the 409 check.
-func editWorkflow(ctx context.Context, c *cmdContext, wf store.Workflow, from string) (store.Workflow, error) {
+func editWorkflow(ctx context.Context, c *Context, wf store.Workflow, from string) (store.Workflow, error) {
 	if from != "" {
 		if _, err := toml.DecodeFile(from, &wf); err != nil {
 			return wf, err

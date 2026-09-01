@@ -55,9 +55,15 @@ bench:
 # with -q so a SIGPIPE cannot turn a violation into a pass under pipefail.
 #
 #   tree   packages                                 may reach
-#   core   internal/* except web, tools           core
+#   core   internal/* except web, tools, tui        core
 #   tools  internal/tools                           core tools
 #   web    internal/web                             core tools web
+#   tui    internal/tui                             core tui
+#
+# §6.3 exception: tui imports core/store for its row TYPES only (DTOs decoded
+# from API responses); promoting them into protocol is its own later task.
+# go list cannot see "types only", so the store edge is simply legal core —
+# this comment is the exception's single recorded home.
 boundary:
     @check() { desc="$1"; list="$2"; deny="$3"; allow="$4"; \
         if [ -z "$list" ]; then echo "boundary: $desc: rule matches no packages (fail closed)"; exit 1; fi; \
@@ -65,8 +71,11 @@ boundary:
             bad=$(go list -deps "$p" | grep -E "$deny" | grep -vx "$p" | grep -Ev "$allow" || true); \
             if [ -n "$bad" ]; then echo "boundary: $desc: $p imports:"; echo "$bad"; exit 1; fi; \
         done; }; \
-    check "core may not reach web or tools" \
-        "$(go list ./internal/... 2>/dev/null | grep -vE '^forge/internal/(web|tools)' || true)" \
+    check "core may not reach web, tools, or tui" \
+        "$(go list ./internal/... 2>/dev/null | grep -vE '^forge/internal/(web|tools|tui)' || true)" \
+        '^forge/internal/(web|tools)(/|$)' '^$'; \
+    check "tui may reach core and tui only" \
+        "$(go list ./internal/tui/... 2>/dev/null || true)" \
         '^forge/internal/(web|tools)(/|$)' '^$'; \
     check "tools may reach core and tools only" \
         "$(go list ./internal/tools/... 2>/dev/null || true)" \

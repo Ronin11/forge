@@ -3,19 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"forge/internal/tui"
 	"strings"
 	"testing"
 	"time"
 )
 
-// mcpCmdContext is a cmdContext whose environment is empty, so runMCP fails
+// mcpCmdContext is a tui.Context whose environment is empty, so runMCP fails
 // before it ever touches stdin.
-func mcpCmdContext(t *testing.T) (*cmdContext, *bytes.Buffer) {
+func mcpCmdContext(t *testing.T) (*tui.Context, *bytes.Buffer) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	c := &cmdContext{stdout: &out, stderr: &errOut,
-		getenv:    func(string) string { return "" },
-		forgeHome: t.TempDir(), userHome: t.TempDir(), now: time.Now}
+	c := &tui.Context{Stdout: &out, Stderr: &errOut,
+		Getenv:    func(string) string { return "" },
+		ForgeHome: t.TempDir(), UserHome: t.TempDir(), Now: time.Now}
 	return c, &errOut
 }
 

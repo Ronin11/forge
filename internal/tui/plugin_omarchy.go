@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -26,7 +26,7 @@ const omarchyAgentsID = "omarchy.agents"
 
 // installOmarchyIndicator copies the plugin's QML into
 // ~/.config/omarchy/plugins/ronin.forge/ and adds the widget to the bar.
-func installOmarchyIndicator(ctx context.Context, c *cmdContext) error {
+func installOmarchyIndicator(ctx context.Context, c *Context) error {
 	src, err := omarchyIndicatorSource()
 	if err != nil {
 		return fmt.Errorf("locate omarchy-indicator source: %w", err)
@@ -36,7 +36,7 @@ func installOmarchyIndicator(ctx context.Context, c *cmdContext) error {
 	if err != nil {
 		return fmt.Errorf("install plugin files: %w", err)
 	}
-	fmt.Fprintf(c.stdout, "installed %s into %s\n", strings.Join(copied, ", "), dst)
+	fmt.Fprintf(c.Stdout, "installed %s into %s\n", strings.Join(copied, ", "), dst)
 
 	shellJSON := filepath.Join(omarchyConfigDir(c), "shell.json")
 	present, err := shellJSONHasEntry(shellJSON, omarchyPluginID)
@@ -44,7 +44,7 @@ func installOmarchyIndicator(ctx context.Context, c *cmdContext) error {
 		return fmt.Errorf("read %s: %w", shellJSON, err)
 	}
 	if present {
-		fmt.Fprintf(c.stdout, "%s is already on the bar\n", omarchyPluginID)
+		fmt.Fprintf(c.Stdout, "%s is already on the bar\n", omarchyPluginID)
 		return nil
 	}
 
@@ -54,10 +54,10 @@ func installOmarchyIndicator(ctx context.Context, c *cmdContext) error {
 		out, err := exec.CommandContext(ctx, "omarchy", "bar", "put", omarchyPluginID,
 			"--section", "right", "--before", omarchyAgentsID).CombinedOutput()
 		if err == nil {
-			fmt.Fprintf(c.stdout, "omarchy bar put: %s\n", strings.TrimSpace(string(out)))
+			fmt.Fprintf(c.Stdout, "omarchy bar put: %s\n", strings.TrimSpace(string(out)))
 			return nil
 		}
-		fmt.Fprintf(c.stderr, "omarchy bar put failed (%v): %s — editing shell.json directly\n",
+		fmt.Fprintf(c.Stderr, "omarchy bar put failed (%v): %s — editing shell.json directly\n",
 			err, strings.TrimSpace(string(out)))
 	}
 
@@ -65,61 +65,61 @@ func installOmarchyIndicator(ctx context.Context, c *cmdContext) error {
 	// runs on its built-in defaults; writing one with only our entry would
 	// replace the whole default bar, so leave it alone and say so.
 	if _, err := os.Stat(shellJSON); os.IsNotExist(err) {
-		fmt.Fprintf(c.stdout, "%s does not exist; not creating one — run: omarchy bar put %s --section right --before %s\n",
+		fmt.Fprintf(c.Stdout, "%s does not exist; not creating one — run: omarchy bar put %s --section right --before %s\n",
 			shellJSON, omarchyPluginID, omarchyAgentsID)
 		return nil
 	}
-	backup := fmt.Sprintf("%s.forge-backup-%d", shellJSON, c.now().Unix())
+	backup := fmt.Sprintf("%s.forge-backup-%d", shellJSON, c.Now().Unix())
 	changed, err := addOmarchyBarEntry(shellJSON, backup)
 	if err != nil {
 		return fmt.Errorf("add %s to %s: %w", omarchyPluginID, shellJSON, err)
 	}
 	if changed {
-		fmt.Fprintf(c.stdout, "backed up %s to %s\n", shellJSON, backup)
-		fmt.Fprintf(c.stdout, "added %s to the bar's right section\n", omarchyPluginID)
+		fmt.Fprintf(c.Stdout, "backed up %s to %s\n", shellJSON, backup)
+		fmt.Fprintf(c.Stdout, "added %s to the bar's right section\n", omarchyPluginID)
 	} else {
-		fmt.Fprintf(c.stdout, "%s is already on the bar\n", omarchyPluginID)
+		fmt.Fprintf(c.Stdout, "%s is already on the bar\n", omarchyPluginID)
 	}
 	return nil
 }
 
 // uninstallOmarchyIndicator removes the widget from shell.json and deletes
 // the installed plugin directory. Safe when either is already gone.
-func uninstallOmarchyIndicator(ctx context.Context, c *cmdContext) error {
+func uninstallOmarchyIndicator(ctx context.Context, c *Context) error {
 	shellJSON := filepath.Join(omarchyConfigDir(c), "shell.json")
 	if _, err := os.Stat(shellJSON); err == nil {
-		backup := fmt.Sprintf("%s.forge-backup-%d", shellJSON, c.now().Unix())
+		backup := fmt.Sprintf("%s.forge-backup-%d", shellJSON, c.Now().Unix())
 		changed, err := removeOmarchyBarEntry(shellJSON, backup)
 		if err != nil {
 			return fmt.Errorf("remove %s from %s: %w", omarchyPluginID, shellJSON, err)
 		}
 		if changed {
-			fmt.Fprintf(c.stdout, "backed up %s to %s\n", shellJSON, backup)
-			fmt.Fprintf(c.stdout, "removed %s from the bar\n", omarchyPluginID)
+			fmt.Fprintf(c.Stdout, "backed up %s to %s\n", shellJSON, backup)
+			fmt.Fprintf(c.Stdout, "removed %s from the bar\n", omarchyPluginID)
 		} else {
-			fmt.Fprintf(c.stdout, "%s was not on the bar\n", omarchyPluginID)
+			fmt.Fprintf(c.Stdout, "%s was not on the bar\n", omarchyPluginID)
 		}
 	}
 
 	dst := filepath.Join(omarchyConfigDir(c), "plugins", omarchyPluginID)
 	if _, err := os.Stat(dst); os.IsNotExist(err) {
-		fmt.Fprintf(c.stdout, "%s is not installed\n", dst)
+		fmt.Fprintf(c.Stdout, "%s is not installed\n", dst)
 		return nil
 	}
 	if err := os.RemoveAll(dst); err != nil {
 		return fmt.Errorf("remove %s: %w", dst, err)
 	}
-	fmt.Fprintf(c.stdout, "removed %s\n", dst)
+	fmt.Fprintf(c.Stdout, "removed %s\n", dst)
 	return nil
 }
 
 // omarchyConfigDir is ~/.config/omarchy, honoring XDG_CONFIG_HOME the way
 // serviceUnitDir does.
-func omarchyConfigDir(c *cmdContext) string {
-	if x := c.getenv("XDG_CONFIG_HOME"); x != "" {
+func omarchyConfigDir(c *Context) string {
+	if x := c.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "omarchy")
 	}
-	return filepath.Join(c.userHome, ".config", "omarchy")
+	return filepath.Join(c.UserHome, ".config", "omarchy")
 }
 
 // omarchyIndicatorSource walks up from the forge binary (and, failing that,

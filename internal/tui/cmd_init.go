@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -18,40 +18,40 @@ import (
 	"forge/internal/core/worker"
 )
 
-// runInit is the optional interactive half of setup (DESIGN.md §1.3): report
+// RunInit is the optional interactive half of setup (DESIGN.md §1.3): report
 // binaries, register repositories, choose the kb path, and — behind flags —
 // install the systemd units and Playwright. Bootstrap proper stays in the
 // daemon; init only edits the same files and says what it did or skipped.
-func runInit(ctx context.Context, c *cmdContext, args []string) int {
-	fs, lf := c.flags("init")
+func RunInit(ctx context.Context, c *Context, args []string) int {
+	fs, lf := c.Flags("init")
 	yes := fs.Bool("yes", false, "take every default; no prompts")
 	service := fs.Bool("service", false, "install the systemd user units")
 	withBrowser := fs.Bool("with-browser", false, "install Playwright under <home>/deps (never global)")
-	if code := c.parse(fs, args); code >= 0 {
+	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "forge init: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(c.Stderr, "forge init: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	_, log, code := c.resolveLogging(lf, "cli.init")
+	_, log, code := c.ResolveLogging(lf, "cli.init")
 	if code >= 0 {
 		return code
 	}
-	log.DebugContext(ctx, "init", "yes", *yes, "service", *service, "with_browser", *withBrowser, "home", c.forgeHome)
-	if err := os.MkdirAll(c.forgeHome, 0o700); err != nil {
-		return c.fail("init", fmt.Errorf("create %s: %w", c.forgeHome, err))
+	log.DebugContext(ctx, "init", "yes", *yes, "service", *service, "with_browser", *withBrowser, "home", c.ForgeHome)
+	if err := os.MkdirAll(c.ForgeHome, 0o700); err != nil {
+		return c.Fail("init", fmt.Errorf("create %s: %w", c.ForgeHome, err))
 	}
 
 	// Step 1: binaries. Same checks as doctor, so the two never disagree.
-	fmt.Fprintln(c.stdout, "binaries:")
+	fmt.Fprintln(c.Stdout, "binaries:")
 	for _, ch := range doctor.Binaries(exec.LookPath, binaryVersion) {
-		fmt.Fprintf(c.stdout, "  %-4s %-6s %s\n", ch.Status, strings.TrimPrefix(ch.Name, "binary."), ch.Detail)
+		fmt.Fprintf(c.Stdout, "  %-4s %-6s %s\n", ch.Status, strings.TrimPrefix(ch.Name, "binary."), ch.Detail)
 	}
 
-	cfg, err := config.LoadConfig(filepath.Join(c.forgeHome, "config.toml"), c.forgeHome, c.userHome, c.getenv)
+	cfg, err := config.LoadConfig(filepath.Join(c.ForgeHome, "config.toml"), c.ForgeHome, c.UserHome, c.Getenv)
 	if err != nil {
-		return c.fail("init", err)
+		return c.Fail("init", err)
 	}
 
 	// Step 2: repositories.
@@ -61,22 +61,22 @@ func runInit(ctx context.Context, c *cmdContext, args []string) int {
 
 	// Step 3: kb path.
 	if *yes {
-		fmt.Fprintf(c.stdout, "kb path: %s (kept; --yes)\n", cfg.KB.Path)
+		fmt.Fprintf(c.Stdout, "kb path: %s (kept; --yes)\n", cfg.KB.Path)
 	} else if code := initKbPath(c, cfg.KB.Path); code != 0 {
 		return code
 	}
 
 	// Step 4: systemd units, through the same code path as `forge service install`.
 	if !*service {
-		fmt.Fprintln(c.stdout, "service: skipped (run with --service to install the systemd user units)")
+		fmt.Fprintln(c.Stdout, "service: skipped (run with --service to install the systemd user units)")
 	} else {
 		if _, err := exec.LookPath("systemctl"); err != nil {
-			fmt.Fprintln(c.stderr, "forge init: systemctl is not on PATH — cannot install the user units")
+			fmt.Fprintln(c.Stderr, "forge init: systemctl is not on PATH — cannot install the user units")
 			return 1
 		}
 		self, err := os.Executable()
 		if err != nil {
-			return c.fail("init", fmt.Errorf("resolve forge binary: %w", err))
+			return c.Fail("init", fmt.Errorf("resolve forge binary: %w", err))
 		}
 		if code := serviceInstall(ctx, c, serviceUnitDir(c), self, execServiceRunner); code != 0 {
 			return code
@@ -85,7 +85,7 @@ func runInit(ctx context.Context, c *cmdContext, args []string) int {
 
 	// Step 5: Playwright under <home>/deps.
 	if !*withBrowser {
-		fmt.Fprintln(c.stdout, "browser: skipped (run with --with-browser to install Playwright)")
+		fmt.Fprintln(c.Stdout, "browser: skipped (run with --with-browser to install Playwright)")
 	} else if code := initBrowser(ctx, c); code != 0 {
 		return code
 	}
@@ -103,9 +103,9 @@ type repoCandidate struct {
 // offers to register each in worker.toml. With --yes nothing is written: the
 // safe default keeps worker.toml as-is and reports what an interactive run
 // would offer.
-func initRepositories(ctx context.Context, c *cmdContext, projectsRoot string, yes bool) int {
+func initRepositories(ctx context.Context, c *Context, projectsRoot string, yes bool) int {
 	candidates := scanRepos(ctx, projectsRoot, forgeCheckout())
-	wtPath := filepath.Join(c.forgeHome, "worker.toml")
+	wtPath := filepath.Join(c.ForgeHome, "worker.toml")
 	registered := registeredRepoNames(wtPath)
 	var fresh []repoCandidate
 	for _, cand := range candidates {
@@ -113,16 +113,16 @@ func initRepositories(ctx context.Context, c *cmdContext, projectsRoot string, y
 			fresh = append(fresh, cand)
 		}
 	}
-	fmt.Fprintf(c.stdout, "repositories: %d checkouts with an origin under %s, %d already in worker.toml\n", len(candidates), projectsRoot, len(candidates)-len(fresh))
+	fmt.Fprintf(c.Stdout, "repositories: %d checkouts with an origin under %s, %d already in worker.toml\n", len(candidates), projectsRoot, len(candidates)-len(fresh))
 	if len(fresh) == 0 {
-		fmt.Fprintln(c.stdout, "  nothing new to register")
+		fmt.Fprintln(c.Stdout, "  nothing new to register")
 		return 0
 	}
 	if yes {
 		for _, cand := range fresh {
-			fmt.Fprintf(c.stdout, "  would register %s (%s)\n", cand.Name, cand.Path)
+			fmt.Fprintf(c.Stdout, "  would register %s (%s)\n", cand.Name, cand.Path)
 		}
-		fmt.Fprintln(c.stdout, "  worker.toml left unchanged (--yes registers nothing; run interactively to choose)")
+		fmt.Fprintln(c.Stdout, "  worker.toml left unchanged (--yes registers nothing; run interactively to choose)")
 		return 0
 	}
 	in := promptReader(c)
@@ -133,16 +133,16 @@ func initRepositories(ctx context.Context, c *cmdContext, projectsRoot string, y
 		}
 	}
 	if len(adds) == 0 {
-		fmt.Fprintln(c.stdout, "  no repositories registered")
+		fmt.Fprintln(c.Stdout, "  no repositories registered")
 		return 0
 	}
 	// A fresh box has no worker.toml yet; seed the same default bootstrap writes.
 	self, err := os.Executable()
 	if err != nil {
-		return c.fail("init", fmt.Errorf("resolve forge binary: %w", err))
+		return c.Fail("init", fmt.Errorf("resolve forge binary: %w", err))
 	}
-	if _, err := worker.WriteDefault(wtPath, c.forgeHome, self); err != nil {
-		return c.fail("init", err)
+	if _, err := worker.WriteDefault(wtPath, c.ForgeHome, self); err != nil {
+		return c.Fail("init", err)
 	}
 	if err := mergeTomlFile(wtPath, func(m map[string]any) {
 		repos, ok := m["repositories"].(map[string]any)
@@ -156,42 +156,42 @@ func initRepositories(ctx context.Context, c *cmdContext, projectsRoot string, y
 		}
 		m["repositories"] = repos
 	}); err != nil {
-		return c.fail("init", err)
+		return c.Fail("init", err)
 	}
 	if _, err := worker.LoadConfig(wtPath); err != nil {
-		return c.fail("init", fmt.Errorf("worker.toml is invalid after the merge: %w", err))
+		return c.Fail("init", fmt.Errorf("worker.toml is invalid after the merge: %w", err))
 	}
 	names := make([]string, 0, len(adds))
 	for name := range adds {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	fmt.Fprintf(c.stdout, "  registered %s in %s (the worker advertises them within 30 s; 'forge daemon restart' if it is not running)\n", strings.Join(names, ", "), wtPath)
+	fmt.Fprintf(c.Stdout, "  registered %s in %s (the worker advertises them within 30 s; 'forge daemon restart' if it is not running)\n", strings.Join(names, ", "), wtPath)
 	return 0
 }
 
 // initKbPath shows the current [kb] path and rewrites config.toml if the
 // operator types a different one.
-func initKbPath(c *cmdContext, current string) int {
+func initKbPath(c *Context, current string) int {
 	in := promptReader(c)
 	if in == nil {
-		fmt.Fprintf(c.stdout, "kb path: %s (kept; no terminal)\n", current)
+		fmt.Fprintf(c.Stdout, "kb path: %s (kept; no terminal)\n", current)
 		return 0
 	}
-	fmt.Fprintf(c.stdout, "kb path [%s]: ", current)
+	fmt.Fprintf(c.Stdout, "kb path [%s]: ", current)
 	line, err := in.ReadString('\n')
 	if err != nil && line == "" {
-		fmt.Fprintf(c.stdout, "\nkb path: %s (kept)\n", current)
+		fmt.Fprintf(c.Stdout, "\nkb path: %s (kept)\n", current)
 		return 0
 	}
 	answer := strings.TrimSpace(line)
 	if answer == "" || answer == current {
-		fmt.Fprintf(c.stdout, "kb path: %s (kept)\n", current)
+		fmt.Fprintf(c.Stdout, "kb path: %s (kept)\n", current)
 		return 0
 	}
-	cfgPath := filepath.Join(c.forgeHome, "config.toml")
-	if _, err := config.WriteDefaultConfig(cfgPath, c.forgeHome, c.userHome); err != nil {
-		return c.fail("init", err)
+	cfgPath := filepath.Join(c.ForgeHome, "config.toml")
+	if _, err := config.WriteDefaultConfig(cfgPath, c.ForgeHome, c.UserHome); err != nil {
+		return c.Fail("init", err)
 	}
 	if err := mergeTomlFile(cfgPath, func(m map[string]any) {
 		kb, ok := m["kb"].(map[string]any)
@@ -201,32 +201,32 @@ func initKbPath(c *cmdContext, current string) int {
 		kb["path"] = answer
 		m["kb"] = kb
 	}); err != nil {
-		return c.fail("init", err)
+		return c.Fail("init", err)
 	}
-	fmt.Fprintf(c.stdout, "kb path: set to %s (the daemon reads config.toml on restart)\n", answer)
+	fmt.Fprintf(c.Stdout, "kb path: set to %s (the daemon reads config.toml on restart)\n", answer)
 	return 0
 }
 
 // initBrowser installs Playwright and Chromium under <home>/deps — never
 // globally — streaming npm's output so failures are the real ones.
-func initBrowser(ctx context.Context, c *cmdContext) int {
-	deps := filepath.Join(c.forgeHome, "deps")
+func initBrowser(ctx context.Context, c *Context) int {
+	deps := filepath.Join(c.ForgeHome, "deps")
 	if err := os.MkdirAll(deps, 0o700); err != nil {
-		return c.fail("init", fmt.Errorf("create %s: %w", deps, err))
+		return c.Fail("init", fmt.Errorf("create %s: %w", deps, err))
 	}
 	for _, argv := range [][]string{
 		{"npm", "i", "playwright"},
 		{"npx", "playwright", "install", "chromium"},
 	} {
-		fmt.Fprintf(c.stdout, "browser: running %s in %s\n", strings.Join(argv, " "), deps)
+		fmt.Fprintf(c.Stdout, "browser: running %s in %s\n", strings.Join(argv, " "), deps)
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.Dir = deps
-		cmd.Stdout, cmd.Stderr = c.stdout, c.stderr
+		cmd.Stdout, cmd.Stderr = c.Stdout, c.Stderr
 		if err := cmd.Run(); err != nil {
-			return c.fail("init", fmt.Errorf("%s: %w", strings.Join(argv, " "), err))
+			return c.Fail("init", fmt.Errorf("%s: %w", strings.Join(argv, " "), err))
 		}
 	}
-	fmt.Fprintf(c.stdout, "browser: installed under %s (the worker advertises browser=ready on its next registration)\n", deps)
+	fmt.Fprintf(c.Stdout, "browser: installed under %s (the worker advertises browser=ready on its next registration)\n", deps)
 	return 0
 }
 
@@ -312,18 +312,18 @@ func mergeTomlFile(path string, mutate func(m map[string]any)) error {
 	return nil
 }
 
-// promptReader wraps c.stdin for prompting; nil when there is nothing to read
+// promptReader wraps c.Stdin for prompting; nil when there is nothing to read
 // from, in which case every prompt takes its default.
-func promptReader(c *cmdContext) *bufio.Reader {
-	if c.stdin == nil {
+func promptReader(c *Context) *bufio.Reader {
+	if c.Stdin == nil {
 		return nil
 	}
-	return bufio.NewReader(c.stdin)
+	return bufio.NewReader(c.Stdin)
 }
 
 // askYesNo prompts with the default capitalised and reads one line; EOF, a
 // missing stdin, or a blank answer takes the default.
-func askYesNo(c *cmdContext, in *bufio.Reader, prompt string, def bool) bool {
+func askYesNo(c *Context, in *bufio.Reader, prompt string, def bool) bool {
 	suffix := " [y/N] "
 	if def {
 		suffix = " [Y/n] "
@@ -331,11 +331,11 @@ func askYesNo(c *cmdContext, in *bufio.Reader, prompt string, def bool) bool {
 	if in == nil {
 		return def
 	}
-	fmt.Fprint(c.stdout, prompt+suffix)
+	fmt.Fprint(c.Stdout, prompt+suffix)
 	line, err := in.ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	if err != nil && answer == "" {
-		fmt.Fprintln(c.stdout)
+		fmt.Fprintln(c.Stdout)
 		return def
 	}
 	switch answer {
