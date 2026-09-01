@@ -20,6 +20,7 @@ import (
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
+	"forge/internal/core/protocol"
 	"forge/internal/core/stats"
 	"forge/internal/core/store"
 	"forge/internal/web"
@@ -39,11 +40,21 @@ type UI struct {
 	// pluginHealth is the supervisor's live view for the System page; nil
 	// (tests, a UI without a daemon) renders installed rows as not running.
 	pluginHealth func() []plugin.PluginHealth
+	// appStatus is the run supervisor's live app state for the Repos list;
+	// nil (tests, a bare UI) shows no app chips.
+	appStatus func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// attention + quietHours let the Human Queue show each non-critical
 	// question's countdown to auto-decision (the same deadline the sweep acts
 	// on). Zero attention (tests, a bare UI) shows no countdown.
 	attentionCfg config.AttentionConfig
 	quietHours   config.QuietHoursConfig
+}
+
+// SetAppStatus wires the run supervisor's live app state into the Repos list:
+// the per-row app chip and the live URL (preferred over the static app_url,
+// which goes stale when a restart leases a different port). Nil hides both.
+func (u *UI) SetAppStatus(fn func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)) {
+	u.appStatus = fn
 }
 
 // SetPluginHealth wires the supervisor's live state into the System page; the
@@ -143,6 +154,19 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 			return fmt.Sprintf("$%.4f", *p)
 		},
 		"stateClass": func(s any) string { return "state-" + strings.ReplaceAll(fmt.Sprint(s), "_", "-") },
+		// appStateClass maps the run supervisor's app states onto the existing
+		// state pill palette (style.css has no app-specific classes).
+		"appStateClass": func(s string) string {
+			switch s {
+			case "running":
+				return "state-running"
+			case "errored":
+				return "state-failed"
+			case "building", "starting":
+				return "state-preparing"
+			}
+			return "state-idle"
+		},
 		// stateIcon maps a state to the sprite symbol id for its pill glyph,
 		// following the same groups as the .state-* colors in style.css; idle and
 		// any unmapped state get "" (no glyph).
@@ -648,7 +672,26 @@ func (u *UI) repos(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "repos.html", "Repos", map[string]any{"Repositories": repos, "RepoStates": states})
+	// Live app state per row (P2, TODO 2026-09-01): the task-health chip says
+	// nothing about a running app, and the static app_url goes stale when a
+	// restart leases a new port — prefer the supervisor's live URL.
+	apps := map[string]protocol.AppStatus{}
+	if u.appStatus != nil {
+		for _, repo := range repos {
+			if repo.Archived {
+				continue
+			}
+			st, err := u.appStatus(ctx, repo.Name, repo.Path)
+			if err != nil {
+				u.log.WarnContext(ctx, "app status for repos list", "repo", repo.Name, "error", err)
+				continue
+			}
+			if st.Configured {
+				apps[repo.Name] = st
+			}
+		}
+	}
+	u.render(w, r, "repos.html", "Repos", map[string]any{"Repositories": repos, "RepoStates": states, "Apps": apps})
 }
 
 func (u *UI) system(w http.ResponseWriter, r *http.Request) {

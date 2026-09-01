@@ -298,6 +298,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	}
 	ui.SetPluginHealth(sup.Health)
 	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
+	ui.SetAppStatus(runSup.AppStatus)
 	srv.MountRoot(ui.Handler())
 	pid := os.Getpid()
 	pidStart, err := daemon.ProcStart(pid)
