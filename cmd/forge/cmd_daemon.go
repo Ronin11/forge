@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -234,6 +236,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		StopApp:      runSup.StopApp,
 		RebuildApp:   runSup.RebuildApp,
 		AppStatus:    runSup.AppStatus,
+		ModelCall:    d.modelCall,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
@@ -972,6 +975,54 @@ func detectBaseBranch(ctx context.Context, path string) string {
 		return strings.TrimSpace(string(out))
 	}
 	return ""
+}
+
+// modelCall runs one cheap headless claude completion for the concierge
+// (handlers_assistant.go): the system prompt as --append-system-prompt, the user
+// text on stdin, and the model's text pulled from --output-format json's result.
+func (d *daemonProcess) modelCall(ctx context.Context, system, user, model string) (string, error) {
+	bin, err := resolveClaude()
+	if err != nil {
+		return "", err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, bin, "--print", "--output-format", "json", "--model", model, "--append-system-prompt", system)
+	cmd.Stdin = strings.NewReader(user)
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("claude: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var res struct {
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		return "", fmt.Errorf("parse claude output: %w", err)
+	}
+	return res.Result, nil
+}
+
+// resolveClaude finds the claude binary: PATH first, then the common install
+// locations (the daemon's systemd env may not carry the mise shims).
+func resolveClaude() (string, error) {
+	if p, err := exec.LookPath("claude"); err == nil {
+		return p, nil
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		home = ""
+	}
+	for _, c := range []string{
+		filepath.Join(home, ".local/share/mise/installs/claude/latest/claude"),
+		filepath.Join(home, ".local/bin/claude"),
+		"/usr/local/bin/claude",
+	} {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("claude binary not found on PATH or common locations")
 }
 
 // runnerCapacities extracts each runner's capacity for the scheduler's

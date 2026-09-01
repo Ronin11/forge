@@ -93,6 +93,12 @@ type Server struct {
 	stopApp    func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	rebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	appStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	// modelCall is the concierge's one LLM primitive (daemon-injected); the
+	// session maps hold per-sender conversation context.
+	modelCall         func(ctx context.Context, system, user, model string) (string, error)
+	assistantMu       sync.Mutex
+	assistantSessions map[string][]assistantTurn
+	assistantLastSeen map[string]time.Time
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -175,6 +181,9 @@ type ServerOptions struct {
 	StopApp    func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	RebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	AppStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	// ModelCall runs one cheap model completion for the concierge (system +
+	// user prompt → text); nil disables the assistant endpoint.
+	ModelCall func(ctx context.Context, system, user, model string) (string, error)
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -259,6 +268,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
+		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
 		closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
@@ -333,6 +343,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
 	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
 	m.HandleFunc("POST /api/v1/rpc/{method}", s.handle(s.rpc))
+	m.HandleFunc("POST /api/v1/assistant/message", s.handle(s.assistantMessage))
 	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))
 	m.HandleFunc("GET /api/v1/attempts/{id}/events", s.handle(s.getEvents))
 	m.HandleFunc("GET /api/v1/workers", s.handle(s.workers))

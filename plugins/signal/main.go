@@ -320,7 +320,7 @@ func (b *bridge) runInbound(ctx context.Context) error {
 				b.log.Info("ignoring message from non-recipient", "from", m.From)
 				continue
 			}
-			b.command(ctx, m.Text, m.QuoteID)
+			b.command(ctx, m.Text, m.QuoteID, m.From)
 		}
 	}
 	return ctx.Err()
@@ -328,7 +328,7 @@ func (b *bridge) runInbound(ctx context.Context) error {
 
 // command interprets one inbound message: a reply to a question (answers it), a
 // /-command, or a bare request that becomes a task.
-func (b *bridge) command(ctx context.Context, text string, quoteID int64) {
+func (b *bridge) command(ctx context.Context, text string, quoteID int64, from string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -352,47 +352,24 @@ func (b *bridge) command(ctx context.Context, text string, quoteID int64) {
 		b.send(ctx, "Answered task "+shortID(pq.WorkID)+".")
 		return
 	}
-	if !strings.HasPrefix(text, "/") {
-		b.fileTask(ctx, text)
-		return
-	}
-	fields := strings.Fields(text)
-	switch strings.ToLower(fields[0]) {
-	case "/help":
-		b.send(ctx, "Forge commands:\n• <any text> — file a task\n• /task <text> — file a task\n• /answer <id> <text> — answer a waiting question\n• /status — queue summary")
-	case "/status":
-		b.status(ctx)
-	case "/task":
-		b.fileTask(ctx, strings.TrimSpace(strings.TrimPrefix(text, fields[0])))
-	case "/answer":
+	// /answer <id> <text> stays a deterministic fast-path.
+	if fields := strings.Fields(text); strings.EqualFold(fields[0], "/answer") {
 		if len(fields) < 3 {
 			b.send(ctx, "Usage: /answer <task-id> <your answer>")
 			return
 		}
 		b.answer(ctx, fields[1], strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, fields[0]), " "+fields[1])))
-	default:
-		b.send(ctx, "Unknown command. Send /help, or just text a request to file a task.")
-	}
-}
-
-func (b *bridge) fileTask(ctx context.Context, prompt string) {
-	if strings.TrimSpace(prompt) == "" {
 		return
 	}
-	repos := []string(nil)
-	if b.cfg.DefaultRepo != "" {
-		repos = []string{b.cfg.DefaultRepo}
-	}
-	if len(repos) == 0 {
-		b.send(ctx, "No default repo set (default_repo in signal.toml) — can't file a task without one.")
-		return
-	}
-	id, err := b.api.CreateTask(ctx, createTaskRequest{Prompt: prompt, Repositories: repos, SubmittedBy: "signal"})
+	// Everything else goes to the concierge: natural language in, action out.
+	reply, err := b.api.Assistant(ctx, from, text)
 	if err != nil {
-		b.send(ctx, "Couldn't file that: "+errMessage(err))
+		b.send(ctx, "Sorry, I hit an error reaching Forge: "+errMessage(err))
 		return
 	}
-	b.send(ctx, fmt.Sprintf("Filed task %s on %s.\n%s/tasks/%s", shortID(id), repos[0], b.cfg.UI, id))
+	if reply != "" {
+		b.send(ctx, reply)
+	}
 }
 
 func (b *bridge) answer(ctx context.Context, taskRef, answer string) {
@@ -417,26 +394,6 @@ func (b *bridge) answer(ctx context.Context, taskRef, answer string) {
 		}
 	}
 	b.send(ctx, "No open question for task "+taskRef+".")
-}
-
-func (b *bridge) status(ctx context.Context) {
-	q, err := b.api.Queue(ctx)
-	if err != nil {
-		b.send(ctx, "Couldn't read the queue: "+errMessage(err))
-		return
-	}
-	running, pending, deferred := 0, 0, 0
-	for _, item := range q {
-		switch item.State {
-		case "running":
-			running++
-		case "pending", "blocked":
-			pending++
-		case "deferred":
-			deferred++
-		}
-	}
-	b.send(ctx, fmt.Sprintf("Forge queue: %d running, %d waiting, %d deferred (%d total).\n%s", running, pending, deferred, len(q), b.cfg.UI))
 }
 
 // ---- helpers ----
