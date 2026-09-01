@@ -12,7 +12,7 @@
 </nav>{{end}}{{end}}
 {{range .Data.Questions}}<div class="card question" data-question="{{.ID}}"><b>Question</b> {{.Text}}{{if .Options}} <small>options: {{join .Options ", "}}</small>{{end}}
 {{if .AnsweredAt.IsZero}}<form data-answer-form="{{.ID}}"><input type="text" name="answer" placeholder="your answer" size="60" required> <button type="submit">Answer &amp; resume</button></form>
-<p class="meta">or: <code>forge task answer {{short .WorkID}} "…"</code></p>{{else}}<div>Answered by {{.AnsweredBy}}: {{.Answer}}</div>{{end}}</div>{{end}}
+<p class="meta">or: <code>forge task answer {{short .WorkID}} "…"</code></p>{{else if .IsAuto}}<div class="auto-answer"><span class="chip warn">decided by Forge ({{.AutoModel}})</span> {{.Answer}}{{if .Rationale}}<p class="meta">rationale: {{.Rationale}}</p>{{end}}</div>{{else}}<div>Answered by {{.AnsweredBy}}: {{.Answer}}</div>{{end}}</div>{{end}}
 {{range .Data.Targets}}
 <section class="card">
 <h2>{{.Target.Repository}} {{template "stateChip" .Target.State}}{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>

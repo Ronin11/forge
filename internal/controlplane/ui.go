@@ -36,11 +36,22 @@ type UI struct {
 	// pluginHealth is the supervisor's live view for the System page; nil
 	// (tests, a UI without a daemon) renders installed rows as not running.
 	pluginHealth func() []plugin.PluginHealth
+	// attention + quietHours let the Human Queue show each non-critical
+	// question's countdown to auto-decision (the same deadline the sweep acts
+	// on). Zero attention (tests, a bare UI) shows no countdown.
+	attentionCfg AttentionConfig
+	quietHours   QuietHoursConfig
 }
 
 // SetPluginHealth wires the supervisor's live state into the System page; the
 // daemon calls it once at startup.
 func (u *UI) SetPluginHealth(fn func() []plugin.PluginHealth) { u.pluginHealth = fn }
+
+// SetAttention wires the fuzzy Human Queue's SLA into the UI so the queue shows
+// each non-critical question's countdown; the daemon calls it once at startup.
+func (u *UI) SetAttention(cfg AttentionConfig, quiet QuietHoursConfig) {
+	u.attentionCfg, u.quietHours = cfg, quiet
+}
 
 // NewUI parses the embedded templates once; a template error is a startup error.
 func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, error) {
@@ -59,6 +70,15 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 				return "-"
 			}
 			return humanDuration(clock().Sub(t)) + " ago"
+		},
+		// until renders a future instant as a remaining-time phrase (the Human
+		// Queue's "Forge decides in …" countdown); a past or zero instant reads
+		// "now".
+		"until": func(t time.Time) string {
+			if d := t.Sub(clock()); d > 0 {
+				return "~" + humanDuration(d)
+			}
+			return "now"
 		},
 		"dur": func(us *int64) string {
 			if us == nil {
@@ -763,16 +783,34 @@ func (u *UI) attention(w http.ResponseWriter, r *http.Request) {
 		Question store.Question
 		Work     *store.Work
 		Actions  []QueueAction
+		// AutoDecide is true when Forge will decide this question once its
+		// Deadline lapses (non-critical, auto-decision on); critical questions
+		// have AutoDecide false and no Deadline — they need a human.
+		AutoDecide bool
+		Deadline   time.Time
 	}
 	rows := make([]row, 0, len(questions))
+	now := u.clock()
 	for _, q := range questions {
 		work, err := u.store.GetWork(r.Context(), q.WorkID)
 		if err != nil {
 			u.fail(w, r, err)
 			return
 		}
-		rows = append(rows, row{Question: q, Work: work, Actions: questionActions(q.Context)})
+		deadline, auto := attentionDeadline(q, now, u.attentionCfg, u.quietHours)
+		rows = append(rows, row{Question: q, Work: work, Actions: questionActions(q.Context), AutoDecide: auto, Deadline: deadline})
 	}
+	// Most urgent first: auto-deciding questions by soonest deadline, then the
+	// critical "needs you" items (which never auto-decide) by age.
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].AutoDecide != rows[j].AutoDecide {
+			return rows[i].AutoDecide
+		}
+		if rows[i].AutoDecide {
+			return rows[i].Deadline.Before(rows[j].Deadline)
+		}
+		return rows[i].Question.AskedAt.Before(rows[j].Question.AskedAt)
+	})
 	proposals, err := u.store.ListProposals(r.Context(), model.ProposalProposed)
 	if err != nil {
 		u.fail(w, r, err)

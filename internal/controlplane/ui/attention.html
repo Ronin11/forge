@@ -2,8 +2,9 @@
 {{if and (not .Data.Questions) (not .Data.Proposals)}}<p class="empty">Nothing is waiting on you.</p>{{end}}
 {{if or .Data.Questions .Data.Proposals}}{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter — text, type:question, kind:prompt, routine:name" "Keys" "type,kind,routine,target"}}{{end}}
 {{range .Data.Questions}}
-<div class="card question" data-question="{{.Question.ID}}" data-sf-item data-f-type="question" data-f-routine="{{.Work.RoutineName}}">
+<div class="card question" data-question="{{.Question.ID}}" data-sf-item data-f-type="question" data-f-routine="{{.Work.RoutineName}}" data-f-criticality="{{.Question.Criticality}}">
 <b>Question</b> from <a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> ({{.Work.RoutineName}}@{{.Work.Generation}}) · asked {{ago .Question.AskedAt}}
+{{if .AutoDecide}}<span class="chip">{{.Question.Criticality}}</span> <span class="chip" title="{{.Deadline}}">Forge decides in {{until .Deadline}}</span>{{else}}<span class="chip warn">critical · needs you</span>{{end}}
 <p>{{.Question.Text}}</p>
 {{if .Question.Options}}<p class="meta">options: {{join .Question.Options ", "}}</p>{{end}}
 {{if .Actions}}<p>{{range .Actions}}{{if .URL}}<a href="{{.URL}}">{{.Label}} →</a>{{else}}<button data-rpc="{{.RPC}}"{{if .Args}} data-rpc-args="{{.Args}}"{{end}}>{{.Label}}</button>{{end}} {{end}}</p>{{end}}
