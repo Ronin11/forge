@@ -1,4 +1,4 @@
-package controlplane
+package pluginbridge
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/mcpserve"
 	"forge/internal/tools"
+	"forge/internal/tools/mcpserve"
 )
 
 // TestPluginToolsBridge speaks one real initialize → tools/list → tools/call

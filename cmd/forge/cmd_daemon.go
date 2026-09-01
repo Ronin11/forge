@@ -35,6 +35,7 @@ import (
 	"forge/internal/core/store"
 	"forge/internal/core/worker"
 	"forge/internal/tools"
+	"forge/internal/tools/pluginbridge"
 )
 
 func runDaemon(ctx context.Context, c *cmdContext, args []string) int {
@@ -662,7 +663,7 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 	sup := plugin.NewSupervisor(plugin.SupervisorOptions{LogFor: d.handler.For})
 	// bridges is filled here, before the server exists, and only read by the
 	// runtime start hook afterwards.
-	bridges := map[string]*controlplane.PluginTools{}
+	bridges := map[string]*pluginbridge.PluginTools{}
 	launch := func(ctx context.Context, m *plugin.Manifest, token string) error {
 		f, err := os.OpenFile(filepath.Join(logsDir, m.Name+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
@@ -717,7 +718,7 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 			return nil, nil, fmt.Errorf("refresh plugin token: %w", err)
 		}
 		if m.Has(plugin.CapTools) {
-			bridges[m.Name] = controlplane.NewPluginTools(m.Name, d.handler.For("plugin."+m.Name))
+			bridges[m.Name] = pluginbridge.NewPluginTools(m.Name, d.handler.For("plugin."+m.Name))
 		}
 		if err := launch(ctx, m, token); err != nil {
 			log.WarnContext(ctx, "plugin did not start", "plugin", m.Name, "error", err)
@@ -725,7 +726,7 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 	}
 	for name, b := range bridges {
 		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := controlplane.RegisterPluginTools(wctx, reg, b)
+		err := pluginbridge.RegisterPluginTools(wctx, reg, b)
 		cancel()
 		if err != nil {
 			log.WarnContext(ctx, "plugin tools not registered", "plugin", name, "error", err)

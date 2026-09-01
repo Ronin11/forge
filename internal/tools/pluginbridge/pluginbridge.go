@@ -7,7 +7,7 @@
 // (internal/mcpserve documents the framing from the server side). The surface
 // needed here — initialize, tools/list, tools/call — is small enough to write
 // as a client by hand; mcpserve's types are its server's and stay there.
-package controlplane
+package pluginbridge
 
 import (
 	"bufio"

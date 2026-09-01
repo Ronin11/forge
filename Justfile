@@ -54,9 +54,10 @@ bench:
 # protocol import nothing of Forge (protocol may see model). grep is not run
 # with -q so a SIGPIPE cannot turn a violation into a pass under pipefail.
 #
-#   tree   packages                          may reach
-#   core   internal/* except controlplane    core
-#   web    internal/controlplane             core web
+#   tree   packages                                 may reach
+#   core   internal/* except controlplane, tools    core
+#   tools  internal/tools                           core tools
+#   web    internal/controlplane                    core tools web
 boundary:
     @check() { desc="$1"; list="$2"; deny="$3"; allow="$4"; \
         if [ -z "$list" ]; then echo "boundary: $desc: rule matches no packages (fail closed)"; exit 1; fi; \
@@ -64,8 +65,11 @@ boundary:
             bad=$(go list -deps "$p" | grep -E "$deny" | grep -vx "$p" | grep -Ev "$allow" || true); \
             if [ -n "$bad" ]; then echo "boundary: $desc: $p imports:"; echo "$bad"; exit 1; fi; \
         done; }; \
-    check "core may not reach web" \
-        "$(go list ./internal/... 2>/dev/null | grep -v '^forge/internal/controlplane' || true)" \
+    check "core may not reach web or tools" \
+        "$(go list ./internal/... 2>/dev/null | grep -vE '^forge/internal/(controlplane|tools)' || true)" \
+        '^forge/internal/(controlplane|tools)(/|$)' '^$'; \
+    check "tools may reach core and tools only" \
+        "$(go list ./internal/tools/... 2>/dev/null || true)" \
         '^forge/internal/controlplane(/|$)' '^$'; \
     check "web tree present" \
         "$(go list ./internal/controlplane/... 2>/dev/null || true)" \

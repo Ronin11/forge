@@ -10,7 +10,7 @@ import (
 
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
-	"forge/internal/mcpserve"
+	"forge/internal/tools/mcpserve"
 )
 
 // runMCP is `forge mcp --attempt <id>`: the per-attempt MCP server every agent
