@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/plugin"
+	"forge/internal/core/plugin"
 )
 
 // The repo's plugin.toml must satisfy the manifest contract, and the source

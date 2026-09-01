@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"forge/internal/core/plugin"
 	"forge/internal/doctor"
-	"forge/internal/plugin"
 )
 
 // doctorRoutes registers GET /api/v1/doctor: the daemon-side checks `forge

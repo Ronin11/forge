@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/plugin"
 	"forge/internal/core/store"
-	"forge/internal/plugin"
 	"forge/internal/stats"
 )
 

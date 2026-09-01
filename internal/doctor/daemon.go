@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/plugin"
 	"forge/internal/core/store"
-	"forge/internal/plugin"
 )
 
 // kbStaleAfter is how old the kb index may be before it is a warn: the daemon

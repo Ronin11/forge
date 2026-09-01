@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
-	"forge/internal/plugin"
+	"forge/internal/core/plugin"
 )
 
 // pluginRow mirrors the daemon's GET /api/v1/plugins row.
