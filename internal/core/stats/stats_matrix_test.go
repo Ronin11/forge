@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
+	"forge/internal/core/stats"
 	"forge/internal/core/store"
-	"forge/internal/stats"
 )
 
 func mfact(modelAlias, class, runner string, state model.State, pass *bool, usd, secs float64) store.AttemptFacts {

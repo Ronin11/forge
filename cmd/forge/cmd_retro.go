@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"forge/internal/stats"
+	"forge/internal/core/stats"
 )
 
 // runRetro emits the reflection data pack (DESIGN.md §9.4). The --json flag

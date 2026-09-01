@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"forge/internal/stats"
+	"forge/internal/core/stats"
 )
 
 // statsEnvelope mirrors GET /api/v1/stats's body.

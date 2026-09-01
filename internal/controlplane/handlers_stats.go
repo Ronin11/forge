@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"forge/internal/stats"
+	"forge/internal/core/stats"
 )
 
 // defaultStatsWindow is the stats and retro window when ?since is absent —

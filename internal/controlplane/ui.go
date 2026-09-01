@@ -18,8 +18,8 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
+	"forge/internal/core/stats"
 	"forge/internal/core/store"
-	"forge/internal/stats"
 )
 
 //go:embed ui/*.html ui/static/*
