@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/stats"
 	"forge/internal/store"
 )

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 const testWorkerID = "0123456789abcdef0123456789abcdef"

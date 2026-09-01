@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Proposal is one self-improvement suggestion (DESIGN.md §12): reflection

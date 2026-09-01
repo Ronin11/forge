@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // TestMigrationBackfillProvenance drives the real backfill: a database is

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // ErrModelOverride is returned when a retry asks for a per-target model

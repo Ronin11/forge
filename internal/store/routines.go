@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Routine is a saved procedure. Nil-able numeric fields are pointers so "not set"

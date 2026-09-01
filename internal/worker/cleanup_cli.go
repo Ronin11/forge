@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // ResolveAttemptID accepts a full id or a unique prefix among the manifests.

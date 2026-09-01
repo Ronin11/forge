@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // assistantRequest is POST /api/v1/assistant/message: who sent it and what they

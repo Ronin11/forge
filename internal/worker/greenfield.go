@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/protocol"
 )
 

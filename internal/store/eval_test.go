@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 func TestSetProposalEvalScore(t *testing.T) {

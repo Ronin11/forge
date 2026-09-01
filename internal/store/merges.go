@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Merge is one Target's trip through the merge queue (DESIGN.md §20): who,

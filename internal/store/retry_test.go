@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // retryWork creates one Work with one Target and drives the Target along

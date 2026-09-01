@@ -8,9 +8,9 @@ import (
 	"os"
 	"sync"
 
+	"forge/internal/core/model"
 	"forge/internal/logging"
 	"forge/internal/mcpserve"
-	"forge/internal/model"
 )
 
 // runMCP is `forge mcp --attempt <id>`: the per-attempt MCP server every agent

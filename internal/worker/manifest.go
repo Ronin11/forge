@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Manifest lifecycles (DESIGN §4.3). The main path is preparing →

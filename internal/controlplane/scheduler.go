@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

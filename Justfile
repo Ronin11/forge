@@ -74,11 +74,11 @@ boundary:
         "$(go list ./internal/worker/... 2>/dev/null || true)" \
         '^forge/internal/(controlplane|store)(/|$)' '^$'; \
     check "model imports nothing of forge" \
-        "$(go list ./internal/model/... 2>/dev/null || true)" \
+        "$(go list ./internal/core/model/... 2>/dev/null || true)" \
         '^forge/' '^$'; \
     check "protocol imports nothing of forge but model" \
         "$(go list ./internal/protocol/... 2>/dev/null || true)" \
-        '^forge/' '^forge/internal/model$'; \
+        '^forge/' '^forge/internal/core/model$'; \
     echo "boundary: ok"
 
 # Knowledge-base integrity (M2): dangling links, bad frontmatter, id mismatches.

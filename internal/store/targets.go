@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // LeaseDuration is how long a claim or heartbeat holds a Target; RestartGrace is

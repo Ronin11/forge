@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"forge/internal/core/model"
 	"forge/internal/eval"
-	"forge/internal/model"
 	"forge/internal/store"
 )
 

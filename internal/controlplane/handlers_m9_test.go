@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/modes"
 	planmode "forge/internal/modes/plan"
 	"forge/internal/protocol"

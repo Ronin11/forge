@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/model"
 	"forge/internal/logging"
-	"forge/internal/model"
 	"forge/internal/protocol"
 )
 

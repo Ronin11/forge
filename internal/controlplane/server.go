@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"forge/internal/core/model"
 	"forge/internal/logging"
-	"forge/internal/model"
 	"forge/internal/modes"
 	"forge/internal/plugin"
 	"forge/internal/protocol"

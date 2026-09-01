@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Repository is what a worker advertises for each configured checkout.

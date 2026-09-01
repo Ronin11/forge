@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/protocol"
 )
 

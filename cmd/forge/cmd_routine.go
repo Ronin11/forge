@@ -11,7 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // SetProposalEvalScore records the summary score `forge eval` measured for a

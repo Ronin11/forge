@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/protocol"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

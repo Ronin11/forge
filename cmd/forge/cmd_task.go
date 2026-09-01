@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

@@ -6,7 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/modes"
 	"forge/internal/modes/schema"
 	"forge/internal/protocol"

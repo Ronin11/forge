@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

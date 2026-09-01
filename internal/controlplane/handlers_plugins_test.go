@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/plugin"
 	"forge/internal/store"
 )

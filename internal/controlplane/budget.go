@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/store"
 )
 

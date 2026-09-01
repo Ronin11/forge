@@ -20,7 +20,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // ScriptManifest is <home>/tools/<name>/manifest.toml — the one description of

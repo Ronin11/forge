@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 func mkProposal(t *testing.T, st *Store, kind model.ProposalKind, target string) *Proposal {

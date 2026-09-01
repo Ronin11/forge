@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Workflow is routines strung together: an ordered list of steps, each naming a

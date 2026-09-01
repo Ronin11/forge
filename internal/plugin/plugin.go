@@ -12,7 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Capabilities a plugin may declare (DESIGN.md §17).

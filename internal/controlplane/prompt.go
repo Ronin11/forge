@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"forge/internal/core/model"
 	"forge/internal/kb"
-	"forge/internal/model"
 	"forge/internal/store"
 )
 

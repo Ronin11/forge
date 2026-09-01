@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/modes"
 	"forge/internal/store"
 )

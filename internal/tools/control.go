@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/protocol"
 	"forge/internal/store"
 )

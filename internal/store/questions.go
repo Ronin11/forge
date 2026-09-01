@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/protocol"
 )
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // AttemptProgress is the live in-flight view of a running attempt: a turn/token

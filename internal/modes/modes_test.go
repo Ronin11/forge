@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
 	"forge/internal/protocol"

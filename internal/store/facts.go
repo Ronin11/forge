@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // AttemptFacts is the immutable per-attempt row (DESIGN.md §9.2). Pointer fields

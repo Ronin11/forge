@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Budget dimensions a request may ask along. Kept here so the tool, the

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 func createTestWorkflow(t *testing.T, s *Store, wf *Workflow) {

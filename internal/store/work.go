@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/model"
+	"forge/internal/core/model"
 )
 
 // Work is one invocation of a routine (or an ad-hoc task). Everything but
