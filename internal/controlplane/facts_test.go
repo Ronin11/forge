@@ -7,7 +7,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func ev(source, kind, name, span, parent string, elapsed, dur int64, attrs string) store.StoredEvent {

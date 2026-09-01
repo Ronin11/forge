@@ -10,7 +10,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 var budgetCfg = BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97, ForecastPacing: true}

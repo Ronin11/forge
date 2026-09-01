@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // streamBatch bounds one cursor read of either feed; a tick loops until both

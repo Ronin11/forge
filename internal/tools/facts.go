@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/stats"
-	"forge/internal/store"
 )
 
 // windowNames are the two subscription windows samples are recorded for.

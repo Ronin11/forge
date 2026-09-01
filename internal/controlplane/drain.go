@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // drainBody is POST /api/v1/daemon/drain's optional body (DESIGN.md §1.4).

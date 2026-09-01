@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestDaemonChecks(t *testing.T) {

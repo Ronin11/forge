@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // FactsInput is everything ComputeFacts looks at; it is assembled by the caller

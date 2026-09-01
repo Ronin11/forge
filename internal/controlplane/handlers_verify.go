@@ -8,8 +8,8 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
+	"forge/internal/core/store"
 	"forge/internal/modes"
-	"forge/internal/store"
 )
 
 // Follow-up Work defaults where a WorkSpec leaves fields unset; the verify

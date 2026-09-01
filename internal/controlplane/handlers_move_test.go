@@ -15,7 +15,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // moveFixture builds a daemon over a real store with three open tasks shaped

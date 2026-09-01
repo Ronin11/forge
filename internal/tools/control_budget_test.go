@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // TestRequestBudget drives forge_request_budget: it validates its input, routes

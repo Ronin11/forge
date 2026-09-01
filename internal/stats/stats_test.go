@@ -12,8 +12,8 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
+	"forge/internal/core/store"
 	"forge/internal/stats"
-	"forge/internal/store"
 )
 
 func ctx() context.Context { return context.Background() }

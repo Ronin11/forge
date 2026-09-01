@@ -12,7 +12,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 const workerID = "0123456789abcdef0123456789abcdef"

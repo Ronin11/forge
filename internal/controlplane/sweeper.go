@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // RunSweeper is DESIGN.md §14's lease sweeper. On start it grants every live

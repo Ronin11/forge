@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // QueueAction is one click on a Human-queue card: a link (URL set) or an

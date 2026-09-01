@@ -6,7 +6,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // The M10 cost vector: usd is tokens × the model's price; runner_seconds is the

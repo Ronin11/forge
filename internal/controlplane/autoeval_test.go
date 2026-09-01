@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // fakeEval is an injected evalRunner: it records the modes it was asked to

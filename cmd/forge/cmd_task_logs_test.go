@@ -17,7 +17,7 @@ import (
 	"forge/internal/controlplane"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestReadSSE(t *testing.T) {

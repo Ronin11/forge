@@ -12,7 +12,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // repoRoutes serves the repository-controls surface (M12+): a per-repository

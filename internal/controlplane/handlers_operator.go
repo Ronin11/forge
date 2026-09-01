@@ -14,7 +14,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Ad-hoc Work defaults (POST /api/v1/tasks without a routine).

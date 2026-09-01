@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // recordDecision adjudicates one request, appends it to the extension ledger,

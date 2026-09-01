@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Workflows are routines strung together (store.Workflow). Running one

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestQuestionActions(t *testing.T) {

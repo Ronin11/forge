@@ -25,11 +25,11 @@ import (
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
+	"forge/internal/core/store"
 	"forge/internal/integrator"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
 	"forge/internal/plugin"
-	"forge/internal/store"
 	"forge/internal/tools"
 	"forge/internal/worker"
 )

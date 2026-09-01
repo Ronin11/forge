@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/plugin"
-	"forge/internal/store"
 )
 
 // pluginServer is a store + server + httptest listener tuned for the plugin

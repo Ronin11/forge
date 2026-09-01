@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/plugin"
-	"forge/internal/store"
 )
 
 // pluginRoutes registers the plugin surface (DESIGN.md §17): the journal feed

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Add / archive / restore: the Repos-page lifecycle. The filesystem work is a

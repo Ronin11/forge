@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // timelineRoutes serves the dashboard's live wall-clock timeline: every attempt

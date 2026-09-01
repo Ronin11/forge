@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Window lengths L_w of DESIGN.md §10.1.

@@ -15,7 +15,7 @@ import (
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 
 	"forge/internal/core/kb"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // parseKbQuery splits a search-bar query into free text and the qualifiers the

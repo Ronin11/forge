@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // SchedulerPolicy decides, per budget class, whether new admissions are allowed

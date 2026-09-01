@@ -9,7 +9,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // routingConfig builds a config with kimi (devbox, cheaper) and haiku (claude),

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // SchemaVersion stamps the retro pack so its consumer (the M5 retro mode)

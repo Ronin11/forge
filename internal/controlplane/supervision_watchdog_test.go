@@ -10,7 +10,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // runningAttempt drives a claim to the running state so it appears in the sweep.

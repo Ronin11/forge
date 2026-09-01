@@ -12,7 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func runRoutine(ctx context.Context, c *cmdContext, args []string) int {

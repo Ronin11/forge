@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // failedTarget drives one ad-hoc task to a failed Target and returns its id.

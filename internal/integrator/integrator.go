@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 	"forge/internal/worker"
 )
 

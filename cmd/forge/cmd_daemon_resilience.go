@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Names under <home>/prev: what a rollback restores.

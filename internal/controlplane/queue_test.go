@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestOrderAndPick(t *testing.T) {

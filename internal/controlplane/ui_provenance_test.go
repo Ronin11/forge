@@ -12,7 +12,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // TestUIProvenanceViews renders the task-detail strip, the /work tree, and the

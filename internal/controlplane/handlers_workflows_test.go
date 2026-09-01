@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // A workflow of chained routines: create, run, and watch the second step wait

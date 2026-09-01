@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // queueRow is one entry of GET /api/v1/queue.

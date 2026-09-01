@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // The conservative intersection rule (DESIGN.md §20): intersect unless

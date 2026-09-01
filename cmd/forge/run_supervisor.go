@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 	"forge/internal/worker"
 )
 

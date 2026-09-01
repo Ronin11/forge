@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // proposalRoutes serves DESIGN.md §12's decision surface: reflection (or a

@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"strings"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // rpcFunc runs one named action. args is the raw JSON the caller posted (may be

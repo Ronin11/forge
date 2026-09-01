@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // usageReporter is the capability a SchedulerPolicy exposes when it can report

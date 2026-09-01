@@ -7,7 +7,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Plan-batch bounds and per-task defaults. A planned task is real coding

@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func runProposal(ctx context.Context, c *cmdContext, args []string) int {

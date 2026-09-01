@@ -17,7 +17,7 @@ import (
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // sampleLookback is how far before an attempt's start the facts computation

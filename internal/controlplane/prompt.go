@@ -12,7 +12,7 @@ import (
 
 	"forge/internal/core/kb"
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // promptInput is everything assembly needs (MODES.md "Prompt assembly").

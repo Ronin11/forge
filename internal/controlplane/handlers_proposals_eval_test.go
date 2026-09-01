@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // createKindProposal files a proposal of an arbitrary kind through the API.

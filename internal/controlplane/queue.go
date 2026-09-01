@@ -4,7 +4,7 @@ import (
 	"sort"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // QueueEntry is one Work in the priority queue with its derived state and, when

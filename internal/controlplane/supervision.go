@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // Policy thresholds for the deterministic ladder. Deliberately conservative:

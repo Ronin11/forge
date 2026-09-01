@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // repoRow is one row of GET /api/v1/repositories: the repository plus its

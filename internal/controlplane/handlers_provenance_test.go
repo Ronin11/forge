@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/modes"
-	"forge/internal/store"
 )
 
 // planMode is a level-1, non-writing mode whose successful result carries a

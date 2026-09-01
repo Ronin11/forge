@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // lineageData is one provenance tree (DESIGN.md §3), resolved from any member

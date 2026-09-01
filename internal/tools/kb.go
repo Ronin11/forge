@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"forge/internal/core/kb"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 type kbSearchTool struct{}

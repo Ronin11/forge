@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // BootstrapOptions are the inputs bootstrap cannot derive itself.

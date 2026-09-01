@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"forge/internal/core/store"
 	"forge/internal/plugin"
-	"forge/internal/store"
 )
 
 func TestPluginChecks(t *testing.T) {

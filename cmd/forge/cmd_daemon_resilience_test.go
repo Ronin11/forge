@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestCaptureLastKnownGood(t *testing.T) {

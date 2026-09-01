@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func createProposalVia(h *harness, target string) store.Proposal {

@@ -13,7 +13,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // TestUIAttentionCountdownAndMarker renders the Human Queue and the task page and

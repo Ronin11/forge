@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 type proposeTool struct{}

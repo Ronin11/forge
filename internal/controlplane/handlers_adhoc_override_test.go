@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // An ad-hoc task honours max_turns / timeout_seconds overrides in the body,

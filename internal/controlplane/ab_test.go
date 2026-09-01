@@ -9,7 +9,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // abFixture is the world checkABReverts sees: a routine on generation 2 via an

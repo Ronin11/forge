@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/plugin"
 	"forge/internal/stats"
-	"forge/internal/store"
 )
 
 //go:embed ui/*.html ui/static/*

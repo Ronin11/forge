@@ -13,7 +13,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // fakeExe writes an executable file the drain validation accepts.

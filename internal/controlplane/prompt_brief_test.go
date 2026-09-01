@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"forge/internal/core/kb"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // indexBrief writes one kb note into a temp kb dir and indexes it.

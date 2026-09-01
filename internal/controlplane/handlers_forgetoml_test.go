@@ -10,7 +10,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func registerWith(h *harness, repos ...protocol.Repository) {

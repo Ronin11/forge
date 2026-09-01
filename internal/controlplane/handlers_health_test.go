@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func TestHealthEndpoint(t *testing.T) {

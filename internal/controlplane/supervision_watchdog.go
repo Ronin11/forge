@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // RunSupervision is the sibling sweep to RunAttention: every interval it sweeps

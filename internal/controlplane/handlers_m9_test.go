@@ -10,9 +10,9 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
+	"forge/internal/core/store"
 	"forge/internal/modes"
 	planmode "forge/internal/modes/plan"
-	"forge/internal/store"
 )
 
 // submitM9 creates one ad-hoc task with M9 knobs.

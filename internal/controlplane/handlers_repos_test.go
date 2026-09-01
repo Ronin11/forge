@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // The repository detail read, pause/resume, cancel-running, and app-url form

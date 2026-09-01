@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	"forge/internal/core/model"
+	"forge/internal/core/store"
 	"forge/internal/eval"
-	"forge/internal/store"
 )
 
 // evalRunner runs the golden eval for a mode and returns its summary score in

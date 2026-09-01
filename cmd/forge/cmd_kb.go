@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 
 	"forge/internal/core/kb"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // kbDir is where notes live; the daemon's config may override, but the CLI and

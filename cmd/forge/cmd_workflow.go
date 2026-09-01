@@ -9,7 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func runWorkflow(ctx context.Context, c *cmdContext, args []string) int {

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // abOutcome is what MarkProposalReverted records as outcome_metrics: the

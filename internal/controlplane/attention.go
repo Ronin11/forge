@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // RunAttention is the sibling sweep to RunSweeper: every interval it auto-decides

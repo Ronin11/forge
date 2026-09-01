@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // SchemaVersion stamps every tool response so agents can detect shape changes.

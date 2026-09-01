@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"forge/internal/core/kb"
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // kbRoutes are the operator's index-backed kb endpoints: the CLI's search,

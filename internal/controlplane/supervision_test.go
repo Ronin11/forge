@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 func testSupervisionCfg() SupervisionConfig {

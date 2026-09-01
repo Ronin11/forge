@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"forge/internal/store"
+	"forge/internal/core/store"
 )
 
 // healthRoutes serves DESIGN.md §23's operational surface: GET /api/v1/health
