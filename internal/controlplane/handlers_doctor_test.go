@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
+	"forge/internal/core/doctor"
 	"forge/internal/core/protocol"
-	"forge/internal/doctor"
 )
 
 func TestDoctorEndpoint(t *testing.T) {

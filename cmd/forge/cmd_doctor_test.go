@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/doctor"
+	"forge/internal/core/doctor"
 )
 
 // fakeBinDir builds a PATH with stub executables so the binary checks never

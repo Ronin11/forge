@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"forge/internal/controlplane"
-	"forge/internal/doctor"
+	"forge/internal/core/doctor"
 )
 
 // runDoctor is `forge doctor`: the local checks always, plus GET
