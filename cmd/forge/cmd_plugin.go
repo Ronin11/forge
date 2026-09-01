@@ -173,10 +173,18 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 		return finishPluginInstall(ctx, c, log, name, "third_party")
 	}
 	dst := filepath.Join(c.forgeHome, "plugins", name)
+	var preserved map[string][]byte
 	if _, err := os.Stat(dst); err == nil {
 		if !*force {
 			return c.fail("plugin install", fmt.Errorf("%s already exists; --force replaces it", dst))
 		}
+		// Keep user files the source does not provide (e.g. <name>.toml config)
+		// so --force refreshes the plugin without wiping its configuration.
+		p, perr := preservedUserFiles(dst, src)
+		if perr != nil {
+			return c.fail("plugin install", perr)
+		}
+		preserved = p
 		if err := os.RemoveAll(dst); err != nil {
 			return c.fail("plugin install", err)
 		}
@@ -200,7 +208,43 @@ func runPluginInstall(ctx context.Context, c *cmdContext, args []string) int {
 	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
 		return c.fail("plugin install", fmt.Errorf("copy %s: %w", src, err))
 	}
+	for rel, content := range preserved {
+		full := filepath.Join(dst, rel)
+		if _, err := os.Stat(full); err == nil {
+			continue // the source now provides it; do not clobber the fresh copy
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			return c.fail("plugin install", err)
+		}
+		if err := os.WriteFile(full, content, 0o600); err != nil {
+			return c.fail("plugin install", fmt.Errorf("restore %s: %w", rel, err))
+		}
+	}
 	return finishPluginInstall(ctx, c, log, name, kind)
+}
+
+// preservedUserFiles reads the top-level files under dst that the source dir
+// does not contain — user-added config the reinstall must not wipe.
+func preservedUserFiles(dst, src string) (map[string][]byte, error) {
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]byte{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, serr := os.Stat(filepath.Join(src, e.Name())); serr == nil {
+			continue // provided by the source — the copy will refresh it
+		}
+		b, rerr := os.ReadFile(filepath.Join(dst, e.Name()))
+		if rerr != nil {
+			return nil, rerr
+		}
+		out[e.Name()] = b
+	}
+	return out, nil
 }
 
 // finishPluginInstall registers the on-disk plugin with the daemon.

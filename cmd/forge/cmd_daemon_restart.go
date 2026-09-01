@@ -61,6 +61,12 @@ func (d *daemonProcess) listeners(ctx context.Context) (unixL, tcpL net.Listener
 // never inherit it — M6 smoke 6) except here, cleared just before the exec.
 // On success it never returns.
 func (d *daemonProcess) execRestart(execPath string, unixL, tcpL net.Listener) error {
+	// Reap plugin children first: syscall.Exec replaces this image in place, so
+	// a plugin left running would orphan (and keep an inherited listener fd,
+	// wedging the next bind). Kill and wait for them before the swap.
+	if d.stopPlugins != nil {
+		d.stopPlugins()
+	}
 	ul, ok := unixL.(*net.UnixListener)
 	if !ok {
 		return fmt.Errorf("exec restart: socket listener is %T, not *net.UnixListener", unixL)

@@ -182,6 +182,23 @@ func (s *Supervisor) Stop(name string) {
 // calls it after the shared context is cancelled so no child outlives it.
 func (s *Supervisor) Wait() { s.wg.Wait() }
 
+// Shutdown stops every supervised plugin (SIGTERM → SIGKILL) and waits for the
+// children to exit. The daemon calls it before an exec-restart so no plugin
+// child orphans across the image swap — an orphaned plugin holding an inherited
+// listener fd is what wedged the next bind with "address already in use".
+func (s *Supervisor) Shutdown() {
+	s.mu.Lock()
+	names := make([]string, 0, len(s.running))
+	for n := range s.running {
+		names = append(names, n)
+	}
+	s.mu.Unlock()
+	for _, n := range names {
+		s.Stop(n)
+	}
+	s.wg.Wait()
+}
+
 // Health reports every supervised plugin's state, sorted by name.
 func (s *Supervisor) Health() []PluginHealth {
 	s.mu.Lock()

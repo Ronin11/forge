@@ -135,6 +135,9 @@ type daemonProcess struct {
 	log     *slog.Logger
 	lock    *controlplane.Lock
 	state   controlplane.DaemonState
+	// stopPlugins reaps the plugin children (set once they start); execRestart
+	// calls it before syscall.Exec so plugins never orphan across the restart.
+	stopPlugins func()
 }
 
 func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
@@ -207,6 +210,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	if err != nil {
 		return err
 	}
+	d.stopPlugins = sup.Shutdown
 	unixL, tcpL, err := d.listeners(ctx)
 	if err != nil {
 		return err
