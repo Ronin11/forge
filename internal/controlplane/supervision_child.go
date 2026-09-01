@@ -21,7 +21,7 @@ import (
 // heartbeat); a denial of a child ask is journaled attempt.budget_denied. A
 // kill is recorded on the ledger but actuated by the caller (which owns the
 // enforce_kill gate). The verdict is returned for the caller to act on.
-func (s *Server) recordDecision(ctx context.Context, ev supervisionEvidence, ask *budgetAsk, reason string) (budgetVerdict, error) {
+func (s *Engine) recordDecision(ctx context.Context, ev supervisionEvidence, ask *budgetAsk, reason string) (budgetVerdict, error) {
 	v := s.adjudicate(ctx, ev, ask)
 
 	dimension, amount := store.BudgetTurns, 0.0
@@ -81,7 +81,7 @@ func (s *Server) recordDecision(ctx context.Context, ev supervisionEvidence, ask
 
 // evidencePayload is the journaled evidence + rationale + decided_by for one
 // decision — mirrors question.auto_answered's audited shape.
-func (s *Server) evidencePayload(ev supervisionEvidence, v budgetVerdict, reason string) map[string]any {
+func (s *Engine) evidencePayload(ev supervisionEvidence, v budgetVerdict, reason string) map[string]any {
 	return map[string]any{
 		"trigger":         reason,
 		"action":          v.Action,
@@ -104,7 +104,7 @@ func (s *Server) evidencePayload(ev supervisionEvidence, v budgetVerdict, reason
 // it assembles evidence, adjudicates the ask, records it, and returns the
 // child-facing outcome. A grant is queued for the worker via the heartbeat; a
 // kill or continue reads to the child as a denial (the watchdog owns the reap).
-func (s *Server) AdjudicateBudgetRequest(ctx context.Context, attemptID, dimension string, amount float64, reason string) (store.BudgetOutcome, error) {
+func (s *Engine) AdjudicateBudgetRequest(ctx context.Context, attemptID, dimension string, amount float64, reason string) (store.BudgetOutcome, error) {
 	if !s.supervisionCfg.enabledOn() {
 		return store.BudgetOutcome{Decision: "denied", Message: "supervision is disabled; proceed within your current budget"}, nil
 	}

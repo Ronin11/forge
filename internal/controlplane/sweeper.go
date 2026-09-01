@@ -13,7 +13,7 @@ import (
 // every interval, it fails Targets whose lease lapsed and records their facts.
 // Each tick also runs the A/B auto-revert check over applied proposals
 // (ab.go), with the configured K and margin. It returns when ctx is done.
-func (s *Server) RunSweeper(ctx context.Context, interval time.Duration, reflection ReflectionConfig) {
+func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflection ReflectionConfig) {
 	var extended int
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		n, err := tx.ExtendLeases(ctx)
@@ -47,7 +47,7 @@ func (s *Server) RunSweeper(ctx context.Context, interval time.Duration, reflect
 // The attempt for each swept Target is looked up through the reader pool; it
 // was committed at claim time, long before this transaction. Errors are logged
 // here — the next tick retries; nothing else handles them.
-func (s *Server) sweep(ctx context.Context) {
+func (s *Engine) sweep(ctx context.Context) {
 	var swept []store.Target
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		var err error

@@ -77,7 +77,7 @@ func TestParseSupervisionDecision(t *testing.T) {
 // TestAdjudicateEscalatesToDecider exercises the ambiguous middle: an injected
 // fake modelCall stands in for opus and its verdict is honoured.
 func TestAdjudicateEscalatesToDecider(t *testing.T) {
-	srv := &Server{log: slog.Default(), now: time.Now, supervisionCfg: testSupervisionCfg()}
+	srv := &Server{Engine: &Engine{log: slog.Default(), now: time.Now, supervisionCfg: testSupervisionCfg()}}
 	var sawModel string
 	srv.modelCall = func(_ context.Context, _, _, m string) (string, error) {
 		sawModel = m

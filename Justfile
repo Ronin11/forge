@@ -79,6 +79,10 @@ boundary:
     check "protocol imports nothing of forge but model" \
         "$(go list ./internal/core/protocol/... 2>/dev/null || true)" \
         '^forge/' '^forge/internal/core/model$'; \
+    engfiles=$(grep -l '^func (s \*Engine)' internal/controlplane/*.go 2>/dev/null || true); \
+    if [ -z "$engfiles" ]; then echo "boundary: no Engine method files found (fail closed)"; exit 1; fi; \
+    bad=$(echo "$engfiles" | xargs grep -l '"net/http"' 2>/dev/null || true); \
+    if [ -n "$bad" ]; then echo "boundary: Engine methods defined in files importing net/http:"; echo "$bad"; exit 1; fi; \
     echo "boundary: ok"
 
 # Knowledge-base integrity (M2): dangling links, bad frontmatter, id mismatches.

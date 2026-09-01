@@ -137,7 +137,7 @@ const briefMaxBytes = 4 << 10
 // note ids unique by suffixing the title, so a refresh is a new note). ""
 // when none exists; every failure degrades to no brief — a claim must never
 // fail on kb state.
-func (s *Server) repoBrief(ctx context.Context, repo string) string {
+func (s *Engine) repoBrief(ctx context.Context, repo string) string {
 	prefix := "brief: " + repo
 	notes, err := s.store.SearchKb(ctx, "brief "+repo, 20)
 	if err != nil {
@@ -178,7 +178,7 @@ const escalationNoteMaxBytes = 6 << 10
 // checks that failed verification, so the stronger model starts from what the
 // weaker one produced instead of a blank slate. Every failure degrades to no
 // note — a claim never fails on this.
-func (s *Server) escalationNote(ctx context.Context, targetID, currentAttemptID string) string {
+func (s *Engine) escalationNote(ctx context.Context, targetID, currentAttemptID string) string {
 	priors, err := s.store.AttemptsForTarget(ctx, targetID)
 	if err != nil {
 		s.log.WarnContext(ctx, "escalation note: attempts", "error", err)
@@ -215,7 +215,7 @@ func (s *Server) escalationNote(ctx context.Context, targetID, currentAttemptID 
 
 // failingChecks renders the names of the checks a previous attempt failed, from
 // its verification verdicts. "" when none are recorded or readable.
-func failingChecks(ctx context.Context, s *Server, attemptID string) string {
+func failingChecks(ctx context.Context, s *Engine, attemptID string) string {
 	vs, err := s.store.VerificationsForAttempt(ctx, attemptID)
 	if err != nil {
 		return ""
@@ -269,7 +269,7 @@ func cutBytes(s string, n int) string {
 
 // assembleClaimPrompt gathers assembly inputs from the claim's rows. It lives
 // beside assemblePrompt so the claim builder stays one line.
-func (s *Server) assembleClaimPrompt(ctx context.Context, tx *store.Tx, snap store.Routine, t store.Target, a *store.Attempt) (template, rendered string) {
+func (s *Engine) assembleClaimPrompt(ctx context.Context, tx *store.Tx, snap store.Routine, t store.Target, a *store.Attempt) (template, rendered string) {
 	in := promptInput{Mode: snap.Mode, RoutinePrompt: snap.Prompt, Repository: t.Repository, Autonomy: a.Autonomy, Home: s.home, AttemptID: a.ID}
 	if info, ok := s.modelInfoFor(a.ModelAlias); ok {
 		in.ModelClass = info.Class

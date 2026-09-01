@@ -24,7 +24,7 @@ import (
 // approval back and the proposal stays where it was. Filesystem and git
 // effects clean up after themselves on failure and refuse to overwrite: a tool
 // directory or proposal branch that already exists is an error.
-func (s *Server) applyProposal(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
+func (s *Engine) applyProposal(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
 	switch p.Kind {
 	case model.ProposalRoutine:
 		return s.applyRoutine(ctx, tx, p)
@@ -58,7 +58,7 @@ type routineUpdates struct {
 
 // applyRoutine creates a new generation carrying only the fields the proposal
 // names (source = proposal:<id>); everything else keeps its current value.
-func (s *Server) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
+func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
 	name, err := targetName(p.Target, "routine:")
 	if err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
@@ -115,7 +115,7 @@ type processUpdates struct {
 
 // applyProcess is applyRoutine for the scheduling fields; it too creates a new
 // generation with source = proposal:<id>.
-func (s *Server) applyProcess(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
+func (s *Engine) applyProcess(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
 	name, err := targetName(p.Target, "routine:")
 	if err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
@@ -167,7 +167,7 @@ func (s *Server) applyProcess(ctx context.Context, tx *store.Tx, p *store.Propos
 // prompt assembly already prefers over the embedded default (prompt.go). An
 // existing file is first copied to <name>.md.prev-<id8> so the previous
 // preamble survives. No context: a few local file operations only.
-func (s *Server) applyModePrompt(p *store.Proposal) (string, error) {
+func (s *Engine) applyModePrompt(p *store.Proposal) (string, error) {
 	name, err := targetName(p.Target, "mode:")
 	if err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
@@ -218,7 +218,7 @@ type toolAfter struct {
 // tool's test there — the "its tests pass" gate. A test failure removes the
 // directory and returns the error, so the approve transaction rolls back and
 // the proposal stays proposed.
-func (s *Server) applyTool(ctx context.Context, p *store.Proposal) (string, error) {
+func (s *Engine) applyTool(ctx context.Context, p *store.Proposal) (string, error) {
 	name := p.Target
 	if err := model.ValidateName(name); err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
@@ -297,7 +297,7 @@ func (s *Server) applyTool(ctx context.Context, p *store.Proposal) (string, erro
 // diff as a file — never applied, never merged, never pushed (DESIGN.md §12).
 // A temporary worktree under <home>/scratch keeps the registered checkout's
 // working tree, index, and HEAD untouched.
-func (s *Server) applyCode(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
+func (s *Engine) applyCode(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
 	repos, err := tx.Repositories(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list repositories: %w", err)

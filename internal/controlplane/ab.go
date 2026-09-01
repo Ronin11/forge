@@ -32,7 +32,7 @@ type abOutcome struct {
 // applying a change of its own: the human's approval covered the A/B plan
 // including this revert, and the revert only ever restores a snapshot that
 // already existed in routine_generations.
-func (s *Server) checkABReverts(ctx context.Context, cfg ReflectionConfig) {
+func (s *Engine) checkABReverts(ctx context.Context, cfg ReflectionConfig) {
 	applied, err := s.store.ListProposals(ctx, model.ProposalApplied)
 	if err != nil {
 		s.log.ErrorContext(ctx, "ab: list applied proposals", "error", err)
@@ -62,7 +62,7 @@ func (s *Server) checkABReverts(ctx context.Context, cfg ReflectionConfig) {
 }
 
 // checkABRevert decides and, on regression, performs one proposal's revert.
-func (s *Server) checkABRevert(ctx context.Context, p *store.Proposal, name string, gen int, cfg ReflectionConfig) error {
+func (s *Engine) checkABRevert(ctx context.Context, p *store.Proposal, name string, gen int, cfg ReflectionConfig) error {
 	newFacts, err := s.store.FactsByRoutineGeneration(ctx, name, gen, cfg.K)
 	if err != nil {
 		return fmt.Errorf("facts of generation %d: %w", gen, err)

@@ -4,7 +4,9 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"time"
 
@@ -361,4 +363,71 @@ func computeCostVector(f *store.AttemptFacts, a store.Attempt, info ModelInfo) {
 	if agent := f.Phases["agent"]; agent != nil {
 		f.RunnerSeconds = ptr(float64(*agent) / 1e6)
 	}
+}
+
+// recordFacts computes and inserts the facts row for a terminal attempt inside
+// the transaction that made it terminal. The attempt, Target, and Work rows come
+// from the transaction (they were just changed); events, questions, and samples
+// come from the reader pool, which is complete for them because they are only
+// ever written in their own, earlier transactions. Facts are immutable, so an
+// existing row (an idempotent retry, a sweep racing a completion) is left alone.
+func (s *Engine) recordFacts(ctx context.Context, tx *store.Tx, attemptID string) error {
+	a, err := tx.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return err
+	}
+	t, err := tx.GetTarget(ctx, a.TargetID)
+	if err != nil {
+		return err
+	}
+	w, err := tx.GetWork(ctx, t.WorkID)
+	if err != nil {
+		return err
+	}
+	project, err := tx.ProjectForRepository(ctx, t.Repository)
+	if err != nil {
+		return err
+	}
+	events, err := s.store.Events(ctx, a.ID, true, 0)
+	if err != nil {
+		return err
+	}
+	all, err := s.store.QuestionsForWork(ctx, w.ID)
+	if err != nil {
+		return err
+	}
+	var questions []store.Question
+	for _, q := range all {
+		if q.AttemptID == a.ID {
+			questions = append(questions, q)
+		}
+	}
+	since := a.StartedAt
+	if since.IsZero() {
+		since = tx.Now()
+	}
+	since = since.Add(-sampleLookback)
+	fiveHour, err := s.store.SamplesSince(ctx, "five_hour", since)
+	if err != nil {
+		return err
+	}
+	sevenDay, err := s.store.SamplesSince(ctx, "seven_day", since)
+	if err != nil {
+		return err
+	}
+	leaseBlockedAt, err := s.store.LeaseBlockedAt(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	info, _ := s.modelInfoFor(a.ModelAlias)
+	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now(), LeaseBlockedAt: leaseBlockedAt, Model: info})
+	if err := tx.InsertFacts(ctx, facts); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			s.log.DebugContext(ctx, "facts already recorded", "attempt_id", a.ID)
+			return nil
+		}
+		return err
+	}
+	s.log.InfoContext(ctx, "facts recorded", "attempt_id", a.ID, "target_id", t.ID, "work_id", w.ID, "state", facts.State, "events", len(events))
+	return nil
 }

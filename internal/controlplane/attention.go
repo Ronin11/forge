@@ -26,7 +26,7 @@ import (
 // open non-critical questions past their deadline. It returns when ctx is done.
 // A process without a decider (modelCall nil) or with auto-decision off never
 // runs — questions block for a human as before.
-func (s *Server) RunAttention(ctx context.Context, interval time.Duration) {
+func (s *Engine) RunAttention(ctx context.Context, interval time.Duration) {
 	if s.modelCall == nil || !s.attentionCfg.autoDecideOn() {
 		s.log.InfoContext(ctx, "attention auto-decision disabled")
 		return
@@ -46,7 +46,7 @@ func (s *Server) RunAttention(ctx context.Context, interval time.Duration) {
 // sweepAttention is one tick: read the open questions fresh (so an already
 // answered one is never re-decided), and auto-decide each past its deadline.
 // Per-question failures are logged and left open for the next tick.
-func (s *Server) sweepAttention(ctx context.Context) {
+func (s *Engine) sweepAttention(ctx context.Context) {
 	if s.modelCall == nil || !s.attentionCfg.autoDecideOn() {
 		return
 	}
@@ -66,7 +66,7 @@ func (s *Server) sweepAttention(ctx context.Context) {
 }
 
 // questionDeadline is the server's view of attentionDeadline.
-func (s *Server) questionDeadline(q store.Question, now time.Time) (time.Time, bool) {
+func (s *Engine) questionDeadline(q store.Question, now time.Time) (time.Time, bool) {
 	return attentionDeadline(q, now, s.attentionCfg, s.quietHours)
 }
 
@@ -99,7 +99,7 @@ func attentionDeadline(q store.Question, now time.Time, cfg AttentionConfig, qui
 // autoDecide asks the decider model for an answer + rationale and records it, so
 // the Work resumes. A model or parse failure leaves the question open (retried
 // next tick); a concurrent human answer is a benign conflict.
-func (s *Server) autoDecide(ctx context.Context, q store.Question, deadline time.Time) {
+func (s *Engine) autoDecide(ctx context.Context, q store.Question, deadline time.Time) {
 	deciderModel := s.attentionCfg.Model
 	if deciderModel == "" {
 		deciderModel = "opus"
@@ -157,7 +157,7 @@ func parseAttentionDecision(raw string) attentionDecision {
 // and its task context — enough to make a reasonable call. Lean by design: the
 // Work title and repository, the question, its options, and any context the agent
 // attached.
-func (s *Server) attentionPrompt(ctx context.Context, q store.Question) (system, user string) {
+func (s *Engine) attentionPrompt(ctx context.Context, q store.Question) (system, user string) {
 	system = "You are Forge deciding a non-critical question an agent raised while working, because no human answered within the wait window. " +
 		"Make the reasonable, low-regret call that lets the work proceed; prefer the safest option when unsure. " +
 		"Reply ONLY with a JSON object, no prose or code fences:\n" +

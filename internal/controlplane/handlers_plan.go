@@ -41,7 +41,7 @@ type planTask struct {
 // completion transaction: the batch appears together or not at all. Planned
 // tasks run in `run` mode — L1, the level the merge queue re-checks — so a
 // batch does not multiply into L2 verify chains.
-func (s *Server) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attempt, w *store.Work, t *store.Target, env *protocol.ResultEnvelope) error {
+func (s *Engine) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attempt, w *store.Work, t *store.Target, env *protocol.ResultEnvelope) error {
 	tasks, err := planTasks(env)
 	if err != nil {
 		return fmt.Errorf("plan %s: %w", a.ID, err)

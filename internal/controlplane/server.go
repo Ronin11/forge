@@ -41,45 +41,38 @@ const shutdownGrace = 5 * time.Second
 // Server is the daemon's HTTP surface: one mux served on two listeners (the
 // Unix socket and loopback TCP) whose only difference is the auth rule of
 // DESIGN.md §1.1, decided per connection by the transport stamped in ConnContext.
-type Server struct {
-	store             *store.Store
-	policy            SchedulerPolicy
-	log               *slog.Logger
-	now               func() time.Time
-	version           string
-	token             string
-	home              string
-	requiredLevel     func(mode string) int
-	resolveModel      func(alias string) (string, bool)
-	modelInfo         func(alias string) (ModelInfo, bool)
-	modelAliases      []string
-	routing           RoutingConfig
-	runnerCapacities  map[string]int
-	setLogLevels      func(spec string) error
-	logLevels         func() string
-	allowHosts        []string
-	gitConfig         map[string]string
-	maxStackDepth     int
-	transportOverride string
-	mux               *http.ServeMux
-	tools             *tools.Registry
-	kbDir             string
-	modes             *modes.Registry
-	pluginHealth      func() []plugin.PluginHealth
-	pluginStart       func(name, token string) error
-	pluginStop        func(name string)
-	pluginRoots       []string
+// Engine holds the control plane's decision and orchestration state —
+// everything the daemon knows that is not HTTP (MODULARIZATION.md §5): the
+// store, the scheduler policy, config, and the injected func seams. Stage 2
+// of the migration: it lives inside package controlplane and Server embeds
+// it, so every existing call site and all internal tests keep compiling;
+// Stage 3 cuts it out to internal/core/engine. No file defining an Engine
+// method may import net/http (the boundary recipe checks).
+type Engine struct {
+	store            *store.Store
+	policy           SchedulerPolicy
+	log              *slog.Logger
+	now              func() time.Time
+	home             string
+	requiredLevel    func(mode string) int
+	resolveModel     func(alias string) (string, bool)
+	modelInfo        func(alias string) (ModelInfo, bool)
+	modelAliases     []string
+	routing          RoutingConfig
+	runnerCapacities map[string]int
+	setLogLevels     func(spec string) error
+	logLevels        func() string
+	allowHosts       []string
+	gitConfig        map[string]string
+	maxStackDepth    int
+	tools            *tools.Registry
+	kbDir            string
+	modes            *modes.Registry
+	pluginHealth     func() []plugin.PluginHealth
+	pluginStart      func(name, token string) error
+	pluginStop       func(name string)
+	pluginRoots      []string
 
-	// draining refuses new claims and operator writes once set; heartbeats,
-	// events, and completions keep flowing so running attempts finish (§1.4).
-	draining atomic.Bool
-	// inflight counts requests inside handle; the drain's exec waits for it to
-	// reach zero so no response is cut off mid-write. SSE streams are not
-	// counted — the drain flag closes them instead (§1.4).
-	inflight atomic.Int64
-	// execRestart replaces this process with a new binary once the drain is
-	// idle; nil in processes that cannot (tests, or a server without listeners).
-	execRestart func(execPath string) error
 	// registerRepo backs DESIGN §1.3's repositories-on-the-fly; nil disables.
 	registerRepo func(ctx context.Context, nameOrPath string) (protocol.Repository, error)
 	// addRepo/archiveRepo/restoreRepo back the Repos page (POST /api/v1/
@@ -108,12 +101,6 @@ type Server struct {
 	// child-initiated budget negotiation and the watchdog that reaps (or, in
 	// shadow mode, would-reap) wedged or spinning attempts.
 	supervisionCfg SupervisionConfig
-	// closed is closed by Serve on shutdown so long-lived streams end with a
-	// retry hint instead of holding Shutdown for the whole grace period.
-	closed    chan struct{}
-	closeOnce sync.Once
-	// streamInterval is the SSE endpoints' store poll cadence.
-	streamInterval time.Duration
 
 	// evalFn runs a mode's golden eval for auto-eval (autoeval.go); the real
 	// impl is s.runEval, replaced by a fake in tests. exe is the daemon binary,
@@ -135,6 +122,35 @@ type Server struct {
 	// slow eval is not launched twice across sweep ticks.
 	inflightMu   sync.Mutex
 	inflightEval map[string]bool
+}
+
+// Server is the HTTP surface over the Engine: transport, auth, drain state,
+// the inflight counter, and the SSE plumbing — nothing else
+// (MODULARIZATION.md §5). The Engine is embedded so handlers and internal
+// tests reach its fields and methods unchanged; Stage 5 narrows this to a
+// named field when the packages separate.
+type Server struct {
+	*Engine
+	version           string
+	token             string
+	transportOverride string
+	mux               *http.ServeMux
+	// draining refuses new claims and operator writes once set; heartbeats,
+	// events, and completions keep flowing so running attempts finish (§1.4).
+	draining atomic.Bool
+	// inflight counts requests inside handle; the drain's exec waits for it to
+	// reach zero so no response is cut off mid-write. SSE streams are not
+	// counted — the drain flag closes them instead (§1.4).
+	inflight atomic.Int64
+	// execRestart replaces this process with a new binary once the drain is
+	// idle; nil in processes that cannot (tests, or a server without listeners).
+	execRestart func(execPath string) error
+	// closed is closed by Serve on shutdown so long-lived streams end with a
+	// retry hint instead of holding Shutdown for the whole grace period.
+	closed    chan struct{}
+	closeOnce sync.Once
+	// streamInterval is the SSE endpoints' store poll cadence.
+	streamInterval time.Duration
 }
 
 // ServerOptions are the inputs the server cannot derive itself.
@@ -279,22 +295,27 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if len(o.PluginRoots) == 0 && o.Home != "" {
 		o.PluginRoots = []string{filepath.Join(o.Home, "plugins")}
 	}
-	s := &Server{
-		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, version: o.Version, token: o.Token, home: o.Home,
+	eng := &Engine{
+		store: o.Store, policy: o.Policy, log: o.Logger, now: o.Clock, home: o.Home,
 		requiredLevel: o.RequiredLevel, resolveModel: o.ResolveModel, modelInfo: o.ModelInfo, modelAliases: o.ModelAliases, routing: o.Routing, runnerCapacities: o.RunnerCapacities, setLogLevels: o.SetLogLevels, logLevels: o.LogLevels,
-		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
+		allowHosts: o.AllowHosts, gitConfig: o.GitConfig, maxStackDepth: o.MaxStackDepth,
 		tools: o.Tools, kbDir: o.KbDir, modes: o.Modes,
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
-		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
+		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
 		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision,
-		closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
-	s.evalFn = o.EvalFn
-	if s.evalFn == nil {
-		s.evalFn = s.runEval
+	eng.evalFn = o.EvalFn
+	if eng.evalFn == nil {
+		eng.evalFn = eng.runEval
+	}
+	s := &Server{
+		Engine:  eng,
+		version: o.Version, token: o.Token, transportOverride: o.TransportOverride, mux: http.NewServeMux(),
+		execRestart: o.ExecRestart,
+		closed:      make(chan struct{}), streamInterval: o.StreamInterval,
 	}
 	if s.streamInterval <= 0 {
 		s.streamInterval = time.Second

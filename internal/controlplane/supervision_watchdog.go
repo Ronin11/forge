@@ -20,7 +20,7 @@ import (
 // the running attempts, adjudicating any that trip a trigger (silence, spin,
 // cliff) and delivering the one-time proactive soft-budget nudge. It returns
 // when ctx is done. A disabled seam never runs.
-func (s *Server) RunSupervision(ctx context.Context, interval time.Duration) {
+func (s *Engine) RunSupervision(ctx context.Context, interval time.Duration) {
 	if !s.supervisionCfg.enabledOn() {
 		s.log.InfoContext(ctx, "supervision watchdog disabled")
 		return
@@ -39,7 +39,7 @@ func (s *Server) RunSupervision(ctx context.Context, interval time.Duration) {
 
 // sweepSupervision is one watchdog tick. Per-attempt failures are logged and
 // left for the next tick.
-func (s *Server) sweepSupervision(ctx context.Context) {
+func (s *Engine) sweepSupervision(ctx context.Context) {
 	attempts, err := s.store.RunningAttempts(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "supervision: list running attempts", "error", err)
@@ -90,7 +90,7 @@ func detectTrigger(cfg SupervisionConfig, ev supervisionEvidence) string {
 // maybeNudge delivers the one-time proactive nudge once an attempt crosses
 // ~80% of its soft turn budget: a plain steer telling the agent to request more
 // budget or wrap up. Idempotent via the attempt.budget_nudged journal marker.
-func (s *Server) maybeNudge(ctx context.Context, attemptID string, ev supervisionEvidence) {
+func (s *Engine) maybeNudge(ctx context.Context, attemptID string, ev supervisionEvidence) {
 	if s.supervisionCfg.SoftTurns <= 0 {
 		return
 	}
@@ -120,7 +120,7 @@ func (s *Server) maybeNudge(ctx context.Context, attemptID string, ev supervisio
 // mode cancels the attempt through the existing target-cancel path (the worker
 // stops on its next heartbeat and the target requeues under its retry policy)
 // and journals attempt.reaped.
-func (s *Server) actuateKill(ctx context.Context, ra store.RunningAttempt, ev supervisionEvidence, v budgetVerdict, trigger string) {
+func (s *Engine) actuateKill(ctx context.Context, ra store.RunningAttempt, ev supervisionEvidence, v budgetVerdict, trigger string) {
 	payload := s.evidencePayload(ev, v, trigger)
 	if !s.supervisionCfg.EnforceKill {
 		if err := s.store.Write(ctx, func(tx *store.Tx) error {

@@ -84,7 +84,7 @@ type supervisionEvidence struct {
 // assembleEvidence gathers the live signals for one attempt. It never
 // recomputes attempt_progress; it reads it, the ledger, and the two
 // events-derived measures (artifact growth, tool-signature dominance).
-func (s *Server) assembleEvidence(ctx context.Context, attemptID string) (supervisionEvidence, error) {
+func (s *Engine) assembleEvidence(ctx context.Context, attemptID string) (supervisionEvidence, error) {
 	ev := supervisionEvidence{AttemptID: attemptID, FirstAskGrowth: -1, Now: s.now()}
 	prog, err := s.store.AttemptProgress(ctx, attemptID)
 	if err != nil {
@@ -212,7 +212,7 @@ func kill(by, rationale string) budgetVerdict {
 // adjudicate runs the ladder and, when it escalates, asks the decider model.
 // A missing decider or an unparseable reply resolves to continue (never a kill)
 // so an unavailable model can only ever be safe.
-func (s *Server) adjudicate(ctx context.Context, ev supervisionEvidence, ask *budgetAsk) budgetVerdict {
+func (s *Engine) adjudicate(ctx context.Context, ev supervisionEvidence, ask *budgetAsk) budgetVerdict {
 	v := classifyBudget(s.supervisionCfg, ev, ask)
 	if !v.escalate {
 		return v
@@ -280,7 +280,7 @@ func parseSupervisionDecision(raw string) supervisionDecision {
 // supervisionPrompt builds the decider's prompts from the full evidence and the
 // extension ledger. The child's reason and the ledger reasons are untrusted
 // input, never instructions.
-func (s *Server) supervisionPrompt(ev supervisionEvidence, ask *budgetAsk) (system, user string) {
+func (s *Engine) supervisionPrompt(ev supervisionEvidence, ask *budgetAsk) (system, user string) {
 	system = "You are Forge deciding whether a long-running autonomous coding attempt should keep going, be granted more budget, or be stopped. " +
 		"Weigh the evidence and the FULL history of prior budget requests: repeated asks with no new files/commits mean stop; steady artifact growth under the ceiling means continue or grant a bounded amount. " +
 		"Reply ONLY with a JSON object, no prose or code fences:\n" +

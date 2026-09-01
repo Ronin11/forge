@@ -32,7 +32,7 @@ type routeChoice struct {
 
 // modelInfoFor resolves an alias, using the config-backed table when wired and
 // falling back to the plain resolveModel seam (M1) otherwise.
-func (s *Server) modelInfoFor(alias string) (ModelInfo, bool) {
+func (s *Engine) modelInfoFor(alias string) (ModelInfo, bool) {
 	if s.modelInfo != nil {
 		return s.modelInfo(alias)
 	}
@@ -46,7 +46,7 @@ func (s *Server) modelInfoFor(alias string) (ModelInfo, bool) {
 // attempt, an allowlist routine escalates to the next ladder rung. Returns
 // nil,nil when routing found no runner able to run any candidate right now, so
 // the claim is skipped and retried.
-func (s *Server) routeClaim(ctx context.Context, worker store.Worker, w store.Work, t store.Target, snap store.Routine, tx *store.Tx) (*routeChoice, error) {
+func (s *Engine) routeClaim(ctx context.Context, worker store.Worker, w store.Work, t store.Target, snap store.Routine, tx *store.Tx) (*routeChoice, error) {
 	allowlist := snap.Models
 	tier := 0
 	if snap.Tier != nil {
@@ -114,7 +114,7 @@ func (s *Server) routeClaim(ctx context.Context, worker store.Worker, w store.Wo
 }
 
 // modelTable is the full alias→info map the router filters over.
-func (s *Server) modelTable() map[string]ModelInfo {
+func (s *Engine) modelTable() map[string]ModelInfo {
 	out := make(map[string]ModelInfo, len(s.modelAliases))
 	for _, a := range s.modelAliases {
 		if info, ok := s.modelInfoFor(a); ok {
@@ -144,7 +144,7 @@ func runnerReady(worker store.Worker, runner string) bool {
 // runnerFree reports whether the runner has a free capacity slot. Capacity 0 is
 // unbounded (bounded only by worker slots — the claude runner). The in-flight
 // count is read inside the claim transaction so it is race-free.
-func (s *Server) runnerFree(ctx context.Context, tx *store.Tx, runner string) bool {
+func (s *Engine) runnerFree(ctx context.Context, tx *store.Tx, runner string) bool {
 	limit := s.runnerCap(runner)
 	if limit <= 0 {
 		return true
@@ -158,7 +158,7 @@ func (s *Server) runnerFree(ctx context.Context, tx *store.Tx, runner string) bo
 }
 
 // runnerCap is the configured capacity for a runner; 0 when unknown/unbounded.
-func (s *Server) runnerCap(runner string) int {
+func (s *Engine) runnerCap(runner string) int {
 	if s.runnerCapacities == nil {
 		return 0
 	}
@@ -177,7 +177,7 @@ func executorFor(info ModelInfo, snap store.Routine) string {
 // buildEvidence returns the router's per-model evidence function for one
 // routine: p50 cost vector and verified-success record from facts, falling
 // back from routine+model to model-wide facts to the configured price proxy.
-func (s *Server) buildEvidence(ctx context.Context, routine string) func(string) ModelEvidence {
+func (s *Engine) buildEvidence(ctx context.Context, routine string) func(string) ModelEvidence {
 	until := s.now().Add(time.Hour)
 	since := s.now().Add(-routingWindow)
 	routineFacts, err := s.store.FactsSince(ctx, since, until, routine)

@@ -26,7 +26,7 @@ type evalRunner func(ctx context.Context, mode string) (score float64, ok bool, 
 // (the process-wide slot and the per-proposal in-flight guard), because
 // eval.Run shells out per case and takes seconds; the eval runs in a goroutine
 // owned by RunSweeper so a slow eval never stalls the lease sweep.
-func (s *Server) sweepAutoEval(ctx context.Context) {
+func (s *Engine) sweepAutoEval(ctx context.Context) {
 	proposals, err := s.store.ListProposals(ctx, model.ProposalProposed)
 	if err != nil {
 		s.log.ErrorContext(ctx, "auto-eval: list proposals", "error", err)
@@ -67,7 +67,7 @@ func (s *Server) sweepAutoEval(ctx context.Context) {
 // A missing-cases result (ok=false) leaves the score nil for the override —
 // the next tick's cheap dir check skips the proposal again, so there is no
 // retry storm.
-func (s *Server) runOneAutoEval(ctx context.Context, id, mode string) {
+func (s *Engine) runOneAutoEval(ctx context.Context, id, mode string) {
 	defer s.autoEvalWG.Done()
 	defer func() { <-s.autoEvalSem }()
 	defer s.endEval(id)
@@ -95,7 +95,7 @@ func (s *Server) runOneAutoEval(ctx context.Context, id, mode string) {
 // routine proposal evaluates the routine's mode; a mode_prompt proposal names
 // the mode directly. The target may carry the kind prefix or a bare name,
 // matching the apply engine (apply.go targetName).
-func (s *Server) proposalEvalMode(ctx context.Context, p *store.Proposal) (string, error) {
+func (s *Engine) proposalEvalMode(ctx context.Context, p *store.Proposal) (string, error) {
 	switch p.Kind {
 	case model.ProposalRoutine:
 		name, err := targetName(p.Target, "routine:")
@@ -116,7 +116,7 @@ func (s *Server) proposalEvalMode(ctx context.Context, p *store.Proposal) (strin
 
 // beginEval marks a proposal's eval in flight, returning false if one is
 // already running for it so a slow eval is never launched twice across ticks.
-func (s *Server) beginEval(id string) bool {
+func (s *Engine) beginEval(id string) bool {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	if s.inflightEval[id] {
@@ -127,7 +127,7 @@ func (s *Server) beginEval(id string) bool {
 }
 
 // endEval clears the in-flight mark once an eval finishes.
-func (s *Server) endEval(id string) {
+func (s *Engine) endEval(id string) {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	delete(s.inflightEval, id)
@@ -138,7 +138,7 @@ func (s *Server) endEval(id string) {
 // the summary score. ok is false — not an error — when auto-eval is disabled
 // (the binary is not in its checkout) or the mode has no golden cases, so the
 // sweep leaves the score nil for the override rather than erroring or looping.
-func (s *Server) runEval(ctx context.Context, mode string) (float64, bool, error) {
+func (s *Engine) runEval(ctx context.Context, mode string) (float64, bool, error) {
 	root, ok := s.evalRootCached(ctx)
 	if !ok {
 		return 0, false, nil
@@ -172,7 +172,7 @@ func (s *Server) runEval(ctx context.Context, mode string) (float64, bool, error
 // evalRootCached returns the checkout root for auto-eval, discovered once from
 // the daemon binary and cached under evalRootMu. The first miss logs once at
 // info so an operator sees why auto-eval is off; later calls are silent.
-func (s *Server) evalRootCached(ctx context.Context) (string, bool) {
+func (s *Engine) evalRootCached(ctx context.Context) (string, bool) {
 	s.evalRootMu.Lock()
 	defer s.evalRootMu.Unlock()
 	if !s.evalRootDone {
