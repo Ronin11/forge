@@ -262,7 +262,7 @@ func TestL2FollowUps(t *testing.T) {
 		if s.Title != "verify 01234567" {
 			t.Errorf("%s: title %q", m.Name(), s.Title)
 		}
-		if s.Autonomy != model.AutonomyAuto || s.Timeout != 1200 || s.MaxTurns != 30 {
+		if s.Autonomy != model.AutonomyAuto || s.Timeout != 2400 || s.MaxTurns != 60 {
 			t.Errorf("%s: verify knobs wrong: %+v", m.Name(), s)
 		}
 		if s.VerifyOf == nil || s.VerifyOf.AttemptID != c.AttemptID || s.VerifyOf.Branch != c.Branch ||

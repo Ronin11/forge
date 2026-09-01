@@ -47,8 +47,12 @@ func VerifyWork(env *protocol.ResultEnvelope, c FollowUpContext) []WorkSpec {
 		Class:      class,
 		Priority:   c.Priority,
 		Autonomy:   model.AutonomyAuto,
-		Timeout:    1200,
-		MaxTurns:   30,
+		// 60/2400 rather than 30/1200: real subjects (a full `just check`,
+		// Playwright runs) exhausted 30 turns and died on the executor's
+		// --max-turns cliff before supervision's soft-budget nudge (~80% of
+		// [supervision].soft_turns) could ever fire.
+		Timeout:  2400,
+		MaxTurns: 60,
 		VerifyOf: &VerifySubject{
 			AttemptID: c.AttemptID,
 			Branch:    c.Branch,
