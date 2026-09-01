@@ -222,9 +222,9 @@ for r in ref: print(" ", r["payload"].get("reason"))' | tee -a "$LOG"
   echo "remote2 heads (must be only the setup commit):" | tee -a "$LOG"
   run git -C "$REMOTE2" log --oneline -3 master
   say "8b. no --force/-f/+refspec in any push invocation (source grep + unit test)"
-  run grep -rn -- '"push"' internal/integrator/push.go
-  ! grep -rn -- '--force\|"+refs/' internal/integrator/*.go | grep -v _test.go | tee -a "$LOG"
-  run go test -count=1 -run TestNoForceInPushSource ./internal/integrator
+  run grep -rn -- '"push"' internal/core/integrator/push.go
+  ! grep -rn -- '--force\|"+refs/' internal/core/integrator/*.go | grep -v _test.go | tee -a "$LOG"
+  run go test -count=1 -run TestNoForceInPushSource ./internal/core/integrator
 }
 
 steps=("$@"); [ ${#steps[@]} -eq 0 ] && steps=(1 2 3 4 5 6 7 8)
