@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/kb"
 	"forge/internal/core/model"
-	"forge/internal/kb"
 )
 
 func TestKbIndexRoundTrip(t *testing.T) {

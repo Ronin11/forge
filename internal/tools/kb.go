@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 	"forge/internal/store"
 )
 

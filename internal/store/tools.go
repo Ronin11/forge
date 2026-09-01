@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 )
 
 // RebindMCPToken stores the hash of a re-minted per-attempt MCP token. A

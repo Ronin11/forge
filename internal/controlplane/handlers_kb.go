@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 	"forge/internal/store"
 )
 

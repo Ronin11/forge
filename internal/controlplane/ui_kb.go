@@ -14,7 +14,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 	"forge/internal/store"
 )
 

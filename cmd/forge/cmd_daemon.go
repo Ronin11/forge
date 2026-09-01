@@ -21,11 +21,11 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"forge/internal/controlplane"
+	"forge/internal/core/kb"
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/integrator"
-	"forge/internal/kb"
 	"forge/internal/modes"
 	"forge/internal/modes/all"
 	"forge/internal/plugin"

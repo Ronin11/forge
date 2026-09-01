@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/kb"
 	"forge/internal/core/protocol"
-	"forge/internal/kb"
 )
 
 func TestDoctorReaders(t *testing.T) {

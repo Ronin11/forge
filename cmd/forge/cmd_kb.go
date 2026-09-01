@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 	"forge/internal/store"
 )
 

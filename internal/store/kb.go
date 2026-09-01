@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 )
 
 // KbNote is one indexed note row.

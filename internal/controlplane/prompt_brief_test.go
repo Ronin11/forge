@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/kb"
+	"forge/internal/core/kb"
 	"forge/internal/store"
 )
 
