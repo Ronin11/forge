@@ -165,7 +165,11 @@ func (a *attempt) greenfieldMove(result json.RawMessage) {
 						}
 					}
 					if allMoved {
-						os.Remove(nested)
+						if err := os.Remove(nested); err != nil {
+							// The flatten already succeeded; an unremovable
+							// shell dir (stray dotfiles) is only worth a note.
+							a.emitter.Lifecycle("greenfield flatten left the empty shell directory", map[string]any{"path": nested, "error": err.Error()})
+						}
 					}
 				}
 			}

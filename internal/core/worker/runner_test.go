@@ -92,7 +92,11 @@ func TestNew_PartialRepositoryValidationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 
 	// Verify that only the valid repository is registered.
 	repos := w.runner.repoList()
