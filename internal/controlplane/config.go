@@ -26,6 +26,7 @@ type Config struct {
 	Retention    RetentionConfig    `toml:"retention"`
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Backup       BackupConfig       `toml:"backup"`
+	Attention    AttentionConfig    `toml:"attention"`
 
 	// Runners, Models, and Routing (M10, DESIGN.md §21) ship as embedded
 	// defaults merged under config.toml by LoadConfig; bootstrap does not write
@@ -122,6 +123,27 @@ type BackupConfig struct {
 	Keep int `toml:"keep"` // archives retained under <home>/backups; default 7
 }
 
+// AttentionConfig tunes the fuzzy Human Queue (DESIGN.md §10.4): a non-critical
+// Question burns down on a time-of-day-aware SLA and, once past it, a strong
+// model decides so the Work resumes. Reuses [budget.quiet_hours] for the
+// active/quiet split (unset → always active).
+type AttentionConfig struct {
+	// AutoDecide turns the whole mechanism on; default true (the operator's
+	// "err on the side of action"; the budget policy is the backstop). When
+	// false, every question blocks for a human as before.
+	AutoDecide *bool `toml:"auto_decide"`
+	// WaitActiveMinutes is the burndown wait during active hours; default 240.
+	WaitActiveMinutes int `toml:"wait_active_minutes"`
+	// WaitQuietMinutes is the (shorter) wait during quiet hours, when no one is
+	// watching; default 20.
+	WaitQuietMinutes int `toml:"wait_quiet_minutes"`
+	// Model is the decider (a strong model makes the call); default opus.
+	Model string `toml:"model"`
+}
+
+// autoDecideOn reports whether auto-decision is enabled (nil default is true).
+func (a AttentionConfig) autoDecideOn() bool { return a.AutoDecide == nil || *a.AutoDecide }
+
 // DefaultConfig is what bootstrap writes; userHome seeds the projects root.
 func DefaultConfig(home, userHome string) Config {
 	return Config{
@@ -135,6 +157,7 @@ func DefaultConfig(home, userHome string) Config {
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 		Backup:       BackupConfig{Keep: 7},
+		Attention:    AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"},
 	}
 }
 
@@ -248,6 +271,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Backup.Keep < 1 {
 		return fmt.Errorf("[backup] keep must be ≥ 1")
+	}
+	if c.Attention.WaitActiveMinutes < 1 || c.Attention.WaitQuietMinutes < 1 {
+		return fmt.Errorf("[attention] wait_active_minutes and wait_quiet_minutes must be ≥ 1")
 	}
 	if err := c.validateModels(); err != nil {
 		return err

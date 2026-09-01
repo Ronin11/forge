@@ -237,6 +237,8 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		RebuildApp:   runSup.RebuildApp,
 		AppStatus:    runSup.AppStatus,
 		ModelCall:    d.modelCall,
+		Attention:    d.cfg.Attention,
+		QuietHours:   d.cfg.Budget.QuietHours,
 		Store:        st, Policy: policy, Logger: d.handler.For("controlplane.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
@@ -289,6 +291,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		return err
 	}
 	ui.SetPluginHealth(sup.Health)
+	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
 	srv.MountUI(ui)
 	pid := os.Getpid()
 	pidStart, err := controlplane.ProcStart(pid)
@@ -326,6 +329,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	g.Go(func() error { return srv.Serve(gctx, unixL, tcpL) })
 	g.Go(func() error { <-gctx.Done(); sup.Wait(); return nil })
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
+	g.Go(func() error { srv.RunAttention(gctx, time.Minute); return nil })
 	integ := integrator.New(st, d.handler.For("integrator"), time.Now, integrator.Config{Home: home, MaxRebaseAttempts: d.cfg.Integration.MaxRebaseAttempts})
 	g.Go(func() error { integ.Run(gctx); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })

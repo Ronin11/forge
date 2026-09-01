@@ -99,6 +99,11 @@ type Server struct {
 	assistantMu       sync.Mutex
 	assistantSessions map[string][]assistantTurn
 	assistantLastSeen map[string]time.Time
+	// attention + quietHours drive the fuzzy Human Queue sweep (attention.go):
+	// a non-critical question past its time-of-day SLA is auto-decided by the
+	// decider model so its Work resumes.
+	attentionCfg AttentionConfig
+	quietHours   QuietHoursConfig
 	// closed is closed by Serve on shutdown so long-lived streams end with a
 	// retry hint instead of holding Shutdown for the whole grace period.
 	closed    chan struct{}
@@ -182,8 +187,14 @@ type ServerOptions struct {
 	RebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	AppStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// ModelCall runs one cheap model completion for the concierge (system +
-	// user prompt → text); nil disables the assistant endpoint.
+	// user prompt → text); nil disables the assistant endpoint. It is also the
+	// attention sweep's decider primitive (attention.go).
 	ModelCall func(ctx context.Context, system, user, model string) (string, error)
+	// Attention tunes the fuzzy Human Queue sweep; QuietHours (from [budget])
+	// splits active vs quiet burndown. Zero Attention disables auto-decision
+	// (WaitActiveMinutes 0), so tests and a bare daemon never auto-answer.
+	Attention  AttentionConfig
+	QuietHours QuietHoursConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -269,6 +280,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		execRestart: o.ExecRestart, registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
+		attentionCfg: o.Attention, quietHours: o.QuietHours,
 		closed: make(chan struct{}), streamInterval: o.StreamInterval,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 	}
