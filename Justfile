@@ -45,20 +45,41 @@ test-integration:
 bench:
     @if [ -f bench/threshold.txt ]; then ./scripts/bench-check.sh; else echo "bench: no benchmarks yet (M1)"; fi
 
-# Layering, proved by go list: the worker never imports controlplane or store (one
-# SQLite writer); model and protocol import nothing of Forge. grep is not run with -q
-# so a SIGPIPE cannot turn a violation into a pass under pipefail.
+# Layering, proved by go list (MODULARIZATION.md §7). Fails closed: a rule whose
+# path matches no packages is itself a failure, so a `git mv` cannot silently
+# evaporate a rule. The tree table mirrors §3 on today's layout — controlplane
+# is `web` (the ceiling: may reach anything), every other internal tree is
+# `core` (may not reach controlplane) — plus the three finer rules that predate
+# it: worker never imports controlplane or store (one SQLite writer); model and
+# protocol import nothing of Forge (protocol may see model). grep is not run
+# with -q so a SIGPIPE cannot turn a violation into a pass under pipefail.
+#
+#   tree   packages                          may reach
+#   core   internal/* except controlplane    core
+#   web    internal/controlplane             core web
 boundary:
-    @for p in $(go list ./internal/worker/... 2>/dev/null); do \
-        if go list -deps "$p" | grep -E '^forge/internal/(controlplane|store)(/|$)' >/dev/null; then echo "boundary: $p imports controlplane or store"; exit 1; fi; \
-    done
-    @for p in $(go list ./internal/model/... 2>/dev/null); do \
-        if go list -deps "$p" | grep -E '^forge/' | grep -vx "$p" >/dev/null; then echo "boundary: $p imports another Forge package"; exit 1; fi; \
-    done
-    @for p in $(go list ./internal/protocol/... 2>/dev/null); do \
-        if go list -deps "$p" | grep -E '^forge/' | grep -vx "$p" | grep -v '^forge/internal/model$' >/dev/null; then echo "boundary: $p imports more than model"; exit 1; fi; \
-    done
-    @echo "boundary: ok"
+    @check() { desc="$1"; list="$2"; deny="$3"; allow="$4"; \
+        if [ -z "$list" ]; then echo "boundary: $desc: rule matches no packages (fail closed)"; exit 1; fi; \
+        for p in $list; do \
+            bad=$(go list -deps "$p" | grep -E "$deny" | grep -vx "$p" | grep -Ev "$allow" || true); \
+            if [ -n "$bad" ]; then echo "boundary: $desc: $p imports:"; echo "$bad"; exit 1; fi; \
+        done; }; \
+    check "core may not reach web" \
+        "$(go list ./internal/... 2>/dev/null | grep -v '^forge/internal/controlplane' || true)" \
+        '^forge/internal/controlplane(/|$)' '^$'; \
+    check "web tree present" \
+        "$(go list ./internal/controlplane/... 2>/dev/null || true)" \
+        '^$' '^$'; \
+    check "worker may not reach controlplane or store" \
+        "$(go list ./internal/worker/... 2>/dev/null || true)" \
+        '^forge/internal/(controlplane|store)(/|$)' '^$'; \
+    check "model imports nothing of forge" \
+        "$(go list ./internal/model/... 2>/dev/null || true)" \
+        '^forge/' '^$'; \
+    check "protocol imports nothing of forge but model" \
+        "$(go list ./internal/protocol/... 2>/dev/null || true)" \
+        '^forge/' '^forge/internal/model$'; \
+    echo "boundary: ok"
 
 # Knowledge-base integrity (M2): dangling links, bad frontmatter, id mismatches.
 kb-check: build
