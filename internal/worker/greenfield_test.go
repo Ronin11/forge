@@ -136,6 +136,62 @@ func TestSlugify(t *testing.T) {
 	}
 }
 
+func TestGreenfieldMoveFlatten(t *testing.T) {
+	// Verify that greenfieldMove flattens a single top-level subdirectory whose
+	// name matches the project slug, fixing the double-nesting issue when agents
+	// build in <worktree>/<slug>/ instead of at the worktree root.
+	ctx := context.Background()
+	r, projects := greenfieldRunner(t)
+	c := greenfieldClaim()
+	a := bareAttempt(r, c)
+
+	wt := filepath.Join(r.cfg.DataDir, "worktrees", c.AttemptID)
+	if err := a.prepareWorktree(ctx, wt, model.BranchName(c.RoutineName, c.AttemptID)); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	dir := a.manifest.WorktreePath
+
+	// Simulate agent building in a subdirectory: create dir/my-tool/ with content.
+	nested := filepath.Join(dir, "my-tool")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testFile := filepath.Join(nested, "main.go")
+	if err := os.WriteFile(testFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testDir := filepath.Join(nested, "pkg")
+	if err := os.Mkdir(testDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedFile := filepath.Join(testDir, "helper.go")
+	if err := os.WriteFile(nestedFile, []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move with project_name "My Tool" (slugifies to "my-tool").
+	a.greenfieldMove(json.RawMessage(`{"project_name":"My Tool"}`))
+	dest := filepath.Join(projects, "my-tool")
+
+	// Verify the project was moved.
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("project not moved to %s: %v", dest, err)
+	}
+
+	// Verify flattening: main.go and pkg/ should be at dest/, not dest/my-tool/.
+	if _, err := os.Stat(filepath.Join(dest, "main.go")); err != nil {
+		t.Errorf("main.go not flattened to %s: %v", dest, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "pkg", "helper.go")); err != nil {
+		t.Errorf("pkg/helper.go not flattened: %v", err)
+	}
+
+	// Verify the nested dir was removed.
+	if _, err := os.Stat(filepath.Join(dest, "my-tool")); !os.IsNotExist(err) {
+		t.Errorf("nested my-tool/ dir should be removed, got err: %v", err)
+	}
+}
+
 func TestPrepareWorktreeVerifyOfCutsAtSubjectHead(t *testing.T) {
 	ctx := context.Background()
 	gf := newGitFixture(t)
