@@ -82,6 +82,8 @@ func runTaskAdd(ctx context.Context, c *Context, args []string) int {
 	autonomy := fs.String("autonomy", "", "ask|checkpoint|notify|auto")
 	modelAlias := fs.String("model", "", "model alias (default haiku)")
 	integrate := fs.Bool("integrate", false, "queue for merge after success (M9)")
+	maxTurns := fs.Int("max-turns", 0, "turn budget for an ad-hoc task (default 30; a real implement task wants 100+)")
+	timeoutSec := fs.Int("timeout", 0, "seconds an ad-hoc attempt may run (default 1800)")
 	title := fs.String("title", "", "short title (default: the prompt's first line)")
 	force := fs.Bool("force", false, "submit even if an identical prompt was added within 24h")
 	wait := fs.Bool("wait", false, "wait for the task to finish and exit with its outcome")
@@ -118,6 +120,12 @@ func runTaskAdd(ctx context.Context, c *Context, args []string) int {
 		return c.Fail("task add", err)
 	}
 	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title, "force": *force}
+	if *maxTurns > 0 {
+		body["max_turns"] = *maxTurns
+	}
+	if *timeoutSec > 0 {
+		body["timeout_seconds"] = *timeoutSec
+	}
 	var out taskView
 	// On a fresh home the daemon was auto-started moments ago and the worker
 	// registers repositories a beat later; "task add on a freshly initialised
