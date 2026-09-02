@@ -39,7 +39,7 @@ test.describe('dashboard', () => {
     await expect(laptop.locator('.dot.ok')).toBeVisible(); // connected
     // The recent-tasks table (scoped: failed/waiting rows also appear under
     // "Needs attention") lists the seeded tasks with the right chip classes.
-    const recent = page.locator('h2:has-text("Recent tasks") + table');
+    const recent = page.locator('h2:has-text("Recent tasks") + .tablewrap table');
     await expect(recent.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"]`)).toContainText('Inventory the demo repo');
     await expect(recent.locator(`tr[data-href="/tasks/${s.succeeded.work_id}"] .state.state-succeeded`).first()).toBeVisible();
     await expect(recent.locator(`tr[data-href="/tasks/${s.failed.work_id}"] .state.state-failed`).first()).toBeVisible();
@@ -517,6 +517,9 @@ test.describe('proposals', () => {
     if ((await rejectBtn.count()) > 0) {
       await rejectBtn.click(); // app.js POSTs and reloads on success
     }
+    // A decided proposal leaves the default open scope; the rejected chip
+    // shows under All (and Closed).
+    await page.goto('/proposals?scope=all');
     await expect(decide.locator('.state.state-rejected')).toBeVisible({ timeout: 10_000 });
     await expect(decide.locator('button')).toHaveCount(0);
     // The kept proposal reaches the human queue with the CLI hint.
@@ -746,4 +749,66 @@ test.describe('responsive', () => {
       }
     });
   }
+});
+
+// The other half of "responsive": a wide window must be *used*. These assert the
+// layout facts a fixed 1200px page could not satisfy — the content column follows
+// the window, tables fill their column, and the dashboard becomes columns.
+test.describe('wide screens', () => {
+  const box = async (page, selector) => {
+    const b = await page.locator(selector).first().boundingBox();
+    if (!b) throw new Error(`no box for ${selector}`);
+    return b;
+  };
+
+  test('the content column follows the window instead of stopping at a fixed width', async ({ page }) => {
+    seed();
+    for (const width of [1440, 2560]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('/tasks?scope=all');
+      const main = await box(page, 'main');
+      // Gutters grow with the window, so allow generous slack; the point is that
+      // the column is a fraction of the window, not a 1200px cap.
+      expect(main.width, `main is ${main.width}px at ${width}px`).toBeGreaterThan(width * 0.8);
+      // The table uses the column it is given rather than shrinking to content.
+      const table = await box(page, 'table.tasks');
+      expect(table.width, `table is ${table.width}px inside ${main.width}px`).toBeGreaterThan(main.width * 0.9);
+      // And the page still does not scroll sideways.
+      const overflow = await page.evaluate(() => {
+        const el = document.scrollingElement || document.documentElement;
+        return el.scrollWidth - el.clientWidth;
+      });
+      expect(overflow).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('the dashboard lays its cards into columns on a wide screen', async ({ page }) => {
+    seed();
+    await page.setViewportSize({ width: 2560, height: 1440 });
+    await page.goto('/');
+    const running = await box(page, '.c-running');
+    const attention = await box(page, '.c-attention');
+    const status = await box(page, '.dash-status');
+    // Running and Needs attention sit side by side …
+    expect(attention.x).toBeGreaterThan(running.x + running.width - 1);
+    expect(Math.abs(attention.y - running.y)).toBeLessThan(4);
+    // … and the status stack is a third column beside them, not a full-width row.
+    expect(status.x).toBeGreaterThan(attention.x + attention.width - 1);
+    expect(status.width).toBeLessThan(running.width);
+    // The gauges share a row with the search bar rather than stacking.
+    const gauges = page.locator('.dash-head .gauge');
+    const first = await gauges.nth(0).boundingBox();
+    const second = await gauges.nth(1).boundingBox();
+    expect(Math.abs(first.y - second.y)).toBeLessThan(4);
+  });
+
+  test('a phone keeps the single-column stack', async ({ page }) => {
+    seed();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    const running = await box(page, '.c-running');
+    const attention = await box(page, '.c-attention');
+    expect(Math.abs(attention.x - running.x)).toBeLessThan(2);
+    expect(attention.y).toBeGreaterThan(running.y);
+  });
 });

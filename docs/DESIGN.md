@@ -305,24 +305,80 @@ questions have an exact answer. `source` is `edit` or `proposal:<id>`.
 
 ### Workflow
 
-Routines strung together. `workflows(id, name UNIQUE, steps JSON, schedule,
-schedule_enabled, generation, next_due_at, archived_at)` with the same
-generation/409, archive, and snapshot (`workflow_generations`) machinery as
-routines. `steps` is an ordered list of `{name, routine, after: [{step, on,
-stack_on}]}`; `after` may only reference an *earlier* step (a DAG by
-construction), a step without `after` follows the previous one (a plain list is
-a chain; `after = []` makes an independent root), and steps reference routines
-by name — latest generation at instantiation time, the Work snapshot being the
-audit trail.
+A workflow is a **graph of typed nodes** (`internal/core/store/workflow_graph.go`).
+`workflows(id, name UNIQUE, steps JSON, graph JSON, schedule, schedule_enabled,
+generation, next_due_at, archived_at)` with the same generation/409, archive,
+and snapshot (`workflow_generations`) machinery as routines. `graph` is the
+canonical form — `{nodes: [{id, type, config, position}], edges: [{from, to,
+when, case, default, stack_on, loop, max_iterations}]}`; the legacy `steps`
+list is still accepted on every write path and converted losslessly
+(`GraphFromSteps`; `on: terminal` → `when: always`), and pre-graph rows were
+backfilled at open. Node types: **routine** (an agent runs a routine — one
+Work through the queue; config may override repositories and carry an
+objective template), **script** (embedded JavaScript in the daemon's goja
+sandbox — no host bindings, an interrupt timeout, source/output caps, and a
+per-run budget), **switch** (a JS expression over upstream outputs whose
+String() value picks the matching `case` edge, else the `default` edge), and
+**join** (fan-in: `all` waits for every incoming edge to be decided, `any`
+fires on the first taken). Edge conditions are `success` (default), `failure`,
+`always`, and `case`; the graph minus its `loop: true` edges must be acyclic
+with at least one root, and every loop edge carries `max_iterations` (1–20) —
+the one sanctioned kind of cycle. Scripts and switch expressions are compiled
+at save, and cron strings parse at save: a definitional mistake is a 400, not
+a runtime surprise.
 
-A workflow is definition-layer only: `POST /api/v1/workflows/{name}/run`
-instantiates one Work per step in one transaction, with `after` becoming
-ordinary `work_dependencies` edges (§10.3) and each Work stamped with
-`workflow_run_id`/`workflow_name`/`workflow_step`. From there the queue,
-dependency, failure (`dependency_failed` → attention), and stacking machinery
-apply unchanged. A run has no state row — `GET .../runs` groups Works by run id
-and derives an aggregate. Data passing between steps beyond `stack_on` branches
-is deliberately out of scope.
+A run is a first-class row: `POST /api/v1/workflows/{name}/run` freezes the
+graph into `workflow_runs` (like a Work's routine snapshot — a later edit
+never reroutes a run in flight) and the **run engine** takes over. The pure
+half (`internal/core/flow`) evaluates the run as token passing over
+`workflow_run_nodes` instances: when an instance reaches a terminal status,
+each outgoing edge is decided — taken or dead — exactly once; a node instance
+is ready when every incoming non-loop edge is decided and at least one was
+taken; an instance whose every incoming edge went dead is **skipped**, and the
+skip cascades — replacing the old permanent `dependency_failed` wedge inside
+workflows, because dependants are never pre-created. A loop edge taken creates
+the target's next iteration until its cap. The driver
+(`internal/web/flow_engine.go`) materializes ready routine nodes into ordinary
+Works via `createWorkTx` (with already-satisfied `blocked_by` edges so
+`stack_on` and provenance keep working), executes ready scripts and switches
+strictly outside SQLite's writer, and applies each evaluation's diff in one
+compare-and-set-guarded transaction — so advancing is idempotent, completion
+and cancellation handlers advance runs synchronously, and a 15s daemon loop is
+the restart story and the backstop for transitions with no HTTP hook
+(integrator merges, lease expiries).
+
+**Output passing** is the data contract between nodes: a terminal routine
+node's output is `{state, summary, output, targets}` assembled from its result
+envelope (the free-form `output` object a mode's result may carry); a script's
+output is its `main(input)` return value; a switch's is `{case}`. Downstream
+routine objectives template over them (`{{steps.<node>.output.<path>}}`,
+`{{run.objective}}`) and scripts read them as `input.steps.<node>`. Run
+operations: `GET /api/v1/workflow-runs/{id}` (the frozen graph plus every
+instance and Work summary), `POST .../cancel`, and `POST .../retry {node}`
+(a fresh iteration of a failed or cancelled node; downstream re-fires as its
+tokens arrive). Runs from before the engine remain readable through the old
+derived grouping, flagged `legacy`. The web editor (`/workflows/{name}/edit`,
+`static/graph.js`) edits the graph as SVG — palette, port-to-port edges,
+per-type config panels, client lint mirroring server validation — with a
+positions-only `PATCH .../layout` that does not bump the generation, and
+`POST /api/v1/workflows/draft` turns a plain-language description into a
+validated graph via the concierge's model seam for the human to refine and
+save.
+
+### Schedules
+
+Routines and workflows carry `schedule` (standard 5-field cron, or `@daily`
+descriptors; robfig/cron is the parser only — the daemon's own loop is the
+runner), `schedule_enabled`, and `next_due_at`. The scheduler
+(`internal/web/scheduler.go`, a 30s daemon loop beside the sweeper) backfills
+`next_due_at` for enabled schedules that lack one, fires what is due — one
+Work per due routine, one engine run per due workflow, both stamped
+`trigger = schedule` — and advances `next_due_at` in the same transaction as
+the admission, which is the claim (one daemon owns the database). Occurrences
+missed while the daemon was down fire once, then jump to the next future
+occurrence; a routine still busy from its last firing, or a workflow with a
+run still open, is skipped and journaled (`schedule.skipped`) rather than
+piled up.
 
 ### Work
 
@@ -1156,6 +1212,9 @@ Dependencies: `blocked_by: [{work_id, on}]`. `on: terminal` is satisfied when th
 dependency is terminal; `on: success` when it is `succeeded`. If a `success`
 dependency ends any other way the dependent Work is `blocked` with reason
 `dependency_failed` and stays so until a human removes the edge or cancels it.
+(Workflow runs never hit this wedge: the run engine creates a node's Work only
+once its upstream edges resolved, so a failed upstream skips dependants
+instead — see §Workflow.)
 `PATCH /api/v1/work/{id}` sets `priority` and adds/removes edges; cycles are refused.
 The UI's drag-and-drop refuses an order in which a Work sits above one it is blocked
 by; the API enforces the same rule (`queue.Violates`).
@@ -1582,6 +1641,7 @@ forge task tell ID "…" | retry ID [--model M]     # M11
 forge backup [--out DIR] | restore ARCHIVE | eval --mode M [...]   # M12
 forge daemon rollback                             # M12
 forge routine add|list|show|edit|run|enable|disable NAME
+forge workflow add|list|show|edit|run|runs|run-show|retry|cancel|enable|disable
 forge queue [list] | queue move ID --before ID | queue block ID --on ID
 forge proposal list|show|approve|reject ID
 forge usage | stats | retro | prune | cleanup
