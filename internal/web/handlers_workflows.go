@@ -313,6 +313,74 @@ func (s *Server) getWorkflowRun(r *http.Request) (int, any, error) {
 	return http.StatusOK, out, nil
 }
 
+// retryWorkflowRun re-opens a terminal run from one failed or cancelled
+// node: a fresh instance (iteration + 1, ready — human-initiated, so loop
+// caps do not apply to its creation) that the engine materializes and routes
+// like any other; downstream nodes re-fire as its tokens reach them.
+func (s *Server) retryWorkflowRun(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var body struct {
+		Node string `json:"node"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		return 0, nil, err
+	}
+	if err := model.ValidateName(body.Node); err != nil {
+		return 0, nil, badRequest("node: %v", err)
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		run, err := tx.GetWorkflowRun(ctx, id)
+		if err != nil {
+			return err
+		}
+		if run.Status == store.RunRunning {
+			return badRequest("run is still running")
+		}
+		def := run.Graph.Node(body.Node)
+		if def == nil {
+			return badRequest("run has no node %q", body.Node)
+		}
+		nodes, err := tx.RunNodes(ctx, id)
+		if err != nil {
+			return err
+		}
+		var latest *store.RunNode
+		for i := range nodes {
+			n := &nodes[i]
+			if n.NodeID == body.Node && (latest == nil || n.Iteration > latest.Iteration) {
+				latest = n
+			}
+		}
+		if latest == nil {
+			return badRequest("node %s never ran in this run", body.Node)
+		}
+		if latest.Status != store.NodeFailed && latest.Status != store.NodeCancelled {
+			return badRequest("node %s is %s; only failed or cancelled nodes retry", body.Node, latest.Status)
+		}
+		fresh := &store.RunNode{RunID: id, NodeID: body.Node, Iteration: latest.Iteration + 1, Type: def.Type, Status: store.NodeReady, Edges: map[string]string{"retry": "taken"}}
+		if err := tx.CreateRunNode(ctx, fresh); err != nil {
+			return err
+		}
+		if err := tx.SetWorkflowRunStatus(ctx, id, store.RunRunning); err != nil {
+			return err
+		}
+		return tx.Journal(ctx, "workflow.run_retried", store.EntityWorkflow, id, map[string]any{"node": body.Node, "iteration": fresh.Iteration})
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.KickFlow(ctx, id)
+	s.log.InfoContext(ctx, "workflow run retried", "run_id", id, "node", body.Node)
+	return http.StatusAccepted, map[string]string{"run_id": id, "status": "running"}, nil
+}
+
 // cancelWorkflowRun requests the whole run stop: waiting instances cancel
 // now, running Works get the ordinary cancel request, and the engine settles
 // the run to cancelled as they land.

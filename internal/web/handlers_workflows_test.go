@@ -344,3 +344,48 @@ func TestWorkflowRunOutputPassing(t *testing.T) {
 		t.Errorf("fix snapshot prompt = %s", w.Snapshot)
 	}
 }
+
+// Retrying a failed run from its failed node re-opens it: a fresh instance
+// materializes, and success re-fires the downstream wave.
+func TestWorkflowRunRetry(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutine("build")
+	h.createRoutine("deploy")
+
+	wf := store.Workflow{Name: "retryable", Steps: []store.WorkflowStep{
+		{Name: "build", Routine: "build"},
+		{Name: "deploy", Routine: "deploy"},
+	}}
+	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
+	var run workflowRunCreated
+	h.call(http.MethodPost, "/api/v1/workflows/retryable/run", nil, &run, http.StatusCreated)
+	h.completeNode("wf-r1", model.Failed)
+	if d := h.runDetail(run.RunID); d.Status != store.RunFailed {
+		t.Fatalf("run = %s, want failed", d.Status)
+	}
+
+	// Retry of a node that did not fail is refused.
+	if status, _ := h.do(http.MethodPost, "/api/v1/workflow-runs/"+run.RunID+"/retry", map[string]string{"node": "deploy"}, nil, ""); status != http.StatusBadRequest {
+		t.Fatalf("retry of skipped node = %d", status)
+	}
+
+	h.call(http.MethodPost, "/api/v1/workflow-runs/"+run.RunID+"/retry", map[string]string{"node": "build"}, nil, http.StatusAccepted)
+	d := h.runDetail(run.RunID)
+	if d.Status != store.RunRunning {
+		t.Fatalf("run after retry = %s", d.Status)
+	}
+	b2 := nodeInstance(d, "build", 2)
+	if b2 == nil || b2.Status != store.NodeRunning || b2.WorkID == "" {
+		t.Fatalf("build#2 = %+v", b2)
+	}
+	h.completeNode("wf-r2", model.Succeeded)
+	d = h.runDetail(run.RunID)
+	if got := nodeInstance(d, "deploy", 2); got == nil || got.Status != store.NodeRunning {
+		t.Fatalf("deploy#2 = %+v", got)
+	}
+	h.completeNode("wf-r3", model.Succeeded)
+	if d = h.runDetail(run.RunID); d.Status != store.RunSucceeded {
+		t.Fatalf("final = %s", d.Status)
+	}
+}

@@ -383,6 +383,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/workflows/{name}/runs", s.handle(s.workflowRuns))
 	m.HandleFunc("GET /api/v1/workflow-runs/{id}", s.handle(s.getWorkflowRun))
 	m.HandleFunc("POST /api/v1/workflow-runs/{id}/cancel", s.handle(s.cancelWorkflowRun))
+	m.HandleFunc("POST /api/v1/workflow-runs/{id}/retry", s.handle(s.retryWorkflowRun))
 	for _, base := range []string{"/api/v1/work", "/api/v1/tasks"} {
 		m.HandleFunc("GET "+base, s.handle(s.listWork))
 		m.HandleFunc("POST "+base, s.handle(s.createWork))

@@ -160,6 +160,16 @@ func (s *Store) OpenWorkflowRuns(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// HasOpenWorkflowRun reports whether a workflow has a run still going — the
+// scheduler's skip-if-running check.
+func (s *Store) HasOpenWorkflowRun(ctx context.Context, name string) (bool, error) {
+	var n int
+	if err := s.queryRow(ctx, `SELECT count(*) FROM workflow_runs WHERE workflow_name = ? AND status = ?`, name, RunRunning).Scan(&n); err != nil {
+		return false, fmt.Errorf("count open runs of %s: %w", name, err)
+	}
+	return n > 0, nil
+}
+
 // WorkflowRunsFor lists a workflow's runs, newest first.
 func (s *Store) WorkflowRunsFor(ctx context.Context, name string, limit int) ([]WorkflowRun, error) {
 	if limit <= 0 || limit > 500 {

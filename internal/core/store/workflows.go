@@ -123,6 +123,9 @@ func (w *Workflow) Validate() error {
 	if err := w.Graph.Validate(); err != nil {
 		return fmt.Errorf("workflow %s: %w", w.Name, err)
 	}
+	if err := ValidateSchedule(w.Schedule); err != nil {
+		return fmt.Errorf("workflow %s: %w", w.Name, err)
+	}
 	return nil
 }
 

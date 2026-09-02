@@ -88,6 +88,9 @@ func (r *Routine) Validate() error {
 	if r.MaxQuestions < 0 {
 		return fmt.Errorf("routine %s: max_questions must not be negative", r.Name)
 	}
+	if err := ValidateSchedule(r.Schedule); err != nil {
+		return fmt.Errorf("routine %s: %w", r.Name, err)
+	}
 	return nil
 }
 
@@ -251,6 +254,17 @@ func (s *Store) ListRoutines(ctx context.Context, includeArchived bool) ([]Routi
 		q += ` WHERE archived_at IS NULL`
 	}
 	return s.routines(each(s.query(ctx, q+` ORDER BY name`)))
+}
+
+// OpenWorkCountForRoutine counts a routine's unfinished Works — the
+// scheduler's skip-if-running check (pending counts too: a queued occurrence
+// that has not started yet should not be doubled).
+func (s *Store) OpenWorkCountForRoutine(ctx context.Context, routineID string) (int, error) {
+	var n int
+	if err := s.queryRow(ctx, `SELECT count(*) FROM work WHERE routine_id = ? AND finished_at IS NULL`, routineID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count open work of routine %s: %w", routineID, err)
+	}
+	return n, nil
 }
 
 // DueRoutines returns enabled, unarchived routines whose next_due_at ≤ now.

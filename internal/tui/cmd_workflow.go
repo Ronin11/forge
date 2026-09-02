@@ -19,7 +19,7 @@ func RunWorkflow(ctx context.Context, c *Context, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.Stderr, "usage: forge workflow add|list|show|edit|run|runs|run-show|cancel|enable|disable NAME [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge workflow add|list|show|edit|run|runs|run-show|retry|cancel|enable|disable NAME [flags]")
 		return code
 	}
 	sub, rest := args[0], args[1:]
@@ -30,7 +30,7 @@ func RunWorkflow(ctx context.Context, c *Context, args []string) int {
 		return runWorkflowList(ctx, c, rest)
 	case "show", "run", "runs", "enable", "disable", "edit":
 		return runWorkflowNamed(ctx, c, sub, rest)
-	case "run-show", "cancel":
+	case "run-show", "cancel", "retry":
 		return runWorkflowRunOp(ctx, c, sub, rest)
 	}
 	fmt.Fprintf(c.Stderr, "forge workflow: unknown subcommand %q\n", sub)
@@ -80,15 +80,20 @@ func resolveWorkflowRunID(ctx context.Context, cl *cliClient, prefix string) (st
 	return "", fmt.Errorf("%q matches %d runs; be more specific", prefix, len(matches))
 }
 
-// runWorkflowRunOp is the run-addressed half: run-show and cancel.
+// runWorkflowRunOp is the run-addressed half: run-show, cancel, and retry.
 func runWorkflowRunOp(ctx context.Context, c *Context, sub string, args []string) int {
 	fs, lf := c.Flags("workflow " + sub)
 	asJSON := fs.Bool("json", false, "JSON output")
+	fromNode := fs.String("from", "", "node to retry from (retry only)")
 	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(c.Stderr, "usage: forge workflow %s RUN_ID\n", sub)
+		return 2
+	}
+	if sub == "retry" && *fromNode == "" {
+		fmt.Fprintln(c.Stderr, "usage: forge workflow retry RUN_ID --from NODE")
 		return 2
 	}
 	_, log, code := c.ResolveLogging(lf, "cli.workflow")
@@ -103,12 +108,20 @@ func runWorkflowRunOp(ctx context.Context, c *Context, sub string, args []string
 	if err != nil {
 		return c.Fail("workflow "+sub, err)
 	}
-	if sub == "cancel" {
+	switch sub {
+	case "cancel":
 		var out map[string]string
 		if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflow-runs/"+id+"/cancel", map[string]any{}, &out); err != nil {
 			return c.Fail("workflow cancel", err)
 		}
 		fmt.Fprintf(c.Stdout, "run %s cancelling\n", short(id))
+		return 0
+	case "retry":
+		var out map[string]string
+		if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflow-runs/"+id+"/retry", map[string]string{"node": *fromNode}, &out); err != nil {
+			return c.Fail("workflow retry", err)
+		}
+		fmt.Fprintf(c.Stdout, "run %s retrying from %s\n", short(id), *fromNode)
 		return 0
 	}
 	var out workflowRunDetailView
