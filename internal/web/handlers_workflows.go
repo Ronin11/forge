@@ -29,8 +29,8 @@ func (s *Server) listWorkflows(r *http.Request) (int, any, error) {
 	return http.StatusOK, workflows, nil
 }
 
-// decodeWorkflow reads a workflow body and rejects what the API decides before
-// the store does: the name.
+// decodeWorkflow reads a workflow body — graph form or legacy steps form — and
+// normalizes to the canonical graph so every handler sees one shape.
 func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 	var wf store.Workflow
 	if err := decodeJSON(r, &wf); err != nil {
@@ -40,19 +40,34 @@ func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 	if err := model.ValidateName(wf.Name); err != nil {
 		return nil, badRequest("%v", err)
 	}
+	if err := wf.Normalize(); err != nil {
+		return nil, badRequest("%v", err)
+	}
 	return &wf, nil
 }
 
-// checkStepRoutines refuses a workflow whose steps name a routine that does not
-// exist or is archived — at definition time, where the mistake is cheap.
+// checkStepRoutines refuses a workflow whose routine nodes name a routine that
+// does not exist or is archived — at definition time, where the mistake is
+// cheap. Legacy `steps` bodies are converted by the store before this runs, so
+// the check normalizes first to see the graph either way.
 func checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) error {
-	for _, st := range wf.Steps {
-		rt, err := tx.GetRoutine(ctx, st.Routine)
+	if wf.Graph == nil {
+		return nil // normalize in the store surfaces the real validation error
+	}
+	for _, n := range wf.Graph.Nodes {
+		if n.Type != store.NodeRoutine {
+			continue
+		}
+		cfg, err := n.RoutineConfig()
 		if err != nil {
-			return badRequest("step %s: routine %s does not exist", st.Name, st.Routine)
+			return badRequest("%v", err)
+		}
+		rt, err := tx.GetRoutine(ctx, cfg.Routine)
+		if err != nil {
+			return badRequest("node %s: routine %s does not exist", n.ID, cfg.Routine)
 		}
 		if !rt.ArchivedAt.IsZero() {
-			return badRequest("step %s: routine %s is archived", st.Name, st.Routine)
+			return badRequest("node %s: routine %s is archived", n.ID, cfg.Routine)
 		}
 	}
 	return nil
@@ -76,7 +91,7 @@ func (s *Server) createWorkflow(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	s.log.InfoContext(ctx, "workflow created", "workflow", wf.Name, "workflow_id", wf.ID, "steps", len(wf.Steps))
+	s.log.InfoContext(ctx, "workflow created", "workflow", wf.Name, "workflow_id", wf.ID, "nodes", len(wf.Graph.Nodes))
 	return http.StatusCreated, wf, nil
 }
 
@@ -122,6 +137,32 @@ func (s *Server) updateWorkflow(r *http.Request) (int, any, error) {
 	return http.StatusOK, wf, nil
 }
 
+// updateWorkflowLayout moves nodes on the canvas: {positions: {node: {x,y}}}.
+// No generation bump and no generation precondition — dragging nodes around is
+// "how it looks", not "what it does", and must not 409 against a real edit.
+func (s *Server) updateWorkflowLayout(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	var body struct {
+		Positions map[string]store.GraphPosition `json:"positions"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		return 0, nil, err
+	}
+	if len(body.Positions) == 0 {
+		return 0, nil, badRequest("positions are required")
+	}
+	name := r.PathValue("name")
+	if err := s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.SetWorkflowPositions(ctx, name, body.Positions)
+	}); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusNoContent, nil, nil
+}
+
 func (s *Server) archiveWorkflow(r *http.Request) (int, any, error) {
 	ctx := r.Context()
 	if s.Draining() {
@@ -142,9 +183,12 @@ type workflowRunCreated struct {
 	Works    []workCreated `json:"works"`
 }
 
-// runWorkflow instantiates every step as a Work in one transaction: either the
-// whole run is admitted or none of it. Step edges become work_dependencies, so
-// a later step sits blocked until what it runs after is done.
+// runWorkflow instantiates a static graph — routine nodes with
+// success/always edges, no loops — as Works in one transaction: either the
+// whole run is admitted or none of it. Edges become work_dependencies, so a
+// node sits blocked until what it runs after is done. Graphs that need
+// runtime evaluation (scripts, switches, failure edges, loops) go through the
+// run engine instead (B2 of the revamp; refused until it lands).
 func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 	ctx := r.Context()
 	if s.Draining() {
@@ -166,37 +210,81 @@ func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 		if !wf.ArchivedAt.IsZero() {
 			return badRequest("workflow %s is archived", wf.Name)
 		}
-		workOf := map[string]string{} // step name → work id, filled in step order
-		for _, st := range wf.Steps {
+		order, err := staticOrder(wf.Graph)
+		if err != nil {
+			return err
+		}
+		workOf := map[string]string{} // node id → work id, filled in topo order
+		for _, id := range order {
+			n := wf.Graph.Node(id)
+			cfg, err := n.RoutineConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
 			var edges []model.Edge
-			for _, e := range st.After {
-				on := e.On
-				if on == "" {
-					on = model.OnSuccess
+			for _, e := range wf.Graph.Edges {
+				if e.To != n.ID {
+					continue
 				}
-				edges = append(edges, model.Edge{BlockedBy: workOf[e.Step], On: on, StackOn: e.StackOn})
+				on := model.OnSuccess
+				if e.When == store.WhenAlways {
+					on = model.OnTerminal
+				}
+				edges = append(edges, model.Edge{BlockedBy: workOf[e.From], On: on, StackOn: e.StackOn})
+			}
+			repos := body.Repositories
+			if len(cfg.Repositories) > 0 {
+				repos = cfg.Repositories
+			}
+			objective := body.Objective
+			if cfg.Objective != "" {
+				objective = cfg.Objective
 			}
 			created, err := s.createWorkTx(ctx, tx, workRequest{
-				Routine:       st.Routine,
-				Repositories:  body.Repositories,
-				Objective:     body.Objective,
-				Title:         wf.Name + ": " + st.Name,
-				workflowRunID: out.RunID, workflowName: wf.Name, workflowStep: st.Name,
+				Routine:       cfg.Routine,
+				Repositories:  repos,
+				Objective:     objective,
+				Title:         wf.Name + ": " + n.ID,
+				workflowRunID: out.RunID, workflowName: wf.Name, workflowStep: n.ID,
 				stepEdges: edges,
 			})
 			if err != nil {
 				return err
 			}
-			workOf[st.Name] = created.Work.ID
+			workOf[n.ID] = created.Work.ID
 			out.Works = append(out.Works, created)
 		}
-		return tx.Journal(ctx, "workflow.run_created", store.EntityWork, out.RunID, map[string]any{"workflow": wf.Name, "generation": wf.Generation, "steps": len(wf.Steps)})
+		return tx.Journal(ctx, "workflow.run_created", store.EntityWork, out.RunID, map[string]any{"workflow": wf.Name, "generation": wf.Generation, "nodes": len(order)})
 	})
 	if err != nil {
 		return 0, nil, err
 	}
 	s.log.InfoContext(ctx, "workflow run created", "workflow", name, "run_id", out.RunID, "works", len(out.Works))
 	return http.StatusCreated, out, nil
+}
+
+// staticOrder returns the instantiation order for a graph the static run path
+// can execute: routine nodes joined by success/always edges. Anything needing
+// runtime evaluation is refused with a pointer at what.
+func staticOrder(g *store.WorkflowGraph) ([]string, error) {
+	for _, n := range g.Nodes {
+		if n.Type != store.NodeRoutine {
+			return nil, badRequest("node %s: %s nodes need the run engine, which this Forge does not have yet", n.ID, n.Type)
+		}
+	}
+	for _, e := range g.Edges {
+		if e.Loop {
+			return nil, badRequest("loop edge %s→%s needs the run engine, which this Forge does not have yet", e.From, e.To)
+		}
+		if e.When == store.WhenFailure || e.When == store.WhenCase || e.Default {
+			return nil, badRequest("edge %s→%s (%s) needs the run engine, which this Forge does not have yet", e.From, e.To, e.When)
+		}
+	}
+	order, err := g.TopoOrder()
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	return order, nil
 }
 
 // workflowRun is one row of GET /api/v1/workflows/{name}/runs: the Works one

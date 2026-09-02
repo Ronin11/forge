@@ -19,6 +19,7 @@ const (
 	EntityDaemon   = "daemon"
 	EntityPlugin   = "plugin"
 	EntityMerge    = "merge"
+	EntityWorkflow = "workflow"
 )
 
 // JournalEntry is one row of the audit trail.

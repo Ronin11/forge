@@ -79,7 +79,11 @@ func runWorkflowAdd(ctx context.Context, c *Context, args []string) int {
 	if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflows", wf, &out); err != nil {
 		return c.Fail("workflow add", err)
 	}
-	fmt.Fprintf(c.Stdout, "workflow %s created with %d step(s) (generation %d)\n", out.Name, len(out.Steps), out.Generation)
+	nodes := 0
+	if out.Graph != nil {
+		nodes = len(out.Graph.Nodes)
+	}
+	fmt.Fprintf(c.Stdout, "workflow %s created with %d node(s) (generation %d)\n", out.Name, nodes, out.Generation)
 	return 0
 }
 
@@ -108,9 +112,12 @@ func runWorkflowList(ctx context.Context, c *Context, args []string) int {
 	tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tGEN\tSTEPS\tSCHEDULE")
 	for _, wf := range out {
-		names := make([]string, len(wf.Steps))
-		for i, st := range wf.Steps {
-			names[i] = st.Name
+		var names []string
+		if wf.Graph != nil {
+			names = make([]string, len(wf.Graph.Nodes))
+			for i, n := range wf.Graph.Nodes {
+				names[i] = n.ID
+			}
 		}
 		sched := wf.Schedule
 		if sched != "" && !wf.ScheduleEnabled {

@@ -24,8 +24,13 @@ func TestWorkflowRunInstantiatesChain(t *testing.T) {
 	}}
 	var created store.Workflow
 	h.call(http.MethodPost, "/api/v1/workflows", wf, &created, http.StatusCreated)
-	if created.Generation != 1 || len(created.Steps) != 2 || len(created.Steps[1].After) != 1 {
+	// The steps body is converted to the canonical graph: two routine nodes
+	// chained by one success edge.
+	if created.Generation != 1 || created.Graph == nil || len(created.Steps) != 0 {
 		t.Fatalf("created = %+v", created)
+	}
+	if g := created.Graph; len(g.Nodes) != 2 || len(g.Edges) != 1 || g.Edges[0].From != "lint" || g.Edges[0].To != "fix" {
+		t.Fatalf("graph = %+v", created.Graph)
 	}
 
 	var run workflowRunCreated

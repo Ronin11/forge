@@ -649,9 +649,12 @@ func (u *UI) workflows(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]wfRow, 0, len(wfs))
 	for _, wf := range wfs {
-		row := wfRow{Workflow: wf, StepNames: make([]string, len(wf.Steps))}
-		for i, st := range wf.Steps {
-			row.StepNames[i] = st.Name
+		row := wfRow{Workflow: wf}
+		if wf.Graph != nil {
+			row.StepNames = make([]string, len(wf.Graph.Nodes))
+			for i, n := range wf.Graph.Nodes {
+				row.StepNames[i] = n.ID
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -909,13 +912,51 @@ func (u *UI) proposal(w http.ResponseWriter, r *http.Request) {
 	u.render(w, r, "proposal-detail.html", title, map[string]any{"Proposal": p, "History": history})
 }
 
+// proposalsData backs proposals.html: the current scope, the proposals in it,
+// and the per-scope counts the tabs show.
+type proposalsData struct {
+	Scope     string
+	Proposals []store.Proposal
+	Open      int
+	Closed    int
+}
+
+// proposalScope clamps the ?scope= param to open (the default — proposals
+// still waiting on a decision or an apply), closed (decided and done), or all.
+func proposalScope(q string) string {
+	switch q {
+	case "closed", "all":
+		return q
+	default:
+		return "open"
+	}
+}
+
+// proposalOpen reports whether a proposal still has somewhere to go: undecided,
+// or approved but not yet applied. Rejected, applied and reverted are closed.
+func proposalOpen(s model.ProposalStatus) bool {
+	return s == model.ProposalProposed || s == model.ProposalApproved
+}
+
 func (u *UI) proposals(w http.ResponseWriter, r *http.Request) {
-	ps, err := u.store.ListProposals(r.Context(), "")
+	all, err := u.store.ListProposals(r.Context(), "")
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
-	u.render(w, r, "proposals.html", "Proposals", ps)
+	data := proposalsData{Scope: proposalScope(r.URL.Query().Get("scope")), Proposals: []store.Proposal{}}
+	for _, p := range all {
+		open := proposalOpen(p.Status)
+		if open {
+			data.Open++
+		} else {
+			data.Closed++
+		}
+		if data.Scope == "all" || open == (data.Scope == "open") {
+			data.Proposals = append(data.Proposals, p)
+		}
+	}
+	u.render(w, r, "proposals.html", "Proposals", data)
 }
 
 // runnerHealthRow is one runner's advertised health for the dashboard (M10).
