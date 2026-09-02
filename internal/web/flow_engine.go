@@ -114,10 +114,17 @@ func (s *Server) advanceOnce(ctx context.Context, runID string) (bool, error) {
 	}
 	// Execute ready scripts and switches outside the write transaction.
 	results, ranScripts := s.executeFlowScripts(run, nodes)
+	s.flowMu.Lock()
+	startFails := make(map[string]string, len(s.flowStartFails))
+	for id, msg := range s.flowStartFails {
+		startFails[id] = msg
+	}
+	s.flowMu.Unlock()
 
 	diff, err := flow.Evaluate(flow.Input{
 		RunID: runID, Graph: run.Graph, RunStatus: run.Status,
-		Nodes: nodes, WorkStates: workStates, WorkOutputs: workOutputs, ScriptResults: results,
+		Nodes: nodes, WorkStates: workStates, WorkOutputs: workOutputs,
+		ScriptResults: results, MaterializeFailures: startFails,
 	})
 	if err != nil {
 		// An evaluation error is structural (bad graph state): fail the run
@@ -404,8 +411,32 @@ func (s *Server) applyFlowDiff(ctx context.Context, tx *store.Tx, run *store.Wor
 		byKey[u.Node.NodeID+"#"+fmt.Sprint(u.Node.Iteration)] = &u.Node
 	}
 	for _, st := range diff.Starts {
-		if err := s.startFlowWork(ctx, tx, run, st, byKey); err != nil {
+		err := s.startFlowWork(ctx, tx, run, st, byKey)
+		if err == nil {
+			continue
+		}
+		// A definitional mistake — an unregistered repository, an archived
+		// routine, a bad model alias — would fail this transaction forever.
+		// Record it and leave the instance ready: the next evaluation fails
+		// the node through the engine, so its tokens still deliver and the
+		// skip cascade and run status say what happened. Infrastructure
+		// errors still abort and retry.
+		var re *requestError
+		if !errors.As(err, &re) && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {
 			return err
+		}
+		inst := byKey[st.NodeID+"#"+fmt.Sprint(st.Iteration)]
+		if inst == nil {
+			return err
+		}
+		s.flowMu.Lock()
+		if s.flowStartFails == nil {
+			s.flowStartFails = map[string]string{}
+		}
+		s.flowStartFails[inst.ID] = err.Error()
+		s.flowMu.Unlock()
+		if jerr := tx.Journal(ctx, "workflow.node_failed", store.EntityWorkflow, run.ID, map[string]any{"node": st.NodeID, "iteration": st.Iteration, "error": err.Error()}); jerr != nil {
+			return jerr
 		}
 	}
 	if ranScripts > 0 {

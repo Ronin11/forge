@@ -1,0 +1,13 @@
+{{template "head" .}}<div class="page-head"><h1><a href="/workflows/{{.Data.Name}}/runs">{{.Data.Name}}</a> · run <code data-gv-run-short></code> <span class="state" data-gv-run-state>…</span></h1>
+<div class="gv-toolbar">
+<button class="btn" data-gv-fit title="Fit the graph in view">Zoom fit</button>
+<button class="btn" data-gv-run-cancel hidden>Cancel run</button>
+</div></div>
+<p class="error" data-gv-error hidden></p>
+<p class="meta" data-gv-run-meta></p>
+<div class="gv-editor gv-runview" data-graph-run data-workflow-name="{{.Data.Name}}" data-run-id="{{.Data.RunID}}">
+<svg class="gv-stage" data-gv-stage tabindex="0" aria-label="Workflow run graph"></svg>
+<aside class="gv-panel" data-gv-panel><p class="hint">Click a node to see its state, timing, and output.</p></aside>
+</div>
+<script src="/static/graph.js" defer></script>
+{{template "foot" .}}

@@ -389,3 +389,25 @@ func TestWorkflowRunRetry(t *testing.T) {
 		t.Fatalf("final = %s", d.Status)
 	}
 }
+
+// A routine node whose Work cannot be created (unregistered repository) fails
+// the node — with the reason on the instance — rather than wedging the run in
+// a forever-retrying transaction.
+func TestWorkflowRunMaterializationFailureFailsNode(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	ghost := store.Routine{Name: "ghostly", Mode: "run", Prompt: "p", Repositories: []string{"ghost-repo"}, Model: "haiku", TimeoutSeconds: 300}
+	h.call(http.MethodPost, "/api/v1/routines", ghost, nil, http.StatusCreated)
+	wf := store.Workflow{Name: "doomed", Steps: []store.WorkflowStep{{Name: "a", Routine: "ghostly"}}}
+	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
+	var run workflowRunCreated
+	h.call(http.MethodPost, "/api/v1/workflows/doomed/run", nil, &run, http.StatusCreated)
+	d := h.runDetail(run.RunID)
+	a := nodeInstance(d, "a", 1)
+	if a == nil || a.Status != store.NodeFailed || !strings.Contains(a.Error, "not registered") {
+		t.Fatalf("a = %+v", a)
+	}
+	if d.Status != store.RunFailed {
+		t.Fatalf("run = %s, want failed", d.Status)
+	}
+}

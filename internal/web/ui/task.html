@@ -17,22 +17,22 @@
 <section class="card">
 <h2>{{.Target.Repository}} {{template "stateChip" .Target.State}}{{if .Target.FailureReason}} <small>{{.Target.FailureReason}}</small>{{end}}{{if .Target.UnverifiedReason}} <small>{{.Target.UnverifiedReason}}</small>{{end}}{{if .Target.Retained}} <span class="chip warn">retained</span>{{end}}</h2>
 {{range .Attempts}}
-<dl class="kv">
+<dl class="kv pairs">
 <dt>Attempt</dt><dd>{{.ID}} · launches {{.Launches}} · executor {{.Executor}} · model {{.ModelAlias}} ({{.Model}}){{if .Runner}} · runner {{.Runner}}{{end}}{{if .EscalatedFrom}} · escalated from {{.EscalatedFrom}}{{end}}</dd>
-{{with routing .Routing}}<dt>Routing</dt><dd class="routing" data-routing>chosen {{.Chosen}} — {{.Why}}<table class="list"><thead><tr><th>Model</th><th>Runner</th><th>Score</th><th>Verified LB</th><th>Samples</th><th>Eligible</th><th>Reason</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{.Model}}</td><td>{{.Runner}}</td><td>{{printf "%.4f" .Score}}</td><td>{{printf "%.2f" .WilsonLB}}</td><td>{{.Successes}}/{{.Trials}}</td><td>{{.Eligible}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody></table></dd>{{end}}
+{{with routing .Routing}}<dt>Routing</dt><dd class="routing" data-routing>chosen {{.Chosen}} — {{.Why}}<div class="tablewrap"><table class="list"><thead><tr><th>Model</th><th>Runner</th><th>Score</th><th>Verified LB</th><th>Samples</th><th>Eligible</th><th class="grow">Reason</th></tr></thead><tbody>{{range .Candidates}}<tr><td>{{.Model}}</td><td>{{.Runner}}</td><td>{{printf "%.4f" .Score}}</td><td>{{printf "%.2f" .WilsonLB}}</td><td>{{.Successes}}/{{.Trials}}</td><td>{{.Eligible}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody></table></div></dd>{{end}}
 {{if .Branch}}<dt>Git</dt><dd>{{.Branch}} · base {{short .BaseCommit}} · head {{short .HeadCommit}} · commits {{.Git.Commits}} · files ±{{.Git.FilesChanged}} · pushed {{.Git.Pushed}} · dirty {{.Git.Dirty}}</dd>{{end}}
 <dt>Agent</dt><dd>turns {{.NumTurns}} · tokens in {{.Usage.InputTokens}} out {{.Usage.OutputTokens}} cache {{.Usage.CacheReadTokens}}/{{.Usage.CacheCreationTokens}} · cost {{deref .CostUSD}}{{if .SessionID}} · session {{.SessionID}}{{end}}</dd>
 {{with .Progress}}<dt>Live</dt><dd class="live">{{if .Phase}}phase <b>{{.Phase}}</b> · {{ago .PhaseAt}} · {{end}}turns {{.RunningTurns}} · tokens in/out {{.TokensIn}}/{{.TokensOut}}{{if not .LastEventAt.IsZero}} · last event {{ago .LastEventAt}}{{end}}{{if .Note}} · note: {{trunc .Note}}{{if .Checkpoint}} ({{.Checkpoint}}){{end}}{{end}}</dd>{{end}}
 {{if .Cleanup.Outcome}}<dt>Cleanup</dt><dd>{{.Cleanup.Outcome}} — {{.Cleanup.Reason}}{{if .Cleanup.Command}} · <code>{{.Cleanup.Command}}</code>{{end}}</dd>{{end}}
 {{if .VerificationLevel}}<dt>Verification</dt><dd>L{{.VerificationLevel}} passed={{.VerificationPass}}</dd>{{end}}
-{{if .ResultText}}<dt>Result</dt><dd><pre class="result">{{.ResultText}}</pre></dd>{{end}}
+{{if .ResultText}}<dt class="wide">Result</dt><dd class="wide"><pre class="result">{{.ResultText}}</pre></dd>{{end}}
 </dl>
 {{end}}
-{{with .Facts}}<h3>Facts</h3><table class="facts"><tr><th>queue wait</th><th>fetch</th><th>resolve</th><th>worktree</th><th>manifest</th><th>agent</th><th>inspect</th><th>verify</th><th>cleanup</th><th>total</th></tr>
-<tr><td>{{dur (index .Phases "queue_wait")}}</td><td>{{dur (index .Phases "fetch")}}</td><td>{{dur (index .Phases "resolve_base")}}</td><td>{{dur (index .Phases "worktree_add")}}</td><td>{{dur (index .Phases "manifest")}}</td><td>{{dur (index .Phases "agent")}}</td><td>{{dur (index .Phases "git_inspect")}}</td><td>{{dur (index .Phases "verify")}}</td><td>{{dur (index .Phases "cleanup")}}</td><td>{{dur (index .Phases "total")}}</td></tr></table>
+{{with .Facts}}<h3>Facts</h3><div class="tablewrap"><table class="facts"><tr><th>queue wait</th><th>fetch</th><th>resolve</th><th>worktree</th><th>manifest</th><th>agent</th><th>inspect</th><th>verify</th><th>cleanup</th><th>total</th></tr>
+<tr><td>{{dur (index .Phases "queue_wait")}}</td><td>{{dur (index .Phases "fetch")}}</td><td>{{dur (index .Phases "resolve_base")}}</td><td>{{dur (index .Phases "worktree_add")}}</td><td>{{dur (index .Phases "manifest")}}</td><td>{{dur (index .Phases "agent")}}</td><td>{{dur (index .Phases "git_inspect")}}</td><td>{{dur (index .Phases "verify")}}</td><td>{{dur (index .Phases "cleanup")}}</td><td>{{dur (index .Phases "total")}}</td></tr></table></div>
 <p class="meta">tools: {{range $k,$v := .ToolCallsByName}}{{$k}}×{{$v}} {{end}}</p>{{end}}
 {{if .Events}}<h3>Timeline</h3><div class="timeline" data-timeline>{{range .Events}}{{if eq .Kind "span_end"}}<div class="span" data-elapsed="{{.ElapsedUS}}" data-dur="{{.DurationUS}}" data-parent="{{.ParentID}}"><span class="name">{{.Name}}</span><span class="bar"></span><span class="dur">{{dur .DurationUS | printf "%s"}}</span></div>{{end}}{{end}}</div>
-<details><summary>Events ({{len .Events}})</summary><table class="events">{{range .Events}}<tr><td>{{.Seq}}</td><td>{{.Source}}</td><td>{{.ElapsedUS}}µs</td><td>{{.Kind}}</td><td>{{.Name}}</td><td>{{.Message}}</td><td><code>{{printf "%s" .Attrs}}</code></td></tr>{{end}}</table></details>{{end}}
+<details><summary>Events ({{len .Events}})</summary><div class="tablewrap"><table class="events">{{range .Events}}<tr><td>{{.Seq}}</td><td>{{.Source}}</td><td>{{.ElapsedUS}}µs</td><td>{{.Kind}}</td><td>{{.Name}}</td><td>{{.Message}}</td><td><code>{{printf "%s" .Attrs}}</code></td></tr>{{end}}</table></div></details>{{end}}
 </section>
 {{end}}
 {{template "foot" .}}

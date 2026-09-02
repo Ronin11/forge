@@ -1,0 +1,33 @@
+{{template "head" .}}<div class="page-head"><h1 data-gv-title>{{if .Data.Name}}Edit {{.Data.Name}}{{else}}New workflow{{end}}</h1>
+<div class="gv-toolbar">
+<button class="btn" data-gv-layout title="Arrange nodes left to right by dependency">Auto-layout</button>
+<button class="btn" data-gv-fit title="Fit the graph in view">Zoom fit</button>
+<button class="btn" data-gv-undo title="Undo (Ctrl+Z)">Undo</button>
+<button class="btn" data-gv-redo title="Redo (Ctrl+Shift+Z)">Redo</button>
+<a class="btn" href="/workflows">Cancel</a>
+<button class="btn primary" data-gv-save>Save</button>
+</div></div>
+<p class="error" data-gv-error hidden></p>
+<ul class="gv-lint" data-gv-lint hidden></ul>
+<div class="gv-editor" data-graph-editor data-workflow-name="{{.Data.Name}}">
+<div class="gv-palette" data-gv-palette>
+<b>Nodes</b>
+<div class="gv-tile" draggable="true" data-gv-add="routine" title="An agent runs a routine — one task through the queue"><svg class="i"><use href="#i-routines"/></svg> Routine</div>
+<div class="gv-tile" draggable="true" data-gv-add="script" title="JavaScript runs in the daemon: logic and data-munging between steps"><svg class="i"><use href="#i-gv-js"/></svg> JavaScript</div>
+<div class="gv-tile" draggable="true" data-gv-add="switch" title="An expression over upstream outputs picks one branch"><svg class="i"><use href="#i-gv-switch"/></svg> Switch</div>
+<div class="gv-tile" draggable="true" data-gv-add="join" title="Fan branches back in: wait for all, or the first"><svg class="i"><use href="#i-gv-join"/></svg> Join</div>
+<p class="hint">Drag onto the canvas, or click then click the canvas. Drag from a port to connect; click a node or edge to configure; Delete removes.</p>
+<b>Draft with AI</b>
+<textarea data-gv-draft-text rows="4" placeholder="Describe the workflow — e.g. “nightly: run lint, and if it fails, run the fixer and retry lint up to 3 times, then write docs”. The draft lands here for you to refine; nothing is saved until you Save."></textarea>
+<button class="btn" data-gv-draft>Draft</button>
+<p class="hint" data-gv-draft-notes hidden></p>
+</div>
+<svg class="gv-stage" data-gv-stage tabindex="0" aria-label="Workflow graph canvas"></svg>
+<aside class="gv-panel" data-gv-panel></aside>
+</div>
+<details class="gv-raw"><summary>Raw graph JSON</summary>
+<textarea data-gv-raw rows="14" spellcheck="false"></textarea>
+<button class="btn" data-gv-raw-apply>Apply JSON</button>
+</details>
+<script src="/static/graph.js" defer></script>
+{{template "foot" .}}

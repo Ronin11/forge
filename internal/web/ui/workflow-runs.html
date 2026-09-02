@@ -1,0 +1,8 @@
+{{template "head" .}}<div class="page-head"><h1>{{.Data.Workflow.Name}} · Runs</h1>
+<div class="gv-toolbar"><a class="btn" href="/workflows/{{.Data.Workflow.Name}}/edit">Edit workflow</a>
+<button class="btn primary" data-action-post="/api/v1/workflows/{{.Data.Workflow.Name}}/run">Run now</button></div></div>
+<div class="tablewrap"><table class="list"><thead><tr><th>Run</th><th>State</th><th>Trigger</th><th>Started</th><th>Finished</th><th>Nodes</th></tr></thead><tbody>
+{{range .Data.Runs}}<tr data-href="/workflows/{{.WorkflowName}}/runs/{{.ID}}"><td><a href="/workflows/{{.WorkflowName}}/runs/{{.ID}}"><code>{{short .ID}}</code></a></td><td><span class="state state-{{.Status}}">{{.Status}}</span></td><td>{{.Trigger}}</td><td>{{ago .CreatedAt}}</td><td>{{if .FinishedAt.IsZero}}—{{else}}{{ago .FinishedAt}}{{end}}</td><td class="chips">{{range .Nodes}}<span class="state state-{{.Status}}">{{.NodeID}}{{if gt .Iteration 1}}#{{.Iteration}}{{end}}</span> {{end}}</td></tr>
+{{else}}<tr><td colspan="6" class="empty">No runs yet. Run now above, or <code>forge workflow run {{.Data.Workflow.Name}}</code>. Runs from before the run engine appear under <a href="/tasks?q=%22{{.Data.Workflow.Name}}:%22">task search</a>.</td></tr>{{end}}
+</tbody></table></div>
+{{template "foot" .}}

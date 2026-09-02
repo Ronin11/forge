@@ -1,10 +1,10 @@
 {{template "head" .}}<div class="page-head"><h1>Repos</h1><button class="btn primary" data-repo-add>+ Add repo</button></div>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter repos — text, state:running, state:archived, project:name" "Keys" "state,project"}}
 <p id="repo-error" class="error" hidden></p>
-<table class="list"><thead><tr><th>Name</th><th>State</th><th>Path</th><th>Origin</th><th>Base</th><th>Seen</th><th>Controls</th></tr></thead><tbody>
+<div class="tablewrap"><table class="list"><thead><tr><th>Name</th><th>State</th><th class="grow">Path</th><th>Origin</th><th>Base</th><th>Seen</th><th>Controls</th></tr></thead><tbody>
 {{range .Data.Repositories}}{{$st := index $.Data.RepoStates .Name}}<tr data-sf-item data-f-state="{{if .Archived}}archived{{else}}{{$st}}{{end}}" data-f-project="{{.Project}}"><td><a href="/repos/{{.Name}}">{{.Name}}</a></td><td>{{$app := index $.Data.Apps .Name}}{{if .Archived}}<span class="state state-idle">archived</span>{{else}}{{template "stateChip" $st}}{{if $app.State}} <span class="state {{appStateClass $app.State}}" title="app {{$app.State}}{{if $app.URL}} at {{$app.URL}}{{end}}">app {{$app.State}}</span>{{end}}{{end}}</td><td>{{if .Archived}}<span class="meta">— deleted</span>{{else}}<code>{{.Path}}</code>{{end}}</td><td>{{.OriginIdentity}}</td><td>{{.BaseBranch}}</td><td>{{if .Archived}}archived {{ago .ArchivedAt}}{{else}}{{ago .LastSeenAt}}{{end}}</td><td class="actions">{{if .Archived}}{{if .OriginURL}}<button class="btn small" data-repo-restore="{{.Name}}">Restore</button>{{else}}<span class="meta">no saved origin</span>{{end}}{{else}}{{if .Paused}}<button class="btn small" data-repo-resume="{{.Name}}">Resume</button>{{else}}<button class="btn small" data-repo-pause="{{.Name}}">Pause</button>{{end}} <button class="btn small" data-repo-archive="{{.Name}}">Archive</button>{{if $app.URL}} <a class="btn small" href="{{$app.URL}}" target="_blank" rel="noopener">App ↗</a>{{else if .AppURL}} <a class="btn small" href="{{.AppURL}}" target="_blank" rel="noopener">App ↗</a>{{end}}{{end}}</td></tr>
 {{else}}<tr><td colspan="7" class="empty">No repositories — add one with <b>+ Add repo</b>, or <code>forge repo add PATH_OR_URL</code>.</td></tr>{{end}}
-</tbody></table>
+</tbody></table></div>
 
 <dialog data-repo-dialog>
 <form method="dialog" data-repo-form>

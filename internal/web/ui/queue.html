@@ -1,11 +1,11 @@
 {{template "head" .}}<h1>Queue</h1>
 <p class="meta">Drag rows to reorder. A task never moves above one it is blocked by; such a drop is refused.</p>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter queue — text, repo:name, state:pending, class:interactive" "Keys" "repo,state,class"}}
-<table class="list" id="queue" data-queue>
-<thead><tr><th></th><th>#</th><th>Task</th><th>State</th><th>Class</th><th>Priority</th><th>Depends on</th><th>Reason</th></tr></thead>
+<div class="tablewrap"><table class="list" id="queue" data-queue>
+<thead><tr><th></th><th>#</th><th class="grow">Task</th><th>State</th><th>Class</th><th>Priority</th><th>Depends on</th><th>Reason</th></tr></thead>
 <tbody>
-{{range .Data}}<tr draggable="true" data-id="{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-class="{{.Work.BudgetClass}}"><td class="grip">⋮⋮</td><td>{{.Position}}</td><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}{{if .Work.CausedByWorkID}} <a class="chip part" href="/work/{{.Work.RootWorkID}}">part of {{short .Work.RootWorkID}}</a>{{end}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td>{{range .Waiting}}<span class="chip">{{short .}}</span>{{end}}{{range .FailedOn}}<span class="chip warn">{{short .}} failed</span>{{end}}</td><td>{{.Reason}}</td></tr>
+{{range .Data}}<tr draggable="true" data-id="{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-class="{{.Work.BudgetClass}}"><td class="grip">⋮⋮</td><td>{{.Position}}</td><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}{{if .Work.CausedByWorkID}} <a class="chip part" href="/work/{{.Work.RootWorkID}}">part of {{short .Work.RootWorkID}}</a>{{end}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td class="chips">{{range .Waiting}}<span class="chip">{{short .}}</span>{{end}}{{range .FailedOn}}<span class="chip warn">{{short .}} failed</span>{{end}}</td><td>{{.Reason}}</td></tr>
 {{else}}<tr><td colspan="8" class="empty">The queue is empty.</td></tr>{{end}}
-</tbody></table>
+</tbody></table></div>
 <p id="queue-error" class="meta" hidden></p>
 {{template "foot" .}}

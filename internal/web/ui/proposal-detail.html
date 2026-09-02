@@ -12,8 +12,8 @@
 {{with prettyJSON $p.ExternalRefs}}<section class="card"><h2>External refs</h2><pre class="result">{{.}}</pre></section>{{end}}
 
 <h2>Decision history</h2>
-<table class="list"><thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead><tbody>
+<div class="tablewrap"><table class="list"><thead><tr><th>When</th><th>Event</th><th class="grow">Detail</th></tr></thead><tbody>
 {{range .Data.History}}<tr><td title="{{.Time}}">{{ago .Time}}</td><td><span class="chip">{{.Kind}}</span></td><td><code>{{printf "%s" .Payload}}</code></td></tr>
 {{else}}<tr><td colspan="3" class="empty">No recorded history.</td></tr>{{end}}
-</tbody></table>
+</tbody></table></div>
 {{template "foot" .}}

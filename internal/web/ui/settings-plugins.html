@@ -2,8 +2,8 @@
 {{template "settingsNav" .}}
 <div class="page-head"><h2>Plugins</h2></div>
 <p id="plugin-error" class="error" hidden></p>
-<table class="list"><thead><tr><th></th><th>Name</th><th>Version</th><th>Kind</th><th>Enabled</th><th>Running</th><th>Restarts</th><th>Last exit</th><th>Controls</th></tr></thead><tbody>
-{{range .Data.Plugins}}<tr><td><span class="dot {{if .Running}}ok{{else}}off{{end}}"></span></td><td>{{.Name}}</td><td>{{.Version}}</td><td>{{.Kind}}</td><td>{{if .Enabled}}yes{{else}}no{{end}}</td><td>{{if .Running}}pid {{.PID}}{{else}}no{{end}}</td><td>{{.Restarts}}</td><td>{{.LastExit}}</td><td class="actions">{{if .Enabled}}<button class="btn small" data-plugin-disable="{{.Name}}">Disable</button>{{else}}<button class="btn small" data-plugin-enable="{{.Name}}">Enable</button>{{end}} <button class="btn small" data-plugin-uninstall="{{.Name}}">Uninstall</button>{{if eq .Name "notify"}} <button class="btn small" data-rpc="notify.test">Test toast</button>{{end}}</td></tr>{{else}}<tr><td colspan="9" class="empty">No plugins installed.</td></tr>{{end}}</tbody></table>
+<div class="tablewrap"><table class="list"><thead><tr><th></th><th class="grow">Name</th><th>Version</th><th>Kind</th><th>Enabled</th><th>Running</th><th>Restarts</th><th>Last exit</th><th>Controls</th></tr></thead><tbody>
+{{range .Data.Plugins}}<tr><td><span class="dot {{if .Running}}ok{{else}}off{{end}}"></span></td><td>{{.Name}}</td><td>{{.Version}}</td><td>{{.Kind}}</td><td>{{if .Enabled}}yes{{else}}no{{end}}</td><td>{{if .Running}}pid {{.PID}}{{else}}no{{end}}</td><td>{{.Restarts}}</td><td>{{.LastExit}}</td><td class="actions">{{if .Enabled}}<button class="btn small" data-plugin-disable="{{.Name}}">Disable</button>{{else}}<button class="btn small" data-plugin-enable="{{.Name}}">Enable</button>{{end}} <button class="btn small" data-plugin-uninstall="{{.Name}}">Uninstall</button>{{if eq .Name "notify"}} <button class="btn small" data-rpc="notify.test">Test toast</button>{{end}}</td></tr>{{else}}<tr><td colspan="9" class="empty">No plugins installed.</td></tr>{{end}}</tbody></table></div>
 
 <section class="card">
 <h2>Install a plugin</h2>

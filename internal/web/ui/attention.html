@@ -1,6 +1,7 @@
 {{template "head" .}}<h1>Human Queue</h1>
 {{if and (not .Data.Questions) (not .Data.Proposals)}}<p class="empty">Nothing is waiting on you.</p>{{end}}
 {{if or .Data.Questions .Data.Proposals}}{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter — text, type:question, kind:prompt, routine:name" "Keys" "type,kind,routine,target"}}{{end}}
+<section class="cards">
 {{range .Data.Questions}}
 <div class="card question" data-question="{{.Question.ID}}" data-sf-item data-f-type="question" data-f-routine="{{.Work.RoutineName}}" data-f-criticality="{{.Question.Criticality}}">
 <b>Question</b> from <a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> ({{.Work.RoutineName}}@{{.Work.Generation}}) · asked {{ago .Question.AskedAt}}
@@ -21,5 +22,6 @@
 <p class="meta">or: <code>forge proposal approve {{short .ID}}</code></p>
 </div>
 {{end}}
+</section>
 <p id="proposal-error" class="meta" hidden></p>
 {{template "foot" .}}

@@ -241,7 +241,15 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	if err != nil {
 		return nil, fmt.Errorf("ui static: %w", err)
 	}
-	u.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	// Embedded assets carry no modtime, so the FileServer emits no cache
+	// validators and browsers cache heuristically — which serves stale JS
+	// after a daemon upgrade. no-cache forces a revalidation-shaped refetch;
+	// the assets are small and the daemon is local.
+	staticFiles := http.StripPrefix("/static/", http.FileServer(http.FS(static)))
+	u.mux.Handle("GET /static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		staticFiles.ServeHTTP(w, r)
+	}))
 	u.mux.HandleFunc("GET /{$}", u.dashboard)
 	u.mux.HandleFunc("GET /tasks", u.tasks)
 	u.mux.HandleFunc("GET /tasks/rows", u.taskRowsFragment)
@@ -249,6 +257,10 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	u.mux.HandleFunc("GET /work/{id}", u.work)
 	u.mux.HandleFunc("GET /routines", u.routines)
 	u.mux.HandleFunc("GET /workflows", u.workflows)
+	u.mux.HandleFunc("GET /workflows/new", u.workflowEdit)
+	u.mux.HandleFunc("GET /workflows/{name}/edit", u.workflowEdit)
+	u.mux.HandleFunc("GET /workflows/{name}/runs", u.workflowRuns)
+	u.mux.HandleFunc("GET /workflows/{name}/runs/{id}", u.workflowRun)
 	u.mux.HandleFunc("GET /settings", u.settingsGeneral)
 	u.mux.HandleFunc("GET /settings/plugins", u.settingsPlugins)
 	u.mux.HandleFunc("GET /system", u.system)
@@ -659,6 +671,56 @@ func (u *UI) workflows(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	u.render(w, r, "workflows.html", "Workflows", map[string]any{"Workflows": rows, "Routines": names})
+}
+
+// workflowEdit is the graph editor shell for /workflows/new and
+// /workflows/{name}/edit. The client fetches the workflow (and routine names)
+// from the API; the page only carries which workflow to load.
+func (u *UI) workflowEdit(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	title := "New workflow"
+	if name != "" {
+		title = "Edit " + name
+	}
+	u.render(w, r, "workflow-edit.html", title, map[string]any{"Name": name})
+}
+
+// workflowRuns lists a workflow's engine runs, newest first. Runs from before
+// the run engine have no rows here; the task search link below the table
+// still finds their Works by title prefix.
+func (u *UI) workflowRuns(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	wf, err := u.store.GetWorkflow(r.Context(), name)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	runs, err := u.store.WorkflowRunsFor(r.Context(), name, 100)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	type runRow struct {
+		store.WorkflowRun
+		Nodes []store.RunNode
+	}
+	rows := make([]runRow, 0, len(runs))
+	for _, run := range runs {
+		nodes, err := u.store.RunNodes(r.Context(), run.ID)
+		if err != nil {
+			u.fail(w, r, err)
+			return
+		}
+		rows = append(rows, runRow{WorkflowRun: run, Nodes: nodes})
+	}
+	u.render(w, r, "workflow-runs.html", wf.Name+" runs", map[string]any{"Workflow": wf, "Runs": rows})
+}
+
+// workflowRun is the run view shell: the frozen graph rendered read-only with
+// live per-node states. The client fetches the run detail from the API.
+func (u *UI) workflowRun(w http.ResponseWriter, r *http.Request) {
+	name, id := r.PathValue("name"), r.PathValue("id")
+	u.render(w, r, "workflow-run.html", name+" run", map[string]any{"Name": name, "RunID": id})
 }
 
 // repos is the Repos page: every registered repository (archived included),

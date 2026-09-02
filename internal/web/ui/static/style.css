@@ -1,19 +1,63 @@
-:root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#6b6b66;--line:#e2e1dc;--card:#fff;--ok:#2f8f4e;--warn:#c27a12;--bad:#c23b2f;--run:#2b6cb0;--wait:#8a5bd0}
+:root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#6b6b66;--line:#e2e1dc;--card:#fff;--ok:#2f8f4e;--warn:#c27a12;--bad:#c23b2f;--run:#2b6cb0;--wait:#8a5bd0;--page:2200px;--gutter:clamp(.8rem,2.2vw,2.5rem);--measure:80ch}
 @media(prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ebeae5;--muted:#9a9993;--line:#2c2c2a;--card:#1c1c1a}}
 body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
 input,select,textarea{max-width:100%;box-sizing:border-box}
-nav.top{display:flex;gap:1.2rem;align-items:center;padding:.6rem 1.2rem;border-bottom:1px solid var(--line);background:var(--card)}
+/* The bar spans the window; its contents line up with main's content column. */
+nav.top{display:flex;gap:1.2rem;align-items:center;border-bottom:1px solid var(--line);background:var(--card);padding:.6rem max(var(--gutter),calc((100% - var(--page))/2 + var(--gutter)))}
 .nav-links{display:flex;flex:1;align-items:center;gap:1.2rem}
 .nav-toggle{display:none;background:none;border:0;color:var(--fg);cursor:pointer;padding:.2rem;margin-left:auto}
 .nav-toggle .i{width:22px;height:22px}
 nav.top a{color:var(--muted);text-decoration:none}nav.top a.active,nav.top a:hover{color:var(--fg)}nav.top .brand{font-weight:700;color:var(--fg)}
-main{max-width:1200px;margin:0 auto;padding:1rem 1.2rem}
+/* Fluid page: the content column grows with the window up to --page, so a wide
+   monitor is used rather than framed by two empty margins. */
+main{width:100%;max-width:var(--page);margin:0 auto;padding:1rem var(--gutter);box-sizing:border-box}
 h1{font-size:1.4rem;margin:.4rem 0 1rem}h2{font-size:1.05rem;margin:1rem 0 .5rem}h3{font-size:.95rem;margin:.8rem 0 .3rem}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem}
-.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.8rem 1rem;margin-bottom:1rem}
-table.list,table.facts,table.events{width:100%;border-collapse:collapse;display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,21rem),1fr));gap:1rem;align-items:start}
+/* A card whose content is a table earns two tracks once there are tracks to spare. */
+@media (min-width:1180px){.card.span2{grid-column:span 2}}
+@media (min-width:1700px){.card.span3{grid-column:span 3}}
+/* Grid children carry their own gap; the card margin would double it. */
+.cards>.card{margin-bottom:0}
+/* The dashboard is laid out, not auto-fitted: Running and Needs attention are
+   the work, and the small status cards ride together in their own stack —
+   full width on a laptop, a narrow third column on a wide screen. */
+.dash-status{display:grid;gap:1rem;align-content:start;grid-template-columns:repeat(auto-fit,minmax(min(100%,21rem),1fr))}
+.dash-status>.card{margin-bottom:0}
+@media (min-width:1100px){
+  .dash-cards{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .dash-status{grid-column:1/-1}
+}
+@media (min-width:1600px){
+  .dash-cards{grid-template-columns:minmax(0,1.5fr) minmax(0,1.5fr) minmax(0,1fr)}
+  .dash-status{grid-column:3;grid-row:1;grid-template-columns:minmax(0,1fr)}
+}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.8rem 1rem;margin-bottom:1rem;container-type:inline-size}
+/* A table fills its column; the horizontal scroll a phone needs lives on the
+   wrapper, so the table itself can stretch to the width available. */
+.tablewrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.list,table.facts,table.events{width:100%;border-collapse:collapse}
 .card{min-width:0}
 table th{text-align:left;font-weight:600;color:var(--muted);font-size:.8rem;padding:.3rem .5rem;border-bottom:1px solid var(--line)}
+table.list th,table.list td{white-space:nowrap}
+table.list td:first-child,table.list th:first-child,table.list td.prompt,table.list td.wrap,table.list td.empty{white-space:normal}
+/* One column per table absorbs the slack (the title, the path, the rationale);
+   the rest stay at their content width instead of drifting apart. */
+table.list th.grow{width:100%}
+table.list.tasks td:first-child{min-width:12rem}
+/* Chip clusters (repositories, dependencies) wrap inside their own cell rather
+   than stretching the row. */
+table.list td.chips{white-space:normal;max-width:24rem}
+/* Inside a card narrower than this, a task table sheds Class and Priority —
+   the dashboard shows what is happening, the Tasks page shows everything. */
+@container (max-width:54rem){
+  table.tasks th:nth-child(5),table.tasks td:nth-child(5),
+  table.tasks th:nth-child(6),table.tasks td:nth-child(6){display:none}
+  table.list td:first-child{min-width:0}
+  table.list td.chips{max-width:14rem}
+}
+@container (max-width:38rem){
+  table.tasks th:nth-child(3),table.tasks td:nth-child(3){display:none}
+}
 table td{padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
 tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08)}
 .state{display:inline-block;padding:0 .45rem;border-radius:999px;font-size:.75rem;border:1px solid var(--line);color:var(--muted)}
@@ -32,10 +76,13 @@ tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08
 .chip.warn{color:var(--warn);border-color:var(--warn)}
 .dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.off{background:var(--bad)}
 .empty{color:var(--muted)}.meta{color:var(--muted)}small{color:var(--muted)}
+ul.attention li,.card.question>p,.card.proposal>p,p.sub,.card>p.meta{max-width:var(--measure)}
 .attention li{overflow-wrap:anywhere}
 dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;margin:.4rem 0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;word-break:break-word}
+@media (min-width:1300px){dl.kv.pairs{grid-template-columns:max-content minmax(0,1fr) max-content minmax(0,1fr);column-gap:1.6rem}
+  dl.kv.pairs dd.wide,dl.kv.pairs dt.wide{grid-column:span 3}dl.kv.pairs dt.wide{grid-column:span 1}}
 dl.kv dd.live{color:var(--run)}
-pre.result{white-space:pre-wrap;background:var(--bg);padding:.5rem;border-radius:4px;max-height:16rem;overflow:auto;margin:0}
+pre.result{white-space:pre-wrap;background:var(--bg);padding:.5rem;border-radius:4px;max-height:min(50vh,26rem);overflow:auto;margin:0}
 td.prompt{white-space:pre-wrap;max-width:36rem;color:var(--muted)}
 .timeline .span{display:grid;grid-template-columns:10rem 1fr 5rem;align-items:center;gap:.5rem;font-size:.8rem}
 .timeline .bar{height:.6rem;background:var(--run);border-radius:2px;opacity:.7}
@@ -43,7 +90,10 @@ table.events{font-size:.78rem}table.events code{white-space:pre-wrap;word-break:
 ul.attention li{margin:.2rem 0}
 .grip{cursor:grab;color:var(--muted);user-select:none}
 tr[draggable]{background:var(--card)}
-.card.question form{margin:.4rem 0}
+.card.question form{margin:.4rem 0;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.card.question form input[type=text]{flex:1 1 16rem;min-width:0;font:inherit;padding:.35rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.card.question form button{font:inherit;font-size:.8rem;padding:.3rem .8rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer;white-space:nowrap}
+.card.question form button:hover{border-color:var(--fg)}
 .dash-head{display:flex;gap:1rem;align-items:stretch;flex-wrap:wrap;margin-bottom:1rem}
 .dash-head-search{flex:1 1 22rem;min-width:0;display:flex;align-items:flex-start}
 .dash-head-search .searchbar{width:100%;margin:0}
@@ -59,7 +109,7 @@ tr[draggable]{background:var(--card)}
 /* Search bar (shared: every page but System) */
 [hidden]{display:none!important}
 .searchbar{position:relative;display:flex;gap:.5rem;margin:0 0 1rem;align-items:flex-start;flex-wrap:wrap}
-.sb-field{flex:1;max-width:40rem;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;padding:.28rem .4rem;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.sb-field{flex:1;max-width:min(100%,56rem);display:flex;flex-wrap:wrap;align-items:center;gap:.3rem;padding:.28rem .4rem;border:1px solid var(--line);border-radius:6px;background:var(--card)}
 .sb-field:focus-within{outline:2px solid var(--run);outline-offset:-1px}
 .searchbar input[type=search]{flex:1;min-width:8rem;border:none;outline:none;background:transparent;color:var(--fg);font:inherit;padding:.15rem .2rem}
 .sb-chips{display:contents}
@@ -173,8 +223,8 @@ code.cmd-copy.copied::after{content:"copied \2713";margin-left:.5em;color:var(--
 td.actions{white-space:nowrap;text-align:right}
 .error{color:var(--bad)}
 .settings-row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
-.settings-row input{font:inherit;padding:.35rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);flex:1 1 12rem;min-width:0}
-dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;min-width:min(44rem,90vw);max-height:90vh}
+.settings-row input{font:inherit;padding:.35rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);flex:1 1 12rem;min-width:0;max-width:34rem}
+dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:1rem 1.2rem;width:min(62rem,94vw);box-sizing:border-box;max-height:90vh}
 dialog::backdrop{background:rgba(0,0,0,.4)}
 dialog h2{margin:.2rem 0 .8rem}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.6rem .9rem}
@@ -201,7 +251,7 @@ dialog h2{margin:.2rem 0 .8rem}
 .chat-status a{color:var(--run)}
 
 /* Dialogs never exceed the viewport (matters most on small screens). */
-dialog{max-width:min(40rem,95vw);box-sizing:border-box}
+dialog{max-width:94vw}
 
 /* --- Responsive: keep everything inside the viewport on phones/tablets --- */
 /* Nav collapses to a hamburger + vertical popout once the links stop fitting. */
@@ -235,6 +285,26 @@ dialog{max-width:min(40rem,95vw);box-sizing:border-box}
   main{padding:.6rem}
   nav.top{gap:.4rem .7rem}
   nav.top a{font-size:.85rem}
+}
+
+/* --- Wide screens: spend the extra pixels on content, not on margins --- */
+@media (min-width:1200px){
+  /* The two budget gauges sit side by side, leaving the search bar the rest. */
+  .dash-head .gauges{flex:1 1 34rem}
+  .dash-head .gauges{flex-direction:row}
+  .dash-head .gauge{flex:1 1 0;min-width:0}
+  /* A knowledge note keeps its reading measure and moves its links alongside. */
+  .kb-note{max-width:none;display:grid;grid-template-columns:minmax(0,46rem) minmax(15rem,22rem);column-gap:3rem;align-items:start}
+  .kb-note>.crumb,.kb-note>h1,.kb-note>.sub,.kb-note>.kb-body{grid-column:1}
+  .kb-note>.kb-links{grid-column:2;grid-row:1/span 4;margin-top:.4rem;padding-top:0;border-top:0;flex-direction:column;gap:1.4rem;position:sticky;top:1rem}
+  /* The timeline label column can afford to show a whole task title. */
+  .tl-lane{grid-template-columns:14rem 1fr}
+  .tl-axis{margin-left:14.5rem}
+}
+@media (min-width:1900px){
+  /* At this size 14px is small for a wall-mounted dashboard. */
+  body{font-size:15px}
+  :root{--measure:96ch}
 }
 
 /* --- Line Forge icons (inline SVG sprite; everything currentColor) --- */
@@ -274,3 +344,76 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .wtree .wmeta{color:var(--muted)}
 .wtree .wkids{padding-left:1.1rem;border-left:1px solid var(--line);margin-left:.35rem}
 .wtree .wrow.leaf{padding-left:1.2rem}
+
+/* --- Workflow graph editor + run view (graph.js) ------------------------- */
+.page-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.gv-toolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.gv-editor{display:flex;gap:0;border:1px solid var(--line);border-radius:6px;background:var(--card);min-height:62vh;overflow:hidden}
+.gv-palette{flex:0 0 9.5rem;border-right:1px solid var(--line);padding:.7rem;display:flex;flex-direction:column;gap:.45rem}
+.gv-palette b{font-size:.8rem;color:var(--muted)}
+.gv-tile{display:flex;align-items:center;gap:.45rem;border:1px solid var(--line);border-radius:6px;padding:.4rem .55rem;cursor:grab;background:var(--bg);user-select:none;font-size:.85rem}
+.gv-tile:hover{border-color:var(--run)}
+.gv-tile.gv-armed{border-color:var(--run);color:var(--run)}
+.gv-stage{flex:1;min-width:0;display:block;background:var(--bg);cursor:default;outline:none}
+.gv-stage.gv-panning{cursor:grabbing}
+.gv-panel{flex:0 0 20rem;border-left:1px solid var(--line);padding:.7rem .9rem;overflow-y:auto;max-height:72vh}
+.gv-panel h3{margin-top:.2rem}
+.gv-panel label{display:block;font-size:.8rem;color:var(--muted);margin:.5rem 0 .15rem}
+.gv-panel input,.gv-panel select,.gv-panel textarea{width:100%;font:inherit;padding:.3rem .45rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.gv-panel textarea{font-family:ui-monospace,monospace;font-size:.8rem}
+.gv-panel .check{display:flex;align-items:center;gap:.4rem;color:var(--fg)}
+.gv-panel .check input{width:auto}
+.gv-panel .gv-danger{margin-top:.8rem}
+.gv-lint{margin:.4rem 0;padding-left:1.2rem;font-size:.82rem}
+.gv-lint li{cursor:pointer}
+.gv-lint li.gv-err{color:var(--bad)}
+.gv-lint li.gv-warn{color:var(--warn)}
+.gv-raw{margin:.8rem 0}
+.gv-raw textarea{width:100%;font-family:ui-monospace,monospace;font-size:.78rem;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:.5rem;box-sizing:border-box}
+/* SVG pieces — all colors from theme tokens so dark mode is free. */
+.gv-node rect.gv-body{fill:var(--card);stroke:var(--line);stroke-width:1.2}
+.gv-node.gv-selected rect.gv-body{stroke:var(--run);stroke-width:2}
+.gv-node text{fill:var(--fg);font:12.5px system-ui,sans-serif}
+.gv-node text.gv-sub{fill:var(--muted);font-size:11px}
+.gv-node .gv-badge{fill:var(--bad)}
+.gv-node .gv-badge.gv-warn{fill:var(--warn)}
+.gv-node{cursor:grab}
+.gv-runview .gv-node{cursor:pointer}
+.gv-port{fill:var(--muted);stroke:var(--card);stroke-width:1.5;cursor:crosshair}
+.gv-port.gv-p-success{fill:var(--ok)}
+.gv-port.gv-p-failure{fill:var(--bad)}
+.gv-port.gv-p-case{fill:var(--wait)}
+.gv-port.gv-p-in{fill:var(--muted)}
+.gv-port-hit{fill:transparent;cursor:crosshair}
+.gv-port.gv-p-open{stroke:var(--run);stroke-width:2.5}
+.gv-edge{fill:none;stroke:var(--muted);stroke-width:1.6}
+.gv-edge.gv-e-success{stroke:var(--ok)}
+.gv-edge.gv-e-failure{stroke:var(--bad)}
+.gv-edge.gv-e-always{stroke:var(--muted)}
+.gv-edge.gv-e-case{stroke:var(--wait)}
+.gv-edge.gv-e-loop{stroke-dasharray:6 4}
+.gv-edge-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}
+.gv-edge.gv-selected{stroke-width:2.6}
+.gv-edge-label{fill:var(--muted);font:10.5px system-ui,sans-serif}
+.gv-temp-edge{fill:none;stroke:var(--run);stroke-width:1.6;stroke-dasharray:5 4;pointer-events:none}
+.gv-grid{fill:var(--line)}
+/* Run view states */
+.gv-runview .gv-node rect.gv-body{stroke-width:2}
+.gv-node.gv-st-pending rect.gv-body{stroke:var(--line);opacity:.65}
+.gv-node.gv-st-ready rect.gv-body,.gv-node.gv-st-running rect.gv-body{stroke:var(--run)}
+.gv-node.gv-st-succeeded rect.gv-body{stroke:var(--ok)}
+.gv-node.gv-st-failed rect.gv-body{stroke:var(--bad)}
+.gv-node.gv-st-cancelled rect.gv-body{stroke:var(--bad);opacity:.7}
+.gv-node.gv-st-skipped rect.gv-body{stroke:var(--muted);stroke-dasharray:4 3;opacity:.6}
+.gv-node.gv-st-none rect.gv-body{stroke:var(--line);opacity:.5}
+.gv-node text.gv-state{font-size:10.5px}
+.gv-node.gv-st-running text.gv-state{fill:var(--run)}
+.gv-node.gv-st-succeeded text.gv-state{fill:var(--ok)}
+.gv-node.gv-st-failed text.gv-state{fill:var(--bad)}
+.gv-node.gv-st-skipped text.gv-state,.gv-node.gv-st-pending text.gv-state{fill:var(--muted)}
+@keyframes gv-dash{to{stroke-dashoffset:-20}}
+.gv-node.gv-st-running rect.gv-body{stroke-dasharray:8 4;animation:gv-dash 1.2s linear infinite}
+@media (prefers-reduced-motion: reduce){.gv-node.gv-st-running rect.gv-body{animation:none;stroke-dasharray:none}}
+.gv-runview .gv-edge{opacity:.35}
+.gv-runview .gv-edge.gv-taken{opacity:1}
+@media (max-width:900px){.gv-editor{flex-direction:column}.gv-palette{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}.gv-panel{border-left:0;border-top:1px solid var(--line);max-height:none;flex-basis:auto}.gv-stage{min-height:46vh}}

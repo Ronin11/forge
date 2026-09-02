@@ -86,7 +86,10 @@ func TestUIPagesRender(t *testing.T) {
 		"/tasks/rows?scope=all&offset=0": {`data-href="/tasks/`, "equitizr", "<tr"},
 		"/tasks/" + work.ID:              {"inventory@1", "claimed", "fetch", "1ms"},
 		"/routines":                      {"inventory", "list files", "data-routine-new", `data-routine-edit="inventory"`, `data-action-post="/api/v1/routines/inventory/run"`},
-		"/workflows":                     {"nightly", "scan → fix", "data-workflow-new", `data-workflow-edit="nightly"`, `data-action-post="/api/v1/workflows/nightly/run"`, `datalist id="routine-names"`, `<option value="inventory">`},
+		"/workflows":                     {"nightly", "scan → fix", `href="/workflows/new"`, `href="/workflows/nightly/edit"`, `data-action-post="/api/v1/workflows/nightly/run"`, `href="/workflows/nightly/runs"`},
+		"/workflows/new":                 {"New workflow", "data-graph-editor", "data-gv-stage", "graph.js"},
+		"/workflows/nightly/edit":        {"Edit nightly", `data-workflow-name="nightly"`, "data-graph-editor"},
+		"/workflows/nightly/runs":        {"nightly · Runs", "No runs yet"},
 		"/system":                        {"laptop", "github.com/x/equitizr", "sandbox=ready", "data-chat-toggle", "Settings", ">General<", ">Plugins<"},
 		"/settings":                      {"Settings", "Daemon", "Logging", "data-settings-general", "data-loglevel-form", `data-action-post="/api/v1/backup"`, ">General<"},
 		"/settings/plugins":              {"Plugins", "data-plugin-install-form", "Install a plugin", "No plugins installed"},
@@ -149,4 +152,70 @@ func truncateBody(b []byte) string {
 		return string(b[:1500]) + "…"
 	}
 	return string(b)
+}
+
+// TestProposalsScope: the page defaults to open proposals — decided ones live
+// behind the Closed tab, so a long tail of rejected/applied rows never buries
+// the one waiting on a human.
+func TestProposalsScope(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "forge.sqlite3"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := st.Write(ctx, func(tx *store.Tx) error {
+		open := &store.Proposal{Source: "manual", Kind: model.ProposalDoc, Target: "kb:still-open", After: []byte(`{}`), Rationale: "undecided rationale", VerificationPlan: "human reads it"}
+		if err := tx.CreateProposal(ctx, open); err != nil {
+			return err
+		}
+		done := &store.Proposal{Source: "manual", Kind: model.ProposalDoc, Target: "kb:already-rejected", After: []byte(`{}`), Rationale: "decided rationale", VerificationPlan: "human reads it"}
+		if err := tx.CreateProposal(ctx, done); err != nil {
+			return err
+		}
+		_, err := tx.DecideProposal(ctx, done.ID, model.ProposalRejected, "human")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(ui.Handler())
+	defer srv.Close()
+
+	for path, want := range map[string]struct{ has, hasNot []string }{
+		"/proposals":              {has: []string{"kb:still-open", ">Open 1<", ">Closed 1<"}, hasNot: []string{"kb:already-rejected"}},
+		"/proposals?scope=open":   {has: []string{"kb:still-open"}, hasNot: []string{"kb:already-rejected"}},
+		"/proposals?scope=closed": {has: []string{"kb:already-rejected"}, hasNot: []string{"kb:still-open"}},
+		"/proposals?scope=all":    {has: []string{"kb:still-open", "kb:already-rejected"}},
+		"/proposals?scope=bogus":  {has: []string{"kb:still-open"}, hasNot: []string{"kb:already-rejected"}},
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range want.has {
+			if !strings.Contains(string(body), w) {
+				t.Errorf("GET %s: missing %q", path, w)
+			}
+		}
+		for _, w := range want.hasNot {
+			if strings.Contains(string(body), w) {
+				t.Errorf("GET %s: unexpectedly contains %q", path, w)
+			}
+		}
+	}
 }

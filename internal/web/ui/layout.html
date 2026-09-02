@@ -46,6 +46,9 @@
 <symbol id="i-st-paused" viewBox="0 0 24 24"><path d="M9.5 6v12M14.5 6v12"/></symbol>
 <symbol id="i-st-unverified" viewBox="0 0 24 24"><path d="M12 4.5 3.5 19h17z"/><path d="M12 10.5v3.5"/><path d="M12 16.8h.01"/></symbol>
 <symbol id="i-st-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-gv-js" viewBox="0 0 24 24"><path d="M8 5 4 12l4 7M16 5l4 7-4 7"/></symbol>
+<symbol id="i-gv-switch" viewBox="0 0 24 24"><path d="M3 12h6"/><path d="M9 12c3 0 3-5 6-5h6M9 12c3 0 3 5 6 5h6"/><path d="M18 4.5 21 7l-3 2.5M18 14.5 21 17l-3 2.5"/></symbol>
+<symbol id="i-gv-join" viewBox="0 0 24 24"><path d="M21 12h-6"/><path d="M15 12c-3 0-3-5-6-5H3M15 12c-3 0-3 5-6 5H3"/><path d="M18 9.5 21 12l-3 2.5"/></symbol>
 <symbol id="i-st-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
 </defs></svg>{{end}}
 {{define "foot"}}</main>
@@ -69,11 +72,11 @@
 <a href="/system"{{if eq .Active "system.html"}} class="on"{{end}}>System</a>
 <a href="/settings/plugins"{{if eq .Active "settings-plugins.html"}} class="on"{{end}}>Plugins</a>
 </div>{{end}}
-{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}{{if .Work.CausedByWorkID}} <a class="chip part" href="/work/{{.Work.RootWorkID}}">part of {{short .Work.RootWorkID}}</a>{{end}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td>{{range .Targets}}<span class="chip">{{.Repository}} {{template "stateChip" .State}}</span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
+{{define "taskRow"}}<tr data-href="/tasks/{{.Work.ID}}" data-sf-item data-f-repo="{{range .Targets}}{{.Repository}} {{end}}" data-f-state="{{.State}}" data-f-routine="{{.Work.RoutineName}}" data-f-class="{{.Work.BudgetClass}}"><td><a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> {{.Work.Title}}{{if .Work.CausedByWorkID}} <a class="chip part" href="/work/{{.Work.RootWorkID}}">part of {{short .Work.RootWorkID}}</a>{{end}}</td><td>{{if eq (printf "%v" .State) "running"}}{{template "workingIcon"}} {{end}}{{template "stateChip" .State}}</td><td>{{.Work.RoutineName}}@{{.Work.Generation}}</td><td class="chips">{{range .Targets}}<span class="chip">{{.Repository}} {{template "stateChip" .State}}</span> {{end}}</td><td>{{.Work.BudgetClass}}</td><td>{{.Work.Priority}}</td><td title="{{.Work.CreatedAt}}">{{ago .Work.CreatedAt}}</td></tr>{{end}}
 {{define "taskRowList"}}{{range .}}{{template "taskRow" .}}{{end}}{{end}}
-{{define "taskTable"}}<table class="list"><thead><tr><th>Task</th><th>State</th><th>Routine</th><th>Repositories</th><th>Class</th><th>Priority</th><th>Created</th></tr></thead><tbody data-task-rows>
+{{define "taskTable"}}<div class="tablewrap"><table class="list tasks"><thead><tr><th class="grow">Task</th><th>State</th><th>Routine</th><th>Repositories</th><th>Class</th><th>Priority</th><th>Created</th></tr></thead><tbody data-task-rows>
 {{range .}}{{template "taskRow" .}}
 {{else}}<tr><td colspan="7" class="empty"><div class="empty-il">{{template "emptyAnvil"}}<span>No tasks yet — <code>forge task add "…" --repo NAME</code></span></div></td></tr>{{end}}
-</tbody></table>{{end}}
+</tbody></table></div>{{end}}
 {{define "statsRow"}}<tr data-sf-item data-f-routine="{{.Routine}}"><td>{{.Routine}}{{if .Generation}}@{{.Generation}}{{end}}</td><td>{{.Runs}}</td><td>{{printf "%.0f%%" (mulf .VerifiedSuccessRate 100)}}</td><td>{{printf "%.0f%%" (mulf .SelfReportedSuccessRate 100)}}</td><td>{{dur64 .P50TotalUS}}</td><td>{{dur64 .P95TotalUS}}</td><td>{{dur64 .P50AgentUS}}</td><td>{{printf "%.0f/%.0f" .TokensInPerRun .TokensOutPerRun}}</td><td>{{printf "$%.4f" .CostPerRun}}</td><td>{{if .CostPerVerifiedSuccess}}{{printf "$%.4f" (dereff .CostPerVerifiedSuccess)}}{{else}}-{{end}}</td><td>{{printf "%.1f" .TurnsPerRun}}</td><td>{{range .TopFailureReasons}}{{.Reason}}×{{.Count}} {{end}}</td></tr>
 {{end}}

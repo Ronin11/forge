@@ -1,8 +1,13 @@
 {{template "head" .}}<h1>Proposals</h1>
 <p class="meta">Reflection proposes; a human decides. Approve applies in the same transaction — a refused apply leaves the proposal proposed.</p>
+<div class="tabs">
+<a href="/proposals?scope=open"{{if eq .Data.Scope "open"}} class="on"{{end}}>Open{{if .Data.Open}} {{.Data.Open}}{{end}}</a>
+<a href="/proposals?scope=closed"{{if eq .Data.Scope "closed"}} class="on"{{end}}>Closed{{if .Data.Closed}} {{.Data.Closed}}{{end}}</a>
+<a href="/proposals?scope=all"{{if eq .Data.Scope "all"}} class="on"{{end}}>All</a>
+</div>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter proposals — text, status:proposed, kind:prompt, -status:rejected" "Keys" "status,kind,target,source"}}
-<table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th>Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
-{{range .Data}}<tr data-proposal="{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
+<div class="tablewrap"><table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th class="grow">Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
+{{range .Data.Proposals}}<tr data-proposal="{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
 <td><a href="/proposals/{{.ID}}"><code>{{short .ID}}</code></a></td>
 <td>{{template "stateChip" .Status}}</td>
 <td><span class="chip">{{.Kind}}</span></td>
@@ -12,7 +17,7 @@
 <td>{{if .AppliedRef}}<code>{{.AppliedRef}}</code>{{else}}-{{end}}</td>
 <td>{{if eq .Status "proposed"}}<button data-proposal-approve="{{.ID}}">Approve</button> <button data-proposal-reject="{{.ID}}">Reject</button>{{end}}</td>
 </tr>
-{{else}}<tr><td colspan="8" class="empty">No proposals yet — retro attempts file them with <code>forge_propose</code>.</td></tr>{{end}}
-</tbody></table>
+{{else}}<tr><td colspan="8" class="empty">{{if eq $.Data.Scope "closed"}}No decided proposals yet.{{else if and (eq $.Data.Scope "open") $.Data.Closed}}Nothing waiting on you — every proposal is decided. <a href="/proposals?scope=closed">See the closed ones</a>.{{else}}No proposals yet — retro attempts file them with <code>forge_propose</code>.{{end}}</td></tr>{{end}}
+</tbody></table></div>
 <p id="proposal-error" class="meta" hidden></p>
 {{template "foot" .}}

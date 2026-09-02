@@ -127,8 +127,12 @@ type Engine struct {
 
 	// flowLocks serializes workflow-run advances per run (flow_engine.go) so
 	// a kick and the tick never execute one run's scripts twice concurrently.
-	flowMu    sync.Mutex
-	flowLocks map[string]*sync.Mutex
+	// flowStartFails carries definitional materialization failures (instance
+	// id → message) from one apply to the next evaluation; a restart just
+	// rediscovers them.
+	flowMu         sync.Mutex
+	flowLocks      map[string]*sync.Mutex
+	flowStartFails map[string]string
 }
 
 // Server is the HTTP surface over the Engine: transport, auth, drain state,
@@ -375,6 +379,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/routines/{name}/run", s.handle(s.runRoutine))
 	m.HandleFunc("GET /api/v1/workflows", s.handle(s.listWorkflows))
 	m.HandleFunc("POST /api/v1/workflows", s.handle(s.createWorkflow))
+	m.HandleFunc("POST /api/v1/workflows/draft", s.handle(s.draftWorkflow))
 	m.HandleFunc("GET /api/v1/workflows/{name}", s.handle(s.getWorkflow))
 	m.HandleFunc("PUT /api/v1/workflows/{name}", s.handle(s.updateWorkflow))
 	m.HandleFunc("PATCH /api/v1/workflows/{name}/layout", s.handle(s.updateWorkflowLayout))

@@ -50,6 +50,12 @@ type Input struct {
 	// the result finalizes the instance and delivers its tokens here, so the
 	// finalization and the routing land atomically.
 	ScriptResults map[string]ScriptResult
+	// MaterializeFailures carries definitional Work-creation failures (an
+	// unregistered repository, an archived routine) for ready routine
+	// instances, keyed by instance id: the instance fails with the message
+	// and its tokens deliver like any failure, instead of the run wedging on
+	// a transaction that can never commit.
+	MaterializeFailures map[string]string
 }
 
 // ScriptResult is one script or switch execution's outcome.
@@ -203,6 +209,13 @@ func Evaluate(in Input) (Diff, error) {
 					continue
 				}
 				ev.finalize(inst, res.Status, string(res.Output), res.Error)
+				frontier = append(frontier, inst)
+			case inst.Status == store.NodeReady && inst.Type == store.NodeRoutine:
+				msg, ok := in.MaterializeFailures[inst.ID]
+				if !ok {
+					continue
+				}
+				ev.finalize(inst, store.NodeFailed, "", msg)
 				frontier = append(frontier, inst)
 			}
 		}

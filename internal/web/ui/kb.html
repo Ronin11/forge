@@ -5,8 +5,8 @@
 {{if .Data.Tags}}<div class="kb-tags">
   {{range .Data.Tags}}<a href="/kb?tag={{.Tag}}" class="chip{{if eq .Tag $.Data.Tag}} on{{end}}">{{.Tag}} <span>{{.Count}}</span></a>{{end}}
 </div>{{end}}
-<table class="list">
-  <thead><tr><th>Title</th><th>Type</th><th>Tags</th><th>Created</th></tr></thead>
+<div class="tablewrap"><table class="list">
+  <thead><tr><th class="grow">Title</th><th>Type</th><th>Tags</th><th>Created</th></tr></thead>
   <tbody>
   {{range .Data.Notes}}<tr data-href="/kb/{{.ID}}">
     <td><a href="/kb/{{.ID}}">{{.Title}}</a></td>
@@ -15,5 +15,5 @@
     <td title="{{.Created}}">{{ago .Created}}</td>
   </tr>{{else}}<tr><td colspan="4" class="empty">{{if .Data.Query}}No notes match “{{.Data.Query}}”.{{else}}No notes yet — <code>forge kb new --title "…"</code></td>{{end}}</tr>{{end}}
   </tbody>
-</table>
+</table></div>
 {{template "foot" .}}{{end}}
