@@ -124,6 +124,11 @@ type Engine struct {
 	// slow eval is not launched twice across sweep ticks.
 	inflightMu   sync.Mutex
 	inflightEval map[string]bool
+
+	// flowLocks serializes workflow-run advances per run (flow_engine.go) so
+	// a kick and the tick never execute one run's scripts twice concurrently.
+	flowMu    sync.Mutex
+	flowLocks map[string]*sync.Mutex
 }
 
 // Server is the HTTP surface over the Engine: transport, auth, drain state,
@@ -308,6 +313,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
 		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
+		flowLocks: map[string]*sync.Mutex{},
 	}
 	eng.evalFn = o.EvalFn
 	if eng.evalFn == nil {
@@ -375,6 +381,8 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/v1/workflows/{name}", s.handle(s.archiveWorkflow))
 	m.HandleFunc("POST /api/v1/workflows/{name}/run", s.handle(s.runWorkflow))
 	m.HandleFunc("GET /api/v1/workflows/{name}/runs", s.handle(s.workflowRuns))
+	m.HandleFunc("GET /api/v1/workflow-runs/{id}", s.handle(s.getWorkflowRun))
+	m.HandleFunc("POST /api/v1/workflow-runs/{id}/cancel", s.handle(s.cancelWorkflowRun))
 	for _, base := range []string{"/api/v1/work", "/api/v1/tasks"} {
 		m.HandleFunc("GET "+base, s.handle(s.listWork))
 		m.HandleFunc("POST "+base, s.handle(s.createWork))

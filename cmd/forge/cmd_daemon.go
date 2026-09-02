@@ -338,6 +338,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	g.Go(func() error { srv.RunSweeper(gctx, 10*time.Second, d.cfg.Reflection); return nil })
 	g.Go(func() error { srv.RunAttention(gctx, time.Minute); return nil })
 	g.Go(func() error { srv.RunSupervision(gctx, 45*time.Second); return nil })
+	g.Go(func() error { srv.RunFlowEngine(gctx, 15*time.Second); return nil })
 	integ := integrator.New(st, d.handler.For("integrator"), time.Now, integrator.Config{Home: home, MaxRebaseAttempts: d.cfg.Integration.MaxRebaseAttempts})
 	g.Go(func() error { integ.Run(gctx); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })

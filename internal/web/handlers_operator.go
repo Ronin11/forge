@@ -190,12 +190,16 @@ type workRequest struct {
 	// callers; a manual or routine run leaves it unset.
 	CausedBy string `json:"caused_by"`
 
-	// Workflow stamps and prebuilt step edges, set only by runWorkflow —
+	// Workflow stamps and prebuilt step edges, set only by the run engine —
 	// unexported so a request body can never forge them.
 	workflowRunID string
 	workflowName  string
 	workflowStep  string
 	stepEdges     []model.Edge
+	// trigger overrides the manual default: the engine stamps a scheduled
+	// run's Works `schedule` so analytics can tell them apart. Unexported for
+	// the same reason.
+	trigger model.Trigger
 }
 
 // workCreated is the 201 body.
@@ -390,6 +394,9 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	}
 	w.PromptHash = promptHashOf(rt.Prompt)
 	w.Trigger, w.Snapshot, w.Priority, w.BudgetClass = model.TriggerManual, snapshot, rt.Priority, rt.BudgetClass
+	if req.trigger != "" {
+		w.Trigger = req.trigger
+	}
 	w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = req.workflowRunID, req.workflowName, req.workflowStep
 	w.Autonomy = model.ResolveAutonomy(req.Autonomy, rt.Autonomy, "", project.Autonomy, "")
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
@@ -635,6 +642,9 @@ func (s *Server) cancelWork(r *http.Request) (int, any, error) {
 	}
 	if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.CancelWork(ctx, id, "human") }); err != nil {
 		return 0, nil, err
+	}
+	if w, werr := s.store.GetWork(ctx, id); werr == nil && w.WorkflowRunID != "" {
+		s.KickFlow(ctx, w.WorkflowRunID)
 	}
 	s.log.InfoContext(ctx, "work cancelled", "work_id", id)
 	return s.workDetail(ctx, id)
@@ -1030,7 +1040,13 @@ func (s *Server) requeueTarget(r *http.Request) (int, any, error) {
 	var target *store.Target
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
 		target, err = tx.Transition(ctx, id, model.QueuedForMerge, store.TransitionOptions{Actor: "human"})
-		return err
+		if err != nil {
+			return err
+		}
+		// A human requeue means the blocker is fixed; the exhausted rebase
+		// counter must not outlive it, or this transition round-trips
+		// straight back to conflict.
+		return tx.ResetMergeAttempts(ctx, id)
 	})
 	if err != nil {
 		return 0, nil, err

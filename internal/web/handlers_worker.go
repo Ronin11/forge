@@ -790,6 +790,12 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	s.log.InfoContext(ctx, "attempt completed", "reported", req.State, "state", out.Target.State, "late", out.Late, "again", out.Again, "exit_code", req.ExitCode, "turns", req.NumTurns)
+	// A workflow-run Work reaching a terminal state is what the run engine
+	// waits on: advance it after the commit (never inside — flow scripts must
+	// not run in SQLite's writer).
+	if w, werr := s.store.GetWork(ctx, out.Target.WorkID); werr == nil && w.WorkflowRunID != "" {
+		s.KickFlow(ctx, w.WorkflowRunID)
+	}
 	return http.StatusOK, protocol.CompleteResponse{State: out.Target.State, Late: out.Late}, nil
 }
 

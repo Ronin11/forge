@@ -19,7 +19,7 @@ func RunWorkflow(ctx context.Context, c *Context, args []string) int {
 		if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 			code = 0
 		}
-		fmt.Fprintln(c.Stderr, "usage: forge workflow add|list|show|edit|run|runs|enable|disable NAME [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge workflow add|list|show|edit|run|runs|run-show|cancel|enable|disable NAME [flags]")
 		return code
 	}
 	sub, rest := args[0], args[1:]
@@ -30,9 +30,105 @@ func RunWorkflow(ctx context.Context, c *Context, args []string) int {
 		return runWorkflowList(ctx, c, rest)
 	case "show", "run", "runs", "enable", "disable", "edit":
 		return runWorkflowNamed(ctx, c, sub, rest)
+	case "run-show", "cancel":
+		return runWorkflowRunOp(ctx, c, sub, rest)
 	}
 	fmt.Fprintf(c.Stderr, "forge workflow: unknown subcommand %q\n", sub)
 	return 2
+}
+
+// workflowRunDetailView is GET /api/v1/workflow-runs/{id}.
+type workflowRunDetailView struct {
+	ID           string            `json:"id"`
+	WorkflowName string            `json:"workflow_name"`
+	Status       string            `json:"status"`
+	Trigger      string            `json:"trigger"`
+	ScriptRuns   int               `json:"script_runs"`
+	CreatedAt    string            `json:"created_at"`
+	FinishedAt   string            `json:"finished_at,omitempty"`
+	Nodes        []workflowRunNode `json:"nodes"`
+}
+
+// resolveWorkflowRunID accepts a full run id or a unique prefix over every
+// workflow's recent runs.
+func resolveWorkflowRunID(ctx context.Context, cl *cliClient, prefix string) (string, error) {
+	if len(prefix) == 32 {
+		return prefix, nil
+	}
+	var wfs []store.Workflow
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflows?archived=true", nil, &wfs); err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, wf := range wfs {
+		var runs []workflowRunRow
+		if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflows/"+wf.Name+"/runs", nil, &runs); err != nil {
+			return "", err
+		}
+		for _, run := range runs {
+			if strings.HasPrefix(run.RunID, prefix) {
+				matches = append(matches, run.RunID)
+			}
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no workflow run matches %q", prefix)
+	}
+	return "", fmt.Errorf("%q matches %d runs; be more specific", prefix, len(matches))
+}
+
+// runWorkflowRunOp is the run-addressed half: run-show and cancel.
+func runWorkflowRunOp(ctx context.Context, c *Context, sub string, args []string) int {
+	fs, lf := c.Flags("workflow " + sub)
+	asJSON := fs.Bool("json", false, "JSON output")
+	if code := c.Parse(fs, args); code >= 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintf(c.Stderr, "usage: forge workflow %s RUN_ID\n", sub)
+		return 2
+	}
+	_, log, code := c.ResolveLogging(lf, "cli.workflow")
+	if code >= 0 {
+		return code
+	}
+	cl := c.Client(log)
+	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("workflow "+sub, err)
+	}
+	id, err := resolveWorkflowRunID(ctx, cl, fs.Arg(0))
+	if err != nil {
+		return c.Fail("workflow "+sub, err)
+	}
+	if sub == "cancel" {
+		var out map[string]string
+		if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflow-runs/"+id+"/cancel", map[string]any{}, &out); err != nil {
+			return c.Fail("workflow cancel", err)
+		}
+		fmt.Fprintf(c.Stdout, "run %s cancelling\n", short(id))
+		return 0
+	}
+	var out workflowRunDetailView
+	if err := cl.Do(ctx, http.MethodGet, "/api/v1/workflow-runs/"+id, nil, &out); err != nil {
+		return c.Fail("workflow run-show", err)
+	}
+	if *asJSON {
+		c.PrintJSON(out)
+		return 0
+	}
+	fmt.Fprintf(c.Stdout, "run %s  workflow %s  %s  trigger %s  scripts %d\n", short(out.ID), out.WorkflowName, out.Status, out.Trigger, out.ScriptRuns)
+	tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NODE\tITER\tTYPE\tSTATUS\tWORK\tERROR")
+	for _, n := range out.Nodes {
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", n.NodeID, n.Iteration, n.Type, n.Status, short(n.WorkID), n.Error)
+	}
+	if err := tw.Flush(); err != nil {
+		return c.Fail("workflow run-show", err)
+	}
+	return 0
 }
 
 func runWorkflowAdd(ctx context.Context, c *Context, args []string) int {
@@ -131,19 +227,54 @@ func runWorkflowList(ctx context.Context, c *Context, args []string) int {
 	return 0
 }
 
-// workflowRunView is POST /api/v1/workflows/{name}/run's body.
+// workflowRunView is POST /api/v1/workflows/{name}/run's 201 body: the run's
+// Works do not exist yet — the engine materializes nodes as they become ready.
 type workflowRunView struct {
-	RunID    string     `json:"run_id"`
-	Workflow string     `json:"workflow"`
-	Works    []taskView `json:"works"`
+	RunID      string `json:"run_id"`
+	Workflow   string `json:"workflow"`
+	Generation int    `json:"generation"`
 }
 
-// workflowRunRow is one row of GET /api/v1/workflows/{name}/runs.
+// workflowRunNode is one node instance in a runs listing or run detail.
+type workflowRunNode struct {
+	NodeID    string `json:"node_id"`
+	Iteration int    `json:"iteration"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	WorkID    string `json:"work_id,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// workflowRunRow is one row of GET /api/v1/workflows/{name}/runs: an engine
+// run carries Nodes, a pre-engine run carries Works and legacy = true.
 type workflowRunRow struct {
-	RunID     string     `json:"run_id"`
-	State     string     `json:"state"`
-	CreatedAt string     `json:"created_at"`
-	Works     []taskView `json:"works"`
+	RunID     string            `json:"run_id"`
+	State     string            `json:"state"`
+	Trigger   string            `json:"trigger,omitempty"`
+	CreatedAt string            `json:"created_at"`
+	Nodes     []workflowRunNode `json:"nodes,omitempty"`
+	Works     []taskView        `json:"works,omitempty"`
+	Legacy    bool              `json:"legacy,omitempty"`
+}
+
+// runSteps renders a run's per-node (or, for legacy runs, per-work) states.
+func runSteps(run workflowRunRow) string {
+	if run.Legacy {
+		steps := make([]string, len(run.Works))
+		for i, w := range run.Works {
+			steps[i] = w.Work.WorkflowStep + ":" + string(w.State)
+		}
+		return strings.Join(steps, " ")
+	}
+	steps := make([]string, len(run.Nodes))
+	for i, n := range run.Nodes {
+		label := n.NodeID
+		if n.Iteration > 1 {
+			label = fmt.Sprintf("%s#%d", n.NodeID, n.Iteration)
+		}
+		steps[i] = label + ":" + n.Status
+	}
+	return strings.Join(steps, " ")
 }
 
 func runWorkflowNamed(ctx context.Context, c *Context, sub string, args []string) int {
@@ -193,10 +324,8 @@ func runWorkflowNamed(ctx context.Context, c *Context, sub string, args []string
 		if err := cl.Do(ctx, http.MethodPost, "/api/v1/workflows/"+name+"/run", body, &out); err != nil {
 			return c.Fail("workflow run", err)
 		}
-		fmt.Fprintf(c.Stdout, "run %s created from %s@%d: %d task(s)\n", short(out.RunID), name, wf.Generation, len(out.Works))
-		for _, w := range out.Works {
-			fmt.Fprintf(c.Stdout, "  %s  %s\n", short(w.Work.ID), w.Work.Title)
-		}
+		fmt.Fprintf(c.Stdout, "run %s created from %s@%d\n", short(out.RunID), name, out.Generation)
+		fmt.Fprintf(c.Stdout, "  forge workflow run-show %s\n", short(out.RunID))
 		return 0
 	case "runs":
 		var out []workflowRunRow
@@ -210,11 +339,7 @@ func runWorkflowNamed(ctx context.Context, c *Context, sub string, args []string
 		tw := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "RUN\tSTATE\tCREATED\tSTEPS")
 		for _, run := range out {
-			steps := make([]string, len(run.Works))
-			for i, w := range run.Works {
-				steps[i] = w.Work.WorkflowStep + ":" + string(w.State)
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", short(run.RunID), run.State, run.CreatedAt, strings.Join(steps, " "))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", short(run.RunID), run.State, run.CreatedAt, runSteps(run))
 		}
 		if err := tw.Flush(); err != nil {
 			return c.Fail("workflow runs", err)

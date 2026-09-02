@@ -2,21 +2,25 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"time"
 
 	"forge/internal/core/engine"
+	"forge/internal/core/flow"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
 
-// Workflows are routines strung together (store.Workflow). Running one
-// instantiates one Work per step with blocked_by edges inside a single
-// transaction; from there the queue, dependency, and attention machinery treat
-// the steps like any other Work. A run has no state row — GET .../runs derives
-// it from the Works stamped with the run id.
+// Workflows are graphs of typed nodes (store.WorkflowGraph). Running one
+// creates a first-class run row with the graph frozen; the run engine
+// (flow_engine.go) materializes routine nodes into Works as they become
+// ready, so the queue, dependency, and attention machinery treat them like
+// any other Work while switches, scripts, failure edges, and loops are
+// evaluated between materializations.
 
 func (s *Server) listWorkflows(r *http.Request) (int, any, error) {
 	workflows, err := s.store.ListWorkflows(r.Context(), r.URL.Query().Get("archived") == "true")
@@ -46,28 +50,45 @@ func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 	return &wf, nil
 }
 
-// checkStepRoutines refuses a workflow whose routine nodes name a routine that
-// does not exist or is archived — at definition time, where the mistake is
-// cheap. Legacy `steps` bodies are converted by the store before this runs, so
-// the check normalizes first to see the graph either way.
+// checkStepRoutines refuses, at definition time where the mistake is cheap: a
+// routine node naming a routine that does not exist or is archived, and a
+// script or switch whose JavaScript does not compile (a 400 at save, not a
+// runtime failure mid-run). Legacy `steps` bodies were normalized at decode,
+// so the graph is always present here.
 func checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) error {
 	if wf.Graph == nil {
 		return nil // normalize in the store surfaces the real validation error
 	}
 	for _, n := range wf.Graph.Nodes {
-		if n.Type != store.NodeRoutine {
-			continue
-		}
-		cfg, err := n.RoutineConfig()
-		if err != nil {
-			return badRequest("%v", err)
-		}
-		rt, err := tx.GetRoutine(ctx, cfg.Routine)
-		if err != nil {
-			return badRequest("node %s: routine %s does not exist", n.ID, cfg.Routine)
-		}
-		if !rt.ArchivedAt.IsZero() {
-			return badRequest("node %s: routine %s is archived", n.ID, cfg.Routine)
+		switch n.Type {
+		case store.NodeRoutine:
+			cfg, err := n.RoutineConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			rt, err := tx.GetRoutine(ctx, cfg.Routine)
+			if err != nil {
+				return badRequest("node %s: routine %s does not exist", n.ID, cfg.Routine)
+			}
+			if !rt.ArchivedAt.IsZero() {
+				return badRequest("node %s: routine %s is archived", n.ID, cfg.Routine)
+			}
+		case store.NodeScript:
+			cfg, err := n.ScriptConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			if err := flow.CompileScript(cfg.Source); err != nil {
+				return badRequest("node %s: %v", n.ID, err)
+			}
+		case store.NodeSwitch:
+			cfg, err := n.SwitchConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			if err := flow.CompileSwitch(cfg.Expression); err != nil {
+				return badRequest("node %s: %v", n.ID, err)
+			}
 		}
 	}
 	return nil
@@ -176,19 +197,19 @@ func (s *Server) archiveWorkflow(r *http.Request) (int, any, error) {
 	return http.StatusNoContent, nil, nil
 }
 
-// workflowRunCreated is POST /api/v1/workflows/{name}/run's 201 body.
+// workflowRunCreated is POST /api/v1/workflows/{name}/run's 201 body. The
+// run's Works do not exist yet — the engine materializes nodes as they become
+// ready; GET /api/v1/workflow-runs/{run_id} follows the run.
 type workflowRunCreated struct {
-	RunID    string        `json:"run_id"`
-	Workflow string        `json:"workflow"`
-	Works    []workCreated `json:"works"`
+	RunID      string `json:"run_id"`
+	Workflow   string `json:"workflow"`
+	Generation int    `json:"generation"`
 }
 
-// runWorkflow instantiates a static graph — routine nodes with
-// success/always edges, no loops — as Works in one transaction: either the
-// whole run is admitted or none of it. Edges become work_dependencies, so a
-// node sits blocked until what it runs after is done. Graphs that need
-// runtime evaluation (scripts, switches, failure edges, loops) go through the
-// run engine instead (B2 of the revamp; refused until it lands).
+// runWorkflow creates the run row — graph frozen, context stored — and hands
+// it to the engine. The synchronous advance after commit is a latency
+// courtesy: root nodes are materialized before the response so the queue
+// shows the run started.
 func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 	ctx := r.Context()
 	if s.Draining() {
@@ -201,7 +222,7 @@ func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 		}
 	}
 	name := r.PathValue("name")
-	out := workflowRunCreated{RunID: model.NewID(), Workflow: name, Works: []workCreated{}}
+	run := &store.WorkflowRun{Trigger: model.TriggerManual, Context: store.RunContext{Repositories: body.Repositories, Objective: body.Objective}}
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		wf, err := tx.GetWorkflow(ctx, name)
 		if err != nil {
@@ -210,91 +231,150 @@ func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 		if !wf.ArchivedAt.IsZero() {
 			return badRequest("workflow %s is archived", wf.Name)
 		}
-		order, err := staticOrder(wf.Graph)
-		if err != nil {
+		run.WorkflowID, run.WorkflowName, run.WorkflowGeneration, run.Graph = wf.ID, wf.Name, wf.Generation, wf.Graph
+		if err := tx.CreateWorkflowRun(ctx, run); err != nil {
 			return err
 		}
-		workOf := map[string]string{} // node id → work id, filled in topo order
-		for _, id := range order {
-			n := wf.Graph.Node(id)
-			cfg, err := n.RoutineConfig()
-			if err != nil {
-				return badRequest("%v", err)
-			}
-			var edges []model.Edge
-			for _, e := range wf.Graph.Edges {
-				if e.To != n.ID {
-					continue
-				}
-				on := model.OnSuccess
-				if e.When == store.WhenAlways {
-					on = model.OnTerminal
-				}
-				edges = append(edges, model.Edge{BlockedBy: workOf[e.From], On: on, StackOn: e.StackOn})
-			}
-			repos := body.Repositories
-			if len(cfg.Repositories) > 0 {
-				repos = cfg.Repositories
-			}
-			objective := body.Objective
-			if cfg.Objective != "" {
-				objective = cfg.Objective
-			}
-			created, err := s.createWorkTx(ctx, tx, workRequest{
-				Routine:       cfg.Routine,
-				Repositories:  repos,
-				Objective:     objective,
-				Title:         wf.Name + ": " + n.ID,
-				workflowRunID: out.RunID, workflowName: wf.Name, workflowStep: n.ID,
-				stepEdges: edges,
-			})
-			if err != nil {
-				return err
-			}
-			workOf[n.ID] = created.Work.ID
-			out.Works = append(out.Works, created)
-		}
-		return tx.Journal(ctx, "workflow.run_created", store.EntityWork, out.RunID, map[string]any{"workflow": wf.Name, "generation": wf.Generation, "nodes": len(order)})
+		return tx.Journal(ctx, "workflow.run_created", store.EntityWorkflow, run.ID, map[string]any{"workflow": wf.Name, "generation": wf.Generation, "trigger": run.Trigger, "nodes": len(wf.Graph.Nodes)})
 	})
 	if err != nil {
 		return 0, nil, err
 	}
-	s.log.InfoContext(ctx, "workflow run created", "workflow", name, "run_id", out.RunID, "works", len(out.Works))
-	return http.StatusCreated, out, nil
+	s.advanceRun(ctx, run.ID)
+	s.log.InfoContext(ctx, "workflow run created", "workflow", name, "run_id", run.ID)
+	return http.StatusCreated, workflowRunCreated{RunID: run.ID, Workflow: name, Generation: run.WorkflowGeneration}, nil
 }
 
-// staticOrder returns the instantiation order for a graph the static run path
-// can execute: routine nodes joined by success/always edges. Anything needing
-// runtime evaluation is refused with a pointer at what.
-func staticOrder(g *store.WorkflowGraph) ([]string, error) {
-	for _, n := range g.Nodes {
-		if n.Type != store.NodeRoutine {
-			return nil, badRequest("node %s: %s nodes need the run engine, which this Forge does not have yet", n.ID, n.Type)
-		}
-	}
-	for _, e := range g.Edges {
-		if e.Loop {
-			return nil, badRequest("loop edge %s→%s needs the run engine, which this Forge does not have yet", e.From, e.To)
-		}
-		if e.When == store.WhenFailure || e.When == store.WhenCase || e.Default {
-			return nil, badRequest("edge %s→%s (%s) needs the run engine, which this Forge does not have yet", e.From, e.To, e.When)
-		}
-	}
-	order, err := g.TopoOrder()
+// runNodeSummary is one node instance in a runs listing or run detail.
+type runNodeSummary struct {
+	NodeID    string    `json:"node_id"`
+	Iteration int       `json:"iteration"`
+	Type      string    `json:"type"`
+	Status    string    `json:"status"`
+	WorkID    string    `json:"work_id,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+}
+
+// workflowRunDetail is GET /api/v1/workflow-runs/{id}: the run row (frozen
+// graph included — the view must draw what routed, not what the workflow says
+// today) plus every instance, with the Work summary for routine nodes.
+type workflowRunDetail struct {
+	store.WorkflowRun
+	Nodes []runNodeDetail `json:"nodes"`
+}
+
+type runNodeDetail struct {
+	store.RunNode
+	Work *workSummary `json:"work,omitempty"`
+}
+
+func (s *Server) getWorkflowRun(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	id, err := pathID(r)
 	if err != nil {
-		return nil, badRequest("%v", err)
+		return 0, nil, err
 	}
-	return order, nil
+	run, err := s.store.GetWorkflowRun(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	nodes, err := s.store.RunNodes(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	works, err := s.store.WorkForRun(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	ids := make([]string, len(works))
+	byID := map[string]store.Work{}
+	for i, w := range works {
+		ids[i] = w.ID
+		byID[w.ID] = w
+	}
+	targets, err := s.store.TargetsForWorks(ctx, ids)
+	if err != nil {
+		return 0, nil, err
+	}
+	out := workflowRunDetail{WorkflowRun: *run, Nodes: make([]runNodeDetail, 0, len(nodes))}
+	for _, n := range nodes {
+		d := runNodeDetail{RunNode: n}
+		if w, ok := byID[n.WorkID]; ok {
+			ts := targets[w.ID]
+			if ts == nil {
+				ts = []store.Target{}
+			}
+			state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: w.Integrate})
+			d.Work = &workSummary{Work: w, State: state, Targets: ts}
+		}
+		out.Nodes = append(out.Nodes, d)
+	}
+	return http.StatusOK, out, nil
 }
 
-// workflowRun is one row of GET /api/v1/workflows/{name}/runs: the Works one
-// run instantiated, with their derived states (targets only — dependency and
-// budget effects show in the queue) and a coarse aggregate.
+// cancelWorkflowRun requests the whole run stop: waiting instances cancel
+// now, running Works get the ordinary cancel request, and the engine settles
+// the run to cancelled as they land.
+func (s *Server) cancelWorkflowRun(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		run, err := tx.GetWorkflowRun(ctx, id)
+		if err != nil {
+			return err
+		}
+		if run.Status != store.RunRunning {
+			return badRequest("run is already %s", run.Status)
+		}
+		nodes, err := tx.RunNodes(ctx, id)
+		if err != nil {
+			return err
+		}
+		for i := range nodes {
+			n := &nodes[i]
+			switch n.Status {
+			case store.NodePending, store.NodeReady:
+				from := n.Status
+				n.Status, n.Error, n.FinishedAt = store.NodeCancelled, "run cancelled", tx.Now()
+				if err := tx.UpdateRunNodeFrom(ctx, n, from); err != nil {
+					return err
+				}
+			case store.NodeRunning:
+				if n.WorkID == "" {
+					continue
+				}
+				if err := tx.CancelWork(ctx, n.WorkID, "human"); err != nil && !errors.Is(err, store.ErrConflict) {
+					return err
+				}
+			}
+		}
+		return tx.Journal(ctx, "workflow.run_cancel_requested", store.EntityWorkflow, id, map[string]any{"workflow": run.WorkflowName})
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.KickFlow(ctx, id)
+	s.log.InfoContext(ctx, "workflow run cancel requested", "run_id", id)
+	return http.StatusAccepted, map[string]string{"run_id": id, "status": "cancelling"}, nil
+}
+
+// workflowRun is one row of GET /api/v1/workflows/{name}/runs. An engine run
+// carries its stored status and node instances; a legacy run (pre-engine,
+// instantiated upfront with no run row) carries its Works and a derived
+// aggregate, marked legacy.
 type workflowRun struct {
-	RunID     string        `json:"run_id"`
-	State     string        `json:"state"`
-	CreatedAt time.Time     `json:"created_at"`
-	Works     []workSummary `json:"works"`
+	RunID      string           `json:"run_id"`
+	State      string           `json:"state"`
+	Trigger    string           `json:"trigger,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	FinishedAt time.Time        `json:"finished_at,omitempty"`
+	Nodes      []runNodeSummary `json:"nodes,omitempty"`
+	Works      []workSummary    `json:"works,omitempty"`
+	Legacy     bool             `json:"legacy,omitempty"`
 }
 
 func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
@@ -307,9 +387,42 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	work, err := s.store.WorkForWorkflow(ctx, name, limit)
+	runs, err := s.store.WorkflowRunsFor(ctx, name, limit)
 	if err != nil {
 		return 0, nil, err
+	}
+	out := make([]workflowRun, 0, len(runs))
+	engineRuns := map[string]bool{}
+	for _, run := range runs {
+		engineRuns[run.ID] = true
+		nodes, err := s.store.RunNodes(ctx, run.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		row := workflowRun{RunID: run.ID, State: run.Status, Trigger: string(run.Trigger), CreatedAt: run.CreatedAt, FinishedAt: run.FinishedAt}
+		for _, n := range nodes {
+			row.Nodes = append(row.Nodes, runNodeSummary{NodeID: n.NodeID, Iteration: n.Iteration, Type: string(n.Type), Status: n.Status, WorkID: n.WorkID, Error: n.Error, StartedAt: n.StartedAt})
+		}
+		out = append(out, row)
+	}
+	legacy, err := s.legacyWorkflowRuns(ctx, name, limit, engineRuns)
+	if err != nil {
+		return 0, nil, err
+	}
+	out = append(out, legacy...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return http.StatusOK, out, nil
+}
+
+// legacyWorkflowRuns derives rows for runs that predate the engine: grouped
+// Works, exactly the old listing.
+func (s *Server) legacyWorkflowRuns(ctx context.Context, name string, limit int, engineRuns map[string]bool) ([]workflowRun, error) {
+	work, err := s.store.WorkForWorkflow(ctx, name, limit)
+	if err != nil {
+		return nil, err
 	}
 	ids := make([]string, len(work))
 	for i, wk := range work {
@@ -317,14 +430,17 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 	}
 	targets, err := s.store.TargetsForWorks(ctx, ids)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	byRun := map[string]*workflowRun{}
 	order := []string{}
 	for _, wk := range work {
+		if engineRuns[wk.WorkflowRunID] {
+			continue
+		}
 		run, ok := byRun[wk.WorkflowRunID]
 		if !ok {
-			run = &workflowRun{RunID: wk.WorkflowRunID}
+			run = &workflowRun{RunID: wk.WorkflowRunID, Legacy: true}
 			byRun[wk.WorkflowRunID] = run
 			order = append(order, wk.WorkflowRunID)
 		}
@@ -345,7 +461,7 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 		run.State = aggregateRunState(run.Works)
 		out = append(out, *run)
 	}
-	return http.StatusOK, out, nil
+	return out, nil
 }
 
 // aggregateRunState is the coarse one-word summary of a run: what a list row
