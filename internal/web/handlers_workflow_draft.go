@@ -129,7 +129,7 @@ func (s *Server) draftSystemPrompt(ctx context.Context) (string, error) {
 {"graph": {"nodes": [...], "edges": [...]}, "notes": "<2-3 sentences for the human: what the graph does and any assumptions>"}
 
 A node is {"id": "<lower-case-slug>", "type": "routine"|"script"|"switch"|"join", "config": {...}}.
-- routine: an agent runs a saved routine. config: {"routine": "<existing routine name>", "objective": "<optional instructions for this run; may embed {{steps.<node>.output.<path>}} or {{run.objective}}>", "repositories": ["<optional override>"]}
+- routine: an agent runs a saved routine. config: {"routine": "<existing routine name>", "objective": "<optional instructions for this run; may embed {{steps.<node>.output.<path>}} or {{run.objective}}>", "repositories": ["<optional override>"], "persona": "<optional persona from the list below, composed ahead of the prompt>"}
 - script: JavaScript in a sandbox (no filesystem/network). config: {"source": "function main(input) { ... return <json>; }"}. input.steps.<node> = {status, state, summary, output}; the return value becomes the node's output.
 - switch: routes on an expression. config: {"expression": "<JS expression over input, e.g. input.steps.triage.output.kind>"}. Its String() value picks the matching case edge.
 - join: fan-in. config: {"mode": "all"|"any"}. Needs >= 2 incoming edges.
@@ -148,6 +148,17 @@ Existing routines (use these names; do not invent routines):
 			prompt = prompt[:140] + "…"
 		}
 		fmt.Fprintf(&b, "- %s (mode %s, repos %s): %s\n", rt.Name, rt.Mode, strings.Join(rt.Repositories, ","), strings.ReplaceAll(prompt, "\n", " "))
+	}
+	if lib := s.promptLibrary(); lib != nil {
+		var names []string
+		for _, f := range lib.Fragments() {
+			if f.Persona {
+				names = append(names, f.Name)
+			}
+		}
+		if len(names) > 0 {
+			b.WriteString("\nAvailable personas (never invent one): " + strings.Join(names, ", ") + "\n")
+		}
 	}
 	b.WriteString("\nRegistered repositories: ")
 	names := make([]string, len(repos))

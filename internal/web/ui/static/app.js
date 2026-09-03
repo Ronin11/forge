@@ -629,7 +629,7 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
         current: current,
         fill: function () {
           if (!current) return;
-          ['name', 'mode', 'model', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
             field(n).value = current[n] || '';
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
@@ -643,7 +643,7 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
         },
         collect: function () {
           var body = Object.assign({}, current);
-          ['name', 'mode', 'model', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
             body[n] = field(n).value.trim();
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {

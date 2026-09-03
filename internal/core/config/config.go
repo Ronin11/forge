@@ -18,6 +18,7 @@ type Config struct {
 	HTTP         HTTPConfig         `toml:"http"`
 	Budget       BudgetConfig       `toml:"budget"`
 	KB           KBConfig           `toml:"kb"`
+	Prompts      PromptsConfig      `toml:"prompts"`
 	Log          logging.Config     `toml:"log"`
 	Sandbox      SandboxConfig      `toml:"sandbox"`
 	Integration  IntegrationConfig  `toml:"integration"`
@@ -78,6 +79,12 @@ type QuietHoursConfig struct {
 
 // KBConfig is where notes live.
 type KBConfig struct {
+	Path string `toml:"path"`
+}
+
+// PromptsConfig is where the persona/fragment library lives (a git-versioned
+// directory of Markdown, default <home>/prompts).
+type PromptsConfig struct {
 	Path string `toml:"path"`
 }
 
@@ -197,6 +204,7 @@ func DefaultConfig(home, userHome string) Config {
 		HTTP:         HTTPConfig{Listen: "127.0.0.1:7340"},
 		Budget:       BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97},
 		KB:           KBConfig{Path: filepath.Join(home, "kb")},
+		Prompts:      PromptsConfig{Path: filepath.Join(home, "prompts")},
 		Sandbox:      SandboxConfig{AllowHosts: []string{"api.anthropic.com", "statsig.anthropic.com", "proxy.golang.org", "sum.golang.org", "registry.npmjs.org"}},
 		Integration:  IntegrationConfig{MaxStackDepth: 2, MaxRebaseAttempts: 3},
 		Repositories: RepositoriesConfig{ProjectsRoot: filepath.Join(userHome, "Projects")},

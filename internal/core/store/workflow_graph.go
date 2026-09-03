@@ -92,6 +92,8 @@ type RoutineNodeConfig struct {
 	Routine      string   `json:"routine"`
 	Repositories []string `json:"repositories,omitempty"`
 	Objective    string   `json:"objective,omitempty"`
+	// Persona overrides the routine's persona for this node's runs.
+	Persona string `json:"persona,omitempty"`
 }
 
 // ScriptNodeConfig is a script node's typed view. Source must define

@@ -25,6 +25,7 @@ import (
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
 	"forge/internal/core/plugin"
+	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 	"forge/internal/tools"
@@ -91,6 +92,7 @@ type Engine struct {
 	// modelCall is the concierge's one LLM primitive (daemon-injected); the
 	// session maps hold per-sender conversation context.
 	modelCall         func(ctx context.Context, system, user, model string) (string, error)
+	prompts           func() *prompts.Library
 	assistantMu       sync.Mutex
 	assistantSessions map[string][]assistantTurn
 	assistantLastSeen map[string]time.Time
@@ -217,6 +219,9 @@ type ServerOptions struct {
 	StopApp    func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	RebuildApp func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	AppStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
+	// Prompts returns the current persona/fragment library (the daemon's
+	// last-good load of the prompts directory); nil disables personas.
+	Prompts func() *prompts.Library
 	// ModelCall runs one cheap model completion for the concierge (system +
 	// user prompt → text); nil disables the assistant endpoint. It is also the
 	// attention sweep's decider primitive (attention.go).
@@ -314,7 +319,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
-		modelCall: o.ModelCall, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
+		modelCall: o.ModelCall, prompts: o.Prompts, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
 		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},
@@ -370,6 +375,8 @@ func (s *Server) routes() {
 	s.verifyRoutes(m)
 	m.HandleFunc("POST /api/v1/tools/{name}", s.handle(s.callTool))
 
+	m.HandleFunc("GET /api/v1/personas", s.handle(s.listPersonas))
+	m.HandleFunc("GET /api/v1/personas/{name}", s.handle(s.getPersona))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("GET /api/v1/routine-templates", s.handle(s.listRoutineTemplates))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))

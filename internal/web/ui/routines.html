@@ -15,6 +15,7 @@
 <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
 <label>Mode <input name="mode" value="run"></label>
 <label>Model <input name="model" value="haiku"></label>
+<label>Persona <input name="persona" placeholder="from ~/.forge/prompts" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
 <label>Class <select name="budget_class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
 <label class="wide">Prompt <textarea name="prompt" rows="5" required placeholder="{{`{{repo}}`}} is replaced per repository"></textarea></label>
 <label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>

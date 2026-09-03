@@ -479,6 +479,7 @@ func (s *Server) startFlowWork(ctx context.Context, tx *store.Tx, run *store.Wor
 		Routine:       st.Config.Routine,
 		Repositories:  repos,
 		Objective:     objective,
+		Persona:       st.Config.Persona,
 		Title:         run.WorkflowName + ": " + step,
 		workflowRunID: run.ID, workflowName: run.WorkflowName, workflowStep: step,
 		stepEdges: st.BlockedBy,

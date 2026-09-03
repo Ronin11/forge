@@ -32,13 +32,17 @@ type Work struct {
 	// WorkflowRunID groups the Works one workflow run instantiated; Name and
 	// Step say which workflow and which step this Work is. A run's state is
 	// derived from its Works — there is no run row.
-	WorkflowRunID string          `json:"workflow_run_id,omitempty"`
-	WorkflowName  string          `json:"workflow_name,omitempty"`
-	WorkflowStep  string          `json:"workflow_step,omitempty"`
-	PromptHash    string          `json:"prompt_hash,omitempty"`
-	ScheduledFor  time.Time       `json:"scheduled_for,omitempty"`
-	SubmittedBy   string          `json:"submitted_by,omitempty"`
-	ExternalRefs  json.RawMessage `json:"external_refs,omitempty"`
+	WorkflowRunID string `json:"workflow_run_id,omitempty"`
+	WorkflowName  string `json:"workflow_name,omitempty"`
+	WorkflowStep  string `json:"workflow_step,omitempty"`
+	PromptHash    string `json:"prompt_hash,omitempty"`
+	// Persona names the prompts-library identity composed into the snapshot;
+	// Composition is its audit manifest (fragments, hashes, library commit).
+	Persona      string          `json:"persona,omitempty"`
+	Composition  json.RawMessage `json:"composition,omitempty"`
+	ScheduledFor time.Time       `json:"scheduled_for,omitempty"`
+	SubmittedBy  string          `json:"submitted_by,omitempty"`
+	ExternalRefs json.RawMessage `json:"external_refs,omitempty"`
 	// Provenance (DESIGN.md §3): CausedByWorkID is the Work whose execution
 	// created this one (empty for a root); RootWorkID is the root of the tree
 	// (own id for a root, else the parent's root), computed by CreateWork, not
@@ -120,9 +124,9 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 		}
 		open = append(open, e)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), nullString(w.CausedByWorkID), w.RootWorkID, nullString(string(w.Cause)), formatTime(w.CreatedAt))
+	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullString(w.Persona), jsonRaw(w.Composition), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), nullString(w.CausedByWorkID), w.RootWorkID, nullString(string(w.Cause)), formatTime(w.CreatedAt))
 	if err != nil {
 		return nil, fmt.Errorf("insert work: %w", err)
 	}
@@ -233,7 +237,7 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 	return tx.Journal(ctx, "work.finished", EntityWork, workID, nil)
 }
 
-const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at, finished_at`
+const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at, finished_at`
 
 // GetWork reads one Work.
 func (s *Store) GetWork(ctx context.Context, id string) (*Work, error) {
@@ -361,15 +365,18 @@ func scanWork(iter func(func(*sql.Rows) error) error) ([]Work, error) {
 	var out []Work
 	err := iter(func(rows *sql.Rows) error {
 		var w Work
-		var routineID, paths, deps, models, batch, wfRun, wfName, wfStep, hash, scheduled, submitted, refs, causedBy, root, cause, finished sql.NullString
+		var routineID, paths, deps, models, batch, wfRun, wfName, wfStep, hash, persona, composition, scheduled, submitted, refs, causedBy, root, cause, finished sql.NullString
 		var tier sql.NullInt64
 		var snapshot, created string
 		var integrate int
-		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &scheduled, &submitted, &refs, &causedBy, &root, &cause, &created, &finished); err != nil {
+		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &persona, &composition, &scheduled, &submitted, &refs, &causedBy, &root, &cause, &created, &finished); err != nil {
 			return fmt.Errorf("scan work: %w", err)
 		}
 		w.RoutineID, w.PlanBatchID, w.PromptHash, w.SubmittedBy = routineID.String, batch.String, hash.String, submitted.String
-		w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = wfRun.String, wfName.String, wfStep.String
+		w.WorkflowRunID, w.WorkflowName, w.WorkflowStep, w.Persona = wfRun.String, wfName.String, wfStep.String, persona.String
+		if composition.Valid {
+			w.Composition = json.RawMessage(composition.String)
+		}
 		w.CausedByWorkID, w.RootWorkID, w.Cause = causedBy.String, root.String, model.Cause(cause.String)
 		w.Snapshot, w.Integrate = json.RawMessage(snapshot), integrate == 1
 		if refs.Valid {

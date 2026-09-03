@@ -14,6 +14,7 @@ import (
 
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
+	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -64,11 +65,28 @@ func (s *Server) decodeRoutine(r *http.Request) (*store.Routine, error) {
 	if err := model.ValidateName(rt.Name); err != nil {
 		return nil, badRequest("%v", err)
 	}
-	if rt.Model == "" {
-		return nil, badRequest("routine %s: model is required", rt.Name)
+	if rt.Persona != "" {
+		// The library may be absent (tests, a bare server) — then the name is
+		// taken on faith and run creation is where a mistake surfaces.
+		if lib := s.promptLibrary(); lib != nil {
+			p := lib.Persona(rt.Persona)
+			if p == nil {
+				return nil, badRequest("routine %s: persona %q is not in the prompts library (personas/%s.md)", rt.Name, rt.Persona, rt.Persona)
+			}
+			if rt.Model == "" && p.Model != "" {
+				if _, ok := s.resolveModel(p.Model); !ok {
+					return nil, badRequest("persona %s: unknown default model alias %q", rt.Persona, p.Model)
+				}
+			}
+		}
 	}
-	if _, ok := s.resolveModel(rt.Model); !ok {
-		return nil, badRequest("unknown model alias %q", rt.Model)
+	if rt.Model == "" && rt.Persona == "" {
+		return nil, badRequest("routine %s: model is required (or a persona with a default model)", rt.Name)
+	}
+	if rt.Model != "" {
+		if _, ok := s.resolveModel(rt.Model); !ok {
+			return nil, badRequest("unknown model alias %q", rt.Model)
+		}
 	}
 	return &rt, nil
 }
@@ -184,6 +202,9 @@ type workRequest struct {
 	// Force overrides intake dedupe (M11): submit even when an identical
 	// prompt was created within the window.
 	Force bool `json:"force"`
+	// Persona names an identity from the prompts library composed ahead of
+	// the prompt; it overrides the routine's persona for this run.
+	Persona string `json:"persona"`
 	// CausedBy chains this submission's intent explicitly to an existing Work
 	// (DESIGN.md §3 "Provenance"): the store makes it the caused_by parent and
 	// inherits its root. Empty leaves the Work a root. For CLI/plugins/future
@@ -303,6 +324,16 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		w = store.Work{RoutineName: adHocRoutineName}
 	}
+	if req.Persona != "" {
+		rt.Persona = req.Persona
+	}
+	var composition *prompts.Composition
+	if rt.Persona != "" {
+		var err error
+		if composition, err = s.composePersona(&rt); err != nil {
+			return workCreated{}, err
+		}
+	}
 	rt.Prompt = injectObjective(rt.Prompt, req.Objective)
 	if req.Class != "" {
 		if !req.Class.Valid() {
@@ -393,6 +424,14 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		w.Title = titleFromPrompt(rt.Prompt, rt.Name)
 	}
 	w.PromptHash = promptHashOf(rt.Prompt)
+	w.Persona = rt.Persona
+	if composition != nil {
+		raw, err := json.Marshal(composition)
+		if err != nil {
+			return workCreated{}, fmt.Errorf("encode composition: %w", err)
+		}
+		w.Composition = raw
+	}
 	w.Trigger, w.Snapshot, w.Priority, w.BudgetClass = model.TriggerManual, snapshot, rt.Priority, rt.BudgetClass
 	if req.trigger != "" {
 		w.Trigger = req.trigger

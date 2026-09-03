@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"forge/internal/core/modes"
 	"forge/internal/core/modes/all"
 	"forge/internal/core/plugin"
+	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 	"forge/internal/core/worker"
@@ -231,7 +233,18 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			}
 		}
 	}()
+	// The prompts library: file-backed personas/fragments, loaded now and
+	// reloaded on a timer; a broken tree keeps the last good load.
+	promptsLib := &atomic.Pointer[prompts.Library]{}
+	if err := prompts.Ensure(d.cfg.Prompts.Path); err != nil {
+		d.log.WarnContext(ctx, "ensure prompts dir", "path", d.cfg.Prompts.Path, "error", err)
+	} else if lib, err := prompts.Load(d.cfg.Prompts.Path); err != nil {
+		d.log.WarnContext(ctx, "load prompts library", "path", d.cfg.Prompts.Path, "error", err)
+	} else {
+		promptsLib.Store(lib)
+	}
 	srv, err := web.NewServer(web.ServerOptions{
+		Prompts:      promptsLib.Load,
 		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
 		RegisterRepo: d.registerRepoOnTheFly,
 		AddRepo:      d.addRepo,
@@ -343,6 +356,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	integ := integrator.New(st, d.handler.For("integrator"), time.Now, integrator.Config{Home: home, MaxRebaseAttempts: d.cfg.Integration.MaxRebaseAttempts})
 	g.Go(func() error { integ.Run(gctx); return nil })
 	g.Go(func() error { d.kbReindexLoop(gctx, st); return nil })
+	g.Go(func() error { d.promptsReloadLoop(gctx, promptsLib); return nil })
 	g.Go(func() error { d.nightlyPrune(gctx, st); return nil })
 	g.Go(func() error { d.nightlyBackup(gctx, st); return nil })
 	g.Go(func() error { logging.WatchSIGUSR1(d.handler, d.log, nil).Run(gctx); return nil })
@@ -702,6 +716,33 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 		return launch(ctx, m, token)
 	}
 	return sup, startPlugin, nil
+}
+
+// promptsReloadLoop keeps the in-memory prompts library in step with the
+// files: every 30 seconds, keeping the last good tree when a load fails so a
+// half-saved edit never bricks run creation. The reload is cheap (a small
+// Markdown tree) and needs no change detection.
+func (d *daemonProcess) promptsReloadLoop(ctx context.Context, lib *atomic.Pointer[prompts.Library]) {
+	log := d.handler.For("daemon.prompts")
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			next, err := prompts.Load(d.cfg.Prompts.Path)
+			if err != nil {
+				log.WarnContext(ctx, "prompts library load failed; keeping the last good tree", "error", err)
+				continue
+			}
+			prev := lib.Load()
+			lib.Store(next)
+			if prev == nil || prev.Commit != next.Commit || prev.Dirty != next.Dirty {
+				log.InfoContext(ctx, "prompts library loaded", "fragments", len(next.Fragments()), "commit", next.Commit, "dirty", next.Dirty)
+			}
+		}
+	}
 }
 
 // kbReindexLoop keeps the kb index in step with the files: on start, every five

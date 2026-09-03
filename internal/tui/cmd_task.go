@@ -81,6 +81,7 @@ func runTaskAdd(ctx context.Context, c *Context, args []string) int {
 	class := fs.String("class", "", "budget class: interactive|normal|backlog")
 	autonomy := fs.String("autonomy", "", "ask|checkpoint|notify|auto")
 	modelAlias := fs.String("model", "", "model alias (default haiku)")
+	persona := fs.String("persona", "", "persona from the prompts library, composed ahead of the prompt")
 	integrate := fs.Bool("integrate", false, "queue for merge after success (M9)")
 	maxTurns := fs.Int("max-turns", 0, "turn budget for an ad-hoc task (default 30; a real implement task wants 100+)")
 	timeoutSec := fs.Int("timeout", 0, "seconds an ad-hoc attempt may run (default 1800)")
@@ -119,7 +120,7 @@ func runTaskAdd(ctx context.Context, c *Context, args []string) int {
 	if err := cl.Connect(ctx); err != nil {
 		return c.Fail("task add", err)
 	}
-	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title, "force": *force}
+	body := map[string]any{"prompt": prompt, "repositories": []string(repos), "mode": *mode, "routine": *routine, "priority": *priority, "class": *class, "autonomy": *autonomy, "model": *modelAlias, "after": []string(after), "paths": []string(paths), "integrate": *integrate, "title": *title, "force": *force, "persona": *persona}
 	if *maxTurns > 0 {
 		body["max_turns"] = *maxTurns
 	}

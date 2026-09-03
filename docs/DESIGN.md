@@ -365,6 +365,42 @@ positions-only `PATCH .../layout` that does not bump the generation, and
 validated graph via the concierge's model seam for the human to refine and
 save.
 
+### Personas and the prompts library
+
+The judgment half of a prompt — standards, taste, escalation instincts —
+lives outside routines, in a **git-versioned Markdown tree** (default
+`~/.forge/prompts`, `[prompts] path` in config): `personas/<name>.md` are
+top-level identities a routine names via its `persona` field;
+`fragments/<name>.md` are building blocks composed with `{{> name}}` (and
+`{{> name key="value"}}`, substituting `{{key}}` inside that fragment only).
+A persona's optional frontmatter carries `model: <alias>` — a default the
+routine's own model overrides — and `## mode: <name>` body sections compose
+only into runs of that mode. The language is deliberately dumb: includes and
+parameters, **no conditionals and no loops** — teaching is selection, not
+branching — and placeholders the library does not own (`{{objective}}`,
+`{{repo}}`) pass through to their existing substitutions. Git owns authoring:
+edits are ordinary commits, diffs, blame, and revert, and an agent improving
+prompts is an ordinary task on the prompts repo through the same
+branch-and-merge pipeline as code — reflection through the front door,
+superseding a bespoke proposals-apply path for prompt content.
+
+The daemon owns reading (`internal/core/prompts`): it loads and validates the
+tree at start and every 30 s, refusing a broken load — unknown includes,
+cycles, over-deep nesting, oversize resolutions — and **keeping the last good
+library**, so a half-saved edit never bricks run creation. At `createWorkTx`
+the persona resolves for the routine's mode and the composed text lands ahead
+of the routine prompt **inside the frozen snapshot**; `prompt_hash` covers
+the resolved bytes, and the Work's `composition` column records the audit
+manifest — persona, mode, the library's git commit (and dirtiness), and the
+content hash of every fragment that went in — so "what did this run read"
+and "which fragment edit moved the numbers" are queries. A missing persona at
+run time fails Work creation loudly (for a workflow node, the engine fails
+the node and the skip cascade reports it). Surfaces:
+`GET /api/v1/personas[/{name}?resolved=1&mode=M]`, `forge persona list|show
+[--resolved --mode M]` (the exact final bytes, never hand-walked includes),
+`task add --persona`, a per-run `persona` on the task API, and a per-node
+`persona` in workflow routine-node configs.
+
 ### Schedules
 
 Routines and workflows carry `schedule` (standard 5-field cron, or `@daily`
@@ -1640,6 +1676,7 @@ forge task requeue ID                             # conflict → merge queue (M9
 forge task tell ID "…" | retry ID [--model M]     # M11
 forge backup [--out DIR] | restore ARCHIVE | eval --mode M [...]   # M12
 forge daemon rollback                             # M12
+forge persona list|show NAME [--resolved --mode M]     # library: ~/.forge/prompts
 forge routine add|list|show|edit|run|enable|disable NAME
 forge workflow add|list|show|edit|run|runs|run-show|retry|cancel|enable|disable
 forge queue [list] | queue move ID --before ID | queue block ID --on ID

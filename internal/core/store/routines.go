@@ -14,10 +14,14 @@ import (
 // Routine is a saved procedure. Nil-able numeric fields are pointers so "not set"
 // is distinguishable from zero; JSON fields are decoded slices.
 type Routine struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Mode            string            `json:"mode"`
-	Prompt          string            `json:"prompt"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Mode   string `json:"mode"`
+	Prompt string `json:"prompt"`
+	// Persona names an identity in the file-backed prompts library; its
+	// resolved text is composed ahead of Prompt at Work creation, and its
+	// default model applies when Model is empty.
+	Persona         string            `json:"persona,omitempty"`
 	Repositories    []string          `json:"repositories"`
 	Executor        string            `json:"executor"`
 	Model           string            `json:"model"`
@@ -65,8 +69,13 @@ func (r *Routine) Validate() error {
 	if r.Prompt == "" {
 		return fmt.Errorf("routine %s: prompt is required", r.Name)
 	}
-	if r.Model == "" {
-		return fmt.Errorf("routine %s: model is required", r.Name)
+	if r.Model == "" && r.Persona == "" {
+		return fmt.Errorf("routine %s: model is required (or a persona with a default model)", r.Name)
+	}
+	if r.Persona != "" {
+		if err := model.ValidateName(r.Persona); err != nil {
+			return fmt.Errorf("routine %s: persona: %w", r.Name, err)
+		}
 	}
 	if r.TimeoutSeconds <= 0 || r.TimeoutSeconds > 8*3600 {
 		return fmt.Errorf("routine %s: timeout_seconds must be in 1..28800", r.Name)
@@ -161,8 +170,8 @@ func (tx *Tx) updateRoutine(ctx context.Context, r *Routine, expectedGeneration 
 	r.Generation = current + 1
 	r.UpdatedAt = tx.now
 	repos, tools, paths, deps, models := jsonList(r.Repositories), jsonOrNull(r.AllowedTools), jsonOrNull(r.Paths), jsonOrNull(r.Deps), jsonOrNull(r.Models)
-	_, err = tx.Exec(ctx, `UPDATE routines SET mode=?, prompt=?, repositories=?, executor=?, model=?, effort=?, max_turns=?, timeout_seconds=?, max_budget_usd=?, allowed_tools=?, autonomy=?, verification=?, priority=?, budget_class=?, schedule=?, schedule_enabled=?, concurrency=?, paths=?, deps=?, tier=?, models=?, integrate=?, require_sandbox=?, max_questions=?, generation=?, updated_at=? WHERE name=?`,
-		r.Mode, r.Prompt, repos, r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), tools, nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, paths, deps, nullIntPtr(r.Tier), models, boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.UpdatedAt), r.Name)
+	_, err = tx.Exec(ctx, `UPDATE routines SET mode=?, prompt=?, persona=?, repositories=?, executor=?, model=?, effort=?, max_turns=?, timeout_seconds=?, max_budget_usd=?, allowed_tools=?, autonomy=?, verification=?, priority=?, budget_class=?, schedule=?, schedule_enabled=?, concurrency=?, paths=?, deps=?, tier=?, models=?, integrate=?, require_sandbox=?, max_questions=?, generation=?, updated_at=? WHERE name=?`,
+		r.Mode, r.Prompt, nullString(r.Persona), repos, r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), tools, nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, paths, deps, nullIntPtr(r.Tier), models, boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.UpdatedAt), r.Name)
 	if err != nil {
 		return fmt.Errorf("update routine %s: %w", r.Name, err)
 	}
@@ -170,9 +179,9 @@ func (tx *Tx) updateRoutine(ctx context.Context, r *Routine, expectedGeneration 
 }
 
 func (tx *Tx) insertRoutine(ctx context.Context, r *Routine) error {
-	_, err := tx.Exec(ctx, `INSERT INTO routines (id, name, mode, prompt, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Mode, r.Prompt, jsonList(r.Repositories), r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), jsonOrNull(r.AllowedTools), nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, jsonOrNull(r.Paths), jsonOrNull(r.Deps), nullIntPtr(r.Tier), jsonOrNull(r.Models), boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
+	_, err := tx.Exec(ctx, `INSERT INTO routines (id, name, mode, prompt, persona, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Mode, r.Prompt, nullString(r.Persona), jsonList(r.Repositories), r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), jsonOrNull(r.AllowedTools), nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, jsonOrNull(r.Paths), jsonOrNull(r.Deps), nullIntPtr(r.Tier), jsonOrNull(r.Models), boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("routine %s already exists: %w", r.Name, ErrConflict)
@@ -221,7 +230,7 @@ func (tx *Tx) SetNextDue(ctx context.Context, name string, next time.Time) error
 	return nil
 }
 
-const routineColumns = `id, name, mode, prompt, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, next_due_at, archived_at, created_at, updated_at`
+const routineColumns = `id, name, mode, prompt, persona, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, next_due_at, archived_at, created_at, updated_at`
 
 // GetRoutine reads one routine by name.
 func (s *Store) GetRoutine(ctx context.Context, name string) (*Routine, error) {
@@ -276,15 +285,15 @@ func (s *Store) routines(iter func(func(*sql.Rows) error) error) ([]Routine, err
 	var out []Routine
 	err := iter(func(rows *sql.Rows) error {
 		var r Routine
-		var effort, tools, autonomy, verification, schedule, paths, deps, models, repos sql.NullString
+		var effort, tools, autonomy, verification, schedule, paths, deps, models, repos, persona sql.NullString
 		var maxTurns, tier sql.NullInt64
 		var budget sql.NullFloat64
 		var scheduleEnabled, integrate, requireSandbox int
 		var nextDue, archived, created, updated sql.NullString
-		if err := rows.Scan(&r.ID, &r.Name, &r.Mode, &r.Prompt, &repos, &r.Executor, &r.Model, &effort, &maxTurns, &r.TimeoutSeconds, &budget, &tools, &autonomy, &verification, &r.Priority, &r.BudgetClass, &schedule, &scheduleEnabled, &r.Concurrency, &paths, &deps, &tier, &models, &integrate, &requireSandbox, &r.MaxQuestions, &r.Generation, &nextDue, &archived, &created, &updated); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Mode, &r.Prompt, &persona, &repos, &r.Executor, &r.Model, &effort, &maxTurns, &r.TimeoutSeconds, &budget, &tools, &autonomy, &verification, &r.Priority, &r.BudgetClass, &schedule, &scheduleEnabled, &r.Concurrency, &paths, &deps, &tier, &models, &integrate, &requireSandbox, &r.MaxQuestions, &r.Generation, &nextDue, &archived, &created, &updated); err != nil {
 			return fmt.Errorf("scan routine: %w", err)
 		}
-		r.Effort, r.Verification, r.Schedule = effort.String, verification.String, schedule.String
+		r.Effort, r.Verification, r.Schedule, r.Persona = effort.String, verification.String, schedule.String, persona.String
 		r.Autonomy = model.Autonomy(autonomy.String)
 		r.MaxTurns, r.MaxBudgetUSD = int(maxTurns.Int64), budget.Float64
 		if tier.Valid {

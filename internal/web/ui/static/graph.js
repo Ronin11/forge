@@ -730,6 +730,12 @@
         objective.placeholder = 'Optional objective. {{steps.<node>.output.<path>}} and {{run.objective}} expand at run time.';
         objective.addEventListener('input', function () { panelMutate(function () { n.config.objective = objective.value; }); });
         field('Objective (optional)', objective);
+        var personaInput = field('Persona (blank = the routine’s own)', textInput(n.config.persona, function (v) {
+          panelMutate(function () {
+            if (v.trim()) n.config.persona = v.trim(); else delete n.config.persona;
+          });
+        }));
+        personaInput.placeholder = 'from ~/.forge/prompts';
         var repos = field('Repositories (comma-separated, blank = run default)', textInput((n.config.repositories || []).join(', '), function (v) {
           panelMutate(function () {
             var list = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
