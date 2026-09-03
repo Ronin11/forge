@@ -174,3 +174,19 @@ func TestEnsureBootstrapsAndIsIdempotent(t *testing.T) {
 		t.Errorf("empty tree load: %v", err)
 	}
 }
+
+// The bootstrapped README documents every construct and variable — the
+// reference lives next to the files it governs, so drift is a test failure.
+func TestReadmeDocumentsTheSurface(t *testing.T) {
+	for _, want := range []string{
+		"{{> name}}", `{{> name key="value"}}`, "## mode:",
+		"{{objective}}", "{{repo}}",
+		"{{run.objective}}", "{{run.repositories}}", "{{run.workflow}}", "{{run.id}}",
+		"{{steps.<node>.status}}", "{{steps.<node>.output.<dot.path>}}",
+		"model:", "forge persona show",
+	} {
+		if !strings.Contains(readmeContent, want) {
+			t.Errorf("README missing %q", want)
+		}
+	}
+}

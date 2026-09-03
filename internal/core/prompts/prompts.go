@@ -351,25 +351,88 @@ func Ensure(dir string) error {
 	if fresh {
 		readme := filepath.Join(dir, "README.md")
 		if _, err := os.Stat(readme); os.IsNotExist(err) {
-			content := `# Forge prompts
-
-Personas and fragments composed into routine prompts at run creation.
-
-- personas/<name>.md — a top-level identity a routine names via its persona
-  field. Optional frontmatter: "model: <alias>" (a default the routine can
-  override). "## mode: <name>" sections compose only into runs of that mode.
-- fragments/<name>.md — building blocks included with {{> name}} or
-  {{> name key="value"}} (the value substitutes {{key}} inside that fragment).
-
-No conditionals, no loops: composition is selection. Edits are ordinary git
-commits; the daemon reloads the tree and refuses a broken one, keeping the
-last good version. "forge persona show <name> --resolved" prints exactly what
-an agent will read.
-`
-			if err := os.WriteFile(readme, []byte(content), 0o644); err != nil {
+			if err := os.WriteFile(readme, []byte(readmeContent), 0o644); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
+
+// readmeContent is written once at bootstrap: the reference for everything a
+// prompt author can use, kept next to the files it documents.
+const readmeContent = `# Forge prompts
+
+Personas and fragments, composed into routine prompts when a run is created.
+Edits are ordinary git commits: the daemon reloads this tree every 30s,
+refuses a broken one (unknown includes, cycles, nesting deeper than 8,
+resolutions past 256 KiB), and keeps the last good version until you fix it.
+
+    forge persona list
+    forge persona show <name> --resolved [--mode <mode>]   # the exact bytes an agent reads
+
+## Layout
+
+- personas/<name>.md — a top-level identity. Routines name it in their
+  persona field; "task add --persona <name>" and a workflow routine-node's
+  config {"persona": ...} use it per run.
+- fragments/<name>.md — building blocks; subdirectories are fine
+  (fragments/house-style/go.md includes as {{> house-style/go}}).
+  Names are lower-case slugs.
+
+## Frontmatter (optional, personas)
+
+    ---
+    model: opus        # default model alias; the routine's own model wins
+    ---
+
+## Composition
+
+There are exactly three constructs — no conditionals, no loops. Teaching is
+selection, not branching: an agent (or you) must be able to read any file top
+to bottom and know what it says.
+
+- {{> name}} — include a fragment's body.
+- {{> name key="value"}} — include with parameters: every {{key}} inside
+  *that fragment only* becomes value. Parameters you do not pass stay as-is.
+- ## mode: <name> — a persona section composed only into runs of that mode
+  (the routine's mode). Everything above the first mode heading is the core,
+  always included; a mode with no section just gets the core. Includes work
+  inside mode sections; included fragments never contribute their own mode
+  sections.
+
+## Variables
+
+Composition happens first; later stages substitute into the composed text.
+Everything the library does not own passes through untouched.
+
+| Variable | Where it works | Replaced by | When |
+|---|---|---|---|
+| {{> name}}, {{> name k="v"}} | persona and fragment bodies | the fragment's body | composition (run creation) |
+| {{k}} | inside a fragment given k="v" | the parameter value | composition |
+| {{objective}} | anywhere in the final prompt (persona text included) | the run's objective, or a self-directed fallback | work creation |
+| {{repo}} | anywhere in the final prompt | the repository this attempt targets | claim time (per repository) |
+| {{run.objective}} | workflow routine-node *objectives* only | the workflow run's objective | node materialization |
+| {{run.repositories}} | workflow routine-node objectives only | the run's repositories, comma-joined | node materialization |
+| {{run.workflow}} | workflow routine-node objectives only | the workflow name | node materialization |
+| {{run.id}} | workflow routine-node objectives only | the run id | node materialization |
+| {{steps.<node>.status}} | workflow routine-node objectives only | the upstream node's status | node materialization |
+| {{steps.<node>.output.<dot.path>}} | workflow routine-node objectives only | a value from the upstream node's output | node materialization |
+
+The {{run.*}} and {{steps.*}} forms belong to the workflow engine, not this
+library: they expand in a routine node's objective, which then replaces
+{{objective}} wherever the composed prompt says it. Putting them directly in
+a persona or fragment does nothing — they pass through unresolved.
+
+## What runs where
+
+The final prompt an agent reads is, in order:
+
+    resolved persona (core + the routine's mode section)
+    routine prompt (the task text)
+
+with {{objective}} and {{repo}} substituted as above. Every run freezes the
+resolved bytes plus a composition manifest (each fragment's content hash and
+this repo's commit) into its snapshot — "what did this run read" never
+depends on the working tree, and a dirty tree is recorded as dirty.
+`
