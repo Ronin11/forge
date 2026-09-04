@@ -100,7 +100,9 @@ server name `forge`, so in `--allowedTools` they appear as `mcp__forge__forge_us
 etc. Mode definitions list them as `forge_usage`; the executor adds the prefix. Modes
 that must have **no** built-in tools pass `--tools ""` in addition to `--allowedTools`.
 
-Every mode gets `forge_note_progress`, `forge_kb_search`, and `forge_usage`. Every mode
+Every mode gets `forge_note_progress`, `forge_kb_search`, `forge_usage`,
+`forge_library` (library search and read — the skills reading path), and
+`forge_script_run` (run a tool-flagged library script in the sandbox). Every mode
 at autonomy `ask`/`checkpoint` also gets `forge_ask`. `forge_ask` **does not block**:
 it records the Question and returns immediately with the instruction to end the turn.
 The one rule (`DESIGN.md` §4.1) is "an open Question exists when the process exits ⇒
@@ -120,7 +122,9 @@ directive body, or a legacy routine's stored prompt — *is* the task.
 
 - **Prompt outline:** preamble (rules: stay in the worktree; commit if the task asks;
   never push) → materialized prompt → context block.
-- **Tools:** all built-ins; `forge_repo_status`, `forge_check`, `forge_diff_summary`.
+- **Tools:** all built-ins; `forge_repo_status`, `forge_check`, `forge_diff_summary`;
+  `forge_directive_run`, `forge_workflow_run` (spawn tool-flagged directives and
+  workflows — call-time guardrails, `DESIGN.md` §13).
 - **Result:** envelope only.
 - **Verification:** L1 (declared checks re-run, if the repo declares any; L0 otherwise).
 - **Checkpoints:** none. **Budget class:** `normal`. **Autonomy:** project default.
@@ -179,7 +183,8 @@ Issue → branch → commits with verification evidence.
   run the declared checks after each meaningful step and before finishing; record each
   run in `checks_run`; checkpoint `before_report`; final summary names commits.
 - **Tools:** all built-ins; `forge_check`, `forge_repo_status`, `forge_diff_summary`,
-  `forge_kb_search`.
+  `forge_kb_search`; `forge_directive_run`, `forge_workflow_run` (spawn
+  tool-flagged directives and workflows — call-time guardrails, `DESIGN.md` §13).
 - **Result:** envelope + `commits[] {sha, subject}`, `tests_added[]`.
 - **Verification:** L2 (L1 checks, then a `verify` attempt).
 - **Checkpoints:** `before_report`. **Budget class:** `normal`. **Autonomy:** project

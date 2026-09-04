@@ -292,7 +292,8 @@ repository belongs to exactly one project; `default` is created by bootstrap.
 A routine is a **trigger shell**: it says *when* something runs, *against what*,
 and under *which operational envelope* — not what the agent is told. What runs
 lives elsewhere: `target = directive:<name>` (a file in the directives library,
-below) or `workflow:<name>`.
+below), `workflow:<name>`, or `script:<name>` (a library script fired as a
+synthetic single-node run, §Schedules).
 
 `routines(id, name UNIQUE, target, objective, mode, prompt, repositories JSON,
 executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools
@@ -337,8 +338,12 @@ questions have an exact answer. `source` is `edit`, `proposal:<id>`, or
 
 A workflow is a **graph of typed nodes** (`internal/core/store/workflow_graph.go`).
 `workflows(id, name UNIQUE, steps JSON, graph JSON, schedule, schedule_enabled,
-generation, next_due_at, archived_at)` with the same generation/409, archive,
-and snapshot (`workflow_generations`) machinery as routines. `graph` is the
+generation, next_due_at, archived_at, description, tool)` with the same generation/409, archive,
+and snapshot (`workflow_generations`) machinery as routines. `description` and
+`tool` mirror the library's metadata on a workflow row (edited in the editor's
+settings panel; seeds JSON carries them): `description` feeds library search
+(§"Personas and the directives library") and `tool` marks the workflow
+agent-callable via `forge_workflow_run` (§13). `graph` is the
 canonical form — `{nodes: [{id, type, config, position}], edges: [{from, to,
 when, case, default, stack_on, loop, max_iterations}]}`; the legacy `steps`
 list is still accepted on every write path and converted losslessly
@@ -347,10 +352,15 @@ backfilled at open. Node types: **directive** (an agent runs a directive from
 the library — one Work through the queue; config is `{directive,
 repositories?, objective?, persona?, timeout_seconds?, max_turns?,
 budget_class?, model?}`, where envelope zero-values mean the engine defaults —
-timeout 3600, max_turns 60, class `normal`, priority 50), **script** (embedded
-JavaScript in the daemon's goja
-sandbox — no host bindings, an interrupt timeout, source/output caps, and a
-per-run budget), **switch** (a JS expression over upstream outputs whose
+timeout 3600, max_turns 60, class `normal`, priority 50), **script** (JavaScript
+in the daemon's goja sandbox — no host bindings, an interrupt timeout,
+source/output caps, and a per-run budget; config is `{source | script (exactly
+one), params?, timeout_ms?}` — inline `source`, or a named library script
+(`scripts/<name>.js`, §"Personas and the directives library") resolved from the
+**live** library at execution, so an edit lands on the next run and a deleted
+script fails the node cleanly with the skip cascade proceeding; `params` rides
+into `input.params`; effective timeout is node config > script header
+`timeout_ms` > default), **switch** (a JS expression over upstream outputs whose
 String() value picks the matching `case` edge, else the `default` edge), and
 **join** (fan-in: `all` waits for every incoming edge to be decided, `any`
 fires on the first taken). Edge conditions are `success` (default), `failure`,
@@ -410,11 +420,15 @@ nodes; routine nodes appear only when rendering an old graph.
 Executable content lives outside routines, in a **git-versioned Markdown
 tree** (default `~/.forge/directives`, `[prompts] path` in config — the TOML
 key is unchanged; pre-restructure homes are renamed from `~/.forge/prompts`
-on boot, §"Directives migration"). Three file kinds:
+on boot, §"Directives migration"). Four file kinds — every `.md` kind takes an
+optional `description:` frontmatter line (one line, for search and the library
+tool):
 
 - `directives/<name>.md` — **directives**, the executable content a trigger
   routine or a workflow directive-node names. Frontmatter: `mode:` (required),
-  optional `persona:`/`model:`/`effort:`. The body is the task text; it may
+  optional `persona:`/`model:`/`effort:`/`description:`/`tool:` (`tool: true`
+  marks the directive agent-callable via `forge_directive_run`, §13). The body
+  is the task text; it may
   use `{{> fragment}}` includes, and `{{objective}}`/`{{repo}}` pass through
   to their existing substitutions. `Library.ResolveDirectiveBody` expands a
   directive's body (includes resolved) with its manifest.
@@ -426,6 +440,26 @@ on boot, §"Directives migration"). Three file kinds:
   into runs of that mode.
 - `fragments/<name>.md` — building blocks composed with `{{> name}}` (and
   `{{> name key="value"}}`, substituting `{{key}}` inside that fragment only).
+- `scripts/<name>.js` — **scripts**, goja JavaScript defining
+  `function main(input)`, run only in the daemon's sandbox (§Workflow's script
+  node, the `script:<name>` trigger target, `forge_script_run`). Metadata is an
+  optional `/**forge … */` header — a legal JS block comment, so the file runs
+  exactly as authored — parsed with frontmatter strictness (unknown keys and
+  orphan continuation lines are load errors, each key at most once):
+
+  ```
+  /**forge
+   * description: one line of what this computes
+   * input: {"type":"object", …}   (a JSON schema; may wrap — continuation lines join)
+   * timeout_ms: 10000
+   * tool: true
+   */
+  ```
+
+  `tool: true` requires a description and an input schema — a callable an
+  agent cannot understand is a mistake, not a tool. Scripts are
+  compile-checked at load (`internal/core/directives/scripts.go`): a syntax
+  error is a load error, never a run failure.
 
 The language is deliberately dumb: includes and parameters, **no conditionals
 and no loops** — teaching is selection, not branching. Git owns authoring:
@@ -437,7 +471,8 @@ superseding a bespoke proposals-apply path for prompt content.
 The daemon owns reading (`internal/core/directives`, the renamed
 `internal/core/prompts` — exported names unchanged): it loads and validates
 the tree at start and every 30 s, refusing a broken load — unknown includes,
-cycles, over-deep nesting, oversize resolutions — and **keeping the last good
+cycles, over-deep nesting, oversize resolutions, a script that does not
+compile or whose header is malformed — and **keeping the last good
 library**, so a half-saved edit never bricks run creation.
 `materializeRoutine` (`internal/web/materialize.go`) is the **one compose
 path**: directive resolution → per-call overrides → persona composition →
@@ -461,7 +496,17 @@ engine fails the node and the skip cascade reports it). Surfaces:
 takes subjects `persona:<name>`, `directive:<name>`, and legacy
 `routine:<name>`; run history is keyed by the same subjects. The UI page is
 `/directives` (nav "Directives"; `/routines` answers 301 with the query
-preserved).
+preserved) — a tree filter, a scripts section, and a script detail view with a
+sandbox test run.
+
+**Search** is `Library.Search` (`internal/core/directives/search.go`):
+in-memory over the loaded library, every query term must match, scored
+name (3) > description (2) > body (1). `GET /api/v1/library/search?q=&kind=&limit=`
+serves it and merges workflow rows (scored identically from name/description);
+`forge directives search <q> [--kind K]` is the CLI face, and `forge_library`
+the agent's (§13). `POST /api/v1/script-test` runs a library script (or inline
+source) in the sandbox — the operator's test surface, backing the script
+detail view.
 
 ### Schedules
 
@@ -476,7 +521,12 @@ in the same transaction as the admission, which is the claim (one daemon owns
 the database). A **workflow-target routine** fires a workflow run instead of
 a Work — the scheduler and the manual run endpoint alike — with the routine's
 repositories and `objective` as the run context and the trigger stamped
-`schedule`/`manual`; a workflow may also still carry its own schedule.
+`schedule`/`manual`; a workflow may also still carry its own schedule. A
+**script-target routine** (`target = script:<name>`) fires a **synthetic
+single-node run** through the flow engine — `WorkflowName = "script:<name>"`,
+no workflow row — so the runs page, cancel, skip-if-running (keyed on that
+name's open runs), and the journal all come for free; a run's `retry` answers
+400 pointing back at the routine (there is no retryable graph — re-fire it).
 Occurrences missed while the daemon was down fire once, then jump to the next
 future occurrence; a routine still busy from its last firing, or a workflow
 with a run still open (also the skip key for a workflow-target routine's
@@ -532,13 +582,16 @@ routine firing, a plan — never a new entity.
   one indexed query, not a recursive walk; `CreateWork` is the one place that
   computes it and it is NOT NULL for every row it writes.
 - **`cause`** is a short machine label for the functional reason —
-  `plan_task`, `verify`, or `follow_up` — empty for roots
+  `plan_task`, `verify`, `follow_up`, or `tool` (an agent spawned it through
+  `forge_directive_run`, §13) — empty for roots
   (`model.Cause`, validated alongside `Trigger`).
 
 The invariant is enforced in the store, not by callers: setting
 `caused_by_work_id` looks up the parent (which must exist) and copies its root; a
-root's `root_work_id` is its own id. The three spawn sites stamp it —
-`planFollowUps` (`plan_task`), `createFollowUp` (`verify`/`follow_up`), and an
+root's `root_work_id` is its own id. The spawn sites stamp it —
+`planFollowUps` (`plan_task`), `createFollowUp` (`verify`/`follow_up`), the
+tool bridge (`tool`, with `submitted_by = agent:<attempt>` and `caused_by` =
+the calling agent's Work, §13), and an
 explicit `caused_by` on a work request — while a manual, routine-run, or
 workflow-step Work is a parentless root (a workflow run groups its siblings by
 `workflow_run_id`, not by a fabricated parent).
@@ -1417,7 +1470,10 @@ Operator: `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
 `GET /api/v1/directives`, `GET|PUT /api/v1/directives/{name}`,
 `POST /api/v1/directive-test`, `GET /api/v1/directive-tests` (renamed from
 `/api/v1/prompts*` and `/api/v1/prompt-test[s]`; `/api/v1/personas*`
-unchanged);
+unchanged); `GET /api/v1/library/search?q=&kind=&limit=` (library search
+merged with workflow rows, §"Personas and the directives library");
+`POST /api/v1/script-test` (run a library script or inline source in the
+sandbox);
 `GET|POST /api/v1/work`, `GET|PATCH|DELETE /api/v1/work/{id}`; `GET /api/v1/queue`;
 `GET /api/v1/attention`; `GET /api/v1/attempts/{id}`, `GET
 /api/v1/attempts/{id}/events`; `POST /api/v1/questions/{id}/answer`; `POST
@@ -1449,6 +1505,43 @@ itself** — it is a child of the agent, in the worktree, in the agent's process
 group, so a group kill takes its checks with it and the control plane never spawns
 processes in a worker-owned directory. Every tool call, wherever it ran, is reported
 by `forge mcp` as an `mcp`-source span through `POST /api/v1/attempts/{id}/events`.
+
+**The tool/skill bridge** is four daemon tools (`internal/tools/library.go`,
+`librun.go`; the daemon closures and guardrails in
+`internal/web/tool_bridge.go`). They are **static registrations with
+call-time dynamism**: the registry freezes at `NewServer` and an attempt
+fetches its MCP tool list once, so the tools stay fixed while what they can
+reach — the live library, the tool flags — is checked per call.
+
+- `forge_library` — search (`Library.Search` merged with workflow rows) and
+  fetch-by-name across directives, personas, fragments, scripts, and
+  workflows: the **skills reading path** — a directive an agent reads and
+  follows without spawning anything.
+- `forge_script_run` — run a `tool: true` library script synchronously in the
+  sandbox; the input rides in as `input.params`.
+- `forge_directive_run` — spawn a sub-Work from a `tool: true` directive
+  through the ordinary `createWorkTx` materialization: **async**, returns the
+  work id. Guardrails, enforced at the call: a **depth cap** (spawned work
+  may not spawn further — consecutive `cause = tool` links in the `caused_by`
+  chain), a **fan-out cap** of 5 spawns per calling Work, class `backlog` by
+  default and never `interactive`, autonomy inherited from the caller (the
+  child never runs more autonomously than its parent), and provenance
+  `cause = tool`, `submitted_by = agent:<attempt>`, `caused_by` = the
+  caller's Work. Journaled `tool.spawned_work`.
+- `forge_workflow_run` — fire a `tool: true` workflow (the flag re-read
+  inside the transaction, so a race with archive/un-flag still refuses):
+  async, returns the run id. Journaled `tool.workflow_run`.
+
+The safety framing is deliberate: an attempt whose snapshot has an **empty**
+`allowed_tools` list omits `--allowedTools` entirely, so such agents see
+*every* tool — which is why the tool-flag checks and the spawn guardrails
+live at the call, not the listing. The mode `AllowedTools` lists are the
+documented contract — `forge_library` and `forge_script_run` in every mode,
+`forge_directive_run`/`forge_workflow_run` in `run` and `implement` — but the
+runtime mode∩routine intersection remains uncomputed (a pre-existing,
+documented gap). The tools reach the daemon through nil-disabling
+`tools.Deps` closures (`Library`, `SpawnWork`, `StartWorkflowRun`): a process
+without them answers with a clear refusal, never a panic.
 
 ## 14. Leases, crashes, and what can never be lost
 
@@ -1760,6 +1853,7 @@ forge task tell ID "…" | retry ID [--model M]     # M11
 forge backup [--out DIR] | restore ARCHIVE | eval --mode M [...]   # M12
 forge daemon rollback                             # M12
 forge persona list|show NAME [--resolved --mode M]     # library: ~/.forge/directives
+forge directives update | search QUERY [--kind K]      # pull upstream; search the library
 forge routine add|list|show|edit|run|enable|disable NAME
 forge admin migrate-directives [--home DIR] [--dry-run]  # stopped-home surgery
 forge workflow add|list|show|edit|run|runs|run-show|retry|cancel|enable|disable
