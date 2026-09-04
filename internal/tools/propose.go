@@ -22,7 +22,7 @@ func (proposeTool) Where() string { return WhereDaemon }
 func (proposeTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
 		"kind":{"type":"string","enum":["routine","mode_prompt","doc","tool","process","code"]},
-		"target":{"type":"string","description":"what the proposal changes: a routine name, a mode, a doc path, a tool name"},
+		"target":{"type":"string","description":"what the proposal changes: a routine name (a routine whose target is a directive gets its prompt/model/effort updates written to the directive file in the library), a mode, a doc path, a tool name"},
 		"before":{"description":"the current value, when it helps the reviewer"},
 		"after":{"description":"the proposed value"},
 		"rationale":{"type":"string","description":"why, grounded in the retro data"},

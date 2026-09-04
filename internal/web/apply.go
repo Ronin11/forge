@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/core/model"
+	"forge/internal/core/prompts"
 	"forge/internal/core/store"
 	"forge/internal/tools"
 )
@@ -71,13 +72,52 @@ func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Propos
 	if err != nil {
 		return "", err
 	}
-	if u.Prompt != nil {
-		r.Prompt = *u.Prompt
-	}
 	if u.Model != nil {
 		if _, ok := s.resolveModel(*u.Model); !ok {
 			return "", fmt.Errorf("proposal %s: unknown model alias %q", model.ShortID(p.ID), *u.Model)
 		}
+	}
+	// A directive-target routine's content lives in the library: prompt,
+	// model, and effort updates rewrite directives/<name>.md through the same
+	// validate-or-revert path a UI edit takes. Operational fields below still
+	// hit the row. Content A/B rides git history — no generation: ref, so the
+	// auto-revert sweep deliberately excludes these.
+	if kind, dname := targetOf(r); kind == store.TargetDirective {
+		var ref string
+		if u.Prompt != nil || u.Model != nil || u.Effort != nil {
+			if ref, err = s.applyDirectiveContent(ctx, p, dname, prompts.DirectiveUpdates{Body: u.Prompt, Model: u.Model, Effort: u.Effort}); err != nil {
+				return "", err
+			}
+		}
+		if u.MaxTurns != nil || u.TimeoutSeconds != nil || u.MaxBudgetUSD != nil || u.AllowedTools != nil {
+			if u.MaxTurns != nil {
+				r.MaxTurns = *u.MaxTurns
+			}
+			if u.TimeoutSeconds != nil {
+				r.TimeoutSeconds = *u.TimeoutSeconds
+			}
+			if u.MaxBudgetUSD != nil {
+				r.MaxBudgetUSD = *u.MaxBudgetUSD
+			}
+			if u.AllowedTools != nil {
+				r.AllowedTools = *u.AllowedTools
+			}
+			if err := tx.UpdateRoutineFrom(ctx, r, r.Generation, "proposal:"+p.ID); err != nil {
+				return "", fmt.Errorf("apply routine proposal %s: %w", model.ShortID(p.ID), err)
+			}
+			if ref == "" {
+				ref = fmt.Sprintf("generation:%d", r.Generation)
+			}
+		}
+		if ref == "" {
+			return "", fmt.Errorf("proposal %s: no applicable updates", model.ShortID(p.ID))
+		}
+		return ref, nil
+	}
+	if u.Prompt != nil {
+		r.Prompt = *u.Prompt
+	}
+	if u.Model != nil {
 		r.Model = *u.Model
 	}
 	if u.Effort != nil {
@@ -99,6 +139,54 @@ func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Propos
 		return "", fmt.Errorf("apply routine proposal %s: %w", model.ShortID(p.ID), err)
 	}
 	return fmt.Sprintf("generation:%d", r.Generation), nil
+}
+
+// applyDirectiveContent rewrites directives/<name>.md with a content
+// proposal's updates: write, validate by reloading the whole tree, revert on
+// failure, commit, hot-reload — the putPromptFragment discipline. The file
+// commit cannot roll back with the approve transaction; the git history
+// keeps it auditable either way.
+func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, name string, u prompts.DirectiveUpdates) (string, error) {
+	lib := s.libraryNow()
+	if lib == nil {
+		return "", fmt.Errorf("proposal %s: this process has no prompts library", model.ShortID(p.ID))
+	}
+	d := lib.Directive(name)
+	if d == nil {
+		return "", fmt.Errorf("proposal %s: directive %q is not in the library", model.ShortID(p.ID), name)
+	}
+	old, err := os.ReadFile(d.Path)
+	if err != nil {
+		return "", err
+	}
+	next, err := prompts.RewriteDirective(old, u)
+	if err != nil {
+		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
+	}
+	if err := os.WriteFile(d.Path, next, 0o644); err != nil {
+		return "", err
+	}
+	if _, err := prompts.Load(lib.Dir); err != nil {
+		if rerr := os.WriteFile(d.Path, old, 0o644); rerr != nil {
+			s.log.ErrorContext(ctx, "revert refused directive proposal", "path", d.Path, "error", rerr)
+		}
+		return "", fmt.Errorf("proposal %s: the edit breaks the library: %w", model.ShortID(p.ID), err)
+	}
+	prompts.CommitEdit(lib.Dir, d.Path, "proposal:"+p.ID)
+	if s.promptsReload != nil {
+		if err := s.promptsReload(); err != nil {
+			s.log.WarnContext(ctx, "prompts reload after proposal", "error", err)
+		}
+	}
+	return "directive:" + name, nil
+}
+
+// libraryNow is promptLibrary for Engine methods (no HTTP imports here).
+func (s *Engine) libraryNow() *prompts.Library {
+	if s.prompts == nil {
+		return nil
+	}
+	return s.prompts()
 }
 
 // processUpdates are the after-fields a `process` proposal may set: when and

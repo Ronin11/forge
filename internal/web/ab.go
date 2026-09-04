@@ -109,6 +109,15 @@ func (s *Engine) checkABRevert(ctx context.Context, p *store.Proposal, name stri
 		// The restore is a NEW generation whose content equals the snapshot;
 		// identity stays the current row's, so history remains linear.
 		restored.ID, restored.Name = r.ID, r.Name
+		if r.Target != "" && restored.Target == "" {
+			// A pre-split snapshot resurrects a content-ful row: legal (the
+			// store is dual-mode for exactly this), but the routine detaches
+			// from its directive file until the operator re-targets it.
+			if err := tx.Journal(ctx, "ab.revert_detached_target", store.EntityDaemon, r.ID, map[string]any{"routine": r.Name, "was_target": r.Target, "restored_generation": gen - 1}); err != nil {
+				return err
+			}
+			s.log.WarnContext(ctx, "ab revert restores pre-directive content; routine detached from its directive", "routine", r.Name, "was_target", r.Target)
+		}
 		if err := tx.UpdateRoutineFrom(ctx, &restored, r.Generation, "proposal:"+p.ID+":revert"); err != nil {
 			return err
 		}

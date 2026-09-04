@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"forge/internal/core/model"
+	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -396,5 +397,106 @@ func TestTargetNameBare(t *testing.T) {
 	}
 	if _, err := targetName("routine:bad name!", "routine:"); err == nil {
 		t.Error("invalid name accepted")
+	}
+}
+
+// A routine proposal against a directive-target routine writes its content
+// updates to the library file (validated, committed) while operational
+// updates still bump the row; a breaking content edit reverts the file and
+// rolls the approval back.
+func TestApplyDirectiveRoutineProposal(t *testing.T) {
+	f := newApplyFixture(t)
+	dir := t.TempDir()
+	for path, content := range map[string]string{
+		"directives/triage.md": "---\nmode: run\nmodel: haiku\n---\nOld task: {{objective}}\n",
+	} {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lib, err := prompts.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := lib
+	f.srv.prompts = func() *prompts.Library { return current }
+	f.srv.promptsReload = func() error {
+		next, err := prompts.Load(dir)
+		if err != nil {
+			return err
+		}
+		current = next
+		return nil
+	}
+	f.write(func(tx *store.Tx) error {
+		return tx.CreateRoutine(actx(), &store.Routine{Name: "triage-trigger", Target: "directive:triage", TimeoutSeconds: 300})
+	})
+
+	p := f.approved(model.ProposalRoutine, "routine:triage-trigger", `{"prompt":"New task: {{objective}}","model":"sonnet","max_turns":9}`)
+	ref, err := f.apply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != "directive:triage" {
+		t.Errorf("ref = %q", ref)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "directives", "triage.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"New task: {{objective}}", "model: sonnet", "mode: run"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("file missing %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "Old task") {
+		t.Errorf("old body remains:\n%s", raw)
+	}
+	// Operational field still hit the row; content never did.
+	r := f.routine("triage-trigger")
+	if r.MaxTurns != 9 || r.Prompt != "" || r.Model != "" || r.Generation != 2 {
+		t.Errorf("row after apply = %+v", r)
+	}
+	// The hot-reload swapped the library.
+	if d := current.Directive("triage"); d == nil || d.Model != "sonnet" {
+		t.Errorf("library after apply = %+v", d)
+	}
+
+	// A breaking edit reverts the file and the approval.
+	bad := f.approved(model.ProposalRoutine, "routine:triage-trigger", `{"prompt":"{{> ghost}}"}`)
+	if _, err := f.apply(bad); err == nil {
+		t.Fatal("breaking edit applied")
+	}
+	raw, err = os.ReadFile(filepath.Join(dir, "directives", "triage.md"))
+	if err != nil || !strings.Contains(string(raw), "New task") {
+		t.Errorf("file not reverted: %v\n%s", err, raw)
+	}
+	if got := f.proposal(bad.ID); got.Status != model.ProposalApproved {
+		t.Errorf("proposal after failed apply = %s", got.Status)
+	}
+}
+
+func TestRewriteDirective(t *testing.T) {
+	raw := []byte("---\nmode: run\npersona: triager\nmodel: haiku\n---\nOld body.\n")
+	sp := func(s string) *string { return &s }
+	out, err := prompts.RewriteDirective(raw, prompts.DirectiveUpdates{Body: sp("New body."), Model: sp("opus"), Effort: sp("high")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\nmode: run\npersona: triager\nmodel: opus\neffort: high\n---\nNew body.\n"
+	if string(out) != want {
+		t.Errorf("rewrite = %q, want %q", out, want)
+	}
+	// Clearing a key removes it; nil keeps.
+	out, err = prompts.RewriteDirective(raw, prompts.DirectiveUpdates{Model: sp("")})
+	if err != nil || strings.Contains(string(out), "model:") || !strings.Contains(string(out), "Old body.") {
+		t.Errorf("clear model = %q, %v", out, err)
+	}
+	if _, err := prompts.RewriteDirective([]byte("no frontmatter"), prompts.DirectiveUpdates{}); err == nil {
+		t.Error("frontmatter-less accepted")
 	}
 }

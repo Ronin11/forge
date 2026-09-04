@@ -159,6 +159,20 @@
       objective.value = t.objective || '';
       repo.value = t.repo || '';
     });
+    optimizePanel(detail, 'directive:' + f.name, f.model, function () {
+      return { objective: objective.value.trim(), repo: repo.value.trim() };
+    }, function (content) {
+      fetch(promptURL(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content }) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          clearFail();
+          showFragment(f.name);
+        })
+        .catch(fail);
+    }, {
+      baselineChars: rawOf(f).length,
+      promptChars: fetchJSON(promptURL(f.name, '?test=1')).then(function (r) { return ((r.test || {}).prompt || '').length; }),
+    });
   }
 
   // sourceEditor: the raw file, with an in-place edit → validate → commit →

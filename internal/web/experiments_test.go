@@ -293,3 +293,67 @@ func TestExperimentTrim(t *testing.T) {
 		t.Errorf("newest first: %q", list[0].Goal)
 	}
 }
+
+// The directive subject: variants are whole directive files, validated by
+// library composition, run through the real assembly; a trigger routine as a
+// subject is refused with a pointer at the directive.
+func TestExperimentDirective(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{
+		"directives/triage.md": "---\nmode: run\nmodel: haiku\n---\nOld triage: {{objective}}",
+	})
+	variants := `{"variants": [
+		{"title": "sharper", "rationale": "r", "content": "---\nmode: run\nmodel: haiku\n---\nNew triage: {{objective}}"},
+		{"title": "broken", "rationale": "r", "content": "---\nmode: run\n---\n{{> ghost}}"}
+	]}`
+	h.srv.modelCall = experimentFakeModel(t, variants,
+		func(prompt string) string {
+			if strings.Contains(prompt, "New triage: obj") {
+				return "OUT-NEW"
+			}
+			return "OUT-OLD"
+		},
+		func(output string) float64 {
+			if strings.Contains(output, "OUT-NEW") {
+				return 9
+			}
+			return 3
+		})
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	h.call(http.MethodPost, "/api/v1/experiments", map[string]any{
+		"subject": "directive:triage", "goal": "sharper triage",
+		"target_model": "haiku", "optimizer_model": "sonnet",
+		"test": map[string]string{"objective": "obj", "repo": "equitizr"},
+	}, &created, http.StatusCreated)
+	pe := waitExperiment(t, h, created.ID)
+	if pe.Status != store.ExperimentDone {
+		t.Fatalf("experiment = %s error=%q", pe.Status, pe.Error)
+	}
+	if !strings.Contains(pe.Baseline, "Old triage") {
+		t.Errorf("baseline = %q", pe.Baseline)
+	}
+	var results experimentResults
+	if err := json.Unmarshal(pe.Results, &results); err != nil {
+		t.Fatal(err)
+	}
+	if results.Best != "sharper" || results.Candidates[0].Output != "OUT-NEW" {
+		t.Errorf("results = %+v", results)
+	}
+	last := results.Candidates[len(results.Candidates)-1]
+	if last.Title != "broken" || !strings.Contains(last.Error, "does not compose") {
+		t.Errorf("broken variant = %+v", last)
+	}
+
+	// A trigger routine is not an experiment subject anymore.
+	rt := store.Routine{Name: "triage-trigger", Target: "directive:triage", Repositories: []string{"equitizr"}}
+	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
+	if status, body := h.do(http.MethodPost, "/api/v1/experiments", map[string]any{
+		"subject": "routine:triage-trigger", "goal": "g", "target_model": "haiku", "optimizer_model": "sonnet",
+	}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "directive:triage") {
+		t.Errorf("trigger subject = %d %s", status, body)
+	}
+}

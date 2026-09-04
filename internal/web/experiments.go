@@ -147,8 +147,9 @@ func (p personaSubject) run(ctx context.Context, content string, baseline bool) 
 	return p.s.experimentModelCall(ctx, preview.Prompt, p.pe.TargetModel)
 }
 
-// routineSubject varies a routine's task prompt; persona and binding stay as
-// saved.
+// routineSubject varies a legacy content routine's task prompt; persona and
+// binding stay as saved. New-style routines are triggers — their content
+// optimizes as directive: subjects instead.
 type routineSubject struct {
 	s    *Server
 	name string
@@ -183,6 +184,59 @@ func (r routineSubject) run(ctx context.Context, content string, baseline bool) 
 	return r.s.experimentModelCall(ctx, preview.Prompt, r.pe.TargetModel)
 }
 
+// directiveSubject varies a whole directive file: frontmatter and task text.
+// A run composes the variant in a cloned library and previews a synthetic
+// trigger routine through the real assembly path.
+type directiveSubject struct {
+	s    *Server
+	name string
+	pe   *store.Experiment
+	test experimentTest
+}
+
+func (d directiveSubject) generationRules(sb *strings.Builder) {
+	var names []string
+	if lib := d.s.promptLibrary(); lib != nil {
+		for _, f := range lib.Fragments() {
+			if !f.Persona && !f.Directive {
+				names = append(names, f.Name)
+			}
+		}
+	}
+	fmt.Fprintf(sb, `- This is a directive file: preserve the frontmatter shape (--- fenced; mode: is required, persona:/model:/effort: optional), keep {{objective}} and {{repo}} placeholders where present, and only include fragments that exist: %s. {{> name}} includes are literal syntax.
+`, strings.Join(names, ", "))
+}
+
+func (d directiveSubject) validate(content string) string {
+	lib := d.s.promptLibrary()
+	if lib == nil {
+		return "no prompts library"
+	}
+	if _, err := lib.WithVariant(d.name, content); err != nil {
+		return "does not compose: " + err.Error()
+	}
+	return ""
+}
+
+func (d directiveSubject) run(ctx context.Context, content string, baseline bool) (string, error) {
+	lib := d.s.promptLibrary()
+	if lib == nil {
+		return "", fmt.Errorf("no prompts library")
+	}
+	if !baseline {
+		var err error
+		if lib, err = lib.WithVariant(d.name, content); err != nil {
+			return "", err
+		}
+	}
+	rt := store.Routine{Name: "(experiment)", Target: "directive:" + d.name}
+	preview, err := d.s.renderPreviewLib(ctx, lib, rt, d.test.Objective, d.test.Repo)
+	if err != nil {
+		return "", err
+	}
+	return d.s.experimentModelCall(ctx, preview.Prompt, d.pe.TargetModel)
+}
+
 // experimentSubjectFor resolves a subject string; workflow:<name> lands here
 // as a third case when workflow experiments arrive.
 func (s *Server) experimentSubjectFor(ctx context.Context, pe *store.Experiment) (experimentSubject, string, error) {
@@ -211,10 +265,27 @@ func (s *Server) experimentSubjectFor(ctx context.Context, pe *store.Experiment)
 			return nil, "", err
 		}
 		return personaSubject{s: s, name: name, pe: pe, test: test}, string(raw), nil
+	case "directive":
+		lib := s.promptLibrary()
+		if lib == nil {
+			return nil, "", badRequest("this process has no prompts library")
+		}
+		f := lib.Directive(name)
+		if f == nil {
+			return nil, "", badRequest("directive %q is not in the library", name)
+		}
+		raw, err := os.ReadFile(f.Path)
+		if err != nil {
+			return nil, "", err
+		}
+		return directiveSubject{s: s, name: name, pe: pe, test: test}, string(raw), nil
 	case "routine":
 		rt, err := s.store.GetRoutine(ctx, name)
 		if err != nil {
 			return nil, "", err
+		}
+		if rt.Target != "" {
+			return nil, "", badRequest("routine %s is a trigger — optimize its content as directive:%s", name, strings.TrimPrefix(rt.Target, "directive:"))
 		}
 		return routineSubject{s: s, name: name, pe: pe, test: test}, rt.Prompt, nil
 	}

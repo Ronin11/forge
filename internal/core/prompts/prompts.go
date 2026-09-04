@@ -445,6 +445,58 @@ func (l *Library) expandIncludes(text string, used map[string]bool, depth int, s
 	return out, expandErr
 }
 
+// DirectiveUpdates are the fields RewriteDirective may replace; nil keeps the
+// current value.
+type DirectiveUpdates struct {
+	Body   *string
+	Model  *string
+	Effort *string
+}
+
+// RewriteDirective returns a directive file's raw bytes with the given fields
+// replaced: the body swapped wholesale, model/effort updated (or added) in
+// the frontmatter, everything else — mode, persona, key order, comments —
+// preserved. The proposal-apply path uses it so a content proposal edits the
+// file the way a human would.
+func RewriteDirective(raw []byte, u DirectiveUpdates) ([]byte, error) {
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\n") {
+		return nil, fmt.Errorf("not a directive file: missing frontmatter")
+	}
+	rest := text[4:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil, fmt.Errorf("unterminated frontmatter")
+	}
+	lines := strings.Split(rest[:end], "\n")
+	set := func(key string, val *string) {
+		if val == nil {
+			return
+		}
+		for i, line := range lines {
+			k, _, ok := strings.Cut(strings.TrimSpace(line), ":")
+			if ok && strings.TrimSpace(k) == key {
+				if *val == "" {
+					lines = append(lines[:i], lines[i+1:]...)
+				} else {
+					lines[i] = key + ": " + *val
+				}
+				return
+			}
+		}
+		if *val != "" {
+			lines = append(lines, key+": "+*val)
+		}
+	}
+	set("model", u.Model)
+	set("effort", u.Effort)
+	body := strings.TrimPrefix(rest[end+4:], "\n")
+	if u.Body != nil {
+		body = strings.TrimSpace(*u.Body) + "\n"
+	}
+	return []byte("---\n" + strings.Join(lines, "\n") + "\n---\n" + body), nil
+}
+
 // gitState reads HEAD and dirtiness; a dir that is not a git repo reports no
 // commit and dirty (nothing pins the bytes, and the manifest says so).
 func gitState(dir string) (commit string, dirty bool) {
