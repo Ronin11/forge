@@ -55,7 +55,7 @@ func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 // script or switch whose JavaScript does not compile (a 400 at save, not a
 // runtime failure mid-run). Legacy `steps` bodies were normalized at decode,
 // so the graph is always present here.
-func checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) error {
+func (s *Server) checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) error {
 	if wf.Graph == nil {
 		return nil // normalize in the store surfaces the real validation error
 	}
@@ -72,6 +72,17 @@ func checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) er
 			}
 			if !rt.ArchivedAt.IsZero() {
 				return badRequest("node %s: routine %s is archived", n.ID, cfg.Routine)
+			}
+		case store.NodeDirective:
+			cfg, err := n.DirectiveConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			// The library may be absent (tests, a bare server) — then the name
+			// is taken on faith and node materialization is where a mistake
+			// fails the node.
+			if lib := s.promptLibrary(); lib != nil && lib.Directive(cfg.Directive) == nil {
+				return badRequest("node %s: directive %q is not in the library (directives/%s.md)", n.ID, cfg.Directive, cfg.Directive)
 			}
 		case store.NodeScript:
 			cfg, err := n.ScriptConfig()
@@ -104,7 +115,7 @@ func (s *Server) createWorkflow(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
-		if err := checkStepRoutines(ctx, tx, wf); err != nil {
+		if err := s.checkStepRoutines(ctx, tx, wf); err != nil {
 			return err
 		}
 		return routineWriteError(tx.CreateWorkflow(ctx, wf))
@@ -146,7 +157,7 @@ func (s *Server) updateWorkflow(r *http.Request) (int, any, error) {
 			return err
 		}
 		wf.ID = saved.ID // the generation record is keyed by it
-		if err := checkStepRoutines(ctx, tx, wf); err != nil {
+		if err := s.checkStepRoutines(ctx, tx, wf); err != nil {
 			return err
 		}
 		return routineWriteError(tx.UpdateWorkflow(ctx, wf, generation))

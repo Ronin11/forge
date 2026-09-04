@@ -136,18 +136,20 @@ test.describe('workflow graph editor', () => {
   test('a new workflow gets palette nodes via click-then-canvas and saves', async ({ page }) => {
     await page.goto('/workflows/new');
     await expect(page.locator('[data-graph-editor]')).toBeVisible();
-    await page.locator('[data-gv-add="routine"]').click();
+    // The palette authors directive nodes: content lives in the library.
+    await page.locator('[data-gv-add="directive"]').click();
     const stage = await page.locator('[data-gv-stage]').boundingBox();
     await page.mouse.click(stage.x + 200, stage.y + 120);
     await expect(page.locator('.gv-node')).toHaveCount(1);
-    // Name the node's routine and the workflow through the panels, then save.
-    await page.locator('[data-gv-panel] input[list="gv-routine-names"]').fill('wfg-lint');
+    // Name the node's directive and the workflow through the panels, then save.
+    await page.locator('[data-gv-panel] input[list="gv-directive-names"]').fill('triage-repo');
     await page.keyboard.press('Escape'); // back to the workflow panel
     await page.locator('[data-gv-panel] input').first().fill('penciled');
     await page.locator('[data-gv-save]').click();
     await page.waitForURL('**/workflows');
     const saved = await api('GET', '/api/v1/workflows/penciled');
     expect(saved.graph.nodes).toHaveLength(1);
+    expect(saved.graph.nodes[0].type).toBe('directive');
     await api('DELETE', '/api/v1/workflows/penciled', undefined, false, 204);
   });
 });

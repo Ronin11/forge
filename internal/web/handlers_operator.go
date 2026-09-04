@@ -29,6 +29,11 @@ const (
 	adHocPriority     = 100
 	adHocMaxQuestions = 3
 	titleMaxRunes     = 80
+
+	// Directive workflow-node envelope defaults (node config overrides).
+	directiveNodeTimeout  = 3600
+	directiveNodeMaxTurns = 60
+	directiveNodePriority = 50
 )
 
 // routineWriteError maps what CreateRoutine and UpdateRoutine return: the
@@ -287,6 +292,12 @@ type workRequest struct {
 	workflowName  string
 	workflowStep  string
 	stepEdges     []model.Edge
+	// directive materializes a Work straight from a directives-library file —
+	// a directive workflow node, no stored routine involved. nodeTimeout and
+	// nodeMaxTurns are its operational envelope (0 = engine defaults).
+	directive    string
+	nodeTimeout  int
+	nodeMaxTurns int
 	// trigger overrides the manual default: the engine stamps a scheduled
 	// run's Works `schedule` so analytics can tell them apart. Unexported for
 	// the same reason.
@@ -365,6 +376,24 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		rt.Integrate = rt.Integrate || req.Integrate
 		w = store.Work{RoutineID: saved.ID, RoutineName: saved.Name, Generation: saved.Generation, Tier: saved.Tier, Models: saved.Models, Deps: saved.Deps}
+	} else if req.directive != "" {
+		// A directive workflow node: the content comes from the library, the
+		// operational envelope from the node config (engine defaults where
+		// unset). No stored routine row exists or is created.
+		rt = store.Routine{
+			Name: req.directive, Target: "directive:" + req.directive,
+			Repositories: req.Repositories, Executor: adHocExecutor,
+			TimeoutSeconds: directiveNodeTimeout, MaxTurns: directiveNodeMaxTurns,
+			BudgetClass: model.ClassNormal, Priority: directiveNodePriority, Concurrency: 1,
+			Paths: req.Paths, Integrate: req.Integrate, MaxQuestions: adHocMaxQuestions,
+		}
+		if req.nodeTimeout > 0 {
+			rt.TimeoutSeconds = req.nodeTimeout
+		}
+		if req.nodeMaxTurns > 0 {
+			rt.MaxTurns = req.nodeMaxTurns
+		}
+		w = store.Work{RoutineName: req.directive}
 	} else {
 		if strings.TrimSpace(req.Prompt) == "" {
 			return workCreated{}, badRequest("prompt is required")

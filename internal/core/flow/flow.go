@@ -72,15 +72,23 @@ type Update struct {
 	From string
 }
 
-// Start is a ready routine instance the driver must materialize into a Work.
+// Start is a ready queue-backed instance (routine or directive node) the
+// driver must materialize into a Work. Type says which config is populated.
 // BlockedBy carries already-satisfied edges to the upstream Works (stack_on
 // rides them; provenance and lineage views keep working).
 type Start struct {
 	InstanceID string
 	NodeID     string
 	Iteration  int
-	Config     store.RoutineNodeConfig
+	Type       store.NodeType
+	Config     store.RoutineNodeConfig   // Type == NodeRoutine (frozen legacy graphs)
+	Directive  store.DirectiveNodeConfig // Type == NodeDirective
 	BlockedBy  []model.Edge
+}
+
+// queueBacked reports whether a node type materializes as a Work.
+func queueBacked(t store.NodeType) bool {
+	return t == store.NodeRoutine || t == store.NodeDirective
 }
 
 // Event is a journal row the driver writes with the diff.
@@ -191,7 +199,7 @@ func Evaluate(in Input) (Diff, error) {
 	for _, list := range ev.byNode {
 		for _, inst := range list {
 			switch {
-			case inst.Status == store.NodeRunning && inst.Type == store.NodeRoutine:
+			case inst.Status == store.NodeRunning && queueBacked(inst.Type):
 				st, ok := in.WorkStates[inst.WorkID]
 				status, terminal := NodeStatusForWork(st)
 				if !ok || !terminal {
@@ -210,7 +218,7 @@ func Evaluate(in Input) (Diff, error) {
 				}
 				ev.finalize(inst, res.Status, string(res.Output), res.Error)
 				frontier = append(frontier, inst)
-			case inst.Status == store.NodeReady && inst.Type == store.NodeRoutine:
+			case inst.Status == store.NodeReady && queueBacked(inst.Type):
 				msg, ok := in.MaterializeFailures[inst.ID]
 				if !ok {
 					continue
@@ -269,9 +277,9 @@ func Evaluate(in Input) (Diff, error) {
 					ev.finalize(inst, store.NodeSucceeded, "", "")
 					frontier = append(frontier, inst)
 					progress = true
-				case store.NodeRoutine, store.NodeScript, store.NodeSwitch:
-					// Routine: the driver materializes. Script/switch: the
-					// driver executes. Both stay ready here.
+				case store.NodeRoutine, store.NodeDirective, store.NodeScript, store.NodeSwitch:
+					// Routine/directive: the driver materializes. Script/switch:
+					// the driver executes. Both stay ready here.
 				}
 			}
 		}
@@ -291,18 +299,24 @@ func Evaluate(in Input) (Diff, error) {
 	// Ready routine instances become Starts.
 	for _, list := range ev.byNode {
 		for _, inst := range list {
-			if inst.Status != store.NodeReady || inst.Type != store.NodeRoutine {
+			if inst.Status != store.NodeReady || !queueBacked(inst.Type) {
 				continue
 			}
 			def := ev.graph.Node(inst.NodeID)
-			cfg, err := def.RoutineConfig()
+			start := Start{
+				InstanceID: inst.ID, NodeID: inst.NodeID, Iteration: inst.Iteration,
+				Type: inst.Type, BlockedBy: ev.satisfiedEdges(inst),
+			}
+			var err error
+			if inst.Type == store.NodeDirective {
+				start.Directive, err = def.DirectiveConfig()
+			} else {
+				start.Config, err = def.RoutineConfig()
+			}
 			if err != nil {
 				return Diff{}, err
 			}
-			ev.diff.Starts = append(ev.diff.Starts, Start{
-				InstanceID: inst.ID, NodeID: inst.NodeID, Iteration: inst.Iteration,
-				Config: cfg, BlockedBy: ev.satisfiedEdges(inst),
-			})
+			ev.diff.Starts = append(ev.diff.Starts, start)
 		}
 	}
 	sort.Slice(ev.diff.Starts, func(i, j int) bool { return ev.diff.Starts[i].NodeID < ev.diff.Starts[j].NodeID })

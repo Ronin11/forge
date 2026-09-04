@@ -11,7 +11,8 @@
   var SVG = 'http://www.w3.org/2000/svg';
   var NODE_W = 180, NODE_H = 54;
   var TYPES = {
-    routine: { label: 'Routine', icon: '#i-routines' },
+    directive: { label: 'Directive', icon: '#i-routines' },
+    routine: { label: 'Routine', icon: '#i-routines' }, // frozen legacy graphs only
     script: { label: 'JavaScript', icon: '#i-gv-js' },
     switch: { label: 'Switch', icon: '#i-gv-switch' },
     join: { label: 'Join', icon: '#i-gv-join' },
@@ -111,7 +112,7 @@
 
   // validateGraph mirrors the server's rules the editor can check early.
   // Errors block save; warnings do not.
-  function validateGraph(graph, routineNames) {
+  function validateGraph(graph, routineNames, directiveNames) {
     var out = [];
     function err(msg, ref) { out.push({ level: 'err', msg: msg, ref: ref }); }
     function warn(msg, ref) { out.push({ level: 'warn', msg: msg, ref: ref }); }
@@ -125,6 +126,9 @@
       if (n.type === 'routine') {
         if (!cfg.routine) err('node "' + n.id + '": pick a routine', { node: n.id });
         else if (routineNames && routineNames.length && routineNames.indexOf(cfg.routine) < 0) warn('node "' + n.id + '": routine "' + cfg.routine + '" is not in the list', { node: n.id });
+      } else if (n.type === 'directive') {
+        if (!cfg.directive) err('node "' + n.id + '": pick a directive', { node: n.id });
+        else if (directiveNames && directiveNames.length && directiveNames.indexOf(cfg.directive) < 0) warn('node "' + n.id + '": directive "' + cfg.directive + '" is not in the library', { node: n.id });
       }
       if (n.type === 'script' && !(cfg.source || '').trim()) err('node "' + n.id + '": script body is empty', { node: n.id });
       if (n.type === 'switch' && !(cfg.expression || '').trim()) err('node "' + n.id + '": switch expression is empty', { node: n.id });
@@ -210,6 +214,7 @@
   function subtitleOf(n) {
     var cfg = n.config || {};
     if (n.type === 'routine') return cfg.routine || '(no routine)';
+    if (n.type === 'directive') return cfg.directive || '(no directive)';
     if (n.type === 'script') return (cfg.source || '').split('\n')[0].slice(0, 26) || '(empty)';
     if (n.type === 'switch') return (cfg.expression || '').slice(0, 26) || '(no expression)';
     if (n.type === 'join') return (cfg.mode === 'any' ? 'any' : 'all');
@@ -220,7 +225,7 @@
   // edge the port starts: success | failure | case | out (join) | in.
   function portsOf(n) {
     var out = [{ kind: 'in', x: 0, y: NODE_H / 2 }];
-    if (n.type === 'routine' || n.type === 'script') {
+    if (n.type === 'routine' || n.type === 'directive' || n.type === 'script') {
       out.push({ kind: 'success', x: NODE_W, y: NODE_H / 2 - 12 });
       out.push({ kind: 'failure', x: NODE_W, y: NODE_H / 2 + 12 });
     } else if (n.type === 'switch') {
@@ -429,6 +434,7 @@
     var current = null; // the fetched workflow object; null for a new one
     var graph = { nodes: [], edges: [] };
     var routineNames = [];
+    var directiveNames = [];
     var selection = null; // {node: id} | {edge: index}
     var history = [], future = [];
     var armedType = null; // palette tile clicked, waiting for a canvas click
@@ -466,7 +472,7 @@
     }
 
     function lint() {
-      var findings = validateGraph(graph, routineNames);
+      var findings = validateGraph(graph, routineNames, directiveNames);
       lintBox.textContent = '';
       lintBox.hidden = findings.length === 0;
       findings.forEach(function (f) {
@@ -721,8 +727,39 @@
       }));
       idInput.pattern = '[a-z0-9][a-z0-9-]{0,39}';
       n.config = n.config || {};
-      if (n.type === 'routine') {
-        var r = field('Routine', textInput(n.config.routine, function (v) { panelMutate(function () { n.config.routine = v.trim(); }); }));
+      if (n.type === 'directive') {
+        var d = field('Directive', textInput(n.config.directive, function (v) { panelMutate(function () { n.config.directive = v.trim(); }); }));
+        d.setAttribute('list', 'gv-directive-names');
+        var dirLink = document.createElement('a');
+        dirLink.className = 'hint';
+        dirLink.textContent = 'view directive →';
+        function syncDirLink(v) {
+          dirLink.hidden = !v;
+          dirLink.href = '/routines?sel=' + encodeURIComponent('prompt:' + v);
+        }
+        var dObjective = document.createElement('textarea');
+        dObjective.rows = 3;
+        dObjective.value = n.config.objective || '';
+        dObjective.placeholder = 'Optional objective. {{steps.<node>.output.<path>}} and {{run.objective}} expand at run time.';
+        dObjective.addEventListener('input', function () { panelMutate(function () { n.config.objective = dObjective.value; }); });
+        field('Objective (optional)', dObjective);
+        var dPersona = field('Persona (blank = the directive\u2019s own)', textInput(n.config.persona, function (v) {
+          panelMutate(function () {
+            if (v.trim()) n.config.persona = v.trim(); else delete n.config.persona;
+          });
+        }));
+        dPersona.placeholder = 'persona override';
+        panel.appendChild(dirLink);
+        syncDirLink(n.config.directive || '');
+        var dRepos = field('Repositories (comma-separated, blank = run default)', textInput((n.config.repositories || []).join(', '), function (v) {
+          panelMutate(function () {
+            var list = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+            if (list.length) n.config.repositories = list; else delete n.config.repositories;
+          });
+        }));
+        dRepos.placeholder = 'repo-a, repo-b';
+      } else if (n.type === 'routine') {
+        var r = field('Routine (legacy node — new graphs use directives)', textInput(n.config.routine, function (v) { panelMutate(function () { n.config.routine = v.trim(); }); }));
         r.setAttribute('list', 'gv-routine-names');
         var objective = document.createElement('textarea');
         objective.rows = 3;
@@ -845,7 +882,8 @@
       if (isSwitch && e.when === 'case' && !e.default) {
         field('Case value', textInput(e.case, function (v) { panelMutate(function () { e.case = v.trim(); }); }));
       }
-      if (!isSwitch && (!e.when || e.when === 'success') && from && from.type === 'routine' && (nodeById(graph, e.to) || {}).type === 'routine') {
+      var agentTypes = { routine: 1, directive: 1 };
+      if (!isSwitch && (!e.when || e.when === 'success') && from && agentTypes[from.type] && agentTypes[(nodeById(graph, e.to) || {}).type]) {
         var stack = document.createElement('label');
         stack.className = 'check';
         var sbox = document.createElement('input');
@@ -1050,6 +1088,18 @@
       document.body.appendChild(dl);
       lint();
     }).catch(function () {});
+    fetchJSON('/api/v1/personas').then(function (lib) {
+      directiveNames = (lib.fragments || []).filter(function (f) { return f.directive; }).map(function (f) { return f.name; });
+      var dl = document.createElement('datalist');
+      dl.id = 'gv-directive-names';
+      directiveNames.forEach(function (d) {
+        var o = document.createElement('option');
+        o.value = d;
+        dl.appendChild(o);
+      });
+      document.body.appendChild(dl);
+      lint();
+    }).catch(function () {});
 
     function loaded() {
       if (needsLayout(graph)) autoLayout(graph);
@@ -1078,7 +1128,7 @@
       getModel: function () { return JSON.parse(snapshot()); },
       setModel: function (g) { mutate(function () { graph = g; graph.edges = graph.edges || []; }); select(null); },
       layout: function () { autoLayout(graph); afterChange(); },
-      validate: function () { return validateGraph(graph, routineNames); },
+      validate: function () { return validateGraph(graph, routineNames, directiveNames); },
       zoomFit: function () { stage.zoomFit(graph); },
       selectNode: function (id) { select({ node: id }); },
     };

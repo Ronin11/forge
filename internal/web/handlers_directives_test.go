@@ -239,3 +239,90 @@ func TestPromptTestDirectiveSubject(t *testing.T) {
 		t.Errorf("history = %+v", tests)
 	}
 }
+
+// A graph mixing a directive node with a legacy routine node runs end to end:
+// the directive node materializes from the library (frontmatter mode/model,
+// node envelope), the routine node still runs, and the objective template
+// carries upstream output into the directive node.
+func TestWorkflowDirectiveNode(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutine("wfd-legacy")
+	h.withPrompts(map[string]string{
+		"directives/wfd-triage.md": "---\nmode: run\nmodel: sonnet\n---\nTriage next: {{objective}}",
+	})
+
+	graph := map[string]any{
+		"nodes": []map[string]any{
+			{"id": "old", "type": "routine", "config": map[string]any{"routine": "wfd-legacy"}, "position": map[string]float64{"x": 0, "y": 0}},
+			{"id": "new", "type": "directive", "config": map[string]any{
+				"directive": "wfd-triage", "objective": "follow up on {{steps.old.status}}",
+				"timeout_seconds": 900, "max_turns": 7, "budget_class": "backlog",
+			}, "position": map[string]float64{"x": 300, "y": 0}},
+		},
+		"edges": []map[string]any{{"from": "old", "to": "new", "when": "success"}},
+	}
+	h.call(http.MethodPost, "/api/v1/workflows", map[string]any{"name": "wfd", "graph": graph}, nil, http.StatusCreated)
+
+	var run workflowRunCreated
+	h.call(http.MethodPost, "/api/v1/workflows/wfd/run", map[string]any{"repositories": []string{"equitizr"}}, &run, http.StatusCreated)
+	h.completeNode("wfd-1", model.Succeeded)
+
+	d := h.runDetail(run.RunID)
+	inst := nodeInstance(d, "new", 1)
+	if inst == nil || inst.Status != store.NodeRunning || inst.WorkID == "" {
+		t.Fatalf("directive node = %+v", inst)
+	}
+	w, err := h.st.GetWork(context.Background(), inst.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := string(w.Snapshot)
+	for _, want := range []string{
+		"Triage next: follow up on succeeded", // directive body + expanded template objective
+		`"model":"sonnet"`,                    // frontmatter model
+		`"timeout_seconds":900`,               // node envelope
+		`"max_turns":7`,
+		`"budget_class":"backlog"`,
+		`"target":"directive:wfd-triage"`,
+	} {
+		if !strings.Contains(snap, want) {
+			t.Errorf("snapshot missing %q\n%s", want, snap)
+		}
+	}
+	if w.RoutineName != "wfd-triage" || w.BudgetClass != "backlog" {
+		t.Errorf("work = routine %q class %q", w.RoutineName, w.BudgetClass)
+	}
+
+	h.completeNode("wfd-2", model.Succeeded)
+	if d = h.runDetail(run.RunID); d.Status != store.RunSucceeded {
+		t.Fatalf("run = %s", d.Status)
+	}
+}
+
+// Save-time validation for directive nodes: unknown directives and bad
+// envelopes are 400s at save, not runtime failures.
+func TestWorkflowDirectiveNodeValidation(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.withPrompts(map[string]string{"directives/real.md": "---\nmode: run\nmodel: haiku\n---\nbody"})
+	node := func(cfg map[string]any) map[string]any {
+		return map[string]any{
+			"name": "wfv",
+			"graph": map[string]any{
+				"nodes": []map[string]any{{"id": "n", "type": "directive", "config": cfg, "position": map[string]float64{"x": 0, "y": 0}}},
+				"edges": []map[string]any{},
+			},
+		}
+	}
+	for name, cfg := range map[string]map[string]any{
+		"unknown directive": {"directive": "ghost"},
+		"no directive":      {},
+		"bad timeout":       {"directive": "real", "timeout_seconds": 999999},
+		"bad class":         {"directive": "real", "budget_class": "platinum"},
+	} {
+		if status, _ := h.do(http.MethodPost, "/api/v1/workflows", node(cfg), nil, ""); status != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", name, status)
+		}
+	}
+	h.call(http.MethodPost, "/api/v1/workflows", node(map[string]any{"directive": "real"}), nil, http.StatusCreated)
+}

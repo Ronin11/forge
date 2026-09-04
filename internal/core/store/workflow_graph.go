@@ -23,7 +23,12 @@ type NodeType string
 
 const (
 	// NodeRoutine runs one Work through the queue, exactly like a legacy step.
+	// Retired for new graphs in favor of NodeDirective, but validated and
+	// executed forever: frozen run graphs contain these.
 	NodeRoutine NodeType = "routine"
+	// NodeDirective runs one Work built from a directives-library file — the
+	// content lives in git, the node supplies the binding.
+	NodeDirective NodeType = "directive"
 	// NodeScript runs an embedded JavaScript function in the daemon.
 	NodeScript NodeType = "script"
 	// NodeSwitch evaluates an expression and takes the matching case edge.
@@ -96,6 +101,24 @@ type RoutineNodeConfig struct {
 	Persona string `json:"persona,omitempty"`
 }
 
+// DirectiveNodeConfig is a directive node's typed view: which directive runs,
+// with optional per-node overrides of the run's repositories/objective/persona
+// and an operational envelope. Zero envelope values take the engine defaults;
+// the routine→directive graph migration bakes the source routine's values in
+// so converted workflows keep their exact behavior.
+type DirectiveNodeConfig struct {
+	Directive    string   `json:"directive"`
+	Repositories []string `json:"repositories,omitempty"`
+	Objective    string   `json:"objective,omitempty"`
+	// Persona overrides the directive's persona for this node's runs.
+	Persona string `json:"persona,omitempty"`
+	// Operational envelope.
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	MaxTurns       int               `json:"max_turns,omitempty"`
+	BudgetClass    model.BudgetClass `json:"budget_class,omitempty"`
+	Model          string            `json:"model,omitempty"`
+}
+
 // ScriptNodeConfig is a script node's typed view. Source must define
 // `function main(input)`; its JSON-serialized return value is the node output.
 type ScriptNodeConfig struct {
@@ -132,6 +155,9 @@ func nodeConfig[T any](n WorkflowNode) (T, error) {
 // they error only on structurally wrong config (a string where a list goes).
 func (n WorkflowNode) RoutineConfig() (RoutineNodeConfig, error) {
 	return nodeConfig[RoutineNodeConfig](n)
+}
+func (n WorkflowNode) DirectiveConfig() (DirectiveNodeConfig, error) {
+	return nodeConfig[DirectiveNodeConfig](n)
 }
 func (n WorkflowNode) ScriptConfig() (ScriptNodeConfig, error) {
 	return nodeConfig[ScriptNodeConfig](n)
@@ -232,6 +258,23 @@ func (g *WorkflowGraph) validateNodeConfig(n WorkflowNode) error {
 		}
 		if err := model.ValidateName(cfg.Routine); err != nil {
 			return fmt.Errorf("node %s: routine: %w", n.ID, err)
+		}
+	case NodeDirective:
+		cfg, err := n.DirectiveConfig()
+		if err != nil {
+			return err
+		}
+		if _, _, err := ParseTarget("directive:" + cfg.Directive); err != nil {
+			return fmt.Errorf("node %s: %w", n.ID, err)
+		}
+		if cfg.TimeoutSeconds < 0 || cfg.TimeoutSeconds > 8*3600 {
+			return fmt.Errorf("node %s: timeout_seconds %d: want 0..28800", n.ID, cfg.TimeoutSeconds)
+		}
+		if cfg.MaxTurns < 0 {
+			return fmt.Errorf("node %s: max_turns must not be negative", n.ID)
+		}
+		if cfg.BudgetClass != "" && !cfg.BudgetClass.Valid() {
+			return fmt.Errorf("node %s: budget_class %q", n.ID, cfg.BudgetClass)
 		}
 	case NodeScript:
 		cfg, err := n.ScriptConfig()

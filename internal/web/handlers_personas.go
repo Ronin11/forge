@@ -34,6 +34,10 @@ type personaRow struct {
 	Modes   []string `json:"modes,omitempty"`
 	Hash    string   `json:"hash"`
 	Persona bool     `json:"persona"`
+	// Directive marks executable task content (directives/); its frontmatter
+	// mode rides Mode below.
+	Directive bool   `json:"directive,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 // personasList is the response envelope: the library's provenance plus every
@@ -72,7 +76,7 @@ func (s *Server) listPersonas(r *http.Request) (int, any, error) {
 		}
 	}
 	for _, f := range lib.Fragments() {
-		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona}
+		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Mode: f.Mode}
 		for mode := range f.Modes {
 			row.Modes = append(row.Modes, mode)
 		}

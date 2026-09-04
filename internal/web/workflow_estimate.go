@@ -88,39 +88,67 @@ func (s *Server) estimateWorkflow(r *http.Request) (int, any, error) {
 	routineByModel := map[string]map[string][]store.AttemptFacts{}
 
 	for _, n := range graph.Nodes {
-		if n.Type != store.NodeRoutine {
-			continue
-		}
-		cfg, err := n.RoutineConfig()
-		if err != nil {
-			continue // Validate rejects these at save; an old row degrades to unknown
-		}
-		out.RoutineNodes++
-		ne := workflowNodeEstimate{Node: n.ID, Routine: cfg.Routine, Source: "none", LoopCap: loopCap[n.ID]}
-		rt, err := s.store.GetRoutine(ctx, cfg.Routine)
-		if err == nil {
-			ne.Model = rt.Model
-			persona := rt.Persona
-			if cfg.Persona != "" {
-				persona = cfg.Persona
+		var ne workflowNodeEstimate
+		switch n.Type {
+		case store.NodeRoutine:
+			cfg, err := n.RoutineConfig()
+			if err != nil {
+				continue // Validate rejects these at save; an old row degrades to unknown
 			}
-			if ne.Model == "" && persona != "" {
-				if lib := s.promptLibrary(); lib != nil {
-					if p := lib.Persona(persona); p != nil {
-						ne.Model = p.Model
+			ne = workflowNodeEstimate{Node: n.ID, Routine: cfg.Routine, Source: "none", LoopCap: loopCap[n.ID]}
+			rt, err := s.store.GetRoutine(ctx, cfg.Routine)
+			if err == nil {
+				ne.Model = rt.Model
+				persona := rt.Persona
+				if cfg.Persona != "" {
+					persona = cfg.Persona
+				}
+				if ne.Model == "" && persona != "" {
+					if lib := s.promptLibrary(); lib != nil {
+						if p := lib.Persona(persona); p != nil {
+							ne.Model = p.Model
+						}
 					}
 				}
 			}
-		}
-		if ne.Model != "" {
-			if routineByModel[cfg.Routine] == nil {
-				rows, err := s.store.FactsSince(ctx, since, until, cfg.Routine)
-				if err != nil {
-					s.log.WarnContext(ctx, "workflow estimate: routine facts", "routine", cfg.Routine, "error", err)
-				}
-				routineByModel[cfg.Routine] = groupFactsByModel(rows)
+		case store.NodeDirective:
+			cfg, err := n.DirectiveConfig()
+			if err != nil {
+				continue
 			}
-			rows, source := routineByModel[cfg.Routine][ne.Model], "routine"
+			// History keys on the Work's routine name, which for a directive
+			// node is the directive name itself.
+			ne = workflowNodeEstimate{Node: n.ID, Routine: cfg.Directive, Source: "none", LoopCap: loopCap[n.ID]}
+			ne.Model = cfg.Model
+			if lib := s.promptLibrary(); lib != nil {
+				if d := lib.Directive(cfg.Directive); d != nil {
+					if ne.Model == "" {
+						ne.Model = d.Model
+					}
+					persona := d.PersonaRef
+					if cfg.Persona != "" {
+						persona = cfg.Persona
+					}
+					if ne.Model == "" && persona != "" {
+						if p := lib.Persona(persona); p != nil {
+							ne.Model = p.Model
+						}
+					}
+				}
+			}
+		default:
+			continue
+		}
+		out.RoutineNodes++
+		if ne.Model != "" {
+			if routineByModel[ne.Routine] == nil {
+				rows, err := s.store.FactsSince(ctx, since, until, ne.Routine)
+				if err != nil {
+					s.log.WarnContext(ctx, "workflow estimate: routine facts", "routine", ne.Routine, "error", err)
+				}
+				routineByModel[ne.Routine] = groupFactsByModel(rows)
+			}
+			rows, source := routineByModel[ne.Routine][ne.Model], "routine"
 			if len(rows) == 0 {
 				rows, source = globalFacts()[ne.Model], "model"
 			}

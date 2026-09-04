@@ -128,8 +128,8 @@ func (s *Server) draftSystemPrompt(ctx context.Context) (string, error) {
 	b.WriteString(`You design workflow graphs for Forge, a system that runs coding agents against local git repositories. You return ONLY a JSON object, no prose outside it:
 {"graph": {"nodes": [...], "edges": [...]}, "notes": "<2-3 sentences for the human: what the graph does and any assumptions>"}
 
-A node is {"id": "<lower-case-slug>", "type": "routine"|"script"|"switch"|"join", "config": {...}}.
-- routine: an agent runs a saved routine. config: {"routine": "<existing routine name>", "objective": "<optional instructions for this run; may embed {{steps.<node>.output.<path>}} or {{run.objective}}>", "repositories": ["<optional override>"], "persona": "<optional persona from the list below, composed ahead of the prompt>"}
+A node is {"id": "<lower-case-slug>", "type": "directive"|"script"|"switch"|"join", "config": {...}}.
+- directive: an agent runs a directive from the library (its task content, mode, and model live there). config: {"directive": "<existing directive name>", "objective": "<optional instructions for this run; may embed {{steps.<node>.output.<path>}} or {{run.objective}}>", "repositories": ["<optional override>"], "persona": "<optional persona from the list below, overriding the directive's own>"}
 - script: JavaScript in a sandbox (no filesystem/network). config: {"source": "function main(input) { ... return <json>; }"}. input.steps.<node> = {status, state, summary, output}; the return value becomes the node's output.
 - switch: routes on an expression. config: {"expression": "<JS expression over input, e.g. input.steps.triage.output.kind>"}. Its String() value picks the matching case edge.
 - join: fan-in. config: {"mode": "all"|"any"}. Needs >= 2 incoming edges.
@@ -140,14 +140,31 @@ An edge is {"from": "<id>", "to": "<id>", "when": "success"|"failure"|"always"|"
 - A failed node with no failure edge skips everything downstream and fails the run — add failure/always edges deliberately.
 - Prefer few, clear nodes. Use scripts only for real logic (shaping outputs, thresholds), not as glue for its own sake.
 
-Existing routines (use these names; do not invent routines):
+Existing directives (use these names; do not invent directives):
 `)
+	if lib := s.promptLibrary(); lib != nil {
+		for _, f := range lib.Fragments() {
+			if !f.Directive {
+				continue
+			}
+			body := f.Body
+			if len(body) > 140 {
+				body = body[:140] + "…"
+			}
+			fmt.Fprintf(&b, "- %s (mode %s): %s\n", f.Name, f.Mode, strings.ReplaceAll(body, "\n", " "))
+		}
+	}
+	// Legacy routines still reference-able as routine nodes during the
+	// transition; prefer directives.
 	for _, rt := range routines {
+		if rt.Prompt == "" {
+			continue
+		}
 		prompt := rt.Prompt
 		if len(prompt) > 140 {
 			prompt = prompt[:140] + "…"
 		}
-		fmt.Fprintf(&b, "- %s (mode %s, repos %s): %s\n", rt.Name, rt.Mode, strings.Join(rt.Repositories, ","), strings.ReplaceAll(prompt, "\n", " "))
+		fmt.Fprintf(&b, "- routine node fallback %s (mode %s, repos %s): %s\n", rt.Name, rt.Mode, strings.Join(rt.Repositories, ","), strings.ReplaceAll(prompt, "\n", " "))
 	}
 	if lib := s.promptLibrary(); lib != nil {
 		var names []string
@@ -166,7 +183,7 @@ Existing routines (use these names; do not invent routines):
 		names[i] = rep.Name
 	}
 	b.WriteString(strings.Join(names, ", "))
-	b.WriteString("\nIf the description needs a routine that does not exist, pick the closest existing routine and say so in notes — never invent a routine name.")
+	b.WriteString("\nIf the description needs a directive that does not exist, pick the closest existing one and say so in notes — never invent a directive name.")
 	return b.String(), nil
 }
 

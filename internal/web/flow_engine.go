@@ -169,12 +169,16 @@ func (s *Server) expandStartObjectives(run *store.WorkflowRun, nodes []store.Run
 	merged = append(merged, diff.Creates...)
 	for i := range diff.Starts {
 		st := &diff.Starts[i]
-		if st.Config.Objective == "" {
+		objective := &st.Config.Objective
+		if st.Type == store.NodeDirective {
+			objective = &st.Directive.Objective
+		}
+		if *objective == "" {
 			continue
 		}
 		input := flowScriptInput(run, merged, store.RunNode{NodeID: st.NodeID, Iteration: st.Iteration})
-		expanded, missing := flow.ExpandTemplate(st.Config.Objective, input)
-		st.Config.Objective = expanded
+		expanded, missing := flow.ExpandTemplate(*objective, input)
+		*objective = expanded
 		if len(missing) > 0 {
 			diff.Events = append(diff.Events, flow.Event{Kind: "workflow.template_missing", Payload: map[string]any{"node": st.NodeID, "iteration": st.Iteration, "references": missing}})
 		}
@@ -349,7 +353,7 @@ func flowScriptInput(run *store.WorkflowRun, nodes []store.RunNode, inst store.R
 		}
 		step := flow.StepInput{Status: n.Status, Iteration: n.Iteration}
 		if len(n.Output) > 0 {
-			if n.Type == store.NodeRoutine {
+			if n.Type == store.NodeRoutine || n.Type == store.NodeDirective {
 				// A routine node stores {state, summary, output, targets};
 				// lift them so scripts read input.steps.x.output directly.
 				var wrapped struct {
@@ -460,31 +464,41 @@ func (s *Server) applyFlowDiff(ctx context.Context, tx *store.Tx, run *store.Wor
 	return nil
 }
 
-// startFlowWork materializes one ready routine instance into a Work and
-// flips the instance to running, in the same transaction.
+// startFlowWork materializes one ready routine or directive instance into a
+// Work and flips the instance to running, in the same transaction.
 func (s *Server) startFlowWork(ctx context.Context, tx *store.Tx, run *store.WorkflowRun, st flow.Start, byKey map[string]*store.RunNode) error {
-	repos := st.Config.Repositories
-	if len(repos) == 0 {
-		repos = run.Context.Repositories
+	req := workRequest{
+		Routine:      st.Config.Routine,
+		Repositories: st.Config.Repositories,
+		Objective:    st.Config.Objective,
+		Persona:      st.Config.Persona,
 	}
-	objective := st.Config.Objective
-	if objective == "" {
-		objective = run.Context.Objective
+	if st.Type == store.NodeDirective {
+		req = workRequest{
+			directive:    st.Directive.Directive,
+			Repositories: st.Directive.Repositories,
+			Objective:    st.Directive.Objective,
+			Persona:      st.Directive.Persona,
+			Model:        st.Directive.Model,
+			Class:        st.Directive.BudgetClass,
+			nodeTimeout:  st.Directive.TimeoutSeconds,
+			nodeMaxTurns: st.Directive.MaxTurns,
+		}
+	}
+	if len(req.Repositories) == 0 {
+		req.Repositories = run.Context.Repositories
+	}
+	if req.Objective == "" {
+		req.Objective = run.Context.Objective
 	}
 	step := st.NodeID
 	if st.Iteration > 1 {
 		step = fmt.Sprintf("%s#%d", st.NodeID, st.Iteration)
 	}
-	created, err := s.createWorkTx(ctx, tx, workRequest{
-		Routine:       st.Config.Routine,
-		Repositories:  repos,
-		Objective:     objective,
-		Persona:       st.Config.Persona,
-		Title:         run.WorkflowName + ": " + step,
-		workflowRunID: run.ID, workflowName: run.WorkflowName, workflowStep: step,
-		stepEdges: st.BlockedBy,
-		trigger:   run.Trigger,
-	})
+	req.Title = run.WorkflowName + ": " + step
+	req.workflowRunID, req.workflowName, req.workflowStep = run.ID, run.WorkflowName, step
+	req.stepEdges, req.trigger = st.BlockedBy, run.Trigger
+	created, err := s.createWorkTx(ctx, tx, req)
 	if err != nil {
 		return fmt.Errorf("node %s: %w", st.NodeID, err)
 	}
