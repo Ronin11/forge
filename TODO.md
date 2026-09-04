@@ -64,3 +64,8 @@ P0/P1 fixes have since landed.)
 - [ ] Run-scoped SSE for the run view (the poller swap is ~20 lines).
 - [ ] Workflow nodes without routines (persona + mode + objective directly)
   once personas prove out.
+- [ ] Workflow experiments: third `experimentSubject` implementation
+  (`workflow:<name>`) where a variant is a graph edit and a run is a real
+  workflow run — the store/pipeline/API are already generic
+  (internal/web/experiments.go); the open questions are what "variant" means
+  for a graph and how to judge a multi-step run's output.
