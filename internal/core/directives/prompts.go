@@ -63,9 +63,20 @@ type Fragment struct {
 	Modes   map[string]string
 	Hash    string `json:"hash"` // sha256 of the raw file
 	Persona bool   `json:"persona"`
+	// Description is optional metadata for search and tool exposure (any
+	// kind: frontmatter `description:`; scripts: the header block).
+	Description string `json:"description,omitempty"`
 	// Directive marks executable task content; the remaining fields are
 	// directive frontmatter only.
-	Directive  bool   `json:"directive,omitempty"`
+	Directive bool `json:"directive,omitempty"`
+	// Script marks scripts/<name>.js — goja JavaScript with a parsed
+	// /**forge header (scripts.go). Body is the full raw source.
+	Script      bool   `json:"script,omitempty"`
+	InputSchema string `json:"input_schema,omitempty"` // scripts: JSON schema for tool input
+	TimeoutMS   int    `json:"timeout_ms,omitempty"`   // scripts: execution cap
+	// Tool marks content agents may invoke through the bridge tools
+	// (scripts + directives).
+	Tool       bool   `json:"tool,omitempty"`
 	PersonaRef string `json:"persona_ref,omitempty"` // persona composed ahead of the body
 	Mode       string `json:"mode,omitempty"`        // required for directives
 	Effort     string `json:"effort,omitempty"`
@@ -78,6 +89,7 @@ const (
 	kindFragment fragmentKind = iota
 	kindPersona
 	kindDirective
+	kindScript
 )
 
 // Library is one loaded, validated tree. It is immutable once built — the
@@ -130,8 +142,8 @@ func ValidateName(name string) error {
 // its previous library: a broken edit must never brick run creation.
 func Load(dir string) (*Library, error) {
 	lib := &Library{Dir: dir, LoadedAt: time.Now().UTC(), fragments: map[string]*Fragment{}}
-	kinds := map[string]fragmentKind{"personas": kindPersona, "fragments": kindFragment, "directives": kindDirective}
-	for _, sub := range []string{"personas", "fragments", "directives"} {
+	kinds := map[string]fragmentKind{"personas": kindPersona, "fragments": kindFragment, "directives": kindDirective, "scripts": kindScript}
+	for _, sub := range []string{"personas", "fragments", "directives", "scripts"} {
 		root := filepath.Join(dir, sub)
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -140,14 +152,18 @@ func Load(dir string) (*Library, error) {
 				}
 				return err
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			ext := ".md"
+			if kinds[sub] == kindScript {
+				ext = ".js"
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ext) {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
 			if err != nil {
 				return err
 			}
-			f, err := loadFragment(path, filepath.ToSlash(strings.TrimSuffix(rel, ".md")), kinds[sub])
+			f, err := loadFragment(path, filepath.ToSlash(strings.TrimSuffix(rel, ext)), kinds[sub])
 			if err != nil {
 				return err
 			}
@@ -165,6 +181,9 @@ func Load(dir string) (*Library, error) {
 	// Validate every composition path now: each fragment alone, and each
 	// persona's core plus each of its mode sections.
 	for _, f := range lib.fragments {
+		if f.Script {
+			continue // compile-checked at parse; no includes to expand
+		}
 		if _, _, err := lib.expand(f, "", nil, 0); err != nil {
 			return nil, fmt.Errorf("%s: %w", f.Path, err)
 		}
@@ -184,6 +203,9 @@ func loadFragment(path, name string, kind fragmentKind) (*Fragment, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if kind == kindScript {
+		return parseScript(raw, path, name)
 	}
 	return parseFragment(raw, path, name, kind)
 }
@@ -213,6 +235,16 @@ func parseFragment(raw []byte, path, name string, kind fragmentKind) (*Fragment,
 			}
 			key, val = strings.TrimSpace(key), strings.TrimSpace(val)
 			switch {
+			case key == "description":
+				f.Description = val
+			case key == "tool" && kind == kindDirective:
+				switch val {
+				case "true":
+					f.Tool = true
+				case "false":
+				default:
+					return nil, fmt.Errorf("%s: frontmatter tool %q: want true or false", path, val)
+				}
 			case key == "model":
 				f.Model = val
 			case key == "mode" && kind == kindDirective:
@@ -280,8 +312,16 @@ func (l *Library) WithVariant(name, raw string) (*Library, error) {
 		kind = kindPersona
 	case orig.Directive:
 		kind = kindDirective
+	case orig.Script:
+		kind = kindScript
 	}
-	f, err := parseFragment([]byte(raw), orig.Path, name, kind)
+	var f *Fragment
+	var err error
+	if kind == kindScript {
+		f, err = parseScript([]byte(raw), orig.Path, name)
+	} else {
+		f, err = parseFragment([]byte(raw), orig.Path, name, kind)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +331,7 @@ func (l *Library) WithVariant(name, raw string) (*Library, error) {
 	}
 	next.fragments[name] = f
 	for _, frag := range next.fragments {
-		if !frag.Persona && !frag.Directive && frag.Name != name {
+		if frag.Script || (!frag.Persona && !frag.Directive && frag.Name != name) {
 			continue
 		}
 		if _, _, err := next.expand(frag, "", nil, 0); err != nil {
@@ -319,6 +359,15 @@ func (l *Library) Persona(name string) *Fragment {
 func (l *Library) Directive(name string) *Fragment {
 	f := l.fragments[name]
 	if f == nil || !f.Directive {
+		return nil
+	}
+	return f
+}
+
+// Script returns a library script by name, or nil.
+func (l *Library) Script(name string) *Fragment {
+	f := l.fragments[name]
+	if f == nil || !f.Script {
 		return nil
 	}
 	return f
@@ -524,7 +573,7 @@ func Ensure(dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		fresh = true
 	}
-	for _, sub := range []string{"personas", "fragments", "directives"} {
+	for _, sub := range []string{"personas", "fragments", "directives", "scripts"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return err
 		}
@@ -646,6 +695,10 @@ resolutions past 256 KiB), and keeps the last good version until you fix it.
 - fragments/<name>.md — building blocks; subdirectories are fine
   (fragments/house-style/go.md includes as {{> house-style/go}}).
   Names are lower-case slugs.
+- scripts/<name>.js — goja JavaScript defining function main(input):
+  referenced by workflow script nodes ({"script": "<name>"}), schedulable
+  via a routine target "script:<name>", and — with tool: true — callable by
+  agents through forge_script_run. No filesystem or network; pure compute.
 
 ## Frontmatter
 
@@ -663,6 +716,22 @@ Personas (all optional):
     ---
     model: opus        # default model alias; the directive's own model wins
     ---
+
+Every .md kind may also carry description: (one line, used by search and the
+library tool). Directives may carry tool: true to become agent-callable via
+forge_directive_run.
+
+Scripts carry their metadata in a leading comment block — a legal JS comment,
+so the file runs exactly as authored:
+
+    /**forge
+     * description: one line of what this computes
+     * input: {"type":"object", ...}    (JSON schema; may wrap lines)
+     * timeout_ms: 10000
+     * tool: true
+     */
+
+tool: true requires description and input. Unknown keys are load errors.
 
 ## Composition
 
