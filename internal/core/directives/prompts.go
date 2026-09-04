@@ -69,11 +69,14 @@ type Fragment struct {
 	// Directive marks executable task content; the remaining fields are
 	// directive frontmatter only.
 	Directive bool `json:"directive,omitempty"`
-	// Script marks scripts/<name>.js — goja JavaScript with a parsed
-	// /**forge header (scripts.go). Body is the full raw source.
-	Script      bool   `json:"script,omitempty"`
-	InputSchema string `json:"input_schema,omitempty"` // scripts: JSON schema for tool input
-	TimeoutMS   int    `json:"timeout_ms,omitempty"`   // scripts: execution cap
+	// Script marks scripts/<name>.<ext> — any language, with a parsed
+	// comment header (scripts.go). Body is the full raw source. Interpreter
+	// is the resolved argv prefix for a subprocess script; empty means .js,
+	// run in-process in the goja sandbox.
+	Script      bool     `json:"script,omitempty"`
+	Interpreter []string `json:"interpreter,omitempty"`
+	InputSchema string   `json:"input_schema,omitempty"` // scripts: JSON schema for tool input
+	TimeoutMS   int      `json:"timeout_ms,omitempty"`   // scripts: execution cap
 	// Tool marks content agents may invoke through the bridge tools
 	// (scripts + directives).
 	Tool       bool   `json:"tool,omitempty"`
@@ -152,11 +155,17 @@ func Load(dir string) (*Library, error) {
 				}
 				return err
 			}
-			ext := ".md"
-			if kinds[sub] == kindScript {
-				ext = ".js"
+			if d.IsDir() {
+				return nil
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ext) {
+			ext := filepath.Ext(path)
+			if kinds[sub] == kindScript {
+				// Scripts may be any language: .js runs in-process (goja);
+				// everything else runs as a subprocess. Dotfiles skip.
+				if ext == "" || strings.HasPrefix(d.Name(), ".") {
+					return nil
+				}
+			} else if ext != ".md" {
 				return nil
 			}
 			rel, err := filepath.Rel(root, path)
@@ -695,10 +704,13 @@ resolutions past 256 KiB), and keeps the last good version until you fix it.
 - fragments/<name>.md — building blocks; subdirectories are fine
   (fragments/house-style/go.md includes as {{> house-style/go}}).
   Names are lower-case slugs.
-- scripts/<name>.js — goja JavaScript defining function main(input):
-  referenced by workflow script nodes ({"script": "<name>"}), schedulable
-  via a routine target "script:<name>", and — with tool: true — callable by
-  agents through forge_script_run. No filesystem or network; pure compute.
+- scripts/<name>.<ext> — any language. .js runs in-process (goja: no
+  filesystem or network, the safe default); anything else runs as a daemon
+  subprocess — shebang or extension-mapped interpreter (.py/.sh/.rb/.pl),
+  JSON input on stdin, one JSON value on stdout. Referenced by workflow
+  script nodes ({"script": "<name>"}), schedulable via a routine target
+  "script:<name>", and — with tool: true — callable by agents through
+  forge_script_run.
 
 ## Frontmatter
 
@@ -721,17 +733,18 @@ Every .md kind may also carry description: (one line, used by search and the
 library tool). Directives may carry tool: true to become agent-callable via
 forge_directive_run.
 
-Scripts carry their metadata in a leading comment block — a legal JS comment,
-so the file runs exactly as authored:
+Scripts carry their metadata in a leading comment block with the same keys
+in every language — the file runs exactly as authored:
 
-    /**forge
-     * description: one line of what this computes
-     * input: {"type":"object", ...}    (JSON schema; may wrap lines)
-     * timeout_ms: 10000
-     * tool: true
+    /**forge                        #!/usr/bin/env python3
+     * description: what it does    #forge
+     * input: {"type":"object"}     # description: what it does
+     * timeout_ms: 10000            # input: {"type":"object"}
+     * tool: true                   # tool: true
      */
 
 tool: true requires description and input. Unknown keys are load errors.
+Subprocess scripts may declare timeout_ms up to 300000; .js caps at 30000.
 
 ## Composition
 

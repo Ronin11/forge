@@ -23,7 +23,7 @@ type scriptRunTool struct{}
 
 func (scriptRunTool) Name() string { return "forge_script_run" }
 func (scriptRunTool) Description() string {
-	return "Run a tool-flagged library script (scripts/<name>.js) synchronously in the sandbox: pure compute, no filesystem or network. input becomes input.params. Discover scripts and their input schemas with forge_library."
+	return "Run a tool-flagged library script synchronously. input becomes input.params. .js scripts run in a sandbox (no filesystem or network); other languages run as daemon-side processes. Discover scripts and their input schemas with forge_library."
 }
 func (scriptRunTool) Where() string { return WhereDaemon }
 func (scriptRunTool) InputSchema() json.RawMessage {
@@ -63,7 +63,7 @@ func (scriptRunTool) Call(ctx context.Context, req Request) (json.RawMessage, er
 		}
 		input.Params = params
 	}
-	out, err := flow.RunScript(f.Body, input, flow.ScriptTimeout(f.TimeoutMS))
+	out, err := flow.RunAny(f.Interpreter, f.Path, f.Body, input, f.TimeoutMS)
 	if err != nil {
 		return nil, BadInput("script %s: %v", in.Script, err)
 	}

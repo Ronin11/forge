@@ -81,6 +81,8 @@ func (s *Server) scriptTest(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	source, timeoutMS := req.Source, 0
+	var interpreter []string
+	path := ""
 	if req.Name != "" {
 		lib := s.promptLibrary()
 		if lib == nil {
@@ -88,9 +90,9 @@ func (s *Server) scriptTest(r *http.Request) (int, any, error) {
 		}
 		f := lib.Script(req.Name)
 		if f == nil {
-			return 0, nil, badRequest("script %q is not in the library (scripts/%s.js)", req.Name, req.Name)
+			return 0, nil, badRequest("script %q is not in the library (scripts/)", req.Name)
 		}
-		source, timeoutMS = f.Body, f.TimeoutMS
+		source, interpreter, path, timeoutMS = f.Body, f.Interpreter, f.Path, f.TimeoutMS
 	}
 	if strings.TrimSpace(source) == "" {
 		return 0, nil, badRequest("name a library script or pass source")
@@ -104,7 +106,7 @@ func (s *Server) scriptTest(r *http.Request) (int, any, error) {
 		input.Params = params
 	}
 	start := s.now()
-	out, err := flow.RunScript(source, input, flow.ScriptTimeout(timeoutMS))
+	out, err := flow.RunAny(interpreter, path, source, input, timeoutMS)
 	elapsed := s.now().Sub(start).Milliseconds()
 	if err != nil {
 		return http.StatusOK, map[string]any{"error": err.Error(), "elapsed_ms": elapsed}, nil

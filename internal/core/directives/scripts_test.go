@@ -171,3 +171,52 @@ func TestLibrarySearch(t *testing.T) {
 		t.Errorf("browse = %+v", got)
 	}
 }
+
+// Non-JS scripts: the #forge header parses after a shebang, interpreters
+// resolve (shebang first, extension map fallback), and undeterminable files
+// are load errors.
+func TestExternalScripts(t *testing.T) {
+	dir := write(t, map[string]string{
+		"scripts/shaper.py": "#!/usr/bin/env python3\n#forge\n# description: reshape input\n# input: {\"type\":\"object\",\n#        \"additionalProperties\":true}\n# timeout_ms: 120000\n# tool: true\nimport json, sys\nprint(json.dumps(json.load(sys.stdin)))\n",
+		"scripts/plain.sh":  "echo '{}'\n",
+		"scripts/calc.js":   "function main(i){return 1}",
+	})
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	py := lib.Script("shaper")
+	if py == nil || !py.Tool || py.Description != "reshape input" {
+		t.Fatalf("py = %+v", py)
+	}
+	if len(py.Interpreter) == 0 || py.Interpreter[0] != "/usr/bin/env" {
+		t.Errorf("shebang interpreter = %v", py.Interpreter)
+	}
+	if !strings.Contains(py.InputSchema, "additionalProperties") {
+		t.Errorf("continuation lines not joined: %q", py.InputSchema)
+	}
+	if py.TimeoutMS != 120000 {
+		t.Errorf("external timeout not honored above the goja cap: %d", py.TimeoutMS)
+	}
+	if sh := lib.Script("plain"); len(sh.Interpreter) != 1 || sh.Interpreter[0] != "bash" || sh.Tool {
+		t.Errorf("ext-map interpreter = %+v", sh)
+	}
+	if js := lib.Script("calc"); len(js.Interpreter) != 0 {
+		t.Errorf("js should have no interpreter: %v", js.Interpreter)
+	}
+	// No shebang + unknown extension = load error.
+	if _, err := Load(write(t, map[string]string{"scripts/x.zig": "pub fn main() {}"})); err == nil || !strings.Contains(err.Error(), "shebang") {
+		t.Errorf("unknown ext = %v", err)
+	}
+	// Cross-extension duplicates share the flat namespace.
+	if _, err := Load(write(t, map[string]string{
+		"scripts/x.js": "function main(i){return 1}",
+		"scripts/x.py": "#!/usr/bin/env python3\nprint('{}')",
+	})); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("cross-ext dup = %v", err)
+	}
+	// Header refusals apply to hash headers too.
+	if _, err := Load(write(t, map[string]string{"scripts/x.py": "#forge\n# budget: 4\nprint('{}')"})); err == nil {
+		t.Error("unknown hash-header key accepted")
+	}
+}
