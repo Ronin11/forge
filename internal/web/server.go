@@ -389,6 +389,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/directive-tests", s.handle(s.listPromptTests))
 	m.HandleFunc("POST /api/v1/experiments", s.handle(s.createExperiment))
 	m.HandleFunc("GET /api/v1/experiments", s.handle(s.listExperiments))
+	m.HandleFunc("GET /api/v1/library/search", s.handle(s.librarySearch))
+	m.HandleFunc("POST /api/v1/script-test", s.handle(s.scriptTest))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))
 	m.HandleFunc("GET /api/v1/routines/{name}", s.handle(s.getRoutine))

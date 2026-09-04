@@ -127,3 +127,47 @@ func TestWithVariantScript(t *testing.T) {
 		t.Error("broken script variant accepted")
 	}
 }
+
+// Search: all terms must match, name > description > body, kind filter,
+// empty query = browse.
+func TestLibrarySearch(t *testing.T) {
+	dir := write(t, map[string]string{
+		"directives/triage-repo.md": "---\nmode: run\nmodel: haiku\ndescription: sweep a repository\n---\nSurvey and rank.",
+		"personas/triager.md":       "---\ndescription: fast triage identity\n---\nYou triage.",
+		"fragments/checklist.md":    "triage steps live here",
+		"scripts/rank.js":           "/**forge\n * description: rank triage output\n * input: {\"type\":\"object\"}\n * tool: true\n */\nfunction main(i){return 1}",
+	})
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := lib.Search("triage", nil, 0)
+	if len(hits) != 4 {
+		t.Fatalf("hits = %+v", hits)
+	}
+	// Name matches outrank description matches outrank body matches.
+	if hits[0].Name != "triage-repo" && hits[0].Name != "triager" {
+		t.Errorf("ranking = %+v", hits)
+	}
+	if hits[len(hits)-1].Name != "checklist" {
+		t.Errorf("body-only match should rank last: %+v", hits)
+	}
+	// Tool-flagged script carries its schema.
+	for _, h := range hits {
+		if h.Name == "rank" && (!h.Tool || h.InputSchema == "") {
+			t.Errorf("script hit = %+v", h)
+		}
+	}
+	// All terms must match somewhere.
+	if got := lib.Search("triage zebra", nil, 0); len(got) != 0 {
+		t.Errorf("partial-term match: %+v", got)
+	}
+	// Kind filter.
+	if got := lib.Search("triage", map[string]bool{"script": true}, 0); len(got) != 1 || got[0].Name != "rank" {
+		t.Errorf("kind filter = %+v", got)
+	}
+	// Empty query browses everything in name order.
+	if got := lib.Search("", nil, 0); len(got) != 4 || got[0].Name != "checklist" {
+		t.Errorf("browse = %+v", got)
+	}
+}

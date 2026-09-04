@@ -35,9 +35,15 @@ type personaRow struct {
 	Hash    string   `json:"hash"`
 	Persona bool     `json:"persona"`
 	// Directive marks executable task content (directives/); its frontmatter
-	// mode rides Mode below.
-	Directive bool   `json:"directive,omitempty"`
-	Mode      string `json:"mode,omitempty"`
+	// mode rides Mode below. Script marks scripts/<name>.js with its header
+	// metadata alongside.
+	Directive   bool   `json:"directive,omitempty"`
+	Script      bool   `json:"script,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	Description string `json:"description,omitempty"`
+	Tool        bool   `json:"tool,omitempty"`
+	InputSchema string `json:"input_schema,omitempty"`
+	TimeoutMS   int    `json:"timeout_ms,omitempty"`
 }
 
 // personasList is the response envelope: the library's provenance plus every
@@ -76,7 +82,8 @@ func (s *Server) listPersonas(r *http.Request) (int, any, error) {
 		}
 	}
 	for _, f := range lib.Fragments() {
-		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Mode: f.Mode}
+		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Script: f.Script,
+			Mode: f.Mode, Description: f.Description, Tool: f.Tool, InputSchema: f.InputSchema, TimeoutMS: f.TimeoutMS}
 		for mode := range f.Modes {
 			row.Modes = append(row.Modes, mode)
 		}
@@ -110,7 +117,8 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 	if f == nil {
 		return 0, nil, badRequest("%q is not in the prompts library", name)
 	}
-	out := personaDetail{personaRow: personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Mode: f.Mode}, Body: f.Body, Path: f.Path}
+	out := personaDetail{personaRow: personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Script: f.Script,
+		Mode: f.Mode, Description: f.Description, Tool: f.Tool, InputSchema: f.InputSchema, TimeoutMS: f.TimeoutMS}, Body: f.Body, Path: f.Path}
 	// The raw file, exactly as on disk: the page's editor round-trips this,
 	// never the split view (Body is the frontmatter- and mode-stripped core).
 	if raw, err := os.ReadFile(f.Path); err == nil {

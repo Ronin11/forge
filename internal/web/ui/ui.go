@@ -653,7 +653,7 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	for i, rep := range repos {
 		names[i] = rep.Name
 	}
-	var personas, fragments, directives []promptTreeItem
+	var personas, fragments, directives, scripts []promptTreeItem
 	libDir := ""
 	if u.prompts != nil {
 		if lib := u.prompts(); lib != nil {
@@ -676,7 +676,7 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	}
 	u.render(w, r, "directives.html", "Directives", map[string]any{
 		"Routines": rs, "Repositories": names,
-		"Personas": personas, "Fragments": fragments, "Directives": directives, "LibDir": libDir,
+		"Personas": personas, "Fragments": fragments, "Directives": directives, "Scripts": scripts, "LibDir": libDir,
 	})
 }
 

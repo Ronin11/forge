@@ -3,6 +3,7 @@
 <p id="editor-error" class="error" hidden></p>
 <div class="pr-layout" data-prompts-page>
 <div class="pr-tree card">
+<input class="pr-filter" data-tree-filter type="search" placeholder="filter the library…" aria-label="Filter the library tree">
 <div class="pr-folder">personas/</div>
 <ul>
 {{range .Data.Personas}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</a></li>
@@ -12,6 +13,11 @@
 <ul>
 {{range .Data.Directives}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add directives/&lt;name&gt;.md</li>{{end}}
+</ul>
+<div class="pr-folder">scripts/</div>
+<ul>
+{{range .Data.Scripts}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-gv-js"/></svg> {{.Label}}</a></li>
+{{else}}<li class="empty pr-empty">none yet — add scripts/&lt;name&gt;.js</li>{{end}}
 </ul>
 <div class="pr-folder">fragments/</div>
 <ul>

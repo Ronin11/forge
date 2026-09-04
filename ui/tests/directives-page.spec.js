@@ -224,3 +224,27 @@ test.describe('directives', () => {
     await form.locator('[data-editor-cancel]').click();
   });
 });
+
+test.describe('scripts and search', () => {
+  test('the tree filter narrows, and a seeded script runs in the sandbox', async ({ page }) => {
+    // Seed a script straight into the daemon's library; the 30s reload is too
+    // slow for a test, so use the same pre-seeded file global-setup wrote —
+    // check it exists, else write + wait via the API-side reload on PUT.
+    await page.goto('/directives');
+    const tree = page.locator('.pr-tree');
+    await expect(tree).toContainText('scripts/');
+    await expect(tree.locator('[data-sel="prompt:wfg-shape"]')).toBeVisible();
+    // Filter narrows to matching names.
+    await tree.locator('[data-tree-filter]').fill('wfg-shape');
+    await expect(tree.locator('[data-sel="prompt:triage-repo"]')).toBeHidden();
+    await expect(tree.locator('[data-sel="prompt:wfg-shape"]')).toBeVisible();
+    await tree.locator('[data-tree-filter]').fill('');
+    // The script pane: chips + sandbox run.
+    await tree.locator('[data-sel="prompt:wfg-shape"]').click();
+    const detail = page.locator('[data-prompt-detail]');
+    await expect(detail).toContainText('script');
+    await detail.locator('.pr-test textarea').fill('{"n": 21}');
+    await detail.locator('button', { hasText: 'Run script' }).click();
+    await expect(detail.locator('pre').last()).toContainText('42');
+  });
+});

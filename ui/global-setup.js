@@ -77,6 +77,11 @@ module.exports = async function globalSetup() {
   fs.writeFileSync(path.join(libDir, 'wfg-fix.md'), directive('wfg-fix on {{repo}}: {{objective}}'));
   fs.writeFileSync(path.join(libDir, 'pr-page-test.md'),
     '---\nmode: run\npersona: senior-reviewer\n---\nTask on {{repo}}: {{objective}}\n');
+  // A library script for the scripts-section and sandbox-run specs.
+  const scriptsDir = path.join(HOME, 'directives', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  fs.writeFileSync(path.join(scriptsDir, 'wfg-shape.js'),
+    '/**forge\n * description: doubles n for the browser tests\n * input: {"type":"object","properties":{"n":{"type":"number"}}}\n * tool: true\n */\nfunction main(input) { return { doubled: input.params.n * 2 } }\n');
 
   // INVOCATION_ID is dropped so a daemon started from inside a systemd unit
   // (some terminals set it) never tries `systemctl start forge-worker`.

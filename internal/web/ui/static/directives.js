@@ -92,9 +92,11 @@
       detail.textContent = '';
       var head = el('div', 'pr-head');
       head.appendChild(el('h2', '', f.name));
-      head.appendChild(chip(f.persona ? 'persona' : (f.directive ? 'directive' : 'fragment')));
+      head.appendChild(chip(f.persona ? 'persona' : (f.directive ? 'directive' : (f.script ? 'script' : 'fragment'))));
       if (f.model) head.appendChild(chip('model: ' + f.model));
       if (f.directive && f.mode) head.appendChild(chip('mode: ' + f.mode));
+      if (f.tool) head.appendChild(chip('tool'));
+      if (f.script && f.timeout_ms) head.appendChild(chip(f.timeout_ms + 'ms cap'));
       (f.modes || []).forEach(function (m) { head.appendChild(chip('mode: ' + m)); });
       detail.appendChild(head);
       if (f.path) {
@@ -110,7 +112,50 @@
         personaTester(f);
       }
       if (f.directive) directiveTester(f);
+      if (f.script) scriptTester(f);
     }).catch(fail);
+  }
+
+  // scriptTester: run the script in the sandbox with a JSON params payload —
+  // pure compute, instant, no model involved.
+  function scriptTester(f) {
+    if (f.description) detail.appendChild(el('p', 'meta', f.description));
+    detail.appendChild(el('h3', '', 'Test: run in the sandbox'));
+    var controls = el('div', 'pr-controls pr-test');
+    var input = document.createElement('textarea');
+    input.rows = 3;
+    input.placeholder = f.input_schema ? 'JSON input (schema: ' + f.input_schema.slice(0, 120) + ')' : 'JSON input → input.params (optional)';
+    var out = el('div');
+    controls.appendChild(input);
+    controls.appendChild(button('Run script', 'primary', function (e) {
+      var btn = e.currentTarget;
+      btn.disabled = true;
+      var body = { name: f.name };
+      var raw = input.value.trim();
+      if (raw) {
+        try { body.input = JSON.parse(raw); } catch (err) { fail(new Error('input is not JSON: ' + err.message)); btn.disabled = false; return; }
+      }
+      clearFail();
+      fetch('/api/v1/script-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          return resp.json();
+        })
+        .then(function (r) {
+          out.textContent = '';
+          if (r.error) {
+            out.appendChild(el('p', 'meta', 'failed in ' + r.elapsed_ms + 'ms'));
+            out.appendChild(pre(r.error));
+          } else {
+            out.appendChild(el('p', 'meta', 'ran in ' + r.elapsed_ms + 'ms'));
+            out.appendChild(pre(JSON.stringify(r.output, null, 2)));
+          }
+        })
+        .catch(fail)
+        .then(function () { btn.disabled = false; });
+    }));
+    detail.appendChild(controls);
+    detail.appendChild(out);
   }
 
   // directiveTester: the composed body, then the exact prompt a run of this
@@ -715,6 +760,18 @@
     var name = sel.slice(kind.length + 1);
     if (kind === 'routine') showRoutine(name); else showFragment(name, opts.mode);
   }
+  // The tree filter: hides non-matching items (name match) and folders that
+  // end up empty. Server search ranks better; this is the quick narrow.
+  var filter = page.querySelector('[data-tree-filter]');
+  if (filter) filter.addEventListener('input', function () {
+    var q = filter.value.trim().toLowerCase();
+    page.querySelectorAll('.pr-tree li').forEach(function (li) {
+      var item = li.querySelector('.pr-item');
+      if (!item) return;
+      li.hidden = q !== '' && item.textContent.toLowerCase().indexOf(q) < 0;
+    });
+  });
+
   page.querySelectorAll('[data-sel]').forEach(function (b) {
     b.addEventListener('click', function (e) {
       e.preventDefault();

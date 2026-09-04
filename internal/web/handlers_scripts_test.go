@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,5 +140,59 @@ func TestScriptTriggerRoutine(t *testing.T) {
 	bad := store.Routine{Name: "ghost-cron", Target: "script:ghost", Repositories: []string{"equitizr"}}
 	if status, _ := h.do(http.MethodPost, "/api/v1/routines", bad, nil, ""); status != http.StatusBadRequest {
 		t.Errorf("unknown script trigger = %d", status)
+	}
+}
+
+// The library search API merges workflow rows with library hits under one
+// ranking, filters kinds, and script-test runs the sandbox.
+func TestLibrarySearchAndScriptTest(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{
+		"directives/triage-repo.md": "---\nmode: run\nmodel: haiku\ndescription: sweep a repository\ntool: true\n---\nSurvey.",
+		"scripts/rank.js":           "/**forge\n * description: rank triage output\n * input: {\"type\":\"object\"}\n * tool: true\n * timeout_ms: 2000\n */\nfunction main(i){ return {got: i.params} }",
+	})
+	graph := map[string]any{"nodes": []map[string]any{{"id": "n", "type": "directive", "config": map[string]any{"directive": "triage-repo"}, "position": map[string]float64{"x": 0, "y": 0}}}, "edges": []map[string]any{}}
+	h.call(http.MethodPost, "/api/v1/workflows", map[string]any{"name": "triage-flow", "description": "triage then report", "tool": true, "graph": graph}, nil, http.StatusCreated)
+
+	var out struct {
+		Hits []struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+			Tool bool   `json:"tool"`
+		} `json:"hits"`
+	}
+	h.call(http.MethodGet, "/api/v1/library/search?q=triage", nil, &out, http.StatusOK)
+	kinds := map[string]string{}
+	for _, hit := range out.Hits {
+		kinds[hit.Name] = hit.Kind
+		if !hit.Tool {
+			t.Errorf("%s should be tool-flagged", hit.Name)
+		}
+	}
+	if kinds["triage-repo"] != "directive" || kinds["rank"] != "script" || kinds["triage-flow"] != "workflow" {
+		t.Fatalf("hits = %+v", out.Hits)
+	}
+	h.call(http.MethodGet, "/api/v1/library/search?q=triage&kind=workflow", nil, &out, http.StatusOK)
+	if len(out.Hits) != 1 || out.Hits[0].Name != "triage-flow" {
+		t.Errorf("kind filter = %+v", out.Hits)
+	}
+
+	// script-test: output, throw, timeout.
+	var res struct {
+		Output    json.RawMessage `json:"output"`
+		Error     string          `json:"error"`
+		ElapsedMS int64           `json:"elapsed_ms"`
+	}
+	h.call(http.MethodPost, "/api/v1/script-test", map[string]any{"name": "rank", "input": map[string]int{"n": 7}}, &res, http.StatusOK)
+	if !strings.Contains(string(res.Output), `"n":7`) || res.Error != "" {
+		t.Errorf("script-test = %+v", res)
+	}
+	h.call(http.MethodPost, "/api/v1/script-test", map[string]any{"source": "function main(i){ throw new Error('boom') }"}, &res, http.StatusOK)
+	if !strings.Contains(res.Error, "boom") {
+		t.Errorf("throw = %+v", res)
+	}
+	if status, _ := h.do(http.MethodPost, "/api/v1/script-test", map[string]any{"name": "ghost"}, nil, ""); status != http.StatusBadRequest {
+		t.Errorf("unknown script = %d", status)
 	}
 }

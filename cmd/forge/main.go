@@ -71,7 +71,7 @@ func commands() map[string]command {
 		"backup":      {summary: "write a backup archive via the running daemon", run: tui.RunBackup},
 		"restore":     {summary: "restore a backup archive into a fresh FORGE_HOME", run: tui.RunRestore},
 		"eval":        {summary: "run golden eval cases on the fake executor and score them", run: tui.RunEval},
-		"directives":  {summary: "update the directives library from its upstream base repo", run: tui.RunDirectives},
+		"directives":  {summary: "search the library, or update it from its upstream base repo", run: tui.RunDirectives},
 	}
 }
 
