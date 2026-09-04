@@ -233,6 +233,7 @@ func TestReadmeDocumentsTheSurface(t *testing.T) {
 		"{{objective}}", "{{repo}}",
 		"{{run.objective}}", "{{run.repositories}}", "{{run.workflow}}", "{{run.id}}",
 		"{{steps.<node>.status}}", "{{steps.<node>.output.<dot.path>}}",
+		"{{steps.<node>.state}}", "{{steps.<node>.summary}}",
 		"model:", "forge persona show",
 	} {
 		if !strings.Contains(readmeContent, want) {

@@ -26,3 +26,18 @@ func TestExpandTemplate(t *testing.T) {
 		t.Errorf("status = %q %v", s, m)
 	}
 }
+
+// state and summary resolve like scripts see them; empty ones report missing.
+func TestExpandTemplateStateSummary(t *testing.T) {
+	in := ScriptInput{Steps: map[string]StepInput{
+		"plan": {Status: "succeeded", State: "succeeded", Summary: "three tasks, gauges first"},
+		"bare": {Status: "succeeded"},
+	}}
+	out, missing := ExpandTemplate("did {{steps.plan.state}}: {{steps.plan.summary}}", in)
+	if out != "did succeeded: three tasks, gauges first" || len(missing) != 0 {
+		t.Errorf("expand = %q, missing %v", out, missing)
+	}
+	if _, missing = ExpandTemplate("{{steps.bare.summary}}", in); len(missing) != 1 {
+		t.Errorf("empty summary should report missing: %v", missing)
+	}
+}

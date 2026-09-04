@@ -33,6 +33,7 @@ import (
 	"forge/internal/core/modes/all"
 	"forge/internal/core/plugin"
 	"forge/internal/core/protocol"
+	"forge/internal/core/seeds"
 	"forge/internal/core/store"
 	"forge/internal/core/worker"
 	"forge/internal/tools"
@@ -254,6 +255,14 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		d.log.WarnContext(ctx, "load prompts library", "path", d.cfg.Prompts.Path, "error", err)
 	} else {
 		promptsLib.Store(lib)
+		// Base-system seeds (library seeds/ dir): starter workflows and
+		// trigger routines, skip-if-name-exists, so a fresh install is a
+		// working system and base updates land additively.
+		if added, err := seeds.Import(ctx, st, d.cfg.Prompts.Path, d.log); err != nil {
+			d.log.WarnContext(ctx, "seed import", "error", err)
+		} else if len(added) > 0 {
+			d.log.InfoContext(ctx, "seeds imported", "added", added)
+		}
 	}
 	srv, err := web.NewServer(web.ServerOptions{
 		Prompts: promptsLib.Load,

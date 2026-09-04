@@ -511,8 +511,14 @@ func gitState(dir string) (commit string, dirty bool) {
 	return strings.TrimSpace(string(head)), len(strings.TrimSpace(string(status))) > 0
 }
 
-// Ensure bootstraps the prompts directory: the two subdirectories, a git
-// repo, and a starter README the first time. It never touches existing files.
+// Ensure bootstraps the library directory (subdirectories, a git repo, the
+// README the first time) and additively syncs the embedded base: any starter
+// file the tree lacks is copied in, and a file that exists — however
+// modified — is never touched. A binary upgrade thus delivers new base
+// content to existing installs while the user's fork stays theirs; a base
+// file deleted locally does return on the next boot (remove it upstream, or
+// live with the git history making the re-add visible). Anything copied is
+// committed best-effort.
 func Ensure(dir string) error {
 	fresh := false
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -532,30 +538,61 @@ func Ensure(dir string) error {
 		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readmeContent), 0o644); err != nil {
 			return err
 		}
-		err := fs.WalkDir(starterFS, "starter", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return err
-			}
-			rel, err := filepath.Rel("starter", path)
-			if err != nil {
-				return err
-			}
-			content, err := starterFS.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			dst := filepath.Join(dir, rel)
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				return err
-			}
-			return os.WriteFile(dst, content, 0o644)
-		})
+	}
+	copied := 0
+	err := fs.WalkDir(starterFS, "starter", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel("starter", path)
 		if err != nil {
 			return err
 		}
-		bootstrapCommit(dir)
+		dst := filepath.Join(dir, rel)
+		if _, err := os.Stat(dst); err == nil {
+			return nil // the user's copy wins, always
+		}
+		content, err := starterFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		copied++
+		return os.WriteFile(dst, content, 0o644)
+	})
+	if err != nil {
+		return err
 	}
+	if fresh {
+		bootstrapCommit(dir)
+	} else if copied > 0 {
+		CommitEdit(dir, ".", "forge: base library update")
+	}
+	ensureUpstream(dir)
 	return nil
+}
+
+// ensureUpstream points the library's `upstream` remote at the base repo the
+// binary shipped with (the starter's UPSTREAM file), so `forge directives
+// update` can pull base improvements. Best-effort; an existing remote is
+// never changed — the user's fork is theirs.
+func ensureUpstream(dir string) {
+	raw, err := os.ReadFile(filepath.Join(dir, "UPSTREAM"))
+	if err != nil {
+		return
+	}
+	url := strings.TrimSpace(string(raw))
+	if url == "" {
+		return
+	}
+	if err := exec.Command("git", "-C", dir, "remote", "get-url", "upstream").Run(); err == nil {
+		return
+	}
+	if err := exec.Command("git", "-C", dir, "remote", "add", "upstream", url).Run(); err != nil {
+		return
+	}
 }
 
 // CommitEdit commits one edited file — the UI's save path. Best-effort like
@@ -585,9 +622,10 @@ func bootstrapCommit(dir string) {
 
 // readmeContent is written once at bootstrap: the reference for everything a
 // prompt author can use, kept next to the files it documents.
-const readmeContent = `# Forge prompts
+const readmeContent = `# Forge directives
 
-Personas and fragments, composed into routine prompts when a run is created.
+The library of everything an agent reads: directives (executable task
+content), personas (identities), and fragments (shared building blocks).
 Edits are ordinary git commits: the daemon reloads this tree every 30s,
 refuses a broken one (unknown includes, cycles, nesting deeper than 8,
 resolutions past 256 KiB), and keeps the last good version until you fix it.
@@ -597,17 +635,33 @@ resolutions past 256 KiB), and keeps the last good version until you fix it.
 
 ## Layout
 
-- personas/<name>.md — a top-level identity. Routines name it in their
-  persona field; "task add --persona <name>" and a workflow routine-node's
-  config {"persona": ...} use it per run.
+- directives/<name>.md — executable task content. A trigger routine's
+  target ("directive:<name>") runs it on a schedule or by hand; a workflow
+  directive-node runs it as one graph step. Frontmatter names its mode
+  (required) and optionally a persona, model, and effort; the body is the
+  task text.
+- personas/<name>.md — a top-level identity, composed ahead of the task
+  text. Directives name one in frontmatter; "task add --persona <name>" and
+  a workflow node's config {"persona": ...} override it per run.
 - fragments/<name>.md — building blocks; subdirectories are fine
   (fragments/house-style/go.md includes as {{> house-style/go}}).
   Names are lower-case slugs.
 
-## Frontmatter (optional, personas)
+## Frontmatter
+
+Directives (mode: required):
 
     ---
-    model: opus        # default model alias; the routine's own model wins
+    mode: run          # the execution mode (run, plan, review, ...)
+    persona: triager   # optional; composed ahead of the body
+    model: opus        # optional; the persona default fills in when absent
+    effort: low        # optional model effort knob
+    ---
+
+Personas (all optional):
+
+    ---
+    model: opus        # default model alias; the directive's own model wins
     ---
 
 ## Composition
@@ -620,10 +674,11 @@ to bottom and know what it says.
 - {{> name key="value"}} — include with parameters: every {{key}} inside
   *that fragment only* becomes value. Parameters you do not pass stay as-is.
 - ## mode: <name> — a persona section composed only into runs of that mode
-  (the routine's mode). Everything above the first mode heading is the core,
-  always included; a mode with no section just gets the core. Includes work
-  inside mode sections; included fragments never contribute their own mode
-  sections.
+  (the directive's mode). Everything above the first mode heading is the
+  core, always included; a mode with no section just gets the core. Includes
+  work inside mode sections; included fragments never contribute their own
+  mode sections. In a directive body a "## mode:" heading is plain markdown —
+  a directive has exactly one mode, in its frontmatter.
 
 ## Variables
 
@@ -632,28 +687,30 @@ Everything the library does not own passes through untouched.
 
 | Variable | Where it works | Replaced by | When |
 |---|---|---|---|
-| {{> name}}, {{> name k="v"}} | persona and fragment bodies | the fragment's body | composition (run creation) |
+| {{> name}}, {{> name k="v"}} | directive, persona, and fragment bodies | the fragment's body | composition (run creation) |
 | {{k}} | inside a fragment given k="v" | the parameter value | composition |
 | {{objective}} | anywhere in the final prompt (persona text included) | the run's objective, or a self-directed fallback | work creation |
 | {{repo}} | anywhere in the final prompt | the repository this attempt targets | claim time (per repository) |
-| {{run.objective}} | workflow routine-node *objectives* only | the workflow run's objective | node materialization |
-| {{run.repositories}} | workflow routine-node objectives only | the run's repositories, comma-joined | node materialization |
-| {{run.workflow}} | workflow routine-node objectives only | the workflow name | node materialization |
-| {{run.id}} | workflow routine-node objectives only | the run id | node materialization |
-| {{steps.<node>.status}} | workflow routine-node objectives only | the upstream node's status | node materialization |
-| {{steps.<node>.output.<dot.path>}} | workflow routine-node objectives only | a value from the upstream node's output | node materialization |
+| {{run.objective}} | workflow node *objectives* only | the workflow run's objective | node materialization |
+| {{run.repositories}} | workflow node objectives only | the run's repositories, comma-joined | node materialization |
+| {{run.workflow}} | workflow node objectives only | the workflow name | node materialization |
+| {{run.id}} | workflow node objectives only | the run id | node materialization |
+| {{steps.<node>.status}} | workflow node objectives only | the upstream node's status | node materialization |
+| {{steps.<node>.state}} | workflow node objectives only | the upstream Work's final state | node materialization |
+| {{steps.<node>.summary}} | workflow node objectives only | the upstream attempt's result summary | node materialization |
+| {{steps.<node>.output.<dot.path>}} | workflow node objectives only | a value from the upstream node's output | node materialization |
 
 The {{run.*}} and {{steps.*}} forms belong to the workflow engine, not this
-library: they expand in a routine node's objective, which then replaces
+library: they expand in a directive node's objective, which then replaces
 {{objective}} wherever the composed prompt says it. Putting them directly in
-a persona or fragment does nothing — they pass through unresolved.
+a directive, persona, or fragment does nothing — they pass through unresolved.
 
 ## What runs where
 
 The final prompt an agent reads is, in order:
 
-    resolved persona (core + the routine's mode section)
-    routine prompt (the task text)
+    resolved persona (core + the directive's mode section)
+    directive body (the task text, includes expanded)
 
 with {{objective}} and {{repo}} substituted as above. Every run freezes the
 resolved bytes plus a composition manifest (each fragment's content hash and

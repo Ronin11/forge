@@ -9,7 +9,8 @@ import (
 
 // Objective templates. A routine node's objective may reference the run and
 // upstream outputs — {{run.objective}}, {{run.repositories}},
-// {{steps.<node>.output.<dot.path>}}, {{steps.<node>.status}} — expanded by
+// {{steps.<node>.output.<dot.path>}}, {{steps.<node>.status}},
+// {{steps.<node>.state}}, {{steps.<node>.summary}} — expanded by
 // the engine just before the Work is created. Only `run.` and `steps.`
 // references are the engine's: {{objective}} and {{repo}} pass through
 // untouched for the ordinary prompt substitutions downstream. A missing path
@@ -62,6 +63,10 @@ func resolveRef(ref string, input ScriptInput) (string, bool) {
 		switch parts[2] {
 		case "status":
 			return step.Status, true
+		case "state":
+			return step.State, step.State != ""
+		case "summary":
+			return step.Summary, step.Summary != ""
 		case "output":
 			return resolvePath(step.Output, parts[3:])
 		}
