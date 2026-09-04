@@ -14,7 +14,6 @@ import (
 
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
-	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -64,6 +63,26 @@ func (s *Server) decodeRoutine(r *http.Request) (*store.Routine, error) {
 	rt.ID, rt.Generation = "", 0
 	if err := model.ValidateName(rt.Name); err != nil {
 		return nil, badRequest("%v", err)
+	}
+	if kind, target, err := store.ParseTarget(rt.Target); err != nil {
+		return nil, badRequest("routine %s: %v", rt.Name, err)
+	} else if kind != "" {
+		if rt.Mode != "" || rt.Prompt != "" || rt.Persona != "" || rt.Model != "" || rt.Effort != "" {
+			return nil, badRequest("routine %s: a target routine carries no content fields — the directive owns mode/prompt/persona/model/effort", rt.Name)
+		}
+		switch kind {
+		case store.TargetDirective:
+			// The library may be absent (tests, a bare server) — then the name
+			// is taken on faith and run creation is where a mistake surfaces.
+			if lib := s.promptLibrary(); lib != nil && lib.Directive(target) == nil {
+				return nil, badRequest("routine %s: directive %q is not in the library (directives/%s.md)", rt.Name, target, target)
+			}
+		case store.TargetWorkflow:
+			if _, err := s.store.GetWorkflow(r.Context(), target); err != nil {
+				return nil, badRequest("routine %s: workflow %q: %v", rt.Name, target, err)
+			}
+		}
+		return &rt, nil
 	}
 	if rt.Persona != "" {
 		// The library may be absent (tests, a bare server) — then the name is
@@ -166,13 +185,64 @@ type runRequest struct {
 }
 
 func (s *Server) runRoutine(r *http.Request) (int, any, error) {
+	ctx := r.Context()
 	var body runRequest
 	if r.ContentLength != 0 {
 		if err := decodeJSON(r, &body); err != nil {
 			return 0, nil, err
 		}
 	}
-	return s.submitWork(r.Context(), workRequest{Routine: r.PathValue("name"), Repositories: body.Repositories, Objective: body.Objective})
+	name := r.PathValue("name")
+	rt, err := s.store.GetRoutine(ctx, name)
+	if err != nil {
+		return 0, nil, err
+	}
+	// A workflow-target routine runs as a workflow run — the routine is the
+	// trigger, its repositories/objective the run context.
+	if kind, target := targetOf(rt); kind == store.TargetWorkflow {
+		if s.Draining() {
+			return 0, nil, errDraining
+		}
+		run, err := s.startRoutineWorkflowRun(ctx, rt, target, firstNonEmptySlice(body.Repositories, rt.Repositories), firstNonEmpty(body.Objective, rt.Objective), model.TriggerManual)
+		if err != nil {
+			return 0, nil, err
+		}
+		s.log.InfoContext(ctx, "routine fired workflow run", "routine", rt.Name, "workflow", target, "run_id", run.ID)
+		return http.StatusCreated, workflowRunCreated{RunID: run.ID, Workflow: target, Generation: run.WorkflowGeneration}, nil
+	}
+	return s.submitWork(ctx, workRequest{Routine: name, Repositories: body.Repositories, Objective: body.Objective})
+}
+
+// startRoutineWorkflowRun creates a workflow run on a trigger routine's
+// behalf and advances it — the runWorkflow/fireDueWorkflows shape.
+func (s *Server) startRoutineWorkflowRun(ctx context.Context, rt *store.Routine, workflow string, repos []string, objective string, trigger model.Trigger) (*store.WorkflowRun, error) {
+	run := &store.WorkflowRun{Trigger: trigger, Context: store.RunContext{Repositories: repos, Objective: objective}}
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		wf, err := tx.GetWorkflow(ctx, workflow)
+		if err != nil {
+			return err
+		}
+		if !wf.ArchivedAt.IsZero() {
+			return badRequest("routine %s targets archived workflow %s", rt.Name, wf.Name)
+		}
+		run.WorkflowID, run.WorkflowName, run.WorkflowGeneration, run.Graph = wf.ID, wf.Name, wf.Generation, wf.Graph
+		if err := tx.CreateWorkflowRun(ctx, run); err != nil {
+			return err
+		}
+		return tx.Journal(ctx, "workflow.run_created", store.EntityWorkflow, run.ID, map[string]any{"workflow": wf.Name, "generation": wf.Generation, "trigger": run.Trigger, "routine": rt.Name, "nodes": len(wf.Graph.Nodes)})
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.advanceRun(ctx, run.ID)
+	return run, nil
+}
+
+func firstNonEmptySlice(a, b []string) []string {
+	if len(a) > 0 {
+		return a
+	}
+	return b
 }
 
 // workRequest is POST /api/v1/work|tasks: a routine run with overrides, or an
@@ -286,16 +356,10 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		if !saved.ArchivedAt.IsZero() {
 			return workCreated{}, fmt.Errorf("routine %s is archived: %w", saved.Name, store.ErrConflict)
 		}
+		if kind, target := targetOf(saved); kind == store.TargetWorkflow {
+			return workCreated{}, badRequest("routine %s targets workflow %q: run it as a workflow (POST /api/v1/routines/%s/run), not as a Work", saved.Name, target, saved.Name)
+		}
 		rt = *saved
-		if req.Prompt != "" {
-			rt.Prompt = req.Prompt
-		}
-		if req.Mode != "" {
-			rt.Mode = req.Mode
-		}
-		if req.Model != "" {
-			rt.Model = req.Model
-		}
 		if len(req.Paths) > 0 {
 			rt.Paths = req.Paths
 		}
@@ -310,12 +374,6 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 			TimeoutSeconds: adHocTimeout, MaxTurns: adHocMaxTurns, BudgetClass: model.ClassInteractive, Priority: adHocPriority, Concurrency: 1,
 			Paths: req.Paths, Integrate: req.Integrate, MaxQuestions: adHocMaxQuestions,
 		}
-		if req.Mode != "" {
-			rt.Mode = req.Mode
-		}
-		if req.Model != "" {
-			rt.Model = req.Model
-		}
 		if req.MaxTurns != nil && *req.MaxTurns > 0 {
 			rt.MaxTurns = *req.MaxTurns
 		}
@@ -324,17 +382,12 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		w = store.Work{RoutineName: adHocRoutineName}
 	}
-	if req.Persona != "" {
-		rt.Persona = req.Persona
+	composition, err := s.materializeRoutine(&rt, materializeOpts{
+		Mode: req.Mode, Model: req.Model, Prompt: req.Prompt, Persona: req.Persona, Objective: req.Objective,
+	})
+	if err != nil {
+		return workCreated{}, err
 	}
-	var composition *prompts.Composition
-	if rt.Persona != "" {
-		var err error
-		if composition, err = s.composePersona(&rt); err != nil {
-			return workCreated{}, err
-		}
-	}
-	rt.Prompt = injectObjective(rt.Prompt, req.Objective)
 	if req.Class != "" {
 		if !req.Class.Valid() {
 			return workCreated{}, badRequest("class %q: want interactive, normal, or backlog", req.Class)

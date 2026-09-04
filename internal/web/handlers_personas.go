@@ -20,29 +20,6 @@ import (
 	"forge/internal/core/store"
 )
 
-// composePersona resolves rt.Persona for rt.Mode and rewrites rt in place:
-// the resolved text ahead of the prompt (so the snapshot and prompt_hash
-// carry the exact bytes) and the persona's default model where the routine
-// left it empty. Called inside createWorkTx; failures surface as 400s — and,
-// for workflow nodes, as engine materialization failures that fail the node.
-func (s *Server) composePersona(rt *store.Routine) (*prompts.Composition, error) {
-	lib := s.promptLibrary()
-	if lib == nil {
-		return nil, badRequest("routine %s names persona %q but this process has no prompts library", rt.Name, rt.Persona)
-	}
-	text, comp, err := lib.Resolve(rt.Persona, rt.Mode)
-	if err != nil {
-		return nil, badRequest("%v", err)
-	}
-	if rt.Model == "" {
-		rt.Model = lib.Persona(rt.Persona).Model
-	}
-	if text != "" {
-		rt.Prompt = text + "\n\n" + rt.Prompt
-	}
-	return &comp, nil
-}
-
 func (s *Server) promptLibrary() *prompts.Library {
 	if s.prompts == nil {
 		return nil
@@ -247,15 +224,18 @@ func (s *Server) previewRoutine(r *http.Request) (int, any, error) {
 // injection, mode preamble and overlays, autonomy block, {{repo}}
 // substitution, declared checks.
 func (s *Server) renderPreview(ctx context.Context, rt store.Routine, objective, repo string) (routinePreview, error) {
-	out := routinePreview{Mode: rt.Mode, Persona: rt.Persona}
-	if rt.Persona != "" {
-		comp, err := s.composePersona(&rt)
-		if err != nil {
-			return out, err
-		}
-		out.Composition = comp
+	return s.renderPreviewOpts(ctx, rt, materializeOpts{Objective: objective}, repo)
+}
+
+// renderPreviewOpts is renderPreview with the full override surface — the
+// experiments' variant libraries come through opts.Lib.
+func (s *Server) renderPreviewOpts(ctx context.Context, rt store.Routine, opts materializeOpts, repo string) (routinePreview, error) {
+	out := routinePreview{}
+	comp, err := s.materializeRoutine(&rt, opts)
+	if err != nil {
+		return out, err
 	}
-	rt.Prompt = injectObjective(rt.Prompt, objective)
+	out.Mode, out.Persona, out.Composition = rt.Mode, rt.Persona, comp
 	out.Model = rt.Model
 	if repo == "" && len(rt.Repositories) > 0 {
 		repo = rt.Repositories[0]
@@ -306,6 +286,7 @@ func (s *Server) renderPreview(ctx context.Context, rt store.Routine, objective,
 // completion at the chosen model size.
 type promptTestRequest struct {
 	Routine   string `json:"routine"`
+	Directive string `json:"directive"`
 	Persona   string `json:"persona"`
 	Mode      string `json:"mode"`
 	Task      string `json:"task"`
@@ -340,6 +321,8 @@ func (s *Server) promptTest(r *http.Request) (int, any, error) {
 			return 0, nil, err
 		}
 		rt = *saved
+	case req.Directive != "":
+		rt = store.Routine{Name: "(prompt test)", Target: "directive:" + req.Directive}
 	case req.Persona != "":
 		mode := req.Mode
 		if mode == "" {
@@ -347,7 +330,7 @@ func (s *Server) promptTest(r *http.Request) (int, any, error) {
 		}
 		rt = store.Routine{Name: "(prompt test)", Mode: mode, Prompt: req.Task, Persona: req.Persona}
 	default:
-		return 0, nil, badRequest("name a routine or a persona to test")
+		return 0, nil, badRequest("name a routine, directive, or persona to test")
 	}
 	preview, err := s.renderPreview(ctx, rt, req.Objective, req.Repo)
 	if err != nil {
@@ -375,8 +358,11 @@ func (s *Server) promptTest(r *http.Request) (int, any, error) {
 	// rides along, so a reader after a fragment edit can see the output came
 	// from older fragment versions.
 	subject := "persona:" + req.Persona
-	if req.Routine != "" {
+	switch {
+	case req.Routine != "":
 		subject = "routine:" + req.Routine
+	case req.Directive != "":
+		subject = "directive:" + req.Directive
 	}
 	record := store.PromptTest{
 		Subject: subject, Persona: preview.Persona, Routine: req.Routine,

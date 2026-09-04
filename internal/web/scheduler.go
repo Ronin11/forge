@@ -101,6 +101,10 @@ func (s *Server) fireDueRoutines(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, rt := range due {
+		if kind, target := targetOf(&rt); kind == store.TargetWorkflow {
+			s.fireDueWorkflowRoutine(ctx, rt, target, now)
+			continue
+		}
 		open, err := s.store.OpenWorkCountForRoutine(ctx, rt.ID)
 		if err != nil {
 			s.log.ErrorContext(ctx, "count open work", "routine", rt.Name, "error", err)
@@ -136,6 +140,60 @@ func (s *Server) fireDueRoutines(ctx context.Context, now time.Time) {
 		}
 		s.log.InfoContext(ctx, "scheduled routine fired", "routine", rt.Name, "skipped", open > 0, "next_due_at", next)
 	}
+}
+
+// fireDueWorkflowRoutine fires one workflow-target trigger routine: the
+// routine owns the schedule, the workflow owns the graph. Skip-if-running
+// keys on the workflow's open runs, the same policy as a workflow's own
+// schedule.
+func (s *Server) fireDueWorkflowRoutine(ctx context.Context, rt store.Routine, workflow string, now time.Time) {
+	open, err := s.store.HasOpenWorkflowRun(ctx, workflow)
+	if err != nil {
+		s.log.ErrorContext(ctx, "check open runs", "routine", rt.Name, "workflow", workflow, "error", err)
+		return
+	}
+	next, err := store.NextOccurrence(rt.Schedule, now)
+	if err != nil {
+		s.log.WarnContext(ctx, "unparseable routine schedule", "routine", rt.Name, "error", err)
+		return
+	}
+	var runID string
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		saved, err := tx.GetRoutine(ctx, rt.Name)
+		if err != nil || !saved.ScheduleEnabled || !saved.ArchivedAt.IsZero() {
+			return err
+		}
+		if err := tx.SetNextDue(ctx, rt.Name, next); err != nil {
+			return err
+		}
+		if open {
+			return tx.Journal(ctx, "schedule.skipped", store.EntityDaemon, saved.ID, map[string]any{"routine": rt.Name, "workflow": workflow, "reason": "already_running"})
+		}
+		wf, err := tx.GetWorkflow(ctx, workflow)
+		if err != nil {
+			return err
+		}
+		if !wf.ArchivedAt.IsZero() {
+			return tx.Journal(ctx, "schedule.skipped", store.EntityDaemon, saved.ID, map[string]any{"routine": rt.Name, "workflow": workflow, "reason": "workflow_archived"})
+		}
+		run := &store.WorkflowRun{
+			WorkflowID: wf.ID, WorkflowName: wf.Name, WorkflowGeneration: wf.Generation, Graph: wf.Graph,
+			Trigger: model.TriggerSchedule, Context: store.RunContext{Repositories: saved.Repositories, Objective: saved.Objective},
+		}
+		if err := tx.CreateWorkflowRun(ctx, run); err != nil {
+			return err
+		}
+		runID = run.ID
+		return tx.Journal(ctx, "schedule.fired", store.EntityWorkflow, run.ID, map[string]any{"routine": rt.Name, "workflow": workflow, "next_due_at": next})
+	})
+	if err != nil {
+		s.log.ErrorContext(ctx, "fire scheduled workflow routine", "routine", rt.Name, "workflow", workflow, "error", err)
+		return
+	}
+	if runID != "" {
+		s.advanceRun(ctx, runID)
+	}
+	s.log.InfoContext(ctx, "scheduled routine fired workflow", "routine", rt.Name, "workflow", workflow, "run_id", runID, "skipped", open, "next_due_at", next)
 }
 
 // fireDueWorkflows starts one run per due workflow, unless a run is still

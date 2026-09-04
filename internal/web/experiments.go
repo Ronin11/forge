@@ -528,21 +528,5 @@ THE TEST the candidates were given: %s
 // renderPreviewLib is renderPreview with an explicit library — variant
 // composition without touching the daemon's loaded tree.
 func (s *Server) renderPreviewLib(ctx context.Context, lib *prompts.Library, rt store.Routine, objective, repo string) (routinePreview, error) {
-	if rt.Persona != "" {
-		text, comp, err := lib.Resolve(rt.Persona, rt.Mode)
-		if err != nil {
-			return routinePreview{}, badRequest("%v", err)
-		}
-		if rt.Model == "" {
-			rt.Model = lib.Persona(rt.Persona).Model
-		}
-		if text != "" {
-			rt.Prompt = text + "\n\n" + rt.Prompt
-		}
-		rt.Persona = "" // composed by hand; renderPreview must not re-compose
-		preview, err := s.renderPreview(ctx, rt, objective, repo)
-		preview.Composition = &comp
-		return preview, err
-	}
-	return s.renderPreview(ctx, rt, objective, repo)
+	return s.renderPreviewOpts(ctx, rt, materializeOpts{Objective: objective, Lib: lib}, repo)
 }
