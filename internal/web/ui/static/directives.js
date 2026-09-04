@@ -1,4 +1,4 @@
-// The Prompts page (routines.html): the library tree is server-rendered;
+// The Directives page (directives.html): the library tree is server-rendered;
 // this file drives the detail pane — fragment and persona inspection,
 // composed-prompt previews, and routine testing against the real assembly
 // path (GET /api/v1/routines/{name}/preview). Same rules as app.js: no
@@ -24,8 +24,6 @@
   }
   function clearFail() { errBox.hidden = true; }
 
-  var routines = [];
-  var routinesReady = fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; }).catch(function () {});
   var modelAliases = ['haiku', 'sonnet', 'opus'];
   var modelPrices = {}; // alias → {input, output} in $/MTok
   var libCommit = '';
@@ -645,109 +643,6 @@
 
   // ---- routine detail: summary, edit/run, and the composed-prompt tester ----
 
-  function showRoutine(name) {
-    clearFail();
-    routinesReady.then(function () {
-      var rt = routines.filter(function (r) { return r.name === name; })[0];
-      if (!rt) { fail(new Error('routine ' + name + ' not found')); return; }
-      detail.textContent = '';
-      var targetKind = (rt.target || '').split(':')[0];
-      var targetName = (rt.target || '').slice(targetKind.length + 1);
-      var head = el('div', 'pr-head');
-      head.appendChild(el('h2', '', rt.name));
-      head.appendChild(chip('trigger'));
-      if (targetKind === 'directive') {
-        var dchip = chip('directive: ');
-        dchip.appendChild(fragLink(targetName));
-        head.appendChild(dchip);
-      } else if (targetKind === 'workflow') {
-        var wchip = chip('');
-        var wlink = document.createElement('a');
-        wlink.textContent = 'workflow: ' + targetName;
-        wlink.href = '/workflows/' + encodeURIComponent(targetName) + '/edit';
-        wchip.appendChild(wlink);
-        head.appendChild(wchip);
-      }
-      if (rt.schedule) head.appendChild(chip(rt.schedule + (rt.schedule_enabled ? '' : ' (off)')));
-      detail.appendChild(head);
-      var meta = el('p', 'meta', 'gen ' + rt.generation + ' · ' + (rt.repositories || []).join(', ') + ' · ' + rt.budget_class + ' · priority ' + rt.priority);
-      detail.appendChild(meta);
-
-      var actions = el('div', 'pr-controls');
-      actions.appendChild(button('Edit', '', function () {
-        if (window.ForgeRoutines) window.ForgeRoutines.edit(rt.name);
-      }));
-      actions.appendChild(button('Run', '', function (e) {
-        var btn = e.currentTarget;
-        btn.disabled = true;
-        fetch('/api/v1/routines/' + encodeURIComponent(rt.name) + '/run', { method: 'POST' })
-          .then(function (resp) {
-            if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
-            btn.textContent = 'Run ✓';
-            window.setTimeout(function () { btn.textContent = 'Run'; btn.disabled = false; }, 2000);
-          })
-          .catch(function (err) { fail(err); btn.disabled = false; });
-      }));
-      detail.appendChild(actions);
-
-      if (rt.objective) {
-        detail.appendChild(label('Default objective'));
-        detail.appendChild(pre(rt.objective));
-      }
-      if (targetKind === 'workflow') {
-        // A workflow trigger has no prompt of its own — Run starts a
-        // workflow run with this routine's repositories and objective.
-        detail.appendChild(el('p', 'meta', 'This trigger starts a workflow run. Inspect and test the graph on the workflow editor; runs land under the workflow’s runs page.'));
-        return;
-      }
-      // The tester: objective + repository → the byte-exact rendered prompt.
-      detail.appendChild(el('h3', '', 'Test: the prompt the agent will read'));
-      var controls = el('div', 'pr-controls pr-test');
-      var objective = document.createElement('textarea');
-      objective.rows = 2;
-      objective.placeholder = 'Objective — substitutes {{objective}} (blank = the self-directed fallback)';
-      var repoSel = document.createElement('select');
-      (rt.repositories && rt.repositories.length ? rt.repositories : ['']).forEach(function (r) {
-        var o = document.createElement('option');
-        o.value = r;
-        o.textContent = r || '(no repository)';
-        repoSel.appendChild(o);
-      });
-      var out = el('div');
-      controls.appendChild(objective);
-      controls.appendChild(repoSel);
-      controls.appendChild(button('Preview', 'primary', function () {
-        fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name) + '/preview?objective=' + encodeURIComponent(objective.value.trim()) + '&repo=' + encodeURIComponent(repoSel.value)).then(function (p) {
-          out.textContent = '';
-          var line = el('p', 'meta');
-          line.appendChild(document.createTextNode('model ' + (p.model || '?') + ' · mode ' + p.mode + ' · '));
-          if (p.composition) {
-            line.appendChild(document.createTextNode('composed from '));
-            (p.composition.fragments || []).forEach(function (fr, i) {
-              if (i > 0) line.appendChild(document.createTextNode(', '));
-              line.appendChild(fragLink(fr.name));
-            });
-          } else {
-            line.appendChild(document.createTextNode('no persona'));
-          }
-          line.appendChild(document.createTextNode(' · ' + p.prompt.length + ' bytes'));
-          out.appendChild(line);
-          out.appendChild(pre(p.prompt));
-        }).catch(fail);
-      }));
-      detail.appendChild(controls);
-      detail.appendChild(out);
-      runPanel(detail, rt.model, function () {
-        return { routine: rt.name, objective: objective.value.trim(), repo: repoSel.value };
-      }, 'routine:' + rt.name, function (t) {
-        objective.value = t.objective || '';
-        if (t.repo) repoSel.value = t.repo;
-      });
-      // The content lives in the directive — the optimize panel is on its
-      // library page (the linked chip above).
-    });
-  }
-
   // ---- selection ----
 
   function select(sel, opts) {
@@ -758,7 +653,7 @@
     if (opts.push) window.history.pushState({}, '', urlFor(sel, opts.mode));
     var kind = sel.split(':')[0];
     var name = sel.slice(kind.length + 1);
-    if (kind === 'routine') showRoutine(name); else showFragment(name, opts.mode);
+    showFragment(name, opts.mode);
   }
   // The tree filter: hides non-matching items (name match) and folders that
   // end up empty. Server search ranks better; this is the quick narrow.
@@ -769,6 +664,16 @@
       var item = li.querySelector('.pr-item');
       if (!item) return;
       li.hidden = q !== '' && item.textContent.toLowerCase().indexOf(q) < 0;
+    });
+    if (q !== '') page.querySelectorAll('.pr-sec').forEach(function (d) { d.open = true; });
+  });
+
+  // Collapsible sections, remembered per folder.
+  page.querySelectorAll('.pr-sec').forEach(function (d) {
+    var key = 'forge.tree.' + d.dataset.sec;
+    try { if (localStorage.getItem(key) === 'closed') d.open = false; } catch (e) { /* storage unavailable */ }
+    d.addEventListener('toggle', function () {
+      try { localStorage.setItem(key, d.open ? 'open' : 'closed'); } catch (e) { /* storage unavailable */ }
     });
   });
 

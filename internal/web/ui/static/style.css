@@ -448,6 +448,10 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .pr-cost{margin:.2rem 0 .5rem;cursor:help}
 .wf-est{color:var(--muted);white-space:nowrap;cursor:help}
 .pr-filter{width:100%;box-sizing:border-box;margin-bottom:.5rem;padding:.3rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg)}
+.pr-sec summary.pr-folder{cursor:pointer;list-style:none}
+.pr-sec summary.pr-folder::before{content:"▸";display:inline-block;width:1em;color:var(--muted);transition:transform .12s}
+.pr-sec[open] summary.pr-folder::before{transform:rotate(90deg)}
+.pr-sec:not([open]) ul{display:none}
 .pr-optimize .pr-controls textarea{flex:1 1 22rem;min-width:0}
 .pr-cand p{margin:.2rem 0}
 .pr-cand details{margin:.3rem 0}

@@ -1,0 +1,44 @@
+{{template "head" .}}<div class="page-head"><h1>Routines</h1><button class="btn primary" data-routine-new>New routine</button></div>
+<p class="meta">Triggers: each routine invokes a <a href="/directives">directive or script</a> or a <a href="/workflows">workflow</a>, on a schedule or by hand, under its operational envelope. Content lives with the target.</p>
+<p id="editor-error" class="error" hidden></p>
+<div class="tablewrap"><table class="list"><thead><tr><th>Name</th><th class="grow">Target</th><th>Objective</th><th>Schedule</th><th>Class</th><th>Repositories</th><th></th></tr></thead><tbody>
+{{range .Data.Routines}}<tr>
+<td>{{.Name}}</td>
+<td>{{if .TargetLink}}<a href="{{.TargetLink}}"><span class="chip">{{.Target}}</span></a>{{else}}<span class="chip">{{.Target}}</span>{{end}}</td>
+<td class="prompt">{{.Objective}}</td>
+<td>{{.Schedule}}{{if and .Schedule (not .ScheduleEnabled)}} (off){{end}}</td>
+<td>{{.BudgetClass}}</td>
+<td class="chips">{{range .Repositories}}<span class="chip">{{.}}</span>{{end}}</td>
+<td class="actions"><button class="btn" data-routine-edit="{{.Name}}">Edit</button> <button class="btn" data-action-post="/api/v1/routines/{{.Name}}/run">Run</button></td>
+</tr>
+{{else}}<tr><td colspan="7" class="empty">No routines — the New routine button above, or <code>forge routine add NAME --target directive:&lt;name&gt;</code></td></tr>{{end}}
+</tbody></table></div>
+
+<dialog data-routine-dialog>
+<form method="dialog" data-routine-form>
+<h2 data-editor-title>New routine</h2>
+<p class="dialog-error" hidden></p>
+<div class="form-grid">
+<label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
+<label class="wide">Target <input name="target" list="target-names" required placeholder="directive:&lt;name&gt;, script:&lt;name&gt;, or workflow:&lt;name&gt;" title="What this trigger invokes — the target owns the content."></label>
+<label class="wide">Objective <textarea name="objective" rows="2" placeholder="Default {{`{{objective}}`}} for runs this trigger creates (optional)"></textarea></label>
+<label>Class <select name="budget_class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
+<label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>
+<label>Schedule <input name="schedule" placeholder="cron, e.g. 0 3 * * *"></label>
+<label>Priority <input name="priority" type="number" value="50"></label>
+<label>Timeout (s) <input name="timeout_seconds" type="number" value="1800" min="1" max="28800"></label>
+<label>Max turns <input name="max_turns" type="number" value="30"></label>
+<label>Concurrency <input name="concurrency" type="number" value="1" min="1" max="100"></label>
+<label>Budget cap ($) <input name="max_budget_usd" type="number" step="0.01" min="0" placeholder="none"></label>
+<label>Autonomy <select name="autonomy"><option value="">inherit</option><option>ask</option><option>checkpoint</option><option>notify</option><option>auto</option></select></label>
+<label class="check"><input name="schedule_enabled" type="checkbox"> Schedule enabled</label>
+<label class="check"><input name="integrate" type="checkbox"> Integrate (merge queue)</label>
+<label class="check"><input name="require_sandbox" type="checkbox" checked> Require sandbox</label>
+</div>
+<p class="hint">Advanced fields (paths, deps, tier, models, allowed tools, verification) keep their values on edit; change them with <code>forge routine edit NAME</code>.</p>
+<div class="dialog-actions"><button type="button" class="btn" data-editor-cancel>Cancel</button><button type="submit" class="btn primary" data-editor-save>Save</button></div>
+</form>
+</dialog>
+<datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
+<datalist id="target-names">{{range .Data.Directives}}<option value="directive:{{.}}">{{end}}{{range .Data.ScriptNames}}<option value="script:{{.}}">{{end}}{{range .Data.Workflows}}<option value="workflow:{{.}}">{{end}}</datalist>
+{{template "foot" .}}

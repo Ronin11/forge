@@ -17,7 +17,8 @@ const EMPTY_CHECKS = [
   { path: '/queue', wants: ['The queue is empty.'] },
   { path: '/attention', wants: ['Nothing is waiting on you.'] },
   { path: '/proposals', wants: ['No proposals yet'] },
-  { path: '/directives', wants: ['daily-triage'] }, // a fresh install ships the seeded base system, not an empty page
+  { path: '/directives', wants: ['triage-repo'] }, // the seeded base library
+  { path: '/routines', wants: ['daily-triage'] }, // seeded trigger routines
   { path: '/stats', wants: ['No finished attempts in this window.'] },
   { path: '/system', wants: ['No repositories advertised'] },
   { path: '/kb', wants: ['No notes yet'] },

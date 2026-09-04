@@ -259,7 +259,8 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn 
 	u.mux.HandleFunc("GET /tasks/rows", u.taskRowsFragment)
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /work/{id}", u.work)
-	u.mux.HandleFunc("GET /directives", u.routines)
+	u.mux.HandleFunc("GET /directives", u.directives)
+	u.mux.HandleFunc("GET /routines", u.routinesPage)
 	u.mux.HandleFunc("GET /workflows", u.workflows)
 	u.mux.HandleFunc("GET /workflows/new", u.workflowEdit)
 	u.mux.HandleFunc("GET /workflows/{name}/edit", u.workflowEdit)
@@ -633,17 +634,11 @@ type promptTreeItem struct {
 	Directive bool
 }
 
-// routines is the Prompts page: the file-backed library rendered as its
-// folder structure (personas/, fragments/), plus the routines that bind
-// personas to jobs. Details, composition previews, and testing are
-// client-side against the API (static/directives.js); this handler only shapes
-// the tree.
-func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
-	rs, err := u.store.ListRoutines(r.Context(), false)
-	if err != nil {
-		u.fail(w, r, err)
-		return
-	}
+// directives is the library page: the file-backed tree (personas/,
+// directives/, scripts/, fragments/). Details, composition previews, and
+// testing are client-side against the API (static/directives.js); this
+// handler only shapes the tree.
+func (u *UI) directives(w http.ResponseWriter, r *http.Request) {
 	repos, err := u.store.Repositories(r.Context())
 	if err != nil {
 		u.fail(w, r, err)
@@ -675,8 +670,70 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	u.render(w, r, "directives.html", "Directives", map[string]any{
-		"Routines": rs, "Repositories": names,
-		"Personas": personas, "Fragments": fragments, "Directives": directives, "Scripts": scripts, "LibDir": libDir,
+		"Repositories": names,
+		"Personas":     personas, "Fragments": fragments, "Directives": directives, "Scripts": scripts, "LibDir": libDir,
+	})
+}
+
+// routinesPage lists the trigger routines: what fires, when, at which
+// target. Content lives with the target; the dialog edits the trigger.
+func (u *UI) routinesPage(w http.ResponseWriter, r *http.Request) {
+	rs, err := u.store.ListRoutines(r.Context(), false)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	repos, err := u.store.Repositories(r.Context())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	repoNames := make([]string, len(repos))
+	for i, rep := range repos {
+		repoNames[i] = rep.Name
+	}
+	type rtRow struct {
+		store.Routine
+		TargetLink string
+	}
+	rows := make([]rtRow, 0, len(rs))
+	for _, rt := range rs {
+		row := rtRow{Routine: rt}
+		if kind, name, err := store.ParseTarget(rt.Target); err == nil {
+			switch kind {
+			case store.TargetDirective, store.TargetScript:
+				row.TargetLink = "/directives?sel=prompt:" + name
+			case store.TargetWorkflow:
+				row.TargetLink = "/workflows/" + name + "/edit"
+			}
+		}
+		rows = append(rows, row)
+	}
+	var directiveNames, scriptNames []string
+	if u.prompts != nil {
+		if lib := u.prompts(); lib != nil {
+			for _, f := range lib.Fragments() {
+				switch {
+				case f.Directive:
+					directiveNames = append(directiveNames, f.Name)
+				case f.Script:
+					scriptNames = append(scriptNames, f.Name)
+				}
+			}
+		}
+	}
+	wfs, err := u.store.ListWorkflows(r.Context(), false)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	wfNames := make([]string, len(wfs))
+	for i, wf := range wfs {
+		wfNames[i] = wf.Name
+	}
+	u.render(w, r, "routines.html", "Routines", map[string]any{
+		"Routines": rows, "Repositories": repoNames,
+		"Directives": directiveNames, "ScriptNames": scriptNames, "Workflows": wfNames,
 	})
 }
 

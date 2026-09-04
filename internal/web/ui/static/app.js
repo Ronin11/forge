@@ -591,26 +591,6 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     var form = dialog.querySelector('form');
     function field(n) { return form.querySelector('[name=' + n + ']'); }
 
-    // Workflows join the target datalist (directives are server-rendered).
-    var targetList = document.getElementById('target-names');
-    if (targetList) fetchJSON('/api/v1/workflows').then(function (list) {
-      (list || []).forEach(function (wf) {
-        var o = document.createElement('option');
-        o.value = 'workflow:' + wf.name;
-        targetList.appendChild(o);
-      });
-    }).catch(function () {});
-
-
-    // Workflows join the target datalist (directives are server-rendered).
-    var targetList = document.getElementById('target-names');
-    if (targetList) fetchJSON('/api/v1/workflows').then(function (list) {
-      (list || []).forEach(function (wf) {
-        var o = document.createElement('option');
-        o.value = 'workflow:' + wf.name;
-        targetList.appendChild(o);
-      });
-    }).catch(function () {});
 
 
     function open(current) {

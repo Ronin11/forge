@@ -11,7 +11,6 @@ test.describe('prompts page', () => {
     const tree = page.locator('.pr-tree');
     await expect(tree).toContainText('personas/');
     await expect(tree).toContainText('fragments/');
-    await expect(tree).toContainText('routines/');
     await expect(tree.locator('[data-sel="prompt:senior-reviewer"]')).toBeVisible();
     await expect(tree.locator('[data-sel="prompt:engineering-standards"]')).toBeVisible();
   });
@@ -31,36 +30,32 @@ test.describe('prompts page', () => {
     await expect(detail.locator('pre').nth(1)).toContainText('Rank findings by severity');
   });
 
-  test('a routine detail previews the exact prompt with objective and repo substituted', async ({ page }) => {
-    // A trigger routine bound to a pre-seeded directive (global-setup writes
-    // directives/pr-page-test.md, which names the starter persona).
+  test('the routines page lists triggers and its dialog edits them', async ({ page }) => {
     const res = await page.request.post('/api/v1/routines', {
-      data: { name: 'pr-page-test', target: 'directive:pr-page-test', repositories: ['demo'], timeout_seconds: 300 },
+      data: { name: 'pr-page-test', target: 'directive:pr-page-test', repositories: ['demo'], timeout_seconds: 300, objective: 'audit the gauges' },
     });
     if (res.status() !== 201) {
       expect((await res.text())).toContain('exists'); // rerun tolerance
     }
-    await page.goto('/directives');
-    await page.locator('[data-sel="routine:pr-page-test"]').click();
-    const detail = page.locator('[data-prompt-detail]');
-    await expect(detail).toContainText('trigger');
-    await expect(detail).toContainText('directive:');
-    await detail.locator('.pr-test textarea').fill('audit the gauges');
-    await detail.locator('.pr-test button').click();
-    await expect(detail).toContainText('composed from');
-    const preview = detail.locator('pre').last();
-    await expect(preview).toContainText('You are the senior reviewer');
-    await expect(preview).toContainText('Task on demo: audit the gauges');
-    await expect(preview).toContainText('YOUR TASK');
+    await page.goto('/routines');
+    const row = page.locator('tr', { hasText: 'pr-page-test' }).first();
+    await expect(row).toContainText('directive:pr-page-test');
+    await expect(row).toContainText('audit the gauges');
+    // The target chip links into the library.
+    await row.locator('a', { hasText: 'directive:pr-page-test' }).click();
+    await expect(page).toHaveURL(/directives\?sel=prompt%3Apr-page-test|directives\?sel=prompt:pr-page-test/);
+    await expect(page.locator('[data-prompt-detail]')).toContainText('directive');
   });
 
-  test('the routine dialog still opens from the detail pane', async ({ page }) => {
-    await page.goto('/directives');
-    await page.locator('[data-sel="routine:pr-page-test"]').click();
-    await page.locator('[data-prompt-detail] button', { hasText: 'Edit' }).click();
+  test('the routine dialog opens from the row and carries the trigger fields', async ({ page }) => {
+    await page.goto('/routines');
+    await page.locator('[data-routine-edit="pr-page-test"]').click();
     const dialog = page.locator('[data-routine-dialog]');
     await expect(dialog.locator('[name=name]')).toHaveValue('pr-page-test');
     await expect(dialog.locator('[name=target]')).toHaveValue('directive:pr-page-test');
+    await expect(dialog.locator('[name=prompt]')).toHaveCount(0);
+    await expect(dialog.locator('[name=mode]')).toHaveCount(0);
+    await dialog.locator('[data-editor-cancel]').click();
   });
 });
 
@@ -136,12 +131,6 @@ test.describe('prompt editing and testing', () => {
     await opt.locator('.pr-variants').fill('4');
     await expect(opt.locator('.pr-cost')).toContainText('5 runs on haiku + 2 fable calls');
 
-    // A trigger routine has no optimize panel of its own — the content lives
-    // in the directive, linked from the chip in the detail head.
-    await page.goto('/directives?sel=routine:pr-page-test');
-    await expect(detail).toContainText('trigger');
-    await expect(detail.locator('a[data-nav="prompt:pr-page-test"]')).toBeVisible();
-    await expect(detail.locator('.pr-optimize')).toHaveCount(0);
   });
 });
 
@@ -198,30 +187,23 @@ test.describe('directives', () => {
     await expect(detail.locator('button', { hasText: 'Run test' })).toBeVisible();
   });
 
-  test('a trigger routine renders its target and the dialog has no content fields', async ({ page }) => {
-    const res = await page.request.post('/api/v1/routines', {
-      data: { name: 'trigger-test', target: 'directive:triage-repo', repositories: ['demo'], objective: 'nightly sweep' },
-    });
-    if (res.status() !== 201) {
-      expect(await res.text()).toContain('exists'); // rerun tolerance
-    }
-    await page.goto('/directives?sel=routine:trigger-test');
-    const detail = page.locator('[data-prompt-detail]');
-    await expect(detail).toContainText('trigger');
-    await expect(detail).toContainText('directive: ');
-    await expect(detail).toContainText('nightly sweep');
-    // The tester previews through the directive.
-    await detail.locator('.pr-test button', { hasText: 'Preview' }).click();
-    await expect(detail.locator('pre').last()).toContainText('Survey the current state of demo');
-
-    // Dialog: a trigger is target + objective + envelope — no content fields.
-    await detail.locator('button', { hasText: 'Edit' }).click();
-    const form = page.locator('[data-routine-form]');
-    await expect(form.locator('[name=target]')).toHaveValue('directive:triage-repo');
-    await expect(form.locator('[name=prompt]')).toHaveCount(0);
-    await expect(form.locator('[name=mode]')).toHaveCount(0);
-    await expect(form.locator('[name=model]')).toHaveCount(0);
-    await form.locator('[data-editor-cancel]').click();
+  test('tree sections collapse, remember, and reopen while filtering', async ({ page }) => {
+    await page.goto('/directives');
+    const sec = page.locator('.pr-sec[data-sec="fragments"]');
+    await expect(sec.locator('.pr-item').first()).toBeVisible();
+    await sec.locator('summary').click();
+    await expect(sec.locator('.pr-item').first()).toBeHidden();
+    // The toggle event (and its localStorage write) is queued async — wait
+    // for it before reloading.
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('forge.tree.fragments'))).toBe('closed');
+    // The collapse survives a reload (localStorage).
+    await page.reload();
+    await expect(page.locator('.pr-sec[data-sec="fragments"] .pr-item').first()).toBeHidden();
+    // Filtering reopens sections so matches are visible.
+    await page.locator('[data-tree-filter]').fill('engineering');
+    await expect(page.locator('[data-sel="prompt:engineering-standards"]')).toBeVisible();
+    await page.locator('[data-tree-filter]').fill('');
+    await page.locator('.pr-sec[data-sec="fragments"] summary').click(); // restore open for later specs
   });
 });
 
