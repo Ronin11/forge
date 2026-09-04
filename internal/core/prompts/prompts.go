@@ -22,6 +22,7 @@ package prompts
 
 import (
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"fmt"
 	"io/fs"
@@ -33,6 +34,13 @@ import (
 	"strings"
 	"time"
 )
+
+// starterFS is the shipped library: standard software roles built from shared
+// fragments, written once on a fresh bootstrap and then owned by the user's
+// git history like anything else in the tree.
+//
+//go:embed starter
+var starterFS embed.FS
 
 // MaxIncludeDepth bounds nesting; a tree deeper than this is a maze, not a
 // library.
@@ -349,14 +357,46 @@ func Ensure(dir string) error {
 		}
 	}
 	if fresh {
-		readme := filepath.Join(dir, "README.md")
-		if _, err := os.Stat(readme); os.IsNotExist(err) {
-			if err := os.WriteFile(readme, []byte(readmeContent), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readmeContent), 0o644); err != nil {
+			return err
+		}
+		err := fs.WalkDir(starterFS, "starter", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
 				return err
 			}
+			rel, err := filepath.Rel("starter", path)
+			if err != nil {
+				return err
+			}
+			content, err := starterFS.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			dst := filepath.Join(dir, rel)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(dst, content, 0o644)
+		})
+		if err != nil {
+			return err
 		}
+		bootstrapCommit(dir)
 	}
 	return nil
+}
+
+// bootstrapCommit commits the starter library so the tree starts clean and
+// the first run's manifest pins to a commit. Best-effort by design: a host
+// where git balks leaves the library dirty until the user commits, which the
+// manifest records honestly.
+func bootstrapCommit(dir string) {
+	if err := exec.Command("git", "-C", dir, "add", "-A").Run(); err != nil {
+		return
+	}
+	if err := exec.Command("git", "-C", dir, "-c", "user.name=forge", "-c", "user.email=forge@localhost", "commit", "-q", "-m", "forge: starter prompt library").Run(); err != nil {
+		return
+	}
 }
 
 // readmeContent is written once at bootstrap: the reference for everything a

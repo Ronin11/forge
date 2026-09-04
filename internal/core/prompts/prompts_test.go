@@ -169,9 +169,59 @@ func TestEnsureBootstrapsAndIsIdempotent(t *testing.T) {
 	if err != nil || string(got) != "mine" {
 		t.Errorf("README overwritten: %q, %v", got, err)
 	}
-	// An empty tree loads fine.
+	// The starter tree loads fine.
 	if _, err := Load(dir); err != nil {
-		t.Errorf("empty tree load: %v", err)
+		t.Errorf("starter tree load: %v", err)
+	}
+}
+
+// The shipped starter library must itself be sound: it loads, every persona
+// resolves for its declared modes with no unexpanded includes or dangling
+// parameters, and the bootstrap commit leaves the tree clean.
+func TestStarterLibraryResolves(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "prompts")
+	if err := Ensure(dir); err != nil {
+		t.Fatal(err)
+	}
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personas := 0
+	for _, f := range lib.Fragments() {
+		if !f.Persona {
+			continue
+		}
+		personas++
+		if f.Model == "" {
+			t.Errorf("persona %s: no default model", f.Name)
+		}
+		modes := []string{""}
+		for m := range f.Modes {
+			modes = append(modes, m)
+		}
+		for _, mode := range modes {
+			text, comp, err := lib.Resolve(f.Name, mode)
+			if err != nil {
+				t.Errorf("%s (mode %q): %v", f.Name, mode, err)
+				continue
+			}
+			if strings.Contains(text, "{{>") {
+				t.Errorf("%s (mode %q): unexpanded include", f.Name, mode)
+			}
+			if strings.Contains(text, "{{what}}") {
+				t.Errorf("%s (mode %q): dangling parameter", f.Name, mode)
+			}
+			if len(comp.Fragments) < 2 {
+				t.Errorf("%s: composes only %d fragments — a persona should share fragments", f.Name, len(comp.Fragments))
+			}
+		}
+	}
+	if personas < 8 {
+		t.Errorf("starter library has %d personas; want the standard roles", personas)
+	}
+	if lib.Commit == "" || lib.Dirty {
+		t.Errorf("bootstrap should leave a clean commit: commit=%q dirty=%v", lib.Commit, lib.Dirty)
 	}
 }
 
