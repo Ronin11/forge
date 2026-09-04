@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"forge/internal/core/prompts"
 	"forge/internal/core/store"
@@ -366,6 +367,7 @@ func TestPromptTestHistory(t *testing.T) {
 	}
 
 	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "first try", "objective": "obj-1"}, nil, http.StatusOK)
+	h.clock.Advance(time.Second) // same-instant rows would tie-break on random ids
 	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "second try", "model": "sonnet"}, nil, http.StatusOK)
 
 	var tests []store.PromptTest

@@ -1325,3 +1325,34 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     if (links.classList.contains('open') && !links.contains(e.target) && !toggle.contains(e.target)) setOpen(false);
   });
 })();
+
+// Workflow list cost estimates: each [data-wf-est] cell asks the estimate API
+// what a run of that graph is expected to spend (p50 of real attempt history
+// per routine node). Honest about coverage: nodes without history are counted,
+// not priced.
+(function () {
+  var cells = document.querySelectorAll('[data-wf-est]');
+  if (!cells.length) return;
+  cells.forEach(function (cell) {
+    fetch('/api/v1/workflows/' + encodeURIComponent(cell.dataset.wfEst) + '/estimate')
+      .then(function (resp) { return resp.ok ? resp.json() : Promise.reject(new Error(resp.status)); })
+      .then(function (est) {
+        cell.textContent = '';
+        if (!est.routine_nodes) { cell.textContent = '—'; return; }
+        if (!est.known_nodes) { cell.textContent = 'no history yet'; cell.title = 'No priced attempts for these routines in the last 30 days.'; return; }
+        var usd = est.known_usd;
+        var text = '≈ $' + (usd < 0.095 ? usd.toFixed(3) : usd.toFixed(2));
+        if (est.known_nodes < est.routine_nodes) text += ' (partial)';
+        if (est.conditional) text += ' †';
+        cell.textContent = text;
+        var lines = est.nodes.map(function (n) {
+          var v = n.usd == null ? 'no history' : '$' + n.usd.toFixed(3) + ' p50 of ' + n.samples + ' ' + (n.source === 'routine' ? 'runs' : n.model + ' attempts');
+          return n.node + ' (' + n.routine + (n.model ? ' on ' + n.model : '') + '): ' + v + (n.loop_cap ? ' — may loop ×' + n.loop_cap : '');
+        });
+        if (est.known_nodes < est.routine_nodes) lines.push('Partial: ' + est.known_nodes + ' of ' + est.routine_nodes + ' routine nodes have history.');
+        if (est.conditional) lines.push('† Branching: not every node necessarily runs, and loops can repeat nodes.');
+        cell.title = lines.join('\n');
+      })
+      .catch(function () { cell.textContent = ''; });
+  });
+})();

@@ -73,6 +73,11 @@ test.describe('workflow graph editor', () => {
 
   test('clicking a node opens its config panel; the workflows list links here', async ({ page }) => {
     await page.goto('/workflows');
+    // The estimate cell resolves for every row: a dollar figure once history
+    // exists, "no history yet" before, "—" for routine-less graphs.
+    const est = page.locator('[data-wf-est]').first();
+    await expect(est).not.toHaveText('…');
+    await expect(est).toHaveText(/\$|no history yet|—/);
     await page.locator('a[href="/workflows/graphy/edit"]').click();
     await expect(page.locator('.gv-node')).toHaveCount(5);
     await page.evaluate(() => window.ForgeGraph.selectNode('shape'));

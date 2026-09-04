@@ -405,6 +405,7 @@ func (s *Server) routes() {
 	m.HandleFunc("PATCH /api/v1/workflows/{name}/layout", s.handle(s.updateWorkflowLayout))
 	m.HandleFunc("DELETE /api/v1/workflows/{name}", s.handle(s.archiveWorkflow))
 	m.HandleFunc("POST /api/v1/workflows/{name}/run", s.handle(s.runWorkflow))
+	m.HandleFunc("GET /api/v1/workflows/{name}/estimate", s.handle(s.estimateWorkflow))
 	m.HandleFunc("GET /api/v1/workflows/{name}/runs", s.handle(s.workflowRuns))
 	m.HandleFunc("GET /api/v1/workflow-runs/{id}", s.handle(s.getWorkflowRun))
 	m.HandleFunc("POST /api/v1/workflow-runs/{id}/cancel", s.handle(s.cancelWorkflowRun))
