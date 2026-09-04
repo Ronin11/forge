@@ -172,3 +172,51 @@ test.describe('deep links', () => {
     await expect(page).toHaveURL(/sel=prompt%3Aengineering-standards/);
   });
 });
+
+test.describe('directives', () => {
+  test('the tree has a directives section and the detail composes and previews', async ({ page }) => {
+    await page.goto('/routines');
+    const tree = page.locator('.pr-tree');
+    await expect(tree).toContainText('directives/');
+    await tree.locator('[data-sel="prompt:triage-repo"]').click();
+    const detail = page.locator('[data-prompt-detail]');
+    await expect(detail).toContainText('directive');
+    await expect(detail).toContainText('mode: run');
+    // The composed body expands with its manifest.
+    await expect(detail).toContainText('Composed from');
+    await expect(detail.locator('pre').nth(1)).toContainText('Survey the current state of {{repo}}');
+    // The preview renders the full assembly without a model call.
+    const tester = detail.locator('.pr-test');
+    await tester.locator('textarea').fill('find the gaps');
+    await tester.locator('button', { hasText: 'Preview' }).click();
+    const preview = detail.locator('pre').last();
+    await expect(preview).toContainText('find the gaps');
+    await expect(preview).toContainText('YOUR TASK');
+    await expect(detail.locator('button', { hasText: 'Run test' })).toBeVisible();
+  });
+
+  test('a trigger routine renders its target and the dialog disables content fields', async ({ page }) => {
+    const res = await page.request.post('/api/v1/routines', {
+      data: { name: 'trigger-test', target: 'directive:triage-repo', repositories: ['demo'], objective: 'nightly sweep' },
+    });
+    if (res.status() !== 201) {
+      expect(await res.text()).toContain('exists'); // rerun tolerance
+    }
+    await page.goto('/routines?sel=routine:trigger-test');
+    const detail = page.locator('[data-prompt-detail]');
+    await expect(detail).toContainText('trigger');
+    await expect(detail).toContainText('directive: ');
+    await expect(detail).toContainText('nightly sweep');
+    // The tester previews through the directive.
+    await detail.locator('.pr-test button', { hasText: 'Preview' }).click();
+    await expect(detail.locator('pre').last()).toContainText('Survey the current state of demo');
+
+    // Dialog: setting a target disables the content fields.
+    await detail.locator('button', { hasText: 'Edit' }).click();
+    const form = page.locator('[data-routine-form]');
+    await expect(form.locator('[name=target]')).toHaveValue('directive:triage-repo');
+    await expect(form.locator('[name=prompt]')).toBeDisabled();
+    await expect(form.locator('[name=mode]')).toBeDisabled();
+    await form.locator('[data-editor-cancel]').click();
+  });
+});

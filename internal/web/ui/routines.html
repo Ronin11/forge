@@ -8,6 +8,11 @@
 {{range .Data.Personas}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add personas/&lt;name&gt;.md</li>{{end}}
 </ul>
+<div class="pr-folder">directives/</div>
+<ul>
+{{range .Data.Directives}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Label}}</a></li>
+{{else}}<li class="empty pr-empty">none yet — add directives/&lt;name&gt;.md</li>{{end}}
+</ul>
 <div class="pr-folder">fragments/</div>
 <ul>
 {{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</a></li>
@@ -15,7 +20,7 @@
 </ul>
 <div class="pr-folder">routines/</div>
 <ul>
-{{range .Data.Routines}}<li><a class="pr-item" data-sel="routine:{{.Name}}" href="/routines?sel=routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</a></li>
+{{range .Data.Routines}}<li><a class="pr-item" data-sel="routine:{{.Name}}" href="/routines?sel=routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Target}} <span class="chip">{{.Target}}</span>{{else if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</a></li>
 {{else}}<li class="empty pr-empty">No routines — the New routine button above, or <code>forge routine add</code></li>{{end}}
 </ul>
 </div>
@@ -31,6 +36,8 @@
 <label class="wide" data-template-row>Start from a role template <select data-routine-template><option value="">— blank routine —</option></select> <small class="meta" data-template-desc></small></label>
 <div class="form-grid">
 <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
+<label class="wide">Target <input name="target" list="target-names" placeholder="directive:&lt;name&gt; or workflow:&lt;name&gt; — blank keeps inline content" title="What this trigger invokes. Set it and the content fields below empty out: a directive owns mode/model/persona/prompt."></label>
+<label class="wide" data-objective-row>Objective <textarea name="objective" rows="2" placeholder="Default {{`{{objective}}`}} for runs this trigger creates (optional)"></textarea></label>
 <label>Mode <input name="mode" value="run"></label>
 <label>Model <input name="model" value="haiku"></label>
 <label>Persona <input name="persona" list="persona-names" placeholder="from ~/.forge/prompts" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
@@ -54,5 +61,6 @@
 </dialog>
 <datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
 <datalist id="persona-names">{{range .Data.Personas}}<option value="{{.Name}}">{{end}}</datalist>
+<datalist id="target-names">{{range .Data.Directives}}<option value="directive:{{.Name}}">{{end}}</datalist>
 <script src="/static/prompts.js" defer></script>
 {{template "foot" .}}

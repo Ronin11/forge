@@ -626,10 +626,11 @@ func (u *UI) work(w http.ResponseWriter, r *http.Request) {
 
 // promptTreeItem is one row of the Prompts page's library tree.
 type promptTreeItem struct {
-	Name    string // full fragment name (may contain /)
-	Label   string // last path segment, indented under its folder
-	Folder  string // "" for top-level files
-	Persona bool
+	Name      string // full fragment name (may contain /)
+	Label     string // last path segment, indented under its folder
+	Folder    string // "" for top-level files
+	Persona   bool
+	Directive bool
 }
 
 // routines is the Prompts page: the file-backed library rendered as its
@@ -652,19 +653,22 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	for i, rep := range repos {
 		names[i] = rep.Name
 	}
-	var personas, fragments []promptTreeItem
+	var personas, fragments, directives []promptTreeItem
 	libDir := ""
 	if u.prompts != nil {
 		if lib := u.prompts(); lib != nil {
 			libDir = lib.Dir
 			for _, f := range lib.Fragments() {
-				item := promptTreeItem{Name: f.Name, Label: f.Name, Persona: f.Persona}
+				item := promptTreeItem{Name: f.Name, Label: f.Name, Persona: f.Persona, Directive: f.Directive}
 				if i := strings.LastIndex(f.Name, "/"); i >= 0 {
 					item.Folder, item.Label = f.Name[:i], f.Name[i+1:]
 				}
-				if f.Persona {
+				switch {
+				case f.Persona:
 					personas = append(personas, item)
-				} else {
+				case f.Directive:
+					directives = append(directives, item)
+				default:
 					fragments = append(fragments, item)
 				}
 			}
@@ -672,7 +676,7 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	}
 	u.render(w, r, "routines.html", "Prompts", map[string]any{
 		"Routines": rs, "Repositories": names,
-		"Personas": personas, "Fragments": fragments, "LibDir": libDir,
+		"Personas": personas, "Fragments": fragments, "Directives": directives, "LibDir": libDir,
 	})
 }
 

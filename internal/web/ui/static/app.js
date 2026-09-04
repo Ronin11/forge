@@ -591,6 +591,33 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     var form = dialog.querySelector('form');
     function field(n) { return form.querySelector('[name=' + n + ']'); }
 
+    // Workflows join the target datalist (directives are server-rendered).
+    var targetList = document.getElementById('target-names');
+    if (targetList) fetchJSON('/api/v1/workflows').then(function (list) {
+      (list || []).forEach(function (wf) {
+        var o = document.createElement('option');
+        o.value = 'workflow:' + wf.name;
+        targetList.appendChild(o);
+      });
+    }).catch(function () {});
+
+    // A target routine is a pure trigger: the content fields belong to the
+    // directive (or workflow) and are disabled + cleared while target is set.
+    var contentFields = ['mode', 'model', 'persona', 'prompt'];
+    function syncTarget() {
+      var target = field('target');
+      if (!target) return;
+      var on = !!target.value.trim();
+      contentFields.forEach(function (n) {
+        var f = field(n);
+        f.disabled = on;
+        if (on) f.value = '';
+      });
+      field('prompt').required = !on;
+      var tplRowEl = form.querySelector('[data-template-row]');
+      if (tplRowEl && on) tplRowEl.hidden = true;
+    }
+
     // Role templates: fill the New-routine form from a built-in starting point.
     var tplSelect = form.querySelector('[data-routine-template]');
     var tplRow = form.querySelector('[data-template-row]');
@@ -628,8 +655,9 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
         base: '/api/v1/routines',
         current: current,
         fill: function () {
+          syncTarget();
           if (!current) return;
-          ['name', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'target', 'objective', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
             field(n).value = current[n] || '';
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
@@ -640,10 +668,11 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
           ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
             field(n).checked = !!current[n];
           });
+          syncTarget();
         },
         collect: function () {
           var body = Object.assign({}, current);
-          ['name', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'target', 'objective', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
             body[n] = field(n).value.trim();
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
@@ -654,10 +683,16 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
           ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
             body[n] = field(n).checked;
           });
+          if (body.target) {
+            // The directive owns the content; never send stale copies along.
+            body.mode = body.model = body.persona = body.prompt = body.effort = '';
+          }
           return body;
         },
       });
     }
+    var targetInput = field('target');
+    if (targetInput) targetInput.addEventListener('input', syncTarget);
 
     var newBtn = document.querySelector('[data-routine-new]');
     if (newBtn) newBtn.addEventListener('click', function () { open(null); });

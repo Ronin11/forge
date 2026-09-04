@@ -45,6 +45,8 @@ func routineFlags(fs interface {
 	Float64(string, float64, string) *float64
 	Bool(string, bool, string) *bool
 }) func(r *store.Routine) {
+	target := fs.String("target", "", "directive:<name> or workflow:<name> — a trigger routine; content flags are refused with it")
+	objective := fs.String("objective", "", "default {{objective}} for runs this trigger creates")
 	mode := fs.String("mode", "run", "mode")
 	prompt := fs.String("prompt", "", "prompt ({{repo}} allowed)")
 	repos := fs.String("repos", "", "comma-separated repository names")
@@ -66,11 +68,29 @@ func routineFlags(fs interface {
 				return
 			}
 		}
-		r.Mode, r.Model, r.Effort, r.MaxTurns, r.TimeoutSeconds, r.MaxBudgetUSD = or(r.Mode, *mode), or(r.Model, *modelAlias), or(r.Effort, *effort), orInt(r.MaxTurns, *maxTurns), orInt(r.TimeoutSeconds, *timeout), r.MaxBudgetUSD+*budget
+		r.Target, r.Objective = or(r.Target, *target), or(r.Objective, *objective)
+		r.MaxTurns, r.TimeoutSeconds, r.MaxBudgetUSD = orInt(r.MaxTurns, *maxTurns), orInt(r.TimeoutSeconds, *timeout), r.MaxBudgetUSD+*budget
 		r.Schedule, r.Autonomy, r.BudgetClass = or(r.Schedule, *schedule), model.Autonomy(or(string(r.Autonomy), *autonomy)), model.BudgetClass(or(string(r.BudgetClass), *class))
 		r.Priority, r.Concurrency = orInt(r.Priority, *priority), orInt(r.Concurrency, *concurrency)
-		if *prompt != "" {
-			r.Prompt = *prompt
+		if r.Target != "" {
+			// A trigger routine: content lives in the directive/workflow. The
+			// content flag defaults must not ride along; explicit content
+			// flags surface as the API's target+content refusal.
+			r.Mode, r.Model, r.Effort = or(r.Mode, ""), or(r.Model, ""), or(r.Effort, *effort)
+			if *prompt != "" {
+				r.Prompt = *prompt
+			}
+			if *mode != "run" {
+				r.Mode = *mode
+			}
+			if *modelAlias != "haiku" {
+				r.Model = *modelAlias
+			}
+		} else {
+			r.Mode, r.Model, r.Effort = or(r.Mode, *mode), or(r.Model, *modelAlias), or(r.Effort, *effort)
+			if *prompt != "" {
+				r.Prompt = *prompt
+			}
 		}
 		if *repos != "" {
 			r.Repositories = strings.Split(*repos, ",")

@@ -92,8 +92,9 @@
       detail.textContent = '';
       var head = el('div', 'pr-head');
       head.appendChild(el('h2', '', f.name));
-      head.appendChild(chip(f.persona ? 'persona' : 'fragment'));
+      head.appendChild(chip(f.persona ? 'persona' : (f.directive ? 'directive' : 'fragment')));
       if (f.model) head.appendChild(chip('model: ' + f.model));
+      if (f.directive && f.mode) head.appendChild(chip('mode: ' + f.mode));
       (f.modes || []).forEach(function (m) { head.appendChild(chip('mode: ' + m)); });
       detail.appendChild(head);
       if (f.path) {
@@ -108,7 +109,56 @@
         personaComposer(f, initialMode);
         personaTester(f);
       }
+      if (f.directive) directiveTester(f);
     }).catch(fail);
+  }
+
+  // directiveTester: the composed body, then the exact prompt a run of this
+  // directive would read — objective and repository from the inputs — with a
+  // real-model run panel recording under directive:<name>.
+  function directiveTester(f) {
+    detail.appendChild(el('h3', '', 'Composed body'));
+    var composed = el('div');
+    detail.appendChild(composed);
+    fetchJSON(promptURL(f.name, '?resolved=1')).then(function (r) {
+      var manifest = el('p', 'meta');
+      manifest.appendChild(document.createTextNode('Composed from '));
+      (r.composition.fragments || []).forEach(function (fr, i) {
+        if (i > 0) manifest.appendChild(document.createTextNode(', '));
+        manifest.appendChild(fragLink(fr.name));
+      });
+      composed.appendChild(manifest);
+      composed.appendChild(pre(r.resolved));
+    }).catch(fail);
+
+    detail.appendChild(el('h3', '', 'Test: the prompt a run of this directive would read'));
+    var controls = el('div', 'pr-controls pr-test');
+    var objective = document.createElement('textarea');
+    objective.rows = 2;
+    objective.placeholder = 'Objective — substitutes {{objective}} (blank = the self-directed fallback)';
+    var repo = document.createElement('input');
+    repo.placeholder = 'repository (optional)';
+    repo.setAttribute('list', 'repo-names');
+    var out = el('div');
+    controls.appendChild(objective);
+    controls.appendChild(repo);
+    controls.appendChild(button('Preview', 'primary', function () {
+      var q = '?test=1&objective=' + encodeURIComponent(objective.value.trim()) + '&repo=' + encodeURIComponent(repo.value.trim());
+      fetchJSON(promptURL(f.name, q)).then(function (r) {
+        out.textContent = '';
+        var t = r.test || {};
+        out.appendChild(el('p', 'meta', 'model ' + (t.model || '?') + ' · mode ' + t.mode + ' · ' + (t.prompt || '').length + ' bytes'));
+        out.appendChild(pre(t.prompt || ''));
+      }).catch(fail);
+    }));
+    detail.appendChild(controls);
+    detail.appendChild(out);
+    runPanel(detail, f.model, function () {
+      return { directive: f.name, objective: objective.value.trim(), repo: repo.value.trim() };
+    }, 'directive:' + f.name, function (t) {
+      objective.value = t.objective || '';
+      repo.value = t.repo || '';
+    });
   }
 
   // sourceEditor: the raw file, with an in-place edit → validate → commit →
@@ -542,10 +592,24 @@
       var rt = routines.filter(function (r) { return r.name === name; })[0];
       if (!rt) { fail(new Error('routine ' + name + ' not found')); return; }
       detail.textContent = '';
+      var targetKind = (rt.target || '').split(':')[0];
+      var targetName = (rt.target || '').slice(targetKind.length + 1);
       var head = el('div', 'pr-head');
       head.appendChild(el('h2', '', rt.name));
-      head.appendChild(chip('routine'));
-      head.appendChild(chip('mode: ' + rt.mode));
+      head.appendChild(chip(rt.target ? 'trigger' : 'routine'));
+      if (targetKind === 'directive') {
+        var dchip = chip('directive: ');
+        dchip.appendChild(fragLink(targetName));
+        head.appendChild(dchip);
+      } else if (targetKind === 'workflow') {
+        var wchip = chip('');
+        var wlink = document.createElement('a');
+        wlink.textContent = 'workflow: ' + targetName;
+        wlink.href = '/workflows/' + encodeURIComponent(targetName) + '/edit';
+        wchip.appendChild(wlink);
+        head.appendChild(wchip);
+      }
+      if (rt.mode) head.appendChild(chip('mode: ' + rt.mode));
       if (rt.model) head.appendChild(chip('model: ' + rt.model));
       if (rt.persona) {
         var pchip = chip('persona: ');
@@ -574,8 +638,20 @@
       }));
       detail.appendChild(actions);
 
-      detail.appendChild(label('Task text (the routine prompt)'));
-      detail.appendChild(pre(rt.prompt || '(empty)'));
+      if (rt.objective) {
+        detail.appendChild(label('Default objective'));
+        detail.appendChild(pre(rt.objective));
+      }
+      if (targetKind === 'workflow') {
+        // A workflow trigger has no prompt of its own — Run starts a
+        // workflow run with this routine's repositories and objective.
+        detail.appendChild(el('p', 'meta', 'This trigger starts a workflow run. Inspect and test the graph on the workflow editor; runs land under the workflow’s runs page.'));
+        return;
+      }
+      if (!rt.target) {
+        detail.appendChild(label('Task text (the routine prompt)'));
+        detail.appendChild(pre(rt.prompt || '(empty)'));
+      }
 
       // The tester: objective + repository → the byte-exact rendered prompt.
       detail.appendChild(el('h3', '', 'Test: the prompt the agent will read'));
@@ -620,6 +696,9 @@
         objective.value = t.objective || '';
         if (t.repo) repoSel.value = t.repo;
       });
+      // A directive-target routine's content lives in the library — optimize
+      // the directive itself from its library page (P6 wires that subject).
+      if (rt.target) return;
       optimizePanel(detail, 'routine:' + rt.name, rt.model, function () {
         return { objective: objective.value.trim(), repo: repoSel.value };
       }, function (content) {

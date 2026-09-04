@@ -110,7 +110,7 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 	if f == nil {
 		return 0, nil, badRequest("%q is not in the prompts library", name)
 	}
-	out := personaDetail{personaRow: personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona}, Body: f.Body, Path: f.Path}
+	out := personaDetail{personaRow: personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona, Directive: f.Directive, Mode: f.Mode}, Body: f.Body, Path: f.Path}
 	// The raw file, exactly as on disk: the page's editor round-trips this,
 	// never the split view (Body is the frontmatter- and mode-stripped core).
 	if raw, err := os.ReadFile(f.Path); err == nil {
@@ -127,17 +127,30 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 		}
 		out.Resolved, out.Composition = text, &comp
 	}
-	// ?test=1 runs a persona through the full assembly path with a synthetic
-	// routine — mode, task text, objective, and repo from the query — so the
-	// page can answer "what would an agent wearing this persona read" without
-	// a routine existing yet.
-	if f.Persona && r.URL.Query().Get("test") == "1" {
-		q := r.URL.Query()
-		mode := q.Get("mode")
-		if mode == "" {
-			mode = "run"
+	if f.Directive && r.URL.Query().Get("resolved") == "1" {
+		text, manifest, err := lib.ResolveDirectiveBody(name)
+		if err != nil {
+			return 0, nil, badRequest("%v", err)
 		}
-		rt := store.Routine{Name: "(persona test)", Mode: mode, Prompt: q.Get("task"), Persona: name}
+		out.Resolved = text
+		out.Composition = &prompts.Composition{Mode: f.Mode, Commit: lib.Commit, Dirty: lib.Dirty, Fragments: manifest}
+	}
+	// ?test=1 runs a persona or directive through the full assembly path with
+	// a synthetic routine — for personas: mode, task text, objective, repo
+	// from the query; for directives the file supplies the content — so the
+	// page can answer "what would the agent read" without a routine existing.
+	if (f.Persona || f.Directive) && r.URL.Query().Get("test") == "1" {
+		q := r.URL.Query()
+		var rt store.Routine
+		if f.Directive {
+			rt = store.Routine{Name: "(directive test)", Target: "directive:" + name}
+		} else {
+			mode := q.Get("mode")
+			if mode == "" {
+				mode = "run"
+			}
+			rt = store.Routine{Name: "(persona test)", Mode: mode, Prompt: q.Get("task"), Persona: name}
+		}
 		preview, err := s.renderPreview(r.Context(), rt, q.Get("objective"), q.Get("repo"))
 		if err != nil {
 			return 0, nil, err
