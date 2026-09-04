@@ -268,12 +268,14 @@ const (
 	CausePlanTask Cause = "plan_task"
 	CauseVerify   Cause = "verify"
 	CauseFollowUp Cause = "follow_up"
+	// CauseTool: an agent spawned this Work through forge_directive_run.
+	CauseTool Cause = "tool"
 )
 
 // Valid reports whether c is empty (a root) or one of the known causes.
 func (c Cause) Valid() bool {
 	switch c {
-	case "", CausePlanTask, CauseVerify, CauseFollowUp:
+	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool:
 		return true
 	}
 	return false

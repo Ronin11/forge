@@ -17,6 +17,7 @@ import (
 	"sort"
 	"time"
 
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -68,10 +69,29 @@ type Deps struct {
 	KbDir  string
 	Clock  func() time.Time
 	Logger *slog.Logger
+	// Library returns the daemon's current directives library; nil disables
+	// forge_library and forge_script_run (they report the seam unavailable).
+	Library func() *directives.Library
+	// SpawnWork creates one Work on an agent's behalf (forge_directive_run):
+	// the daemon injects a closure that applies the depth/spawn guardrails
+	// and provenance stamps. Nil disables the tool.
+	SpawnWork func(ctx context.Context, att Attempt, in SpawnInput) (workID string, err error)
+	// StartWorkflowRun fires a tool-flagged workflow (forge_workflow_run).
+	// Nil disables the tool.
+	StartWorkflowRun func(ctx context.Context, att Attempt, workflow, objective string, repos []string) (runID string, err error)
 	// Adjudicate routes a forge_request_budget call to the supervisor
 	// adjudicator's child-initiated path (supervision.go); nil disables the tool
 	// (it reports the seam is unavailable). The daemon injects s.AdjudicateBudgetRequest.
 	Adjudicate func(ctx context.Context, attemptID, dimension string, amount float64, reason string) (store.BudgetOutcome, error)
+}
+
+// SpawnInput is forge_directive_run's request, validated by the tool before
+// the daemon's SpawnWork closure applies the guardrails.
+type SpawnInput struct {
+	Directive    string
+	Objective    string
+	Repositories []string
+	Class        model.BudgetClass
 }
 
 // InputError is a tool input the caller got wrong; the handler maps it to 400
@@ -135,6 +155,7 @@ func Defaults() *Registry {
 		statsTool{}, retroPackTool{},
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
 		askTool{}, noteProgressTool{}, requestBudgetTool{}, proposeTool{},
+		libraryTool{}, scriptRunTool{}, directiveRunTool{}, workflowRunTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

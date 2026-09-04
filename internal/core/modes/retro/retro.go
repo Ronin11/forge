@@ -40,6 +40,7 @@ func (mode) AllowedTools() []string {
 		"forge_kb_search", "forge_kb_new", "forge_kb_note",
 		"forge_kb_backlinks", "forge_kb_links", "forge_propose",
 		"forge_note_progress",
+		"forge_library", "forge_script_run",
 	}
 }
 

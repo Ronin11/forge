@@ -34,6 +34,7 @@ func (mode) AllowedTools() []string {
 		"Read", "Grep", "Glob", "Bash(git log:*)", "Bash(git show:*)",
 		"forge_kb_new", "forge_kb_links", "forge_repo_status",
 		"forge_note_progress", "forge_kb_search", "forge_usage",
+		"forge_library", "forge_script_run",
 	}
 }
 

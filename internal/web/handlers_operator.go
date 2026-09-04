@@ -317,6 +317,11 @@ type workRequest struct {
 	directive    string
 	nodeTimeout  int
 	nodeMaxTurns int
+	// cause + submittedBy override the manual defaults for engine- and
+	// tool-created Works ("tool" + "agent:<attempt>"); unexported so a
+	// request body can never forge provenance.
+	cause       model.Cause
+	submittedBy string
 	// trigger overrides the manual default: the engine stamps a scheduled
 	// run's Works `schedule` so analytics can tell them apart. Unexported for
 	// the same reason.
@@ -514,6 +519,9 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 			return workCreated{}, err
 		}
 		w.CausedByWorkID, w.Cause = req.CausedBy, model.CauseFollowUp
+		if req.cause != "" {
+			w.Cause = req.cause
+		}
 	}
 	rt.Repositories = repos
 	snapshot, err := json.Marshal(rt)
@@ -540,6 +548,9 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	w.WorkflowRunID, w.WorkflowName, w.WorkflowStep = req.workflowRunID, req.workflowName, req.workflowStep
 	w.Autonomy = model.ResolveAutonomy(req.Autonomy, rt.Autonomy, "", project.Autonomy, "")
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
+	if req.submittedBy != "" {
+		w.SubmittedBy = req.submittedBy
+	}
 	if w.Integrate && s.modeWritesNothing(rt.Mode) {
 		// A non-writing mode (plan, verify) produces nothing to merge: the
 		// Work-level flag off keeps succeeded terminal, while the snapshot

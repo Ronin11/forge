@@ -31,7 +31,8 @@ func (mode) Preamble() string { return preamble }
 func (mode) AllowedTools() []string {
 	return append(modes.Builtins(),
 		"forge_check", "forge_repo_status", "forge_diff_summary",
-		"forge_note_progress", "forge_kb_search", "forge_usage")
+		"forge_note_progress", "forge_kb_search", "forge_usage",
+		"forge_library", "forge_script_run")
 }
 
 func (mode) ResultSchema() json.RawMessage { return schema.MustExtend(extras) }

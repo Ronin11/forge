@@ -189,10 +189,12 @@ func (f *fixture) mustCall(name string, att tools.Attempt, input string) map[str
 func TestRegistry(t *testing.T) {
 	reg := tools.Defaults()
 	wantNames := []string{
-		"forge_ask", "forge_attempt", "forge_check", "forge_diff_summary", "forge_events",
+		"forge_ask", "forge_attempt", "forge_check", "forge_diff_summary", "forge_directive_run",
+		"forge_events",
 		"forge_kb_backlinks", "forge_kb_links", "forge_kb_new", "forge_kb_note", "forge_kb_search",
-		"forge_note_progress", "forge_prompt_version", "forge_propose", "forge_queue",
-		"forge_repo_status", "forge_request_budget", "forge_retro_pack", "forge_stats", "forge_usage",
+		"forge_library", "forge_note_progress", "forge_prompt_version", "forge_propose", "forge_queue",
+		"forge_repo_status", "forge_request_budget", "forge_retro_pack", "forge_script_run",
+		"forge_stats", "forge_usage", "forge_workflow_run",
 	}
 	all := reg.All()
 	names := make([]string, len(all))

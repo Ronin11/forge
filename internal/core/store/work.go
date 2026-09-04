@@ -239,6 +239,16 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 
 const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at, finished_at`
 
+// CountToolSpawns counts the Works an agent spawned from one parent work
+// (forge_directive_run's fan-out cap).
+func (tx *Tx) CountToolSpawns(ctx context.Context, parentWorkID string) (int, error) {
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM work WHERE caused_by_work_id = ? AND cause = ?`, parentWorkID, string(model.CauseTool)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count tool spawns of %s: %w", parentWorkID, err)
+	}
+	return n, nil
+}
+
 // GetWork reads one Work.
 func (s *Store) GetWork(ctx context.Context, id string) (*Work, error) {
 	ws, err := scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work WHERE id = ?`, id)))

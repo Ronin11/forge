@@ -44,6 +44,7 @@ func (mode) AllowedTools() []string {
 	return []string{
 		"Read", "Grep", "Glob", "Bash",
 		"forge_repo_status", "forge_note_progress", "forge_kb_search", "forge_usage",
+		"forge_library", "forge_script_run",
 	}
 }
 
