@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"forge/internal/core/engine"
@@ -71,7 +72,13 @@ func (s *Server) checkGraphNodes(wf *store.Workflow) error {
 			if err != nil {
 				return badRequest("%v", err)
 			}
-			if err := flow.CompileScript(cfg.Source); err != nil {
+			if cfg.Script != "" {
+				// The library may be absent (tests, a bare server) — then the
+				// name is taken on faith and execution fails the node.
+				if lib := s.promptLibrary(); lib != nil && lib.Script(cfg.Script) == nil {
+					return badRequest("node %s: script %q is not in the library (scripts/%s.js)", n.ID, cfg.Script, cfg.Script)
+				}
+			} else if err := flow.CompileScript(cfg.Source); err != nil {
 				return badRequest("node %s: %v", n.ID, err)
 			}
 		case store.NodeSwitch:
@@ -332,6 +339,9 @@ func (s *Server) retryWorkflowRun(r *http.Request) (int, any, error) {
 		run, err := tx.GetWorkflowRun(ctx, id)
 		if err != nil {
 			return err
+		}
+		if strings.HasPrefix(run.WorkflowName, "script:") {
+			return badRequest("a script run has no retryable graph — re-fire its routine")
 		}
 		if run.Status == store.RunRunning {
 			return badRequest("run is still running")

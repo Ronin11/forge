@@ -101,11 +101,15 @@ type DirectiveNodeConfig struct {
 	Model          string            `json:"model,omitempty"`
 }
 
-// ScriptNodeConfig is a script node's typed view. Source must define
-// `function main(input)`; its JSON-serialized return value is the node output.
+// ScriptNodeConfig is a script node's typed view: inline Source, or a named
+// library script (scripts/<name>.js) — exactly one. Either way the code must
+// define `function main(input)`; its JSON-serialized return value is the
+// node output. Params rides into input.params for named scripts.
 type ScriptNodeConfig struct {
-	Source    string `json:"source"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	Source    string         `json:"source,omitempty"`
+	Script    string         `json:"script,omitempty"`
+	Params    map[string]any `json:"params,omitempty"`
+	TimeoutMS int            `json:"timeout_ms,omitempty"`
 }
 
 // SwitchNodeConfig is a switch node's typed view: a JavaScript expression over
@@ -252,8 +256,13 @@ func (g *WorkflowGraph) validateNodeConfig(n WorkflowNode) error {
 		if err != nil {
 			return err
 		}
-		if cfg.Source == "" {
-			return fmt.Errorf("node %s: script source is required", n.ID)
+		if (cfg.Source == "") == (cfg.Script == "") {
+			return fmt.Errorf("node %s: exactly one of source (inline) or script (a scripts/ library name) is required", n.ID)
+		}
+		if cfg.Script != "" {
+			if _, _, err := ParseTarget("script:" + cfg.Script); err != nil {
+				return fmt.Errorf("node %s: %w", n.ID, err)
+			}
 		}
 		if len(cfg.Source) > MaxScriptSourceBytes {
 			return fmt.Errorf("node %s: script source %d bytes exceeds %d", n.ID, len(cfg.Source), MaxScriptSourceBytes)

@@ -87,6 +87,10 @@ func (s *Server) decodeRoutine(r *http.Request) (*store.Routine, error) {
 		if _, err := s.store.GetWorkflow(r.Context(), target); err != nil {
 			return nil, badRequest("routine %s: workflow %q: %v", rt.Name, target, err)
 		}
+	case store.TargetScript:
+		if lib := s.promptLibrary(); lib != nil && lib.Script(target) == nil {
+			return nil, badRequest("routine %s: script %q is not in the library (scripts/%s.js)", rt.Name, target, target)
+		}
 	}
 	return &rt, nil
 }
@@ -178,9 +182,10 @@ func (s *Server) runRoutine(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	// A workflow-target routine runs as a workflow run — the routine is the
-	// trigger, its repositories/objective the run context.
-	if kind, target := targetOf(rt); kind == store.TargetWorkflow {
+	// A workflow- or script-target routine runs as a run, not a Work — the
+	// routine is the trigger, its repositories/objective the run context.
+	switch kind, target := targetOf(rt); kind {
+	case store.TargetWorkflow:
 		if s.Draining() {
 			return 0, nil, errDraining
 		}
@@ -190,8 +195,46 @@ func (s *Server) runRoutine(r *http.Request) (int, any, error) {
 		}
 		s.log.InfoContext(ctx, "routine fired workflow run", "routine", rt.Name, "workflow", target, "run_id", run.ID)
 		return http.StatusCreated, workflowRunCreated{RunID: run.ID, Workflow: target, Generation: run.WorkflowGeneration}, nil
+	case store.TargetScript:
+		if s.Draining() {
+			return 0, nil, errDraining
+		}
+		run, err := s.startScriptRun(ctx, target, firstNonEmptySlice(body.Repositories, rt.Repositories), firstNonEmpty(body.Objective, rt.Objective), model.TriggerManual)
+		if err != nil {
+			return 0, nil, err
+		}
+		s.log.InfoContext(ctx, "routine fired script run", "routine", rt.Name, "script", target, "run_id", run.ID)
+		return http.StatusCreated, workflowRunCreated{RunID: run.ID, Workflow: "script:" + target}, nil
 	}
 	return s.submitWork(ctx, workRequest{Routine: name, Repositories: body.Repositories, Objective: body.Objective})
+}
+
+// startScriptRun runs one library script through the flow engine as a
+// synthetic single-node run: the runs page, cancel, skip-if-running, and the
+// journal all come for free. The run's name is "script:<name>"; it belongs
+// to no workflow row.
+func (s *Server) startScriptRun(ctx context.Context, script string, repos []string, objective string, trigger model.Trigger) (*store.WorkflowRun, error) {
+	if lib := s.promptLibrary(); lib == nil || lib.Script(script) == nil {
+		return nil, badRequest("script %q is not in the library (scripts/%s.js)", script, script)
+	}
+	run := &store.WorkflowRun{
+		WorkflowName: "script:" + script, Trigger: trigger,
+		Context: store.RunContext{Repositories: repos, Objective: objective},
+		Graph: &store.WorkflowGraph{Nodes: []store.WorkflowNode{{
+			ID: "main", Type: store.NodeScript, Config: map[string]any{"script": script},
+		}}},
+	}
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		if err := tx.CreateWorkflowRun(ctx, run); err != nil {
+			return err
+		}
+		return tx.Journal(ctx, "workflow.run_created", store.EntityWorkflow, run.ID, map[string]any{"script": script, "trigger": run.Trigger})
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.advanceRun(ctx, run.ID)
+	return run, nil
 }
 
 // startRoutineWorkflowRun creates a workflow run on a trigger routine's

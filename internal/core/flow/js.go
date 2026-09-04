@@ -45,6 +45,10 @@ type StepInput struct {
 type ScriptInput struct {
 	Run   RunInfo              `json:"run"`
 	Steps map[string]StepInput `json:"steps"`
+	// Params is the free-form parameter channel: a named script node's
+	// config params, or a forge_script_run tool call's input. Zero for plain
+	// inline graph scripts.
+	Params any `json:"params,omitempty"`
 }
 
 // CompileScript is the save-time syntax check: a script that does not parse

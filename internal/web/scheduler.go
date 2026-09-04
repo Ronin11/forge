@@ -104,6 +104,9 @@ func (s *Server) fireDueRoutines(ctx context.Context, now time.Time) {
 		if kind, target := targetOf(&rt); kind == store.TargetWorkflow {
 			s.fireDueWorkflowRoutine(ctx, rt, target, now)
 			continue
+		} else if kind == store.TargetScript {
+			s.fireDueScriptRoutine(ctx, rt, target, now)
+			continue
 		}
 		open, err := s.store.OpenWorkCountForRoutine(ctx, rt.ID)
 		if err != nil {
@@ -194,6 +197,48 @@ func (s *Server) fireDueWorkflowRoutine(ctx context.Context, rt store.Routine, w
 		s.advanceRun(ctx, runID)
 	}
 	s.log.InfoContext(ctx, "scheduled routine fired workflow", "routine", rt.Name, "workflow", workflow, "run_id", runID, "skipped", open, "next_due_at", next)
+}
+
+// fireDueScriptRoutine fires one script-target trigger: a synthetic
+// single-node run, skip-if-running keyed on the script's open runs.
+func (s *Server) fireDueScriptRoutine(ctx context.Context, rt store.Routine, script string, now time.Time) {
+	open, err := s.store.HasOpenWorkflowRun(ctx, "script:"+script)
+	if err != nil {
+		s.log.ErrorContext(ctx, "check open script runs", "routine", rt.Name, "script", script, "error", err)
+		return
+	}
+	next, err := store.NextOccurrence(rt.Schedule, now)
+	if err != nil {
+		s.log.WarnContext(ctx, "unparseable routine schedule", "routine", rt.Name, "error", err)
+		return
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		saved, err := tx.GetRoutine(ctx, rt.Name)
+		if err != nil || !saved.ScheduleEnabled || !saved.ArchivedAt.IsZero() {
+			return err
+		}
+		if err := tx.SetNextDue(ctx, rt.Name, next); err != nil {
+			return err
+		}
+		if open {
+			return tx.Journal(ctx, "schedule.skipped", store.EntityDaemon, saved.ID, map[string]any{"routine": rt.Name, "script": script, "reason": "already_running"})
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.ErrorContext(ctx, "fire scheduled script routine", "routine", rt.Name, "script", script, "error", err)
+		return
+	}
+	if open {
+		s.log.InfoContext(ctx, "scheduled script routine skipped", "routine", rt.Name, "script", script, "next_due_at", next)
+		return
+	}
+	run, err := s.startScriptRun(ctx, script, rt.Repositories, rt.Objective, model.TriggerSchedule)
+	if err != nil {
+		s.log.ErrorContext(ctx, "start scheduled script run", "routine", rt.Name, "script", script, "error", err)
+		return
+	}
+	s.log.InfoContext(ctx, "scheduled routine fired script", "routine", rt.Name, "script", script, "run_id", run.ID, "next_due_at", next)
 }
 
 // fireDueWorkflows starts one run per due workflow, unless a run is still

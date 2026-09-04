@@ -328,7 +328,28 @@ func (s *Server) executeFlowScript(run *store.WorkflowRun, nodes []store.RunNode
 		if err != nil {
 			return flow.ScriptResult{Status: store.NodeFailed, Error: err.Error()}
 		}
-		out, err := flow.RunScript(cfg.Source, input, flow.ScriptTimeout(cfg.TimeoutMS))
+		source, timeoutMS := cfg.Source, cfg.TimeoutMS
+		if cfg.Script != "" {
+			// A named script resolves from the LIVE library at execution (the
+			// same freshness rule directive nodes have at materialization); a
+			// script renamed mid-run fails the node cleanly.
+			lib := s.promptLibrary()
+			if lib == nil {
+				return flow.ScriptResult{Status: store.NodeFailed, Error: "this process has no library to resolve script " + cfg.Script}
+			}
+			f := lib.Script(cfg.Script)
+			if f == nil {
+				return flow.ScriptResult{Status: store.NodeFailed, Error: fmt.Sprintf("script %q is not in the library (scripts/%s.js)", cfg.Script, cfg.Script)}
+			}
+			source = f.Body
+			if timeoutMS == 0 {
+				timeoutMS = f.TimeoutMS
+			}
+			if len(cfg.Params) > 0 {
+				input.Params = cfg.Params
+			}
+		}
+		out, err := flow.RunScript(source, input, flow.ScriptTimeout(timeoutMS))
 		if err != nil {
 			return flow.ScriptResult{Status: store.NodeFailed, Error: err.Error()}
 		}

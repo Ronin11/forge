@@ -44,6 +44,8 @@ func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*d
 	switch kind {
 	case store.TargetWorkflow:
 		return nil, badRequest("routine %s targets workflow %q — it runs as a workflow run, not a Work", rt.Name, name)
+	case store.TargetScript:
+		return nil, badRequest("routine %s targets script %q — it runs as a script run, not a Work", rt.Name, name)
 	case store.TargetDirective:
 		if lib == nil {
 			return nil, badRequest("routine %s targets directive %q but this process has no library", rt.Name, name)
