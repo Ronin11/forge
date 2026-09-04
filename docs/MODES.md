@@ -115,10 +115,11 @@ and are added here, with the same structure, when their milestone starts.
 
 ### `run`
 
-One prompt, one repository, current context. The routine prompt *is* the task.
+One prompt, one repository, current context. The materialized prompt — the
+directive body, or a legacy routine's stored prompt — *is* the task.
 
 - **Prompt outline:** preamble (rules: stay in the worktree; commit if the task asks;
-  never push) → routine prompt → context block.
+  never push) → materialized prompt → context block.
 - **Tools:** all built-ins; `forge_repo_status`, `forge_check`, `forge_diff_summary`.
 - **Result:** envelope only.
 - **Verification:** L1 (declared checks re-run, if the repo declares any; L0 otherwise).

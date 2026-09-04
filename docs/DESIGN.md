@@ -154,6 +154,17 @@ daemon is already up.
   `<home>/worker.toml` (only if absent). The Forge repository is registered in the
   seeded `worker.toml` only when the running binary sits inside a Git checkout
   (`os.Executable()` and its parents); otherwise it is skipped and `init` offers it.
+- **Directives migration** (`internal/core/migratedirectives`) runs on every
+  daemon start after bootstrap, idempotent by state derivation (no marker file):
+  rename `<home>/prompts` → `<home>/directives` (only when the configured
+  `[prompts] path` is the new default), split each content routine into a
+  byte-deterministic `directives/<name>.md` plus a row update to a trigger
+  (generation bump, `source = migrate:directives`; a directive-name collision
+  or a prompt containing a literal `{{>` skips the routine, which stays
+  legacy), and convert workflow routine-nodes to directive nodes with the
+  source routine's envelope baked into the node config. `forge admin
+  migrate-directives [--home DIR] [--dry-run]` rehearses or runs it against a
+  stopped home.
 - **Repositories on the fly.** `--repo X` resolves in order: a registered name; a
   path (absolute, or relative to the cwd); `<projects_root>/X` (`[repositories]
   projects_root` in `config.toml`, default `~/Projects`). An unregistered checkout
@@ -278,22 +289,40 @@ repository belongs to exactly one project; `default` is created by bootstrap.
 
 ### Routine
 
-`routines(id, name UNIQUE, mode, prompt, repositories JSON, executor, model, effort,
-max_turns, timeout_seconds, max_budget_usd, allowed_tools JSON, autonomy, verification,
-priority, budget_class, schedule, schedule_enabled, concurrency, paths JSON, deps JSON,
-tier, models JSON, integrate, require_sandbox, max_questions, generation,
-archived_at)`. The last seven are the M9–M11 columns (§20–§22): `paths` are the
-write-set globs, `deps` the dependencies a pre-step adds, `tier` (0–3) and `models`
-(allowlist and escalation ladder) drive routing, `integrate` enables the merge queue,
-`require_sandbox` (default true) restricts routing to sandbox-ready workers,
-`max_questions` (default 3) is the ask budget.
+A routine is a **trigger shell**: it says *when* something runs, *against what*,
+and under *which operational envelope* — not what the agent is told. What runs
+lives elsewhere: `target = directive:<name>` (a file in the directives library,
+below) or `workflow:<name>`.
+
+`routines(id, name UNIQUE, target, objective, mode, prompt, repositories JSON,
+executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools
+JSON, autonomy, verification, priority, budget_class, schedule, schedule_enabled,
+concurrency, paths JSON, deps JSON, tier, models JSON, integrate, require_sandbox,
+max_questions, generation, archived_at)`. `objective` is the default
+`{{objective}}` for runs this trigger creates. The `paths`/`deps`/`tier`/`models`/
+`integrate`/`require_sandbox`/`max_questions` group are the M9–M11 columns
+(§20–§22): `paths` are the write-set globs, `deps` the dependencies a pre-step
+adds, `tier` (0–3) and `models` (allowlist and escalation ladder) drive routing,
+`integrate` enables the merge queue, `require_sandbox` (default true) restricts
+routing to sandbox-ready workers, `max_questions` (default 3) is the ask budget.
 `generation` starts at 1 and increments on every edit; edits carry the expected
-generation and return 409 on a stale write. `prompt` may use `{{repo}}`. Defaults:
-`executor = claude-code`, `concurrency = 1`, `budget_class = normal`, `priority` from
-the project baseline, `autonomy` inherited (NULL = inherit), `verification` NULL =
-the mode's level (a routine may only raise the level, e.g. to `L3`, never lower it).
-`allowed_tools` may only *narrow* the mode's tool list (the effective list is the
-intersection); a routine naming a tool its mode does not allow is rejected on save.
+generation and return 409 on a stale write. Defaults: `executor = claude-code`,
+`concurrency = 1`, `budget_class = normal`, `priority` from the project baseline,
+`autonomy` inherited (NULL = inherit), `verification` NULL = the mode's level (a
+routine may only raise the level, e.g. to `L3`, never lower it). `allowed_tools`
+may only *narrow* the mode's tool list (the effective list is the intersection);
+a routine naming a tool its mode does not allow is rejected on save.
+
+**Content lives in the target, not the row.** A stored routine carries no
+`mode`/`prompt`/`persona`/`model`/`effort` data — those columns and struct fields
+remain because `materializeRoutine` (`internal/web/materialize.go`) resolves the
+target directive's content *into* them at Work creation, before the routine is
+frozen into `work.snapshot`. Old snapshots and `routine_generations` rows decode
+unchanged; "what ran" stays byte-for-byte answerable. Validation is dual-mode:
+a routine is exactly one of two shapes — a trigger (`target` set, content fields
+empty) or a **legacy content routine** (`target` empty, the pre-restructure rules
+above). Legacy rows stay valid — restored A/B generations and tests depend on
+them — and the API still accepts them; new routines are triggers.
 
 **Autonomy precedence** (one home, `model.ResolveAutonomy`): Work submit override >
 routine > repository `forge.toml [defaults]` > project. Whatever `MODES.md` calls the
@@ -301,7 +330,8 @@ routine > repository `forge.toml [defaults]` > project. Whatever `MODES.md` call
 
 `routine_generations(routine_id, generation, snapshot JSON, prompt_version_hash,
 created_at, source)` keeps every generation so A/B comparisons (§12) and "what ran"
-questions have an exact answer. `source` is `edit` or `proposal:<id>`.
+questions have an exact answer. `source` is `edit`, `proposal:<id>`, or
+`migrate:directives` (the boot migration's split, §1.3).
 
 ### Workflow
 
@@ -313,9 +343,12 @@ canonical form — `{nodes: [{id, type, config, position}], edges: [{from, to,
 when, case, default, stack_on, loop, max_iterations}]}`; the legacy `steps`
 list is still accepted on every write path and converted losslessly
 (`GraphFromSteps`; `on: terminal` → `when: always`), and pre-graph rows were
-backfilled at open. Node types: **routine** (an agent runs a routine — one
-Work through the queue; config may override repositories and carry an
-objective template), **script** (embedded JavaScript in the daemon's goja
+backfilled at open. Node types: **directive** (an agent runs a directive from
+the library — one Work through the queue; config is `{directive,
+repositories?, objective?, persona?, timeout_seconds?, max_turns?,
+budget_class?, model?}`, where envelope zero-values mean the engine defaults —
+timeout 3600, max_turns 60, class `normal`, priority 50), **script** (embedded
+JavaScript in the daemon's goja
 sandbox — no host bindings, an interrupt timeout, source/output caps, and a
 per-run budget), **switch** (a JS expression over upstream outputs whose
 String() value picks the matching `case` edge, else the `default` edge), and
@@ -325,7 +358,11 @@ fires on the first taken). Edge conditions are `success` (default), `failure`,
 with at least one root, and every loop edge carries `max_iterations` (1–20) —
 the one sanctioned kind of cycle. Scripts and switch expressions are compiled
 at save, and cron strings parse at save: a definitional mistake is a 400, not
-a runtime surprise.
+a runtime surprise. The pre-restructure **routine** node type (a content
+routine run by name, config overriding repositories and carrying an objective
+template) is retired for new graphs but validated, executed, and rendered
+forever: a frozen `workflow_runs.graph` is never rewritten, so every old run
+must stay replayable and readable.
 
 A run is a first-class row: `POST /api/v1/workflows/{name}/run` freezes the
 graph into `workflow_runs` (like a Work's routine snapshot — a later edit
@@ -338,8 +375,9 @@ taken; an instance whose every incoming edge went dead is **skipped**, and the
 skip cascades — replacing the old permanent `dependency_failed` wedge inside
 workflows, because dependants are never pre-created. A loop edge taken creates
 the target's next iteration until its cap. The driver
-(`internal/web/flow_engine.go`) materializes ready routine nodes into ordinary
-Works via `createWorkTx` (with already-satisfied `blocked_by` edges so
+(`internal/web/flow_engine.go`) materializes ready directive nodes (and legacy
+routine nodes in old frozen graphs) into ordinary Works via `createWorkTx` (with
+already-satisfied `blocked_by` edges so
 `stack_on` and provenance keep working), executes ready scripts and switches
 strictly outside SQLite's writer, and applies each evaluation's diff in one
 compare-and-set-guarded transaction — so advancing is idempotent, completion
@@ -347,12 +385,13 @@ and cancellation handlers advance runs synchronously, and a 15s daemon loop is
 the restart story and the backstop for transitions with no HTTP hook
 (integrator merges, lease expiries).
 
-**Output passing** is the data contract between nodes: a terminal routine
-node's output is `{state, summary, output, targets}` assembled from its result
-envelope (the free-form `output` object a mode's result may carry); a script's
-output is its `main(input)` return value; a switch's is `{case}`. Downstream
-routine objectives template over them (`{{steps.<node>.output.<path>}}`,
-`{{run.objective}}`) and scripts read them as `input.steps.<node>`. Run
+**Output passing** is the data contract between nodes: a terminal directive
+(or routine) node's output is `{state, summary, output, targets}` assembled
+from its result envelope (the free-form `output` object a mode's result may
+carry); a script's output is its `main(input)` return value; a switch's is
+`{case}`. Downstream node objectives template over them
+(`{{steps.<node>.output.<path>}}`, `{{run.objective}}`) and scripts read them
+as `input.steps.<node>`. Run
 operations: `GET /api/v1/workflow-runs/{id}` (the frozen graph plus every
 instance and Work summary), `POST .../cancel`, and `POST .../retry {node}`
 (a fresh iteration of a failed or cancelled node; downstream re-fires as its
@@ -363,43 +402,66 @@ per-type config panels, client lint mirroring server validation — with a
 positions-only `PATCH .../layout` that does not bump the generation, and
 `POST /api/v1/workflows/draft` turns a plain-language description into a
 validated graph via the concierge's model seam for the human to refine and
-save.
+save. The palette, the drafter, and the cost estimate all speak directive
+nodes; routine nodes appear only when rendering an old graph.
 
-### Personas and the prompts library
+### Personas and the directives library
 
-The judgment half of a prompt — standards, taste, escalation instincts —
-lives outside routines, in a **git-versioned Markdown tree** (default
-`~/.forge/prompts`, `[prompts] path` in config): `personas/<name>.md` are
-top-level identities a routine names via its `persona` field;
-`fragments/<name>.md` are building blocks composed with `{{> name}}` (and
-`{{> name key="value"}}`, substituting `{{key}}` inside that fragment only).
-A persona's optional frontmatter carries `model: <alias>` — a default the
-routine's own model overrides — and `## mode: <name>` body sections compose
-only into runs of that mode. The language is deliberately dumb: includes and
-parameters, **no conditionals and no loops** — teaching is selection, not
-branching — and placeholders the library does not own (`{{objective}}`,
-`{{repo}}`) pass through to their existing substitutions. Git owns authoring:
+Executable content lives outside routines, in a **git-versioned Markdown
+tree** (default `~/.forge/directives`, `[prompts] path` in config — the TOML
+key is unchanged; pre-restructure homes are renamed from `~/.forge/prompts`
+on boot, §"Directives migration"). Three file kinds:
+
+- `directives/<name>.md` — **directives**, the executable content a trigger
+  routine or a workflow directive-node names. Frontmatter: `mode:` (required),
+  optional `persona:`/`model:`/`effort:`. The body is the task text; it may
+  use `{{> fragment}}` includes, and `{{objective}}`/`{{repo}}` pass through
+  to their existing substitutions. `Library.ResolveDirectiveBody` expands a
+  directive's body (includes resolved) with its manifest.
+- `personas/<name>.md` — the judgment half of a prompt (standards, taste,
+  escalation instincts): top-level identities a directive names via its
+  `persona:` frontmatter (a legacy routine via its `persona` field);
+  optional frontmatter `model: <alias>` — a default the directive's or a
+  per-call model overrides — and `## mode: <name>` body sections compose only
+  into runs of that mode.
+- `fragments/<name>.md` — building blocks composed with `{{> name}}` (and
+  `{{> name key="value"}}`, substituting `{{key}}` inside that fragment only).
+
+The language is deliberately dumb: includes and parameters, **no conditionals
+and no loops** — teaching is selection, not branching. Git owns authoring:
 edits are ordinary commits, diffs, blame, and revert, and an agent improving
-prompts is an ordinary task on the prompts repo through the same
+directives is an ordinary task on the directives repo through the same
 branch-and-merge pipeline as code — reflection through the front door,
 superseding a bespoke proposals-apply path for prompt content.
 
-The daemon owns reading (`internal/core/prompts`): it loads and validates the
-tree at start and every 30 s, refusing a broken load — unknown includes,
+The daemon owns reading (`internal/core/directives`, the renamed
+`internal/core/prompts` — exported names unchanged): it loads and validates
+the tree at start and every 30 s, refusing a broken load — unknown includes,
 cycles, over-deep nesting, oversize resolutions — and **keeping the last good
-library**, so a half-saved edit never bricks run creation. At `createWorkTx`
-the persona resolves for the routine's mode and the composed text lands ahead
-of the routine prompt **inside the frozen snapshot**; `prompt_hash` covers
-the resolved bytes, and the Work's `composition` column records the audit
-manifest — persona, mode, the library's git commit (and dirtiness), and the
-content hash of every fragment that went in — so "what did this run read"
-and "which fragment edit moved the numbers" are queries. A missing persona at
-run time fails Work creation loudly (for a workflow node, the engine fails
-the node and the skip cascade reports it). Surfaces:
-`GET /api/v1/personas[/{name}?resolved=1&mode=M]`, `forge persona list|show
+library**, so a half-saved edit never bricks run creation.
+`materializeRoutine` (`internal/web/materialize.go`) is the **one compose
+path**: directive resolution → per-call overrides → persona composition →
+`{{objective}}` injection, with precedence per-call override > directive
+frontmatter > persona default (model only) > routine row `objective`.
+`createWorkTx`, previews, and experiment variant runs all use it, so a
+preview is byte-faithful to a run by construction. At `createWorkTx` the
+materialized content lands **inside the frozen snapshot**; `prompt_hash`
+covers the resolved bytes, and the Work's `composition` column records the
+audit manifest — persona, mode, the library's git commit (and dirtiness), and
+the content hash of every fragment that went in — so "what did this run read"
+and "which fragment edit moved the numbers" are queries. A missing directive
+or persona at run time fails Work creation loudly (for a workflow node, the
+engine fails the node and the skip cascade reports it). Surfaces:
+`GET /api/v1/personas[/{name}?resolved=1&mode=M]`,
+`GET|PUT /api/v1/directives[/{name}]`, `forge persona list|show
 [--resolved --mode M]` (the exact final bytes, never hand-walked includes),
 `task add --persona`, a per-run `persona` on the task API, and a per-node
-`persona` in workflow routine-node configs.
+`persona` in workflow directive-node configs. The prompt tester
+(`POST /api/v1/directive-test`, history at `GET /api/v1/directive-tests`)
+takes subjects `persona:<name>`, `directive:<name>`, and legacy
+`routine:<name>`; run history is keyed by the same subjects. The UI page is
+`/directives` (nav "Directives"; `/routines` answers 301 with the query
+preserved).
 
 ### Schedules
 
@@ -408,13 +470,17 @@ descriptors; robfig/cron is the parser only — the daemon's own loop is the
 runner), `schedule_enabled`, and `next_due_at`. The scheduler
 (`internal/web/scheduler.go`, a 30s daemon loop beside the sweeper) backfills
 `next_due_at` for enabled schedules that lack one, fires what is due — one
-Work per due routine, one engine run per due workflow, both stamped
-`trigger = schedule` — and advances `next_due_at` in the same transaction as
-the admission, which is the claim (one daemon owns the database). Occurrences
-missed while the daemon was down fire once, then jump to the next future
-occurrence; a routine still busy from its last firing, or a workflow with a
-run still open, is skipped and journaled (`schedule.skipped`) rather than
-piled up.
+Work per due directive-target (or legacy content) routine, one engine run per
+due workflow, all stamped `trigger = schedule` — and advances `next_due_at`
+in the same transaction as the admission, which is the claim (one daemon owns
+the database). A **workflow-target routine** fires a workflow run instead of
+a Work — the scheduler and the manual run endpoint alike — with the routine's
+repositories and `objective` as the run context and the trigger stamped
+`schedule`/`manual`; a workflow may also still carry its own schedule.
+Occurrences missed while the daemon was down fire once, then jump to the next
+future occurrence; a routine still busy from its last firing, or a workflow
+with a run still open (also the skip key for a workflow-target routine's
+firing), is skipped and journaled (`schedule.skipped`) rather than piled up.
 
 ### Work
 
@@ -1079,8 +1145,8 @@ window per `rate_limit_event`. These drive the budget policy (§10.1).
 
 `prompt_versions(hash PRIMARY KEY, routine, generation, mode, template,
 rendered_example, system_append, tool_list JSON, model, effort, created_at)`. The hash
-is SHA-256 over `(mode template, routine prompt, system append, sorted tool list,
-model, effort)`; `rendered_example` is the first rendering seen. Every attempt links to
+is SHA-256 over `(mode template, materialized routine prompt, system append, sorted
+tool list, model, effort)`; `rendered_example` is the first rendering seen. Every attempt links to
 one.
 
 ### 9.2 AttemptFacts
@@ -1310,8 +1376,21 @@ verification each requires before apply (spec table). Approval is human by defau
 `auto_apply_after = {approved: N, reverted: 0}` per kind may be configured and starts
 unset.
 
-Applying a `routine` proposal creates a new generation (`source = proposal:<id>`). The
-A/B rule: after `K` (default 5) runs on the new generation, compare verified success
+Applying a `routine` proposal splits by what the routine is. Against a
+**directive-target** routine, content updates (prompt/model/effort) are written
+to the directive file: write → validate the whole library → revert the file on
+failure → commit `proposal:<id>` → hot reload; operational updates still bump
+the row as a new generation. Such content applies record `applied_ref =
+directive:<name>`, which **excludes them from the A/B auto-revert sweep** —
+content A/B rides git history (revert is a git revert), not restored
+generations. Experiments take subject `directive:<name>` (whole-file
+variants); a `routine:` subject against a trigger routine is refused with a
+pointer at its directive.
+
+Any row-bumping apply — operational updates to a trigger routine, or a legacy
+content routine's edit — creates a new generation (`source = proposal:<id>`)
+and the A/B rule holds: after `K` (default 5) runs
+on the new generation, compare verified success
 rate and cost per verified success against the previous generation's last `K` runs;
 if either regresses beyond the configured margin (default 20 % relative), Forge
 restores the previous generation (a new generation whose snapshot equals the last
@@ -1335,6 +1414,10 @@ cursor with no gaps); `GET /api/v1/doctor`.
 
 Operator: `GET /api/v1/dashboard`; `GET|POST /api/v1/routines`,
 `GET|PUT|DELETE /api/v1/routines/{name}`, `POST /api/v1/routines/{name}/run`;
+`GET /api/v1/directives`, `GET|PUT /api/v1/directives/{name}`,
+`POST /api/v1/directive-test`, `GET /api/v1/directive-tests` (renamed from
+`/api/v1/prompts*` and `/api/v1/prompt-test[s]`; `/api/v1/personas*`
+unchanged);
 `GET|POST /api/v1/work`, `GET|PATCH|DELETE /api/v1/work/{id}`; `GET /api/v1/queue`;
 `GET /api/v1/attention`; `GET /api/v1/attempts/{id}`, `GET
 /api/v1/attempts/{id}/events`; `POST /api/v1/questions/{id}/answer`; `POST
@@ -1676,8 +1759,9 @@ forge task requeue ID                             # conflict → merge queue (M9
 forge task tell ID "…" | retry ID [--model M]     # M11
 forge backup [--out DIR] | restore ARCHIVE | eval --mode M [...]   # M12
 forge daemon rollback                             # M12
-forge persona list|show NAME [--resolved --mode M]     # library: ~/.forge/prompts
+forge persona list|show NAME [--resolved --mode M]     # library: ~/.forge/directives
 forge routine add|list|show|edit|run|enable|disable NAME
+forge admin migrate-directives [--home DIR] [--dry-run]  # stopped-home surgery
 forge workflow add|list|show|edit|run|runs|run-show|retry|cancel|enable|disable
 forge queue [list] | queue move ID --before ID | queue block ID --on ID
 forge proposal list|show|approve|reject ID
@@ -1692,14 +1776,17 @@ forge mcp --attempt ID                                            # spawned by t
 
 `task add`: `--repo` is required without `--routine` and optional with it (it
 narrows the routine's repositories); the prompt is required without `--routine` and
-optional with it (it replaces the routine prompt for this task only). `--class`
+optional with it (a per-call override — it replaces the routine's materialized
+prompt for this task only). `--class`
 defaults to `interactive` for human submissions (§10.3). `task answer` on a task with
 one open Question answers it; with several, `--question ID` selects. `--wait`
 streams progress (SSE, resuming across restarts) and exits with the task's derived
 state (§4.2): 0 `succeeded`/`merged`, 1 `failed`/`partial`/`cancelled`, 3
 `unverified`, 4 `waiting_human`/`conflict` when the human is not the caller.
 
-`routine add NAME` takes flags for the common fields (`--mode --prompt --repo… --model
+`routine add NAME` takes `--target directive:<name>|workflow:<name>` and
+`--objective` for a trigger routine (content flags are refused alongside
+`--target`), flags for the common fields (`--mode --prompt --repo… --model
 --effort --max-turns --timeout --schedule --autonomy --class --priority`) and
 `--from FILE.toml` for everything; `routine edit NAME` opens the routine as TOML in
 `$EDITOR` (or applies `--from`) and carries the generation so a stale write is a 409.

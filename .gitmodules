@@ -1,0 +1,3 @@
+[submodule "internal/core/directives/starter"]
+	path = internal/core/directives/starter
+	url = git@github.com:Ronin11/forge-library.git
