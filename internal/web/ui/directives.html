@@ -1,26 +1,26 @@
-{{template "head" .}}<div class="page-head"><h1>Prompts</h1><button class="btn primary" data-routine-new>New routine</button></div>
-<p class="meta">Personas and fragments live in <code>{{if .Data.LibDir}}{{.Data.LibDir}}{{else}}~/.forge/prompts{{end}}</code> — edit them with git and your editor; the daemon reloads within 30s. Routines bind a persona to a job. Select anything to inspect, compose, and test it.</p>
+{{template "head" .}}<div class="page-head"><h1>Directives</h1><button class="btn primary" data-routine-new>New routine</button></div>
+<p class="meta">Directives, personas, and fragments live in <code>{{if .Data.LibDir}}{{.Data.LibDir}}{{else}}~/.forge/directives{{end}}</code> — edit them with git and your editor; the daemon reloads within 30s. Routines bind a persona to a job. Select anything to inspect, compose, and test it.</p>
 <p id="editor-error" class="error" hidden></p>
 <div class="pr-layout" data-prompts-page>
 <div class="pr-tree card">
 <div class="pr-folder">personas/</div>
 <ul>
-{{range .Data.Personas}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</a></li>
+{{range .Data.Personas}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add personas/&lt;name&gt;.md</li>{{end}}
 </ul>
 <div class="pr-folder">directives/</div>
 <ul>
-{{range .Data.Directives}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Label}}</a></li>
+{{range .Data.Directives}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add directives/&lt;name&gt;.md</li>{{end}}
 </ul>
 <div class="pr-folder">fragments/</div>
 <ul>
-{{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</a></li>
+{{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><a class="pr-item" data-sel="prompt:{{.Name}}" href="/directives?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add fragments/&lt;name&gt;.md</li>{{end}}
 </ul>
 <div class="pr-folder">routines/</div>
 <ul>
-{{range .Data.Routines}}<li><a class="pr-item" data-sel="routine:{{.Name}}" href="/routines?sel=routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Target}} <span class="chip">{{.Target}}</span>{{else if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</a></li>
+{{range .Data.Routines}}<li><a class="pr-item" data-sel="routine:{{.Name}}" href="/directives?sel=routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Target}} <span class="chip">{{.Target}}</span>{{else if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</a></li>
 {{else}}<li class="empty pr-empty">No routines — the New routine button above, or <code>forge routine add</code></li>{{end}}
 </ul>
 </div>
@@ -40,7 +40,7 @@
 <label class="wide" data-objective-row>Objective <textarea name="objective" rows="2" placeholder="Default {{`{{objective}}`}} for runs this trigger creates (optional)"></textarea></label>
 <label>Mode <input name="mode" value="run"></label>
 <label>Model <input name="model" value="haiku"></label>
-<label>Persona <input name="persona" list="persona-names" placeholder="from ~/.forge/prompts" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
+<label>Persona <input name="persona" list="persona-names" placeholder="from ~/.forge/directives" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
 <label>Class <select name="budget_class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
 <label class="wide">Prompt <textarea name="prompt" rows="5" required placeholder="{{`{{repo}}`}} is replaced per repository"></textarea></label>
 <label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>
@@ -62,5 +62,5 @@
 <datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
 <datalist id="persona-names">{{range .Data.Personas}}<option value="{{.Name}}">{{end}}</datalist>
 <datalist id="target-names">{{range .Data.Directives}}<option value="directive:{{.Name}}">{{end}}</datalist>
-<script src="/static/prompts.js" defer></script>
+<script src="/static/directives.js" defer></script>
 {{template "foot" .}}

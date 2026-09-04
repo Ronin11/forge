@@ -1,4 +1,4 @@
-// The Prompts page: the file-backed library rendered as its folder tree, with
+// The Directives page: the file-backed library rendered as its folder tree, with
 // composition previews and routine testing. The test daemon's fresh
 // FORGE_HOME bootstraps the starter persona library, so real personas are on
 // the page.
@@ -6,8 +6,8 @@ const { test, expect } = require('@playwright/test');
 
 test.describe('prompts page', () => {
   test('tree shows the library folders and the starter personas', async ({ page }) => {
-    await page.goto('/routines');
-    await expect(page.locator('h1')).toHaveText('Prompts');
+    await page.goto('/directives');
+    await expect(page.locator('h1')).toHaveText('Directives');
     const tree = page.locator('.pr-tree');
     await expect(tree).toContainText('personas/');
     await expect(tree).toContainText('fragments/');
@@ -17,7 +17,7 @@ test.describe('prompts page', () => {
   });
 
   test('selecting a persona shows its source and the composed text per mode', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="prompt:senior-reviewer"]').click();
     const detail = page.locator('[data-prompt-detail]');
     await expect(detail).toContainText('persona');
@@ -42,7 +42,7 @@ test.describe('prompts page', () => {
     if (res.status() !== 201) {
       expect((await res.text())).toContain('exists'); // rerun tolerance
     }
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="routine:pr-page-test"]').click();
     const detail = page.locator('[data-prompt-detail]');
     await expect(detail).toContainText('persona: senior-reviewer');
@@ -56,7 +56,7 @@ test.describe('prompts page', () => {
   });
 
   test('the routine dialog still opens from the detail pane', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="routine:pr-page-test"]').click();
     await page.locator('[data-prompt-detail] button', { hasText: 'Edit' }).click();
     const dialog = page.locator('[data-routine-dialog]');
@@ -67,7 +67,7 @@ test.describe('prompts page', () => {
 
 test.describe('prompt editing and testing', () => {
   test('a fragment edits in place: save validates, commits, and recomposes', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="prompt:engineering-standards"]').click();
     const detail = page.locator('[data-prompt-detail]');
     await expect(detail.locator('pre').first()).toContainText('Be honest, not flattering.');
@@ -83,7 +83,7 @@ test.describe('prompt editing and testing', () => {
   });
 
   test('a breaking edit is refused and the file stays intact', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="prompt:escalation"]').click();
     const detail = page.locator('[data-prompt-detail]');
     await detail.locator('button', { hasText: 'Edit' }).first().click();
@@ -98,7 +98,7 @@ test.describe('prompt editing and testing', () => {
   });
 
   test('the persona tester renders the full assembly with task and objective', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="prompt:qa-engineer"]').click();
     const detail = page.locator('[data-prompt-detail]');
     const tester = detail.locator('.pr-test');
@@ -118,7 +118,7 @@ test.describe('prompt editing and testing', () => {
 
   test('the optimize panel offers goal, models, and variant count on personas and routines', async ({ page }) => {
     // Presence only: starting an experiment spends many real completions.
-    await page.goto('/routines?sel=prompt:senior-reviewer');
+    await page.goto('/directives?sel=prompt:senior-reviewer');
     const detail = page.locator('[data-prompt-detail]');
     const opt = detail.locator('.pr-optimize');
     await expect(opt.locator('textarea[placeholder^="Goal"]')).toBeVisible();
@@ -137,14 +137,14 @@ test.describe('prompt editing and testing', () => {
     await opt.locator('.pr-variants').fill('4');
     await expect(opt.locator('.pr-cost')).toContainText('5 runs on haiku + 2 fable calls');
 
-    await page.goto('/routines?sel=routine:pr-page-test');
+    await page.goto('/directives?sel=routine:pr-page-test');
     await expect(detail.locator('.pr-optimize button', { hasText: 'Start experiment' })).toBeVisible();
   });
 });
 
 test.describe('deep links', () => {
   test('?sel selects on load, with the composer mode from the URL', async ({ page }) => {
-    await page.goto('/routines?sel=prompt:senior-reviewer&mode=review');
+    await page.goto('/directives?sel=prompt:senior-reviewer&mode=review');
     const detail = page.locator('[data-prompt-detail]');
     await expect(detail).toContainText('senior-reviewer');
     await expect(page.locator('[data-sel="prompt:senior-reviewer"]')).toHaveClass(/on/);
@@ -153,7 +153,7 @@ test.describe('deep links', () => {
   });
 
   test('tree clicks push the selection into the URL; back returns', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-sel="prompt:triager"]').click();
     await expect(page).toHaveURL(/sel=prompt%3Atriager/);
     await page.locator('[data-sel="prompt:escalation"]').click();
@@ -161,11 +161,11 @@ test.describe('deep links', () => {
     await page.goBack();
     await expect(page.locator('[data-prompt-detail]')).toContainText('triager');
     // Tree items are real links: the href is shareable.
-    await expect(page.locator('[data-sel="prompt:triager"]')).toHaveAttribute('href', '/routines?sel=prompt:triager');
+    await expect(page.locator('[data-sel="prompt:triager"]')).toHaveAttribute('href', '/directives?sel=prompt:triager');
   });
 
   test('the composition manifest links between prompts', async ({ page }) => {
-    await page.goto('/routines?sel=prompt:senior-reviewer');
+    await page.goto('/directives?sel=prompt:senior-reviewer');
     const detail = page.locator('[data-prompt-detail]');
     await detail.locator('a[data-nav="prompt:engineering-standards"]').first().click();
     await expect(detail).toContainText('engineering-standards');
@@ -175,7 +175,7 @@ test.describe('deep links', () => {
 
 test.describe('directives', () => {
   test('the tree has a directives section and the detail composes and previews', async ({ page }) => {
-    await page.goto('/routines');
+    await page.goto('/directives');
     const tree = page.locator('.pr-tree');
     await expect(tree).toContainText('directives/');
     await tree.locator('[data-sel="prompt:triage-repo"]').click();
@@ -202,7 +202,7 @@ test.describe('directives', () => {
     if (res.status() !== 201) {
       expect(await res.text()).toContain('exists'); // rerun tolerance
     }
-    await page.goto('/routines?sel=routine:trigger-test');
+    await page.goto('/directives?sel=routine:trigger-test');
     const detail = page.locator('[data-prompt-detail]');
     await expect(detail).toContainText('trigger');
     await expect(detail).toContainText('directive: ');

@@ -30,7 +30,7 @@ test.describe('dashboard', () => {
     const s = seed();
     await page.goto('/');
     const nav = page.locator('nav.top');
-    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Prompts', 'Stats', 'Settings']) {
+    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Directives', 'Stats', 'Settings']) {
       await expect(nav.getByText(name, { exact: true })).toBeVisible();
     }
     const workers = page.locator('.card', { hasText: 'Workers' });
@@ -684,7 +684,7 @@ test.describe('icons', () => {
 test.describe('routine templates', () => {
   test('a role template fills the New-routine form', async ({ page }) => {
     seed();
-    await page.goto('/routines');
+    await page.goto('/directives');
     await page.locator('[data-routine-new]').click();
     const dialog = page.locator('[data-routine-dialog]');
     await expect(dialog.locator('[data-routine-template]')).toBeVisible();
@@ -710,10 +710,10 @@ test.describe('mobile nav', () => {
     // Open it → the vertical list appears with the nav links.
     await toggle.click();
     await expect(links).toBeVisible();
-    await expect(links.getByText('Prompts', { exact: true })).toBeVisible();
+    await expect(links.getByText('Directives', { exact: true })).toBeVisible();
     // Choosing a link navigates and closes the menu.
-    await links.getByText('Prompts', { exact: true }).click();
-    await expect(page).toHaveURL(/\/routines/);
+    await links.getByText('Directives', { exact: true }).click();
+    await expect(page).toHaveURL(/\/directives/);
     await expect(links).toBeHidden();
   });
 
@@ -731,7 +731,7 @@ test.describe('responsive', () => {
     { name: 'phone', w: 390, h: 844 },
     { name: 'tablet', w: 768, h: 1024 },
   ];
-  const pages = ['/', '/tasks?scope=all', '/queue', '/attention', '/proposals', '/kb', '/routines', '/workflows', '/stats', '/system', '/settings', '/settings/plugins'];
+  const pages = ['/', '/tasks?scope=all', '/queue', '/attention', '/proposals', '/kb', '/directives', '/routines', '/workflows', '/stats', '/system', '/settings', '/settings/plugins'];
   for (const sz of sizes) {
     test(`no horizontal page overflow at ${sz.name} (${sz.w}px)`, async ({ page }) => {
       seed();

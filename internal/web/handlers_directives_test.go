@@ -210,7 +210,7 @@ func TestSchedulerFiresDirectiveTargetRoutine(t *testing.T) {
 	}
 }
 
-// The directive tester subject: POST /api/v1/prompt-test {directive: name}
+// The directive tester subject: POST /api/v1/directive-test {directive: name}
 // composes the full assembly and records under directive:<name>.
 func TestPromptTestDirectiveSubject(t *testing.T) {
 	h := newHarness(t, transportUnix)
@@ -225,7 +225,7 @@ func TestPromptTestDirectiveSubject(t *testing.T) {
 		return "OK", nil
 	}
 	var out promptTestResponse
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"directive": "triage", "objective": "the gauges", "repo": "equitizr"}, &out, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"directive": "triage", "objective": "the gauges", "repo": "equitizr"}, &out, http.StatusOK)
 	for _, want := range []string{"You review.", "Triage equitizr: the gauges"} {
 		if !strings.Contains(gotUser, want) {
 			t.Errorf("test prompt missing %q", want)
@@ -235,7 +235,7 @@ func TestPromptTestDirectiveSubject(t *testing.T) {
 		t.Errorf("model = %q", out.Model)
 	}
 	var tests []store.PromptTest
-	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=directive:triage", nil, &tests, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directive-tests?subject=directive:triage", nil, &tests, http.StatusOK)
 	if len(tests) != 1 || tests[0].Output != "OK" {
 		t.Errorf("history = %+v", tests)
 	}

@@ -55,7 +55,7 @@ func commands() map[string]command {
 		"worker":      {summary: "start the worker process", run: runWorker},
 		"task":        {summary: "add|list|show|cancel|answer tasks", run: tui.RunTask},
 		"repo":        {summary: "list|show|add|archive|restore|pause|resume|cancel|set-app-url repositories", run: tui.RunRepo},
-		"persona":     {summary: "list|show the file-backed prompt personas (~/.forge/prompts)", run: tui.RunPersona},
+		"persona":     {summary: "list|show the file-backed personas (~/.forge/directives)", run: tui.RunPersona},
 		"routine":     {summary: "add|list|show|edit|run|enable|disable routines", run: tui.RunRoutine},
 		"workflow":    {summary: "routines strung together: add|list|show|edit|run|runs", run: tui.RunWorkflow},
 		"queue":       {summary: "show the priority queue", run: tui.RunQueue},

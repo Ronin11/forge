@@ -735,7 +735,7 @@
         dirLink.textContent = 'view directive →';
         function syncDirLink(v) {
           dirLink.hidden = !v;
-          dirLink.href = '/routines?sel=' + encodeURIComponent('prompt:' + v);
+          dirLink.href = '/directives?sel=' + encodeURIComponent('prompt:' + v);
         }
         var dObjective = document.createElement('textarea');
         dObjective.rows = 3;
@@ -772,7 +772,7 @@
         personaLink.textContent = 'view persona →';
         function syncPersonaLink(v) {
           personaLink.hidden = !v;
-          personaLink.href = '/routines?sel=' + encodeURIComponent('prompt:' + v);
+          personaLink.href = '/directives?sel=' + encodeURIComponent('prompt:' + v);
         }
         var personaInput = field('Persona (blank = the routine’s own)', textInput(n.config.persona, function (v) {
           panelMutate(function () {

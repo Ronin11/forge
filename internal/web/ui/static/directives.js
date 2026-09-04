@@ -58,7 +58,7 @@
   // ---- deep links: the selection (and composer mode) live in the URL ----
 
   function urlFor(sel, mode) {
-    return '/routines?sel=' + encodeURIComponent(sel) + (mode ? '&mode=' + encodeURIComponent(mode) : '');
+    return '/directives?sel=' + encodeURIComponent(sel) + (mode ? '&mode=' + encodeURIComponent(mode) : '');
   }
   function currentParams() {
     var q = new URLSearchParams(window.location.search);
@@ -83,7 +83,7 @@
   // ---- fragment / persona detail ----
 
   function promptURL(name, query) {
-    return '/api/v1/prompts/' + name.split('/').map(encodeURIComponent).join('/') + (query || '');
+    return '/api/v1/directives/' + name.split('/').map(encodeURIComponent).join('/') + (query || '');
   }
 
   function showFragment(name, initialMode) {
@@ -351,7 +351,7 @@
       out.appendChild(el('p', 'meta', 'Waiting for the model — a real completion, typically a few seconds…'));
       var req = body();
       req.model = modelSel.value;
-      fetch('/api/v1/prompt-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })
+      fetch('/api/v1/directive-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })
         .then(function (resp) {
           if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
           return resp.json();
@@ -374,7 +374,7 @@
     parent.appendChild(history);
     function loadHistory() {
       if (!subject) return;
-      fetchJSON('/api/v1/prompt-tests?subject=' + encodeURIComponent(subject)).then(function (tests) {
+      fetchJSON('/api/v1/directive-tests?subject=' + encodeURIComponent(subject)).then(function (tests) {
         history.textContent = '';
         if (!tests.length) return;
         history.appendChild(label('Last test run'));
@@ -763,9 +763,10 @@
     var p = currentParams();
     if (p.sel) select(p.sel, { mode: p.mode });
   });
-  // Deep link: /routines?sel=prompt:<name>[&mode=<mode>] selects on load.
+  // Deep link: /directives?sel=prompt:<name>[&mode=<mode>] selects on load.
   var boot = currentParams();
   if (boot.sel) select(boot.sel, { mode: boot.mode });
 
-  window.ForgePrompts = { select: select };
+  window.ForgeDirectives = { select: select };
+  window.ForgePrompts = window.ForgeDirectives; // legacy hook name
 })();

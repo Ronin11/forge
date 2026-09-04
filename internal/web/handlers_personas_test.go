@@ -214,8 +214,8 @@ func TestPromptFragmentEdit(t *testing.T) {
 		Body string `json:"body"`
 	}
 	h.call(http.MethodGet, "/api/v1/personas", nil, nil, http.StatusOK)
-	h.call(http.MethodGet, "/api/v1/prompts/personas-check", nil, nil, http.StatusBadRequest)
-	h.call(http.MethodGet, "/api/v1/prompts/reviewer", nil, &detail, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directives/personas-check", nil, nil, http.StatusBadRequest)
+	h.call(http.MethodGet, "/api/v1/directives/reviewer", nil, &detail, http.StatusOK)
 	if !strings.Contains(detail.Raw, "model: haiku") || !strings.Contains(detail.Raw, "## mode: review") {
 		t.Fatalf("raw is not the whole file: %q", detail.Raw)
 	}
@@ -229,7 +229,7 @@ func TestPromptFragmentEdit(t *testing.T) {
 	var after struct {
 		Raw string `json:"raw"`
 	}
-	h.call(http.MethodPut, "/api/v1/prompts/reviewer", map[string]string{"content": newContent}, &after, http.StatusOK)
+	h.call(http.MethodPut, "/api/v1/directives/reviewer", map[string]string{"content": newContent}, &after, http.StatusOK)
 	if !strings.Contains(after.Raw, "New identity.") {
 		t.Fatalf("edit not served back: %q", after.Raw)
 	}
@@ -240,13 +240,13 @@ func TestPromptFragmentEdit(t *testing.T) {
 	var resolved struct {
 		Resolved string `json:"resolved"`
 	}
-	h.call(http.MethodGet, "/api/v1/prompts/reviewer?resolved=1&mode=review", nil, &resolved, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directives/reviewer?resolved=1&mode=review", nil, &resolved, http.StatusOK)
 	if !strings.Contains(resolved.Resolved, "New teaching.") {
 		t.Fatalf("reload did not take: %q", resolved.Resolved)
 	}
 
 	// A breaking edit (unknown include) is refused and the file reverted.
-	status, body := h.do(http.MethodPut, "/api/v1/prompts/standards", map[string]string{"content": "{{> ghost}}"}, nil, "")
+	status, body := h.do(http.MethodPut, "/api/v1/directives/standards", map[string]string{"content": "{{> ghost}}"}, nil, "")
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "not found") {
 		t.Fatalf("breaking edit = %d %s", status, body)
 	}
@@ -256,7 +256,7 @@ func TestPromptFragmentEdit(t *testing.T) {
 	}
 
 	// Only existing files: no create-by-PUT.
-	if status, _ := h.do(http.MethodPut, "/api/v1/prompts/brand-new", map[string]string{"content": "x"}, nil, ""); status != http.StatusBadRequest {
+	if status, _ := h.do(http.MethodPut, "/api/v1/directives/brand-new", map[string]string{"content": "x"}, nil, ""); status != http.StatusBadRequest {
 		t.Fatalf("create by PUT = %d", status)
 	}
 }
@@ -274,7 +274,7 @@ func TestPersonaTestPreview(t *testing.T) {
 			Model  string `json:"model"`
 		} `json:"test"`
 	}
-	h.call(http.MethodGet, "/api/v1/prompts/reviewer?test=1&mode=run&task=Fix+{{repo}}:+{{objective}}&objective=the+gauges&repo=equitizr", nil, &out, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directives/reviewer?test=1&mode=run&task=Fix+{{repo}}:+{{objective}}&objective=the+gauges&repo=equitizr", nil, &out, http.StatusOK)
 	if out.Test == nil {
 		t.Fatal("no test preview")
 	}
@@ -288,7 +288,7 @@ func TestPersonaTestPreview(t *testing.T) {
 	}
 }
 
-// POST /api/v1/prompt-test runs the composed prompt through the model seam:
+// POST /api/v1/directive-test runs the composed prompt through the model seam:
 // the persona path composes before calling, the routine path uses the saved
 // binding, the model override wins, and a process without model access or an
 // unknown alias refuses cleanly.
@@ -300,7 +300,7 @@ func TestPromptTestRun(t *testing.T) {
 	})
 
 	// No model seam: refused before anything runs.
-	if status, body := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "model access") {
+	if status, body := h.do(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "t"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "model access") {
 		t.Fatalf("no seam = %d %s", status, body)
 	}
 
@@ -316,7 +316,7 @@ func TestPromptTestRun(t *testing.T) {
 		Prompt    string `json:"prompt"`
 		ElapsedMS *int64 `json:"elapsed_ms"`
 	}
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{
 		"persona": "reviewer", "mode": "run", "task": "Fix {{repo}}: {{objective}}",
 		"objective": "the gauges", "repo": "equitizr",
 	}, &out, http.StatusOK)
@@ -333,7 +333,7 @@ func TestPromptTestRun(t *testing.T) {
 	}
 
 	// Model override beats the persona default.
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t", "model": "sonnet"}, &out, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "t", "model": "sonnet"}, &out, http.StatusOK)
 	if gotModel != "sonnet" || out.Model != "sonnet" {
 		t.Errorf("override: gotModel=%q out.Model=%q", gotModel, out.Model)
 	}
@@ -341,16 +341,16 @@ func TestPromptTestRun(t *testing.T) {
 	// The routine path uses the saved binding.
 	rt := store.Routine{Name: "runnable", Mode: "run", Prompt: "Routine task on {{repo}}", Persona: "reviewer", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"routine": "runnable"}, &out, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"routine": "runnable"}, &out, http.StatusOK)
 	if !strings.Contains(gotUser, "Routine task on equitizr") || !strings.Contains(gotUser, "You are the reviewer.") {
 		t.Errorf("routine test prompt = %q", gotUser)
 	}
 
 	// Refusals: unknown alias, and neither routine nor persona.
-	if status, body := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t", "model": "bogus"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "unknown model alias") {
+	if status, body := h.do(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "t", "model": "bogus"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "unknown model alias") {
 		t.Fatalf("bad alias = %d %s", status, body)
 	}
-	if status, _ := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"task": "t"}, nil, ""); status != http.StatusBadRequest {
+	if status, _ := h.do(http.MethodPost, "/api/v1/directive-test", map[string]string{"task": "t"}, nil, ""); status != http.StatusBadRequest {
 		t.Fatalf("no subject = %d", status)
 	}
 }
@@ -366,12 +366,12 @@ func TestPromptTestHistory(t *testing.T) {
 		return "OUTPUT for " + model, nil
 	}
 
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "first try", "objective": "obj-1"}, nil, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "first try", "objective": "obj-1"}, nil, http.StatusOK)
 	h.clock.Advance(time.Second) // same-instant rows would tie-break on random ids
-	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "second try", "model": "sonnet"}, nil, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "second try", "model": "sonnet"}, nil, http.StatusOK)
 
 	var tests []store.PromptTest
-	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directive-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
 	if len(tests) != 2 {
 		t.Fatalf("tests = %d", len(tests))
 	}
@@ -386,19 +386,19 @@ func TestPromptTestHistory(t *testing.T) {
 		t.Errorf("latest missing prompt/manifest: %+v", latest)
 	}
 	// Subjects are separate: nothing recorded under a routine subject.
-	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=routine:reviewer", nil, &tests, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directive-tests?subject=routine:reviewer", nil, &tests, http.StatusOK)
 	if len(tests) != 0 {
 		t.Errorf("cross-subject leak: %d", len(tests))
 	}
-	if status, _ := h.do(http.MethodGet, "/api/v1/prompt-tests", nil, nil, ""); status != http.StatusBadRequest {
+	if status, _ := h.do(http.MethodGet, "/api/v1/directive-tests", nil, nil, ""); status != http.StatusBadRequest {
 		t.Errorf("no subject = %d", status)
 	}
 
 	// The per-subject trim keeps the scratchpad bounded.
 	for i := 0; i < 25; i++ {
-		h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "spam"}, nil, http.StatusOK)
+		h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"persona": "reviewer", "task": "spam"}, nil, http.StatusOK)
 	}
-	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/directive-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
 	if len(tests) != 20 {
 		t.Errorf("trim: %d rows, want 20", len(tests))
 	}

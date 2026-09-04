@@ -17,7 +17,7 @@ const EMPTY_CHECKS = [
   { path: '/queue', wants: ['The queue is empty.'] },
   { path: '/attention', wants: ['Nothing is waiting on you.'] },
   { path: '/proposals', wants: ['No proposals yet'] },
-  { path: '/routines', wants: ['No routines'] },
+  { path: '/directives', wants: ['No routines'] },
   { path: '/stats', wants: ['No finished attempts in this window.'] },
   { path: '/system', wants: ['No repositories advertised'] },
   { path: '/kb', wants: ['No notes yet'] },
