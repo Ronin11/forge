@@ -442,3 +442,5 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .pr-source{width:100%;font-family:ui-monospace,monospace;font-size:.8rem;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:.5rem;box-sizing:border-box}
 .pr-mode{max-width:9rem}
 .pr-controls input{font:inherit;padding:.3rem .45rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.pr-run{border-top:1px solid var(--line);padding-top:.4rem;margin-top:.4rem}
+.pr-run pre.result{max-height:16rem}

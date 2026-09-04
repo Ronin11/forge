@@ -386,6 +386,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/prompts/{name...}", s.handle(s.getPromptFragment))
 	m.HandleFunc("PUT /api/v1/prompts/{name...}", s.handle(s.putPromptFragment))
 	m.HandleFunc("POST /api/v1/prompt-test", s.handle(s.promptTest))
+	m.HandleFunc("GET /api/v1/prompt-tests", s.handle(s.listPromptTests))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("GET /api/v1/routine-templates", s.handle(s.listRoutineTemplates))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))

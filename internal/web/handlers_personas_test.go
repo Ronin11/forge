@@ -353,3 +353,51 @@ func TestPromptTestRun(t *testing.T) {
 		t.Fatalf("no subject = %d", status)
 	}
 }
+
+// Every test run is recorded against its subject with inputs, manifest, and
+// output — the page's "last ran with these inputs" memory — trimmed to the
+// most recent per subject.
+func TestPromptTestHistory(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer."})
+	h.srv.modelCall = func(ctx context.Context, system, user, model string) (string, error) {
+		return "OUTPUT for " + model, nil
+	}
+
+	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "first try", "objective": "obj-1"}, nil, http.StatusOK)
+	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "second try", "model": "sonnet"}, nil, http.StatusOK)
+
+	var tests []store.PromptTest
+	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
+	if len(tests) != 2 {
+		t.Fatalf("tests = %d", len(tests))
+	}
+	latest, prev := tests[0], tests[1]
+	if latest.Task != "second try" || latest.Model != "sonnet" || latest.Output != "OUTPUT for sonnet" {
+		t.Errorf("latest = %+v", latest)
+	}
+	if prev.Task != "first try" || prev.Objective != "obj-1" || prev.Model != "haiku" {
+		t.Errorf("prev = %+v", prev)
+	}
+	if !strings.Contains(latest.Prompt, "You are the reviewer.") || len(latest.Composition) == 0 {
+		t.Errorf("latest missing prompt/manifest: %+v", latest)
+	}
+	// Subjects are separate: nothing recorded under a routine subject.
+	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=routine:reviewer", nil, &tests, http.StatusOK)
+	if len(tests) != 0 {
+		t.Errorf("cross-subject leak: %d", len(tests))
+	}
+	if status, _ := h.do(http.MethodGet, "/api/v1/prompt-tests", nil, nil, ""); status != http.StatusBadRequest {
+		t.Errorf("no subject = %d", status)
+	}
+
+	// The per-subject trim keeps the scratchpad bounded.
+	for i := 0; i < 25; i++ {
+		h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "spam"}, nil, http.StatusOK)
+	}
+	h.call(http.MethodGet, "/api/v1/prompt-tests?subject=persona:reviewer", nil, &tests, http.StatusOK)
+	if len(tests) != 20 {
+		t.Errorf("trim: %d rows, want 20", len(tests))
+	}
+}

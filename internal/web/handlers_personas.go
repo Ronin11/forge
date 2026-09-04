@@ -352,8 +352,51 @@ func (s *Server) promptTest(r *http.Request) (int, any, error) {
 		return 0, nil, fmt.Errorf("test run (%s): %w", alias, err)
 	}
 	preview.Model = alias
+	elapsed := s.now().Sub(start).Milliseconds()
+	// Record the run against its subject so the page can show "last ran with
+	// these inputs, got this output" — the iterate loop's memory. The manifest
+	// rides along, so a reader after a fragment edit can see the output came
+	// from older fragment versions.
+	subject := "persona:" + req.Persona
+	if req.Routine != "" {
+		subject = "routine:" + req.Routine
+	}
+	record := store.PromptTest{
+		Subject: subject, Persona: preview.Persona, Routine: req.Routine,
+		Mode: preview.Mode, Task: req.Task, Objective: req.Objective, Repo: preview.Repository,
+		Model: alias, Prompt: preview.Prompt, Output: output, ElapsedMS: elapsed,
+	}
+	if preview.Composition != nil {
+		if raw, err := json.Marshal(preview.Composition); err == nil {
+			record.Composition = raw
+		}
+	}
+	if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.InsertPromptTest(ctx, &record) }); err != nil {
+		s.log.WarnContext(ctx, "record prompt test", "error", err)
+	}
 	s.log.InfoContext(ctx, "prompt test run", "routine", req.Routine, "persona", req.Persona, "model", alias, "prompt_bytes", len(preview.Prompt), "output_bytes", len(output))
-	return http.StatusOK, promptTestResponse{routinePreview: preview, Output: output, ElapsedMS: s.now().Sub(start).Milliseconds()}, nil
+	return http.StatusOK, promptTestResponse{routinePreview: preview, Output: output, ElapsedMS: elapsed}, nil
+}
+
+// listPromptTests is GET /api/v1/prompt-tests?subject=persona:<name> —
+// a subject's recorded test runs, newest first.
+func (s *Server) listPromptTests(r *http.Request) (int, any, error) {
+	subject := r.URL.Query().Get("subject")
+	if subject == "" {
+		return 0, nil, badRequest("subject is required (persona:<name> or routine:<name>)")
+	}
+	limit, err := listLimit(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	tests, err := s.store.PromptTests(r.Context(), subject, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	if tests == nil {
+		tests = []store.PromptTest{}
+	}
+	return http.StatusOK, tests, nil
 }
 
 func (s *Server) getPersona(r *http.Request) (int, any, error) {

@@ -27,8 +27,10 @@
   var routines = [];
   var routinesReady = fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; }).catch(function () {});
   var modelAliases = ['haiku', 'sonnet', 'opus'];
+  var libCommit = '';
   var modelsReady = fetchJSON('/api/v1/personas').then(function (lib) {
     if (lib.models && lib.models.length) modelAliases = lib.models;
+    libCommit = lib.commit || '';
   }).catch(function () {});
 
   function el(tag, cls, text) {
@@ -172,13 +174,50 @@
     detail.appendChild(out);
     runPanel(detail, f.model, function () {
       return { persona: f.name, mode: modeInput.value.trim(), task: task.value, objective: objective.value.trim(), repo: repo.value.trim() };
+    }, 'persona:' + f.name, function (t) {
+      if (t.mode) modeInput.value = t.mode;
+      task.value = t.task || '';
+      objective.value = t.objective || '';
+      repo.value = t.repo || '';
     });
   }
 
-  // runPanel appends a model picker, a Run button, and an output pane; body()
-  // assembles the prompt-test request at click time. One click = one real
-  // model completion at the chosen size — a prompt smoke, not an agent run.
-  function runPanel(parent, defaultModel, body) {
+  function relTime(iso) {
+    var s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (s < 90) return Math.round(s) + 's ago';
+    if (s < 5400) return Math.round(s / 60) + 'm ago';
+    if (s < 129600) return Math.round(s / 3600) + 'h ago';
+    return Math.round(s / 86400) + 'd ago';
+  }
+
+  // testRecord renders one saved run: when, model, inputs, output — and a
+  // Load-inputs button that refills the tester, which is the iterate loop.
+  function testRecord(t, setInputs, modelSel) {
+    var box = el('div', 'pr-run');
+    var line = el('p', 'meta');
+    var drift = t.composition && libCommit && t.composition.commit && t.composition.commit !== libCommit;
+    line.textContent = relTime(t.created_at) + ' · ' + t.model + ' · ' + (t.elapsed_ms / 1000).toFixed(1) + 's' +
+      (t.mode ? ' · mode ' + t.mode : '') + (t.repo ? ' · repo ' + t.repo : '') +
+      (drift ? ' · library has changed since this run' : '');
+    box.appendChild(line);
+    if (t.task || t.objective) {
+      var inputs = el('p', 'meta');
+      inputs.textContent = (t.task ? 'task: ' + t.task.slice(0, 120) : '') + (t.objective ? '  ·  objective: ' + t.objective.slice(0, 120) : '');
+      box.appendChild(inputs);
+    }
+    if (setInputs) box.appendChild(button('Load these inputs', '', function () {
+      setInputs(t);
+      if (modelSel) modelSel.value = modelAliases.indexOf(t.model) >= 0 ? t.model : '';
+    }));
+    box.appendChild(pre(t.output || '(no output recorded)'));
+    return box;
+  }
+
+  // runPanel appends a model picker, a Run button, an output pane, and the
+  // subject's run history; body() assembles the prompt-test request at click
+  // time. One click = one real model completion at the chosen size — a
+  // prompt smoke, not an agent run.
+  function runPanel(parent, defaultModel, body, subject, setInputs) {
     var row = el('div', 'pr-controls');
     var modelSel = document.createElement('select');
     modelsReady.then(function () {
@@ -215,10 +254,33 @@
           out.appendChild(pre(r.output || '(empty)'));
         })
         .catch(function (err) { out.textContent = ''; fail(err); })
-        .then(function () { btn.disabled = false; btn.textContent = 'Run test'; });
+        .then(function () { btn.disabled = false; btn.textContent = 'Run test'; loadHistory(); });
     }));
     parent.appendChild(row);
     parent.appendChild(out);
+
+    // History: the latest run in full, older ones collapsed — coming back to
+    // a prompt shows what it last did with which inputs.
+    var history = el('div');
+    parent.appendChild(history);
+    function loadHistory() {
+      if (!subject) return;
+      fetchJSON('/api/v1/prompt-tests?subject=' + encodeURIComponent(subject)).then(function (tests) {
+        history.textContent = '';
+        if (!tests.length) return;
+        history.appendChild(label('Last test run'));
+        history.appendChild(testRecord(tests[0], setInputs, modelSel));
+        if (tests.length > 1) {
+          var older = document.createElement('details');
+          var sum = document.createElement('summary');
+          sum.textContent = (tests.length - 1) + ' earlier run(s)';
+          older.appendChild(sum);
+          tests.slice(1).forEach(function (t) { older.appendChild(testRecord(t, setInputs, modelSel)); });
+          history.appendChild(older);
+        }
+      }).catch(function () {});
+    }
+    loadHistory();
   }
 
   // personaComposer: pick a mode, see the exact composed text and manifest.
@@ -320,6 +382,9 @@
       detail.appendChild(out);
       runPanel(detail, rt.model, function () {
         return { routine: rt.name, objective: objective.value.trim(), repo: repoSel.value };
+      }, 'routine:' + rt.name, function (t) {
+        objective.value = t.objective || '';
+        if (t.repo) repoSel.value = t.repo;
       });
     });
   }
