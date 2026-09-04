@@ -50,18 +50,35 @@ const MaxIncludeDepth = 8
 // document's job.
 const MaxResolvedBytes = 256 * 1024
 
-// Fragment is one file: a fragment proper, or a persona (personas are
-// fragments that live under personas/ and may declare a model and mode
-// sections).
+// Fragment is one file: a fragment proper, a persona (under personas/, may
+// declare a model and mode sections), or a directive (under directives/ —
+// executable task content: frontmatter names its mode, and optionally a
+// persona, model, and effort; the body is the task text a routine trigger or
+// workflow node runs).
 type Fragment struct {
 	Name    string `json:"name"` // relative path minus .md: "escalation-rules", "house-style/go"
 	Path    string `json:"path"`
-	Model   string `json:"model,omitempty"` // personas: default model alias, routine overrides
+	Model   string `json:"model,omitempty"` // personas/directives: default model alias; overrides win
 	Body    string `json:"-"`               // core body, mode sections split out
 	Modes   map[string]string
 	Hash    string `json:"hash"` // sha256 of the raw file
 	Persona bool   `json:"persona"`
+	// Directive marks executable task content; the remaining fields are
+	// directive frontmatter only.
+	Directive  bool   `json:"directive,omitempty"`
+	PersonaRef string `json:"persona_ref,omitempty"` // persona composed ahead of the body
+	Mode       string `json:"mode,omitempty"`        // required for directives
+	Effort     string `json:"effort,omitempty"`
 }
+
+// fragmentKind selects the parse rules for one library subdir.
+type fragmentKind int
+
+const (
+	kindFragment fragmentKind = iota
+	kindPersona
+	kindDirective
+)
 
 // Library is one loaded, validated tree. It is immutable once built — the
 // daemon swaps whole libraries, never mutates one.
@@ -113,7 +130,8 @@ func ValidateName(name string) error {
 // its previous library: a broken edit must never brick run creation.
 func Load(dir string) (*Library, error) {
 	lib := &Library{Dir: dir, LoadedAt: time.Now().UTC(), fragments: map[string]*Fragment{}}
-	for _, sub := range []string{"personas", "fragments"} {
+	kinds := map[string]fragmentKind{"personas": kindPersona, "fragments": kindFragment, "directives": kindDirective}
+	for _, sub := range []string{"personas", "fragments", "directives"} {
 		root := filepath.Join(dir, sub)
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -129,7 +147,7 @@ func Load(dir string) (*Library, error) {
 			if err != nil {
 				return err
 			}
-			f, err := loadFragment(path, filepath.ToSlash(strings.TrimSuffix(rel, ".md")), sub == "personas")
+			f, err := loadFragment(path, filepath.ToSlash(strings.TrimSuffix(rel, ".md")), kinds[sub])
 			if err != nil {
 				return err
 			}
@@ -159,7 +177,7 @@ func Load(dir string) (*Library, error) {
 	return lib, nil
 }
 
-func loadFragment(path, name string, persona bool) (*Fragment, error) {
+func loadFragment(path, name string, kind fragmentKind) (*Fragment, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -167,14 +185,15 @@ func loadFragment(path, name string, persona bool) (*Fragment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseFragment(raw, path, name, persona)
+	return parseFragment(raw, path, name, kind)
 }
 
 // parseFragment builds a fragment from raw bytes — the file loader and
 // in-memory variants (WithVariant) share it.
-func parseFragment(raw []byte, path, name string, persona bool) (*Fragment, error) {
+func parseFragment(raw []byte, path, name string, kind fragmentKind) (*Fragment, error) {
 	sum := sha256.Sum256(raw)
-	f := &Fragment{Name: name, Path: path, Hash: hex.EncodeToString(sum[:]), Persona: persona, Modes: map[string]string{}}
+	f := &Fragment{Name: name, Path: path, Hash: hex.EncodeToString(sum[:]),
+		Persona: kind == kindPersona, Directive: kind == kindDirective, Modes: map[string]string{}}
 	body := string(raw)
 	// Frontmatter is optional: a bare Markdown file is a fine fragment.
 	if strings.HasPrefix(body, "---\n") {
@@ -192,14 +211,33 @@ func parseFragment(raw []byte, path, name string, persona bool) (*Fragment, erro
 			if !ok {
 				return nil, fmt.Errorf("%s: frontmatter line %q", path, line)
 			}
-			switch strings.TrimSpace(key) {
-			case "model":
-				f.Model = strings.TrimSpace(val)
+			key, val = strings.TrimSpace(key), strings.TrimSpace(val)
+			switch {
+			case key == "model":
+				f.Model = val
+			case key == "mode" && kind == kindDirective:
+				f.Mode = val
+			case key == "persona" && kind == kindDirective:
+				if err := ValidateName(val); err != nil {
+					return nil, fmt.Errorf("%s: persona: %w", path, err)
+				}
+				f.PersonaRef = val
+			case key == "effort" && kind == kindDirective:
+				f.Effort = val
 			default:
-				return nil, fmt.Errorf("%s: unknown frontmatter key %q", path, strings.TrimSpace(key))
+				return nil, fmt.Errorf("%s: unknown frontmatter key %q", path, key)
 			}
 		}
 		body = strings.TrimPrefix(rest[end+4:], "\n")
+	}
+	if kind == kindDirective {
+		if f.Mode == "" {
+			return nil, fmt.Errorf("%s: a directive needs `mode:` in its frontmatter", path)
+		}
+		// Directives have exactly one mode (frontmatter); a `## mode:` heading
+		// in the body is just markdown, not a section.
+		f.Body = strings.TrimSpace(body)
+		return f, nil
 	}
 	f.Body, f.Modes = splitModeSections(body)
 	return f, nil
@@ -236,7 +274,14 @@ func (l *Library) WithVariant(name, raw string) (*Library, error) {
 	if orig == nil {
 		return nil, fmt.Errorf("fragment %q is not in the library", name)
 	}
-	f, err := parseFragment([]byte(raw), orig.Path, name, orig.Persona)
+	kind := kindFragment
+	switch {
+	case orig.Persona:
+		kind = kindPersona
+	case orig.Directive:
+		kind = kindDirective
+	}
+	f, err := parseFragment([]byte(raw), orig.Path, name, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +291,7 @@ func (l *Library) WithVariant(name, raw string) (*Library, error) {
 	}
 	next.fragments[name] = f
 	for _, frag := range next.fragments {
-		if !frag.Persona && frag.Name != name {
+		if !frag.Persona && !frag.Directive && frag.Name != name {
 			continue
 		}
 		if _, _, err := next.expand(frag, "", nil, 0); err != nil {
@@ -268,6 +313,38 @@ func (l *Library) Persona(name string) *Fragment {
 		return nil
 	}
 	return f
+}
+
+// Directive returns a directive by name, or nil.
+func (l *Library) Directive(name string) *Fragment {
+	f := l.fragments[name]
+	if f == nil || !f.Directive {
+		return nil
+	}
+	return f
+}
+
+// ResolveDirectiveBody expands a directive's task text — includes resolved,
+// {{objective}}/{{repo}}/{{run.*}} left for the downstream substitutions —
+// and returns the manifest of every fragment that went in. The directive's
+// persona is NOT composed here: persona composition stays with the caller
+// (the same seam routines use), checked at resolve time so one bad reference
+// cannot brick the whole library.
+func (l *Library) ResolveDirectiveBody(name string) (string, []ManifestEntry, error) {
+	f := l.Directive(name)
+	if f == nil {
+		return "", nil, fmt.Errorf("directive %q is not in the library (directives/%s.md)", name, name)
+	}
+	used := map[string]bool{}
+	text, names, err := l.expand(f, "", used, 0)
+	if err != nil {
+		return "", nil, err
+	}
+	entries := make([]ManifestEntry, 0, len(names))
+	for _, n := range names {
+		entries = append(entries, ManifestEntry{Name: n, Hash: l.fragments[n].Hash})
+	}
+	return text, entries, nil
 }
 
 // Fragments lists every fragment, personas included, sorted by name.
@@ -389,7 +466,7 @@ func Ensure(dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		fresh = true
 	}
-	for _, sub := range []string{"personas", "fragments"} {
+	for _, sub := range []string{"personas", "fragments", "directives"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return err
 		}

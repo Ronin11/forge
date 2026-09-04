@@ -277,3 +277,83 @@ func TestWithVariant(t *testing.T) {
 		t.Error("unknown fragment accepted")
 	}
 }
+
+// Directives: frontmatter carries mode (required), persona, model, effort;
+// the body expands includes; `## mode:` headings in a directive body are just
+// markdown.
+func TestDirectives(t *testing.T) {
+	dir := write(t, map[string]string{
+		"directives/triage.md":   "---\nmode: run\npersona: triager\nmodel: haiku\neffort: low\n---\nTriage {{repo}}: {{objective}}\n{{> checklist}}",
+		"directives/plain.md":    "---\nmode: plan\n---\nJust plan.\n\n## mode: run\nnot a section",
+		"personas/triager.md":    "You triage.",
+		"fragments/checklist.md": "- look at the queue",
+	})
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := lib.Directive("triage")
+	if d == nil || d.Mode != "run" || d.PersonaRef != "triager" || d.Model != "haiku" || d.Effort != "low" {
+		t.Fatalf("directive = %+v", d)
+	}
+	if lib.Directive("triager") != nil || lib.Persona("triage") != nil {
+		t.Error("kind accessors leak across kinds")
+	}
+	text, manifest, err := lib.ResolveDirectiveBody("triage")
+	if err != nil || !strings.Contains(text, "- look at the queue") || !strings.Contains(text, "Triage {{repo}}: {{objective}}") {
+		t.Fatalf("resolved = %q, %v", text, err)
+	}
+	if len(manifest) != 2 {
+		t.Errorf("manifest = %+v", manifest)
+	}
+	// A directive body keeps `## mode:` lines verbatim.
+	if p := lib.Directive("plain"); !strings.Contains(p.Body, "## mode: run") || len(p.Modes) != 0 {
+		t.Errorf("directive body mode-split: %+v", p)
+	}
+	if _, _, err := lib.ResolveDirectiveBody("ghost"); err == nil {
+		t.Error("unknown directive resolved")
+	}
+}
+
+func TestDirectiveLoadRefusals(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"missing mode":       {"directives/x.md": "no frontmatter"},
+		"unknown key":        {"directives/x.md": "---\nmode: run\nbudget: high\n---\nbody"},
+		"bad persona name":   {"directives/x.md": "---\nmode: run\npersona: Bad Name\n---\nbody"},
+		"broken include":     {"directives/x.md": "---\nmode: run\n---\n{{> ghost}}"},
+		"dup vs fragment":    {"directives/x.md": "---\nmode: run\n---\nbody", "fragments/x.md": "clash"},
+		"mode on fragment":   {"fragments/x.md": "---\nmode: run\n---\nbody"},
+		"persona on persona": {"personas/x.md": "---\npersona: y\n---\nbody"},
+	} {
+		if _, err := Load(write(t, files)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// WithVariant re-validates directives too — an edit that breaks a directive's
+// includes is refused, and a directive variant composes.
+func TestWithVariantDirective(t *testing.T) {
+	dir := write(t, map[string]string{
+		"directives/triage.md": "---\nmode: run\n---\nOld task. {{> shared}}",
+		"fragments/shared.md":  "Shared.",
+	})
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := lib.WithVariant("triage", "---\nmode: run\n---\nNew task. {{> shared}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text, _, err := v.ResolveDirectiveBody("triage"); err != nil || !strings.Contains(text, "New task. Shared.") {
+		t.Fatalf("variant = %q, %v", text, err)
+	}
+	if _, err := lib.WithVariant("triage", "---\nmode: run\n---\n{{> ghost}}"); err == nil {
+		t.Error("broken directive variant accepted")
+	}
+	// Varying a fragment a directive uses re-validates the directive.
+	if _, err := lib.WithVariant("shared", "{{> missing}}"); err == nil {
+		t.Error("fragment variant breaking a directive accepted")
+	}
+}
