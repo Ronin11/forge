@@ -26,6 +26,10 @@
 
   var routines = [];
   var routinesReady = fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; }).catch(function () {});
+  var modelAliases = ['haiku', 'sonnet', 'opus'];
+  var modelsReady = fetchJSON('/api/v1/personas').then(function (lib) {
+    if (lib.models && lib.models.length) modelAliases = lib.models;
+  }).catch(function () {});
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -166,6 +170,55 @@
     }));
     detail.appendChild(controls);
     detail.appendChild(out);
+    runPanel(detail, f.model, function () {
+      return { persona: f.name, mode: modeInput.value.trim(), task: task.value, objective: objective.value.trim(), repo: repo.value.trim() };
+    });
+  }
+
+  // runPanel appends a model picker, a Run button, and an output pane; body()
+  // assembles the prompt-test request at click time. One click = one real
+  // model completion at the chosen size — a prompt smoke, not an agent run.
+  function runPanel(parent, defaultModel, body) {
+    var row = el('div', 'pr-controls');
+    var modelSel = document.createElement('select');
+    modelsReady.then(function () {
+      var def = document.createElement('option');
+      def.value = '';
+      def.textContent = defaultModel ? 'model: ' + defaultModel + ' (default)' : 'model: (routine default)';
+      modelSel.appendChild(def);
+      modelAliases.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m;
+        o.textContent = 'model: ' + m;
+        modelSel.appendChild(o);
+      });
+    });
+    var out = el('div');
+    row.appendChild(modelSel);
+    row.appendChild(button('Run test', '', function (e) {
+      var btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Running…';
+      out.textContent = '';
+      out.appendChild(el('p', 'meta', 'Waiting for the model — a real completion, typically a few seconds…'));
+      var req = body();
+      req.model = modelSel.value;
+      fetch('/api/v1/prompt-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          return resp.json();
+        })
+        .then(function (r) {
+          out.textContent = '';
+          out.appendChild(el('p', 'meta', 'ran on ' + r.model + ' · ' + (r.elapsed_ms / 1000).toFixed(1) + 's · prompt ' + r.prompt.length + ' bytes → output ' + r.output.length + ' bytes'));
+          out.appendChild(label('Model output'));
+          out.appendChild(pre(r.output || '(empty)'));
+        })
+        .catch(function (err) { out.textContent = ''; fail(err); })
+        .then(function () { btn.disabled = false; btn.textContent = 'Run test'; });
+    }));
+    parent.appendChild(row);
+    parent.appendChild(out);
   }
 
   // personaComposer: pick a mode, see the exact composed text and manifest.
@@ -265,6 +318,9 @@
       }));
       detail.appendChild(controls);
       detail.appendChild(out);
+      runPanel(detail, rt.model, function () {
+        return { routine: rt.name, objective: objective.value.trim(), repo: repoSel.value };
+      });
     });
   }
 

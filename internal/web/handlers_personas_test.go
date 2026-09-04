@@ -286,3 +286,70 @@ func TestPersonaTestPreview(t *testing.T) {
 		t.Errorf("model = %q", out.Test.Model)
 	}
 }
+
+// POST /api/v1/prompt-test runs the composed prompt through the model seam:
+// the persona path composes before calling, the routine path uses the saved
+// binding, the model override wins, and a process without model access or an
+// unknown alias refuses cleanly.
+func TestPromptTestRun(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{
+		"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun teaching.",
+	})
+
+	// No model seam: refused before anything runs.
+	if status, body := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "model access") {
+		t.Fatalf("no seam = %d %s", status, body)
+	}
+
+	var gotUser, gotModel string
+	h.srv.modelCall = func(ctx context.Context, system, user, model string) (string, error) {
+		gotUser, gotModel = user, model
+		return "MODEL SAYS HI", nil
+	}
+
+	var out struct {
+		Output    string `json:"output"`
+		Model     string `json:"model"`
+		Prompt    string `json:"prompt"`
+		ElapsedMS *int64 `json:"elapsed_ms"`
+	}
+	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{
+		"persona": "reviewer", "mode": "run", "task": "Fix {{repo}}: {{objective}}",
+		"objective": "the gauges", "repo": "equitizr",
+	}, &out, http.StatusOK)
+	if out.Output != "MODEL SAYS HI" || out.Model != "haiku" || gotModel != "haiku" {
+		t.Fatalf("out = %+v, gotModel = %q", out, gotModel)
+	}
+	for _, want := range []string{"You are the reviewer.", "Run teaching.", "Fix equitizr: the gauges"} {
+		if !strings.Contains(gotUser, want) {
+			t.Errorf("model call prompt missing %q", want)
+		}
+	}
+	if out.ElapsedMS == nil {
+		t.Error("no elapsed_ms")
+	}
+
+	// Model override beats the persona default.
+	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t", "model": "sonnet"}, &out, http.StatusOK)
+	if gotModel != "sonnet" || out.Model != "sonnet" {
+		t.Errorf("override: gotModel=%q out.Model=%q", gotModel, out.Model)
+	}
+
+	// The routine path uses the saved binding.
+	rt := store.Routine{Name: "runnable", Mode: "run", Prompt: "Routine task on {{repo}}", Persona: "reviewer", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/prompt-test", map[string]string{"routine": "runnable"}, &out, http.StatusOK)
+	if !strings.Contains(gotUser, "Routine task on equitizr") || !strings.Contains(gotUser, "You are the reviewer.") {
+		t.Errorf("routine test prompt = %q", gotUser)
+	}
+
+	// Refusals: unknown alias, and neither routine nor persona.
+	if status, body := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"persona": "reviewer", "task": "t", "model": "bogus"}, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "unknown model alias") {
+		t.Fatalf("bad alias = %d %s", status, body)
+	}
+	if status, _ := h.do(http.MethodPost, "/api/v1/prompt-test", map[string]string{"task": "t"}, nil, ""); status != http.StatusBadRequest {
+		t.Fatalf("no subject = %d", status)
+	}
+}

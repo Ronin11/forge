@@ -9,6 +9,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"sort"
@@ -66,6 +67,8 @@ type personasList struct {
 	LoadedAt time.Time    `json:"loaded_at"`
 	Dir      string       `json:"dir"`
 	Rows     []personaRow `json:"fragments"`
+	// Models are the daemon's model aliases, for the page's test-run picker.
+	Models []string `json:"models,omitempty"`
 }
 
 func (s *Server) listPersonas(r *http.Request) (int, any, error) {
@@ -73,7 +76,7 @@ func (s *Server) listPersonas(r *http.Request) (int, any, error) {
 	if lib == nil {
 		return 0, nil, badRequest("this process has no prompts library")
 	}
-	out := personasList{Commit: lib.Commit, Dirty: lib.Dirty, LoadedAt: lib.LoadedAt, Dir: lib.Dir, Rows: []personaRow{}}
+	out := personasList{Commit: lib.Commit, Dirty: lib.Dirty, LoadedAt: lib.LoadedAt, Dir: lib.Dir, Rows: []personaRow{}, Models: s.modelAliases}
 	for _, f := range lib.Fragments() {
 		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona}
 		for mode := range f.Modes {
@@ -276,6 +279,81 @@ func (s *Server) renderPreview(ctx context.Context, rt store.Routine, objective,
 	_, rendered := assemblePrompt(in)
 	out.Prompt = rendered
 	return out, nil
+}
+
+// promptTest is POST /api/v1/prompt-test: build the preview (a saved routine
+// or a synthetic persona+task) and actually run it — one headless model call
+// through the concierge's seam, with the model alias configurable — so
+// "how does this prompt land" is answerable from the page. This is a prompt
+// smoke, not an agent run: no worktree, no tools, no task; it costs one
+// completion at the chosen model size.
+type promptTestRequest struct {
+	Routine   string `json:"routine"`
+	Persona   string `json:"persona"`
+	Mode      string `json:"mode"`
+	Task      string `json:"task"`
+	Objective string `json:"objective"`
+	Repo      string `json:"repo"`
+	Model     string `json:"model"` // alias override; empty = the effective model
+}
+
+type promptTestResponse struct {
+	routinePreview
+	Output    string `json:"output"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+}
+
+func (s *Server) promptTest(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	if s.modelCall == nil {
+		return 0, nil, badRequest("test runs need the daemon's model access, which this process does not have")
+	}
+	var req promptTestRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return 0, nil, err
+	}
+	var rt store.Routine
+	switch {
+	case req.Routine != "":
+		saved, err := s.store.GetRoutine(ctx, req.Routine)
+		if err != nil {
+			return 0, nil, err
+		}
+		rt = *saved
+	case req.Persona != "":
+		mode := req.Mode
+		if mode == "" {
+			mode = "run"
+		}
+		rt = store.Routine{Name: "(prompt test)", Mode: mode, Prompt: req.Task, Persona: req.Persona}
+	default:
+		return 0, nil, badRequest("name a routine or a persona to test")
+	}
+	preview, err := s.renderPreview(ctx, rt, req.Objective, req.Repo)
+	if err != nil {
+		return 0, nil, err
+	}
+	alias := req.Model
+	if alias == "" {
+		alias = preview.Model
+	}
+	if alias == "" {
+		return 0, nil, badRequest("pick a model — neither the persona nor the request names one")
+	}
+	if _, ok := s.resolveModel(alias); !ok {
+		return 0, nil, badRequest("unknown model alias %q", alias)
+	}
+	start := s.now()
+	output, err := s.modelCall(ctx, "", preview.Prompt, alias)
+	if err != nil {
+		return 0, nil, fmt.Errorf("test run (%s): %w", alias, err)
+	}
+	preview.Model = alias
+	s.log.InfoContext(ctx, "prompt test run", "routine", req.Routine, "persona", req.Persona, "model", alias, "prompt_bytes", len(preview.Prompt), "output_bytes", len(output))
+	return http.StatusOK, promptTestResponse{routinePreview: preview, Output: output, ElapsedMS: s.now().Sub(start).Milliseconds()}, nil
 }
 
 func (s *Server) getPersona(r *http.Request) (int, any, error) {

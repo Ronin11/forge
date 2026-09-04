@@ -27,7 +27,7 @@ test.describe('prompts page', () => {
     await expect(detail).toContainText('Composed from');
     await expect(detail.locator('pre').nth(1)).toContainText('Be honest, not flattering.');
     // Switching to the review mode section composes its extra teaching.
-    await detail.locator('select').selectOption('review');
+    await detail.locator('select').first().selectOption('review');
     await expect(detail.locator('pre').nth(1)).toContainText('Rank findings by severity');
   });
 
@@ -110,5 +110,10 @@ test.describe('prompt editing and testing', () => {
     await expect(preview).toContainText('professionally distrustful');
     await expect(preview).toContainText('Break demo on purpose: the checkout flow');
     await expect(preview).toContainText('YOUR TASK');
+    // The run panel is present with a model picker; clicking would spend a
+    // real completion, so the suite only asserts the controls.
+    await expect(detail.locator('button', { hasText: 'Run test' })).toBeVisible();
+    const picker = detail.locator('select').last();
+    await expect(picker.locator('option', { hasText: 'sonnet (default)' })).toHaveCount(1);
   });
 });
