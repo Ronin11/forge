@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"forge/internal/core/prompts"
+	"forge/internal/core/directives"
 	"forge/internal/core/store"
 )
 
@@ -67,7 +67,7 @@ func Run(ctx context.Context, st *store.Store, home, libDir string, dryRun bool,
 		}
 	}
 	if !dryRun {
-		if err := prompts.Ensure(libDir); err != nil {
+		if err := directives.Ensure(libDir); err != nil {
 			return rep, fmt.Errorf("ensure %s: %w", libDir, err)
 		}
 	}
@@ -138,7 +138,7 @@ func Run(ctx context.Context, st *store.Store, home, libDir string, dryRun bool,
 
 	// The split files must compose before graphs point at them.
 	if !dryRun {
-		if _, err := prompts.Load(libDir); err != nil {
+		if _, err := directives.Load(libDir); err != nil {
 			return rep, fmt.Errorf("library does not load after the split: %w", err)
 		}
 	}
@@ -284,5 +284,5 @@ func convertGraph(g *store.WorkflowGraph, byName map[string]*store.Routine, will
 // bootstrapCommit posture: where git balks the tree stays dirty, which the
 // next manifest records honestly, and the next boot's run commits it.
 func commitAll(dir string) {
-	prompts.CommitEdit(dir, ".", "forge: split routine prompts into directives")
+	directives.CommitEdit(dir, ".", "forge: split routine prompts into directives")
 }

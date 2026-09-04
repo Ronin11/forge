@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/core/prompts"
+	"forge/internal/core/directives"
 	"forge/internal/core/store"
 )
 
@@ -107,7 +107,7 @@ func TestRunFullAndIdempotent(t *testing.T) {
 	if string(raw) != want {
 		t.Errorf("sweep.md = %q, want %q", raw, want)
 	}
-	lib, err := prompts.Load(f.libDir)
+	lib, err := directives.Load(f.libDir)
 	if err != nil {
 		t.Fatal(err)
 	}

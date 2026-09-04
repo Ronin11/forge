@@ -12,8 +12,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
-	"forge/internal/core/prompts"
 	"forge/internal/core/store"
 	"forge/internal/tools"
 )
@@ -85,7 +85,7 @@ func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Propos
 	if kind, dname := targetOf(r); kind == store.TargetDirective {
 		var ref string
 		if u.Prompt != nil || u.Model != nil || u.Effort != nil {
-			if ref, err = s.applyDirectiveContent(ctx, p, dname, prompts.DirectiveUpdates{Body: u.Prompt, Model: u.Model, Effort: u.Effort}); err != nil {
+			if ref, err = s.applyDirectiveContent(ctx, p, dname, directives.DirectiveUpdates{Body: u.Prompt, Model: u.Model, Effort: u.Effort}); err != nil {
 				return "", err
 			}
 		}
@@ -146,7 +146,7 @@ func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Propos
 // failure, commit, hot-reload — the putPromptFragment discipline. The file
 // commit cannot roll back with the approve transaction; the git history
 // keeps it auditable either way.
-func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, name string, u prompts.DirectiveUpdates) (string, error) {
+func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, name string, u directives.DirectiveUpdates) (string, error) {
 	lib := s.libraryNow()
 	if lib == nil {
 		return "", fmt.Errorf("proposal %s: this process has no prompts library", model.ShortID(p.ID))
@@ -159,20 +159,20 @@ func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, n
 	if err != nil {
 		return "", err
 	}
-	next, err := prompts.RewriteDirective(old, u)
+	next, err := directives.RewriteDirective(old, u)
 	if err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
 	}
 	if err := os.WriteFile(d.Path, next, 0o644); err != nil {
 		return "", err
 	}
-	if _, err := prompts.Load(lib.Dir); err != nil {
+	if _, err := directives.Load(lib.Dir); err != nil {
 		if rerr := os.WriteFile(d.Path, old, 0o644); rerr != nil {
 			s.log.ErrorContext(ctx, "revert refused directive proposal", "path", d.Path, "error", rerr)
 		}
 		return "", fmt.Errorf("proposal %s: the edit breaks the library: %w", model.ShortID(p.ID), err)
 	}
-	prompts.CommitEdit(lib.Dir, d.Path, "proposal:"+p.ID)
+	directives.CommitEdit(lib.Dir, d.Path, "proposal:"+p.ID)
 	if s.promptsReload != nil {
 		if err := s.promptsReload(); err != nil {
 			s.log.WarnContext(ctx, "prompts reload after proposal", "error", err)
@@ -182,7 +182,7 @@ func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, n
 }
 
 // libraryNow is promptLibrary for Engine methods (no HTTP imports here).
-func (s *Engine) libraryNow() *prompts.Library {
+func (s *Engine) libraryNow() *directives.Library {
 	if s.prompts == nil {
 		return nil
 	}

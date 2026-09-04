@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/core/prompts"
+	"forge/internal/core/directives"
 	"forge/internal/core/store"
 )
 
 // withPrompts hands the harness a file-backed library, the way the daemon
 // injects its last-good load.
-func (h *harness) withPrompts(files map[string]string) *prompts.Library {
+func (h *harness) withPrompts(files map[string]string) *directives.Library {
 	h.t.Helper()
 	dir := h.t.TempDir()
 	for name, content := range files {
@@ -28,14 +28,14 @@ func (h *harness) withPrompts(files map[string]string) *prompts.Library {
 			h.t.Fatal(err)
 		}
 	}
-	lib, err := prompts.Load(dir)
+	lib, err := directives.Load(dir)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	current := lib
-	h.srv.prompts = func() *prompts.Library { return current }
+	h.srv.prompts = func() *directives.Library { return current }
 	h.srv.promptsReload = func() error {
-		next, err := prompts.Load(dir)
+		next, err := directives.Load(dir)
 		if err != nil {
 			return err
 		}
@@ -78,7 +78,7 @@ func TestPersonaComposesIntoWork(t *testing.T) {
 	if out.Work.Persona != "reviewer" {
 		t.Errorf("work.persona = %q", out.Work.Persona)
 	}
-	var comp prompts.Composition
+	var comp directives.Composition
 	if err := json.Unmarshal(out.Work.Composition, &comp); err != nil {
 		t.Fatalf("composition: %v (%s)", err, out.Work.Composition)
 	}

@@ -22,6 +22,7 @@ import (
 
 	"forge/internal/core/config"
 	"forge/internal/core/daemon"
+	"forge/internal/core/directives"
 	"forge/internal/core/engine"
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
@@ -31,7 +32,6 @@ import (
 	"forge/internal/core/modes"
 	"forge/internal/core/modes/all"
 	"forge/internal/core/plugin"
-	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 	"forge/internal/core/worker"
@@ -247,10 +247,10 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	}
 	// The prompts library: file-backed personas/fragments/directives, loaded
 	// now and reloaded on a timer; a broken tree keeps the last good load.
-	promptsLib := &atomic.Pointer[prompts.Library]{}
-	if err := prompts.Ensure(d.cfg.Prompts.Path); err != nil {
+	promptsLib := &atomic.Pointer[directives.Library]{}
+	if err := directives.Ensure(d.cfg.Prompts.Path); err != nil {
 		d.log.WarnContext(ctx, "ensure prompts dir", "path", d.cfg.Prompts.Path, "error", err)
-	} else if lib, err := prompts.Load(d.cfg.Prompts.Path); err != nil {
+	} else if lib, err := directives.Load(d.cfg.Prompts.Path); err != nil {
 		d.log.WarnContext(ctx, "load prompts library", "path", d.cfg.Prompts.Path, "error", err)
 	} else {
 		promptsLib.Store(lib)
@@ -258,7 +258,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	srv, err := web.NewServer(web.ServerOptions{
 		Prompts: promptsLib.Load,
 		PromptsReload: func() error {
-			lib, err := prompts.Load(d.cfg.Prompts.Path)
+			lib, err := directives.Load(d.cfg.Prompts.Path)
 			if err != nil {
 				return err
 			}
@@ -742,7 +742,7 @@ func (d *daemonProcess) startPlugins(ctx context.Context, st *store.Store, reg *
 // files: every 30 seconds, keeping the last good tree when a load fails so a
 // half-saved edit never bricks run creation. The reload is cheap (a small
 // Markdown tree) and needs no change detection.
-func (d *daemonProcess) promptsReloadLoop(ctx context.Context, lib *atomic.Pointer[prompts.Library]) {
+func (d *daemonProcess) promptsReloadLoop(ctx context.Context, lib *atomic.Pointer[directives.Library]) {
 	log := d.handler.For("daemon.prompts")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -751,7 +751,7 @@ func (d *daemonProcess) promptsReloadLoop(ctx context.Context, lib *atomic.Point
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, err := prompts.Load(d.cfg.Prompts.Path)
+			next, err := directives.Load(d.cfg.Prompts.Path)
 			if err != nil {
 				log.WarnContext(ctx, "prompts library load failed; keeping the last good tree", "error", err)
 				continue

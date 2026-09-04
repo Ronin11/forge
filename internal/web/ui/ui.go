@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/directives"
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
-	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/stats"
 	"forge/internal/core/store"
@@ -40,7 +40,7 @@ type UI struct {
 	mux   *http.ServeMux
 	// prompts returns the daemon's last-good persona/fragment library; nil
 	// (tests, a bare UI) renders the Prompts page with routines only.
-	prompts func() *prompts.Library
+	prompts func() *directives.Library
 	// pluginHealth is the supervisor's live view for the System page; nil
 	// (tests, a UI without a daemon) renders installed rows as not running.
 	pluginHealth func() []plugin.PluginHealth
@@ -72,7 +72,7 @@ func (u *UI) SetAttention(cfg config.AttentionConfig, quiet config.QuietHoursCon
 }
 
 // NewUI parses the embedded templates once; a template error is a startup error.
-func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn func() *prompts.Library) (*UI, error) {
+func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn func() *directives.Library) (*UI, error) {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -636,7 +636,7 @@ type promptTreeItem struct {
 // routines is the Prompts page: the file-backed library rendered as its
 // folder structure (personas/, fragments/), plus the routines that bind
 // personas to jobs. Details, composition previews, and testing are
-// client-side against the API (static/prompts.js); this handler only shapes
+// client-side against the API (static/directives.js); this handler only shapes
 // the tree.
 func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	rs, err := u.store.ListRoutines(r.Context(), false)

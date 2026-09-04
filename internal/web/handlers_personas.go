@@ -15,12 +15,12 @@ import (
 	"sort"
 	"time"
 
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
-	"forge/internal/core/prompts"
 	"forge/internal/core/store"
 )
 
-func (s *Server) promptLibrary() *prompts.Library {
+func (s *Server) promptLibrary() *directives.Library {
 	if s.prompts == nil {
 		return nil
 	}
@@ -89,12 +89,12 @@ func (s *Server) listPersonas(r *http.Request) (int, any, error) {
 // ?resolved=1, the exact composed text an agent would read for ?mode=M.
 type personaDetail struct {
 	personaRow
-	Path        string               `json:"path,omitempty"`
-	Body        string               `json:"body,omitempty"`
-	Raw         string               `json:"raw,omitempty"`
-	Resolved    string               `json:"resolved,omitempty"`
-	Composition *prompts.Composition `json:"composition,omitempty"`
-	Test        *routinePreview      `json:"test,omitempty"`
+	Path        string                  `json:"path,omitempty"`
+	Body        string                  `json:"body,omitempty"`
+	Raw         string                  `json:"raw,omitempty"`
+	Resolved    string                  `json:"resolved,omitempty"`
+	Composition *directives.Composition `json:"composition,omitempty"`
+	Test        *routinePreview         `json:"test,omitempty"`
 }
 
 // getPromptFragment is GET /api/v1/prompts/{name...}: any library file —
@@ -133,7 +133,7 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 			return 0, nil, badRequest("%v", err)
 		}
 		out.Resolved = text
-		out.Composition = &prompts.Composition{Mode: f.Mode, Commit: lib.Commit, Dirty: lib.Dirty, Fragments: manifest}
+		out.Composition = &directives.Composition{Mode: f.Mode, Commit: lib.Commit, Dirty: lib.Dirty, Fragments: manifest}
 	}
 	// ?test=1 runs a persona or directive through the full assembly path with
 	// a synthetic routine — for personas: mode, task text, objective, repo
@@ -192,13 +192,13 @@ func (s *Server) putPromptFragment(r *http.Request) (int, any, error) {
 	if err := os.WriteFile(f.Path, []byte(body.Content), 0o644); err != nil {
 		return 0, nil, err
 	}
-	if _, err := prompts.Load(lib.Dir); err != nil {
+	if _, err := directives.Load(lib.Dir); err != nil {
 		if rerr := os.WriteFile(f.Path, old, 0o644); rerr != nil {
 			s.log.ErrorContext(r.Context(), "revert refused prompt edit", "path", f.Path, "error", rerr)
 		}
 		return 0, nil, badRequest("refused — the edit breaks the library: %v", err)
 	}
-	prompts.CommitEdit(lib.Dir, f.Path, "ui: edit "+name)
+	directives.CommitEdit(lib.Dir, f.Path, "ui: edit "+name)
 	if s.promptsReload != nil {
 		if err := s.promptsReload(); err != nil {
 			s.log.WarnContext(r.Context(), "prompts reload after edit", "error", err)
@@ -215,12 +215,12 @@ func (s *Server) putPromptFragment(r *http.Request) (int, any, error) {
 // substitution, declared checks — without creating any Work. The one honest
 // answer to "what will the agent actually read".
 type routinePreview struct {
-	Prompt      string               `json:"prompt"`
-	Model       string               `json:"model"`
-	Mode        string               `json:"mode"`
-	Persona     string               `json:"persona,omitempty"`
-	Repository  string               `json:"repository,omitempty"`
-	Composition *prompts.Composition `json:"composition,omitempty"`
+	Prompt      string                  `json:"prompt"`
+	Model       string                  `json:"model"`
+	Mode        string                  `json:"mode"`
+	Persona     string                  `json:"persona,omitempty"`
+	Repository  string                  `json:"repository,omitempty"`
+	Composition *directives.Composition `json:"composition,omitempty"`
 }
 
 func (s *Server) previewRoutine(r *http.Request) (int, any, error) {

@@ -8,7 +8,7 @@ package web
 // byte-faithful to a run by construction.
 
 import (
-	"forge/internal/core/prompts"
+	"forge/internal/core/directives"
 	"forge/internal/core/store"
 )
 
@@ -19,10 +19,10 @@ type materializeOpts struct {
 	Mode, Model, Prompt, Persona, Objective string
 	// Lib overrides the daemon's library — the optimization loop's variant
 	// composition. Nil uses the live library.
-	Lib *prompts.Library
+	Lib *directives.Library
 }
 
-func (s *Server) materializeLibrary(opts materializeOpts) *prompts.Library {
+func (s *Server) materializeLibrary(opts materializeOpts) *directives.Library {
 	if opts.Lib != nil {
 		return opts.Lib
 	}
@@ -33,9 +33,9 @@ func (s *Server) materializeLibrary(opts materializeOpts) *prompts.Library {
 // composition manifest (nil only for a legacy/ad-hoc routine with no persona
 // and no directive). A workflow-target routine has no prompt to materialize —
 // the caller creates a workflow run instead; asking for one here is an error.
-func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*prompts.Composition, error) {
+func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*directives.Composition, error) {
 	lib := s.materializeLibrary(opts)
-	var comp *prompts.Composition
+	var comp *directives.Composition
 
 	kind, name, err := store.ParseTarget(rt.Target)
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*p
 		}
 		rt.Mode, rt.Prompt, rt.Effort = d.Mode, body, d.Effort
 		rt.Persona, rt.Model = d.PersonaRef, d.Model
-		comp = &prompts.Composition{Mode: d.Mode, Commit: lib.Commit, Dirty: lib.Dirty, Fragments: manifest}
+		comp = &directives.Composition{Mode: d.Mode, Commit: lib.Commit, Dirty: lib.Dirty, Fragments: manifest}
 	}
 
 	// Per-call overrides.
@@ -101,7 +101,7 @@ func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*p
 
 // mergeCompositions folds the persona manifest into a directive's (fragments
 // deduplicated); either side may be nil.
-func mergeCompositions(directive, persona *prompts.Composition) *prompts.Composition {
+func mergeCompositions(directive, persona *directives.Composition) *directives.Composition {
 	if directive == nil {
 		return persona
 	}

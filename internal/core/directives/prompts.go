@@ -18,7 +18,7 @@
 // edit is refused before any run sees it. Placeholders the library does not
 // own ({{objective}}, {{repo}}) pass through untouched for the existing
 // substitutions downstream.
-package prompts
+package directives
 
 import (
 	"crypto/sha256"

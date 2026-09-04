@@ -30,7 +30,7 @@ import (
 	"sync"
 	"time"
 
-	"forge/internal/core/prompts"
+	"forge/internal/core/directives"
 	"forge/internal/core/store"
 )
 
@@ -93,7 +93,7 @@ type experimentResults struct {
 // ---- subjects ------------------------------------------------------------
 
 // personaSubject varies a persona's whole file; a run composes the variant
-// in memory (prompts.WithVariant) and makes one completion on the target.
+// in memory (directives.WithVariant) and makes one completion on the target.
 type personaSubject struct {
 	s    *Server
 	name string
@@ -598,6 +598,6 @@ THE TEST the candidates were given: %s
 
 // renderPreviewLib is renderPreview with an explicit library — variant
 // composition without touching the daemon's loaded tree.
-func (s *Server) renderPreviewLib(ctx context.Context, lib *prompts.Library, rt store.Routine, objective, repo string) (routinePreview, error) {
+func (s *Server) renderPreviewLib(ctx context.Context, lib *directives.Library, rt store.Routine, objective, repo string) (routinePreview, error) {
 	return s.renderPreviewOpts(ctx, rt, materializeOpts{Objective: objective, Lib: lib}, repo)
 }

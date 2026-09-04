@@ -20,12 +20,12 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/directives"
 	"forge/internal/core/engine"
 	"forge/internal/core/logging"
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
 	"forge/internal/core/plugin"
-	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 	"forge/internal/tools"
@@ -92,7 +92,7 @@ type Engine struct {
 	// modelCall is the concierge's one LLM primitive (daemon-injected); the
 	// session maps hold per-sender conversation context.
 	modelCall         func(ctx context.Context, system, user, model string) (string, error)
-	prompts           func() *prompts.Library
+	prompts           func() *directives.Library
 	promptsReload     func() error
 	assistantMu       sync.Mutex
 	assistantSessions map[string][]assistantTurn
@@ -222,7 +222,7 @@ type ServerOptions struct {
 	AppStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// Prompts returns the current persona/fragment library (the daemon's
 	// last-good load of the prompts directory); nil disables personas.
-	Prompts func() *prompts.Library
+	Prompts func() *directives.Library
 	// PromptsReload re-loads the library immediately (the page's save path
 	// calls it so an edit composes without waiting for the 30s tick); nil
 	// leaves reloads to the daemon loop.

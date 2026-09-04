@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
-	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
@@ -418,14 +418,14 @@ func TestApplyDirectiveRoutineProposal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	lib, err := prompts.Load(dir)
+	lib, err := directives.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	current := lib
-	f.srv.prompts = func() *prompts.Library { return current }
+	f.srv.prompts = func() *directives.Library { return current }
 	f.srv.promptsReload = func() error {
-		next, err := prompts.Load(dir)
+		next, err := directives.Load(dir)
 		if err != nil {
 			return err
 		}
@@ -483,7 +483,7 @@ func TestApplyDirectiveRoutineProposal(t *testing.T) {
 func TestRewriteDirective(t *testing.T) {
 	raw := []byte("---\nmode: run\npersona: triager\nmodel: haiku\n---\nOld body.\n")
 	sp := func(s string) *string { return &s }
-	out, err := prompts.RewriteDirective(raw, prompts.DirectiveUpdates{Body: sp("New body."), Model: sp("opus"), Effort: sp("high")})
+	out, err := directives.RewriteDirective(raw, directives.DirectiveUpdates{Body: sp("New body."), Model: sp("opus"), Effort: sp("high")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,11 +492,11 @@ func TestRewriteDirective(t *testing.T) {
 		t.Errorf("rewrite = %q, want %q", out, want)
 	}
 	// Clearing a key removes it; nil keeps.
-	out, err = prompts.RewriteDirective(raw, prompts.DirectiveUpdates{Model: sp("")})
+	out, err = directives.RewriteDirective(raw, directives.DirectiveUpdates{Model: sp("")})
 	if err != nil || strings.Contains(string(out), "model:") || !strings.Contains(string(out), "Old body.") {
 		t.Errorf("clear model = %q, %v", out, err)
 	}
-	if _, err := prompts.RewriteDirective([]byte("no frontmatter"), prompts.DirectiveUpdates{}); err == nil {
+	if _, err := directives.RewriteDirective([]byte("no frontmatter"), directives.DirectiveUpdates{}); err == nil {
 		t.Error("frontmatter-less accepted")
 	}
 }
