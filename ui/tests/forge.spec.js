@@ -30,7 +30,7 @@ test.describe('dashboard', () => {
     const s = seed();
     await page.goto('/');
     const nav = page.locator('nav.top');
-    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Routines', 'Stats', 'Settings']) {
+    for (const name of ['Dashboard', 'Tasks', 'Queue', 'Human Queue', 'Prompts', 'Stats', 'Settings']) {
       await expect(nav.getByText(name, { exact: true })).toBeVisible();
     }
     const workers = page.locator('.card', { hasText: 'Workers' });
@@ -710,9 +710,9 @@ test.describe('mobile nav', () => {
     // Open it → the vertical list appears with the nav links.
     await toggle.click();
     await expect(links).toBeVisible();
-    await expect(links.getByText('Routines', { exact: true })).toBeVisible();
+    await expect(links.getByText('Prompts', { exact: true })).toBeVisible();
     // Choosing a link navigates and closes the menu.
-    await links.getByText('Routines', { exact: true }).click();
+    await links.getByText('Prompts', { exact: true }).click();
     await expect(page).toHaveURL(/\/routines/);
     await expect(links).toBeHidden();
   });

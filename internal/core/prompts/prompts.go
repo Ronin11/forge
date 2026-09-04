@@ -218,6 +218,9 @@ func splitModeSections(body string) (core string, modes map[string]string) {
 	return core, modes
 }
 
+// Fragment returns any fragment (personas included) by name, or nil.
+func (l *Library) Fragment(name string) *Fragment { return l.fragments[name] }
+
 // Persona returns a persona by name, or nil.
 func (l *Library) Persona(name string) *Fragment {
 	f := l.fragments[name]

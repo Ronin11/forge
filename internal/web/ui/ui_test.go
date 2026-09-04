@@ -73,7 +73,7 @@ func TestUIPagesRender(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now)
+	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestUIPagesRender(t *testing.T) {
 		"/tasks?scope=all":               {"inventory run", "equitizr", "running", `data-searchbar="client"`, `data-f-repo="equitizr`, `data-keys="repo,state,routine,class"`, "New task", `data-task-dialog`, `name="max_turns"`, `name="timeout_seconds"`},
 		"/tasks/rows?scope=all&offset=0": {`data-href="/tasks/`, "equitizr", "<tr"},
 		"/tasks/" + work.ID:              {"inventory@1", "claimed", "fetch", "1ms"},
-		"/routines":                      {"inventory", "list files", "data-routine-new", `data-routine-edit="inventory"`, `data-action-post="/api/v1/routines/inventory/run"`},
+		"/routines":                      {"Prompts", "inventory", "data-routine-new", `data-sel="routine:inventory"`, "personas/", "fragments/", "routines/", "prompts.js"},
 		"/workflows":                     {"nightly", "scan → fix", `href="/workflows/new"`, `href="/workflows/nightly/edit"`, `data-action-post="/api/v1/workflows/nightly/run"`, `href="/workflows/nightly/runs"`},
 		"/workflows/new":                 {"New workflow", "data-graph-editor", "data-gv-stage", "graph.js"},
 		"/workflows/nightly/edit":        {"Edit nightly", `data-workflow-name="nightly"`, "data-graph-editor"},
@@ -182,7 +182,7 @@ func TestProposalsScope(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now)
+	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

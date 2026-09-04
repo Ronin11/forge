@@ -1,10 +1,28 @@
-{{template "head" .}}<div class="page-head"><h1>Routines</h1><button class="btn primary" data-routine-new>New routine</button></div>
-{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter routines — text, repo:name, mode:retro, model:sonnet" "Keys" "repo,mode,model,class"}}
+{{template "head" .}}<div class="page-head"><h1>Prompts</h1><button class="btn primary" data-routine-new>New routine</button></div>
+<p class="meta">Personas and fragments live in <code>{{if .Data.LibDir}}{{.Data.LibDir}}{{else}}~/.forge/prompts{{end}}</code> — edit them with git and your editor; the daemon reloads within 30s. Routines bind a persona to a job. Select anything to inspect, compose, and test it.</p>
 <p id="editor-error" class="error" hidden></p>
-<div class="tablewrap"><table class="list"><thead><tr><th>Name</th><th>Gen</th><th>Mode</th><th>Model</th><th>Repositories</th><th>Class</th><th>Schedule</th><th class="grow">Prompt</th><th></th></tr></thead><tbody>
-{{range .Data.Routines}}<tr data-sf-item data-f-repo="{{join .Repositories " "}}" data-f-mode="{{.Mode}}" data-f-model="{{.Model}}" data-f-class="{{.BudgetClass}}"><td>{{.Name}}</td><td>{{.Generation}}</td><td>{{.Mode}}</td><td>{{.Model}}</td><td>{{join .Repositories ", "}}</td><td>{{.BudgetClass}}</td><td>{{.Schedule}}{{if and .Schedule (not .ScheduleEnabled)}} (off){{end}}</td><td class="prompt">{{.Prompt}}</td><td class="actions"><button class="btn" data-routine-edit="{{.Name}}">Edit</button> <button class="btn" data-action-post="/api/v1/routines/{{.Name}}/run">Run</button></td></tr>
-{{else}}<tr><td colspan="9" class="empty">No routines — the New routine button above, or <code>forge routine add NAME --prompt "…" --repos a,b</code></td></tr>{{end}}
-</tbody></table></div>
+<div class="pr-layout" data-prompts-page>
+<div class="pr-tree card">
+<div class="pr-folder">personas/</div>
+<ul>
+{{range .Data.Personas}}<li><button class="pr-item" data-sel="prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</button></li>
+{{else}}<li class="empty pr-empty">none yet — add personas/&lt;name&gt;.md</li>{{end}}
+</ul>
+<div class="pr-folder">fragments/</div>
+<ul>
+{{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><button class="pr-item" data-sel="prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</button></li>
+{{else}}<li class="empty pr-empty">none yet — add fragments/&lt;name&gt;.md</li>{{end}}
+</ul>
+<div class="pr-folder">routines/</div>
+<ul>
+{{range .Data.Routines}}<li><button class="pr-item" data-sel="routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</button></li>
+{{else}}<li class="empty pr-empty">No routines — the New routine button above, or <code>forge routine add</code></li>{{end}}
+</ul>
+</div>
+<div class="pr-detail card" data-prompt-detail>
+<p class="hint">Select a persona to see and compose it, a fragment to read it, or a routine to preview the exact prompt its agent receives.</p>
+</div>
+</div>
 
 <dialog data-routine-dialog>
 <form method="dialog" data-routine-form>
@@ -15,7 +33,7 @@
 <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
 <label>Mode <input name="mode" value="run"></label>
 <label>Model <input name="model" value="haiku"></label>
-<label>Persona <input name="persona" placeholder="from ~/.forge/prompts" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
+<label>Persona <input name="persona" list="persona-names" placeholder="from ~/.forge/prompts" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
 <label>Class <select name="budget_class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
 <label class="wide">Prompt <textarea name="prompt" rows="5" required placeholder="{{`{{repo}}`}} is replaced per repository"></textarea></label>
 <label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>
@@ -35,4 +53,6 @@
 </form>
 </dialog>
 <datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
+<datalist id="persona-names">{{range .Data.Personas}}<option value="{{.Name}}">{{end}}</datalist>
+<script src="/static/prompts.js" defer></script>
 {{template "foot" .}}

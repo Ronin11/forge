@@ -417,3 +417,25 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .gv-runview .gv-edge{opacity:.35}
 .gv-runview .gv-edge.gv-taken{opacity:1}
 @media (max-width:900px){.gv-editor{flex-direction:column}.gv-palette{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}.gv-panel{border-left:0;border-top:1px solid var(--line);max-height:none;flex-basis:auto}.gv-stage{min-height:46vh}}
+
+/* --- Prompts page (prompts.js): library tree + detail ------------------- */
+.pr-layout{display:grid;grid-template-columns:minmax(14rem,18rem) minmax(0,1fr);gap:1rem;align-items:start}
+.pr-tree{padding:.6rem .4rem}
+.pr-tree ul{list-style:none;margin:.15rem 0 .7rem;padding:0}
+.pr-folder{font-family:ui-monospace,monospace;font-size:.8rem;color:var(--muted);padding:.15rem .5rem}
+.pr-subfolder{font-family:ui-monospace,monospace;font-size:.75rem;color:var(--muted);padding:.1rem .5rem .1rem 1.1rem}
+.pr-nested .pr-item{padding-left:1.7rem}
+.pr-empty{padding:.1rem .6rem;font-size:.78rem}
+.pr-item{display:flex;align-items:center;gap:.45rem;width:100%;text-align:left;background:none;border:0;border-radius:6px;color:var(--fg);font:inherit;font-size:.86rem;padding:.28rem .6rem .28rem 1.1rem;cursor:pointer}
+.pr-item:hover{background:rgba(127,127,127,.1)}
+.pr-item.on{background:rgba(127,127,127,.14);color:var(--fg);outline:1px solid var(--line)}
+.pr-item .i{width:14px;height:14px;color:var(--muted);flex:none}
+.pr-item .chip{margin-left:auto}
+.pr-detail{min-height:24rem}
+.pr-head{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.pr-head h2{margin:0}
+.pr-label{display:block;font-size:.8rem;color:var(--muted);margin:.7rem 0 .25rem}
+.pr-controls{display:flex;gap:.5rem;align-items:flex-start;flex-wrap:wrap;margin:.5rem 0}
+.pr-controls select,.pr-controls textarea{font:inherit;padding:.3rem .45rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.pr-test textarea{flex:1 1 22rem;min-width:0}
+@media (max-width:900px){.pr-layout{grid-template-columns:1fr}}

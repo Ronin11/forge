@@ -20,6 +20,7 @@ import (
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/plugin"
+	"forge/internal/core/prompts"
 	"forge/internal/core/protocol"
 	"forge/internal/core/stats"
 	"forge/internal/core/store"
@@ -37,6 +38,9 @@ type UI struct {
 	clock func() time.Time
 	tmpl  *template.Template
 	mux   *http.ServeMux
+	// prompts returns the daemon's last-good persona/fragment library; nil
+	// (tests, a bare UI) renders the Prompts page with routines only.
+	prompts func() *prompts.Library
 	// pluginHealth is the supervisor's live view for the System page; nil
 	// (tests, a UI without a daemon) renders installed rows as not running.
 	pluginHealth func() []plugin.PluginHealth
@@ -68,7 +72,7 @@ func (u *UI) SetAttention(cfg config.AttentionConfig, quiet config.QuietHoursCon
 }
 
 // NewUI parses the embedded templates once; a template error is a startup error.
-func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, error) {
+func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn func() *prompts.Library) (*UI, error) {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -236,7 +240,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time) (*UI, erro
 	if err != nil {
 		return nil, fmt.Errorf("parse ui templates: %w", err)
 	}
-	u := &UI{store: st, log: log, clock: clock, tmpl: tmpl, mux: http.NewServeMux()}
+	u := &UI{store: st, log: log, clock: clock, tmpl: tmpl, mux: http.NewServeMux(), prompts: promptsFn}
 	static, err := fs.Sub(uiFS, "static")
 	if err != nil {
 		return nil, fmt.Errorf("ui static: %w", err)
@@ -620,6 +624,19 @@ func (u *UI) work(w http.ResponseWriter, r *http.Request) {
 	u.render(w, r, "work.html", "Work "+ld.RootID[:8], map[string]any{"Root": root, "State": ld.State[ld.RootID], "Tree": tree, "Rollup": roll})
 }
 
+// promptTreeItem is one row of the Prompts page's library tree.
+type promptTreeItem struct {
+	Name    string // full fragment name (may contain /)
+	Label   string // last path segment, indented under its folder
+	Folder  string // "" for top-level files
+	Persona bool
+}
+
+// routines is the Prompts page: the file-backed library rendered as its
+// folder structure (personas/, fragments/), plus the routines that bind
+// personas to jobs. Details, composition previews, and testing are
+// client-side against the API (static/prompts.js); this handler only shapes
+// the tree.
 func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	rs, err := u.store.ListRoutines(r.Context(), false)
 	if err != nil {
@@ -635,7 +652,28 @@ func (u *UI) routines(w http.ResponseWriter, r *http.Request) {
 	for i, rep := range repos {
 		names[i] = rep.Name
 	}
-	u.render(w, r, "routines.html", "Routines", map[string]any{"Routines": rs, "Repositories": names})
+	var personas, fragments []promptTreeItem
+	libDir := ""
+	if u.prompts != nil {
+		if lib := u.prompts(); lib != nil {
+			libDir = lib.Dir
+			for _, f := range lib.Fragments() {
+				item := promptTreeItem{Name: f.Name, Label: f.Name, Persona: f.Persona}
+				if i := strings.LastIndex(f.Name, "/"); i >= 0 {
+					item.Folder, item.Label = f.Name[:i], f.Name[i+1:]
+				}
+				if f.Persona {
+					personas = append(personas, item)
+				} else {
+					fragments = append(fragments, item)
+				}
+			}
+		}
+	}
+	u.render(w, r, "routines.html", "Prompts", map[string]any{
+		"Routines": rs, "Repositories": names,
+		"Personas": personas, "Fragments": fragments, "LibDir": libDir,
+	})
 }
 
 // workflows lists workflows with the add/edit dialog; routine names feed the

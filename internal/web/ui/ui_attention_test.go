@@ -72,7 +72,7 @@ func TestUIAttentionCountdownAndMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ui, err := NewUI(st, slog.New(slog.DiscardHandler), func() time.Time { return clock })
+	ui, err := NewUI(st, slog.New(slog.DiscardHandler), func() time.Time { return clock }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

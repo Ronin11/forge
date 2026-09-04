@@ -55,7 +55,7 @@ func TestUIProvenanceViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now)
+	ui, err := NewUI(st, slog.New(slog.DiscardHandler), time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

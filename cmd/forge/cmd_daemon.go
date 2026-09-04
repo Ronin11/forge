@@ -305,7 +305,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		}
 		return r.Path, true
 	})
-	ui, err := webui.NewUI(st, d.handler.For("web.ui"), nil)
+	ui, err := webui.NewUI(st, d.handler.For("web.ui"), nil, promptsLib.Load)
 	if err != nil {
 		return err
 	}

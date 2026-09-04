@@ -666,6 +666,13 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
         fetchJSON('/api/v1/routines/' + encodeURIComponent(btn.dataset.routineEdit)).then(open).catch(pageError);
       });
     });
+    // The Prompts page builds its routine detail dynamically (prompts.js);
+    // this hook lets its Edit button open the same dialog.
+    window.ForgeRoutines = {
+      edit: function (name) {
+        fetchJSON('/api/v1/routines/' + encodeURIComponent(name)).then(open).catch(pageError);
+      },
+    };
   })();
 
 })();

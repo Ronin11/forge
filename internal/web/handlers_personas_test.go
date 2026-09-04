@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -141,5 +142,47 @@ func TestPersonaAPIAndAdHocOverride(t *testing.T) {
 	h.call(http.MethodPost, "/api/v1/tasks", map[string]any{"prompt": "sort my inbox", "repositories": []string{"equitizr"}, "persona": "triager"}, &out, http.StatusCreated)
 	if !strings.Contains(string(out.Work.Snapshot), "Triage fast.") || out.Work.Persona != "triager" {
 		t.Errorf("ad-hoc persona not composed: %s", out.Work.Snapshot)
+	}
+}
+
+// The preview endpoint returns the byte-exact rendered prompt: persona
+// composition, {{objective}} injection, {{repo}} substitution, and the
+// assembly context — without creating any Work.
+func TestRoutinePreview(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{
+		"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun-mode teaching.",
+	})
+	rt := store.Routine{Name: "previewable", Mode: "run", Prompt: "Review {{repo}}: {{objective}}", Persona: "reviewer",
+		Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
+
+	var out struct {
+		Prompt      string `json:"prompt"`
+		Model       string `json:"model"`
+		Composition *struct {
+			Fragments []struct{ Name string } `json:"fragments"`
+		} `json:"composition"`
+	}
+	h.call(http.MethodGet, "/api/v1/routines/previewable/preview?objective=check+the+gauges", nil, &out, http.StatusOK)
+	for _, want := range []string{
+		"You are the reviewer.",
+		"Run-mode teaching.",
+		"Review equitizr: check the gauges", // {{repo}} + {{objective}} both substituted
+		"YOUR TASK",
+		"repository equitizr",
+	} {
+		if !strings.Contains(out.Prompt, want) {
+			t.Errorf("preview missing %q", want)
+		}
+	}
+	if out.Model != "haiku" || out.Composition == nil || len(out.Composition.Fragments) != 1 {
+		t.Errorf("model=%q composition=%+v", out.Model, out.Composition)
+	}
+	// No Work was created.
+	works, err := h.st.OpenWork(context.Background())
+	if err != nil || len(works) != 0 {
+		t.Errorf("preview created work: %v, %v", works, err)
 	}
 }

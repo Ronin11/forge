@@ -377,6 +377,8 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/v1/personas", s.handle(s.listPersonas))
 	m.HandleFunc("GET /api/v1/personas/{name}", s.handle(s.getPersona))
+	m.HandleFunc("GET /api/v1/prompts", s.handle(s.listPersonas))
+	m.HandleFunc("GET /api/v1/prompts/{name...}", s.handle(s.getPromptFragment))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("GET /api/v1/routine-templates", s.handle(s.listRoutineTemplates))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))
@@ -384,6 +386,7 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/v1/routines/{name}", s.handle(s.updateRoutine))
 	m.HandleFunc("DELETE /api/v1/routines/{name}", s.handle(s.archiveRoutine))
 	m.HandleFunc("POST /api/v1/routines/{name}/run", s.handle(s.runRoutine))
+	m.HandleFunc("GET /api/v1/routines/{name}/preview", s.handle(s.previewRoutine))
 	m.HandleFunc("GET /api/v1/workflows", s.handle(s.listWorkflows))
 	m.HandleFunc("POST /api/v1/workflows", s.handle(s.createWorkflow))
 	m.HandleFunc("POST /api/v1/workflows/draft", s.handle(s.draftWorkflow))
