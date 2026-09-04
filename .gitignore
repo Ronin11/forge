@@ -13,3 +13,4 @@
 test-results/
 playwright-report/
 __pycache__/
+/plugins/signal/forge-signal
