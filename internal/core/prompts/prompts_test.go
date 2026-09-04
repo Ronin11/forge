@@ -240,3 +240,40 @@ func TestReadmeDocumentsTheSurface(t *testing.T) {
 		}
 	}
 }
+
+// WithVariant composes a candidate edit in memory: the variant resolves with
+// the rest of the library untouched, and a variant that breaks composition is
+// refused without touching anything.
+func TestWithVariant(t *testing.T) {
+	dir := write(t, map[string]string{
+		"personas/p.md":       "Old core.\n{{> shared}}",
+		"fragments/shared.md": "Shared text.",
+	})
+	lib, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := lib.WithVariant("p", "New core.\n{{> shared}}\n\n## mode: run\nNew mode text.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, err := v.Resolve("p", "run")
+	if err != nil || !strings.Contains(text, "New core.") || !strings.Contains(text, "Shared text.") || !strings.Contains(text, "New mode text.") {
+		t.Fatalf("variant resolve = %q, %v", text, err)
+	}
+	// The original library is untouched.
+	text, _, err = lib.Resolve("p", "")
+	if err != nil || !strings.Contains(text, "Old core.") {
+		t.Errorf("original mutated: %q, %v", text, err)
+	}
+	// A broken variant is refused; varying a fragment revalidates its users.
+	if _, err := lib.WithVariant("p", "{{> ghost}}"); err == nil {
+		t.Error("broken variant accepted")
+	}
+	if _, err := lib.WithVariant("shared", "{{> p-cycle-missing}}"); err == nil {
+		t.Error("fragment variant breaking a persona accepted")
+	}
+	if _, err := lib.WithVariant("ghost", "x"); err == nil {
+		t.Error("unknown fragment accepted")
+	}
+}

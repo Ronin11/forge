@@ -1004,7 +1004,12 @@ func (d *daemonProcess) modelCall(ctx context.Context, system, user, model strin
 	if err != nil {
 		return "", err
 	}
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// The default cap suits the concierge's quick replies; a caller that set
+	// its own deadline (the prompt-optimization loop's longer calls) keeps it.
+	cctx, cancel := ctx, func() {}
+	if _, has := ctx.Deadline(); !has {
+		cctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	}
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, "--print", "--output-format", "json", "--model", model, "--append-system-prompt", system)
 	cmd.Stdin = strings.NewReader(user)

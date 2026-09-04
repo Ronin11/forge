@@ -113,8 +113,25 @@ test.describe('prompt editing and testing', () => {
     // The run panel is present with a model picker; clicking would spend a
     // real completion, so the suite only asserts the controls.
     await expect(detail.locator('button', { hasText: 'Run test' })).toBeVisible();
-    const picker = detail.locator('select').last();
-    await expect(picker.locator('option', { hasText: 'sonnet (default)' })).toHaveCount(1);
+    await expect(detail.locator('option', { hasText: 'sonnet (default)' })).toHaveCount(1);
+  });
+
+  test('the optimize panel offers goal, models, and variant count on personas and routines', async ({ page }) => {
+    // Presence only: starting an experiment spends many real completions.
+    await page.goto('/routines?sel=prompt:senior-reviewer');
+    const detail = page.locator('[data-prompt-detail]');
+    const opt = detail.locator('.pr-optimize');
+    await expect(opt.locator('textarea[placeholder^="Goal"]')).toBeVisible();
+    await expect(opt.locator('option', { hasText: 'run on: haiku' })).toHaveCount(1);
+    await expect(opt.locator('.pr-variants')).toHaveValue('8');
+    await expect(opt.locator('button', { hasText: 'Start experiment' })).toBeVisible();
+    // The target defaults to the persona's model, the optimizer to the
+    // biggest alias.
+    await expect(opt.locator('select').first()).toHaveValue('sonnet');
+    await expect(opt.locator('select').nth(1)).toHaveValue('opus');
+
+    await page.goto('/routines?sel=routine:pr-page-test');
+    await expect(detail.locator('.pr-optimize button', { hasText: 'Start experiment' })).toBeVisible();
   });
 });
 

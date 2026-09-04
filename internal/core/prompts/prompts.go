@@ -167,6 +167,12 @@ func loadFragment(path, name string, persona bool) (*Fragment, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseFragment(raw, path, name, persona)
+}
+
+// parseFragment builds a fragment from raw bytes — the file loader and
+// in-memory variants (WithVariant) share it.
+func parseFragment(raw []byte, path, name string, persona bool) (*Fragment, error) {
 	sum := sha256.Sum256(raw)
 	f := &Fragment{Name: name, Path: path, Hash: hex.EncodeToString(sum[:]), Persona: persona, Modes: map[string]string{}}
 	body := string(raw)
@@ -220,6 +226,40 @@ func splitModeSections(body string) (core string, modes map[string]string) {
 
 // Fragment returns any fragment (personas included) by name, or nil.
 func (l *Library) Fragment(name string) *Fragment { return l.fragments[name] }
+
+// WithVariant derives a library with one fragment's content replaced in
+// memory — the optimization loop's way to compose candidate edits without
+// touching disk. The variant is validated the way Load validates: every
+// persona (and the variant itself) must still expand cleanly.
+func (l *Library) WithVariant(name, raw string) (*Library, error) {
+	orig := l.fragments[name]
+	if orig == nil {
+		return nil, fmt.Errorf("fragment %q is not in the library", name)
+	}
+	f, err := parseFragment([]byte(raw), orig.Path, name, orig.Persona)
+	if err != nil {
+		return nil, err
+	}
+	next := &Library{Dir: l.Dir, Commit: l.Commit, Dirty: true, LoadedAt: l.LoadedAt, fragments: make(map[string]*Fragment, len(l.fragments))}
+	for k, v := range l.fragments {
+		next.fragments[k] = v
+	}
+	next.fragments[name] = f
+	for _, frag := range next.fragments {
+		if !frag.Persona && frag.Name != name {
+			continue
+		}
+		if _, _, err := next.expand(frag, "", nil, 0); err != nil {
+			return nil, err
+		}
+		for mode := range frag.Modes {
+			if _, _, err := next.expand(frag, mode, nil, 0); err != nil {
+				return nil, fmt.Errorf("mode %s: %w", mode, err)
+			}
+		}
+	}
+	return next, nil
+}
 
 // Persona returns a persona by name, or nil.
 func (l *Library) Persona(name string) *Fragment {

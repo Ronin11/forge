@@ -205,6 +205,17 @@
       objective.value = t.objective || '';
       repo.value = t.repo || '';
     });
+    optimizePanel(detail, 'persona:' + f.name, f.model, function () {
+      return { mode: modeInput.value.trim(), task: task.value, objective: objective.value.trim(), repo: repo.value.trim() };
+    }, function (content) {
+      fetch(promptURL(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content }) })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          clearFail();
+          showFragment(f.name);
+        })
+        .catch(fail);
+    });
   }
 
   function relTime(iso) {
@@ -306,6 +317,139 @@
       }).catch(function () {});
     }
     loadHistory();
+  }
+
+  // ---- LLM-assisted optimization ----
+
+  // optimizePanel: state a goal, pick the model it must run well on and the
+  // (big) optimizer model, and start an experiment — the optimizer proposes
+  // variants, every variant plus the untouched baseline runs the tester
+  // inputs on the target model, and the optimizer judges the outputs blind.
+  // Nothing changes until a variant's Apply, which goes through the same
+  // validated save path as a hand edit.
+  function optimizePanel(parent, subject, defaultTarget, buildTest, apply) {
+    parent.appendChild(el('h3', '', 'Optimize: have a big model propose and test variants'));
+    var box = el('div', 'pr-optimize');
+    parent.appendChild(box);
+    var controls = el('div', 'pr-controls');
+    var goal = document.createElement('textarea');
+    goal.rows = 2;
+    goal.placeholder = 'Goal — what should this do better? e.g. "handle empty repos without inventing work" or "hold up on sonnet"';
+    var target = document.createElement('select');
+    var optimizer = document.createElement('select');
+    var count = document.createElement('input');
+    count.type = 'number';
+    count.min = 1;
+    count.max = 12;
+    count.value = 8;
+    count.title = 'how many variants to try';
+    count.className = 'pr-variants';
+    modelsReady.then(function () {
+      modelAliases.forEach(function (m) {
+        [target, optimizer].forEach(function (sel, i) {
+          var o = document.createElement('option');
+          o.value = m;
+          o.textContent = (i ? 'optimizer: ' : 'run on: ') + m;
+          sel.appendChild(o);
+        });
+      });
+      if (defaultTarget && modelAliases.indexOf(defaultTarget) >= 0) target.value = defaultTarget;
+      // The optimizer defaults to the biggest model available.
+      if (modelAliases.indexOf('opus') >= 0) optimizer.value = 'opus';
+      else if (modelAliases.length) optimizer.value = modelAliases[modelAliases.length - 1];
+    });
+    var out = el('div');
+    controls.appendChild(goal);
+    controls.appendChild(target);
+    controls.appendChild(optimizer);
+    controls.appendChild(count);
+    var startBtn = button('Start experiment', 'primary', function () {
+      if (!goal.value.trim()) { fail(new Error('state the goal first — what should this do better?')); return; }
+      clearFail();
+      startBtn.disabled = true;
+      fetch('/api/v1/experiments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: subject, goal: goal.value.trim(), target_model: target.value,
+          optimizer_model: optimizer.value, variants: +count.value || 8, test: buildTest(),
+        }),
+      })
+        .then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+          return resp.json();
+        })
+        .then(function (r) { poll(r.id); })
+        .catch(function (err) { fail(err); startBtn.disabled = false; });
+    });
+    controls.appendChild(startBtn);
+    box.appendChild(controls);
+    box.appendChild(out);
+
+    function poll(id) {
+      if (!box.isConnected) return; // the detail pane moved on
+      fetchJSON('/api/v1/experiments?id=' + encodeURIComponent(id)).then(function (pe) {
+        render(pe);
+        if (pe.status === 'running') window.setTimeout(function () { poll(id); }, 3000);
+      }).catch(fail);
+    }
+
+    function candidateBox(c) {
+      var cb = el('div', 'pr-run pr-cand');
+      var head = el('p', '');
+      head.appendChild(el('strong', '', c.title));
+      if (c.baseline) head.appendChild(chip('current'));
+      if (c.error) head.appendChild(chip('not run'));
+      else head.appendChild(chip('score ' + c.score));
+      cb.appendChild(head);
+      if (c.rationale) cb.appendChild(el('p', 'meta', c.rationale));
+      if (c.error) cb.appendChild(el('p', 'meta', c.error));
+      if (c.judge_rationale) cb.appendChild(el('p', 'meta', 'judge: ' + c.judge_rationale));
+      function fold(title, text) {
+        var d = document.createElement('details');
+        var sum = document.createElement('summary');
+        sum.textContent = title;
+        d.appendChild(sum);
+        d.appendChild(pre(text));
+        cb.appendChild(d);
+      }
+      if (c.output) fold('model output (' + c.output.length + ' bytes)', c.output);
+      if (!c.baseline) {
+        fold('proposed content', c.content);
+        if (!c.error) cb.appendChild(button('Apply this variant', '', function (e) {
+          e.currentTarget.disabled = true;
+          apply(c.content);
+        }));
+      }
+      return cb;
+    }
+
+    function render(pe) {
+      out.textContent = '';
+      startBtn.disabled = pe.status === 'running';
+      if (pe.goal) {
+        out.appendChild(el('p', 'meta', 'experiment ' + relTime(pe.created_at) + ' · goal: ' + pe.goal +
+          ' · ran on ' + pe.target_model + ', optimized by ' + pe.optimizer_model));
+      }
+      if (pe.status === 'running') {
+        out.appendChild(el('p', 'meta', 'running — ' + (pe.progress || 'starting') + ' …'));
+        return;
+      }
+      if (pe.status === 'failed') {
+        out.appendChild(el('p', 'meta', 'failed: ' + (pe.error || 'unknown error')));
+        return;
+      }
+      var results = pe.results || {};
+      if (results.summary) out.appendChild(el('p', '', results.summary));
+      (results.candidates || []).forEach(function (c) { out.appendChild(candidateBox(c)); });
+    }
+
+    // Coming back to the page shows the latest experiment where it stands —
+    // and picks the polling back up if one is still running.
+    fetchJSON('/api/v1/experiments?subject=' + encodeURIComponent(subject)).then(function (list) {
+      if (!list || !list.length) return;
+      render(list[0]);
+      if (list[0].status === 'running') window.setTimeout(function () { poll(list[0].id); }, 3000);
+    }).catch(function () {});
   }
 
   // personaComposer: pick a mode, see the exact composed text and manifest.
@@ -431,6 +575,24 @@
       }, 'routine:' + rt.name, function (t) {
         objective.value = t.objective || '';
         if (t.repo) repoSel.value = t.repo;
+      });
+      optimizePanel(detail, 'routine:' + rt.name, rt.model, function () {
+        return { objective: objective.value.trim(), repo: repoSel.value };
+      }, function (content) {
+        // Applying a routine variant replaces only the task prompt, against
+        // the routine's current generation.
+        fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name)).then(function (fresh) {
+          fresh.prompt = content;
+          return fetch('/api/v1/routines/' + encodeURIComponent(rt.name) + '?generation=' + fresh.generation, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fresh),
+          });
+        })
+          .then(function (resp) {
+            if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+            clearFail();
+            return fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; showRoutine(rt.name); });
+          })
+          .catch(fail);
       });
     });
   }
