@@ -52,20 +52,24 @@ P0/P1 fixes have since landed.)
   detail model — decide then whether that stays hand-rolled or the tree
   becomes a shared partial with the workflow editor's palette.
 
-## Workflow/persona follow-ups (2026-09-04 revamp)
+## Directives follow-ups (2026-09-04 restructure)
 
-- [ ] Point the standing routines at the starter personas (review →
-  senior-reviewer, arch-docs → docs-writer, …) and shrink their prompts to
-  task text.
-- [ ] A reflection routine targeting `~/.forge/prompts` with integrate=true —
-  prompt improvement through the ordinary merge pipeline.
-- [ ] Consider registering the prompts dir as a first-class repo so agents
-  can be tasked against it directly.
+- [ ] A reflection routine targeting `~/.forge/directives` with
+  integrate=true — prompt improvement through the ordinary merge pipeline.
+- [ ] Consider registering the directives dir as a first-class repo so
+  agents can be tasked against it directly.
 - [ ] Run-scoped SSE for the run view (the poller swap is ~20 lines).
-- [ ] Workflow nodes without routines (persona + mode + objective directly)
-  once personas prove out.
 - [ ] Workflow experiments: third `experimentSubject` implementation
   (`workflow:<name>`) where a variant is a graph edit and a run is a real
   workflow run — the store/pipeline/API are already generic
   (internal/web/experiments.go); the open questions are what "variant" means
   for a graph and how to judge a multi-step run's output.
+- [ ] Tighten routine create/update to require `target` once the test
+  fixtures migrate off inline content (deviation noted in the P7 commit;
+  the store stays dual-mode either way for snapshot/A-B decode).
+- [ ] Migrated production directives could name personas the split preserved
+  as `persona:` frontmatter — review the 29 split files and consolidate
+  duplicated role text against the new base directives (plan-project,
+  implement-task, review-change, …).
+- [ ] Rename the `[prompts]` config TOML key to `[directives]` with a
+  read-fallback.
