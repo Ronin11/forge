@@ -50,7 +50,21 @@ func RunDirectives(ctx context.Context, c *Context, args []string) int {
 	if out, err := git("fetch", "upstream"); err != nil {
 		return c.Fail("directives update", fmt.Errorf("fetch: %s", out))
 	}
-	out, err := git("merge", "--no-edit", "FETCH_HEAD")
+	// Merge the remote's default branch explicitly: FETCH_HEAD is marked
+	// not-for-merge when the local branch name differs from upstream's
+	// (git-init'd libraries are on master, the base repo on main), and git
+	// would silently report "already up to date".
+	if _, err := git("remote", "set-head", "upstream", "--auto"); err != nil {
+		return c.Fail("directives update", fmt.Errorf("resolve upstream default branch"))
+	}
+	out, err := git("merge", "--no-edit", "upstream/HEAD")
+	if err != nil && strings.Contains(out, "unrelated histories") {
+		// The first sync: a bootstrapped library was git-init'd locally, so
+		// it shares no ancestor with the base repo. One unrelated merge
+		// grafts the histories; after it, updates are ordinary merges.
+		fmt.Fprintln(c.Stdout, "first sync with the base repo — merging unrelated histories")
+		out, err = git("merge", "--no-edit", "--allow-unrelated-histories", "upstream/HEAD")
+	}
 	if err != nil {
 		fmt.Fprintln(c.Stdout, out)
 		return c.Fail("directives update", fmt.Errorf("merge conflict — resolve it in %s (git status there), then commit; the daemon keeps its last good load meanwhile", dir))
