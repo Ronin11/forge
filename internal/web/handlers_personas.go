@@ -69,6 +69,15 @@ type personasList struct {
 	Rows     []personaRow `json:"fragments"`
 	// Models are the daemon's model aliases, for the page's test-run picker.
 	Models []string `json:"models,omitempty"`
+	// ModelPrices maps each alias to its list price in $/MTok, for the
+	// optimize panel's cost estimate. Absent for aliases with no known price.
+	ModelPrices map[string]modelPrice `json:"model_prices,omitempty"`
+}
+
+// modelPrice is a model's $/MTok list price, for client-side estimates.
+type modelPrice struct {
+	Input  float64 `json:"input"`
+	Output float64 `json:"output"`
 }
 
 func (s *Server) listPersonas(r *http.Request) (int, any, error) {
@@ -77,6 +86,14 @@ func (s *Server) listPersonas(r *http.Request) (int, any, error) {
 		return 0, nil, badRequest("this process has no prompts library")
 	}
 	out := personasList{Commit: lib.Commit, Dirty: lib.Dirty, LoadedAt: lib.LoadedAt, Dir: lib.Dir, Rows: []personaRow{}, Models: s.modelAliases}
+	if s.modelInfo != nil {
+		out.ModelPrices = map[string]modelPrice{}
+		for _, alias := range s.modelAliases {
+			if info, ok := s.modelInfo(alias); ok && (info.Price.Input > 0 || info.Price.Output > 0) {
+				out.ModelPrices[alias] = modelPrice{Input: info.Price.Input, Output: info.Price.Output}
+			}
+		}
+	}
 	for _, f := range lib.Fragments() {
 		row := personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona}
 		for mode := range f.Modes {

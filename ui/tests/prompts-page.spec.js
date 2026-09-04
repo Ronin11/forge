@@ -128,7 +128,14 @@ test.describe('prompt editing and testing', () => {
     // The target defaults to the persona's model, the optimizer to the
     // biggest alias.
     await expect(opt.locator('select').first()).toHaveValue('sonnet');
-    await expect(opt.locator('select').nth(1)).toHaveValue('opus');
+    await expect(opt.locator('select').nth(1)).toHaveValue('fable');
+    // The expected-cost line prices the run from the composed prompt and the
+    // models' list prices, and follows the picker.
+    await expect(opt.locator('.pr-cost')).toContainText(/expected cost ≈ \$\d/);
+    await expect(opt.locator('.pr-cost')).toContainText('9 runs on sonnet + 2 fable calls');
+    await opt.locator('select').first().selectOption('haiku');
+    await opt.locator('.pr-variants').fill('4');
+    await expect(opt.locator('.pr-cost')).toContainText('5 runs on haiku + 2 fable calls');
 
     await page.goto('/routines?sel=routine:pr-page-test');
     await expect(detail.locator('.pr-optimize button', { hasText: 'Start experiment' })).toBeVisible();

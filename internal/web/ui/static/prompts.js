@@ -27,9 +27,11 @@
   var routines = [];
   var routinesReady = fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; }).catch(function () {});
   var modelAliases = ['haiku', 'sonnet', 'opus'];
+  var modelPrices = {}; // alias → {input, output} in $/MTok
   var libCommit = '';
   var modelsReady = fetchJSON('/api/v1/personas').then(function (lib) {
     if (lib.models && lib.models.length) modelAliases = lib.models;
+    modelPrices = lib.model_prices || {};
     libCommit = lib.commit || '';
   }).catch(function () {});
 
@@ -208,6 +210,13 @@
     optimizePanel(detail, 'persona:' + f.name, f.model, function () {
       return { mode: modeInput.value.trim(), task: task.value, objective: objective.value.trim(), repo: repo.value.trim() };
     }, function (content) {
+      applyPersona(content);
+    }, {
+      baselineChars: rawOf(f).length,
+      promptChars: fetchJSON(promptURL(f.name, '?test=1&mode=' + encodeURIComponent((f.modes && f.modes[0]) || 'run') + '&task='))
+        .then(function (r) { return ((r.test || {}).prompt || '').length; }),
+    });
+    function applyPersona(content) {
       fetch(promptURL(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content }) })
         .then(function (resp) {
           if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
@@ -215,7 +224,7 @@
           showFragment(f.name);
         })
         .catch(fail);
-    });
+    }
   }
 
   function relTime(iso) {
@@ -327,7 +336,10 @@
   // inputs on the target model, and the optimizer judges the outputs blind.
   // Nothing changes until a variant's Apply, which goes through the same
   // validated save path as a hand edit.
-  function optimizePanel(parent, subject, defaultTarget, buildTest, apply) {
+  // sizing carries what the cost estimate needs: the subject's content
+  // length in characters and a promise of the full composed prompt's length
+  // (preambles and fragments included — what a test run actually sends).
+  function optimizePanel(parent, subject, defaultTarget, buildTest, apply, sizing) {
     parent.appendChild(el('h3', '', 'Optimize: have a big model propose and test variants'));
     var box = el('div', 'pr-optimize');
     parent.appendChild(box);
@@ -355,8 +367,39 @@
       });
       if (defaultTarget && modelAliases.indexOf(defaultTarget) >= 0) target.value = defaultTarget;
       // The optimizer defaults to the biggest model available.
-      if (modelAliases.indexOf('opus') >= 0) optimizer.value = 'opus';
+      if (modelAliases.indexOf('fable') >= 0) optimizer.value = 'fable';
+      else if (modelAliases.indexOf('opus') >= 0) optimizer.value = 'opus';
       else if (modelAliases.length) optimizer.value = modelAliases[modelAliases.length - 1];
+      estimate();
+    });
+
+    // The cost estimate: list prices × a rough token model. Input tokens
+    // come from the real composed prompt (chars/4); run output is assumed
+    // ~700 tokens; the generation call's output is the dominant optimizer
+    // cost since every variant is a complete rewrite of the content.
+    var promptTokens = Math.ceil((sizing && sizing.baselineChars || 2000) / 4);
+    var baselineTokens = Math.ceil((sizing && sizing.baselineChars || 2000) / 4);
+    if (sizing && sizing.promptChars) sizing.promptChars.then(function (n) {
+      if (n) { promptTokens = Math.ceil(n / 4); estimate(); }
+    }).catch(function () {});
+    var costLine = el('p', 'meta pr-cost');
+    costLine.title = 'List-price estimate: composed prompt ≈ chars/4 input tokens per run, ~700 output tokens per run, ' +
+      'plus one generation call (writes every variant in full) and one judging call on the optimizer. Actual spend varies with output length.';
+    function estimate() {
+      var tp = modelPrices[target.value];
+      var op = modelPrices[optimizer.value];
+      var V = Math.min(12, Math.max(1, +count.value || 8));
+      if (!tp || !op) { costLine.textContent = ''; return; }
+      var runOut = 700;
+      var usd = (V + 1) * (promptTokens * tp.input + runOut * tp.output) / 1e6 +
+        ((baselineTokens + 600) * op.input + (V * baselineTokens + 300) * op.output) / 1e6 +
+        (((V + 1) * runOut + 400) * op.input + 250 * op.output) / 1e6;
+      costLine.textContent = 'expected cost ≈ $' + (usd < 0.095 ? usd.toFixed(3) : usd.toFixed(2)) +
+        ' — ' + (V + 1) + ' runs on ' + target.value + ' + 2 ' + optimizer.value + ' calls';
+    }
+    [target, optimizer, count].forEach(function (input) {
+      input.addEventListener('change', estimate);
+      input.addEventListener('input', estimate);
     });
     var out = el('div');
     controls.appendChild(goal);
@@ -383,6 +426,7 @@
     });
     controls.appendChild(startBtn);
     box.appendChild(controls);
+    box.appendChild(costLine);
     box.appendChild(out);
 
     function poll(id) {
@@ -579,6 +623,13 @@
       optimizePanel(detail, 'routine:' + rt.name, rt.model, function () {
         return { objective: objective.value.trim(), repo: repoSel.value };
       }, function (content) {
+        applyRoutine(content);
+      }, {
+        baselineChars: (rt.prompt || '').length,
+        promptChars: fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name) + '/preview?objective=&repo=' + encodeURIComponent((rt.repositories || [''])[0] || ''))
+          .then(function (p) { return (p.prompt || '').length; }),
+      });
+      function applyRoutine(content) {
         // Applying a routine variant replaces only the task prompt, against
         // the routine's current generation.
         fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name)).then(function (fresh) {
@@ -593,7 +644,7 @@
             return fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; showRoutine(rt.name); });
           })
           .catch(fail);
-      });
+      }
     });
   }
 

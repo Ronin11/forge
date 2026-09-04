@@ -445,6 +445,7 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .pr-run{border-top:1px solid var(--line);padding-top:.4rem;margin-top:.4rem}
 .pr-run pre.result{max-height:16rem}
 .pr-variants{width:4.5rem}
+.pr-cost{margin:.2rem 0 .5rem;cursor:help}
 .pr-optimize .pr-controls textarea{flex:1 1 22rem;min-width:0}
 .pr-cand p{margin:.2rem 0}
 .pr-cand details{margin:.3rem 0}

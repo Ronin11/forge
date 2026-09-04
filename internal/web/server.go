@@ -661,6 +661,8 @@ func defaultResolveModel(alias string) (string, bool) {
 		return "claude-sonnet-4-5", true
 	case "opus":
 		return "claude-opus-4-1", true
+	case "fable":
+		return "claude-fable-5", true
 	}
 	// A full model id ("claude-haiku-4-5-20251001") carries a "-<digit>"; it is
 	// passed through unchanged.

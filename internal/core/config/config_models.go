@@ -93,10 +93,11 @@ func defaultRunners() map[string]RunnerConfig {
 }
 
 // defaultModels is the embedded model table: the three Anthropic aliases M1
-// knew, now with runner, class, and current list prices ($/MTok). Sonnet is
-// classed `mid` (the workhorse between small haiku and frontier opus — see
-// NOTES.md M10); opus is `frontier`; haiku is `small`. max_tier 3 lets any
-// routine tier reach any of them. IDs match defaultResolveModel (server.go).
+// knew plus fable, with runner, class, and current list prices ($/MTok).
+// Sonnet is classed `mid` (the workhorse between small haiku and the frontier
+// pair — see NOTES.md M10); opus and fable are `frontier`; haiku is `small`.
+// max_tier 3 lets any routine tier reach any of them. IDs match
+// defaultResolveModel (server.go).
 // CacheWrite is the 1-hour-TTL rate (2× input): the claude-code executor
 // caches at the 1h TTL, and pricing writes at the 5m rate (1.25× input) is
 // what doctor's notional-vs-reported drift was measuring.
@@ -113,6 +114,10 @@ func defaultModels() map[string]ModelConfig {
 		"opus": {
 			Runner: "claude", ID: "claude-opus-4-1", Class: "frontier", MaxTier: 3,
 			Context: 200_000, Price: Price{Input: 15.00, Output: 75.00, CacheRead: 1.50, CacheWrite: 30.00},
+		},
+		"fable": {
+			Runner: "claude", ID: "claude-fable-5", Class: "frontier", MaxTier: 3,
+			Context: 200_000, Price: Price{Input: 10.00, Output: 50.00, CacheRead: 1.00, CacheWrite: 20.00},
 		},
 	}
 }
