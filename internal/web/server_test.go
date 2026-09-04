@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
 	"forge/internal/core/store"
@@ -48,6 +51,7 @@ type harness struct {
 	srv    *Server
 	http   *httptest.Server
 	clock  *fakeClock
+	libDir string            // the harness's directives library on disk
 	leases map[string]string // attempt id → the lease token of its latest claim
 }
 
@@ -77,7 +81,35 @@ func newHarness(t *testing.T, transport string) *harness {
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	return &harness{t: t, st: st, srv: srv, http: hs, clock: clock, leases: map[string]string{}}
+	h := &harness{t: t, st: st, srv: srv, http: hs, clock: clock, leases: map[string]string{}}
+	h.libDir = t.TempDir()
+	for _, sub := range []string{"personas", "fragments", "directives"} {
+		if err := os.MkdirAll(filepath.Join(h.libDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.wireLibrary()
+	return h
+}
+
+// wireLibrary points the server at the harness's library dir; withPrompts and
+// createRoutine write files there and reload.
+func (h *harness) wireLibrary() {
+	h.t.Helper()
+	lib, err := directives.Load(h.libDir)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	current := lib
+	h.srv.prompts = func() *directives.Library { return current }
+	h.srv.promptsReload = func() error {
+		next, err := directives.Load(h.libDir)
+		if err != nil {
+			return err
+		}
+		current = next
+		return nil
+	}
 }
 
 // do sends one JSON request with an optional bearer token and decodes a 2xx
@@ -147,10 +179,33 @@ func (h *harness) register(workerID string) {
 	}
 }
 
+// createRoutine writes a directive with a standard body and a trigger
+// routine pointing at it — the target-only shape every stored routine has.
 func (h *harness) createRoutine(name string) {
 	h.t.Helper()
-	r := store.Routine{Name: name, Mode: "run", Prompt: "list files in {{repo}}", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300, RequireSandbox: true}
+	h.createRoutineWith(name, "list files in {{repo}}")
+}
+
+func (h *harness) createRoutineWith(name, body string) {
+	h.t.Helper()
+	h.writeDirective(name, "---\nmode: run\nmodel: haiku\n---\n"+body+"\n")
+	r := store.Routine{Name: name, Target: "directive:" + name, Repositories: []string{"equitizr"}, TimeoutSeconds: 300, RequireSandbox: true}
 	h.call(http.MethodPost, "/api/v1/routines", r, nil, http.StatusCreated)
+}
+
+// writeDirective drops one file into the harness library and hot-reloads.
+func (h *harness) writeDirective(name, raw string) {
+	h.t.Helper()
+	path := filepath.Join(h.libDir, "directives", name+".md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.srv.promptsReload(); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *harness) run(name string) workCreated {
@@ -255,22 +310,28 @@ func TestRegisterAndRoutines(t *testing.T) {
 		t.Errorf("repositories = %+v", repos)
 	}
 	h.createRoutine("inventory")
-	bad := store.Routine{Name: "Bad Name", Mode: "run", Prompt: "x", Model: "haiku", TimeoutSeconds: 300}
+	bad := store.Routine{Name: "Bad Name", Target: "directive:inventory", TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", bad, nil, http.StatusBadRequest)
 	bad.Name = "inventory"
 	h.call(http.MethodPost, "/api/v1/routines", bad, nil, http.StatusConflict)
-	bad.Name, bad.Model = "other", "gpt-x"
-	if raw := h.call(http.MethodPost, "/api/v1/routines", bad, nil, http.StatusBadRequest); !bytes.Contains(raw, []byte("unknown model alias")) {
-		t.Errorf("unknown model: %s", raw)
+	// Content fields on a stored routine are refused: the directive owns them.
+	content := store.Routine{Name: "other", Target: "directive:inventory", Prompt: "x", TimeoutSeconds: 300}
+	if raw := h.call(http.MethodPost, "/api/v1/routines", content, nil, http.StatusBadRequest); !bytes.Contains(raw, []byte("carries no content fields")) {
+		t.Errorf("content routine: %s", raw)
 	}
-	bad.Model, bad.TimeoutSeconds = "haiku", 0
-	h.call(http.MethodPost, "/api/v1/routines", bad, nil, http.StatusBadRequest)
+	// A target must exist in the library; the timeout is validated too.
+	ghost := store.Routine{Name: "other", Target: "directive:ghost", TimeoutSeconds: 300}
+	if raw := h.call(http.MethodPost, "/api/v1/routines", ghost, nil, http.StatusBadRequest); !bytes.Contains(raw, []byte("not in the library")) {
+		t.Errorf("missing directive: %s", raw)
+	}
+	badTimeout := store.Routine{Name: "other", Target: "directive:inventory", TimeoutSeconds: -1}
+	h.call(http.MethodPost, "/api/v1/routines", badTimeout, nil, http.StatusBadRequest)
 	var got store.Routine
 	h.call(http.MethodGet, "/api/v1/routines/inventory", nil, &got, http.StatusOK)
-	if got.Generation != 1 || got.Executor != "claude-code" {
+	if got.Generation != 1 || got.Executor != "claude-code" || got.Target != "directive:inventory" {
 		t.Errorf("routine = %+v", got)
 	}
-	got.Prompt = "changed {{repo}}"
+	got.Objective = "changed objective"
 	h.call(http.MethodPut, "/api/v1/routines/inventory?generation=1", got, &got, http.StatusOK)
 	h.call(http.MethodPut, "/api/v1/routines/inventory?generation=1", got, nil, http.StatusConflict)
 	h.call(http.MethodPut, "/api/v1/routines/inventory", got, nil, http.StatusBadRequest)

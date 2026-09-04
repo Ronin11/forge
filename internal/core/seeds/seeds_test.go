@@ -44,7 +44,7 @@ func TestImport(t *testing.T) {
 	}
 	// The operator already owns "taken".
 	if err := st.Write(ctx, func(tx *store.Tx) error {
-		return tx.CreateRoutine(ctx, &store.Routine{Name: "taken", Mode: "run", Prompt: "mine", Model: "haiku", TimeoutSeconds: 300})
+		return tx.CreateRoutine(ctx, &store.Routine{Name: "taken", Target: "directive:mine", Objective: "mine", TimeoutSeconds: 300})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestImport(t *testing.T) {
 	if err != nil || rt.Target != "directive:triage-repo" || rt.ScheduleEnabled {
 		t.Errorf("seeded-cron = %+v, %v", rt, err)
 	}
-	if taken, err := st.GetRoutine(ctx, "taken"); err != nil || taken.Prompt != "mine" {
+	if taken, err := st.GetRoutine(ctx, "taken"); err != nil || taken.Objective != "mine" {
 		t.Errorf("operator row touched: %+v, %v", taken, err)
 	}
 	if _, err := st.GetWorkflow(ctx, "seeded-flow"); err != nil {

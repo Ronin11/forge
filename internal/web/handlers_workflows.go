@@ -1,10 +1,8 @@
 package web
 
 import (
-	"context"
 	"errors"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -44,35 +42,19 @@ func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 	if err := model.ValidateName(wf.Name); err != nil {
 		return nil, badRequest("%v", err)
 	}
-	if err := wf.Normalize(); err != nil {
-		return nil, badRequest("%v", err)
-	}
 	return &wf, nil
 }
 
-// checkStepRoutines refuses, at definition time where the mistake is cheap: a
-// routine node naming a routine that does not exist or is archived, and a
-// script or switch whose JavaScript does not compile (a 400 at save, not a
-// runtime failure mid-run). Legacy `steps` bodies were normalized at decode,
-// so the graph is always present here.
-func (s *Server) checkStepRoutines(ctx context.Context, tx *store.Tx, wf *store.Workflow) error {
+// checkGraphNodes refuses, at definition time where the mistake is cheap: a
+// directive node naming a directive the library lacks, and a script or
+// switch whose JavaScript does not compile (a 400 at save, not a runtime
+// failure mid-run).
+func (s *Server) checkGraphNodes(wf *store.Workflow) error {
 	if wf.Graph == nil {
-		return nil // normalize in the store surfaces the real validation error
+		return nil // Validate in the store surfaces the real error
 	}
 	for _, n := range wf.Graph.Nodes {
 		switch n.Type {
-		case store.NodeRoutine:
-			cfg, err := n.RoutineConfig()
-			if err != nil {
-				return badRequest("%v", err)
-			}
-			rt, err := tx.GetRoutine(ctx, cfg.Routine)
-			if err != nil {
-				return badRequest("node %s: routine %s does not exist", n.ID, cfg.Routine)
-			}
-			if !rt.ArchivedAt.IsZero() {
-				return badRequest("node %s: routine %s is archived", n.ID, cfg.Routine)
-			}
 		case store.NodeDirective:
 			cfg, err := n.DirectiveConfig()
 			if err != nil {
@@ -115,7 +97,7 @@ func (s *Server) createWorkflow(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
-		if err := s.checkStepRoutines(ctx, tx, wf); err != nil {
+		if err := s.checkGraphNodes(wf); err != nil {
 			return err
 		}
 		return routineWriteError(tx.CreateWorkflow(ctx, wf))
@@ -157,7 +139,7 @@ func (s *Server) updateWorkflow(r *http.Request) (int, any, error) {
 			return err
 		}
 		wf.ID = saved.ID // the generation record is keyed by it
-		if err := s.checkStepRoutines(ctx, tx, wf); err != nil {
+		if err := s.checkGraphNodes(wf); err != nil {
 			return err
 		}
 		return routineWriteError(tx.UpdateWorkflow(ctx, wf, generation))
@@ -441,10 +423,8 @@ func (s *Server) cancelWorkflowRun(r *http.Request) (int, any, error) {
 	return http.StatusAccepted, map[string]string{"run_id": id, "status": "cancelling"}, nil
 }
 
-// workflowRun is one row of GET /api/v1/workflows/{name}/runs. An engine run
-// carries its stored status and node instances; a legacy run (pre-engine,
-// instantiated upfront with no run row) carries its Works and a derived
-// aggregate, marked legacy.
+// workflowRun is one row of GET /api/v1/workflows/{name}/runs: the run's
+// stored status and node instances.
 type workflowRun struct {
 	RunID      string           `json:"run_id"`
 	State      string           `json:"state"`
@@ -452,8 +432,6 @@ type workflowRun struct {
 	CreatedAt  time.Time        `json:"created_at"`
 	FinishedAt time.Time        `json:"finished_at,omitempty"`
 	Nodes      []runNodeSummary `json:"nodes,omitempty"`
-	Works      []workSummary    `json:"works,omitempty"`
-	Legacy     bool             `json:"legacy,omitempty"`
 }
 
 func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
@@ -471,9 +449,7 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	out := make([]workflowRun, 0, len(runs))
-	engineRuns := map[string]bool{}
 	for _, run := range runs {
-		engineRuns[run.ID] = true
 		nodes, err := s.store.RunNodes(ctx, run.ID)
 		if err != nil {
 			return 0, nil, err
@@ -484,101 +460,6 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 		}
 		out = append(out, row)
 	}
-	legacy, err := s.legacyWorkflowRuns(ctx, name, limit, engineRuns)
-	if err != nil {
-		return 0, nil, err
-	}
-	out = append(out, legacy...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return http.StatusOK, out, nil
-}
-
-// legacyWorkflowRuns derives rows for runs that predate the engine: grouped
-// Works, exactly the old listing.
-func (s *Server) legacyWorkflowRuns(ctx context.Context, name string, limit int, engineRuns map[string]bool) ([]workflowRun, error) {
-	work, err := s.store.WorkForWorkflow(ctx, name, limit)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, len(work))
-	for i, wk := range work {
-		ids[i] = wk.ID
-	}
-	targets, err := s.store.TargetsForWorks(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	byRun := map[string]*workflowRun{}
-	order := []string{}
-	for _, wk := range work {
-		if engineRuns[wk.WorkflowRunID] {
-			continue
-		}
-		run, ok := byRun[wk.WorkflowRunID]
-		if !ok {
-			run = &workflowRun{RunID: wk.WorkflowRunID, Legacy: true}
-			byRun[wk.WorkflowRunID] = run
-			order = append(order, wk.WorkflowRunID)
-		}
-		ts := targets[wk.ID]
-		if ts == nil {
-			ts = []store.Target{}
-		}
-		state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: wk.Integrate})
-		run.Works = append(run.Works, workSummary{Work: wk, State: state, Targets: ts})
-	}
-	out := make([]workflowRun, 0, len(byRun))
-	for _, id := range order {
-		run := byRun[id]
-		// The query is newest-first, so a run's Works arrived in reverse
-		// instantiation order; flip them back to step order.
-		slices.Reverse(run.Works)
-		run.CreatedAt = run.Works[0].Work.CreatedAt
-		run.State = aggregateRunState(run.Works)
-		out = append(out, *run)
-	}
-	return out, nil
-}
-
-// aggregateRunState is the coarse one-word summary of a run: what a list row
-// shows. It is derived, never stored.
-func aggregateRunState(works []workSummary) string {
-	terminal, succeeded, cancelled, failed := true, true, true, true
-	attention, running := false, false
-	for _, w := range works {
-		switch w.State {
-		case model.WorkSucceeded, model.WorkMerged:
-			cancelled, failed = false, false
-		case model.WorkCancelled:
-			succeeded, failed = false, false
-		case model.WorkFailed, model.WorkUnverified, model.WorkPartial:
-			succeeded, cancelled = false, false
-		default:
-			terminal = false
-			if w.State == model.WorkWaitingHuman || w.State == model.WorkConflict {
-				attention = true
-			}
-			if w.State == model.WorkRunning || w.State == model.WorkMerging {
-				running = true
-			}
-		}
-	}
-	switch {
-	case terminal && succeeded:
-		return "succeeded"
-	case terminal && cancelled:
-		return "cancelled"
-	case terminal && failed:
-		return "failed"
-	case terminal:
-		return "partial"
-	case attention:
-		return "attention"
-	case running:
-		return "running"
-	}
-	return "pending"
 }

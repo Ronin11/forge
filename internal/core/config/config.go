@@ -18,7 +18,7 @@ type Config struct {
 	HTTP         HTTPConfig         `toml:"http"`
 	Budget       BudgetConfig       `toml:"budget"`
 	KB           KBConfig           `toml:"kb"`
-	Prompts      PromptsConfig      `toml:"prompts"`
+	Directives   DirectivesConfig   `toml:"directives"`
 	Log          logging.Config     `toml:"log"`
 	Sandbox      SandboxConfig      `toml:"sandbox"`
 	Integration  IntegrationConfig  `toml:"integration"`
@@ -82,11 +82,10 @@ type KBConfig struct {
 	Path string `toml:"path"`
 }
 
-// PromptsConfig is where the directives library lives (personas, fragments,
-// directives — a git-versioned directory of Markdown, default
-// <home>/directives; pre-restructure homes are renamed from <home>/prompts on
-// boot). The TOML key stays [prompts] for existing configs.
-type PromptsConfig struct {
+// DirectivesConfig is where the directives library lives (directives,
+// personas, fragments — a git-versioned directory of Markdown, default
+// <home>/directives).
+type DirectivesConfig struct {
 	Path string `toml:"path"`
 }
 
@@ -206,7 +205,7 @@ func DefaultConfig(home, userHome string) Config {
 		HTTP:         HTTPConfig{Listen: "127.0.0.1:7340"},
 		Budget:       BudgetConfig{FiveHourTarget: 0.9, SevenDayTarget: 0.9, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97},
 		KB:           KBConfig{Path: filepath.Join(home, "kb")},
-		Prompts:      PromptsConfig{Path: filepath.Join(home, "directives")},
+		Directives:   DirectivesConfig{Path: filepath.Join(home, "directives")},
 		Sandbox:      SandboxConfig{AllowHosts: []string{"api.anthropic.com", "statsig.anthropic.com", "proxy.golang.org", "sum.golang.org", "registry.npmjs.org"}},
 		Integration:  IntegrationConfig{MaxStackDepth: 2, MaxRebaseAttempts: 3},
 		Repositories: RepositoriesConfig{ProjectsRoot: filepath.Join(userHome, "Projects")},

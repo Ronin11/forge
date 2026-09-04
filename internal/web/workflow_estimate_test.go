@@ -49,16 +49,11 @@ func TestWorkflowEstimate(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.withPrompts(map[string]string{
-		"personas/builder.md": "---\nmodel: sonnet\n---\nYou build.",
+		"personas/builder.md":       "---\nmodel: sonnet\n---\nYou build.",
+		"directives/wfe-lint.md":    "---\nmode: run\nmodel: haiku\n---\nlint",
+		"directives/wfe-fix.md":     "---\nmode: run\npersona: builder\n---\nfix",
+		"directives/wfe-mystery.md": "---\nmode: run\nmodel: opus\n---\n?",
 	})
-
-	for _, rt := range []store.Routine{
-		{Name: "wfe-lint", Mode: "run", Prompt: "lint", Model: "haiku", Repositories: []string{"equitizr"}, TimeoutSeconds: 300},
-		{Name: "wfe-fix", Mode: "run", Prompt: "fix", Persona: "builder", Repositories: []string{"equitizr"}, TimeoutSeconds: 300},
-		{Name: "wfe-mystery", Mode: "run", Prompt: "?", Model: "opus", Repositories: []string{"equitizr"}, TimeoutSeconds: 300},
-	} {
-		h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
-	}
 
 	// wfe-lint on haiku has direct history (p50 of 0.10/0.20/0.30 = 0.20);
 	// sonnet has only model-wide history from an unrelated routine (1.00);
@@ -70,10 +65,10 @@ func TestWorkflowEstimate(t *testing.T) {
 
 	graph := map[string]any{
 		"nodes": []map[string]any{
-			{"id": "lint", "type": "routine", "config": map[string]any{"routine": "wfe-lint"}, "position": map[string]float64{"x": 0, "y": 0}},
+			{"id": "lint", "type": "directive", "config": map[string]any{"directive": "wfe-lint"}, "position": map[string]float64{"x": 0, "y": 0}},
 			{"id": "route", "type": "switch", "config": map[string]any{"expression": "'go'"}, "position": map[string]float64{"x": 200, "y": 0}},
-			{"id": "fix", "type": "routine", "config": map[string]any{"routine": "wfe-fix"}, "position": map[string]float64{"x": 400, "y": 0}},
-			{"id": "mystery", "type": "routine", "config": map[string]any{"routine": "wfe-mystery"}, "position": map[string]float64{"x": 600, "y": 0}},
+			{"id": "fix", "type": "directive", "config": map[string]any{"directive": "wfe-fix"}, "position": map[string]float64{"x": 400, "y": 0}},
+			{"id": "mystery", "type": "directive", "config": map[string]any{"directive": "wfe-mystery"}, "position": map[string]float64{"x": 600, "y": 0}},
 		},
 		"edges": []map[string]any{
 			{"from": "lint", "to": "route", "when": "success"},

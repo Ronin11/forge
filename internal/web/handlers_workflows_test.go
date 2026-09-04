@@ -40,7 +40,20 @@ func (h *harness) completeNode(reqID string, state model.State) {
 	h.complete(c, completeRequest(state, time.Now()))
 }
 
-// A workflow of chained routines: create, run, and watch the engine
+// directiveNode builds a directive node whose config names the directive.
+func directiveNode(id, directive string) store.WorkflowNode {
+	return store.WorkflowNode{ID: id, Type: store.NodeDirective, Config: map[string]any{"directive": directive}}
+}
+
+// chainWorkflow is a two-node directive chain joined by one success edge.
+func chainWorkflow(name, first, second string) store.Workflow {
+	return store.Workflow{Name: name, Graph: &store.WorkflowGraph{
+		Nodes: []store.WorkflowNode{directiveNode(first, first), directiveNode(second, second)},
+		Edges: []store.WorkflowGraphEdge{{From: first, To: second}},
+	}}
+}
+
+// A workflow of chained directives: create, run, and watch the engine
 // materialize nodes stepwise — the dependant is never pre-created.
 func TestWorkflowRunEngineChain(t *testing.T) {
 	h := newHarness(t, transportUnix)
@@ -48,15 +61,13 @@ func TestWorkflowRunEngineChain(t *testing.T) {
 	h.createRoutine("lint-all")
 	h.createRoutine("fix-lint")
 
-	wf := store.Workflow{Name: "nightly", Steps: []store.WorkflowStep{
-		{Name: "lint", Routine: "lint-all"},
-		{Name: "fix", Routine: "fix-lint"},
+	wf := store.Workflow{Name: "nightly", Graph: &store.WorkflowGraph{
+		Nodes: []store.WorkflowNode{directiveNode("lint", "lint-all"), directiveNode("fix", "fix-lint")},
+		Edges: []store.WorkflowGraphEdge{{From: "lint", To: "fix"}},
 	}}
 	var created store.Workflow
 	h.call(http.MethodPost, "/api/v1/workflows", wf, &created, http.StatusCreated)
-	// The steps body is converted to the canonical graph: two routine nodes
-	// chained by one success edge.
-	if created.Generation != 1 || created.Graph == nil || len(created.Steps) != 0 {
+	if created.Generation != 1 || created.Graph == nil {
 		t.Fatalf("created = %+v", created)
 	}
 	if g := created.Graph; len(g.Nodes) != 2 || len(g.Edges) != 1 || g.Edges[0].From != "lint" || g.Edges[0].To != "fix" {
@@ -64,7 +75,7 @@ func TestWorkflowRunEngineChain(t *testing.T) {
 	}
 
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/nightly/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/nightly/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 	if run.RunID == "" || run.Workflow != "nightly" {
 		t.Fatalf("run = %+v", run)
 	}
@@ -120,7 +131,7 @@ func TestWorkflowRunEngineChain(t *testing.T) {
 	// The runs listing carries the engine row with node summaries.
 	var runs []workflowRun
 	h.call(http.MethodGet, "/api/v1/workflows/nightly/runs", nil, &runs, http.StatusOK)
-	if len(runs) != 1 || runs[0].RunID != run.RunID || runs[0].State != store.RunSucceeded || len(runs[0].Nodes) != 2 || runs[0].Legacy {
+	if len(runs) != 1 || runs[0].RunID != run.RunID || runs[0].State != store.RunSucceeded || len(runs[0].Nodes) != 2 {
 		t.Fatalf("runs = %+v", runs)
 	}
 }
@@ -133,13 +144,9 @@ func TestWorkflowRunFailureSkips(t *testing.T) {
 	h.createRoutine("build")
 	h.createRoutine("deploy")
 
-	wf := store.Workflow{Name: "release", Steps: []store.WorkflowStep{
-		{Name: "build", Routine: "build"},
-		{Name: "deploy", Routine: "deploy"},
-	}}
-	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows", chainWorkflow("release", "build", "deploy"), nil, http.StatusCreated)
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/release/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/release/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 	h.completeNode("wf-f1", model.Failed)
 	d := h.runDetail(run.RunID)
 	if got := nodeInstance(d, "deploy", 1); got == nil || got.Status != store.NodeSkipped || got.WorkID != "" {
@@ -150,7 +157,7 @@ func TestWorkflowRunFailureSkips(t *testing.T) {
 	}
 }
 
-// A script node runs in the daemon between routine nodes, sees the upstream
+// A script node runs in the daemon between directive nodes, sees the upstream
 // output, and its result feeds the switch that routes the run.
 func TestWorkflowRunScriptAndSwitch(t *testing.T) {
 	h := newHarness(t, transportUnix)
@@ -161,11 +168,11 @@ func TestWorkflowRunScriptAndSwitch(t *testing.T) {
 
 	wf := store.Workflow{Name: "routed", Graph: &store.WorkflowGraph{
 		Nodes: []store.WorkflowNode{
-			{ID: "probe", Type: store.NodeRoutine, Config: map[string]any{"routine": "probe"}},
+			directiveNode("probe", "probe"),
 			{ID: "shape", Type: store.NodeScript, Config: map[string]any{"source": "function main(input) { return {kind: input.steps.probe.status === 'succeeded' ? 'docs' : 'other'} }"}},
 			{ID: "route", Type: store.NodeSwitch, Config: map[string]any{"expression": "input.steps.shape.output.kind"}},
-			{ID: "docs", Type: store.NodeRoutine, Config: map[string]any{"routine": "docs"}},
-			{ID: "other", Type: store.NodeRoutine, Config: map[string]any{"routine": "other"}},
+			directiveNode("docs", "docs"),
+			directiveNode("other", "other"),
 		},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "probe", To: "shape", When: store.WhenAlways},
@@ -176,7 +183,7 @@ func TestWorkflowRunScriptAndSwitch(t *testing.T) {
 	}}
 	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/routed/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/routed/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 	h.completeNode("wf-s1", model.Succeeded)
 
 	d := h.runDetail(run.RunID)
@@ -205,13 +212,9 @@ func TestWorkflowRunCancel(t *testing.T) {
 	h.createRoutine("slow")
 	h.createRoutine("later")
 
-	wf := store.Workflow{Name: "cancellable", Steps: []store.WorkflowStep{
-		{Name: "slow", Routine: "slow"},
-		{Name: "later", Routine: "later"},
-	}}
-	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows", chainWorkflow("cancellable", "slow", "later"), nil, http.StatusCreated)
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/cancellable/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/cancellable/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 	h.call(http.MethodPost, "/api/v1/workflow-runs/"+run.RunID+"/cancel", nil, nil, http.StatusAccepted)
 	// The root work was pending (unclaimed), so cancellation is immediate and
 	// the engine settles the run to cancelled on the kick.
@@ -228,43 +231,33 @@ func TestWorkflowRunCancel(t *testing.T) {
 	}
 }
 
-// Definition-time refusals: unknown or archived routines, forward references,
-// stale generations, archived workflows.
+// Definition-time refusals: directives missing from the library, uncapped
+// loops, stale generations, archived workflows.
 func TestWorkflowValidationAndLifecycle(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.createRoutine("real")
 
-	bad := store.Workflow{Name: "bad", Steps: []store.WorkflowStep{{Name: "a", Routine: "ghost"}}}
+	bad := store.Workflow{Name: "bad", Graph: &store.WorkflowGraph{Nodes: []store.WorkflowNode{directiveNode("a", "ghost")}}}
 	status, body := h.do(http.MethodPost, "/api/v1/workflows", bad, nil, "")
-	if status != http.StatusBadRequest || !strings.Contains(string(body), "does not exist") {
-		t.Fatalf("unknown routine = %d %s", status, body)
-	}
-
-	fwd := store.Workflow{Name: "fwd", Steps: []store.WorkflowStep{
-		{Name: "a", Routine: "real", After: []store.WorkflowEdge{{Step: "b"}}},
-		{Name: "b", Routine: "real"},
-	}}
-	if status, body := h.do(http.MethodPost, "/api/v1/workflows", fwd, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "earlier step") {
-		t.Fatalf("forward reference = %d %s", status, body)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "not in the library") {
+		t.Fatalf("unknown directive = %d %s", status, body)
 	}
 
 	// A graph body with an uncapped loop edge is refused at definition time.
 	loopy := store.Workflow{Name: "loopy", Graph: &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{
-			{ID: "a", Type: store.NodeRoutine, Config: map[string]any{"routine": "real"}},
-			{ID: "b", Type: store.NodeRoutine, Config: map[string]any{"routine": "real"}},
-		},
+		Nodes: []store.WorkflowNode{directiveNode("a", "real"), directiveNode("b", "real")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}, {From: "b", To: "a", Loop: true}},
 	}}
 	if status, body := h.do(http.MethodPost, "/api/v1/workflows", loopy, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "max_iterations") {
 		t.Fatalf("uncapped loop = %d %s", status, body)
 	}
 
-	ok := store.Workflow{Name: "ok", Steps: []store.WorkflowStep{{Name: "a", Routine: "real"}}}
+	ok := store.Workflow{Name: "ok", Graph: &store.WorkflowGraph{Nodes: []store.WorkflowNode{directiveNode("a", "real")}}}
 	h.call(http.MethodPost, "/api/v1/workflows", ok, &ok, http.StatusCreated)
 
 	// Update needs the generation and bumps it; a stale one 409s.
-	ok.Graph.Nodes = append(ok.Graph.Nodes, store.WorkflowNode{ID: "b", Type: store.NodeRoutine, Config: map[string]any{"routine": "real"}})
+	ok.Graph.Nodes = append(ok.Graph.Nodes, directiveNode("b", "real"))
+	ok.Graph.Edges = append(ok.Graph.Edges, store.WorkflowGraphEdge{From: "a", To: "b"})
 	var updated store.Workflow
 	h.call(http.MethodPut, "/api/v1/workflows/ok?generation=1", ok, &updated, http.StatusOK)
 	if updated.Generation != 2 {
@@ -300,25 +293,24 @@ func TestWorkflowValidationAndLifecycle(t *testing.T) {
 	}
 }
 
-// A routine node's result envelope `output` becomes the node output, and a
+// A directive node's result envelope `output` becomes the node output, and a
 // downstream node's objective template reads it before its Work is created.
 func TestWorkflowRunOutputPassing(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.createRoutine("probe")
-	fixer := store.Routine{Name: "fixer", Mode: "run", Prompt: "do this: {{objective}}", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300, RequireSandbox: true}
-	h.call(http.MethodPost, "/api/v1/routines", fixer, nil, http.StatusCreated)
+	h.createRoutineWith("fixer", "do this: {{objective}}")
 
 	wf := store.Workflow{Name: "passing", Graph: &store.WorkflowGraph{
 		Nodes: []store.WorkflowNode{
-			{ID: "probe", Type: store.NodeRoutine, Config: map[string]any{"routine": "probe"}},
-			{ID: "fix", Type: store.NodeRoutine, Config: map[string]any{"routine": "fixer", "objective": "fix {{steps.probe.output.top}} ({{steps.probe.status}})"}},
+			directiveNode("probe", "probe"),
+			{ID: "fix", Type: store.NodeDirective, Config: map[string]any{"directive": "fixer", "objective": "fix {{steps.probe.output.top}} ({{steps.probe.status}})"}},
 		},
 		Edges: []store.WorkflowGraphEdge{{From: "probe", To: "fix"}},
 	}}
 	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/passing/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/passing/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 
 	c := h.mustClaim("wf-o1")
 	h.heartbeat(c, model.Preparing, 0)
@@ -353,13 +345,9 @@ func TestWorkflowRunRetry(t *testing.T) {
 	h.createRoutine("build")
 	h.createRoutine("deploy")
 
-	wf := store.Workflow{Name: "retryable", Steps: []store.WorkflowStep{
-		{Name: "build", Routine: "build"},
-		{Name: "deploy", Routine: "deploy"},
-	}}
-	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows", chainWorkflow("retryable", "build", "deploy"), nil, http.StatusCreated)
 	var run workflowRunCreated
-	h.call(http.MethodPost, "/api/v1/workflows/retryable/run", nil, &run, http.StatusCreated)
+	h.call(http.MethodPost, "/api/v1/workflows/retryable/run", runRequest{Repositories: []string{"equitizr"}}, &run, http.StatusCreated)
 	h.completeNode("wf-r1", model.Failed)
 	if d := h.runDetail(run.RunID); d.Status != store.RunFailed {
 		t.Fatalf("run = %s, want failed", d.Status)
@@ -390,15 +378,16 @@ func TestWorkflowRunRetry(t *testing.T) {
 	}
 }
 
-// A routine node whose Work cannot be created (unregistered repository) fails
-// the node — with the reason on the instance — rather than wedging the run in
-// a forever-retrying transaction.
+// A directive node whose Work cannot be created (unregistered repository)
+// fails the node — with the reason on the instance — rather than wedging the
+// run in a forever-retrying transaction.
 func TestWorkflowRunMaterializationFailureFailsNode(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
-	ghost := store.Routine{Name: "ghostly", Mode: "run", Prompt: "p", Repositories: []string{"ghost-repo"}, Model: "haiku", TimeoutSeconds: 300}
-	h.call(http.MethodPost, "/api/v1/routines", ghost, nil, http.StatusCreated)
-	wf := store.Workflow{Name: "doomed", Steps: []store.WorkflowStep{{Name: "a", Routine: "ghostly"}}}
+	h.writeDirective("ghostly", "---\nmode: run\nmodel: haiku\n---\np\n")
+	wf := store.Workflow{Name: "doomed", Graph: &store.WorkflowGraph{
+		Nodes: []store.WorkflowNode{{ID: "a", Type: store.NodeDirective, Config: map[string]any{"directive": "ghostly", "repositories": []string{"ghost-repo"}}}},
+	}}
 	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
 	var run workflowRunCreated
 	h.call(http.MethodPost, "/api/v1/workflows/doomed/run", nil, &run, http.StatusCreated)

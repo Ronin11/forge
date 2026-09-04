@@ -16,26 +16,23 @@ import (
 // numeric fields are pointers so "not set" is distinguishable from zero; JSON
 // fields are decoded slices.
 //
-// The content fields (Mode, Prompt, Persona, Model, Effort) remain for two
-// reasons: legacy rows created before targets existed, and the frozen-snapshot
-// role — createWorkTx resolves a target's content INTO these fields before
-// marshaling the struct into work.snapshot, so old snapshots and
-// routine_generations history decode unchanged. A stored target row leaves
-// them empty (Validate enforces one shape or the other).
+// The content fields (Mode, Prompt, Persona, Model, Effort) exist on the
+// struct ONLY for the frozen-snapshot role: materializeRoutine resolves the
+// target's content INTO them before the struct marshals into work.snapshot,
+// and pre-restructure snapshots and routine_generations decode through them.
+// They are never stored on rows (no columns) and Validate rejects them set.
 type Routine struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// Target is what a run invokes: "directive:<name>" | "workflow:<name>".
-	// Empty on legacy content rows.
 	Target string `json:"target,omitempty"`
 	// Objective is the default {{objective}} for runs this trigger creates;
 	// a per-run objective wins.
 	Objective string `json:"objective,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Prompt    string `json:"prompt,omitempty"`
-	// Persona names an identity in the file-backed prompts library; its
-	// resolved text is composed ahead of Prompt at Work creation, and its
-	// default model applies when Model is empty.
+	// Snapshot-only content fields (see the type comment): filled by
+	// materialization, never stored.
+	Mode            string            `json:"mode,omitempty"`
+	Prompt          string            `json:"prompt,omitempty"`
 	Persona         string            `json:"persona,omitempty"`
 	Repositories    []string          `json:"repositories"`
 	Executor        string            `json:"executor"`
@@ -74,36 +71,20 @@ var (
 )
 
 // Validate is what the API and CLI reject on before anything is stored. A
-// routine is exactly one of two shapes: a trigger (Target set, content fields
-// empty — content lives in the library or the workflow) or a legacy content
-// routine (Target empty, today's content rules). Keeping the shapes disjoint
-// is what makes an A/B generation restore unambiguous.
+// stored routine is always a trigger: Target names what it invokes; content
+// fields must be empty — content lives in the directive (or the workflow).
 func (r *Routine) Validate() error {
 	if err := model.ValidateName(r.Name); err != nil {
 		return err
 	}
-	if r.Target != "" {
-		if _, _, err := ParseTarget(r.Target); err != nil {
-			return fmt.Errorf("routine %s: %w", r.Name, err)
-		}
-		if r.Mode != "" || r.Prompt != "" || r.Persona != "" || r.Model != "" || r.Effort != "" {
-			return fmt.Errorf("routine %s: a target routine carries no content fields (mode/prompt/persona/model/effort live in the directive)", r.Name)
-		}
-	} else {
-		if r.Mode == "" {
-			return fmt.Errorf("routine %s: mode is required", r.Name)
-		}
-		if r.Prompt == "" {
-			return fmt.Errorf("routine %s: prompt is required", r.Name)
-		}
-		if r.Model == "" && r.Persona == "" {
-			return fmt.Errorf("routine %s: model is required (or a persona with a default model)", r.Name)
-		}
-		if r.Persona != "" {
-			if err := model.ValidateName(r.Persona); err != nil {
-				return fmt.Errorf("routine %s: persona: %w", r.Name, err)
-			}
-		}
+	if r.Target == "" {
+		return fmt.Errorf("routine %s: target is required (directive:<name> or workflow:<name>)", r.Name)
+	}
+	if _, _, err := ParseTarget(r.Target); err != nil {
+		return fmt.Errorf("routine %s: %w", r.Name, err)
+	}
+	if r.Mode != "" || r.Prompt != "" || r.Persona != "" || r.Model != "" || r.Effort != "" {
+		return fmt.Errorf("routine %s: a routine carries no content fields (mode/prompt/persona/model/effort live in the directive)", r.Name)
 	}
 	if r.TimeoutSeconds <= 0 || r.TimeoutSeconds > 8*3600 {
 		return fmt.Errorf("routine %s: timeout_seconds must be in 1..28800", r.Name)
@@ -136,9 +117,9 @@ func (r *Routine) applyDefaults() {
 	if r.Executor == "" {
 		r.Executor = "claude-code"
 	}
-	// A trigger routine's timeout applies to the Works it creates; a sensible
-	// default keeps target creation from demanding operational trivia.
-	if r.Target != "" && r.TimeoutSeconds == 0 {
+	// The timeout applies to the Works this trigger creates; a sensible
+	// default keeps creation from demanding operational trivia.
+	if r.TimeoutSeconds == 0 {
 		r.TimeoutSeconds = 3600
 	}
 	if r.Concurrency == 0 {
@@ -203,8 +184,8 @@ func (tx *Tx) updateRoutine(ctx context.Context, r *Routine, expectedGeneration 
 	r.Generation = current + 1
 	r.UpdatedAt = tx.now
 	repos, tools, paths, deps, models := jsonList(r.Repositories), jsonOrNull(r.AllowedTools), jsonOrNull(r.Paths), jsonOrNull(r.Deps), jsonOrNull(r.Models)
-	_, err = tx.Exec(ctx, `UPDATE routines SET mode=?, prompt=?, persona=?, repositories=?, executor=?, model=?, effort=?, max_turns=?, timeout_seconds=?, max_budget_usd=?, allowed_tools=?, autonomy=?, verification=?, priority=?, budget_class=?, schedule=?, schedule_enabled=?, concurrency=?, paths=?, deps=?, tier=?, models=?, integrate=?, require_sandbox=?, max_questions=?, generation=?, updated_at=?, target=?, objective=? WHERE name=?`,
-		r.Mode, r.Prompt, nullString(r.Persona), repos, r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), tools, nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, paths, deps, nullIntPtr(r.Tier), models, boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.UpdatedAt), nullString(r.Target), nullString(r.Objective), r.Name)
+	_, err = tx.Exec(ctx, `UPDATE routines SET repositories=?, executor=?, max_turns=?, timeout_seconds=?, max_budget_usd=?, allowed_tools=?, autonomy=?, verification=?, priority=?, budget_class=?, schedule=?, schedule_enabled=?, concurrency=?, paths=?, deps=?, tier=?, models=?, integrate=?, require_sandbox=?, max_questions=?, generation=?, updated_at=?, target=?, objective=? WHERE name=?`,
+		repos, r.Executor, nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), tools, nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, paths, deps, nullIntPtr(r.Tier), models, boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.UpdatedAt), r.Target, nullString(r.Objective), r.Name)
 	if err != nil {
 		return fmt.Errorf("update routine %s: %w", r.Name, err)
 	}
@@ -212,9 +193,9 @@ func (tx *Tx) updateRoutine(ctx context.Context, r *Routine, expectedGeneration 
 }
 
 func (tx *Tx) insertRoutine(ctx context.Context, r *Routine) error {
-	_, err := tx.Exec(ctx, `INSERT INTO routines (id, name, mode, prompt, persona, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, created_at, updated_at, target, objective)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Mode, r.Prompt, nullString(r.Persona), jsonList(r.Repositories), r.Executor, r.Model, nullString(r.Effort), nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), jsonOrNull(r.AllowedTools), nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, jsonOrNull(r.Paths), jsonOrNull(r.Deps), nullIntPtr(r.Tier), jsonOrNull(r.Models), boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), nullString(r.Target), nullString(r.Objective))
+	_, err := tx.Exec(ctx, `INSERT INTO routines (id, name, repositories, executor, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, created_at, updated_at, target, objective)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, jsonList(r.Repositories), r.Executor, nullInt(r.MaxTurns), r.TimeoutSeconds, nullFloat(r.MaxBudgetUSD), jsonOrNull(r.AllowedTools), nullString(string(r.Autonomy)), nullString(r.Verification), r.Priority, string(r.BudgetClass), nullString(r.Schedule), boolInt(r.ScheduleEnabled), r.Concurrency, jsonOrNull(r.Paths), jsonOrNull(r.Deps), nullIntPtr(r.Tier), jsonOrNull(r.Models), boolInt(r.Integrate), boolInt(r.RequireSandbox), r.MaxQuestions, r.Generation, formatTime(r.CreatedAt), formatTime(r.UpdatedAt), r.Target, nullString(r.Objective))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("routine %s already exists: %w", r.Name, ErrConflict)
@@ -263,7 +244,7 @@ func (tx *Tx) SetNextDue(ctx context.Context, name string, next time.Time) error
 	return nil
 }
 
-const routineColumns = `id, name, mode, prompt, persona, repositories, executor, model, effort, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, next_due_at, archived_at, created_at, updated_at, target, objective`
+const routineColumns = `id, name, repositories, executor, max_turns, timeout_seconds, max_budget_usd, allowed_tools, autonomy, verification, priority, budget_class, schedule, schedule_enabled, concurrency, paths, deps, tier, models, integrate, require_sandbox, max_questions, generation, next_due_at, archived_at, created_at, updated_at, target, objective`
 
 // GetRoutine reads one routine by name.
 func (s *Store) GetRoutine(ctx context.Context, name string) (*Routine, error) {
@@ -318,16 +299,15 @@ func (s *Store) routines(iter func(func(*sql.Rows) error) error) ([]Routine, err
 	var out []Routine
 	err := iter(func(rows *sql.Rows) error {
 		var r Routine
-		var effort, tools, autonomy, verification, schedule, paths, deps, models, repos, persona, target, objective sql.NullString
+		var tools, autonomy, verification, schedule, paths, deps, models, repos, objective sql.NullString
 		var maxTurns, tier sql.NullInt64
 		var budget sql.NullFloat64
 		var scheduleEnabled, integrate, requireSandbox int
 		var nextDue, archived, created, updated sql.NullString
-		if err := rows.Scan(&r.ID, &r.Name, &r.Mode, &r.Prompt, &persona, &repos, &r.Executor, &r.Model, &effort, &maxTurns, &r.TimeoutSeconds, &budget, &tools, &autonomy, &verification, &r.Priority, &r.BudgetClass, &schedule, &scheduleEnabled, &r.Concurrency, &paths, &deps, &tier, &models, &integrate, &requireSandbox, &r.MaxQuestions, &r.Generation, &nextDue, &archived, &created, &updated, &target, &objective); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &repos, &r.Executor, &maxTurns, &r.TimeoutSeconds, &budget, &tools, &autonomy, &verification, &r.Priority, &r.BudgetClass, &schedule, &scheduleEnabled, &r.Concurrency, &paths, &deps, &tier, &models, &integrate, &requireSandbox, &r.MaxQuestions, &r.Generation, &nextDue, &archived, &created, &updated, &r.Target, &objective); err != nil {
 			return fmt.Errorf("scan routine: %w", err)
 		}
-		r.Effort, r.Verification, r.Schedule, r.Persona = effort.String, verification.String, schedule.String, persona.String
-		r.Target, r.Objective = target.String, objective.String
+		r.Verification, r.Schedule, r.Objective = verification.String, schedule.String, objective.String
 		r.Autonomy = model.Autonomy(autonomy.String)
 		r.MaxTurns, r.MaxBudgetUSD = int(maxTurns.Int64), budget.Float64
 		if tier.Valid {

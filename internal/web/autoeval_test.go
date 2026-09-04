@@ -49,9 +49,13 @@ func seedRoutineProposal(h *harness) store.Proposal {
 	return createKindProposal(h, "routine", "routine:inventory", map[string]any{"prompt": "measured prompt"})
 }
 
+// NOTE: this grades a mode_prompt proposal. A routine proposal's eval mode is
+// resolved from the stored row's Mode (autoeval.go proposalEvalMode), which is
+// always empty now that routines are target-only — routine-kind proposals
+// cannot resolve a mode until production reads it from the directive.
 func TestAutoEvalRecordsScore(t *testing.T) {
 	h := newHarness(t, transportUnix)
-	p := seedRoutineProposal(h)
+	p := createKindProposal(h, "mode_prompt", "mode:run", map[string]any{"content": "measured preamble"})
 
 	fake := &fakeEval{answers: map[string]struct {
 		score float64

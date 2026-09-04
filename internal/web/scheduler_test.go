@@ -18,7 +18,8 @@ func TestSchedulerFiresRoutine(t *testing.T) {
 	h.register(testWorkerID)
 	ctx := context.Background()
 
-	rt := store.Routine{Name: "cronny", Mode: "run", Prompt: "p", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300,
+	h.writeDirective("cronny", "---\nmode: run\nmodel: haiku\n---\np\n")
+	rt := store.Routine{Name: "cronny", Target: "directive:cronny", Repositories: []string{"equitizr"}, TimeoutSeconds: 300,
 		Schedule: "0 3 * * *", ScheduleEnabled: true}
 	h.call(http.MethodPost, "/api/v1/routines", rt, &rt, http.StatusCreated)
 
@@ -82,8 +83,9 @@ func TestSchedulerFiresWorkflow(t *testing.T) {
 	ctx := context.Background()
 	h.createRoutine("step-r")
 
-	wf := store.Workflow{Name: "nightly-flow", Steps: []store.WorkflowStep{{Name: "a", Routine: "step-r"}},
-		Schedule: "30 2 * * *", ScheduleEnabled: true}
+	wf := store.Workflow{Name: "nightly-flow", Graph: &store.WorkflowGraph{
+		Nodes: []store.WorkflowNode{{ID: "a", Type: store.NodeDirective, Config: map[string]any{"directive": "step-r", "repositories": []string{"equitizr"}}}},
+	}, Schedule: "30 2 * * *", ScheduleEnabled: true}
 	h.call(http.MethodPost, "/api/v1/workflows", wf, nil, http.StatusCreated)
 
 	h.srv.scheduleTick(ctx) // backfill
@@ -129,13 +131,15 @@ func TestSchedulerFiresWorkflow(t *testing.T) {
 // An invalid cron string is refused at save time — the old silent trap.
 func TestScheduleValidatedAtSave(t *testing.T) {
 	h := newHarness(t, transportUnix)
-	rt := store.Routine{Name: "badcron", Mode: "run", Prompt: "p", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300,
+	h.createRoutine("real")
+	rt := store.Routine{Name: "badcron", Target: "directive:real", Repositories: []string{"equitizr"}, TimeoutSeconds: 300,
 		Schedule: "not a cron", ScheduleEnabled: true}
 	if status, _ := h.do(http.MethodPost, "/api/v1/routines", rt, nil, ""); status != http.StatusBadRequest {
 		t.Fatalf("bad routine cron = %d", status)
 	}
-	h.createRoutine("real")
-	wf := store.Workflow{Name: "badwf", Steps: []store.WorkflowStep{{Name: "a", Routine: "real"}}, Schedule: "99 99 * * *"}
+	wf := store.Workflow{Name: "badwf", Graph: &store.WorkflowGraph{
+		Nodes: []store.WorkflowNode{{ID: "a", Type: store.NodeDirective, Config: map[string]any{"directive": "real"}}},
+	}, Schedule: "99 99 * * *"}
 	if status, _ := h.do(http.MethodPost, "/api/v1/workflows", wf, nil, ""); status != http.StatusBadRequest {
 		t.Fatalf("bad workflow cron = %d", status)
 	}

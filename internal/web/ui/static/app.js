@@ -601,63 +601,27 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       });
     }).catch(function () {});
 
-    // A target routine is a pure trigger: the content fields belong to the
-    // directive (or workflow) and are disabled + cleared while target is set.
-    var contentFields = ['mode', 'model', 'persona', 'prompt'];
-    function syncTarget() {
-      var target = field('target');
-      if (!target) return;
-      var on = !!target.value.trim();
-      contentFields.forEach(function (n) {
-        var f = field(n);
-        f.disabled = on;
-        if (on) f.value = '';
-      });
-      field('prompt').required = !on;
-      var tplRowEl = form.querySelector('[data-template-row]');
-      if (tplRowEl && on) tplRowEl.hidden = true;
-    }
 
-    // Role templates: fill the New-routine form from a built-in starting point.
-    var tplSelect = form.querySelector('[data-routine-template]');
-    var tplRow = form.querySelector('[data-template-row]');
-    var tplDesc = form.querySelector('[data-template-desc]');
-    var templates = [];
-    if (tplSelect) {
-      fetchJSON('/api/v1/routine-templates').then(function (list) {
-        templates = list || [];
-        templates.forEach(function (t) {
-          var o = document.createElement('option');
-          o.value = t.key; o.textContent = t.role;
-          tplSelect.appendChild(o);
-        });
-      }).catch(function () {});
-      tplSelect.addEventListener('change', function () {
-        var t = templates.filter(function (x) { return x.key === tplSelect.value; })[0];
-        tplDesc.textContent = t ? t.description : '';
-        if (!t) return;
-        if (!field('name').value) field('name').value = t.key;
-        field('mode').value = t.mode;
-        field('model').value = t.model;
-        field('budget_class').value = t.budget_class;
-        field('prompt').value = t.prompt;
-        field('integrate').checked = !!t.integrate;
+    // Workflows join the target datalist (directives are server-rendered).
+    var targetList = document.getElementById('target-names');
+    if (targetList) fetchJSON('/api/v1/workflows').then(function (list) {
+      (list || []).forEach(function (wf) {
+        var o = document.createElement('option');
+        o.value = 'workflow:' + wf.name;
+        targetList.appendChild(o);
       });
-    }
+    }).catch(function () {});
+
 
     function open(current) {
       form.reset();
-      if (tplRow) tplRow.hidden = !!current;
-      if (tplSelect) tplSelect.value = '';
-      if (tplDesc) tplDesc.textContent = '';
       openEditor(dialog, {
         title: current ? 'Edit routine ' + current.name : 'New routine',
         base: '/api/v1/routines',
         current: current,
         fill: function () {
-          syncTarget();
           if (!current) return;
-          ['name', 'target', 'objective', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'target', 'objective', 'budget_class', 'schedule', 'autonomy'].forEach(function (n) {
             field(n).value = current[n] || '';
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
@@ -668,11 +632,10 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
           ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
             field(n).checked = !!current[n];
           });
-          syncTarget();
         },
         collect: function () {
           var body = Object.assign({}, current);
-          ['name', 'target', 'objective', 'mode', 'model', 'persona', 'budget_class', 'prompt', 'schedule', 'autonomy'].forEach(function (n) {
+          ['name', 'target', 'objective', 'budget_class', 'schedule', 'autonomy'].forEach(function (n) {
             body[n] = field(n).value.trim();
           });
           ['priority', 'timeout_seconds', 'max_turns', 'concurrency'].forEach(function (n) {
@@ -683,16 +646,11 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
           ['schedule_enabled', 'integrate', 'require_sandbox'].forEach(function (n) {
             body[n] = field(n).checked;
           });
-          if (body.target) {
-            // The directive owns the content; never send stale copies along.
-            body.mode = body.model = body.persona = body.prompt = body.effort = '';
-          }
+          delete body.mode; delete body.model; delete body.persona; delete body.prompt; delete body.effort;
           return body;
         },
       });
     }
-    var targetInput = field('target');
-    if (targetInput) targetInput.addEventListener('input', syncTarget);
 
     var newBtn = document.querySelector('[data-routine-new]');
     if (newBtn) newBtn.addEventListener('click', function () { open(null); });

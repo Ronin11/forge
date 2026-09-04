@@ -110,12 +110,12 @@ func TestProposalConstitutionGuard(t *testing.T) {
 func TestUpdateRoutineFromRecordsSource(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()
-	r := &Routine{Name: "abtest", Mode: "run", Prompt: "p", Repositories: []string{"forge"},
-		Executor: "claude-code", Model: "haiku", TimeoutSeconds: 60, BudgetClass: model.ClassNormal, Concurrency: 1}
+	r := &Routine{Name: "abtest", Target: "directive:abtest", Repositories: []string{"forge"},
+		Executor: "claude-code", TimeoutSeconds: 60, BudgetClass: model.ClassNormal, Concurrency: 1}
 	if err := st.Write(ctx, func(tx *Tx) error { return tx.CreateRoutine(ctx, r) }); err != nil {
 		t.Fatal(err)
 	}
-	r.Prompt = "p2"
+	r.Objective = "p2"
 	if err := st.Write(ctx, func(tx *Tx) error { return tx.UpdateRoutineFrom(ctx, r, 1, "proposal:abc123") }); err != nil {
 		t.Fatal(err)
 	}

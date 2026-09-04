@@ -39,7 +39,7 @@ func TestUIPagesRender(t *testing.T) {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		r := &store.Routine{Name: "inventory", Mode: "run", Prompt: "list files", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300}
+		r := &store.Routine{Name: "inventory", Target: "directive:inventory", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 		if err := tx.CreateRoutine(ctx, r); err != nil {
 			return err
 		}
@@ -48,7 +48,13 @@ func TestUIPagesRender(t *testing.T) {
 		if err := tx.CreateProposal(ctx, prop); err != nil {
 			return err
 		}
-		if err := tx.CreateWorkflow(ctx, &store.Workflow{Name: "nightly", Steps: []store.WorkflowStep{{Name: "scan", Routine: "inventory"}, {Name: "fix", Routine: "inventory"}}}); err != nil {
+		if err := tx.CreateWorkflow(ctx, &store.Workflow{Name: "nightly", Graph: &store.WorkflowGraph{
+			Nodes: []store.WorkflowNode{
+				{ID: "scan", Type: store.NodeDirective, Config: map[string]any{"directive": "inventory"}},
+				{ID: "fix", Type: store.NodeDirective, Config: map[string]any{"directive": "inventory"}},
+			},
+			Edges: []store.WorkflowGraphEdge{{From: "scan", To: "fix"}},
+		}}); err != nil {
 			return err
 		}
 		work = &store.Work{RoutineID: r.ID, RoutineName: "inventory", Generation: 1, Title: "inventory run", Trigger: model.TriggerManual, Snapshot: []byte(`{}`), Priority: 100, BudgetClass: model.ClassInteractive, Autonomy: model.AutonomyAuto}

@@ -146,60 +146,6 @@ func TestExperimentPersona(t *testing.T) {
 	}
 }
 
-// The routine subject varies the task prompt under the routine's saved
-// persona binding.
-func TestExperimentRoutine(t *testing.T) {
-	h := newHarness(t, transportUnix)
-	h.register(testWorkerID)
-	h.withPrompts(map[string]string{
-		"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer.",
-	})
-	rt := store.Routine{Name: "triage", Mode: "run", Prompt: "Old task on {{repo}}", Persona: "reviewer", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
-	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
-
-	variants := `{"variants": [{"title": "sharper", "rationale": "r", "content": "New task on {{repo}}"}]}`
-	h.srv.modelCall = experimentFakeModel(t, variants,
-		func(prompt string) string {
-			if strings.Contains(prompt, "New task on equitizr") {
-				return "OUT-NEW"
-			}
-			if strings.Contains(prompt, "Old task on equitizr") {
-				return "OUT-OLD"
-			}
-			return "OUT-?"
-		},
-		func(output string) float64 {
-			if strings.Contains(output, "OUT-NEW") {
-				return 8
-			}
-			return 2
-		})
-
-	var created struct {
-		ID string `json:"id"`
-	}
-	h.call(http.MethodPost, "/api/v1/experiments", map[string]any{
-		"subject": "routine:triage", "goal": "sharper task", "variants": 1,
-		"target_model": "haiku", "optimizer_model": "opus",
-		"test": map[string]string{"objective": "obj", "repo": "equitizr"},
-	}, &created, http.StatusCreated)
-
-	pe := waitExperiment(t, h, created.ID)
-	if pe.Status != store.ExperimentDone {
-		t.Fatalf("experiment = %s error=%q", pe.Status, pe.Error)
-	}
-	if pe.Baseline != "Old task on {{repo}}" {
-		t.Errorf("baseline = %q", pe.Baseline)
-	}
-	var results experimentResults
-	if err := json.Unmarshal(pe.Results, &results); err != nil {
-		t.Fatalf("results: %v", err)
-	}
-	if results.Best != "sharper" || results.Candidates[0].Output != "OUT-NEW" || results.Candidates[0].Score != 8 {
-		t.Errorf("results = %+v", results)
-	}
-}
-
 // Refusals happen before any model call: no seam, no goal, bad alias, bad
 // subject shapes.
 func TestExperimentRefusals(t *testing.T) {

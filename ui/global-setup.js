@@ -66,6 +66,18 @@ module.exports = async function globalSetup() {
   fs.mkdirSync(HOME, { recursive: true });
   execSync('go build -o .tmp-home/forge ../cmd/forge', { cwd: __dirname, stdio: 'inherit' });
 
+  // Pre-seed test directives into the library BEFORE the daemon starts:
+  // stored routines are target-only, so browser fixtures reference these
+  // files. The daemon's library bootstrap is additive — the starter base
+  // (daily-triage etc.) still lands beside them.
+  const libDir = path.join(HOME, 'directives', 'directives');
+  fs.mkdirSync(libDir, { recursive: true });
+  const directive = (body) => `---\nmode: run\nmodel: haiku\n---\n${body}\n`;
+  fs.writeFileSync(path.join(libDir, 'wfg-lint.md'), directive('wfg-lint on {{repo}}: {{objective}}'));
+  fs.writeFileSync(path.join(libDir, 'wfg-fix.md'), directive('wfg-fix on {{repo}}: {{objective}}'));
+  fs.writeFileSync(path.join(libDir, 'pr-page-test.md'),
+    '---\nmode: run\npersona: senior-reviewer\n---\nTask on {{repo}}: {{objective}}\n');
+
   // INVOCATION_ID is dropped so a daemon started from inside a systemd unit
   // (some terminals set it) never tries `systemctl start forge-worker`.
   const env = {

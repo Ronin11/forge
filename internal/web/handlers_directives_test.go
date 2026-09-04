@@ -7,15 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"forge/internal/core/migratedirectives"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
 
 // A directive-target routine runs: the directive resolves (frontmatter mode/
 // model/persona, includes expanded), the persona composes ahead, the
-// objective injects, and the frozen snapshot carries the resolved content —
-// byte-identical to an equivalent legacy content routine's run.
+// objective injects, and the frozen snapshot carries the resolved content.
 func TestDirectiveTargetRoutineRuns(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
@@ -27,9 +25,6 @@ func TestDirectiveTargetRoutineRuns(t *testing.T) {
 
 	target := store.Routine{Name: "nightly", Target: "directive:triage", Repositories: []string{"equitizr"}}
 	h.call(http.MethodPost, "/api/v1/routines", target, &target, http.StatusCreated)
-	legacy := store.Routine{Name: "nightly-legacy", Mode: "run", Prompt: "Triage {{repo}}: {{objective}}\n- queue first",
-		Persona: "reviewer", Repositories: []string{"equitizr"}, TimeoutSeconds: 3600}
-	h.call(http.MethodPost, "/api/v1/routines", legacy, &legacy, http.StatusCreated)
 
 	var out workCreated
 	h.call(http.MethodPost, "/api/v1/routines/nightly/run", map[string]string{"objective": "the gauges"}, &out, http.StatusCreated)
@@ -53,13 +48,6 @@ func TestDirectiveTargetRoutineRuns(t *testing.T) {
 		if !strings.Contains(comp, `"name":"`+frag+`"`) {
 			t.Errorf("composition missing fragment %q: %s", frag, comp)
 		}
-	}
-
-	// The invariant: same content through the legacy shape hashes identically.
-	var legacyOut workCreated
-	h.call(http.MethodPost, "/api/v1/routines/nightly-legacy/run", map[string]string{"objective": "the gauges"}, &legacyOut, http.StatusCreated)
-	if out.Work.PromptHash != legacyOut.Work.PromptHash {
-		t.Errorf("prompt hash diverges: directive %s vs legacy %s", out.Work.PromptHash, legacyOut.Work.PromptHash)
 	}
 }
 
@@ -88,10 +76,8 @@ func TestWorkflowTargetRoutine(t *testing.T) {
 	h.register(testWorkerID)
 	h.withPrompts(map[string]string{"directives/step.md": "---\nmode: run\nmodel: haiku\n---\nDo {{run.objective}}"})
 
-	inner := store.Routine{Name: "step-rt", Mode: "run", Prompt: "p", Model: "haiku", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
-	h.call(http.MethodPost, "/api/v1/routines", inner, nil, http.StatusCreated)
 	graph := map[string]any{
-		"nodes": []map[string]any{{"id": "only", "type": "routine", "config": map[string]any{"routine": "step-rt"}, "position": map[string]float64{"x": 0, "y": 0}}},
+		"nodes": []map[string]any{{"id": "only", "type": "directive", "config": map[string]any{"directive": "step"}, "position": map[string]float64{"x": 0, "y": 0}}},
 		"edges": []map[string]any{},
 	}
 	h.call(http.MethodPost, "/api/v1/workflows", map[string]any{"name": "wf-tgt", "graph": graph}, nil, http.StatusCreated)
@@ -129,10 +115,9 @@ func TestSchedulerFiresWorkflowTargetRoutine(t *testing.T) {
 	h.register(testWorkerID)
 	ctx := context.Background()
 
-	inner := store.Routine{Name: "wfr-step", Mode: "run", Prompt: "p", Model: "haiku", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
-	h.call(http.MethodPost, "/api/v1/routines", inner, nil, http.StatusCreated)
+	h.writeDirective("wfr-step", "---\nmode: run\nmodel: haiku\n---\np\n")
 	graph := map[string]any{
-		"nodes": []map[string]any{{"id": "only", "type": "routine", "config": map[string]any{"routine": "wfr-step"}, "position": map[string]float64{"x": 0, "y": 0}}},
+		"nodes": []map[string]any{{"id": "only", "type": "directive", "config": map[string]any{"directive": "wfr-step"}, "position": map[string]float64{"x": 0, "y": 0}}},
 		"edges": []map[string]any{},
 	}
 	h.call(http.MethodPost, "/api/v1/workflows", map[string]any{"name": "wfr", "graph": graph}, nil, http.StatusCreated)
@@ -241,10 +226,9 @@ func TestPromptTestDirectiveSubject(t *testing.T) {
 	}
 }
 
-// A graph mixing a directive node with a legacy routine node runs end to end:
-// the directive node materializes from the library (frontmatter mode/model,
-// node envelope), the routine node still runs, and the objective template
-// carries upstream output into the directive node.
+// A two-directive graph runs end to end: each node materializes from the
+// library (frontmatter mode/model, node envelope), and the objective template
+// carries upstream output into the downstream directive node.
 func TestWorkflowDirectiveNode(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
@@ -255,7 +239,7 @@ func TestWorkflowDirectiveNode(t *testing.T) {
 
 	graph := map[string]any{
 		"nodes": []map[string]any{
-			{"id": "old", "type": "routine", "config": map[string]any{"routine": "wfd-legacy"}, "position": map[string]float64{"x": 0, "y": 0}},
+			{"id": "old", "type": "directive", "config": map[string]any{"directive": "wfd-legacy"}, "position": map[string]float64{"x": 0, "y": 0}},
 			{"id": "new", "type": "directive", "config": map[string]any{
 				"directive": "wfd-triage", "objective": "follow up on {{steps.old.status}}",
 				"timeout_seconds": 900, "max_turns": 7, "budget_class": "backlog",
@@ -326,45 +310,4 @@ func TestWorkflowDirectiveNodeValidation(t *testing.T) {
 		}
 	}
 	h.call(http.MethodPost, "/api/v1/workflows", node(map[string]any{"directive": "real"}), nil, http.StatusCreated)
-}
-
-// THE migration invariant: a routine's run hashes identically before and
-// after its content splits into a directive, through the real
-// migratedirectives.Run against the harness store and library.
-func TestMigrationPreservesPromptHash(t *testing.T) {
-	h := newHarness(t, transportUnix)
-	h.register(testWorkerID)
-	lib := h.withPrompts(map[string]string{
-		"personas/reviewer.md":   "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun teaching.",
-		"fragments/standards.md": "Be honest.",
-	})
-
-	rt := store.Routine{Name: "mig", Mode: "run", Prompt: "Task {{repo}}: {{objective}}\nBe thorough.", Persona: "reviewer",
-		Repositories: []string{"equitizr"}, TimeoutSeconds: 900, MaxTurns: 5, BudgetClass: "backlog"}
-	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
-
-	var before workCreated
-	h.call(http.MethodPost, "/api/v1/routines/mig/run", map[string]string{"objective": "the gauges"}, &before, http.StatusCreated)
-
-	rep, err := migratedirectives.Run(context.Background(), h.st, t.TempDir(), lib.Dir, false, h.srv.log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rep.RoutinesSplit) != 1 || rep.RoutinesSplit[0] != "mig" {
-		t.Fatalf("report = %+v", rep)
-	}
-	if err := h.srv.promptsReload(); err != nil {
-		t.Fatal(err)
-	}
-
-	var after workCreated
-	h.call(http.MethodPost, "/api/v1/routines/mig/run", map[string]string{"objective": "the gauges"}, &after, http.StatusCreated)
-	if before.Work.PromptHash != after.Work.PromptHash {
-		t.Fatalf("prompt hash changed across the split: %s → %s", before.Work.PromptHash, after.Work.PromptHash)
-	}
-	// The operational envelope survived on the row.
-	migrated, err := h.st.GetRoutine(context.Background(), "mig")
-	if err != nil || migrated.Target != "directive:mig" || migrated.TimeoutSeconds != 900 || migrated.MaxTurns != 5 {
-		t.Errorf("migrated row = %+v, %v", migrated, err)
-	}
 }

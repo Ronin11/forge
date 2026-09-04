@@ -258,7 +258,7 @@ func newFixture(t *testing.T) *fixture {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		return tx.CreateRoutine(ctx(), &store.Routine{Name: "inventory", Mode: "run", Prompt: "list files", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300, Schedule: "0 3 * * *", AllowedTools: []string{"Bash"}})
+		return tx.CreateRoutine(ctx(), &store.Routine{Name: "inventory", Target: "directive:inventory", Repositories: []string{"equitizr"}, TimeoutSeconds: 300, Schedule: "0 3 * * *", AllowedTools: []string{"Bash"}})
 	})
 	return f
 }
@@ -399,7 +399,7 @@ func TestLoadAndRetroPack(t *testing.T) {
 		t.Fatalf("pack routines = %d, want 1", len(pack.Routines))
 	}
 	rt := pack.Routines[0]
-	if rt.Name != "inventory" || rt.Generation != 1 || rt.Prompt != "list files" || rt.Schedule != "0 3 * * *" || fmt.Sprint(rt.AllowedTools) != "[Bash]" {
+	if rt.Name != "inventory" || rt.Generation != 1 || rt.Schedule != "0 3 * * *" || fmt.Sprint(rt.AllowedTools) != "[Bash]" {
 		t.Errorf("pack routine = %+v", rt)
 	}
 	// Problems newest first: the retained failure, then the cancelled attempt;

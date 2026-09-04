@@ -114,12 +114,8 @@ func extractJSON(raw string) string {
 }
 
 // draftSystemPrompt teaches the graph schema and lists what exists to build
-// with: the registered routines and repositories.
+// with: the library's directives and personas, and the repositories.
 func (s *Server) draftSystemPrompt(ctx context.Context) (string, error) {
-	routines, err := s.store.ListRoutines(ctx, false)
-	if err != nil {
-		return "", err
-	}
 	repos, err := s.store.Repositories(ctx)
 	if err != nil {
 		return "", err
@@ -153,18 +149,6 @@ Existing directives (use these names; do not invent directives):
 			}
 			fmt.Fprintf(&b, "- %s (mode %s): %s\n", f.Name, f.Mode, strings.ReplaceAll(body, "\n", " "))
 		}
-	}
-	// Legacy routines still reference-able as routine nodes during the
-	// transition; prefer directives.
-	for _, rt := range routines {
-		if rt.Prompt == "" {
-			continue
-		}
-		prompt := rt.Prompt
-		if len(prompt) > 140 {
-			prompt = prompt[:140] + "…"
-		}
-		fmt.Fprintf(&b, "- routine node fallback %s (mode %s, repos %s): %s\n", rt.Name, rt.Mode, strings.Join(rt.Repositories, ","), strings.ReplaceAll(prompt, "\n", " "))
 	}
 	if lib := s.promptLibrary(); lib != nil {
 		var names []string

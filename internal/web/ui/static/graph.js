@@ -12,7 +12,6 @@
   var NODE_W = 180, NODE_H = 54;
   var TYPES = {
     directive: { label: 'Directive', icon: '#i-routines' },
-    routine: { label: 'Routine', icon: '#i-routines' }, // frozen legacy graphs only
     script: { label: 'JavaScript', icon: '#i-gv-js' },
     switch: { label: 'Switch', icon: '#i-gv-switch' },
     join: { label: 'Join', icon: '#i-gv-join' },
@@ -112,7 +111,7 @@
 
   // validateGraph mirrors the server's rules the editor can check early.
   // Errors block save; warnings do not.
-  function validateGraph(graph, routineNames, directiveNames) {
+  function validateGraph(graph, directiveNames) {
     var out = [];
     function err(msg, ref) { out.push({ level: 'err', msg: msg, ref: ref }); }
     function warn(msg, ref) { out.push({ level: 'warn', msg: msg, ref: ref }); }
@@ -123,10 +122,7 @@
       if (ids[n.id]) err('node "' + n.id + '" listed twice', { node: n.id });
       ids[n.id] = n.type;
       var cfg = n.config || {};
-      if (n.type === 'routine') {
-        if (!cfg.routine) err('node "' + n.id + '": pick a routine', { node: n.id });
-        else if (routineNames && routineNames.length && routineNames.indexOf(cfg.routine) < 0) warn('node "' + n.id + '": routine "' + cfg.routine + '" is not in the list', { node: n.id });
-      } else if (n.type === 'directive') {
+      if (n.type === 'directive') {
         if (!cfg.directive) err('node "' + n.id + '": pick a directive', { node: n.id });
         else if (directiveNames && directiveNames.length && directiveNames.indexOf(cfg.directive) < 0) warn('node "' + n.id + '": directive "' + cfg.directive + '" is not in the library', { node: n.id });
       }
@@ -213,7 +209,6 @@
 
   function subtitleOf(n) {
     var cfg = n.config || {};
-    if (n.type === 'routine') return cfg.routine || '(no routine)';
     if (n.type === 'directive') return cfg.directive || '(no directive)';
     if (n.type === 'script') return (cfg.source || '').split('\n')[0].slice(0, 26) || '(empty)';
     if (n.type === 'switch') return (cfg.expression || '').slice(0, 26) || '(no expression)';
@@ -225,7 +220,7 @@
   // edge the port starts: success | failure | case | out (join) | in.
   function portsOf(n) {
     var out = [{ kind: 'in', x: 0, y: NODE_H / 2 }];
-    if (n.type === 'routine' || n.type === 'directive' || n.type === 'script') {
+    if (n.type === 'directive' || n.type === 'script') {
       out.push({ kind: 'success', x: NODE_W, y: NODE_H / 2 - 12 });
       out.push({ kind: 'failure', x: NODE_W, y: NODE_H / 2 + 12 });
     } else if (n.type === 'switch') {
@@ -433,7 +428,6 @@
 
     var current = null; // the fetched workflow object; null for a new one
     var graph = { nodes: [], edges: [] };
-    var routineNames = [];
     var directiveNames = [];
     var selection = null; // {node: id} | {edge: index}
     var history = [], future = [];
@@ -472,7 +466,7 @@
     }
 
     function lint() {
-      var findings = validateGraph(graph, routineNames, directiveNames);
+      var findings = validateGraph(graph, directiveNames);
       lintBox.textContent = '';
       lintBox.hidden = findings.length === 0;
       findings.forEach(function (f) {
@@ -758,38 +752,6 @@
           });
         }));
         dRepos.placeholder = 'repo-a, repo-b';
-      } else if (n.type === 'routine') {
-        var r = field('Routine (legacy node — new graphs use directives)', textInput(n.config.routine, function (v) { panelMutate(function () { n.config.routine = v.trim(); }); }));
-        r.setAttribute('list', 'gv-routine-names');
-        var objective = document.createElement('textarea');
-        objective.rows = 3;
-        objective.value = n.config.objective || '';
-        objective.placeholder = 'Optional objective. {{steps.<node>.output.<path>}} and {{run.objective}} expand at run time.';
-        objective.addEventListener('input', function () { panelMutate(function () { n.config.objective = objective.value; }); });
-        field('Objective (optional)', objective);
-        var personaLink = document.createElement('a');
-        personaLink.className = 'hint';
-        personaLink.textContent = 'view persona →';
-        function syncPersonaLink(v) {
-          personaLink.hidden = !v;
-          personaLink.href = '/directives?sel=' + encodeURIComponent('prompt:' + v);
-        }
-        var personaInput = field('Persona (blank = the routine’s own)', textInput(n.config.persona, function (v) {
-          panelMutate(function () {
-            if (v.trim()) n.config.persona = v.trim(); else delete n.config.persona;
-          });
-          syncPersonaLink(v.trim());
-        }));
-        personaInput.placeholder = 'from ~/.forge/prompts';
-        panel.appendChild(personaLink);
-        syncPersonaLink(n.config.persona || '');
-        var repos = field('Repositories (comma-separated, blank = run default)', textInput((n.config.repositories || []).join(', '), function (v) {
-          panelMutate(function () {
-            var list = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-            if (list.length) n.config.repositories = list; else delete n.config.repositories;
-          });
-        }));
-        repos.placeholder = 'repo-a, repo-b';
       } else if (n.type === 'script') {
         var src = document.createElement('textarea');
         src.rows = 14;
@@ -882,8 +844,7 @@
       if (isSwitch && e.when === 'case' && !e.default) {
         field('Case value', textInput(e.case, function (v) { panelMutate(function () { e.case = v.trim(); }); }));
       }
-      var agentTypes = { routine: 1, directive: 1 };
-      if (!isSwitch && (!e.when || e.when === 'success') && from && agentTypes[from.type] && agentTypes[(nodeById(graph, e.to) || {}).type]) {
+      if (!isSwitch && (!e.when || e.when === 'success') && from && from.type === 'directive' && (nodeById(graph, e.to) || {}).type === 'directive') {
         var stack = document.createElement('label');
         stack.className = 'check';
         var sbox = document.createElement('input');
@@ -1076,18 +1037,6 @@
 
     // ---- load ----
 
-    fetchJSON('/api/v1/routines').then(function (list) {
-      routineNames = (list || []).map(function (r) { return r.name; });
-      var dl = document.createElement('datalist');
-      dl.id = 'gv-routine-names';
-      routineNames.forEach(function (r) {
-        var o = document.createElement('option');
-        o.value = r;
-        dl.appendChild(o);
-      });
-      document.body.appendChild(dl);
-      lint();
-    }).catch(function () {});
     fetchJSON('/api/v1/personas').then(function (lib) {
       directiveNames = (lib.fragments || []).filter(function (f) { return f.directive; }).map(function (f) { return f.name; });
       var dl = document.createElement('datalist');
@@ -1128,7 +1077,7 @@
       getModel: function () { return JSON.parse(snapshot()); },
       setModel: function (g) { mutate(function () { graph = g; graph.edges = graph.edges || []; }); select(null); },
       layout: function () { autoLayout(graph); afterChange(); },
-      validate: function () { return validateGraph(graph, routineNames, directiveNames); },
+      validate: function () { return validateGraph(graph, directiveNames); },
       zoomFit: function () { stage.zoomFit(graph); },
       selectNode: function (id) { select({ node: id }); },
     };

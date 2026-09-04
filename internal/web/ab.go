@@ -23,6 +23,11 @@ type abOutcome struct {
 	RegressedOn        string   `json:"regressed_on"` // "rate" | "cost"
 	RestoredGeneration int      `json:"restored_generation"`
 	NewGeneration      int      `json:"new_generation"`
+	// RestoreSkipped: the regression was real but the previous generation is
+	// a pre-restructure snapshot that cannot restore as a row (content lives
+	// in the directive's git history); the proposal is closed without a
+	// restore.
+	RestoreSkipped bool `json:"restore_skipped,omitempty"`
 }
 
 // checkABReverts is the A/B rule of DESIGN.md §12, run every sweep tick: for
@@ -107,23 +112,25 @@ func (s *Engine) checkABRevert(ctx context.Context, p *store.Proposal, name stri
 			return fmt.Errorf("decode snapshot of generation %d: %w", gen-1, err)
 		}
 		// The restore is a NEW generation whose content equals the snapshot;
-		// identity stays the current row's, so history remains linear.
+		// identity stays the current row's, so history remains linear. A
+		// pre-restructure snapshot (content fields, no target) cannot restore
+		// as a row anymore — its content lives in git; skip with a journal
+		// entry instead of failing the sweep.
 		restored.ID, restored.Name = r.ID, r.Name
-		if r.Target != "" && restored.Target == "" {
-			// A pre-split snapshot resurrects a content-ful row: legal (the
-			// store is dual-mode for exactly this), but the routine detaches
-			// from its directive file until the operator re-targets it.
-			if err := tx.Journal(ctx, "ab.revert_detached_target", store.EntityDaemon, r.ID, map[string]any{"routine": r.Name, "was_target": r.Target, "restored_generation": gen - 1}); err != nil {
-				return err
-			}
-			s.log.WarnContext(ctx, "ab revert restores pre-directive content; routine detached from its directive", "routine", r.Name, "was_target", r.Target)
-		}
-		if err := tx.UpdateRoutineFrom(ctx, &restored, r.Generation, "proposal:"+p.ID+":revert"); err != nil {
-			return err
-		}
 		outcome = abOutcome{K: cfg.K, NewRate: newRate, PrevRate: prevRate,
 			NewCostPerSuccess: newCost, PrevCostPerSuccess: prevCost,
-			RegressedOn: regressedOn, RestoredGeneration: gen - 1, NewGeneration: restored.Generation}
+			RegressedOn: regressedOn, RestoredGeneration: gen - 1}
+		if restored.Target == "" {
+			// A pre-restructure snapshot cannot restore as a row; close the
+			// proposal as reverted-without-restore so the sweep moves on.
+			outcome.RestoreSkipped = true
+			s.log.WarnContext(ctx, "ab revert: pre-restructure snapshot cannot restore (content lives in the directive); closing without a restore", "routine", r.Name, "generation", gen-1)
+		} else {
+			if err := tx.UpdateRoutineFrom(ctx, &restored, r.Generation, "proposal:"+p.ID+":revert"); err != nil {
+				return err
+			}
+			outcome.NewGeneration = restored.Generation
+		}
 		b, err := json.Marshal(outcome)
 		if err != nil {
 			return fmt.Errorf("encode outcome: %w", err)

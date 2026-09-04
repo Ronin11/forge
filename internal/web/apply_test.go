@@ -19,13 +19,14 @@ import (
 
 func actx() context.Context { return context.Background() }
 
-// applyFixture is a store plus a Server with a real home directory — the two
-// things the apply engine touches.
+// applyFixture is a store plus a Server with a real home directory and a
+// file-backed directives library — the things the apply engine touches.
 type applyFixture struct {
-	t    *testing.T
-	st   *store.Store
-	srv  *Server
-	home string
+	t      *testing.T
+	st     *store.Store
+	srv    *Server
+	home   string
+	libDir string
 }
 
 func newApplyFixture(t *testing.T) *applyFixture {
@@ -48,7 +49,39 @@ func newApplyFixture(t *testing.T) *applyFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &applyFixture{t: t, st: st, srv: srv, home: home}
+	f := &applyFixture{t: t, st: st, srv: srv, home: home, libDir: t.TempDir()}
+	for _, sub := range []string{"personas", "fragments", "directives"} {
+		if err := os.MkdirAll(filepath.Join(f.libDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lib, err := directives.Load(f.libDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := lib
+	f.srv.prompts = func() *directives.Library { return current }
+	f.srv.promptsReload = func() error {
+		next, err := directives.Load(f.libDir)
+		if err != nil {
+			return err
+		}
+		current = next
+		return nil
+	}
+	return f
+}
+
+// writeDirective drops one file into the fixture library and hot-reloads.
+func (f *applyFixture) writeDirective(name, raw string) {
+	f.t.Helper()
+	path := filepath.Join(f.libDir, "directives", name+".md")
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.srv.promptsReload(); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func (f *applyFixture) write(fn func(tx *store.Tx) error) {
@@ -90,10 +123,13 @@ func (f *applyFixture) apply(p *store.Proposal) (string, error) {
 	return ref, err
 }
 
+// createRoutine writes directives/<name>.md and creates the trigger routine
+// pointing at it — the target-only shape every stored routine has.
 func (f *applyFixture) createRoutine(name string) {
 	f.t.Helper()
+	f.writeDirective(name, "---\nmode: run\nmodel: haiku\n---\nold prompt\n")
 	f.write(func(tx *store.Tx) error {
-		return tx.CreateRoutine(actx(), &store.Routine{Name: name, Mode: "run", Prompt: "old prompt", Model: "haiku", TimeoutSeconds: 300})
+		return tx.CreateRoutine(actx(), &store.Routine{Name: name, Target: "directive:" + name, TimeoutSeconds: 300})
 	})
 }
 
@@ -123,11 +159,20 @@ func TestApplyRoutineProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref != "generation:2" {
-		t.Errorf("ref = %q, want generation:2", ref)
+	// The prompt update went to the directive file, so the file ref wins.
+	if ref != "directive:inventory" {
+		t.Errorf("ref = %q, want directive:inventory", ref)
 	}
+	raw, err := os.ReadFile(filepath.Join(f.libDir, "directives", "inventory.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "new prompt") || strings.Contains(string(raw), "old prompt") {
+		t.Errorf("directive after apply:\n%s", raw)
+	}
+	// The operational field bumped the row; content never touched it.
 	r := f.routine("inventory")
-	if r.Prompt != "new prompt" || r.MaxTurns != 7 || r.Generation != 2 || r.Model != "haiku" {
+	if r.MaxTurns != 7 || r.Generation != 2 || r.Prompt != "" || r.Model != "" {
 		t.Errorf("routine after apply = %+v", r)
 	}
 	got := f.proposal(p.ID)
@@ -144,8 +189,8 @@ func TestApplyRoutineProposal(t *testing.T) {
 		if err := json.Unmarshal(snap, &old); err != nil {
 			return err
 		}
-		if old.Prompt != "old prompt" {
-			t.Errorf("generation 1 snapshot prompt = %q", old.Prompt)
+		if old.Target != "directive:inventory" || old.MaxTurns != 0 {
+			t.Errorf("generation 1 snapshot = %+v", old)
 		}
 		return nil
 	})
@@ -183,8 +228,10 @@ func TestApplyProcessProposal(t *testing.T) {
 	if r.Schedule != "0 4 * * *" || !r.ScheduleEnabled || r.BudgetClass != model.ClassBacklog || r.Priority != 10 || r.Generation != 2 {
 		t.Errorf("routine after process apply = %+v", r)
 	}
-	if r.Prompt != "old prompt" {
-		t.Errorf("prompt changed by a process proposal: %q", r.Prompt)
+	// The directive's content is untouched by a process proposal.
+	raw, err := os.ReadFile(filepath.Join(f.libDir, "directives", "nightly.md"))
+	if err != nil || !strings.Contains(string(raw), "old prompt") {
+		t.Errorf("directive changed by a process proposal: %v\n%s", err, raw)
 	}
 }
 
@@ -406,35 +453,11 @@ func TestTargetNameBare(t *testing.T) {
 // rolls the approval back.
 func TestApplyDirectiveRoutineProposal(t *testing.T) {
 	f := newApplyFixture(t)
-	dir := t.TempDir()
-	for path, content := range map[string]string{
-		"directives/triage.md": "---\nmode: run\nmodel: haiku\n---\nOld task: {{objective}}\n",
-	} {
-		full := filepath.Join(dir, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lib, err := directives.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current := lib
-	f.srv.prompts = func() *directives.Library { return current }
-	f.srv.promptsReload = func() error {
-		next, err := directives.Load(dir)
-		if err != nil {
-			return err
-		}
-		current = next
-		return nil
-	}
+	f.writeDirective("triage", "---\nmode: run\nmodel: haiku\n---\nOld task: {{objective}}\n")
 	f.write(func(tx *store.Tx) error {
 		return tx.CreateRoutine(actx(), &store.Routine{Name: "triage-trigger", Target: "directive:triage", TimeoutSeconds: 300})
 	})
+	dir := f.libDir
 
 	p := f.approved(model.ProposalRoutine, "routine:triage-trigger", `{"prompt":"New task: {{objective}}","model":"sonnet","max_turns":9}`)
 	ref, err := f.apply(p)
@@ -462,7 +485,7 @@ func TestApplyDirectiveRoutineProposal(t *testing.T) {
 		t.Errorf("row after apply = %+v", r)
 	}
 	// The hot-reload swapped the library.
-	if d := current.Directive("triage"); d == nil || d.Model != "sonnet" {
+	if d := f.srv.prompts().Directive("triage"); d == nil || d.Model != "sonnet" {
 		t.Errorf("library after apply = %+v", d)
 	}
 

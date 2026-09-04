@@ -147,14 +147,14 @@ func runWorkflowRunOp(ctx context.Context, c *Context, sub string, args []string
 func runWorkflowAdd(ctx context.Context, c *Context, args []string) int {
 	fs, lf := c.Flags("workflow add")
 	var steps multiFlag
-	fs.Var(&steps, "step", "NAME=ROUTINE, repeatable; steps chain in order (use --from for a DAG)")
+	fs.Var(&steps, "step", "NAME=DIRECTIVE, repeatable; steps chain in order (use --from for a DAG)")
 	from := fs.String("from", "", "TOML file with the full workflow (steps, schedule)")
 	schedule := fs.String("schedule", "", "cron schedule")
 	if code := c.Parse(fs, args); code >= 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(c.Stderr, "usage: forge workflow add NAME --step lint=lint-all --step fix=fix-lint [flags]")
+		fmt.Fprintln(c.Stderr, "usage: forge workflow add NAME --step triage=triage-repo --step fix=implement-task [flags]")
 		return 2
 	}
 	_, log, code := c.ResolveLogging(lf, "cli.workflow")
@@ -167,13 +167,22 @@ func runWorkflowAdd(ctx context.Context, c *Context, args []string) int {
 			return c.Fail("workflow add", err)
 		}
 	}
-	for _, s := range steps {
-		name, routine, ok := strings.Cut(s, "=")
+	for i, s := range steps {
+		name, directive, ok := strings.Cut(s, "=")
 		if !ok {
-			fmt.Fprintf(c.Stderr, "forge workflow add: --step %q: want NAME=ROUTINE\n", s)
+			fmt.Fprintf(c.Stderr, "forge workflow add: --step %q: want NAME=DIRECTIVE\n", s)
 			return 2
 		}
-		wf.Steps = append(wf.Steps, store.WorkflowStep{Name: name, Routine: routine})
+		if wf.Graph == nil {
+			wf.Graph = &store.WorkflowGraph{}
+		}
+		wf.Graph.Nodes = append(wf.Graph.Nodes, store.WorkflowNode{
+			ID: name, Type: store.NodeDirective, Config: map[string]any{"directive": directive},
+			Position: store.GraphPosition{X: float64(240 * (i + 1)), Y: 120},
+		})
+		if i > 0 {
+			wf.Graph.Edges = append(wf.Graph.Edges, store.WorkflowGraphEdge{From: wf.Graph.Nodes[i-1].ID, To: name, When: store.WhenSuccess})
+		}
 	}
 	wf.Name = fs.Arg(0)
 	if *schedule != "" {

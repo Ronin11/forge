@@ -45,7 +45,7 @@ func newABFixture(t *testing.T) *abFixture {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		return tx.CreateRoutine(actx(), &store.Routine{Name: "inventory", Mode: "run", Prompt: "old prompt", Model: "haiku",
+		return tx.CreateRoutine(actx(), &store.Routine{Name: "inventory", Target: "directive:inventory",
 			TimeoutSeconds: 300, Repositories: []string{"equitizr"}})
 	})
 	srv, err := NewServer(ServerOptions{Store: st, Clock: clock.Now, Version: "test", TransportOverride: transportUnix, Home: t.TempDir()})
@@ -64,11 +64,13 @@ func (f *abFixture) write(fn func(tx *store.Tx) error) {
 }
 
 // appliedProposal approves and applies one routine proposal, moving the
-// routine to generation 2 with the new prompt.
+// routine to generation 2 with a new max_turns. Operational updates keep the
+// generation: ref that the A/B sweep watches (content updates live in the
+// directive's git history and are excluded from auto-revert).
 func (f *abFixture) appliedProposal() *store.Proposal {
 	f.t.Helper()
 	p := &store.Proposal{Source: "manual", Kind: model.ProposalRoutine, Target: "routine:inventory",
-		After: json.RawMessage(`{"prompt":"new prompt"}`), Rationale: "r", VerificationPlan: "v"}
+		After: json.RawMessage(`{"max_turns":8}`), Rationale: "r", VerificationPlan: "v"}
 	f.write(func(tx *store.Tx) error {
 		if err := tx.CreateProposal(actx(), p); err != nil {
 			return err
@@ -161,8 +163,8 @@ func TestABRevertOnRateRegression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Generation != 3 || r.Prompt != "old prompt" {
-		t.Errorf("routine after revert = generation %d prompt %q, want 3 / old prompt", r.Generation, r.Prompt)
+	if r.Generation != 3 || r.MaxTurns != 0 || r.Target != "directive:inventory" {
+		t.Errorf("routine after revert = generation %d max_turns %d target %q, want 3 / 0 / directive:inventory", r.Generation, r.MaxTurns, r.Target)
 	}
 	status, o := f.outcome(p)
 	if status != model.ProposalReverted {
@@ -218,7 +220,7 @@ func TestABNoRevert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Generation != 2 || r.Prompt != "new prompt" {
-		t.Errorf("routine = generation %d prompt %q, want 2 / new prompt", r.Generation, r.Prompt)
+	if r.Generation != 2 || r.MaxTurns != 8 {
+		t.Errorf("routine = generation %d max_turns %d, want 2 / 8", r.Generation, r.MaxTurns)
 	}
 }

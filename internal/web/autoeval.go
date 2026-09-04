@@ -106,7 +106,20 @@ func (s *Engine) proposalEvalMode(ctx context.Context, p *store.Proposal) (strin
 		if err != nil {
 			return "", err
 		}
-		return r.Mode, nil
+		// The mode lives on the routine's directive, not the row.
+		kind, dname := targetOf(r)
+		if kind != store.TargetDirective {
+			return "", fmt.Errorf("proposal %s: routine %s targets %s, which has no single mode to eval", model.ShortID(p.ID), name, r.Target)
+		}
+		lib := s.libraryNow()
+		if lib == nil {
+			return "", fmt.Errorf("proposal %s: no directives library to resolve the mode", model.ShortID(p.ID))
+		}
+		d := lib.Directive(dname)
+		if d == nil {
+			return "", fmt.Errorf("proposal %s: directive %q is not in the library", model.ShortID(p.ID), dname)
+		}
+		return d.Mode, nil
 	case model.ProposalModePrompt:
 		return targetName(p.Target, "mode:")
 	default:

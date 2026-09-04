@@ -69,47 +69,23 @@ func (s *Server) decodeRoutine(r *http.Request) (*store.Routine, error) {
 	if err := model.ValidateName(rt.Name); err != nil {
 		return nil, badRequest("%v", err)
 	}
-	if kind, target, err := store.ParseTarget(rt.Target); err != nil {
-		return nil, badRequest("routine %s: %v", rt.Name, err)
-	} else if kind != "" {
-		if rt.Mode != "" || rt.Prompt != "" || rt.Persona != "" || rt.Model != "" || rt.Effort != "" {
-			return nil, badRequest("routine %s: a target routine carries no content fields — the directive owns mode/prompt/persona/model/effort", rt.Name)
-		}
-		switch kind {
-		case store.TargetDirective:
-			// The library may be absent (tests, a bare server) — then the name
-			// is taken on faith and run creation is where a mistake surfaces.
-			if lib := s.promptLibrary(); lib != nil && lib.Directive(target) == nil {
-				return nil, badRequest("routine %s: directive %q is not in the library (directives/%s.md)", rt.Name, target, target)
-			}
-		case store.TargetWorkflow:
-			if _, err := s.store.GetWorkflow(r.Context(), target); err != nil {
-				return nil, badRequest("routine %s: workflow %q: %v", rt.Name, target, err)
-			}
-		}
-		return &rt, nil
+	kind, target, err := store.ParseTarget(rt.Target)
+	if err != nil || kind == "" {
+		return nil, badRequest("routine %s: target is required (directive:<name> or workflow:<name>)", rt.Name)
 	}
-	if rt.Persona != "" {
-		// The library may be absent (tests, a bare server) — then the name is
-		// taken on faith and run creation is where a mistake surfaces.
-		if lib := s.promptLibrary(); lib != nil {
-			p := lib.Persona(rt.Persona)
-			if p == nil {
-				return nil, badRequest("routine %s: persona %q is not in the prompts library (personas/%s.md)", rt.Name, rt.Persona, rt.Persona)
-			}
-			if rt.Model == "" && p.Model != "" {
-				if _, ok := s.resolveModel(p.Model); !ok {
-					return nil, badRequest("persona %s: unknown default model alias %q", rt.Persona, p.Model)
-				}
-			}
+	if rt.Mode != "" || rt.Prompt != "" || rt.Persona != "" || rt.Model != "" || rt.Effort != "" {
+		return nil, badRequest("routine %s: a routine carries no content fields — the directive owns mode/prompt/persona/model/effort", rt.Name)
+	}
+	switch kind {
+	case store.TargetDirective:
+		// The library may be absent (tests, a bare server) — then the name
+		// is taken on faith and run creation is where a mistake surfaces.
+		if lib := s.promptLibrary(); lib != nil && lib.Directive(target) == nil {
+			return nil, badRequest("routine %s: directive %q is not in the library (directives/%s.md)", rt.Name, target, target)
 		}
-	}
-	if rt.Model == "" && rt.Persona == "" {
-		return nil, badRequest("routine %s: model is required (or a persona with a default model)", rt.Name)
-	}
-	if rt.Model != "" {
-		if _, ok := s.resolveModel(rt.Model); !ok {
-			return nil, badRequest("unknown model alias %q", rt.Model)
+	case store.TargetWorkflow:
+		if _, err := s.store.GetWorkflow(r.Context(), target); err != nil {
+			return nil, badRequest("routine %s: workflow %q: %v", rt.Name, target, err)
 		}
 	}
 	return &rt, nil

@@ -260,13 +260,6 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn 
 	u.mux.HandleFunc("GET /tasks/{id}", u.task)
 	u.mux.HandleFunc("GET /work/{id}", u.work)
 	u.mux.HandleFunc("GET /directives", u.routines)
-	u.mux.HandleFunc("GET /routines", func(w http.ResponseWriter, r *http.Request) {
-		target := "/directives"
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
-		}
-		http.Redirect(w, r, target, http.StatusMovedPermanently)
-	})
 	u.mux.HandleFunc("GET /workflows", u.workflows)
 	u.mux.HandleFunc("GET /workflows/new", u.workflowEdit)
 	u.mux.HandleFunc("GET /workflows/{name}/edit", u.workflowEdit)

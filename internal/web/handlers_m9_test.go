@@ -122,7 +122,8 @@ func TestPathLeaseServializesClaims(t *testing.T) {
 func TestDepsWithIntegrateRefused(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
-	rt := store.Routine{Name: "depsy", Mode: "run", Prompt: "add left-pad to {{repo}}", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300, Deps: []string{"left-pad"}, Integrate: true}
+	h.writeDirective("depsy", "---\nmode: run\nmodel: haiku\n---\nadd left-pad to {{repo}}\n")
+	rt := store.Routine{Name: "depsy", Target: "directive:depsy", Repositories: []string{"equitizr"}, TimeoutSeconds: 300, Deps: []string{"left-pad"}, Integrate: true}
 	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
 	status, body := h.do(http.MethodPost, "/api/v1/routines/depsy/run", nil, nil, "")
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "M9 known gap") {

@@ -84,7 +84,15 @@ func newRoutingHarness(t *testing.T) *harness {
 	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	return &harness{t: t, st: st, srv: srv, http: hs, clock: clock, leases: map[string]string{}}
+	h := &harness{t: t, st: st, srv: srv, http: hs, clock: clock, leases: map[string]string{}}
+	h.libDir = t.TempDir()
+	for _, sub := range []string{"personas", "fragments", "directives"} {
+		if err := os.MkdirAll(filepath.Join(h.libDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.wireLibrary()
+	return h
 }
 
 func runnerCapacitiesForTest(cfg *config.Config) map[string]int {
@@ -110,7 +118,8 @@ func (h *harness) registerRunners(workerID string) {
 func (h *harness) createLadderRoutine(name string) {
 	h.t.Helper()
 	tier := 0
-	r := store.Routine{Name: name, Mode: "run", Prompt: "do {{repo}}", Repositories: []string{"equitizr"}, Model: "haiku",
+	h.writeDirective(name, "---\nmode: run\nmodel: haiku\n---\ndo {{repo}}\n")
+	r := store.Routine{Name: name, Target: "directive:" + name, Repositories: []string{"equitizr"},
 		Models: []string{"kimi", "haiku"}, Tier: &tier, TimeoutSeconds: 300, RequireSandbox: true}
 	h.call(http.MethodPost, "/api/v1/routines", r, nil, http.StatusCreated)
 }
@@ -195,7 +204,8 @@ func containsAll(s string, subs ...string) bool {
 func (h *harness) createKimiRoutine(name string) {
 	h.t.Helper()
 	tier := 0
-	r := store.Routine{Name: name, Mode: "run", Prompt: "do {{repo}}", Repositories: []string{"equitizr"}, Model: "kimi",
+	h.writeDirective(name, "---\nmode: run\nmodel: kimi\n---\ndo {{repo}}\n")
+	r := store.Routine{Name: name, Target: "directive:" + name, Repositories: []string{"equitizr"},
 		Models: []string{"kimi"}, Tier: &tier, TimeoutSeconds: 300, Concurrency: 5, RequireSandbox: true}
 	h.call(http.MethodPost, "/api/v1/routines", r, nil, http.StatusCreated)
 }

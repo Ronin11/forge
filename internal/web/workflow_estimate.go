@@ -90,31 +90,10 @@ func (s *Server) estimateWorkflow(r *http.Request) (int, any, error) {
 	for _, n := range graph.Nodes {
 		var ne workflowNodeEstimate
 		switch n.Type {
-		case store.NodeRoutine:
-			cfg, err := n.RoutineConfig()
-			if err != nil {
-				continue // Validate rejects these at save; an old row degrades to unknown
-			}
-			ne = workflowNodeEstimate{Node: n.ID, Routine: cfg.Routine, Source: "none", LoopCap: loopCap[n.ID]}
-			rt, err := s.store.GetRoutine(ctx, cfg.Routine)
-			if err == nil {
-				ne.Model = rt.Model
-				persona := rt.Persona
-				if cfg.Persona != "" {
-					persona = cfg.Persona
-				}
-				if ne.Model == "" && persona != "" {
-					if lib := s.promptLibrary(); lib != nil {
-						if p := lib.Persona(persona); p != nil {
-							ne.Model = p.Model
-						}
-					}
-				}
-			}
 		case store.NodeDirective:
 			cfg, err := n.DirectiveConfig()
 			if err != nil {
-				continue
+				continue // Validate rejects these at save
 			}
 			// History keys on the Work's routine name, which for a directive
 			// node is the directive name itself.

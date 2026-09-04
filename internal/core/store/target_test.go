@@ -37,8 +37,8 @@ func TestParseTarget(t *testing.T) {
 	}
 }
 
-// A routine is exactly one of two shapes: trigger (target, no content) or
-// legacy content. Both round-trip through the store.
+// A stored routine is always a trigger: target plus operational fields, no
+// content. It round-trips through the store.
 func TestTargetRoutineRoundTrip(t *testing.T) {
 	s := openTest(t)
 	bg := context.Background()
@@ -91,18 +91,20 @@ func TestTargetRoutineValidate(t *testing.T) {
 	if err := badKind.Validate(); err == nil {
 		t.Error("bad target kind accepted")
 	}
-	// Legacy content rules unchanged.
+	// Content-only routines are no longer storable: target is required.
 	legacy := base
 	legacy.Mode, legacy.Prompt, legacy.Model = "run", "do it", "haiku"
-	if err := legacy.Validate(); err != nil {
-		t.Errorf("legacy routine rejected: %v", err)
+	if err := legacy.Validate(); err == nil || !strings.Contains(err.Error(), "target is required") {
+		t.Errorf("content routine = %v, want target-is-required", err)
 	}
 	if err := base.Validate(); err == nil {
 		t.Error("empty routine accepted")
 	}
 }
 
-// Pre-target snapshots (no target/objective keys) decode into today's struct.
+// Pre-target snapshots (no target/objective keys) still decode into today's
+// struct: frozen content snapshots flow through the struct's content fields
+// even though stored rows reject them.
 func TestLegacySnapshotDecode(t *testing.T) {
 	old := `{"id":"x","name":"inventory","mode":"run","prompt":"list files","model":"haiku","repositories":["equitizr"],"executor":"claude-code","timeout_seconds":300,"priority":50,"budget_class":"normal","concurrency":1,"integrate":false,"require_sandbox":false,"max_questions":3,"generation":4,"schedule_enabled":false,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`
 	var r Routine
@@ -112,7 +114,8 @@ func TestLegacySnapshotDecode(t *testing.T) {
 	if r.Target != "" || r.Prompt != "list files" || r.Generation != 4 {
 		t.Errorf("decoded = %+v", r)
 	}
-	if err := r.Validate(); err != nil {
-		t.Errorf("legacy snapshot no longer validates: %v", err)
+	// A decoded content snapshot is not storable any more.
+	if err := r.Validate(); err == nil {
+		t.Error("content snapshot validated as a storable routine")
 	}
 }

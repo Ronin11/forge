@@ -610,7 +610,7 @@
       var targetName = (rt.target || '').slice(targetKind.length + 1);
       var head = el('div', 'pr-head');
       head.appendChild(el('h2', '', rt.name));
-      head.appendChild(chip(rt.target ? 'trigger' : 'routine'));
+      head.appendChild(chip('trigger'));
       if (targetKind === 'directive') {
         var dchip = chip('directive: ');
         dchip.appendChild(fragLink(targetName));
@@ -622,13 +622,6 @@
         wlink.href = '/workflows/' + encodeURIComponent(targetName) + '/edit';
         wchip.appendChild(wlink);
         head.appendChild(wchip);
-      }
-      if (rt.mode) head.appendChild(chip('mode: ' + rt.mode));
-      if (rt.model) head.appendChild(chip('model: ' + rt.model));
-      if (rt.persona) {
-        var pchip = chip('persona: ');
-        pchip.appendChild(fragLink(rt.persona));
-        head.appendChild(pchip);
       }
       if (rt.schedule) head.appendChild(chip(rt.schedule + (rt.schedule_enabled ? '' : ' (off)')));
       detail.appendChild(head);
@@ -662,11 +655,6 @@
         detail.appendChild(el('p', 'meta', 'This trigger starts a workflow run. Inspect and test the graph on the workflow editor; runs land under the workflow’s runs page.'));
         return;
       }
-      if (!rt.target) {
-        detail.appendChild(label('Task text (the routine prompt)'));
-        detail.appendChild(pre(rt.prompt || '(empty)'));
-      }
-
       // The tester: objective + repository → the byte-exact rendered prompt.
       detail.appendChild(el('h3', '', 'Test: the prompt the agent will read'));
       var controls = el('div', 'pr-controls pr-test');
@@ -710,34 +698,8 @@
         objective.value = t.objective || '';
         if (t.repo) repoSel.value = t.repo;
       });
-      // A directive-target routine's content lives in the library — optimize
-      // the directive itself from its library page (P6 wires that subject).
-      if (rt.target) return;
-      optimizePanel(detail, 'routine:' + rt.name, rt.model, function () {
-        return { objective: objective.value.trim(), repo: repoSel.value };
-      }, function (content) {
-        applyRoutine(content);
-      }, {
-        baselineChars: (rt.prompt || '').length,
-        promptChars: fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name) + '/preview?objective=&repo=' + encodeURIComponent((rt.repositories || [''])[0] || ''))
-          .then(function (p) { return (p.prompt || '').length; }),
-      });
-      function applyRoutine(content) {
-        // Applying a routine variant replaces only the task prompt, against
-        // the routine's current generation.
-        fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name)).then(function (fresh) {
-          fresh.prompt = content;
-          return fetch('/api/v1/routines/' + encodeURIComponent(rt.name) + '?generation=' + fresh.generation, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fresh),
-          });
-        })
-          .then(function (resp) {
-            if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
-            clearFail();
-            return fetchJSON('/api/v1/routines').then(function (list) { routines = list || []; showRoutine(rt.name); });
-          })
-          .catch(fail);
-      }
+      // The content lives in the directive — the optimize panel is on its
+      // library page (the linked chip above).
     });
   }
 
@@ -768,5 +730,4 @@
   if (boot.sel) select(boot.sel, { mode: boot.mode });
 
   window.ForgeDirectives = { select: select };
-  window.ForgePrompts = window.ForgeDirectives; // legacy hook name
 })();

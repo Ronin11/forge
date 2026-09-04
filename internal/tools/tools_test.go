@@ -100,7 +100,7 @@ func newFixture(t *testing.T) *fixture {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		return tx.CreateRoutine(ctx(), &store.Routine{Name: "inventory", Mode: "run", Prompt: "list files", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300})
+		return tx.CreateRoutine(ctx(), &store.Routine{Name: "inventory", Target: "directive:inventory", Repositories: []string{"equitizr"}, TimeoutSeconds: 300})
 	})
 	f.deps = tools.Deps{Store: s, Write: s.Write, KbDir: t.TempDir(), Clock: func() time.Time { return f.now }, Logger: slog.New(slog.DiscardHandler)}
 	f.reg = tools.Defaults()
@@ -470,7 +470,7 @@ func TestRetroPack(t *testing.T) {
 	}
 	// The current routine settings ride along for the retro reader.
 	current := arr(t, out["routines"])
-	if len(current) != 1 || obj(t, current[0])["name"] != "inventory" || obj(t, current[0])["prompt"] != "list files" {
+	if len(current) != 1 || obj(t, current[0])["name"] != "inventory" {
 		t.Errorf("routines = %v", current)
 	}
 	problems := arr(t, out["problem_attempts"])

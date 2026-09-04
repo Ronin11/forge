@@ -10,11 +10,11 @@ import (
 func TestGenerationSnapshotAndSource(t *testing.T) {
 	s := openTest(t)
 	bg := context.Background()
-	r := &Routine{Name: "inventory", Mode: "run", Prompt: "old", Model: "haiku", TimeoutSeconds: 300}
+	r := &Routine{Name: "inventory", Target: "directive:inventory", Objective: "old", TimeoutSeconds: 300}
 	if err := s.Write(bg, func(tx *Tx) error { return tx.CreateRoutine(bg, r) }); err != nil {
 		t.Fatal(err)
 	}
-	r.Prompt = "new"
+	r.Objective = "new"
 	if err := s.Write(bg, func(tx *Tx) error { return tx.UpdateRoutineFrom(bg, r, 1, "proposal:abc") }); err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +27,8 @@ func TestGenerationSnapshotAndSource(t *testing.T) {
 		if err := json.Unmarshal(snap, &old); err != nil {
 			return err
 		}
-		if old.Prompt != "old" || old.Generation != 1 {
-			t.Errorf("generation 1 snapshot = prompt %q generation %d", old.Prompt, old.Generation)
+		if old.Objective != "old" || old.Generation != 1 {
+			t.Errorf("generation 1 snapshot = objective %q generation %d", old.Objective, old.Generation)
 		}
 		// The source of the proposal-made generation is recorded verbatim.
 		var source string

@@ -14,13 +14,13 @@ import (
 	"forge/internal/core/store"
 )
 
-// withPrompts hands the harness a file-backed library, the way the daemon
-// injects its last-good load.
+// withPrompts writes files (personas/, fragments/, directives/) into the
+// harness library and hot-reloads, the way the daemon serves its last-good
+// load.
 func (h *harness) withPrompts(files map[string]string) *directives.Library {
 	h.t.Helper()
-	dir := h.t.TempDir()
 	for name, content := range files {
-		path := filepath.Join(dir, name)
+		path := filepath.Join(h.libDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			h.t.Fatal(err)
 		}
@@ -28,21 +28,10 @@ func (h *harness) withPrompts(files map[string]string) *directives.Library {
 			h.t.Fatal(err)
 		}
 	}
-	lib, err := directives.Load(dir)
-	if err != nil {
+	if err := h.srv.promptsReload(); err != nil {
 		h.t.Fatal(err)
 	}
-	current := lib
-	h.srv.prompts = func() *directives.Library { return current }
-	h.srv.promptsReload = func() error {
-		next, err := directives.Load(dir)
-		if err != nil {
-			return err
-		}
-		current = next
-		return nil
-	}
-	return lib
+	return h.srv.prompts()
 }
 
 // A routine naming a persona gets the resolved text composed ahead of its
@@ -56,8 +45,9 @@ func TestPersonaComposesIntoWork(t *testing.T) {
 		"fragments/standards.md": "Be honest, not flattering.",
 	})
 
-	rt := store.Routine{Name: "audited", Mode: "run", Prompt: "task: {{objective}}", Persona: "reviewer",
-		Repositories: []string{"equitizr"}, TimeoutSeconds: 300} // no model: the persona's default applies
+	// No model in the directive: the persona's default applies.
+	h.writeDirective("audited", "---\nmode: run\npersona: reviewer\n---\ntask: {{objective}}\n")
+	rt := store.Routine{Name: "audited", Target: "directive:audited", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", rt, &rt, http.StatusCreated)
 
 	var out workCreated
@@ -82,7 +72,8 @@ func TestPersonaComposesIntoWork(t *testing.T) {
 	if err := json.Unmarshal(out.Work.Composition, &comp); err != nil {
 		t.Fatalf("composition: %v (%s)", err, out.Work.Composition)
 	}
-	if comp.Persona != "reviewer" || comp.Mode != "run" || len(comp.Fragments) != 2 {
+	// The manifest carries the persona, its fragment, and the directive body.
+	if comp.Persona != "reviewer" || comp.Mode != "run" || len(comp.Fragments) != 3 {
 		t.Errorf("composition = %+v", comp)
 	}
 	// The persona text is ahead of the task text.
@@ -91,24 +82,24 @@ func TestPersonaComposesIntoWork(t *testing.T) {
 	}
 }
 
-// Definition-time refusals: an unknown persona 400s at routine save when the
-// library is loaded, and a routine with neither model nor persona 400s.
+// Run-time refusals: a directive naming an unknown persona 400s when its
+// routine runs, and a directive with no model (its own or a persona's) 400s.
 func TestPersonaValidation(t *testing.T) {
 	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
 	h.withPrompts(map[string]string{"personas/real.md": "I exist."})
 
-	ghost := store.Routine{Name: "g", Mode: "run", Prompt: "p", Persona: "ghost", Model: "haiku", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
-	if status, body := h.do(http.MethodPost, "/api/v1/routines", ghost, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "not in the prompts library") {
-		t.Fatalf("ghost persona = %d %s", status, body)
+	h.writeDirective("g", "---\nmode: run\npersona: ghost\nmodel: haiku\n---\np\n")
+	ghost := store.Routine{Name: "g", Target: "directive:g", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.call(http.MethodPost, "/api/v1/routines", ghost, nil, http.StatusCreated)
+	if status, body := h.do(http.MethodPost, "/api/v1/routines/g/run", nil, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "not in the library") {
+		t.Fatalf("ghost persona run = %d %s", status, body)
 	}
-	modeless := store.Routine{Name: "m", Mode: "run", Prompt: "p", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
-	if status, body := h.do(http.MethodPost, "/api/v1/routines", modeless, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "model is required") {
-		t.Fatalf("no model no persona = %d %s", status, body)
-	}
-	// A persona without a default model still needs the routine to name one at
-	// run time; saving is allowed (the persona may gain a model later), but
+	// A persona without a default model still needs the directive to name one
+	// at run time; saving is allowed (the persona may gain a model later), but
 	// running fails clearly.
-	nomodel := store.Routine{Name: "n", Mode: "run", Prompt: "p", Persona: "real", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.writeDirective("n", "---\nmode: run\npersona: real\n---\np\n")
+	nomodel := store.Routine{Name: "n", Target: "directive:n", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", nomodel, nil, http.StatusCreated)
 	if status, body := h.do(http.MethodPost, "/api/v1/routines/n/run", nil, nil, ""); status != http.StatusBadRequest || !strings.Contains(string(body), "model") {
 		t.Fatalf("run without any model = %d %s", status, body)
@@ -164,8 +155,8 @@ func TestRoutinePreview(t *testing.T) {
 	h.withPrompts(map[string]string{
 		"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun-mode teaching.",
 	})
-	rt := store.Routine{Name: "previewable", Mode: "run", Prompt: "Review {{repo}}: {{objective}}", Persona: "reviewer",
-		Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.writeDirective("previewable", "---\nmode: run\npersona: reviewer\n---\nReview {{repo}}: {{objective}}\n")
+	rt := store.Routine{Name: "previewable", Target: "directive:previewable", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
 
 	var out struct {
@@ -187,7 +178,7 @@ func TestRoutinePreview(t *testing.T) {
 			t.Errorf("preview missing %q", want)
 		}
 	}
-	if out.Model != "haiku" || out.Composition == nil || len(out.Composition.Fragments) != 1 {
+	if out.Model != "haiku" || out.Composition == nil || len(out.Composition.Fragments) != 2 {
 		t.Errorf("model=%q composition=%+v", out.Model, out.Composition)
 	}
 	// No Work was created.
@@ -339,7 +330,8 @@ func TestPromptTestRun(t *testing.T) {
 	}
 
 	// The routine path uses the saved binding.
-	rt := store.Routine{Name: "runnable", Mode: "run", Prompt: "Routine task on {{repo}}", Persona: "reviewer", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
+	h.writeDirective("runnable", "---\nmode: run\npersona: reviewer\n---\nRoutine task on {{repo}}\n")
+	rt := store.Routine{Name: "runnable", Target: "directive:runnable", Repositories: []string{"equitizr"}, TimeoutSeconds: 300}
 	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
 	h.call(http.MethodPost, "/api/v1/directive-test", map[string]string{"routine": "runnable"}, &out, http.StatusOK)
 	if !strings.Contains(gotUser, "Routine task on equitizr") || !strings.Contains(gotUser, "You are the reviewer.") {

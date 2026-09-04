@@ -239,7 +239,7 @@ func budgetStore(t *testing.T, clock func() time.Time) *store.Store {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		return tx.CreateRoutine(bctx(), &store.Routine{Name: "inventory", Mode: "run", Prompt: "list files", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300})
+		return tx.CreateRoutine(bctx(), &store.Routine{Name: "inventory", Target: "directive:inventory", Repositories: []string{"equitizr"}, TimeoutSeconds: 300})
 	})
 	if err != nil {
 		t.Fatal(err)

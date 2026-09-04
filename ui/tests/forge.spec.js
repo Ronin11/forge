@@ -681,22 +681,6 @@ test.describe('icons', () => {
   });
 });
 
-test.describe('routine templates', () => {
-  test('a role template fills the New-routine form', async ({ page }) => {
-    seed();
-    await page.goto('/directives');
-    await page.locator('[data-routine-new]').click();
-    const dialog = page.locator('[data-routine-dialog]');
-    await expect(dialog.locator('[data-routine-template]')).toBeVisible();
-    // Pick the Programmer template; the form fills from it.
-    await dialog.locator('[data-routine-template]').selectOption('programmer');
-    await expect(dialog.locator('[name=mode]')).toHaveValue('implement');
-    await expect(dialog.locator('[name=model]')).toHaveValue('sonnet');
-    await expect(dialog.locator('[name=prompt]')).toHaveValue(/careful programmer/);
-    await expect(dialog.locator('[name=integrate]')).toBeChecked();
-  });
-});
-
 test.describe('mobile nav', () => {
   test('hamburger toggles a vertical menu; links navigate and close it', async ({ page }) => {
     seed();
@@ -731,7 +715,7 @@ test.describe('responsive', () => {
     { name: 'phone', w: 390, h: 844 },
     { name: 'tablet', w: 768, h: 1024 },
   ];
-  const pages = ['/', '/tasks?scope=all', '/queue', '/attention', '/proposals', '/kb', '/directives', '/routines', '/workflows', '/stats', '/system', '/settings', '/settings/plugins'];
+  const pages = ['/', '/tasks?scope=all', '/queue', '/attention', '/proposals', '/kb', '/directives', '/workflows', '/stats', '/system', '/settings', '/settings/plugins'];
   for (const sz of sizes) {
     test(`no horizontal page overflow at ${sz.name} (${sz.w}px)`, async ({ page }) => {
       seed();

@@ -15,9 +15,9 @@ import (
 func TestWorkflowGraphTOMLRoundTrip(t *testing.T) {
 	wf := store.Workflow{Name: "branchy", Graph: &store.WorkflowGraph{
 		Nodes: []store.WorkflowNode{
-			{ID: "build", Type: store.NodeRoutine, Config: map[string]any{"routine": "build-all", "objective": "build {{repo}}"}, Position: store.GraphPosition{X: 240, Y: 120}},
+			{ID: "build", Type: store.NodeDirective, Config: map[string]any{"directive": "build-all", "objective": "build {{repo}}"}, Position: store.GraphPosition{X: 240, Y: 120}},
 			{ID: "route", Type: store.NodeSwitch, Config: map[string]any{"expression": "input.steps.build.output.kind"}},
-			{ID: "fix", Type: store.NodeRoutine, Config: map[string]any{"routine": "fix"}},
+			{ID: "fix", Type: store.NodeDirective, Config: map[string]any{"directive": "fix"}},
 		},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "build", To: "route"},
@@ -36,7 +36,7 @@ func TestWorkflowGraphTOMLRoundTrip(t *testing.T) {
 	if back.Graph == nil || len(back.Graph.Nodes) != 3 || len(back.Graph.Edges) != 3 {
 		t.Fatalf("graph = %+v", back.Graph)
 	}
-	if cfg, err := back.Graph.Nodes[0].RoutineConfig(); err != nil || cfg.Routine != "build-all" || cfg.Objective != "build {{repo}}" {
+	if cfg, err := back.Graph.Nodes[0].DirectiveConfig(); err != nil || cfg.Directive != "build-all" || cfg.Objective != "build {{repo}}" {
 		t.Errorf("build config = %+v, %v", cfg, err)
 	}
 	if e := back.Graph.Edges[2]; !e.Loop || e.MaxIterations != 3 {

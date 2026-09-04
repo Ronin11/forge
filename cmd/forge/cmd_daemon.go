@@ -27,7 +27,6 @@ import (
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
 	"forge/internal/core/logging"
-	"forge/internal/core/migratedirectives"
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
 	"forge/internal/core/modes/all"
@@ -235,30 +234,19 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			}
 		}
 	}()
-	// The directives restructure: rename the library dir, split content
-	// routines into directive files, convert workflow graphs — state-derived
-	// predicates make this a no-op on every boot after the first. It runs
-	// before the library load and before any loop starts, so nothing fires
-	// against a half-split routine.
-	if rep, err := migratedirectives.Run(ctx, st, home, d.cfg.Prompts.Path, false, d.log); err != nil {
-		d.log.ErrorContext(ctx, "directives migration", "error", err)
-	} else if !rep.Empty() {
-		d.log.InfoContext(ctx, "directives migration", "dir_renamed", rep.DirRenamed,
-			"routines_split", len(rep.RoutinesSplit), "graphs_converted", len(rep.GraphsConverted), "skipped", rep.Skipped)
-	}
 	// The prompts library: file-backed personas/fragments/directives, loaded
 	// now and reloaded on a timer; a broken tree keeps the last good load.
 	promptsLib := &atomic.Pointer[directives.Library]{}
-	if err := directives.Ensure(d.cfg.Prompts.Path); err != nil {
-		d.log.WarnContext(ctx, "ensure prompts dir", "path", d.cfg.Prompts.Path, "error", err)
-	} else if lib, err := directives.Load(d.cfg.Prompts.Path); err != nil {
-		d.log.WarnContext(ctx, "load prompts library", "path", d.cfg.Prompts.Path, "error", err)
+	if err := directives.Ensure(d.cfg.Directives.Path); err != nil {
+		d.log.WarnContext(ctx, "ensure prompts dir", "path", d.cfg.Directives.Path, "error", err)
+	} else if lib, err := directives.Load(d.cfg.Directives.Path); err != nil {
+		d.log.WarnContext(ctx, "load prompts library", "path", d.cfg.Directives.Path, "error", err)
 	} else {
 		promptsLib.Store(lib)
 		// Base-system seeds (library seeds/ dir): starter workflows and
 		// trigger routines, skip-if-name-exists, so a fresh install is a
 		// working system and base updates land additively.
-		if added, err := seeds.Import(ctx, st, d.cfg.Prompts.Path, d.log); err != nil {
+		if added, err := seeds.Import(ctx, st, d.cfg.Directives.Path, d.log); err != nil {
 			d.log.WarnContext(ctx, "seed import", "error", err)
 		} else if len(added) > 0 {
 			d.log.InfoContext(ctx, "seeds imported", "added", added)
@@ -267,7 +255,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	srv, err := web.NewServer(web.ServerOptions{
 		Prompts: promptsLib.Load,
 		PromptsReload: func() error {
-			lib, err := directives.Load(d.cfg.Prompts.Path)
+			lib, err := directives.Load(d.cfg.Directives.Path)
 			if err != nil {
 				return err
 			}
@@ -760,7 +748,7 @@ func (d *daemonProcess) promptsReloadLoop(ctx context.Context, lib *atomic.Point
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, err := directives.Load(d.cfg.Prompts.Path)
+			next, err := directives.Load(d.cfg.Directives.Path)
 			if err != nil {
 				log.WarnContext(ctx, "prompts library load failed; keeping the last good tree", "error", err)
 				continue

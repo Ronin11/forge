@@ -28,7 +28,7 @@ func RunDirectives(ctx context.Context, c *Context, args []string) int {
 	if err != nil {
 		return c.Fail("directives", err)
 	}
-	dir := cfg.Prompts.Path
+	dir := cfg.Directives.Path
 	git := func(args ...string) (string, error) {
 		out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 		return strings.TrimSpace(string(out)), err

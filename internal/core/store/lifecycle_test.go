@@ -41,7 +41,7 @@ func newFixture(t testing.TB) *fixture {
 			Repositories: []protocol.Repository{{Name: "equitizr", Path: "/tmp/equitizr", OriginIdentity: "github.com/x/equitizr"}}}); err != nil {
 			return err
 		}
-		return tx.CreateRoutine(ctx(), &Routine{Name: "inventory", Mode: "run", Prompt: "list files in {{repo}}", Repositories: []string{"equitizr"}, Model: "haiku", TimeoutSeconds: 300})
+		return tx.CreateRoutine(ctx(), &Routine{Name: "inventory", Target: "directive:inventory", Repositories: []string{"equitizr"}, TimeoutSeconds: 300})
 	})
 	return f
 }
@@ -112,24 +112,24 @@ func TestRoutineGenerationsAndConflicts(t *testing.T) {
 	if err != nil || r.Generation != 1 || r.Executor != "claude-code" || r.Concurrency != 1 || r.MaxQuestions != 3 {
 		t.Fatalf("routine = %+v, %v", r, err)
 	}
-	r.Prompt = "changed"
+	r.Objective = "changed"
 	f.write(func(tx *Tx) error { return tx.UpdateRoutine(ctx(), r, 1) })
 	err = f.s.Write(ctx(), func(tx *Tx) error { return tx.UpdateRoutine(ctx(), r, 1) })
 	if !errors.Is(err, ErrStaleGeneration) {
 		t.Errorf("stale update: %v", err)
 	}
 	r2 := must(f.s.GetRoutine(ctx(), "inventory"))
-	if r2.Generation != 2 || r2.Prompt != "changed" {
+	if r2.Generation != 2 || r2.Objective != "changed" {
 		t.Errorf("after update: %+v", r2)
 	}
 	err = f.s.Write(ctx(), func(tx *Tx) error {
-		return tx.CreateRoutine(ctx(), &Routine{Name: "inventory", Mode: "run", Prompt: "x", Model: "haiku", TimeoutSeconds: 1})
+		return tx.CreateRoutine(ctx(), &Routine{Name: "inventory", Target: "directive:inventory", TimeoutSeconds: 1})
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("duplicate name: %v", err)
 	}
 	err = f.s.Write(ctx(), func(tx *Tx) error {
-		return tx.CreateRoutine(ctx(), &Routine{Name: "Bad Name", Mode: "run", Prompt: "x", Model: "haiku", TimeoutSeconds: 1})
+		return tx.CreateRoutine(ctx(), &Routine{Name: "Bad Name", Target: "directive:x", TimeoutSeconds: 1})
 	})
 	if err == nil {
 		t.Error("bad name accepted")

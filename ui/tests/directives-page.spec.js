@@ -32,12 +32,10 @@ test.describe('prompts page', () => {
   });
 
   test('a routine detail previews the exact prompt with objective and repo substituted', async ({ page }) => {
-    // A routine bound to a starter persona, created through the API.
+    // A trigger routine bound to a pre-seeded directive (global-setup writes
+    // directives/pr-page-test.md, which names the starter persona).
     const res = await page.request.post('/api/v1/routines', {
-      data: {
-        name: 'pr-page-test', mode: 'run', prompt: 'Task on {{repo}}: {{objective}}',
-        persona: 'senior-reviewer', repositories: ['demo'], timeout_seconds: 300,
-      },
+      data: { name: 'pr-page-test', target: 'directive:pr-page-test', repositories: ['demo'], timeout_seconds: 300 },
     });
     if (res.status() !== 201) {
       expect((await res.text())).toContain('exists'); // rerun tolerance
@@ -45,7 +43,8 @@ test.describe('prompts page', () => {
     await page.goto('/directives');
     await page.locator('[data-sel="routine:pr-page-test"]').click();
     const detail = page.locator('[data-prompt-detail]');
-    await expect(detail).toContainText('persona: senior-reviewer');
+    await expect(detail).toContainText('trigger');
+    await expect(detail).toContainText('directive:');
     await detail.locator('.pr-test textarea').fill('audit the gauges');
     await detail.locator('.pr-test button').click();
     await expect(detail).toContainText('composed from');
@@ -61,7 +60,7 @@ test.describe('prompts page', () => {
     await page.locator('[data-prompt-detail] button', { hasText: 'Edit' }).click();
     const dialog = page.locator('[data-routine-dialog]');
     await expect(dialog.locator('[name=name]')).toHaveValue('pr-page-test');
-    await expect(dialog.locator('[name=persona]')).toHaveValue('senior-reviewer');
+    await expect(dialog.locator('[name=target]')).toHaveValue('directive:pr-page-test');
   });
 });
 
@@ -116,7 +115,7 @@ test.describe('prompt editing and testing', () => {
     await expect(detail.locator('option', { hasText: 'sonnet (default)' })).toHaveCount(1);
   });
 
-  test('the optimize panel offers goal, models, and variant count on personas and routines', async ({ page }) => {
+  test('the optimize panel offers goal, models, and variant count on personas', async ({ page }) => {
     // Presence only: starting an experiment spends many real completions.
     await page.goto('/directives?sel=prompt:senior-reviewer');
     const detail = page.locator('[data-prompt-detail]');
@@ -137,8 +136,12 @@ test.describe('prompt editing and testing', () => {
     await opt.locator('.pr-variants').fill('4');
     await expect(opt.locator('.pr-cost')).toContainText('5 runs on haiku + 2 fable calls');
 
+    // A trigger routine has no optimize panel of its own — the content lives
+    // in the directive, linked from the chip in the detail head.
     await page.goto('/directives?sel=routine:pr-page-test');
-    await expect(detail.locator('.pr-optimize button', { hasText: 'Start experiment' })).toBeVisible();
+    await expect(detail).toContainText('trigger');
+    await expect(detail.locator('a[data-nav="prompt:pr-page-test"]')).toBeVisible();
+    await expect(detail.locator('.pr-optimize')).toHaveCount(0);
   });
 });
 
@@ -195,7 +198,7 @@ test.describe('directives', () => {
     await expect(detail.locator('button', { hasText: 'Run test' })).toBeVisible();
   });
 
-  test('a trigger routine renders its target and the dialog disables content fields', async ({ page }) => {
+  test('a trigger routine renders its target and the dialog has no content fields', async ({ page }) => {
     const res = await page.request.post('/api/v1/routines', {
       data: { name: 'trigger-test', target: 'directive:triage-repo', repositories: ['demo'], objective: 'nightly sweep' },
     });
@@ -211,12 +214,13 @@ test.describe('directives', () => {
     await detail.locator('.pr-test button', { hasText: 'Preview' }).click();
     await expect(detail.locator('pre').last()).toContainText('Survey the current state of demo');
 
-    // Dialog: setting a target disables the content fields.
+    // Dialog: a trigger is target + objective + envelope — no content fields.
     await detail.locator('button', { hasText: 'Edit' }).click();
     const form = page.locator('[data-routine-form]');
     await expect(form.locator('[name=target]')).toHaveValue('directive:triage-repo');
-    await expect(form.locator('[name=prompt]')).toBeDisabled();
-    await expect(form.locator('[name=mode]')).toBeDisabled();
+    await expect(form.locator('[name=prompt]')).toHaveCount(0);
+    await expect(form.locator('[name=mode]')).toHaveCount(0);
+    await expect(form.locator('[name=model]')).toHaveCount(0);
     await form.locator('[data-editor-cancel]').click();
   });
 });

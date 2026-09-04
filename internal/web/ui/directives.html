@@ -33,16 +33,11 @@
 <form method="dialog" data-routine-form>
 <h2 data-editor-title>New routine</h2>
 <p class="dialog-error" hidden></p>
-<label class="wide" data-template-row>Start from a role template <select data-routine-template><option value="">— blank routine —</option></select> <small class="meta" data-template-desc></small></label>
 <div class="form-grid">
 <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" title="lower-case slug"></label>
-<label class="wide">Target <input name="target" list="target-names" placeholder="directive:&lt;name&gt; or workflow:&lt;name&gt; — blank keeps inline content" title="What this trigger invokes. Set it and the content fields below empty out: a directive owns mode/model/persona/prompt."></label>
-<label class="wide" data-objective-row>Objective <textarea name="objective" rows="2" placeholder="Default {{`{{objective}}`}} for runs this trigger creates (optional)"></textarea></label>
-<label>Mode <input name="mode" value="run"></label>
-<label>Model <input name="model" value="haiku"></label>
-<label>Persona <input name="persona" list="persona-names" placeholder="from ~/.forge/directives" title="A persona from the prompts library, composed ahead of the prompt; blank = none"></label>
+<label class="wide">Target <input name="target" list="target-names" required placeholder="directive:&lt;name&gt; or workflow:&lt;name&gt;" title="What this trigger invokes — the directive (or workflow) owns the content."></label>
+<label class="wide">Objective <textarea name="objective" rows="2" placeholder="Default {{`{{objective}}`}} for runs this trigger creates (optional)"></textarea></label>
 <label>Class <select name="budget_class"><option>normal</option><option>interactive</option><option>backlog</option></select></label>
-<label class="wide">Prompt <textarea name="prompt" rows="5" required placeholder="{{`{{repo}}`}} is replaced per repository"></textarea></label>
 <label class="wide">Repositories <input name="repositories" list="repo-names" placeholder="comma-separated" required></label>
 <label>Schedule <input name="schedule" placeholder="cron, e.g. 0 3 * * *"></label>
 <label>Priority <input name="priority" type="number" value="50"></label>
@@ -60,7 +55,6 @@
 </form>
 </dialog>
 <datalist id="repo-names">{{range .Data.Repositories}}<option value="{{.}}">{{end}}</datalist>
-<datalist id="persona-names">{{range .Data.Personas}}<option value="{{.Name}}">{{end}}</datalist>
 <datalist id="target-names">{{range .Data.Directives}}<option value="directive:{{.Name}}">{{end}}</datalist>
 <script src="/static/directives.js" defer></script>
 {{template "foot" .}}

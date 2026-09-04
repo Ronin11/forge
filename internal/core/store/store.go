@@ -84,12 +84,6 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		}
 		return nil, err
 	}
-	if err := s.backfillWorkflowGraphs(ctx); err != nil {
-		if cerr := s.Close(); cerr != nil {
-			s.log.WarnContext(ctx, "close after failed backfill", "error", cerr)
-		}
-		return nil, fmt.Errorf("backfill workflow graphs: %w", err)
-	}
 	return s, nil
 }
 

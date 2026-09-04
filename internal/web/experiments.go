@@ -147,43 +147,6 @@ func (p personaSubject) run(ctx context.Context, content string, baseline bool) 
 	return p.s.experimentModelCall(ctx, preview.Prompt, p.pe.TargetModel)
 }
 
-// routineSubject varies a legacy content routine's task prompt; persona and
-// binding stay as saved. New-style routines are triggers — their content
-// optimizes as directive: subjects instead.
-type routineSubject struct {
-	s    *Server
-	name string
-	pe   *store.Experiment
-	test experimentTest
-}
-
-func (r routineSubject) generationRules(sb *strings.Builder) {
-	sb.WriteString("- This is a routine's task prompt. {{objective}} and {{repo}} are substituted at run time — preserve them where present.\n")
-}
-
-func (r routineSubject) validate(content string) string {
-	if strings.TrimSpace(content) == "" {
-		return "empty variant"
-	}
-	return ""
-}
-
-func (r routineSubject) run(ctx context.Context, content string, baseline bool) (string, error) {
-	saved, err := r.s.store.GetRoutine(ctx, r.name)
-	if err != nil {
-		return "", err
-	}
-	rt := *saved
-	if !baseline {
-		rt.Prompt = content
-	}
-	preview, err := r.s.renderPreview(ctx, rt, r.test.Objective, r.test.Repo)
-	if err != nil {
-		return "", err
-	}
-	return r.s.experimentModelCall(ctx, preview.Prompt, r.pe.TargetModel)
-}
-
 // directiveSubject varies a whole directive file: frontmatter and task text.
 // A run composes the variant in a cloned library and previews a synthetic
 // trigger routine through the real assembly path.
@@ -284,10 +247,7 @@ func (s *Server) experimentSubjectFor(ctx context.Context, pe *store.Experiment)
 		if err != nil {
 			return nil, "", err
 		}
-		if rt.Target != "" {
-			return nil, "", badRequest("routine %s is a trigger — optimize its content as directive:%s", name, strings.TrimPrefix(rt.Target, "directive:"))
-		}
-		return routineSubject{s: s, name: name, pe: pe, test: test}, rt.Prompt, nil
+		return nil, "", badRequest("routine %s is a trigger — optimize its content as its target (%s)", name, rt.Target)
 	}
 	return nil, "", badRequest("unknown experiment subject kind %q", kind)
 }

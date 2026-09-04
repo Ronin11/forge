@@ -1,10 +1,11 @@
 // Browser tests for the workflow graph editor and run view (graph.js). The
-// daemon and seed are global-setup's; this file creates its own routines and
-// workflows over the API. Editor semantics are driven through the
+// daemon and seed are global-setup's; the wfg-lint/wfg-fix directive files
+// are pre-seeded into the daemon's library by global-setup (stored routines
+// are target-only, so workflow nodes reference directives), and this file
+// creates its workflow over the API. Editor semantics are driven through the
 // window.ForgeGraph hooks where precision matters, with one real mouse drag
 // as the interaction smoke (the queue-reorder test proves raw drags work in
-// this harness). The workflow routines carry a high priority so their claims
-// never race the seed's pending queue fixtures.
+// this harness).
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
@@ -24,22 +25,13 @@ async function api(method, p, body, useToken, expectStatus) {
   return text ? JSON.parse(text) : null;
 }
 
-// ensure* tolerate reruns: a 409 on create means the earlier run made it.
-async function ensureRoutine(name) {
-  const res = await api('POST', '/api/v1/routines', {
-    name, mode: 'run', prompt: `${name} on {{repo}}: {{objective}}`, repositories: ['demo'],
-    model: 'haiku', timeout_seconds: 300, priority: 150,
-  });
-  if (res && res.error && !/exists/.test(res.error)) throw new Error(res.error);
-}
-
 const GRAPH = {
   nodes: [
-    { id: 'first', type: 'routine', config: { routine: 'wfg-lint' }, position: { x: 40, y: 40 } },
+    { id: 'first', type: 'directive', config: { directive: 'wfg-lint', repositories: ['demo'] }, position: { x: 40, y: 40 } },
     { id: 'shape', type: 'script', config: { source: "function main(input) { return {kind: input.steps.first.status} }" }, position: { x: 300, y: 40 } },
     { id: 'route', type: 'switch', config: { expression: 'input.steps.shape.output.kind' }, position: { x: 560, y: 40 } },
-    { id: 'good', type: 'routine', config: { routine: 'wfg-fix' }, position: { x: 820, y: 0 } },
-    { id: 'bad', type: 'routine', config: { routine: 'wfg-fix' }, position: { x: 820, y: 120 } },
+    { id: 'good', type: 'directive', config: { directive: 'wfg-fix', repositories: ['demo'] }, position: { x: 820, y: 0 } },
+    { id: 'bad', type: 'directive', config: { directive: 'wfg-fix', repositories: ['demo'] }, position: { x: 820, y: 120 } },
   ],
   edges: [
     { from: 'first', to: 'shape', when: 'always' },
@@ -49,14 +41,13 @@ const GRAPH = {
   ],
 };
 
+// ensureWorkflow tolerates reruns: a 409 on create means the earlier run made it.
 async function ensureWorkflow() {
   const res = await api('POST', '/api/v1/workflows', { name: 'graphy', graph: GRAPH });
   if (res && res.error && !/exists/.test(res.error)) throw new Error(res.error);
 }
 
 test.beforeAll(async () => {
-  await ensureRoutine('wfg-lint');
-  await ensureRoutine('wfg-fix');
   await ensureWorkflow();
 });
 
@@ -157,6 +148,13 @@ test.describe('workflow graph editor', () => {
 test.describe('workflow run view', () => {
   test('a run materializes stepwise, routes the switch, and the view shows it', async ({ page }) => {
     const run = await api('POST', '/api/v1/workflows/graphy/run', {}, false, 201);
+
+    // Directive-node works are created at the engine's default priority;
+    // outrank the seed's pending queue fixtures so the claim below can only
+    // pick this run's root.
+    const created = await api('GET', `/api/v1/workflow-runs/${run.run_id}`);
+    const rootWork = created.nodes.find((n) => n.node_id === 'first').work_id;
+    await api('PATCH', `/api/v1/work/${rootWork}`, { priority: 500 }, false, 200);
 
     // The repo page test upstream pauses demo and leaves it paused; resume it
     // so the claim is admissible.

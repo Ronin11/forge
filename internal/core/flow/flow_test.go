@@ -126,13 +126,13 @@ func (s *sim) wantNoInstance(nodeID string, iter int) {
 	}
 }
 
-func routineNode(id string) store.WorkflowNode {
-	return store.WorkflowNode{ID: id, Type: store.NodeRoutine, Config: map[string]any{"routine": "r-" + id}}
+func directiveNode(id string) store.WorkflowNode {
+	return store.WorkflowNode{ID: id, Type: store.NodeDirective, Config: map[string]any{"directive": "r-" + id}}
 }
 
 func TestChainProgression(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("b")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("b")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}},
 	})
 	s.settle()
@@ -152,7 +152,7 @@ func TestChainProgression(t *testing.T) {
 
 func TestFailureWithoutFailureEdgeSkipsAndFails(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("b"), routineNode("c")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("b"), directiveNode("c")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}, {From: "b", To: "c"}},
 	})
 	s.settle()
@@ -166,7 +166,7 @@ func TestFailureWithoutFailureEdgeSkipsAndFails(t *testing.T) {
 
 func TestFailureEdgeRoutes(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("ok"), routineNode("cleanup")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("ok"), directiveNode("cleanup")},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "a", To: "ok", When: store.WhenSuccess},
 			{From: "a", To: "cleanup", When: store.WhenFailure},
@@ -186,7 +186,7 @@ func TestFailureEdgeRoutes(t *testing.T) {
 
 func TestParallelJoinAll(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("fan"), routineNode("b"), routineNode("c"), {ID: "j", Type: store.NodeJoin}, routineNode("after")},
+		Nodes: []store.WorkflowNode{directiveNode("fan"), directiveNode("b"), directiveNode("c"), {ID: "j", Type: store.NodeJoin}, directiveNode("after")},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "fan", To: "b"}, {From: "fan", To: "c"},
 			{From: "b", To: "j"}, {From: "c", To: "j"},
@@ -207,7 +207,7 @@ func TestParallelJoinAll(t *testing.T) {
 
 func TestJoinAnyFiresOnFirst(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("fan"), routineNode("b"), routineNode("c"), {ID: "j", Type: store.NodeJoin, Config: map[string]any{"mode": "any"}}, routineNode("after")},
+		Nodes: []store.WorkflowNode{directiveNode("fan"), directiveNode("b"), directiveNode("c"), {ID: "j", Type: store.NodeJoin, Config: map[string]any{"mode": "any"}}, directiveNode("after")},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "fan", To: "b"}, {From: "fan", To: "c"},
 			{From: "b", To: "j"}, {From: "c", To: "j"},
@@ -228,7 +228,7 @@ func TestJoinAnyFiresOnFirst(t *testing.T) {
 
 func TestJoinAllToleratesDeadBranch(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("good"), routineNode("bad"), {ID: "j", Type: store.NodeJoin}},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("good"), directiveNode("bad"), {ID: "j", Type: store.NodeJoin}},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "a", To: "good", When: store.WhenSuccess}, {From: "a", To: "bad", When: store.WhenFailure},
 			{From: "good", To: "j"}, {From: "bad", To: "j"},
@@ -247,7 +247,7 @@ func TestJoinAllToleratesDeadBranch(t *testing.T) {
 
 func TestLoopRetriesUntilCap(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("build"), routineNode("fix")},
+		Nodes: []store.WorkflowNode{directiveNode("build"), directiveNode("fix")},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "build", To: "fix", When: store.WhenFailure},
 			{From: "fix", To: "build", Loop: true, MaxIterations: 2},
@@ -272,7 +272,7 @@ func TestLoopRetriesUntilCap(t *testing.T) {
 
 func TestLoopRetrySucceeds(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("build"), routineNode("fix"), routineNode("ship")},
+		Nodes: []store.WorkflowNode{directiveNode("build"), directiveNode("fix"), directiveNode("ship")},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "build", To: "ship", When: store.WhenSuccess},
 			{From: "build", To: "fix", When: store.WhenFailure},
@@ -293,9 +293,9 @@ func TestLoopRetrySucceeds(t *testing.T) {
 func TestSwitchRoutesCaseAndDefault(t *testing.T) {
 	g := &store.WorkflowGraph{
 		Nodes: []store.WorkflowNode{
-			routineNode("a"),
+			directiveNode("a"),
 			{ID: "route", Type: store.NodeSwitch, Config: map[string]any{"expression": "input.x"}},
-			routineNode("docs"), routineNode("other"),
+			directiveNode("docs"), directiveNode("other"),
 		},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "a", To: "route"},
@@ -323,9 +323,9 @@ func TestSwitchRoutesCaseAndDefault(t *testing.T) {
 func TestSwitchFailureRoutesFailureEdge(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
 		Nodes: []store.WorkflowNode{
-			routineNode("a"),
+			directiveNode("a"),
 			{ID: "route", Type: store.NodeSwitch, Config: map[string]any{"expression": "input.x"}},
-			routineNode("docs"), routineNode("rescue"),
+			directiveNode("docs"), directiveNode("rescue"),
 		},
 		Edges: []store.WorkflowGraphEdge{
 			{From: "a", To: "route"},
@@ -342,7 +342,7 @@ func TestSwitchFailureRoutesFailureEdge(t *testing.T) {
 
 func TestCancelledWorkCancelsRun(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("b")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("b")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}},
 	})
 	s.settle()
@@ -355,7 +355,7 @@ func TestCancelledWorkCancelsRun(t *testing.T) {
 
 func TestWaitingHumanKeepsNodeRunning(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("b")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("b")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}},
 	})
 	s.settle()
@@ -371,7 +371,7 @@ func TestWaitingHumanKeepsNodeRunning(t *testing.T) {
 // idempotence rests on it.
 func TestEvaluateIsStable(t *testing.T) {
 	s := newSim(t, &store.WorkflowGraph{
-		Nodes: []store.WorkflowNode{routineNode("a"), routineNode("b")},
+		Nodes: []store.WorkflowNode{directiveNode("a"), directiveNode("b")},
 		Edges: []store.WorkflowGraphEdge{{From: "a", To: "b"}},
 	})
 	s.settle()

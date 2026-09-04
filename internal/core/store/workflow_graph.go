@@ -8,11 +8,10 @@ import (
 )
 
 // WorkflowGraph is the canonical workflow definition: typed nodes joined by
-// conditional edges. A plain routine chain is the degenerate case (what
-// GraphFromSteps produces from the legacy steps form); the general form adds
-// script and switch nodes, failure/case edges, parallel fan-out with joins,
-// and declared loop edges with iteration caps. The graph minus its loop edges
-// must be acyclic, so evaluation always has a frontier.
+// conditional edges. A plain directive chain is the degenerate case; the
+// general form adds script and switch nodes, failure/case edges, parallel
+// fan-out with joins, and declared loop edges with iteration caps. The graph
+// minus its loop edges must be acyclic, so evaluation always has a frontier.
 type WorkflowGraph struct {
 	Nodes []WorkflowNode      `json:"nodes" toml:"nodes"`
 	Edges []WorkflowGraphEdge `json:"edges,omitempty" toml:"edges"`
@@ -22,10 +21,6 @@ type WorkflowGraph struct {
 type NodeType string
 
 const (
-	// NodeRoutine runs one Work through the queue, exactly like a legacy step.
-	// Retired for new graphs in favor of NodeDirective, but validated and
-	// executed forever: frozen run graphs contain these.
-	NodeRoutine NodeType = "routine"
 	// NodeDirective runs one Work built from a directives-library file — the
 	// content lives in git, the node supplies the binding.
 	NodeDirective NodeType = "directive"
@@ -61,7 +56,7 @@ type EdgeWhen string
 const (
 	WhenSuccess EdgeWhen = "success" // source succeeded
 	WhenFailure EdgeWhen = "failure" // source failed
-	WhenAlways  EdgeWhen = "always"  // source finished either way (legacy on:terminal)
+	WhenAlways  EdgeWhen = "always"  // source finished either way
 	WhenCase    EdgeWhen = "case"    // switch chose this edge's Case value
 )
 
@@ -78,8 +73,8 @@ type WorkflowGraphEdge struct {
 	MaxIterations int      `json:"max_iterations,omitempty" toml:"max_iterations,omitempty"`
 }
 
-// Graph bounds. Nodes supersede MaxWorkflowSteps; script source is capped so
-// a workflow row stays a definition, not a code repository.
+// Graph bounds. Script source is capped so a workflow row stays a
+// definition, not a code repository.
 const (
 	MaxGraphNodes        = 100
 	MaxGraphEdges        = 300
@@ -90,22 +85,9 @@ const (
 	MaxScriptTimeoutMS     = 30_000
 )
 
-// RoutineNodeConfig is a routine node's typed view: which routine, and
-// optional per-node overrides of the run's repositories and objective. The
-// objective may reference upstream outputs ({{steps.<id>.output.<path>}}).
-type RoutineNodeConfig struct {
-	Routine      string   `json:"routine"`
-	Repositories []string `json:"repositories,omitempty"`
-	Objective    string   `json:"objective,omitempty"`
-	// Persona overrides the routine's persona for this node's runs.
-	Persona string `json:"persona,omitempty"`
-}
-
 // DirectiveNodeConfig is a directive node's typed view: which directive runs,
 // with optional per-node overrides of the run's repositories/objective/persona
-// and an operational envelope. Zero envelope values take the engine defaults;
-// the routine→directive graph migration bakes the source routine's values in
-// so converted workflows keep their exact behavior.
+// and an operational envelope. Zero envelope values take the engine defaults.
 type DirectiveNodeConfig struct {
 	Directive    string   `json:"directive"`
 	Repositories []string `json:"repositories,omitempty"`
@@ -151,11 +133,8 @@ func nodeConfig[T any](n WorkflowNode) (T, error) {
 	return out, nil
 }
 
-// RoutineConfig, ScriptConfig, SwitchConfig, JoinConfig are the typed views;
+// DirectiveConfig, ScriptConfig, SwitchConfig, JoinConfig are the typed views;
 // they error only on structurally wrong config (a string where a list goes).
-func (n WorkflowNode) RoutineConfig() (RoutineNodeConfig, error) {
-	return nodeConfig[RoutineNodeConfig](n)
-}
 func (n WorkflowNode) DirectiveConfig() (DirectiveNodeConfig, error) {
 	return nodeConfig[DirectiveNodeConfig](n)
 }
@@ -251,14 +230,6 @@ func (g *WorkflowGraph) Validate() error {
 
 func (g *WorkflowGraph) validateNodeConfig(n WorkflowNode) error {
 	switch n.Type {
-	case NodeRoutine:
-		cfg, err := n.RoutineConfig()
-		if err != nil {
-			return err
-		}
-		if err := model.ValidateName(cfg.Routine); err != nil {
-			return fmt.Errorf("node %s: routine: %w", n.ID, err)
-		}
 	case NodeDirective:
 		cfg, err := n.DirectiveConfig()
 		if err != nil {
@@ -444,36 +415,4 @@ func (g *WorkflowGraph) TopoOrder() ([]string, error) {
 		}
 	}
 	return order, nil
-}
-
-// GraphFromSteps converts the legacy steps form losslessly: each step becomes
-// a routine node, each `after` edge an edge (`on: terminal` → always), and
-// positions are laid out left-to-right by dependency depth so the editor has
-// something to show. Callers pass normalized steps (defaults materialized).
-func GraphFromSteps(steps []WorkflowStep) *WorkflowGraph {
-	g := &WorkflowGraph{}
-	depth := map[string]int{}
-	rows := map[int]int{}
-	for _, st := range steps {
-		d := 0
-		for _, e := range st.After {
-			if pd, ok := depth[e.Step]; ok && pd+1 > d {
-				d = pd + 1
-			}
-			when := WhenSuccess
-			if e.On == model.OnTerminal {
-				when = WhenAlways
-			}
-			g.Edges = append(g.Edges, WorkflowGraphEdge{From: e.Step, To: st.Name, When: when, StackOn: e.StackOn})
-		}
-		depth[st.Name] = d
-		g.Nodes = append(g.Nodes, WorkflowNode{
-			ID:       st.Name,
-			Type:     NodeRoutine,
-			Config:   map[string]any{"routine": st.Routine},
-			Position: GraphPosition{X: float64(240 * (d + 1)), Y: float64(120 * (rows[d] + 1))},
-		})
-		rows[d]++
-	}
-	return g
 }
