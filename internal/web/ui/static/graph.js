@@ -730,12 +730,22 @@
         objective.placeholder = 'Optional objective. {{steps.<node>.output.<path>}} and {{run.objective}} expand at run time.';
         objective.addEventListener('input', function () { panelMutate(function () { n.config.objective = objective.value; }); });
         field('Objective (optional)', objective);
+        var personaLink = document.createElement('a');
+        personaLink.className = 'hint';
+        personaLink.textContent = 'view persona →';
+        function syncPersonaLink(v) {
+          personaLink.hidden = !v;
+          personaLink.href = '/routines?sel=' + encodeURIComponent('prompt:' + v);
+        }
         var personaInput = field('Persona (blank = the routine’s own)', textInput(n.config.persona, function (v) {
           panelMutate(function () {
             if (v.trim()) n.config.persona = v.trim(); else delete n.config.persona;
           });
+          syncPersonaLink(v.trim());
         }));
         personaInput.placeholder = 'from ~/.forge/prompts';
+        panel.appendChild(personaLink);
+        syncPersonaLink(n.config.persona || '');
         var repos = field('Repositories (comma-separated, blank = run default)', textInput((n.config.repositories || []).join(', '), function (v) {
           panelMutate(function () {
             var list = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);

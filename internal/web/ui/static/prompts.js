@@ -53,13 +53,38 @@
     return b;
   }
 
+  // ---- deep links: the selection (and composer mode) live in the URL ----
+
+  function urlFor(sel, mode) {
+    return '/routines?sel=' + encodeURIComponent(sel) + (mode ? '&mode=' + encodeURIComponent(mode) : '');
+  }
+  function currentParams() {
+    var q = new URLSearchParams(window.location.search);
+    return { sel: q.get('sel') || '', mode: q.get('mode') || '' };
+  }
+  // fragLink is an in-page link to another prompt; clicks route through
+  // select() (delegated below) so navigation stays instant, while the href
+  // keeps middle-click and copy-link honest.
+  function fragLink(name) {
+    var a = el('a', '', name);
+    a.href = urlFor('prompt:' + name);
+    a.setAttribute('data-nav', 'prompt:' + name);
+    return a;
+  }
+  detail.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[data-nav]');
+    if (!a) return;
+    e.preventDefault();
+    select(a.getAttribute('data-nav'), { push: true });
+  });
+
   // ---- fragment / persona detail ----
 
   function promptURL(name, query) {
     return '/api/v1/prompts/' + name.split('/').map(encodeURIComponent).join('/') + (query || '');
   }
 
-  function showFragment(name) {
+  function showFragment(name, initialMode) {
     clearFail();
     fetchJSON(promptURL(name)).then(function (f) {
       detail.textContent = '';
@@ -78,7 +103,7 @@
       }
       sourceEditor(f);
       if (f.persona) {
-        personaComposer(f);
+        personaComposer(f, initialMode);
         personaTester(f);
       }
     }).catch(fail);
@@ -284,7 +309,7 @@
   }
 
   // personaComposer: pick a mode, see the exact composed text and manifest.
-  function personaComposer(f) {
+  function personaComposer(f, initialMode) {
     detail.appendChild(el('h3', '', 'Composed'));
     var row = el('div', 'pr-controls');
     var modeSel = document.createElement('select');
@@ -294,19 +319,28 @@
       o.textContent = i === 0 ? '(core only)' : 'mode: ' + m;
       modeSel.appendChild(o);
     });
+    if (initialMode && (f.modes || []).indexOf(initialMode) >= 0) modeSel.value = initialMode;
     row.appendChild(modeSel);
     var out = el('div');
     function compose() {
       fetchJSON(promptURL(f.name, '?resolved=1&mode=' + encodeURIComponent(modeSel.value))).then(function (r) {
         out.textContent = '';
         var manifest = el('p', 'meta');
-        manifest.textContent = 'Composed from ' + (r.composition.fragments || []).map(function (fr) { return fr.name; }).join(', ') +
-          (r.composition.commit ? ' @ ' + r.composition.commit.slice(0, 8) + (r.composition.dirty ? ' (dirty)' : '') : ' (uncommitted tree)');
+        manifest.appendChild(document.createTextNode('Composed from '));
+        (r.composition.fragments || []).forEach(function (fr, i) {
+          if (i > 0) manifest.appendChild(document.createTextNode(', '));
+          manifest.appendChild(fragLink(fr.name));
+        });
+        manifest.appendChild(document.createTextNode(
+          r.composition.commit ? ' @ ' + r.composition.commit.slice(0, 8) + (r.composition.dirty ? ' (dirty)' : '') : ' (uncommitted tree)'));
         out.appendChild(manifest);
         out.appendChild(pre(r.resolved));
       }).catch(fail);
     }
-    modeSel.addEventListener('change', compose);
+    modeSel.addEventListener('change', function () {
+      window.history.replaceState({}, '', urlFor('prompt:' + f.name, modeSel.value));
+      compose();
+    });
     detail.appendChild(row);
     detail.appendChild(out);
     compose();
@@ -325,7 +359,11 @@
       head.appendChild(chip('routine'));
       head.appendChild(chip('mode: ' + rt.mode));
       if (rt.model) head.appendChild(chip('model: ' + rt.model));
-      if (rt.persona) head.appendChild(chip('persona: ' + rt.persona));
+      if (rt.persona) {
+        var pchip = chip('persona: ');
+        pchip.appendChild(fragLink(rt.persona));
+        head.appendChild(pchip);
+      }
       if (rt.schedule) head.appendChild(chip(rt.schedule + (rt.schedule_enabled ? '' : ' (off)')));
       detail.appendChild(head);
       var meta = el('p', 'meta', 'gen ' + rt.generation + ' · ' + (rt.repositories || []).join(', ') + ' · ' + rt.budget_class + ' · priority ' + rt.priority);
@@ -371,9 +409,17 @@
         fetchJSON('/api/v1/routines/' + encodeURIComponent(rt.name) + '/preview?objective=' + encodeURIComponent(objective.value.trim()) + '&repo=' + encodeURIComponent(repoSel.value)).then(function (p) {
           out.textContent = '';
           var line = el('p', 'meta');
-          line.textContent = 'model ' + (p.model || '?') + ' · mode ' + p.mode +
-            (p.composition ? ' · composed from ' + (p.composition.fragments || []).map(function (fr) { return fr.name; }).join(', ') : ' · no persona') +
-            ' · ' + p.prompt.length + ' bytes';
+          line.appendChild(document.createTextNode('model ' + (p.model || '?') + ' · mode ' + p.mode + ' · '));
+          if (p.composition) {
+            line.appendChild(document.createTextNode('composed from '));
+            (p.composition.fragments || []).forEach(function (fr, i) {
+              if (i > 0) line.appendChild(document.createTextNode(', '));
+              line.appendChild(fragLink(fr.name));
+            });
+          } else {
+            line.appendChild(document.createTextNode('no persona'));
+          }
+          line.appendChild(document.createTextNode(' · ' + p.prompt.length + ' bytes'));
           out.appendChild(line);
           out.appendChild(pre(p.prompt));
         }).catch(fail);
@@ -391,17 +437,29 @@
 
   // ---- selection ----
 
-  function select(sel) {
+  function select(sel, opts) {
+    opts = opts || {};
     page.querySelectorAll('.pr-item').forEach(function (b) {
       b.classList.toggle('on', b.dataset.sel === sel);
     });
+    if (opts.push) window.history.pushState({}, '', urlFor(sel, opts.mode));
     var kind = sel.split(':')[0];
     var name = sel.slice(kind.length + 1);
-    if (kind === 'routine') showRoutine(name); else showFragment(name);
+    if (kind === 'routine') showRoutine(name); else showFragment(name, opts.mode);
   }
   page.querySelectorAll('[data-sel]').forEach(function (b) {
-    b.addEventListener('click', function () { select(b.dataset.sel); });
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
+      select(b.dataset.sel, { push: true });
+    });
   });
+  window.addEventListener('popstate', function () {
+    var p = currentParams();
+    if (p.sel) select(p.sel, { mode: p.mode });
+  });
+  // Deep link: /routines?sel=prompt:<name>[&mode=<mode>] selects on load.
+  var boot = currentParams();
+  if (boot.sel) select(boot.sel, { mode: boot.mode });
 
   window.ForgePrompts = { select: select };
 })();

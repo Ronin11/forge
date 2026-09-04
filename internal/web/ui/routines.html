@@ -5,17 +5,17 @@
 <div class="pr-tree card">
 <div class="pr-folder">personas/</div>
 <ul>
-{{range .Data.Personas}}<li><button class="pr-item" data-sel="prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</button></li>
+{{range .Data.Personas}}<li><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-human"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add personas/&lt;name&gt;.md</li>{{end}}
 </ul>
 <div class="pr-folder">fragments/</div>
 <ul>
-{{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><button class="pr-item" data-sel="prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</button></li>
+{{$folder := ""}}{{range .Data.Fragments}}{{if ne .Folder $folder}}{{$folder = .Folder}}<li class="pr-subfolder">{{.Folder}}/</li>{{end}}<li{{if .Folder}} class="pr-nested"{{end}}><a class="pr-item" data-sel="prompt:{{.Name}}" href="/routines?sel=prompt:{{.Name}}"><svg class="i"><use href="#i-knowledge"/></svg> {{.Label}}</a></li>
 {{else}}<li class="empty pr-empty">none yet — add fragments/&lt;name&gt;.md</li>{{end}}
 </ul>
 <div class="pr-folder">routines/</div>
 <ul>
-{{range .Data.Routines}}<li><button class="pr-item" data-sel="routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</button></li>
+{{range .Data.Routines}}<li><a class="pr-item" data-sel="routine:{{.Name}}" href="/routines?sel=routine:{{.Name}}"><svg class="i"><use href="#i-routines"/></svg> {{.Name}}{{if .Persona}} <span class="chip">{{.Persona}}</span>{{end}}</a></li>
 {{else}}<li class="empty pr-empty">No routines — the New routine button above, or <code>forge routine add</code></li>{{end}}
 </ul>
 </div>

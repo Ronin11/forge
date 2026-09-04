@@ -117,3 +117,34 @@ test.describe('prompt editing and testing', () => {
     await expect(picker.locator('option', { hasText: 'sonnet (default)' })).toHaveCount(1);
   });
 });
+
+test.describe('deep links', () => {
+  test('?sel selects on load, with the composer mode from the URL', async ({ page }) => {
+    await page.goto('/routines?sel=prompt:senior-reviewer&mode=review');
+    const detail = page.locator('[data-prompt-detail]');
+    await expect(detail).toContainText('senior-reviewer');
+    await expect(page.locator('[data-sel="prompt:senior-reviewer"]')).toHaveClass(/on/);
+    await expect(detail.locator('select').first()).toHaveValue('review');
+    await expect(detail.locator('pre').nth(1)).toContainText('Rank findings by severity');
+  });
+
+  test('tree clicks push the selection into the URL; back returns', async ({ page }) => {
+    await page.goto('/routines');
+    await page.locator('[data-sel="prompt:triager"]').click();
+    await expect(page).toHaveURL(/sel=prompt%3Atriager/);
+    await page.locator('[data-sel="prompt:escalation"]').click();
+    await expect(page).toHaveURL(/sel=prompt%3Aescalation/);
+    await page.goBack();
+    await expect(page.locator('[data-prompt-detail]')).toContainText('triager');
+    // Tree items are real links: the href is shareable.
+    await expect(page.locator('[data-sel="prompt:triager"]')).toHaveAttribute('href', '/routines?sel=prompt:triager');
+  });
+
+  test('the composition manifest links between prompts', async ({ page }) => {
+    await page.goto('/routines?sel=prompt:senior-reviewer');
+    const detail = page.locator('[data-prompt-detail]');
+    await detail.locator('a[data-nav="prompt:engineering-standards"]').first().click();
+    await expect(detail).toContainText('engineering-standards');
+    await expect(page).toHaveURL(/sel=prompt%3Aengineering-standards/);
+  });
+});

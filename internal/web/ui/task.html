@@ -1,6 +1,6 @@
 {{template "head" .}}
 <h1>Task {{short .Data.Work.ID}} {{template "stateChip" .Data.State}}</h1>
-<p class="meta">{{.Data.Work.Title}} · routine <b>{{.Data.Work.RoutineName}}@{{.Data.Work.Generation}}</b> · {{.Data.Work.Trigger}} · class {{.Data.Work.BudgetClass}} · priority {{.Data.Work.Priority}} · autonomy {{.Data.Work.Autonomy}} · created {{ago .Data.Work.CreatedAt}}</p>
+<p class="meta">{{.Data.Work.Title}} · routine <b>{{.Data.Work.RoutineName}}@{{.Data.Work.Generation}}</b>{{if .Data.Work.Persona}} · persona <a href="/routines?sel=prompt:{{.Data.Work.Persona}}">{{.Data.Work.Persona}}</a>{{end}} · {{.Data.Work.Trigger}} · class {{.Data.Work.BudgetClass}} · priority {{.Data.Work.Priority}} · autonomy {{.Data.Work.Autonomy}} · created {{ago .Data.Work.CreatedAt}}</p>
 {{with .Data.Lineage}}{{if .MultiNode}}
 <nav class="prov card" aria-label="Provenance">
 <div class="prov-crumb">{{range .Ancestors}}<a href="/tasks/{{.ID}}">{{short .ID}}</a> {{template "stateChip" .State}} <span class="prov-t">{{.Title}}</span> <span class="prov-sep">›</span> {{end}}<b>{{short $.Data.Work.ID}}</b></div>
