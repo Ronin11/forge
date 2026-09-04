@@ -207,3 +207,21 @@ test.describe('workflow run view', () => {
     await expect(page.locator('table.list tbody tr').first()).toContainText('running');
   });
 });
+
+test.describe('workflow metadata', () => {
+  test('description and tool flag edit and persist through the settings panel', async ({ page }) => {
+    await page.goto('/workflows/graphy/edit');
+    await expect(page.locator('.gv-node')).toHaveCount(5);
+    const panel = page.locator('[data-gv-panel]');
+    await panel.locator('input[placeholder="what this workflow does"]').fill('routes by lint outcome');
+    await panel.locator('label.check', { hasText: 'Callable as a tool' }).locator('input').check();
+    await page.locator('[data-gv-save]').click();
+    await page.waitForURL('**/workflows');
+    const saved = await api('GET', '/api/v1/workflows/graphy');
+    expect(saved.description).toBe('routes by lint outcome');
+    expect(saved.tool).toBe(true);
+    // The list shows both.
+    await expect(page.locator('td', { hasText: 'graphy' }).first()).toContainText('routes by lint outcome');
+    await expect(page.locator('td', { hasText: 'graphy' }).first().locator('.chip', { hasText: 'tool' })).toBeVisible();
+  });
+});

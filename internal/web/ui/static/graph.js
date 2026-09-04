@@ -694,6 +694,8 @@
         nameInput.pattern = '[a-z0-9][a-z0-9-]{0,39}';
         nameInput.placeholder = 'my-workflow';
       }
+      var desc = field('Description (one line, for search and the library tool)', textInput(pendingDescription, function (v) { pendingDescription = v.trim(); }));
+      desc.placeholder = 'what this workflow does';
       var sched = field('Schedule (cron, blank = none)', textInput(pendingSchedule, function (v) { pendingSchedule = v.trim(); }));
       sched.placeholder = '0 3 * * *';
       var check = document.createElement('label');
@@ -705,6 +707,15 @@
       check.appendChild(box);
       check.appendChild(document.createTextNode(' Schedule enabled'));
       panel.appendChild(check);
+      var toolCheck = document.createElement('label');
+      toolCheck.className = 'check';
+      var toolBox = document.createElement('input');
+      toolBox.type = 'checkbox';
+      toolBox.checked = pendingTool;
+      toolBox.addEventListener('change', function () { pendingTool = toolBox.checked; });
+      toolCheck.appendChild(toolBox);
+      toolCheck.appendChild(document.createTextNode(' Callable as a tool (agents may fire runs via forge_workflow_run)'));
+      panel.appendChild(toolCheck);
       var hint = document.createElement('p');
       hint.className = 'hint';
       hint.textContent = 'Click a node or edge to configure it. Drag from a colored port to connect: green = on success, red = on failure, purple = a switch case.';
@@ -999,10 +1010,11 @@
     // ---- save ----
 
     var pendingName = '', pendingSchedule = '', pendingScheduleEnabled = false;
+    var pendingDescription = '', pendingTool = false;
     var savedSnapshot = '';
     function dirty() {
       return snapshot() !== savedSnapshot ||
-        (current ? (pendingSchedule !== (current.schedule || '') || pendingScheduleEnabled !== !!current.schedule_enabled) : graph.nodes.length > 0);
+        (current ? (pendingSchedule !== (current.schedule || '') || pendingScheduleEnabled !== !!current.schedule_enabled || pendingDescription !== (current.description || '') || pendingTool !== !!current.tool) : graph.nodes.length > 0);
     }
     window.addEventListener('beforeunload', function (e) {
       if (dirty()) { e.preventDefault(); e.returnValue = ''; }
@@ -1017,6 +1029,8 @@
       if (!body.name) { pageError(new Error('the workflow needs a name')); return; }
       body.schedule = pendingSchedule;
       body.schedule_enabled = pendingScheduleEnabled;
+      body.description = pendingDescription;
+      body.tool = pendingTool;
       body.graph = graph;
       delete body.steps;
       var url = '/api/v1/workflows', method = 'POST';
@@ -1065,6 +1079,8 @@
         graph = wf.graph || { nodes: [], edges: [] };
         graph.edges = graph.edges || [];
         pendingSchedule = wf.schedule || '';
+        pendingDescription = wf.description || '';
+        pendingTool = !!wf.tool;
         pendingScheduleEnabled = !!wf.schedule_enabled;
         loaded();
       }).catch(pageError);

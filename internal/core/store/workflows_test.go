@@ -174,3 +174,28 @@ func TestWorkflowArchiveAndDue(t *testing.T) {
 		t.Fatalf("second archive = %v", err)
 	}
 }
+
+// Description and Tool round-trip through create/update/scan and ride the
+// generation snapshot.
+func TestWorkflowMetadataRoundTrip(t *testing.T) {
+	s := openTest(t)
+	bg := context.Background()
+	w := &Workflow{Name: "meta", Description: "does a thing", Tool: true, Graph: &WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "only", Type: NodeDirective, Config: map[string]any{"directive": "triage-repo"}}},
+	}}
+	if err := s.Write(bg, func(tx *Tx) error { return tx.CreateWorkflow(bg, w) }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetWorkflow(bg, "meta")
+	if err != nil || got.Description != "does a thing" || !got.Tool {
+		t.Fatalf("round trip = %+v, %v", got, err)
+	}
+	got.Description, got.Tool = "does it better", false
+	if err := s.Write(bg, func(tx *Tx) error { return tx.UpdateWorkflow(bg, got, 1) }); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.GetWorkflow(bg, "meta")
+	if err != nil || again.Description != "does it better" || again.Tool || again.Generation != 2 {
+		t.Fatalf("after update = %+v, %v", again, err)
+	}
+}

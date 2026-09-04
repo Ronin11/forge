@@ -15,8 +15,12 @@ import (
 // run Works through the queue; script, switch, and join nodes are evaluated
 // by the run engine.
 type Workflow struct {
-	ID              string         `json:"id"`
-	Name            string         `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Description is one line for search and the library tool; Tool marks the
+	// workflow agent-callable via forge_workflow_run.
+	Description     string         `json:"description,omitempty"`
+	Tool            bool           `json:"tool,omitempty"`
 	Graph           *WorkflowGraph `json:"graph,omitempty"`
 	Schedule        string         `json:"schedule,omitempty"`
 	ScheduleEnabled bool           `json:"schedule_enabled"`
@@ -60,8 +64,8 @@ func (tx *Tx) CreateWorkflow(ctx context.Context, w *Workflow) error {
 		return fmt.Errorf("encode graph of %s: %w", w.Name, err)
 	}
 	// NULL for old readers and generation snapshots.
-	_, err = tx.Exec(ctx, `INSERT INTO workflows (id, name, graph, schedule, schedule_enabled, generation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Name, string(graph), nullString(w.Schedule), boolInt(w.ScheduleEnabled), w.Generation, formatTime(w.CreatedAt), formatTime(w.UpdatedAt))
+	_, err = tx.Exec(ctx, `INSERT INTO workflows (id, name, graph, schedule, schedule_enabled, generation, created_at, updated_at, description, tool) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Name, string(graph), nullString(w.Schedule), boolInt(w.ScheduleEnabled), w.Generation, formatTime(w.CreatedAt), formatTime(w.UpdatedAt), w.Description, boolInt(w.Tool))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("workflow %s already exists: %w", w.Name, ErrConflict)
@@ -104,8 +108,8 @@ func (tx *Tx) updateWorkflow(ctx context.Context, w *Workflow, expectedGeneratio
 	if err != nil {
 		return fmt.Errorf("encode graph of %s: %w", w.Name, err)
 	}
-	_, err = tx.Exec(ctx, `UPDATE workflows SET graph=?, schedule=?, schedule_enabled=?, generation=?, updated_at=? WHERE name=?`,
-		string(graph), nullString(w.Schedule), boolInt(w.ScheduleEnabled), w.Generation, formatTime(w.UpdatedAt), w.Name)
+	_, err = tx.Exec(ctx, `UPDATE workflows SET graph=?, schedule=?, schedule_enabled=?, generation=?, updated_at=?, description=?, tool=? WHERE name=?`,
+		string(graph), nullString(w.Schedule), boolInt(w.ScheduleEnabled), w.Generation, formatTime(w.UpdatedAt), w.Description, boolInt(w.Tool), w.Name)
 	if err != nil {
 		return fmt.Errorf("update workflow %s: %w", w.Name, err)
 	}
@@ -180,7 +184,7 @@ func (tx *Tx) SetWorkflowNextDue(ctx context.Context, name string, next time.Tim
 	return nil
 }
 
-const workflowColumns = `id, name, graph, schedule, schedule_enabled, generation, next_due_at, archived_at, created_at, updated_at`
+const workflowColumns = `id, name, graph, schedule, schedule_enabled, generation, next_due_at, archived_at, created_at, updated_at, description, tool`
 
 // GetWorkflow reads one workflow by name.
 func (s *Store) GetWorkflow(ctx context.Context, name string) (*Workflow, error) {
@@ -236,10 +240,11 @@ func scanWorkflows(iter func(func(*sql.Rows) error) error) ([]Workflow, error) {
 	err := iter(func(rows *sql.Rows) error {
 		var w Workflow
 		var graph, schedule, nextDue, archived, created, updated sql.NullString
-		var enabled int
-		if err := rows.Scan(&w.ID, &w.Name, &graph, &schedule, &enabled, &w.Generation, &nextDue, &archived, &created, &updated); err != nil {
+		var enabled, tool int
+		if err := rows.Scan(&w.ID, &w.Name, &graph, &schedule, &enabled, &w.Generation, &nextDue, &archived, &created, &updated, &w.Description, &tool); err != nil {
 			return fmt.Errorf("scan workflow: %w", err)
 		}
+		w.Tool = tool == 1
 		if !graph.Valid || graph.String == "" {
 			return fmt.Errorf("workflow %s has no graph", w.Name)
 		}

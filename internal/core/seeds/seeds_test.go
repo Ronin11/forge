@@ -83,3 +83,34 @@ func TestImport(t *testing.T) {
 		t.Errorf("missing dir = %v, %v", none, err)
 	}
 }
+
+// Seed workflows carry description/tool metadata onto the row.
+func TestImportWorkflowMetadata(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(home, "forge.sqlite3"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	lib := filepath.Join(home, "directives")
+	path := filepath.Join(lib, "seeds", "workflows", "meta.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"name": "meta-flow", "description": "seeded and callable", "tool": true, "graph": {"nodes": [{"id": "only", "type": "directive", "config": {"directive": "triage-repo"}, "position": {"x": 0, "y": 0}}], "edges": []}}`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx, st, lib, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := st.GetWorkflow(ctx, "meta-flow")
+	if err != nil || wf.Description != "seeded and callable" || !wf.Tool {
+		t.Fatalf("seeded workflow = %+v, %v", wf, err)
+	}
+}
