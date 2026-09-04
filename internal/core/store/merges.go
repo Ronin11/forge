@@ -57,6 +57,17 @@ func (tx *Tx) BeginMerge(ctx context.Context, targetID, repository, branch strin
 	return &row, nil
 }
 
+// ResetMergeAttempts grants a fresh rebase budget after a human resolved a
+// conflict (DESIGN.md §4.1). Without it, a target whose attempts were
+// exhausted bounces from requeue straight back to conflict — the counter
+// outlives the condition the human just fixed.
+func (tx *Tx) ResetMergeAttempts(ctx context.Context, targetID string) error {
+	if _, err := tx.Exec(ctx, `UPDATE merges SET rebase_attempts = 0 WHERE target_id = ?`, targetID); err != nil {
+		return fmt.Errorf("reset merge attempts for %s: %w", targetID, err)
+	}
+	return tx.Journal(ctx, "merge.attempts_reset", EntityTarget, targetID, nil)
+}
+
 // FinishMerge records the outcome. A merged outcome carries the pushed
 // before/after SHAs and journals merge.pushed — the constitution-10 audit row.
 func (tx *Tx) FinishMerge(ctx context.Context, id, outcome, before, after string, detail map[string]any) error {

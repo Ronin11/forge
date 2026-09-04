@@ -110,3 +110,29 @@ func TestUpdateIntegrationFactsOnce(t *testing.T) {
 		t.Fatalf("missing row must be ErrNotFound, got %v", err)
 	}
 }
+
+func TestResetMergeAttempts(t *testing.T) {
+	f := newFixture(t)
+	_, target, _ := integratePastVerify(f)
+	var m *Merge
+	for range 3 {
+		f.write(func(tx *Tx) error {
+			var err error
+			m, err = tx.BeginMerge(ctx(), target.ID, "equitizr", "main")
+			return err
+		})
+	}
+	if m.RebaseAttempts != 3 {
+		t.Fatalf("rebase_attempts = %d, want 3", m.RebaseAttempts)
+	}
+	// A human requeue grants a fresh budget: the next BeginMerge counts from 1.
+	f.write(func(tx *Tx) error { return tx.ResetMergeAttempts(ctx(), target.ID) })
+	f.write(func(tx *Tx) error {
+		var err error
+		m, err = tx.BeginMerge(ctx(), target.ID, "equitizr", "main")
+		return err
+	})
+	if m.RebaseAttempts != 1 {
+		t.Fatalf("rebase_attempts after reset = %d, want 1", m.RebaseAttempts)
+	}
+}
