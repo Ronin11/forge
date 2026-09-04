@@ -26,6 +26,7 @@ import (
 	"forge/internal/core/integrator"
 	"forge/internal/core/kb"
 	"forge/internal/core/logging"
+	"forge/internal/core/migratedirectives"
 	"forge/internal/core/model"
 	"forge/internal/core/modes"
 	"forge/internal/core/modes/all"
@@ -233,8 +234,19 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			}
 		}
 	}()
-	// The prompts library: file-backed personas/fragments, loaded now and
-	// reloaded on a timer; a broken tree keeps the last good load.
+	// The directives restructure: rename the library dir, split content
+	// routines into directive files, convert workflow graphs — state-derived
+	// predicates make this a no-op on every boot after the first. It runs
+	// before the library load and before any loop starts, so nothing fires
+	// against a half-split routine.
+	if rep, err := migratedirectives.Run(ctx, st, home, d.cfg.Prompts.Path, false, d.log); err != nil {
+		d.log.ErrorContext(ctx, "directives migration", "error", err)
+	} else if !rep.Empty() {
+		d.log.InfoContext(ctx, "directives migration", "dir_renamed", rep.DirRenamed,
+			"routines_split", len(rep.RoutinesSplit), "graphs_converted", len(rep.GraphsConverted), "skipped", rep.Skipped)
+	}
+	// The prompts library: file-backed personas/fragments/directives, loaded
+	// now and reloaded on a timer; a broken tree keeps the last good load.
 	promptsLib := &atomic.Pointer[prompts.Library]{}
 	if err := prompts.Ensure(d.cfg.Prompts.Path); err != nil {
 		d.log.WarnContext(ctx, "ensure prompts dir", "path", d.cfg.Prompts.Path, "error", err)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/core/migratedirectives"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -325,4 +326,45 @@ func TestWorkflowDirectiveNodeValidation(t *testing.T) {
 		}
 	}
 	h.call(http.MethodPost, "/api/v1/workflows", node(map[string]any{"directive": "real"}), nil, http.StatusCreated)
+}
+
+// THE migration invariant: a routine's run hashes identically before and
+// after its content splits into a directive, through the real
+// migratedirectives.Run against the harness store and library.
+func TestMigrationPreservesPromptHash(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	lib := h.withPrompts(map[string]string{
+		"personas/reviewer.md":   "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun teaching.",
+		"fragments/standards.md": "Be honest.",
+	})
+
+	rt := store.Routine{Name: "mig", Mode: "run", Prompt: "Task {{repo}}: {{objective}}\nBe thorough.", Persona: "reviewer",
+		Repositories: []string{"equitizr"}, TimeoutSeconds: 900, MaxTurns: 5, BudgetClass: "backlog"}
+	h.call(http.MethodPost, "/api/v1/routines", rt, nil, http.StatusCreated)
+
+	var before workCreated
+	h.call(http.MethodPost, "/api/v1/routines/mig/run", map[string]string{"objective": "the gauges"}, &before, http.StatusCreated)
+
+	rep, err := migratedirectives.Run(context.Background(), h.st, t.TempDir(), lib.Dir, false, h.srv.log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.RoutinesSplit) != 1 || rep.RoutinesSplit[0] != "mig" {
+		t.Fatalf("report = %+v", rep)
+	}
+	if err := h.srv.promptsReload(); err != nil {
+		t.Fatal(err)
+	}
+
+	var after workCreated
+	h.call(http.MethodPost, "/api/v1/routines/mig/run", map[string]string{"objective": "the gauges"}, &after, http.StatusCreated)
+	if before.Work.PromptHash != after.Work.PromptHash {
+		t.Fatalf("prompt hash changed across the split: %s → %s", before.Work.PromptHash, after.Work.PromptHash)
+	}
+	// The operational envelope survived on the row.
+	migrated, err := h.st.GetRoutine(context.Background(), "mig")
+	if err != nil || migrated.Target != "directive:mig" || migrated.TimeoutSeconds != 900 || migrated.MaxTurns != 5 {
+		t.Errorf("migrated row = %+v, %v", migrated, err)
+	}
 }
