@@ -145,6 +145,14 @@ func Run(ctx context.Context, st *store.Store, home, libDir string, dryRun bool,
 
 	// Step 3: convert workflow routine nodes whose routine now targets a
 	// directive. Frozen run graphs (workflow_runs.graph) are never rewritten.
+	// A dry run's rows are still unsplit; the would-split set stands in so
+	// the report matches what a wet run will do.
+	willSplit := map[string]bool{}
+	if dryRun {
+		for _, name := range rep.RoutinesSplit {
+			willSplit[name] = true
+		}
+	}
 	byName := map[string]*store.Routine{}
 	if fresh, err := st.ListRoutines(ctx, false); err == nil {
 		for i := range fresh {
@@ -159,7 +167,7 @@ func Run(ctx context.Context, st *store.Store, home, libDir string, dryRun bool,
 		if wf.Graph == nil {
 			continue
 		}
-		converted, ok := convertGraph(wf.Graph, byName, dryRun, &rep)
+		converted, ok := convertGraph(wf.Graph, byName, willSplit, &rep)
 		if !ok {
 			continue
 		}
@@ -217,12 +225,12 @@ func directiveFile(rt *store.Routine) string {
 }
 
 // convertGraph rewrites routine nodes to directive nodes where the routine
-// now targets the same-named directive, baking the routine's operational
-// envelope so behavior is unchanged (the model rides the directive's
-// frontmatter, written by the split). Returns (nil, false) when nothing
-// converts. Dangling or still-legacy routine references are left alone and
-// reported once.
-func convertGraph(g *store.WorkflowGraph, byName map[string]*store.Routine, dryRun bool, rep *Report) (*store.WorkflowGraph, bool) {
+// now targets the same-named directive (or, on a dry run, would after the
+// split), baking the routine's operational envelope so behavior is unchanged
+// (the model rides the directive's frontmatter, written by the split).
+// Returns (nil, false) when nothing converts. Dangling or still-legacy
+// routine references are left alone and reported once.
+func convertGraph(g *store.WorkflowGraph, byName map[string]*store.Routine, willSplit map[string]bool, rep *Report) (*store.WorkflowGraph, bool) {
 	next := *g
 	next.Nodes = append([]store.WorkflowNode(nil), g.Nodes...)
 	changed := false
@@ -240,11 +248,11 @@ func convertGraph(g *store.WorkflowGraph, byName map[string]*store.Routine, dryR
 			continue
 		}
 		kind, dname, err := store.ParseTarget(rt.Target)
-		if err != nil || kind != store.TargetDirective || dname != rt.Name {
+		if (err != nil || kind != store.TargetDirective || dname != rt.Name) && !willSplit[rt.Name] {
 			rep.Skipped["node:"+cfg.Routine] = "routine is not a same-named directive target"
 			continue
 		}
-		config := map[string]any{"directive": dname}
+		config := map[string]any{"directive": rt.Name}
 		if len(cfg.Repositories) > 0 {
 			config["repositories"] = cfg.Repositories
 		}
