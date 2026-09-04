@@ -31,7 +31,16 @@ func (h *harness) withPrompts(files map[string]string) *prompts.Library {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.srv.prompts = func() *prompts.Library { return lib }
+	current := lib
+	h.srv.prompts = func() *prompts.Library { return current }
+	h.srv.promptsReload = func() error {
+		next, err := prompts.Load(dir)
+		if err != nil {
+			return err
+		}
+		current = next
+		return nil
+	}
 	return lib
 }
 
@@ -184,5 +193,96 @@ func TestRoutinePreview(t *testing.T) {
 	works, err := h.st.OpenWork(context.Background())
 	if err != nil || len(works) != 0 {
 		t.Errorf("preview created work: %v, %v", works, err)
+	}
+}
+
+// PUT edits an existing file: a good edit persists, hot-reloads, and serves
+// the new composition; an edit that breaks the library is reverted and 400s
+// with the loader's reason. The raw file — frontmatter and mode sections
+// included — is what round-trips.
+func TestPromptFragmentEdit(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	lib := h.withPrompts(map[string]string{
+		"personas/reviewer.md":   "---\nmodel: haiku\n---\nOld identity.\n{{> standards}}\n\n## mode: review\nOld teaching.",
+		"fragments/standards.md": "Old standards.",
+	})
+
+	// The GET serves the raw file for the editor.
+	var detail struct {
+		Raw  string `json:"raw"`
+		Body string `json:"body"`
+	}
+	h.call(http.MethodGet, "/api/v1/personas", nil, nil, http.StatusOK)
+	h.call(http.MethodGet, "/api/v1/prompts/personas-check", nil, nil, http.StatusBadRequest)
+	h.call(http.MethodGet, "/api/v1/prompts/reviewer", nil, &detail, http.StatusOK)
+	if !strings.Contains(detail.Raw, "model: haiku") || !strings.Contains(detail.Raw, "## mode: review") {
+		t.Fatalf("raw is not the whole file: %q", detail.Raw)
+	}
+	if strings.Contains(detail.Body, "## mode:") {
+		t.Fatalf("body should be the stripped core: %q", detail.Body)
+	}
+
+	// A good edit lands, commits nothing here (no git in the temp tree — best
+	// effort), and composes immediately via the reload seam.
+	newContent := "---\nmodel: haiku\n---\nNew identity.\n{{> standards}}\n\n## mode: review\nNew teaching."
+	var after struct {
+		Raw string `json:"raw"`
+	}
+	h.call(http.MethodPut, "/api/v1/prompts/reviewer", map[string]string{"content": newContent}, &after, http.StatusOK)
+	if !strings.Contains(after.Raw, "New identity.") {
+		t.Fatalf("edit not served back: %q", after.Raw)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(lib.Dir, "personas", "reviewer.md"))
+	if err != nil || string(onDisk) != newContent {
+		t.Fatalf("edit not on disk: %q, %v", onDisk, err)
+	}
+	var resolved struct {
+		Resolved string `json:"resolved"`
+	}
+	h.call(http.MethodGet, "/api/v1/prompts/reviewer?resolved=1&mode=review", nil, &resolved, http.StatusOK)
+	if !strings.Contains(resolved.Resolved, "New teaching.") {
+		t.Fatalf("reload did not take: %q", resolved.Resolved)
+	}
+
+	// A breaking edit (unknown include) is refused and the file reverted.
+	status, body := h.do(http.MethodPut, "/api/v1/prompts/standards", map[string]string{"content": "{{> ghost}}"}, nil, "")
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "not found") {
+		t.Fatalf("breaking edit = %d %s", status, body)
+	}
+	onDisk, err = os.ReadFile(filepath.Join(lib.Dir, "fragments", "standards.md"))
+	if err != nil || string(onDisk) != "Old standards." {
+		t.Fatalf("breaking edit not reverted: %q, %v", onDisk, err)
+	}
+
+	// Only existing files: no create-by-PUT.
+	if status, _ := h.do(http.MethodPut, "/api/v1/prompts/brand-new", map[string]string{"content": "x"}, nil, ""); status != http.StatusBadRequest {
+		t.Fatalf("create by PUT = %d", status)
+	}
+}
+
+// ?test=1 runs a persona through the full assembly with a synthetic routine.
+func TestPersonaTestPreview(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.withPrompts(map[string]string{
+		"personas/reviewer.md": "---\nmodel: haiku\n---\nYou are the reviewer.\n\n## mode: run\nRun teaching.",
+	})
+	var out struct {
+		Test *struct {
+			Prompt string `json:"prompt"`
+			Model  string `json:"model"`
+		} `json:"test"`
+	}
+	h.call(http.MethodGet, "/api/v1/prompts/reviewer?test=1&mode=run&task=Fix+{{repo}}:+{{objective}}&objective=the+gauges&repo=equitizr", nil, &out, http.StatusOK)
+	if out.Test == nil {
+		t.Fatal("no test preview")
+	}
+	for _, want := range []string{"You are the reviewer.", "Run teaching.", "Fix equitizr: the gauges", "YOUR TASK"} {
+		if !strings.Contains(out.Test.Prompt, want) {
+			t.Errorf("test preview missing %q", want)
+		}
+	}
+	if out.Test.Model != "haiku" {
+		t.Errorf("model = %q", out.Test.Model)
 	}
 }

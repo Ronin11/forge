@@ -64,3 +64,51 @@ test.describe('prompts page', () => {
     await expect(dialog.locator('[name=persona]')).toHaveValue('senior-reviewer');
   });
 });
+
+test.describe('prompt editing and testing', () => {
+  test('a fragment edits in place: save validates, commits, and recomposes', async ({ page }) => {
+    await page.goto('/routines');
+    await page.locator('[data-sel="prompt:engineering-standards"]').click();
+    const detail = page.locator('[data-prompt-detail]');
+    await expect(detail.locator('pre').first()).toContainText('Be honest, not flattering.');
+    await detail.locator('button', { hasText: 'Edit' }).first().click();
+    const ta = detail.locator('textarea.pr-source');
+    const original = await ta.inputValue();
+    await ta.fill(original + '\nUI EDIT MARKER.');
+    await detail.locator('button', { hasText: 'Save' }).click();
+    await expect(detail.locator('pre').first()).toContainText('UI EDIT MARKER.');
+    // The edit composes immediately: a persona including this fragment shows it.
+    await page.locator('[data-sel="prompt:senior-reviewer"]').click();
+    await expect(detail.locator('pre').nth(1)).toContainText('UI EDIT MARKER.');
+  });
+
+  test('a breaking edit is refused and the file stays intact', async ({ page }) => {
+    await page.goto('/routines');
+    await page.locator('[data-sel="prompt:escalation"]').click();
+    const detail = page.locator('[data-prompt-detail]');
+    await detail.locator('button', { hasText: 'Edit' }).first().click();
+    await detail.locator('textarea.pr-source').fill('{{> does-not-exist}}');
+    await detail.locator('button', { hasText: 'Save' }).click();
+    await expect(page.locator('#editor-error')).toBeVisible();
+    await expect(page.locator('#editor-error')).toContainText('not found');
+    // Re-selecting shows the untouched file.
+    await page.locator('[data-sel="prompt:engineering-standards"]').click();
+    await page.locator('[data-sel="prompt:escalation"]').click();
+    await expect(detail.locator('pre').first()).toContainText('When to decide and when to ask');
+  });
+
+  test('the persona tester renders the full assembly with task and objective', async ({ page }) => {
+    await page.goto('/routines');
+    await page.locator('[data-sel="prompt:qa-engineer"]').click();
+    const detail = page.locator('[data-prompt-detail]');
+    const tester = detail.locator('.pr-test');
+    await tester.locator('textarea').fill('Break {{repo}} on purpose: {{objective}}');
+    await tester.locator('input[placeholder^="objective"]').fill('the checkout flow');
+    await tester.locator('input[placeholder^="repository"]').fill('demo');
+    await tester.locator('button', { hasText: 'Preview' }).click();
+    const preview = detail.locator('pre').last();
+    await expect(preview).toContainText('professionally distrustful');
+    await expect(preview).toContainText('Break demo on purpose: the checkout flow');
+    await expect(preview).toContainText('YOUR TASK');
+  });
+});

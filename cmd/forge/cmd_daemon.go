@@ -244,7 +244,15 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		promptsLib.Store(lib)
 	}
 	srv, err := web.NewServer(web.ServerOptions{
-		Prompts:      promptsLib.Load,
+		Prompts: promptsLib.Load,
+		PromptsReload: func() error {
+			lib, err := prompts.Load(d.cfg.Prompts.Path)
+			if err != nil {
+				return err
+			}
+			promptsLib.Store(lib)
+			return nil
+		},
 		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
 		RegisterRepo: d.registerRepoOnTheFly,
 		AddRepo:      d.addRepo,

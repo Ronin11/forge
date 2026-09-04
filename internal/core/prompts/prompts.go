@@ -389,6 +389,18 @@ func Ensure(dir string) error {
 	return nil
 }
 
+// CommitEdit commits one edited file — the UI's save path. Best-effort like
+// the bootstrap commit: where git balks (no identity, hooks) the tree just
+// stays dirty, which the next manifest records honestly.
+func CommitEdit(dir, path, message string) {
+	if err := exec.Command("git", "-C", dir, "add", path).Run(); err != nil {
+		return
+	}
+	if err := exec.Command("git", "-C", dir, "-c", "user.name=forge", "-c", "user.email=forge@localhost", "commit", "-q", "-m", message, "--", path).Run(); err != nil {
+		return
+	}
+}
+
 // bootstrapCommit commits the starter library so the tree starts clean and
 // the first run's manifest pins to a commit. Best-effort by design: a host
 // where git balks leaves the library dirty until the user commits, which the

@@ -93,6 +93,7 @@ type Engine struct {
 	// session maps hold per-sender conversation context.
 	modelCall         func(ctx context.Context, system, user, model string) (string, error)
 	prompts           func() *prompts.Library
+	promptsReload     func() error
 	assistantMu       sync.Mutex
 	assistantSessions map[string][]assistantTurn
 	assistantLastSeen map[string]time.Time
@@ -222,6 +223,10 @@ type ServerOptions struct {
 	// Prompts returns the current persona/fragment library (the daemon's
 	// last-good load of the prompts directory); nil disables personas.
 	Prompts func() *prompts.Library
+	// PromptsReload re-loads the library immediately (the page's save path
+	// calls it so an edit composes without waiting for the 30s tick); nil
+	// leaves reloads to the daemon loop.
+	PromptsReload func() error
 	// ModelCall runs one cheap model completion for the concierge (system +
 	// user prompt → text); nil disables the assistant endpoint. It is also the
 	// attention sweep's decider primitive (attention.go).
@@ -319,7 +324,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
-		modelCall: o.ModelCall, prompts: o.Prompts, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
+		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
 		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},
@@ -379,6 +384,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/personas/{name}", s.handle(s.getPersona))
 	m.HandleFunc("GET /api/v1/prompts", s.handle(s.listPersonas))
 	m.HandleFunc("GET /api/v1/prompts/{name...}", s.handle(s.getPromptFragment))
+	m.HandleFunc("PUT /api/v1/prompts/{name...}", s.handle(s.putPromptFragment))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))
 	m.HandleFunc("GET /api/v1/routine-templates", s.handle(s.listRoutineTemplates))
 	m.HandleFunc("POST /api/v1/routines", s.handle(s.createRoutine))

@@ -49,9 +49,13 @@
 
   // ---- fragment / persona detail ----
 
+  function promptURL(name, query) {
+    return '/api/v1/prompts/' + name.split('/').map(encodeURIComponent).join('/') + (query || '');
+  }
+
   function showFragment(name) {
     clearFail();
-    fetchJSON('/api/v1/prompts/' + name.split('/').map(encodeURIComponent).join('/')).then(function (f) {
+    fetchJSON(promptURL(name)).then(function (f) {
       detail.textContent = '';
       var head = el('div', 'pr-head');
       head.appendChild(el('h2', '', f.name));
@@ -61,15 +65,107 @@
       detail.appendChild(head);
       if (f.path) {
         var meta = el('p', 'meta');
-        meta.textContent = 'Edit on disk (git owns authoring): ';
-        var code = el('code', '', f.path);
-        meta.appendChild(code);
+        meta.textContent = 'On disk: ';
+        meta.appendChild(el('code', '', f.path));
+        meta.appendChild(document.createTextNode(' — edits here commit to the library repo.'));
         detail.appendChild(meta);
       }
-      detail.appendChild(label('Source'));
-      detail.appendChild(pre(f.body || '(empty)'));
-      if (f.persona) personaComposer(f);
+      sourceEditor(f);
+      if (f.persona) {
+        personaComposer(f);
+        personaTester(f);
+      }
     }).catch(fail);
+  }
+
+  // sourceEditor: the raw file, with an in-place edit → validate → commit →
+  // hot-reload flow. An edit that would break the library is refused with the
+  // loader's error and the file stays as it was.
+  function sourceEditor(f) {
+    var wrap = el('div');
+    detail.appendChild(wrap);
+    function view() {
+      wrap.textContent = '';
+      var row = el('div', 'pr-head');
+      row.appendChild(label('Source'));
+      row.appendChild(button('Edit', '', edit));
+      wrap.appendChild(row);
+      wrap.appendChild(pre(rawOf(f)));
+    }
+    function edit() {
+      wrap.textContent = '';
+      wrap.appendChild(label('Editing ' + f.name + ' — Save validates the whole library, commits, and reloads'));
+      var ta = document.createElement('textarea');
+      ta.className = 'pr-source';
+      ta.rows = Math.min(24, Math.max(8, rawOf(f).split('\n').length + 2));
+      ta.value = rawOf(f);
+      wrap.appendChild(ta);
+      var row = el('div', 'pr-controls');
+      row.appendChild(button('Save', 'primary', function (e) {
+        var btn = e.currentTarget;
+        btn.disabled = true;
+        fetch(promptURL(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: ta.value }) })
+          .then(function (resp) {
+            if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+            clearFail();
+            showFragment(f.name); // re-render from the fresh library
+          })
+          .catch(function (err) { fail(err); btn.disabled = false; });
+      }));
+      row.appendChild(button('Cancel', '', view));
+      wrap.appendChild(row);
+    }
+    view();
+  }
+
+  // rawOf reconstructs the file text from the API's split view (frontmatter +
+  // core + mode sections) so the editor round-trips what is on disk.
+  function rawOf(f) {
+    if (f.raw !== undefined) return f.raw;
+    return f.body || '';
+  }
+
+  // personaTester: run the persona through the full assembly path — mode,
+  // task text, objective, repository — and see the byte-exact prompt an agent
+  // wearing it would read.
+  function personaTester(f) {
+    detail.appendChild(el('h3', '', 'Test: the prompt an agent wearing this persona would read'));
+    var controls = el('div', 'pr-controls pr-test');
+    var modeInput = document.createElement('input');
+    modeInput.value = (f.modes && f.modes[0]) || 'run';
+    modeInput.placeholder = 'mode';
+    modeInput.className = 'pr-mode';
+    var task = document.createElement('textarea');
+    task.rows = 2;
+    task.placeholder = 'Task text (the routine prompt) — {{objective}} and {{repo}} substitute as usual';
+    var objective = document.createElement('input');
+    objective.placeholder = 'objective (optional)';
+    var repo = document.createElement('input');
+    repo.placeholder = 'repository (optional)';
+    repo.setAttribute('list', 'repo-names');
+    var out = el('div');
+    controls.appendChild(modeInput);
+    controls.appendChild(task);
+    controls.appendChild(objective);
+    controls.appendChild(repo);
+    controls.appendChild(button('Preview', 'primary', function () {
+      var q = '?test=1&mode=' + encodeURIComponent(modeInput.value.trim()) +
+        '&task=' + encodeURIComponent(task.value) +
+        '&objective=' + encodeURIComponent(objective.value.trim()) +
+        '&repo=' + encodeURIComponent(repo.value.trim());
+      fetchJSON(promptURL(f.name, q)).then(function (r) {
+        out.textContent = '';
+        var t = r.test || {};
+        var line = el('p', 'meta');
+        line.textContent = 'model ' + (t.model || '?') + ' · mode ' + t.mode +
+          (t.composition ? ' · composed from ' + (t.composition.fragments || []).map(function (fr) { return fr.name; }).join(', ') : '') +
+          ' · ' + (t.prompt || '').length + ' bytes';
+        out.appendChild(line);
+        out.appendChild(pre(t.prompt || ''));
+      }).catch(fail);
+    }));
+    detail.appendChild(controls);
+    detail.appendChild(out);
   }
 
   // personaComposer: pick a mode, see the exact composed text and manifest.
@@ -86,7 +182,7 @@
     row.appendChild(modeSel);
     var out = el('div');
     function compose() {
-      fetchJSON('/api/v1/prompts/' + encodeURIComponent(f.name) + '?resolved=1&mode=' + encodeURIComponent(modeSel.value)).then(function (r) {
+      fetchJSON(promptURL(f.name, '?resolved=1&mode=' + encodeURIComponent(modeSel.value))).then(function (r) {
         out.textContent = '';
         var manifest = el('p', 'meta');
         manifest.textContent = 'Composed from ' + (r.composition.fragments || []).map(function (fr) { return fr.name; }).join(', ') +

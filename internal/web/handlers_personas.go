@@ -7,8 +7,10 @@ package web
 // what an agent will read.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 
@@ -88,8 +90,10 @@ type personaDetail struct {
 	personaRow
 	Path        string               `json:"path,omitempty"`
 	Body        string               `json:"body,omitempty"`
+	Raw         string               `json:"raw,omitempty"`
 	Resolved    string               `json:"resolved,omitempty"`
 	Composition *prompts.Composition `json:"composition,omitempty"`
+	Test        *routinePreview      `json:"test,omitempty"`
 }
 
 // getPromptFragment is GET /api/v1/prompts/{name...}: any library file —
@@ -106,6 +110,11 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 		return 0, nil, badRequest("%q is not in the prompts library", name)
 	}
 	out := personaDetail{personaRow: personaRow{Name: f.Name, Model: f.Model, Hash: f.Hash, Persona: f.Persona}, Body: f.Body, Path: f.Path}
+	// The raw file, exactly as on disk: the page's editor round-trips this,
+	// never the split view (Body is the frontmatter- and mode-stripped core).
+	if raw, err := os.ReadFile(f.Path); err == nil {
+		out.Raw = string(raw)
+	}
 	for mode := range f.Modes {
 		out.Modes = append(out.Modes, mode)
 	}
@@ -117,7 +126,73 @@ func (s *Server) getPromptFragment(r *http.Request) (int, any, error) {
 		}
 		out.Resolved, out.Composition = text, &comp
 	}
+	// ?test=1 runs a persona through the full assembly path with a synthetic
+	// routine — mode, task text, objective, and repo from the query — so the
+	// page can answer "what would an agent wearing this persona read" without
+	// a routine existing yet.
+	if f.Persona && r.URL.Query().Get("test") == "1" {
+		q := r.URL.Query()
+		mode := q.Get("mode")
+		if mode == "" {
+			mode = "run"
+		}
+		rt := store.Routine{Name: "(persona test)", Mode: mode, Prompt: q.Get("task"), Persona: name}
+		preview, err := s.renderPreview(r.Context(), rt, q.Get("objective"), q.Get("repo"))
+		if err != nil {
+			return 0, nil, err
+		}
+		out.Test = &preview
+	}
 	return http.StatusOK, out, nil
+}
+
+// putPromptFragment is PUT /api/v1/prompts/{name...}: the page's save path
+// for an existing file. The write is validated by reloading the whole tree —
+// an edit that breaks composition (unknown include, cycle, bad frontmatter)
+// is reverted and refused, so the library on disk is never left broken — then
+// committed (best-effort) and hot-reloaded so the page composes the new
+// version immediately. Creating files stays with git and your editor.
+func (s *Server) putPromptFragment(r *http.Request) (int, any, error) {
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	lib := s.promptLibrary()
+	if lib == nil {
+		return 0, nil, badRequest("this process has no prompts library")
+	}
+	name := r.PathValue("name")
+	f := lib.Fragment(name)
+	if f == nil {
+		return 0, nil, badRequest("%q is not in the prompts library; create new files in %s with your editor", name, lib.Dir)
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		return 0, nil, err
+	}
+	old, err := os.ReadFile(f.Path)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := os.WriteFile(f.Path, []byte(body.Content), 0o644); err != nil {
+		return 0, nil, err
+	}
+	if _, err := prompts.Load(lib.Dir); err != nil {
+		if rerr := os.WriteFile(f.Path, old, 0o644); rerr != nil {
+			s.log.ErrorContext(r.Context(), "revert refused prompt edit", "path", f.Path, "error", rerr)
+		}
+		return 0, nil, badRequest("refused — the edit breaks the library: %v", err)
+	}
+	prompts.CommitEdit(lib.Dir, f.Path, "ui: edit "+name)
+	if s.promptsReload != nil {
+		if err := s.promptsReload(); err != nil {
+			s.log.WarnContext(r.Context(), "prompts reload after edit", "error", err)
+		}
+	}
+	s.log.InfoContext(r.Context(), "prompt fragment edited", "fragment", name)
+	// Serve the updated detail from the fresh library.
+	return s.getPromptFragment(r)
 }
 
 // routinePreview is GET /api/v1/routines/{name}/preview: the exact rendered
@@ -140,18 +215,28 @@ func (s *Server) previewRoutine(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	rt := *saved
+	out, err := s.renderPreview(ctx, *saved, r.URL.Query().Get("objective"), r.URL.Query().Get("repo"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, out, nil
+}
+
+// renderPreview runs the real assembly path over a routine (saved or
+// synthetic) without creating any Work: persona composition, {{objective}}
+// injection, mode preamble and overlays, autonomy block, {{repo}}
+// substitution, declared checks.
+func (s *Server) renderPreview(ctx context.Context, rt store.Routine, objective, repo string) (routinePreview, error) {
 	out := routinePreview{Mode: rt.Mode, Persona: rt.Persona}
 	if rt.Persona != "" {
 		comp, err := s.composePersona(&rt)
 		if err != nil {
-			return 0, nil, err
+			return out, err
 		}
 		out.Composition = comp
 	}
-	rt.Prompt = injectObjective(rt.Prompt, r.URL.Query().Get("objective"))
+	rt.Prompt = injectObjective(rt.Prompt, objective)
 	out.Model = rt.Model
-	repo := r.URL.Query().Get("repo")
 	if repo == "" && len(rt.Repositories) > 0 {
 		repo = rt.Repositories[0]
 	}
@@ -190,7 +275,7 @@ func (s *Server) previewRoutine(r *http.Request) (int, any, error) {
 	}
 	_, rendered := assemblePrompt(in)
 	out.Prompt = rendered
-	return http.StatusOK, out, nil
+	return out, nil
 }
 
 func (s *Server) getPersona(r *http.Request) (int, any, error) {

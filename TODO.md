@@ -39,6 +39,19 @@ P0/P1 fixes have since landed.)
   Explore whether the value beats CLAUDE.md (which the executor already reads
   in-worktree, for free) before building anything.
 
+## P2 — investigate: richer nested data on the Prompts page
+
+- [ ] The library tree flattens structure the data actually has: fragment
+  folders render one level deep (`Folder` = full dirname as a single label,
+  no collapsing, no recursion), persona mode sections and frontmatter are
+  split server-side but the page only surfaces them as chips, and the
+  composition manifest is a flat name list with no way to jump from a
+  manifest entry to its fragment. If deep trees (fragments/a/b/c.md), more
+  frontmatter keys, or per-include drill-down show up in practice, the page
+  wants a real recursive tree component and a structured (not chip-flattened)
+  detail model — decide then whether that stays hand-rolled or the tree
+  becomes a shared partial with the workflow editor's palette.
+
 ## Workflow/persona follow-ups (2026-09-04 revamp)
 
 - [ ] Point the standing routines at the starter personas (review →
