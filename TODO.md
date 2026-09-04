@@ -29,6 +29,16 @@ P0/P1 fixes have since landed.)
   publisher label doesn't match the cited SEC EDGAR URL;
   follow-the-money/guess-the-owner never exercise the `scraped` 0.7 tier.
 
+## P2 — explore repo-specific prompts
+
+- [ ] Repo-scoped prompt fragments (a `.forge/prompts/` per repo, or repo
+  sections in personas) could carry per-repo taste the way `.forge/notes`
+  carries per-repo learnings — but composition is per-Work while `{{repo}}`
+  resolves per-target at claim, so repo-conditional prompt text would push
+  composition to claim time and complicate the snapshot/manifest story.
+  Explore whether the value beats CLAUDE.md (which the executor already reads
+  in-worktree, for free) before building anything.
+
 ## Workflow/persona follow-ups (2026-09-04 revamp)
 
 - [ ] Point the standing routines at the starter personas (review →

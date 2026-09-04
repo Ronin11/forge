@@ -632,3 +632,32 @@ func TestRebindMCPToken(t *testing.T) {
 		t.Error("no attempt.mcp_rebound journal row")
 	}
 }
+
+// A repo-scoped kb_new lands the note in the repository's own .forge/notes —
+// versioned with the code it is about — and indexes it immediately like any
+// other note. An unregistered repo is the caller's mistake.
+func TestKbNewRepoScoped(t *testing.T) {
+	f := newFixture(t)
+	repoPath := t.TempDir()
+	f.write(func(tx *store.Tx) error {
+		return tx.Register(ctx(), protocol.RegisterRequest{WorkerID: "fedcba9876543210fedcba9876543210", Name: "second", Version: "test", MaxConcurrent: 1, Executors: []string{"claude-code"},
+			Repositories: []protocol.Repository{{Name: "scoped", Path: repoPath, OriginIdentity: "github.com/x/scoped"}}})
+	})
+	w, tg, a := f.attempt(model.AutonomyAuto, "kbrepo-1")
+	att := toolAttempt(w, tg, a)
+	out := f.mustCall("forge_kb_new", att, `{"title":"With Deps Gotcha","repo":"scoped","body":"symlink races the checks"}`)
+	path := str(t, out["path"])
+	if !strings.HasPrefix(path, filepath.Join(repoPath, ".forge", "notes")) {
+		t.Fatalf("note path = %q, want under the repo's .forge/notes", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("note file: %v", err)
+	}
+	found := f.mustCall("forge_kb_search", att, `{"query":"Gotcha"}`)
+	if notes := arr(t, found["notes"]); len(notes) != 1 || obj(t, notes[0])["id"] != "with-deps-gotcha" {
+		t.Errorf("search = %v", notes)
+	}
+	if _, err := f.call("forge_kb_new", att, `{"title":"X","repo":"ghost"}`); !tools.IsBadInput(err) {
+		t.Errorf("unregistered repo = %v", err)
+	}
+}

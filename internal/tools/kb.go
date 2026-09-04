@@ -6,7 +6,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"forge/internal/core/kb"
 	"forge/internal/core/store"
@@ -83,12 +85,13 @@ type kbNewTool struct{}
 
 func (kbNewTool) Name() string { return "forge_kb_new" }
 func (kbNewTool) Description() string {
-	return "Create a kb note (the only way agents write notes) and index it immediately; returns the new id and path."
+	return "Create a kb note (the only way agents write notes) and index it immediately; returns the new id and path. Pass repo to record a repository-local learning: the note lands in that repo's .forge/notes, versioned with the repo, instead of the global kb."
 }
 func (kbNewTool) Where() string { return WhereDaemon }
 func (kbNewTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
 		"title":{"type":"string"},
+		"repo":{"type":"string","description":"registered repository name; the note lands in <repo>/.forge/notes (versioned with the repo) instead of the global kb"},
 		"type":{"type":"string","enum":["retro","hypothesis","proposal","spec","note"],"description":"default note"},
 		"tags":{"type":"array","items":{"type":"string"}},
 		"body":{"type":"string"},
@@ -103,6 +106,7 @@ func (kbNewTool) InputSchema() json.RawMessage {
 func (kbNewTool) Call(ctx context.Context, req Request) (json.RawMessage, error) {
 	var in struct {
 		Title string   `json:"title"`
+		Repo  string   `json:"repo"`
 		Type  string   `json:"type"`
 		Tags  []string `json:"tags"`
 		Body  string   `json:"body"`
@@ -124,9 +128,33 @@ func (kbNewTool) Call(ctx context.Context, req Request) (json.RawMessage, error)
 			links[lt] = targets
 		}
 	}
+	// A repo-scoped note goes to the repository's own .forge/notes — the
+	// per-repo Forge home the reindex loop already sweeps — so the learning
+	// is versioned with the code it is about and stays searchable either way.
+	dir := req.Deps.KbDir
+	if in.Repo != "" {
+		repos, err := req.Deps.Store.Repositories(ctx)
+		if err != nil {
+			return nil, err
+		}
+		found := ""
+		for _, r := range repos {
+			if r.Name == in.Repo {
+				found = r.Path
+				break
+			}
+		}
+		if found == "" {
+			return nil, BadInput("repo %q is not a registered repository", in.Repo)
+		}
+		dir = filepath.Join(found, ".forge", "notes")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
 	// WriteNew validates type, id grammar, link grammar, and collisions before
 	// touching disk; everything it refuses is the caller's input.
-	n, err := kb.WriteNew(req.Deps.KbDir, kb.New{Title: in.Title, Type: in.Type, Tags: in.Tags, Links: links, Body: in.Body}, req.Deps.Clock().UTC())
+	n, err := kb.WriteNew(dir, kb.New{Title: in.Title, Type: in.Type, Tags: in.Tags, Links: links, Body: in.Body}, req.Deps.Clock().UTC())
 	if err != nil {
 		return nil, BadInput("%v", err)
 	}
@@ -136,7 +164,7 @@ func (kbNewTool) Call(ctx context.Context, req Request) (json.RawMessage, error)
 		if err := tx.IndexKbNote(ctx, n); err != nil {
 			return err
 		}
-		return tx.Journal(ctx, "kb.note_created", "kb", n.ID, map[string]string{"attempt_id": req.AttemptID, "path": n.Path})
+		return tx.Journal(ctx, "kb.note_created", "kb", n.ID, map[string]string{"attempt_id": req.AttemptID, "path": n.Path, "repo": in.Repo})
 	})
 	if err != nil {
 		return nil, err
