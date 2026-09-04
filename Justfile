@@ -151,6 +151,8 @@ build-plugins:
     cd plugins/notify && go build -o forge-notify .
     cd plugins/github-issues && go build -o forge-github-issues .
     cd plugins/signal && go build -o forge-signal .
+    cd plugins/teams && go build -o forge-teams .
+    cd plugins/email && go build -o forge-email .
 
 # M12: golden eval cases through the fake executor (offline, no budget).
 eval-check: build

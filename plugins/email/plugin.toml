@@ -1,0 +1,8 @@
+name = "email"
+version = "0.1.0"
+description = "Bidirectional email bridge (SMTP/IMAP or Microsoft 365 Graph): mails you when a task needs input, a target fails, the budget hard-stops, or a proposal is filed, and turns your replies into question answers and your new mail into tasks. Mailbox credentials are configured out-of-band."
+build = ["go", "build", "-o", "forge-email", "."]
+command = ["./forge-email"]
+capabilities = ["events", "intake"]
+scopes = ["events:read", "work:read", "work:write"]
+restart = "always"

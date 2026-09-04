@@ -222,6 +222,100 @@ and the click panel shows running work, the human queue, queue counts, usage
 meters, and the last failure. `forge plugin uninstall omarchy-indicator`
 reverses the install, including the `shell.json` edit.
 
+## `teams` — Microsoft Teams as the channel
+
+A first-party `events` + `intake` plugin (Go, `plugins/teams/`). Outbound it
+posts one card per new question, target failure, budget hard stop, and proposal
+into a Teams channel through an **incoming webhook** — no app registration, no
+admin consent, just a URL. Inbound (optional) it polls the same channel through
+**Microsoft Graph** and turns messages into work: `/answer <task-id> <text>`
+resolves a waiting question, `/help` lists the commands, and anything else goes
+to the concierge (`POST /api/v1/assistant/message`), which files a task or
+replies. Thread replies to a card count as messages, so answering where the card
+landed works.
+
+Two transports because Teams has two: a webhook can post but not read, and
+app-only Graph can read channel messages but not post as a user. Forge's own
+cards arrive with no `from.user` (they are posted by an application), so the
+bridge can never read its own messages back.
+
+### Config — `<FORGE_PLUGIN_DIR>/teams.toml`
+
+```toml
+[teams]
+webhook_url = "https://prod-00.westus.logic.azure.com:443/workflows/…"
+# format         = "adaptive"   # or "messagecard" for a legacy connector URL
+# command_prefix = "!forge"     # require (and strip) this on inbound messages
+# poll_seconds   = 30
+# questions = true  failures = true  proposals = true  throttling = true
+# intake    = true
+
+[teams.graph]                    # optional; all five needed for intake
+# tenant_id = "…"  client_id = "…"  client_secret_file = "…"
+# team_id   = "…"  channel_id = "19:…@thread.tacv2"
+# allowed_users = ["nate@example.com"]
+```
+
+`webhook_url` is required; without it the plugin idles rather than crash-loops.
+Intake additionally needs the `ChannelMessage.Read.All` application permission
+*and* Microsoft's protected-API approval for the tenant — until that is granted
+the poll gets 403s, which are logged, not fatal, and the outbound half keeps
+working. Inbound progress lives in `<FORGE_PLUGIN_DIR>/state.json`; a fresh
+install starts at "now", so channel history is never replayed as commands.
+
+## `email` — mail as the channel
+
+A first-party `events` + `intake` plugin (Go, `plugins/email/`). Outbound it
+mails one message per new question, target failure, budget hard stop, and
+proposal. Inbound it polls the mailbox: **a reply answers the question it
+replies to**, and any other message goes to the concierge.
+
+The routing mechanism is the subject marker `[forge #<task>]`, which survives a
+mail client's `Re:` — so an answer needs no command and no id to copy, and
+neither side keeps a pending map. Quoted originals and signatures are stripped,
+so only what the human typed becomes the answer; mail that is machine-generated
+(`Auto-Submitted`, `List-Id`, a `Precedence: bulk`, or Forge's own
+`X-Forge-Plugin` header coming back) is ignored, so two mailboxes cannot talk
+each other into a loop. Only `to` — or the addresses in `allowed_senders` — is
+honored.
+
+Two transports, one behaviour: `mode = "smtp"` sends over SMTP and reads over
+IMAP (any provider), `mode = "graph"` does both through Microsoft Graph, which
+is what an Outlook / Microsoft 365 mailbox with basic auth disabled needs. The
+IMAP client is a deliberately small one written for this plugin — LOGIN, SELECT,
+UID SEARCH, UID FETCH, UID STORE, and the `{n}` literal — so no third-party
+dependency enters the tree. Omitting `[email.imap]` leaves the bridge
+outbound-only.
+
+### Config — `<FORGE_PLUGIN_DIR>/email.toml`
+
+```toml
+[email]
+from = "forge@example.com"
+to   = "nate@example.com"
+# mode = "smtp"                # or "graph"
+# allowed_senders = ["nate@example.com", "sam@example.com"]
+# poll_seconds = 60
+# questions = true  failures = true  proposals = true  throttling = true
+# intake    = true
+
+[email.smtp]                    # mode "smtp"
+host = "smtp.example.com"       # port 587 + starttls by default
+# username = "…"  password_file = "~/.forge/secrets/smtp-password"
+
+[email.imap]                    # mode "smtp", optional
+host = "imap.example.com"       # port 993, mailbox INBOX by default
+# username = "…"  password_file = "~/.forge/secrets/imap-password"
+
+[email.graph]                   # mode "graph": Mail.Send + Mail.ReadWrite, app-only
+# tenant_id = "…"  client_id = "…"  client_secret_file = "…"  mailbox = "forge@example.com"
+```
+
+Handled mail is marked read, and the ids handled recently are kept in
+`<FORGE_PLUGIN_DIR>/state.json`, so a restart mid-poll neither repeats a command
+nor loses one. Without `from`, `to` and a usable transport the plugin idles and
+logs what is missing.
+
 ## Example third-party plugin: `plugins/examples/echo-tools/`
 
 A committed reference copy of the throwaway MCP plugin the M7 smoke uses

@@ -1,0 +1,8 @@
+name = "teams"
+version = "0.1.0"
+description = "Bidirectional Microsoft Teams bridge: posts a channel card for new questions, target failures, budget throttling, and proposals via an incoming webhook, and (optionally) turns channel messages into tasks and question answers via Microsoft Graph. The webhook URL and, for intake, an Entra app registration are set up out-of-band."
+build = ["go", "build", "-o", "forge-teams", "."]
+command = ["./forge-teams"]
+capabilities = ["events", "intake"]
+scopes = ["events:read", "work:read", "work:write"]
+restart = "always"

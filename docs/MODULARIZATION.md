@@ -42,9 +42,9 @@ DTO promotion into `protocol`, recorded as the one linter exception.
 
 ### 1.1 One module, one binary, no nested modules
 
-`go.mod` at the repository root is the only `go.mod` in the tree. The four first-party
-plugins under `plugins/` (`status-file`, `notify`, `github-issues`, `signal`) are
-`main` packages **in this same module** — `just build-plugins` builds each with `cd
+`go.mod` at the repository root is the only `go.mod` in the tree. The six first-party
+plugins under `plugins/` (`status-file`, `notify`, `github-issues`, `signal`, `teams`,
+`email`) are `main` packages **in this same module** — `just build-plugins` builds each with `cd
 plugins/X && go build`, and their import paths are `forge/plugins/X`. They import
 nothing from `forge/internal`. `ui/` at the root is the Playwright harness (Node), not
 Go.
