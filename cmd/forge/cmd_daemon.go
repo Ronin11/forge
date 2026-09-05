@@ -931,6 +931,12 @@ func (d *daemonProcess) registerLibraryRepo(ctx context.Context, st *store.Store
 			return fmt.Errorf("add self origin: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
+	// A self-origin push (the integrator landing a curation merge) targets
+	// the checked-out branch; updateInstead lets it update the work tree —
+	// which is exactly what the hot reload wants to see.
+	if out, err := exec.CommandContext(ctx, "git", "-C", libPath, "config", "receive.denyCurrentBranch", "updateInstead").CombinedOutput(); err != nil {
+		return fmt.Errorf("configure self-origin push: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	rep, err := d.registerRepoOnTheFly(ctx, libPath)
 	if err != nil {
 		return err

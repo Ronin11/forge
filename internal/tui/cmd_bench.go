@@ -293,5 +293,12 @@ func initBenchRepo(ctx context.Context, path string) error {
 	if err := git("-c", "user.name=forge", "-c", "user.email=forge@localhost", "commit", "-q", "-m", "bench: declare the integration branch"); err != nil {
 		return err
 	}
-	return git("remote", "add", "origin", path)
+	if err := git("remote", "add", "origin", path); err != nil {
+		return err
+	}
+	// The origin IS this checkout (repos must declare one); the integrator
+	// pushes the integration branch to origin, and git refuses to update a
+	// checked-out branch of a non-bare repo unless told to update the work
+	// tree along with it.
+	return git("config", "receive.denyCurrentBranch", "updateInstead")
 }
