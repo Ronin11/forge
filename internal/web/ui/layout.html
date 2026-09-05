@@ -16,6 +16,7 @@
 <a href="/workflows" {{if eq .Active "workflows.html"}}class="active"{{end}}><svg class="i"><use href="#i-workflows"/></svg> Workflows</a>
 <a href="/repos" {{if or (eq .Active "repos.html") (eq .Active "repo.html")}}class="active"{{end}}><svg class="i"><use href="#i-repos"/></svg> Repos</a>
 <a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}><svg class="i"><use href="#i-stats"/></svg> Stats</a>
+<a href="/learning" {{if eq .Active "learning.html"}}class="active"{{end}}><svg class="i"><use href="#i-hammer"/></svg> Learning</a>
 <a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}><svg class="i"><use href="#i-system"/></svg> Settings</a>
 <button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false"><svg class="i"><use href="#i-hammer"/></svg> Ask Forge</button>
 </div>

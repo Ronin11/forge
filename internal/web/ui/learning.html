@@ -1,0 +1,17 @@
+{{template "head" .}}<h1>Learning</h1>
+<p class="meta">What the self-improvement loop did and what became of it: reflection runs, library commits, experiments, promotions — each with its fate. An edit only counts when it survives verification, the A/B net, and its experiment.</p>
+<p class="meta"><span class="chip">{{.Data.Landed}} landed</span> <span class="chip">{{.Data.Refuted}} refuted by verify</span> <span class="chip">{{.Data.Reverted}} reverted by A/B</span> <span class="chip">{{.Data.ExpOpen}} experiments open</span> <span class="chip">{{.Data.ExpPromoted}} promoted</span> <span class="chip">${{printf "%.2f" .Data.SpendUSD}} learning spend</span></p>
+{{template "searchbar" dict "Mode" "client" "Placeholder" "Filter the feed — text, kind:experiment, status:refuted, directive:plan-project" "Keys" "kind,status,directive"}}
+<div class="tablewrap"><table class="list"><thead><tr><th>When</th><th>Kind</th><th>Status</th><th class="grow">What</th><th>Touched</th><th>Outcome</th><th>Cost</th></tr></thead><tbody>
+{{range .Data.Entries}}<tr data-sf-item data-f-kind="{{.Kind}}" data-f-status="{{.Status}}" data-f-directive="{{range .Directives}}{{.}} {{end}}">
+<td class="nowrap">{{ago .At}}</td>
+<td><span class="chip">{{.Kind}}</span></td>
+<td>{{template "stateChip" .Status}}</td>
+<td class="prompt" title="{{.Detail}}">{{if .Link}}<a href="{{.Link}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{if .Ref}} <code>{{short .Ref}}</code>{{end}}{{if .Detail}}<br><span class="meta">{{trunc .Detail}}</span>{{end}}</td>
+<td>{{range .Directives}}<span class="chip">{{.}}</span> {{end}}</td>
+<td class="meta">{{.Metrics}}</td>
+<td class="nowrap">{{.Cost}}</td>
+</tr>
+{{else}}<tr><td colspan="7" class="empty">Nothing yet — the loop writes this page as it learns: reflect-library runs, experiments, and applied proposals all land here.</td></tr>{{end}}
+</tbody></table></div>
+{{template "foot" .}}
