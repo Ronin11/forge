@@ -270,12 +270,15 @@ const (
 	CauseFollowUp Cause = "follow_up"
 	// CauseTool: an agent spawned this Work through forge_directive_run.
 	CauseTool Cause = "tool"
+	// CausePromotion: a scratch script crossed the promotion threshold and
+	// the daemon queued a curation Work to fold it into the library.
+	CausePromotion Cause = "promotion"
 )
 
 // Valid reports whether c is empty (a root) or one of the known causes.
 func (c Cause) Valid() bool {
 	switch c {
-	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool:
+	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool, CausePromotion:
 		return true
 	}
 	return false

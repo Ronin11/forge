@@ -9,15 +9,15 @@ package web
 // (cause=tool, submitted_by=agent:<attempt>, caused_by=the caller's work).
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"forge/internal/core/directives"
+	"forge/internal/core/engine"
 	"forge/internal/core/flow"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
@@ -203,109 +203,184 @@ func (s *Server) scratchForTool(ctx context.Context, att tools.Attempt, in tools
 	}
 	meta.RunCount = row.RunCount
 
-	// Promotion: enough runs across enough distinct attempts → the script
-	// stops being ephemeral and joins the git library, fully automatically
-	// (the operator's explicit choice; the journal and git history are the
-	// audit trail).
-	if row.RunCount >= promoteRuns && len(row.Attempts) >= promoteAttempts {
-		if err := s.promoteScratch(ctx, row); err != nil {
-			s.log.WarnContext(ctx, "scratch promotion", "script", row.Name, "error", err)
+	// Promotion threshold: enough runs across enough distinct attempts →
+	// queue a high-priority curation Work (directive promote-scratch, run
+	// against the library repository itself) rather than promoting inline.
+	// The curator dedupes, extends, or adds — and the reconcile sweep
+	// retires the cache row once the Work lands.
+	if row.RunCount >= promoteRuns && len(row.Attempts) >= promoteAttempts && row.PromoteWork == "" {
+		workID, err := s.queuePromotion(ctx, att, row)
+		if err != nil {
+			s.log.WarnContext(ctx, "queue scratch promotion", "script", row.Name, "error", err)
 		} else {
-			meta.Promoted = true
+			meta.PromotionWork = workID
 		}
 	}
 	return out, meta, nil
 }
 
-// promoteScratch writes the row into the library's scripts/ tree with a
-// synthesized metadata header (tool-flagged when it carries an input
-// schema), validates the whole library, commits, hot-reloads, and drops the
-// cache row. Any failure reverts the file and keeps the row — the next run
-// retries.
-func (s *Server) promoteScratch(ctx context.Context, row *store.ScratchScript) error {
+// promotionPriority outranks routine work (default 50): promoted scripts are
+// hot paths, so the curation task jumps the queue without being interactive.
+const promotionPriority = 80
+
+// queuePromotion creates the curation Work for one over-threshold scratch
+// row: directive promote-scratch, run against the repository registered at
+// the library's path, integrate-on-green with auto autonomy (the operator's
+// fully-automatic choice — the journal, the Work trail, and git history are
+// the audit). Refuses cleanly when the directive or the library repository
+// is missing; the threshold re-fires on a later run.
+func (s *Server) queuePromotion(ctx context.Context, att tools.Attempt, row *store.ScratchScript) (string, error) {
 	lib := s.promptLibrary()
 	if lib == nil {
-		return fmt.Errorf("no library to promote into")
+		return "", fmt.Errorf("no library loaded")
 	}
-	if lib.Fragment(row.Name) != nil {
-		return fmt.Errorf("library name %q is taken", row.Name)
+	if lib.Directive("promote-scratch") == nil {
+		return "", fmt.Errorf("directive promote-scratch is not in the library")
 	}
-	path := filepath.Join(lib.Dir, "scripts", row.Name+"."+row.Language)
-	content := synthesizeScriptFile(row)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	libDir, err := filepath.EvalSymlinks(lib.Dir)
+	if err != nil {
+		libDir = filepath.Clean(lib.Dir)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	if _, err := directives.Load(lib.Dir); err != nil {
-		if rerr := os.Remove(path); rerr != nil {
-			s.log.ErrorContext(ctx, "revert failed promotion", "path", path, "error", rerr)
+	priority := promotionPriority
+	var out workCreated
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		repos, err := tx.Repositories(ctx)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("promoted file does not load: %w", err)
+		repoName := ""
+		for _, r := range repos {
+			if r.Archived {
+				continue
+			}
+			p, err := filepath.EvalSymlinks(r.Path)
+			if err != nil {
+				p = filepath.Clean(r.Path)
+			}
+			if p == libDir {
+				repoName = r.Name
+				break
+			}
+		}
+		if repoName == "" {
+			return fmt.Errorf("the library at %s is not a registered repository", lib.Dir)
+		}
+		req := workRequest{
+			directive: "promote-scratch",
+			Objective: fmt.Sprintf("Scratch script %q (%s) crossed the promotion threshold: %d runs across %d distinct agent attempts, saved by %s. Fetch it with forge_library ({\"kind\": \"scratch\", \"name\": %q}) and fold it into the library per this directive.",
+				row.Name, row.Language, row.RunCount, len(row.Attempts), row.CreatedBy, row.Name),
+			Repositories: []string{repoName},
+			Title:        "promote scratch script " + row.Name,
+			Class:        model.ClassNormal,
+			Priority:     &priority,
+			Autonomy:     model.AutonomyAuto,
+			Integrate:    true,
+			cause:        model.CausePromotion,
+			submittedBy:  "forge:scratch",
+		}
+		if att.WorkID != "" {
+			req.CausedBy = att.WorkID
+		}
+		created, err := s.createWorkTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		out = created
+		if err := tx.SetScratchPromoteWork(ctx, row.Name, out.Work.ID); err != nil {
+			return err
+		}
+		return tx.Journal(ctx, "scratch.promotion_queued", store.EntityWork, out.Work.ID, map[string]any{
+			"script": row.Name, "language": row.Language, "runs": row.RunCount, "attempts": len(row.Attempts), "created_by": row.CreatedBy,
+		})
+	})
+	if err != nil {
+		return "", err
 	}
-	directives.CommitEdit(lib.Dir, path, fmt.Sprintf("scratch: promote %s (%d runs, %d attempts, by %s)", row.Name, row.RunCount, len(row.Attempts), row.CreatedBy))
-	if s.promptsReload != nil {
-		if err := s.promptsReload(); err != nil {
-			s.log.WarnContext(ctx, "reload after promotion", "error", err)
+	s.log.InfoContext(ctx, "scratch promotion queued", "script", row.Name, "work_id", out.Work.ID, "runs", row.RunCount)
+	return out.Work.ID, nil
+}
+
+// reconcileScratch retires or retries pending promotions (called from the
+// schedule tick). A row whose name now answers as a library script is done —
+// the curator landed it (or it was shadowed by a manual add); a row whose
+// curation Work reached a done state is also retired even when the curator
+// chose a different path (extended a neighbor, metadata-only) — the cache
+// entry served its purpose. A failed or cancelled Work clears promote_work
+// so a later run may re-queue.
+func (s *Server) reconcileScratch(ctx context.Context) {
+	lib := s.promptLibrary()
+	if lib == nil {
+		return
+	}
+	rows, err := s.store.ListScratch(ctx)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	for _, row := range rows {
+		if f := lib.Fragment(row.Name); f != nil && f.Script {
+			s.retireScratch(ctx, row, "library")
+			continue
+		}
+		if row.PromoteWork == "" {
+			continue
+		}
+		var w *store.Work
+		err := s.store.Write(ctx, func(tx *store.Tx) error {
+			var err error
+			w, err = tx.GetWork(ctx, row.PromoteWork)
+			return err
+		})
+		var state model.WorkState
+		if err == nil {
+			targets, terr := s.store.TargetsForWorks(ctx, []string{w.ID})
+			if terr != nil {
+				err = terr
+			} else {
+				state = model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(targets[w.ID]), Integrate: w.Integrate})
+			}
+		}
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			s.clearPromotion(ctx, row, "work missing")
+		case err != nil:
+			s.log.WarnContext(ctx, "reconcile scratch", "script", row.Name, "error", err)
+		case state == model.WorkMerged || state == model.WorkSucceeded || state == model.WorkPartial:
+			s.retireScratch(ctx, row, "work")
+		case state == model.WorkFailed || state == model.WorkCancelled || state == model.WorkUnverified:
+			s.clearPromotion(ctx, row, string(state))
 		}
 	}
+}
+
+// retireScratch deletes a promoted row and journals the graduation.
+func (s *Server) retireScratch(ctx context.Context, row store.ScratchScript, via string) {
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		if err := tx.DeleteScratch(ctx, row.Name); err != nil {
 			return err
 		}
 		return tx.Journal(ctx, "scratch.promoted", store.EntityDaemon, row.Name, map[string]any{
-			"language": row.Language, "runs": row.RunCount, "attempts": len(row.Attempts), "created_by": row.CreatedBy, "tool": row.InputSchema != "",
+			"language": row.Language, "runs": row.RunCount, "attempts": len(row.Attempts),
+			"created_by": row.CreatedBy, "via": via, "work": row.PromoteWork,
 		})
 	})
 	if err != nil {
-		return err
+		s.log.WarnContext(ctx, "retire scratch", "script", row.Name, "error", err)
+		return
 	}
-	s.log.InfoContext(ctx, "scratch script promoted to the library", "script", row.Name, "runs", row.RunCount, "created_by", row.CreatedBy)
-	return nil
+	s.log.InfoContext(ctx, "scratch script promoted", "script", row.Name, "via", via, "work_id", row.PromoteWork)
 }
 
-// synthesizeScriptFile renders the promoted file: the metadata header the
-// library expects, from the scratch row's fields, above the source verbatim.
-// tool: true only when a schema exists — the library's own rule.
-func synthesizeScriptFile(row *store.ScratchScript) string {
-	desc := strings.Join(strings.Fields(row.Description), " ")
-	compactSchema := ""
-	if row.InputSchema != "" {
-		var buf bytes.Buffer
-		if json.Compact(&buf, []byte(row.InputSchema)) == nil {
-			compactSchema = buf.String()
+// clearPromotion forgets a dead curation Work so the threshold may re-queue.
+func (s *Server) clearPromotion(ctx context.Context, row store.ScratchScript, reason string) {
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		if err := tx.SetScratchPromoteWork(ctx, row.Name, ""); err != nil {
+			return err
 		}
+		return tx.Journal(ctx, "scratch.promotion_retry", store.EntityDaemon, row.Name, map[string]any{
+			"work": row.PromoteWork, "reason": reason,
+		})
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "clear scratch promotion", "script", row.Name, "error", err)
 	}
-	if row.Language == "js" {
-		var b strings.Builder
-		b.WriteString("/**forge\n * description: " + desc + "\n")
-		if compactSchema != "" {
-			b.WriteString(" * input: " + compactSchema + "\n * tool: true\n")
-		}
-		b.WriteString(" */\n")
-		b.WriteString(row.Source)
-		if !strings.HasSuffix(row.Source, "\n") {
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-	source := row.Source
-	shebang := ""
-	if strings.HasPrefix(source, "#!") {
-		if i := strings.IndexByte(source, '\n'); i >= 0 {
-			shebang, source = source[:i+1], source[i+1:]
-		}
-	}
-	var b strings.Builder
-	b.WriteString(shebang)
-	b.WriteString("#forge\n# description: " + desc + "\n")
-	if compactSchema != "" {
-		b.WriteString("# input: " + compactSchema + "\n# tool: true\n")
-	}
-	b.WriteString(source)
-	if !strings.HasSuffix(source, "\n") {
-		b.WriteString("\n")
-	}
-	return b.String()
 }

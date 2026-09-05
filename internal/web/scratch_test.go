@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"forge/internal/core/config"
+	"forge/internal/core/model"
+	"forge/internal/core/protocol"
 	"forge/internal/core/store"
 )
 
@@ -20,13 +22,49 @@ func (h *harness) scratchCall(attemptID string, input map[string]any) (int, []by
 	return h.bridgeTool(attemptID, "forge_scratch", input)
 }
 
+// wireLibraryRepo registers the harness library dir as a repository (the
+// daemon does this at bootstrap) and drops in a promote-scratch directive —
+// the two preconditions of queued promotion.
+func (h *harness) wireLibraryRepo() {
+	h.t.Helper()
+	h.writeDirective("promote-scratch", "---\nmode: run\nmodel: haiku\n---\nCurate the scratch script into {{repo}}: {{objective}}\n")
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		return tx.UpsertProvisionalRepository(context.Background(), protocol.Repository{Name: "directives", Path: h.libDir, OriginIdentity: "local/directives"})
+	}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// promotionWork fetches the curation Work recorded on a scratch row.
+func (h *harness) promotionWork(name string) (*store.ScratchScript, *store.Work) {
+	h.t.Helper()
+	var row *store.ScratchScript
+	var w *store.Work
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		var err error
+		if row, err = tx.GetScratch(context.Background(), name); err != nil {
+			return err
+		}
+		if row.PromoteWork == "" {
+			return nil
+		}
+		w, err = tx.GetWork(context.Background(), row.PromoteWork)
+		return err
+	}); err != nil {
+		h.t.Fatal(err)
+	}
+	return row, w
+}
+
 // The organic lifecycle: an agent saves-and-runs a scratch script, reuse by
-// name counts, it shows up in search, and at the threshold it promotes
-// itself into the git library — tool-flagged when it carried a schema.
+// name counts, it shows up in search, and at the threshold a high-priority
+// curation Work is queued against the library repository; the reconcile
+// sweep retires the row once the script answers from the library.
 func TestScratchLifecycle(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.srv.scratchCfg = config.ScratchConfig{Max: 200, PromoteRuns: 3, PromoteAttempts: 1}
+	h.wireLibraryRepo()
 	h.createRoutine("caller")
 	h.run("caller")
 	claim := h.mustClaim("scr-1")
@@ -55,28 +93,49 @@ func TestScratchLifecycle(t *testing.T) {
 		t.Fatalf("search = %d %s", status, body)
 	}
 
-	// Third run crosses the threshold: automatic promotion.
+	// Third run crosses the threshold: a curation Work is queued, high
+	// priority, cause=promotion, integrate-on-green, against the library repo.
 	status, body = h.scratchCall(claim.AttemptID, map[string]any{"name": "csv-cols", "input": map[string]any{"header": "a"}})
-	if status != http.StatusOK || !strings.Contains(string(body), `"promoted":true`) {
+	if status != http.StatusOK || !strings.Contains(string(body), `"promotion_queued"`) {
 		t.Fatalf("third run = %d %s", status, body)
 	}
-	raw, err := os.ReadFile(filepath.Join(h.libDir, "scripts", "csv-cols.js"))
-	if err != nil {
-		t.Fatalf("promoted file: %v", err)
+	row, w := h.promotionWork("csv-cols")
+	if w == nil {
+		t.Fatalf("no promotion work on row %+v", row)
 	}
-	for _, want := range []string{"/**forge", "description: count the columns", "tool: true", "function main"} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("promoted file missing %q:\n%s", want, raw)
-		}
+	if w.RoutineName != "promote-scratch" || w.Cause != model.CausePromotion || !w.Integrate ||
+		w.Priority != promotionPriority || w.SubmittedBy != "forge:scratch" || w.CausedByWorkID == "" {
+		t.Fatalf("promotion work = %+v", w)
 	}
-	// The library sees it (hot-reloaded) and the cache row is gone.
-	if f := h.srv.promptLibrary().Script("csv-cols"); f == nil || !f.Tool {
-		t.Fatalf("library script = %+v", f)
+	if !strings.Contains(string(w.Snapshot), `"directives"`) || !strings.Contains(string(w.Snapshot), "csv-cols") {
+		t.Fatalf("promotion snapshot = %s", w.Snapshot)
 	}
+
+	// A fourth run past the threshold does NOT queue a second Work.
+	if status, _ := h.scratchCall(claim.AttemptID, map[string]any{"name": "csv-cols", "input": map[string]any{"header": "a"}}); status != http.StatusOK {
+		t.Fatal("fourth run failed")
+	}
+	if again, w2 := h.promotionWork("csv-cols"); w2 == nil || w2.ID != w.ID || again.PromoteWork != w.ID {
+		t.Fatalf("re-queued: %+v", w2)
+	}
+
+	// The curator lands the script in the library (simulated); the reconcile
+	// sweep retires the cache row and the script answers as a real tool.
+	path := filepath.Join(h.libDir, "scripts", "csv-cols.js")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "/**forge\n * description: count the columns of a csv header line\n * input: {\"type\":\"object\"}\n * tool: true\n */\nfunction main(input) { return {cols: input.params.header.split(',').length} }\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.srv.promptsReload(); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.reconcileScratch(context.Background())
 	if rows, err := h.st.ListScratch(context.Background()); err != nil || len(rows) != 0 {
-		t.Errorf("scratch rows after promotion = %v, %v", rows, err)
+		t.Errorf("scratch rows after reconcile = %v, %v", rows, err)
 	}
-	// And it now runs through the ordinary script tool.
 	status, body = h.bridgeTool(claim.AttemptID, "forge_script_run", map[string]any{"script": "csv-cols", "input": map[string]any{"header": "x,y"}})
 	if status != http.StatusOK || !strings.Contains(string(body), `"cols":2`) {
 		t.Fatalf("promoted run = %d %s", status, body)
@@ -84,11 +143,13 @@ func TestScratchLifecycle(t *testing.T) {
 }
 
 // A subprocess scratch script (any language, the operator's explicit choice)
-// runs from the cache dir; one WITHOUT a schema promotes non-tool-flagged.
-func TestScratchSubprocessAndNonToolPromotion(t *testing.T) {
+// runs from the cache dir; a dead curation Work is cleared by the reconcile
+// sweep so a later run re-queues promotion.
+func TestScratchSubprocessAndPromotionRetry(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.srv.scratchCfg = config.ScratchConfig{Max: 200, PromoteRuns: 2, PromoteAttempts: 1}
+	h.wireLibraryRepo()
 	h.createRoutine("caller")
 	h.run("caller")
 	claim := h.mustClaim("scr-sub")
@@ -103,15 +164,27 @@ func TestScratchSubprocessAndNonToolPromotion(t *testing.T) {
 		t.Fatalf("sh run = %d %s", status, body)
 	}
 	status, body = h.scratchCall(claim.AttemptID, map[string]any{"name": "liner"})
-	if status != http.StatusOK || !strings.Contains(string(body), `"promoted":true`) {
+	if status != http.StatusOK || !strings.Contains(string(body), `"promotion_queued"`) {
 		t.Fatalf("promotion run = %d %s", status, body)
 	}
-	raw, err := os.ReadFile(filepath.Join(h.libDir, "scripts", "liner.sh"))
-	if err != nil || !strings.Contains(string(raw), "#forge") || strings.Contains(string(raw), "tool: true") {
-		t.Fatalf("promoted sh = %v\n%s", err, raw)
+	_, w := h.promotionWork("liner")
+	if w == nil {
+		t.Fatal("no promotion work")
 	}
-	if f := h.srv.promptLibrary().Script("liner"); f == nil || f.Tool || len(f.Interpreter) == 0 {
-		t.Fatalf("library sh script = %+v", f)
+
+	// The curation Work dies (cancelled): the sweep clears promote_work and
+	// the next run past the threshold queues a fresh one.
+	h.call(http.MethodDelete, "/api/v1/work/"+w.ID, nil, nil, http.StatusOK)
+	h.srv.reconcileScratch(context.Background())
+	row, _ := h.promotionWork("liner")
+	if row.PromoteWork != "" {
+		t.Fatalf("promote_work not cleared: %+v", row)
+	}
+	if status, body := h.scratchCall(claim.AttemptID, map[string]any{"name": "liner"}); status != http.StatusOK || !strings.Contains(string(body), `"promotion_queued"`) {
+		t.Fatalf("re-queue run = %d %s", status, body)
+	}
+	if _, w2 := h.promotionWork("liner"); w2 == nil || w2.ID == w.ID {
+		t.Fatalf("expected a fresh promotion work, got %+v", w2)
 	}
 }
 

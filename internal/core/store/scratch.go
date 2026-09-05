@@ -14,15 +14,19 @@ import (
 // the curated library. Rows live and die by use (LRU) unless promotion moves
 // them into git.
 type ScratchScript struct {
-	Name        string    `json:"name"`
-	Source      string    `json:"source"`
-	Hash        string    `json:"hash"`
-	Language    string    `json:"language"`
-	Description string    `json:"description"`
-	InputSchema string    `json:"input_schema,omitempty"`
-	CreatedBy   string    `json:"created_by"`
-	RunCount    int       `json:"run_count"`
-	Attempts    []string  `json:"attempts,omitempty"`
+	Name        string   `json:"name"`
+	Source      string   `json:"source"`
+	Hash        string   `json:"hash"`
+	Language    string   `json:"language"`
+	Description string   `json:"description"`
+	InputSchema string   `json:"input_schema,omitempty"`
+	CreatedBy   string   `json:"created_by"`
+	RunCount    int      `json:"run_count"`
+	Attempts    []string `json:"attempts,omitempty"`
+	// PromoteWork is the id of the open curation Work promoting this row, ''
+	// when none. Set when the threshold fires; cleared by the reconcile sweep
+	// when that Work fails, so a later run may re-queue promotion.
+	PromoteWork string    `json:"promote_work,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	LastRunAt   time.Time `json:"last_run_at"`
 }
@@ -127,7 +131,16 @@ func (s *Store) ListScratch(ctx context.Context) ([]ScratchScript, error) {
 	return out, nil
 }
 
-const scratchColumns = `name, source, hash, language, description, input_schema, created_by, run_count, attempts, created_at, last_run_at`
+// SetScratchPromoteWork records (or with "" clears) the curation Work
+// promoting a row.
+func (tx *Tx) SetScratchPromoteWork(ctx context.Context, name, workID string) error {
+	if _, err := tx.Exec(ctx, `UPDATE scratch_scripts SET promote_work = ? WHERE name = ?`, workID, name); err != nil {
+		return fmt.Errorf("set scratch promote work %s: %w", name, err)
+	}
+	return nil
+}
+
+const scratchColumns = `name, source, hash, language, description, input_schema, created_by, run_count, attempts, promote_work, created_at, last_run_at`
 
 func scratchRow(row *sql.Row) (*ScratchScript, error) {
 	s, err := scanScratch(row.Scan)
@@ -140,7 +153,7 @@ func scratchRow(row *sql.Row) (*ScratchScript, error) {
 func scanScratch(scan func(...any) error) (*ScratchScript, error) {
 	var s ScratchScript
 	var attempts, created, lastRun string
-	if err := scan(&s.Name, &s.Source, &s.Hash, &s.Language, &s.Description, &s.InputSchema, &s.CreatedBy, &s.RunCount, &attempts, &created, &lastRun); err != nil {
+	if err := scan(&s.Name, &s.Source, &s.Hash, &s.Language, &s.Description, &s.InputSchema, &s.CreatedBy, &s.RunCount, &attempts, &s.PromoteWork, &created, &lastRun); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(attempts), &s.Attempts); err != nil {

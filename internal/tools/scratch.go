@@ -3,9 +3,10 @@ package tools
 // forge_scratch: the organic script layer. An agent that needs a quick
 // script saves-and-runs it here instead of a worktree throwaway — the daemon
 // caches it (LRU-bounded), counts every run, makes it discoverable through
-// forge_library, and automatically promotes what keeps getting reached for
-// into the git library as a real reusable tool. The efficiency comes from
-// reuse: search before writing, call by name after the first save.
+// forge_library, and when one keeps getting reached for it queues a
+// high-priority curation Work that folds it into the git library (deduped,
+// extended, or added — see the promote-scratch directive). The efficiency
+// comes from reuse: search before writing, call by name after the first save.
 
 import (
 	"context"
@@ -27,10 +28,11 @@ type ScratchInput struct {
 	Input       any
 }
 
-// ScratchMeta rides back with the output: the reuse signal.
+// ScratchMeta rides back with the output: the reuse signal, and the curation
+// Work id when this run crossed the promotion threshold.
 type ScratchMeta struct {
-	RunCount int
-	Promoted bool
+	RunCount      int
+	PromotionWork string
 }
 
 // scratchLanguages bounds what an agent may submit; execution rules match
@@ -41,7 +43,7 @@ type scratchTool struct{}
 
 func (scratchTool) Name() string { return "forge_scratch" }
 func (scratchTool) Description() string {
-	return "Save and run a quick script, or re-run a cached one by name. SEARCH FIRST (forge_library kind=scratch) — reusing an existing scratch script by name is cheaper and more consistent than writing a new one, and scripts that keep being reused are automatically promoted into the permanent library. js runs sandboxed; py/sh/rb/pl run as daemon-side processes reading JSON input on stdin and printing one JSON value."
+	return "Save and run a quick script, or re-run a cached one by name. SEARCH FIRST (forge_library kind=scratch) — reusing an existing scratch script by name is cheaper and more consistent than writing a new one, and scripts that keep being reused are promoted into the permanent library by a curation task. js runs sandboxed; py/sh/rb/pl run as daemon-side processes reading JSON input on stdin and printing one JSON value."
 }
 func (scratchTool) Where() string { return WhereDaemon }
 func (scratchTool) InputSchema() json.RawMessage {
@@ -81,7 +83,7 @@ func (scratchTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 			return nil, BadInput("description is required with source — it is how this script is found again")
 		}
 		if strings.HasPrefix(in.Source, "/**forge") || strings.Contains(in.Source, "\n#forge\n") || strings.HasPrefix(in.Source, "#forge\n") {
-			return nil, BadInput("do not embed a forge metadata header in scratch source — pass description/input_schema as fields; the header is synthesized at promotion")
+			return nil, BadInput("do not embed a forge metadata header in scratch source — pass description/input_schema as fields; the curation task writes the header at promotion")
 		}
 		if in.Language == "js" && !strings.Contains(in.Source, "function main") {
 			return nil, BadInput("a js scratch script must define function main(input)")
@@ -99,9 +101,9 @@ func (scratchTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 		return nil, err
 	}
 	resp := map[string]any{"schema_version": SchemaVersion, "output": out, "run_count": meta.RunCount}
-	if meta.Promoted {
-		resp["promoted"] = true
-		resp["note"] = "this script earned its way into the permanent library — call it via forge_script_run from now on"
+	if meta.PromotionWork != "" {
+		resp["promotion_queued"] = meta.PromotionWork
+		resp["note"] = "this script crossed the promotion threshold — a curation task is folding it into the permanent library; keep calling it here until it appears there"
 	}
 	return respond(resp)
 }

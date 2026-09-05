@@ -101,8 +101,10 @@ etc. Mode definitions list them as `forge_usage`; the executor adds the prefix. 
 that must have **no** built-in tools pass `--tools ""` in addition to `--allowedTools`.
 
 Every mode gets `forge_note_progress`, `forge_kb_search`, `forge_usage`,
-`forge_library` (library search and read — the skills reading path), and
-`forge_script_run` (run a tool-flagged library script in the sandbox). Every mode
+`forge_library` (library search and read — the skills reading path),
+`forge_script_run` (run a tool-flagged library script in the sandbox), and
+`forge_scratch` (save/run quick scripts in the LRU cache; hot ones queue a
+promote-scratch curation Work — DESIGN.md's tool/skill bridge section). Every mode
 at autonomy `ask`/`checkpoint` also gets `forge_ask`. `forge_ask` **does not block**:
 it records the Question and returns immediately with the instruction to end the turn.
 The one rule (`DESIGN.md` §4.1) is "an open Question exists when the process exits ⇒

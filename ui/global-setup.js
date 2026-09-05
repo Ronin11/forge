@@ -20,7 +20,9 @@ const EMPTY_CHECKS = [
   { path: '/directives', wants: ['triage-repo'] }, // the seeded base library
   { path: '/routines', wants: ['daily-triage'] }, // seeded trigger routines
   { path: '/stats', wants: ['No finished attempts in this window.'] },
-  { path: '/system', wants: ['No repositories advertised'] },
+  // Not "no repositories": bootstrap registers the directives library itself
+  // as a repository (scratch promotion runs curation Works against it).
+  { path: '/system', wants: ['directives'] },
   { path: '/kb', wants: ['No notes yet'] },
 ];
 

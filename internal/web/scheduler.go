@@ -43,6 +43,7 @@ func (s *Server) scheduleTick(ctx context.Context) {
 	s.scheduleBackfill(ctx, now)
 	s.fireDueRoutines(ctx, now)
 	s.fireDueWorkflows(ctx, now)
+	s.reconcileScratch(ctx)
 }
 
 // scheduleBackfill seeds next_due_at for enabled schedules that lack one:

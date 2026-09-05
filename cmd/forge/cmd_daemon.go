@@ -251,6 +251,11 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		} else if len(added) > 0 {
 			d.log.InfoContext(ctx, "seeds imported", "added", added)
 		}
+		// The library is itself a workable repository: scratch promotion
+		// (and any reflection routine) runs curation Works against it.
+		if err := d.registerLibraryRepo(ctx, st); err != nil {
+			d.log.WarnContext(ctx, "register library repository", "path", d.cfg.Directives.Path, "error", err)
+		}
 	}
 	srv, err := web.NewServer(web.ServerOptions{
 		Prompts: promptsLib.Load,
@@ -881,6 +886,49 @@ func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath str
 		return protocol.Repository{}, err
 	}
 	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: base, Project: "default"}, nil
+}
+
+// registerLibraryRepo makes the directives library a registered repository
+// (idempotent), so curation Works — scratch promotion, library reflection —
+// run against it like any other repo. The library is a local git repo with
+// no hosted remote, and repositories require an origin, so it gets a
+// self-referencing file origin: identity is the path, fetch is a no-op.
+func (d *daemonProcess) registerLibraryRepo(ctx context.Context, st *store.Store) error {
+	libPath, err := filepath.Abs(d.cfg.Directives.Path)
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(libPath); err == nil {
+		libPath = resolved
+	}
+	wcfg, err := worker.LoadConfig(filepath.Join(d.c.ForgeHome, "worker.toml"))
+	if err == nil {
+		for _, r := range wcfg.Repositories {
+			p := r.Path
+			if resolved, err := filepath.EvalSymlinks(p); err == nil {
+				p = resolved
+			}
+			if p == libPath {
+				return nil // already registered
+			}
+		}
+	}
+	if err := exec.CommandContext(ctx, "git", "-C", libPath, "remote", "get-url", "origin").Run(); err != nil {
+		if out, err := exec.CommandContext(ctx, "git", "-C", libPath, "remote", "add", "origin", libPath).CombinedOutput(); err != nil {
+			return fmt.Errorf("add self origin: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	rep, err := d.registerRepoOnTheFly(ctx, libPath)
+	if err != nil {
+		return err
+	}
+	if err := st.Write(ctx, func(tx *store.Tx) error {
+		return tx.UpsertProvisionalRepository(ctx, rep)
+	}); err != nil {
+		return err
+	}
+	d.log.InfoContext(ctx, "library registered as a repository", "repository", rep.Name, "path", rep.Path)
+	return nil
 }
 
 // addRepo backs the Repos page's "+" (POST /api/v1/repositories): a remote URL

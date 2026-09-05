@@ -1506,7 +1506,7 @@ group, so a group kill takes its checks with it and the control plane never spaw
 processes in a worker-owned directory. Every tool call, wherever it ran, is reported
 by `forge mcp` as an `mcp`-source span through `POST /api/v1/attempts/{id}/events`.
 
-**The tool/skill bridge** is four daemon tools (`internal/tools/library.go`,
+**The tool/skill bridge** is five daemon tools (`internal/tools/library.go`,
 `librun.go`; the daemon closures and guardrails in
 `internal/web/tool_bridge.go`). They are **static registrations with
 call-time dynamism**: the registry freezes at `NewServer` and an attempt
@@ -1531,6 +1531,32 @@ reach — the live library, the tool flags — is checked per call.
 - `forge_workflow_run` — fire a `tool: true` workflow (the flag re-read
   inside the transaction, so a race with archive/un-flag still refuses):
   async, returns the run id. Journaled `tool.workflow_run`.
+- `forge_scratch` — the **organic layer**: save-and-run a quick script (js
+  in the goja sandbox; py/sh/rb/pl as daemon subprocesses from
+  `<home>/scratch-scripts/`), or re-run a cached one by name. Rows live in
+  the `scratch_scripts` LRU cache (`[scratch] max`, default 200; evicted by
+  last use; same-name-new-source resets the counters), are searchable as
+  kind `scratch` through `forge_library`, and count runs plus distinct
+  calling attempts. Journaled `scratch.saved`.
+
+**Scratch promotion is a curation Work, not a copy.** When a row crosses the
+threshold (`promote_runs` runs across `promote_attempts` distinct attempts,
+defaults 5/2), the daemon queues a high-priority Work (priority 80,
+`cause = promotion`, `submitted_by = forge:scratch`, autonomy `auto`,
+integrate-on-green, journaled `scratch.promotion_queued`) running the
+`promote-scratch` directive **against the library repository itself** —
+bootstrap registers `~/.forge/directives` as a repo (self-referencing file
+origin; `registerLibraryRepo` in cmd_daemon.go), which is also what any
+library-reflection routine runs against. The curator dedupes (an existing
+script that already covers the functionality gets better metadata instead of
+a twin), extends near-misses, or adds the script with a proper header and a
+straightforward optimization pass. The row remembers its Work in
+`promote_work`; the schedule tick's `reconcileScratch` retires the row once
+the script answers from the library or the Work lands (journal
+`scratch.promoted`), and clears `promote_work` when the Work dies (journal
+`scratch.promotion_retry`) so a later run re-queues. Fully automatic by the
+operator's explicit choice — the journal, the Work trail, and git history
+are the audit.
 
 The safety framing is deliberate: an attempt whose snapshot has an **empty**
 `allowed_tools` list omits `--allowedTools` entirely, so such agents see
@@ -1540,8 +1566,9 @@ documented contract — `forge_library` and `forge_script_run` in every mode,
 `forge_directive_run`/`forge_workflow_run` in `run` and `implement` — but the
 runtime mode∩routine intersection remains uncomputed (a pre-existing,
 documented gap). The tools reach the daemon through nil-disabling
-`tools.Deps` closures (`Library`, `SpawnWork`, `StartWorkflowRun`): a process
-without them answers with a clear refusal, never a panic.
+`tools.Deps` closures (`Library`, `SpawnWork`, `StartWorkflowRun`,
+`Scratch`): a process without them answers with a clear refusal, never a
+panic.
 
 ## 14. Leases, crashes, and what can never be lost
 
