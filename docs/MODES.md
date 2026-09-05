@@ -323,6 +323,29 @@ Kb hygiene: superseded retro notes and stale hypotheses → one summary note. To
   cwd; nothing may be written there.
 - **Checkpoints:** none. **Budget class:** `backlog`. **Autonomy:** `auto`.
 
+### `supervise`
+
+The return path of recursive decomposition (`DESIGN.md` §3): a continuation
+Work in this mode fires when a plan batch settles. The prompt (frozen at
+creation) carries the goal, the round, and the task list; reality arrives
+through `forge_work_outcomes`. The agent reviews what landed and reports
+`done` (with honest 1-5 scores and the biggest weakness) or `revise` with
+corrective tasks — narrow deltas in the plan-task shape, fanned out by the
+daemon as the next round with a fresh continuation.
+
+- **Prompt outline:** preamble → the goal + batch summary + task ids + round
+  N of M (the final round forbids revising) → context block.
+- **Tools:** read set + `forge_work_outcomes`, `forge_kb_search`,
+  `forge_kb_new` (one repo-scoped retro note when a round exposed a systemic
+  lesson), `forge_repo_status`, `forge_note_progress`, `forge_usage`.
+- **Result:** envelope + required `assessment {outcome, scores, weakness}` +
+  optional `tasks` (required when revising). Scores land in
+  `attempt_facts.score_*`.
+- **Verification:** L0, `Writes() == KbOnly` — the reviewer never patches
+  what it scores; fixes flow through corrective tasks.
+- **Checkpoints:** `before_report`. **Budget class:** `interactive` (moot:
+  the Work is `TriggerDependency`). **Autonomy:** inherited from the plan.
+
 ## Checkpoint mechanics
 
 A checkpoint is a named point in a mode's prompt. Its effect depends on autonomy:

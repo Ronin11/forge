@@ -601,6 +601,32 @@ dependency is a *scheduling* relation ("B may not start until A succeeds"),
 whereas provenance is a *causal* one ("A's run created B"). A plan batch has
 both — the plan is every task's cause, and `blocked_by` edges order the tasks —
 but the two answer different questions and neither is derivable from the other.
+
+**The recursive learning loop** (handlers_supervise.go) makes the tree a call
+stack instead of fire-and-forget fan-out. Every plan batch ends in a
+**continuation** Work (`cause = continuation`, mode `supervise`, never
+integrating), blocked `on:terminal` on every member: its prompt is frozen at
+creation, so what the children actually did arrives at call time through
+`forge_work_outcomes`. The supervisor reports a required `assessment`
+(`done`/`revise`, 1-5 scores, the biggest weakness — scores land in
+`attempt_facts.score_*`, size in `work.size`/`attempt_facts.size`, rollups per
+ask keyed on `root_work_id`); `revise` fans out corrective tasks as the next
+round with a fresh continuation, bounded by `[plan] supervise_rounds` (default
+3 — the final round's prompt forbids revising; a revise anyway journals
+`supervise.rounds_exhausted` and stops). Planned tasks may themselves be plans
+(`planTask.mode = "plan"`), bounded by `[plan] max_nesting` (default 2; past
+the cap the task is demoted to run). Two rules keep release ordering honest:
+the **re-block rule** — creating continuation C for creator P chains every
+open Work blocked on P onto C (`on:terminal`), transitively across rounds and
+nesting, so nothing upstream releases before the subtree settles — and the
+**settlement cascade** — a batch member blocked on a failed sibling would
+wedge open forever as `dependency_failed`, so non-success terminal completions
+and sweeps cancel such members to a fixpoint (`plan.task_dep_cancelled`),
+letting the continuation (the repair path) fire. `forge bench run <spec>`
+submits a spec as a plan-mode root against a throwaway self-origin repo and
+`forge bench list` reads the scored history (`GET /api/v1/bench/{name}`) —
+the benchmark is the eval: quality-at-fixed-budget across runs is the measure
+of whether the loop is real.
 `plan_batch_id` and the snapshot's `verify_of` are kept as-is (existing readers);
 the provenance columns are the walkable superset, redundant on purpose. The
 lineage API (`GET /api/v1/work/{id}/lineage`) and the `/work/{id}` view read this

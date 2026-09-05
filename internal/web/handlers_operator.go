@@ -281,7 +281,10 @@ type workRequest struct {
 	Autonomy     model.Autonomy    `json:"autonomy"`
 	// Size is the optional S|M|L bucket for this ask; trusted when given (no
 	// sizing gate), frozen on the Work, copied into facts for calibration.
-	Size      string   `json:"size"`
+	Size string `json:"size"`
+	// BenchName tags a benchmark run's root: submitted_by becomes
+	// "bench:<name>" so `forge bench list` finds its history.
+	BenchName string   `json:"bench_name"`
 	Model     string   `json:"model"`
 	After     []string `json:"after"`
 	Paths     []string `json:"paths"`
@@ -557,6 +560,12 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	w.Integrate, w.Paths, w.SubmittedBy = rt.Integrate, rt.Paths, "human"
 	if req.submittedBy != "" {
 		w.SubmittedBy = req.submittedBy
+	}
+	if req.BenchName != "" {
+		if err := model.ValidateName(req.BenchName); err != nil {
+			return workCreated{}, badRequest("bench_name: %v", err)
+		}
+		w.SubmittedBy = "bench:" + req.BenchName
 	}
 	if w.Integrate && s.modeWritesNothing(rt.Mode) {
 		// A non-writing mode (plan, verify) produces nothing to merge: the

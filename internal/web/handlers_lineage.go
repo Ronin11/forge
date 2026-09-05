@@ -102,6 +102,41 @@ type lineageEdge struct {
 	On        string `json:"on"`
 }
 
+// benchRun is one benchmark run in GET /api/v1/bench/{name}: the root Work
+// and its tree's rollup — the improvement-over-time readout.
+type benchRun struct {
+	Work   store.Work      `json:"work"`
+	State  model.WorkState `json:"state"`
+	Rollup lineageRollup   `json:"rollup"`
+}
+
+func (s *Server) benchRuns(r *http.Request) (int, any, error) {
+	name := r.PathValue("name")
+	if err := model.ValidateName(name); err != nil {
+		return 0, nil, badRequest("%v", err)
+	}
+	works, err := s.store.WorksBySubmitter(r.Context(), "bench:"+name)
+	if err != nil {
+		return 0, nil, err
+	}
+	runs := []benchRun{}
+	for _, w := range works {
+		if w.CausedByWorkID != "" {
+			continue // only roots are runs
+		}
+		ld, err := ComputeLineage(r.Context(), s.store, w.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		rollup, err := computeLineageRollup(r.Context(), s.store, ld)
+		if err != nil {
+			return 0, nil, err
+		}
+		runs = append(runs, benchRun{Work: w, State: ld.State[w.ID], Rollup: rollup})
+	}
+	return http.StatusOK, runs, nil
+}
+
 func (s *Server) workLineage(r *http.Request) (int, any, error) {
 	id, err := pathID(r)
 	if err != nil {

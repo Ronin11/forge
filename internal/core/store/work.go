@@ -318,6 +318,12 @@ func (tx *Tx) CountToolSpawns(ctx context.Context, parentWorkID string) (int, er
 	return n, nil
 }
 
+// WorksBySubmitter returns every Work a submitter created, newest first —
+// `forge bench list`'s history query (submitted_by "bench:<name>").
+func (s *Store) WorksBySubmitter(ctx context.Context, submittedBy string) ([]Work, error) {
+	return scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work WHERE submitted_by = ? ORDER BY created_at DESC`, submittedBy)))
+}
+
 // GetWork reads one Work.
 func (s *Store) GetWork(ctx context.Context, id string) (*Work, error) {
 	ws, err := scanWork(each(s.query(ctx, `SELECT `+workColumns+` FROM work WHERE id = ?`, id)))

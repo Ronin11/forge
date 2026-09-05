@@ -72,6 +72,7 @@ func commands() map[string]command {
 		"restore":     {summary: "restore a backup archive into a fresh FORGE_HOME", run: tui.RunRestore},
 		"eval":        {summary: "run golden eval cases on the fake executor and score them", run: tui.RunEval},
 		"directives":  {summary: "search the library, or update it from its upstream base repo", run: tui.RunDirectives},
+		"bench":       {summary: "run a from-scratch benchmark spec and track its scored history", run: tui.RunBench},
 	}
 }
 
