@@ -212,6 +212,13 @@ func TestSuperviseLifecycle(t *testing.T) {
 	if !scored {
 		t.Fatalf("no scored supervise facts row: %+v", facts)
 	}
+	// The lineage rollup answers for the whole ask.
+	var lin lineageResponse
+	h.call(http.MethodGet, "/api/v1/work/"+created.Work.ID+"/lineage", nil, &lin, http.StatusOK)
+	ru := lin.Rollup
+	if ru.Open != 0 || ru.Works != 6 || ru.Attempts < 5 || ru.Scores == nil || !strings.Contains(string(ru.Scores), `"overall":4`) || ru.Weakness == "" || ru.Size != "L" {
+		t.Fatalf("rollup = %+v", ru)
+	}
 }
 
 // The round cap: with supervise_rounds=1 the first continuation is told it is

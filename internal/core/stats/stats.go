@@ -45,6 +45,8 @@ type Query struct {
 	Repository string    `json:"repository,omitempty"`
 	Project    string    `json:"project,omitempty"`
 	Mode       string    `json:"mode,omitempty"`
+	// Size narrows to one bucket (S|M|L, or "unsized" for rows without one).
+	Size string `json:"size,omitempty"`
 }
 
 // RoutineStats is one routine's (or one routine generation's) aggregate over
@@ -139,6 +141,9 @@ type Report struct {
 	// verified success in each currency. Runners is per-runner utilization.
 	Matrix  []ModelCapability   `json:"matrix"`
 	Runners []RunnerUtilization `json:"runners"`
+	// Sizes is the size-calibration table (S/M/L/unsized): cost, turns, and
+	// mean overall score per bucket — whether the sizing is honest.
+	Sizes []SizeStats `json:"sizes,omitempty"`
 }
 
 // ModelCapability is one model's row in the capability matrix: how often it
@@ -193,7 +198,88 @@ func Compute(current, prev []store.AttemptFacts) *Report {
 	}
 	r.Matrix = capabilityMatrix(current)
 	r.Runners = runnerUtilization(current)
+	r.Sizes = sizeBuckets(current)
 	return r
+}
+
+// SizeStats is one size bucket's calibration row: whether "S actually costs
+// S". ScoreOverallMean averages only the rows that carried a score; nil when
+// none did.
+type SizeStats struct {
+	Size                string   `json:"size"` // S, M, L, or "unsized"
+	Runs                int      `json:"runs"`
+	VerifiedSuccesses   int      `json:"verified_successes"`
+	VerifiedSuccessRate float64  `json:"verified_success_rate"`
+	CostUSDTotal        float64  `json:"cost_usd_total"`
+	CostPerRun          float64  `json:"cost_per_run"`
+	TurnsPerRun         float64  `json:"turns_per_run"`
+	DurationP50US       int64    `json:"duration_p50_us"`
+	ScoreOverallMean    *float64 `json:"score_overall_mean,omitempty"`
+}
+
+// sizeBuckets groups the window by the work's size bucket. Order is fixed
+// (S, M, L, unsized); empty buckets are omitted.
+func sizeBuckets(rows []store.AttemptFacts) []SizeStats {
+	type acc struct {
+		SizeStats
+		costRuns, turnRuns int
+		turns              int
+		totals             []int64
+		scoreSum, scoreN   int
+	}
+	byBucket := map[string]*acc{}
+	for i := range rows {
+		f := &rows[i]
+		bucket := f.Size
+		if bucket == "" {
+			bucket = "unsized"
+		}
+		a := byBucket[bucket]
+		if a == nil {
+			a = &acc{SizeStats: SizeStats{Size: bucket}}
+			byBucket[bucket] = a
+		}
+		a.Runs++
+		if model.IsSuccess(f.State) && f.VerificationPass != nil && *f.VerificationPass {
+			a.VerifiedSuccesses++
+		}
+		if f.CostUSD != nil {
+			a.CostUSDTotal += *f.CostUSD
+			a.costRuns++
+		}
+		if f.Turns != nil {
+			a.turns += *f.Turns
+			a.turnRuns++
+		}
+		if v := f.Phases["total"]; v != nil {
+			a.totals = append(a.totals, *v)
+		}
+		if f.ScoreOverall != nil {
+			a.scoreSum += *f.ScoreOverall
+			a.scoreN++
+		}
+	}
+	var out []SizeStats
+	for _, bucket := range []string{"S", "M", "L", "unsized"} {
+		a := byBucket[bucket]
+		if a == nil {
+			continue
+		}
+		a.VerifiedSuccessRate = float64(a.VerifiedSuccesses) / float64(a.Runs)
+		if a.costRuns > 0 {
+			a.CostPerRun = a.CostUSDTotal / float64(a.costRuns)
+		}
+		if a.turnRuns > 0 {
+			a.TurnsPerRun = float64(a.turns) / float64(a.turnRuns)
+		}
+		a.DurationP50US, _, _ = percentiles(a.totals)
+		if a.scoreN > 0 {
+			mean := float64(a.scoreSum) / float64(a.scoreN)
+			a.ScoreOverallMean = &mean
+		}
+		out = append(out, a.SizeStats)
+	}
+	return out
 }
 
 // capabilityMatrix groups the window's facts by model into the M10 capability
@@ -354,7 +440,7 @@ func loadFacts(ctx context.Context, st *store.Store, q Query) (current, prev []s
 // filter applies the dimensions the facts query cannot: repository, project,
 // and mode live on every row, so Go filters the fetched range.
 func filter(rows []store.AttemptFacts, q Query) []store.AttemptFacts {
-	if q.Repository == "" && q.Project == "" && q.Mode == "" {
+	if q.Repository == "" && q.Project == "" && q.Mode == "" && q.Size == "" {
 		return rows
 	}
 	out := make([]store.AttemptFacts, 0, len(rows))
@@ -366,6 +452,9 @@ func filter(rows []store.AttemptFacts, q Query) []store.AttemptFacts {
 			continue
 		}
 		if q.Mode != "" && f.Mode != q.Mode {
+			continue
+		}
+		if q.Size != "" && f.Size != q.Size && !(q.Size == "unsized" && f.Size == "") {
 			continue
 		}
 		out = append(out, f)

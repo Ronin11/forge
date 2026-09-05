@@ -62,6 +62,7 @@ func (s *Server) statsQuery(r *http.Request) (stats.Query, error) {
 	return stats.Query{
 		Since: until.Add(-window), Until: until,
 		Routine: v.Get("routine"), Repository: v.Get("repository"), Project: v.Get("project"), Mode: v.Get("mode"),
+		Size: v.Get("size"),
 	}, nil
 }
 
