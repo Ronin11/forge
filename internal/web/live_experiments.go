@@ -107,6 +107,11 @@ func (s *Engine) refreshLiveExperiments(ctx context.Context) {
 			entry = s.buildLiveEntry(row, kind, name, lib)
 			if old[row.ID] != nil {
 				entry.next = old[row.ID].next
+			} else if n, err := s.store.CountExperimentAssignments(ctx, row.ID); err == nil {
+				// A fresh cache (daemon restart) resumes the rotation where
+				// the stamped works left it — otherwise every deploy resets
+				// the cursor and control starves the variant arms.
+				entry.next = uint64(n)
 			}
 		}
 		if kind == "directive" {

@@ -69,6 +69,15 @@ func (s *Store) LearningWorks(ctx context.Context, limit int) ([]LearningWorkRow
 	return out, nil
 }
 
+// CountExperimentAssignments reports how many Works were ever stamped with
+// this experiment — the round-robin cursor's seed after a daemon restart, so
+// redeploys don't reset arm rotation back to control every time.
+func (s *Store) CountExperimentAssignments(ctx context.Context, id string) (int, error) {
+	var n int
+	err := s.queryRow(ctx, `SELECT COUNT(*) FROM work WHERE json_extract(composition, '$.experiment') = ?`, id).Scan(&n)
+	return n, err
+}
+
 // RecentExperiments lists experiments across every subject, newest first —
 // the Learning feed's experiment entries (Experiments is per-subject and
 // capped at the retention window).

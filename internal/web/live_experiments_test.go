@@ -262,6 +262,39 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 	}
 }
 
+// A daemon restart rebuilds the assignment cache from the store; the rotation
+// cursor is seeded from the count of already-stamped works so a deploy never
+// resets arm rotation back to control (seen live: two deploys in a row gave
+// consecutive reflect runs control twice).
+func TestLiveAssignmentSurvivesRestart(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutineWith("rrdir", "base {{objective}}")
+	openLiveExperiment(t, h.st, h.srv.promptLibrary(), "directive:rrdir", "rrdir",
+		"---\nmode: run\nmodel: haiku\n---\nVARIANT {{objective}}\n")
+	h.srv.refreshLiveExperiments(context.Background())
+
+	h.run("rrdir") // control, cursor -> 1
+
+	// Simulate the restart: wipe the in-memory cache, refresh from the store.
+	h.srv.liveMu.Lock()
+	h.srv.liveByDirective = map[string]*liveExperiment{}
+	h.srv.liveByPersona = map[string]*liveExperiment{}
+	h.srv.liveMu.Unlock()
+	h.srv.refreshLiveExperiments(context.Background())
+
+	created := h.run("rrdir")
+	var comp struct {
+		Variant string `json:"variant"`
+	}
+	if err := json.Unmarshal(created.Work.Composition, &comp); err != nil {
+		t.Fatal(err)
+	}
+	if comp.Variant != "v1" {
+		t.Fatalf("post-restart arm = %q, want v1 (rotation reset)", comp.Variant)
+	}
+}
+
 // An experiment past decide_by with arms still short of min_runs closes
 // inconclusive instead of waiting forever.
 func TestLiveExperimentDeadlineInconclusive(t *testing.T) {
