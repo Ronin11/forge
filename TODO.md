@@ -54,22 +54,24 @@ P0/P1 fixes have since landed.)
 
 ## Directives follow-ups (2026-09-04 restructure)
 
-- [ ] A reflection routine targeting `~/.forge/directives` with
-  integrate=true — prompt improvement through the ordinary merge pipeline.
-- [ ] Consider registering the directives dir as a first-class repo so
-  agents can be tasked against it directly.
+Done since: the library IS a registered repo (bootstrap, self-origin —
+scratch promotion curation Works run against it), `[directives]` is the TOML
+key, routines are target-only, and the 2026-09-04 wipe retired the 29
+migrated production directives (the good ones — the flow pipeline,
+architecture-docs — were curated into the base first; the old ~/.forge is
+archived at ~/.forge.pre-wipe-2026-09-04).
+
+- [ ] A reflection routine targeting the `directives` repo with
+  integrate=true — prompt improvement through the ordinary merge pipeline
+  (the repo registration it needed now exists).
 - [ ] Run-scoped SSE for the run view (the poller swap is ~20 lines).
 - [ ] Workflow experiments: third `experimentSubject` implementation
   (`workflow:<name>`) where a variant is a graph edit and a run is a real
   workflow run — the store/pipeline/API are already generic
   (internal/web/experiments.go); the open questions are what "variant" means
   for a graph and how to judge a multi-step run's output.
-- [ ] Tighten routine create/update to require `target` once the test
-  fixtures migrate off inline content (deviation noted in the P7 commit;
-  the store stays dual-mode either way for snapshot/A-B decode).
-- [ ] Migrated production directives could name personas the split preserved
-  as `persona:` frontmatter — review the 29 split files and consolidate
-  duplicated role text against the new base directives (plan-project,
-  implement-task, review-change, …).
-- [ ] Rename the `[prompts]` config TOML key to `[directives]` with a
-  read-fallback.
+- [ ] Scratch promotion follow-through: watch the first real promote-scratch
+  Works land (auto-merge is on); if curators mangle headers or dedupe badly,
+  the directive is the knob. Near-duplicate SCRATCH rows (different names,
+  same functionality) still accumulate below the threshold — a periodic
+  curation sweep over the cache could merge them.
