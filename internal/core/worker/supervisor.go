@@ -598,6 +598,10 @@ func (p *Process) Wait() ExitStatus {
 // Stop kills the group with the identity recorded at launch. The first reason
 // wins and is reported as ExitStatus.Stopped; after the exit it is a no-op, so
 // a cancel racing a natural exit is harmless.
+// Exited closes once cmd.Wait has returned — the linger watcher's signal
+// that no kill is needed.
+func (p *Process) Exited() <-chan struct{} { return p.exited }
+
 func (p *Process) Stop(reason string, grace time.Duration) error {
 	p.mu.Lock()
 	if p.exitedFlag {

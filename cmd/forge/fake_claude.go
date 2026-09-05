@@ -27,6 +27,7 @@ import (
 type fakeMeta struct {
 	ExitCode       int               `toml:"exit_code"`
 	DelayMS        int               `toml:"delay_ms"`
+	LingerMS       int               `toml:"linger_ms"` // stay alive after the last line (linger-watcher tests)
 	ResumeScript   string            `toml:"resume_script"`
 	NeedsInputAt   int               `toml:"needs_input_at"`
 	RateLimitEvent *fakeRateLimit    `toml:"rate_limit_event"`
@@ -353,6 +354,14 @@ func (r *fakeReplay) run(ctx context.Context) (int, error) {
 	// A script without a result line still gets its rate_limit_event, at the end.
 	if err := emitRateLimit(); err != nil {
 		return 1, err
+	}
+	// linger_ms holds the process open AFTER its last line — simulating an
+	// executor that delivered its result and then wedged (telemetry retry
+	// loops), which the worker's linger watcher must grace-kill.
+	if meta.LingerMS > 0 {
+		if err := sleepCtx(ctx, time.Duration(meta.LingerMS)*time.Millisecond); err != nil {
+			return 1, fmt.Errorf("linger: %w", err)
+		}
 	}
 	return meta.ExitCode, nil
 }

@@ -338,3 +338,25 @@ func TestAttemptDeclaredChecksL1(t *testing.T) {
 		t.Errorf("failing test not extracted: %s", req.Verification.Verdict)
 	}
 }
+
+// An executor that delivers its final result and then lingers (telemetry
+// retry loops against the sandbox) is grace-killed by the linger watcher —
+// the attempt succeeds with the delivered result instead of burning its
+// whole wall and failing as a timeout.
+func TestAttemptResultLingerKilled(t *testing.T) {
+	old := resultLingerGrace
+	resultLingerGrace = 300 * time.Millisecond
+	t.Cleanup(func() { resultLingerGrace = old })
+	f := newRunnerFixture(t, "lingering")
+	c := f.claim(model.AutonomyAuto)
+	start := time.Now()
+	req := f.run(c)
+	elapsed := time.Since(start)
+	if req.State != model.Succeeded || len(req.Result) == 0 {
+		t.Fatalf("complete = state %s (%s), result %d bytes", req.State, req.FailureReason, len(req.Result))
+	}
+	// The fixture lingers 8s; anything near that means the watcher never fired.
+	if elapsed > 6*time.Second {
+		t.Fatalf("attempt took %s — the linger watcher did not kill the process", elapsed)
+	}
+}

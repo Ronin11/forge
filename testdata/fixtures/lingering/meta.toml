@@ -1,0 +1,6 @@
+# The inventory run, but the process stays alive 8s after its result line —
+# an executor that delivered and then wedged. The worker's linger watcher
+# must grace-kill it and keep the result.
+exit_code = 0
+delay_ms = 2
+linger_ms = 8000

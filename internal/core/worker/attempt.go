@@ -43,7 +43,15 @@ const (
 	heartbeatRetryMin = time.Second
 	heartbeatRetryMax = 10 * time.Second
 	leaseLostAfter    = 120 * time.Second
+	// stopResultLinger marks a process killed AFTER delivering its final
+	// result — housekeeping, not failure; the outcome switch keeps the result.
+	stopResultLinger = "result_linger"
 )
+
+// resultLingerGrace is how long a process may live past its final result
+// frame before the linger watcher kills its group. A variable so the attempt
+// tests can shrink it.
+var resultLingerGrace = 30 * time.Second
 
 // Runner executes one claim end to end. It is built once per worker and is
 // safe for concurrent attempts.
@@ -265,6 +273,12 @@ func (a *attempt) execute(ctx context.Context, start time.Time, launches int) pr
 		state, reason = model.Cancelled, model.ReasonCancelled
 	case a.stopped() == "lease_lost":
 		state, reason = model.Failed, model.ReasonLeaseExpired
+	case len(result.Structured) > 0 && !result.IsError &&
+		(exit.Stopped == stopResultLinger || exit.TimedOut):
+		// The agent delivered its final result and the process lingered (the
+		// linger watcher's kill, or in the worst case the wall's); either
+		// way the kill was housekeeping — the result stands, and the
+		// envelope parse below decides the real outcome.
 	case exit.TimedOut:
 		state, reason = model.Failed, model.ReasonTimeout
 	case (exit.Code != 0 || result.IsError) && effMaxTurns > 0 && result.NumTurns >= effMaxTurns:
@@ -689,8 +703,18 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 	}
 	openSpans := map[string]int64{}
 	var openMu sync.Mutex
+	// resultSeen closes when the stream delivers the final result frame: from
+	// that moment the executor has nothing left to say, and a process that
+	// lingers (telemetry retry loops against the sandbox's denials, a stuck
+	// child) is holding a worker slot hostage — the linger watcher below
+	// grace-kills it and the outcome switch keeps the delivered result.
+	resultSeen := make(chan struct{})
+	var resultOnce sync.Once
 	onLine := func(line []byte) {
 		for _, ev := range parser.Line(line) {
+			if ev.Kind == protocol.KindLifecycle && ev.Message == "result" {
+				resultOnce.Do(func() { close(resultSeen) })
+			}
 			switch ev.Kind {
 			case protocol.KindSpanStart:
 				openMu.Lock()
@@ -733,6 +757,25 @@ func (a *attempt) runAgent(ctx context.Context, launch int, mcpConfig string) (P
 			a.log.WarnContext(ctx, "stop after launch", "error", serr)
 		}
 	}
+	// The linger watcher: a delivered result means the run is over, whatever
+	// the process thinks. Found live: a planner finished in 2.5 minutes, then
+	// the executor spun on sandbox-denied telemetry for 57 more until the
+	// wall killed it and the timeout ate a perfectly good plan.
+	go func() {
+		select {
+		case <-resultSeen:
+		case <-p.Exited():
+			return
+		}
+		select {
+		case <-time.After(resultLingerGrace):
+			a.emitter.Lifecycle("result linger kill", map[string]any{"grace": resultLingerGrace.String()})
+			if serr := p.Stop(stopResultLinger, killGrace); serr != nil {
+				a.log.WarnContext(ctx, "result linger kill", "error", serr)
+			}
+		case <-p.Exited():
+		}
+	}()
 	m.PID, m.PIDStart, m.ProcessActive, m.Lifecycle, m.Launches = p.PID(), p.PIDStart(), true, ManifestRunning, launch
 	if err := a.r.manifests.Write(m); err != nil {
 		a.log.ErrorContext(ctx, "manifest write after launch", "error", err)
