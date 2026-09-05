@@ -4,3 +4,6 @@
 [submodule "site"]
 	path = site
 	url = git@github.com:Ronin11/ashbyforge.git
+[submodule "plugins"]
+	path = plugins
+	url = git@github.com:Ronin11/forge-plugins.git

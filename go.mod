@@ -4,7 +4,9 @@ go 1.27
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/dop251/goja v0.0.0-20260901132549-43234fa61381
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/yuin/goldmark v1.8.5
 	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.57.0
@@ -13,7 +15,6 @@ require (
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
-	github.com/dop251/goja v0.0.0-20260901132549-43234fa61381 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
@@ -22,7 +23,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.16.0 // indirect

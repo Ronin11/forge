@@ -5,12 +5,12 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 staticcheck_version := "v0.8.1"
 errcheck_version := "v1.20.0"
 
-# Build the binary into ./forge with the git describe as its version. The
-# base library (internal/core/directives/starter) is a submodule and so is
-# the public site (site/ → ashbyforge.com); a fresh clone needs the library
-# before go:embed has anything to embed.
+# Build the binary into ./forge with the git describe as its version. Three
+# submodules ride along — the base library (internal/core/directives/starter,
+# needed before go:embed has anything to embed), the public site (site/), and
+# the first-party plugins (plugins/, its own Go module).
 submodules:
-    test -f internal/core/directives/starter/UPSTREAM -a -f site/index.html || git submodule update --init
+    test -f internal/core/directives/starter/UPSTREAM -a -f site/index.html -a -f plugins/README.md || git submodule update --init
 
 build: submodules
     go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o forge ./cmd/forge
@@ -147,8 +147,13 @@ lines:
     @printf "UI (tmpl/js/css): "; (find internal -path '*/ui/*' -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \) 2>/dev/null | xargs cat 2>/dev/null || true) | wc -l
 
 # The gate.
-check: fmt-check vet staticcheck errcheck generate-check boundary test bench kb-check ui-test lines eval-check
+check: fmt-check vet staticcheck errcheck generate-check boundary test plugins-check bench kb-check ui-test lines eval-check
     @echo "check: green"
+
+# The plugins submodule is its own module, so ./... no longer reaches it;
+# the gate still proves it builds and its tests pass.
+plugins-check: submodules
+    cd plugins && go build ./... && go test -race -count=1 ./...
 
 # Build first-party plugin binaries (M7). The installer runs each manifest's
 # build argv; this is the developer convenience for the same step.

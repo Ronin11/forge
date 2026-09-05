@@ -4,13 +4,7 @@
 *.sqlite3*
 /ui/node_modules/
 /ui/test-results/
-/plugins/status-file/forge-status-file
-/plugins/notify/forge-notify
-/plugins/github-issues/forge-github-issues
-/plugins/teams/forge-teams
-/plugins/email/forge-email
 .claude/
 test-results/
 playwright-report/
 __pycache__/
-/plugins/signal/forge-signal

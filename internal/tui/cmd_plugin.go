@@ -197,9 +197,10 @@ func runPluginInstall(ctx context.Context, c *Context, args []string) int {
 		return c.Fail("plugin install", err)
 	}
 	if len(m.Build) > 0 {
-		// Build in the SOURCE checkout: first-party Go plugins are part of the
-		// repo module and cannot build from the copied dir (no go.mod there —
-		// M7 smoke 1). The built binary ships with the copy.
+		// Build in the SOURCE checkout: first-party Go plugins live in the
+		// plugins submodule's own module and cannot build from the copied
+		// dir (no go.mod there — M7 smoke 1). The built binary ships with
+		// the copy.
 		fmt.Fprintf(c.Stdout, "building %s: %s\n", name, strings.Join(m.Build, " "))
 		if err := runPluginBuild(ctx, c, src, m.Build); err != nil {
 			return c.Fail("plugin install", err)
