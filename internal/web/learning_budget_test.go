@@ -12,15 +12,16 @@ import (
 	"forge/internal/core/store"
 )
 
-// The learning ledger: reflect-library roots are refused once the rolling-7d
-// self-improvement spend crosses [learning] usd_per_week; project work and
-// mid-flight children are untouched.
+// The learning ledger meters API-billed dollars only: subscription spend is
+// prepaid (use-it-or-lose-it) and never trips the pool; spend on an
+// API-billed runner does. Project work and mid-flight children are untouched.
 func TestLearningBudgetGate(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.createRoutineWith("reflect-library", "reflect {{objective}}")
 	h.createRoutineWith("normal-work", "work {{objective}}")
 	h.srv.learningCfg = config.LearningConfig{BudgetUSDPerWeek: 1.0}
+	h.srv.apiBilledRunners = []string{"devbox"}
 
 	// Under budget: a reflect run is created.
 	first := h.run("reflect-library")
@@ -39,6 +40,16 @@ func TestLearningBudgetGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Subscription spend (no runner on the attempt) never trips the pool.
+	h.run("reflect-library")
+
+	// The same spend on an API-billed runner does.
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		_, uerr := tx.Exec(context.Background(), `UPDATE attempts SET runner = 'devbox' WHERE id = ?`, c.AttemptID)
+		return uerr
+	}); err != nil {
+		t.Fatal(err)
+	}
 	status, body := h.do(http.MethodPost, "/api/v1/routines/reflect-library/run", nil, nil, testToken)
 	if status != http.StatusConflict || !strings.Contains(string(body), "learning budget exhausted") {
 		t.Fatalf("over-budget reflect = %d %s", status, body)

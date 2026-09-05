@@ -307,6 +307,14 @@ func (s *Engine) ladderEscalate(ctx context.Context, worker store.Worker, w stor
 	if priorCount == 0 {
 		return nil, false, nil
 	}
+	// Backlog stops at the configured ceiling — unless the subscription
+	// windows are running behind their burn-down pace, in which case the top
+	// rungs are prepaid capacity about to expire and the ceiling lifts.
+	ceiling := s.routing.BacklogCeiling
+	if w.BudgetClass == model.ClassBacklog && ceiling != "" && s.capacitySurplus(ctx, surplusMargin) {
+		s.log.InfoContext(ctx, "ladder ceiling lifted on window surplus", "work_id", w.ID, "ceiling", ceiling)
+		ceiling = ""
+	}
 	rungs := []string{snap.Model}
 	seen := map[string]bool{snap.Model: true}
 	base := -1
@@ -320,7 +328,7 @@ func (s *Engine) ladderEscalate(ctx context.Context, worker store.Worker, w stor
 			rungs = append(rungs, alias)
 			seen[alias] = true
 		}
-		if w.BudgetClass == model.ClassBacklog && alias == s.routing.BacklogCeiling {
+		if w.BudgetClass == model.ClassBacklog && alias == ceiling {
 			break
 		}
 	}

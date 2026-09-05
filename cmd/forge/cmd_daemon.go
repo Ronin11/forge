@@ -267,25 +267,26 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 			promptsLib.Store(lib)
 			return nil
 		},
-		ExecRestart:  func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
-		RegisterRepo: d.registerRepoOnTheFly,
-		AddRepo:      d.addRepo,
-		ArchiveRepo:  d.archiveRepo,
-		RestoreRepo:  d.restoreRepo,
-		StartApp:     runSup.StartApp,
-		StopApp:      runSup.StopApp,
-		RebuildApp:   runSup.RebuildApp,
-		AppStatus:    runSup.AppStatus,
-		ModelCall:    d.modelCall,
-		Attention:    d.cfg.Attention,
-		Scratch:      d.cfg.Scratch,
-		Plan:         d.cfg.Plan,
-		Experiments:  d.cfg.Experiments,
-		Learning:     d.cfg.Learning,
-		Bench:        d.cfg.Bench,
-		QuietHours:   d.cfg.Budget.QuietHours,
-		Supervision:  d.cfg.Supervision,
-		Store:        st, Policy: policy, Logger: d.handler.For("web.http"), Version: version, Token: token, Home: home, Modes: registry,
+		ExecRestart:      func(execPath string) error { return d.execRestart(execPath, unixL, tcpL) },
+		RegisterRepo:     d.registerRepoOnTheFly,
+		AddRepo:          d.addRepo,
+		ArchiveRepo:      d.archiveRepo,
+		RestoreRepo:      d.restoreRepo,
+		StartApp:         runSup.StartApp,
+		StopApp:          runSup.StopApp,
+		RebuildApp:       runSup.RebuildApp,
+		AppStatus:        runSup.AppStatus,
+		ModelCall:        d.modelCall,
+		Attention:        d.cfg.Attention,
+		Scratch:          d.cfg.Scratch,
+		Plan:             d.cfg.Plan,
+		Experiments:      d.cfg.Experiments,
+		Learning:         d.cfg.Learning,
+		Bench:            d.cfg.Bench,
+		APIBilledRunners: apiBilledRunners(d.cfg.Runners),
+		QuietHours:       d.cfg.Budget.QuietHours,
+		Supervision:      d.cfg.Supervision,
+		Store:            st, Policy: policy, Logger: d.handler.For("web.http"), Version: version, Token: token, Home: home, Modes: registry,
 		// Executable seeds auto-eval's walk to the checkout's evals/ + fixtures
 		// (autoeval.go); when the binary is not in its checkout, auto-eval
 		// stays disabled and approvals use the force override.
@@ -338,7 +339,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	}
 	ui.SetPluginHealth(sup.Health)
 	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
-	ui.SetLearning(d.cfg.Learning)
+	ui.SetLearning(d.cfg.Learning, apiBilledRunners(d.cfg.Runners), policy.Usage)
 	ui.SetAppStatus(runSup.AppStatus)
 	srv.MountRoot(ui.Handler())
 	pid := os.Getpid()
@@ -1137,6 +1138,18 @@ func runnerCapacities(cfg *config.Config) map[string]int {
 	for name, r := range cfg.Runners {
 		if r.Capacity > 0 {
 			out[name] = r.Capacity
+		}
+	}
+	return out
+}
+
+// apiBilledRunners lists the runners whose spend is real marginal dollars —
+// the only spend the [learning] USD pool meters.
+func apiBilledRunners(runners map[string]config.RunnerConfig) []string {
+	var out []string
+	for name, r := range runners {
+		if r.Billing == "api" {
+			out = append(out, name)
 		}
 	}
 	return out

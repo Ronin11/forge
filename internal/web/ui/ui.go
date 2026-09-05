@@ -53,8 +53,11 @@ type UI struct {
 	attentionCfg config.AttentionConfig
 	quietHours   config.QuietHoursConfig
 	// learningCfg shows the self-improvement budget pool on the Learning
-	// page; zero hides the pool line.
+	// page; zero hides the pool line. apiRunners scope the pool to API-billed
+	// spend; usage reports subscription-window capacity (nil hides it).
 	learningCfg config.LearningConfig
+	apiRunners  []string
+	usage       func(ctx context.Context) (engine.Usage, error)
 }
 
 // SetAppStatus wires the run supervisor's live app state into the Repos list:
@@ -75,8 +78,12 @@ func (u *UI) SetAttention(cfg config.AttentionConfig, quiet config.QuietHoursCon
 }
 
 // SetLearning wires the [learning] budget into the Learning page's header;
-// the daemon calls it once at startup.
-func (u *UI) SetLearning(cfg config.LearningConfig) { u.learningCfg = cfg }
+// the daemon calls it once at startup. apiRunners are the API-billed runner
+// names — the only spend the USD pool meters; usage (nil for a bare UI)
+// reports the subscription windows so the page can show real capacity.
+func (u *UI) SetLearning(cfg config.LearningConfig, apiRunners []string, usage func(ctx context.Context) (engine.Usage, error)) {
+	u.learningCfg, u.apiRunners, u.usage = cfg, apiRunners, usage
+}
 
 // NewUI parses the embedded templates once; a template error is a startup error.
 func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn func() *directives.Library) (*UI, error) {

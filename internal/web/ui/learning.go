@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -42,17 +43,21 @@ type learningData struct {
 	Landed, Refuted, Reverted int
 	ExpOpen, ExpPromoted      int
 	SpendUSD                  float64
-	// The [learning] pool: rolling-7d spend against the weekly budget.
+	// The [learning] pool: rolling-7d API-billed spend against the weekly
+	// budget (subscription spend is prepaid and governed by capacity).
 	WeekSpendUSD, BudgetUSD float64
+	// Capacity is the subscription-window line ("" when no policy is wired).
+	Capacity string
 }
 
 func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var data learningData
 	data.BudgetUSD = u.learningCfg.BudgetUSDPerWeek
-	if spent, err := u.store.LearningSpendSince(ctx, u.clock().Add(-7*24*time.Hour)); err == nil {
+	if spent, err := u.store.LearningAPISpendSince(ctx, u.clock().Add(-7*24*time.Hour), u.apiRunners); err == nil {
 		data.WeekSpendUSD = spent
 	}
+	data.Capacity = u.capacityLine(ctx)
 
 	proposals, err := u.store.ListProposals(ctx, "")
 	if err != nil {
@@ -376,4 +381,40 @@ func libraryCommits(ctx context.Context, dir string, limit int) []libraryCommit 
 		commits = append(commits, c)
 	}
 	return commits
+}
+
+// capacityLine renders the subscription windows for the Learning header:
+// utilization vs the burn-down pace, and what the last reset left unspent —
+// the use-it-or-lose-it number the loop exists to spend.
+func (u *UI) capacityLine(ctx context.Context) string {
+	if u.usage == nil {
+		return ""
+	}
+	usage, err := u.usage(ctx)
+	if err != nil {
+		return ""
+	}
+	part := func(w engine.WindowUsage, label string) string {
+		if w.Utilization < 0 {
+			return ""
+		}
+		line := label + " " + strconv.Itoa(int(w.Utilization*100+0.5)) + "% used"
+		if w.FractionElapsed > 0 {
+			line += " (pace " + strconv.Itoa(int(w.FractionElapsed*100+0.5)) + "%)"
+		}
+		if w.LastResetUnspent != nil && *w.LastResetUnspent > 0 {
+			line += ", last reset wasted " + strconv.Itoa(int(*w.LastResetUnspent*100+0.5)) + "%"
+		}
+		return line
+	}
+	five, seven := part(usage.FiveHour, "5h"), part(usage.SevenDay, "7d")
+	switch {
+	case five == "" && seven == "":
+		return ""
+	case five == "":
+		return seven
+	case seven == "":
+		return five
+	}
+	return five + " · " + seven
 }

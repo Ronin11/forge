@@ -172,3 +172,36 @@ func (s *Store) OpenWorkCountForSubmitter(ctx context.Context, submittedBy strin
 	err := s.queryRow(ctx, `SELECT COUNT(*) FROM work WHERE submitted_by = ? AND finished_at IS NULL`, submittedBy).Scan(&n)
 	return n, err
 }
+
+// LearningAPISpendSince is LearningSpendSince restricted to attempts that ran
+// on API-billed runners — the only spend that is real marginal dollars. With
+// no API-billed runners configured it is always zero: subscription tokens are
+// prepaid (use-it-or-lose-it) and are governed by window capacity, not USD.
+func (s *Store) LearningAPISpendSince(ctx context.Context, since time.Time, apiRunners []string) (float64, error) {
+	if len(apiRunners) == 0 {
+		return 0, nil
+	}
+	args := []any{}
+	marks := ""
+	for i, r := range apiRunners {
+		if i > 0 {
+			marks += ","
+		}
+		marks += "?"
+		args = append(args, r)
+	}
+	args = append(args, formatTime(since))
+	var usd sql.NullFloat64
+	err := s.queryRow(ctx, `
+		SELECT SUM(f.cost_usd) FROM attempt_facts f
+		JOIN work w ON w.id = f.work_id
+		JOIN attempts a ON a.id = f.attempt_id
+		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion'
+		   OR EXISTS (SELECT 1 FROM work r WHERE r.id = f.root_work_id AND r.submitted_by LIKE 'bench:%'))
+		  AND a.runner IN (`+marks+`)
+		  AND f.finished_at > ?`, args...).Scan(&usd)
+	if err != nil {
+		return 0, fmt.Errorf("learning api spend: %w", err)
+	}
+	return usd.Float64, nil
+}

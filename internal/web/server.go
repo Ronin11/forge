@@ -108,9 +108,14 @@ type Engine struct {
 	// (handlers_supervise.go).
 	planCfg config.PlanConfig
 	// experimentsCfg + the live-assignment cache (live_experiments.go).
-	experimentsCfg  config.ExperimentsConfig
-	learningCfg     config.LearningConfig
-	benchCfg        config.BenchConfig
+	experimentsCfg config.ExperimentsConfig
+	learningCfg    config.LearningConfig
+	benchCfg       config.BenchConfig
+	// apiBilledRunners are the runner names whose spend is real marginal
+	// dollars; only their facts count against the [learning] USD pool.
+	apiBilledRunners []string
+	// lastOpportunist throttles surplus-triggered learning (capacity.go).
+	lastOpportunist time.Time
 	liveMu          sync.Mutex
 	liveByDirective map[string]*liveExperiment
 	liveByPersona   map[string]*liveExperiment
@@ -265,6 +270,8 @@ type ServerOptions struct {
 	Learning config.LearningConfig
 	// Bench enables daemon-fired benchmark runs; empty SpecsDir disables.
 	Bench config.BenchConfig
+	// APIBilledRunners: runner names with billing = "api" (real dollars).
+	APIBilledRunners []string
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -350,7 +357,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
-		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments, learningCfg: o.Learning, benchCfg: o.Bench,
+		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments, learningCfg: o.Learning, benchCfg: o.Bench, apiBilledRunners: o.APIBilledRunners,
 		liveByDirective: map[string]*liveExperiment{}, liveByPersona: map[string]*liveExperiment{},
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},

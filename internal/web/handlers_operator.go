@@ -606,7 +606,7 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	// (verify follow-up, continuation) must not wedge on an exhausted pool.
 	if req.CausedBy == "" && s.learningCfg.BudgetUSDPerWeek > 0 &&
 		(rt.Name == "reflect-library" || req.cause == model.CausePromotion) {
-		spent, err := s.store.LearningSpendSince(ctx, s.now().Add(-7*24*time.Hour))
+		spent, err := s.store.LearningAPISpendSince(ctx, s.now().Add(-7*24*time.Hour), s.apiBilledRunners)
 		if err != nil {
 			return workCreated{}, err
 		}

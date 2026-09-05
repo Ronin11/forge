@@ -34,7 +34,7 @@ func (s *Server) startBenchRun(ctx context.Context, name string, trigger model.T
 		return workCreated{}, badRequest("%v", err)
 	}
 	if s.learningCfg.BudgetUSDPerWeek > 0 {
-		spent, err := s.store.LearningSpendSince(ctx, s.now().Add(-7*24*time.Hour))
+		spent, err := s.store.LearningAPISpendSince(ctx, s.now().Add(-7*24*time.Hour), s.apiBilledRunners)
 		if err != nil {
 			return workCreated{}, err
 		}
@@ -69,12 +69,19 @@ func (s *Server) startBenchRun(ctx context.Context, name string, trigger model.T
 	var created workCreated
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
 		var werr error
+		class := model.ClassInteractive
+		if trigger == model.TriggerSchedule {
+			// A scheduled benchmark is R&D riding prepaid capacity: backlog
+			// class paces the whole tree (children inherit) along the
+			// burn-down line instead of competing with interactive work.
+			class = model.ClassBacklog
+		}
 		created, werr = s.createWorkTx(ctx, tx, workRequest{
 			Prompt: spec.Body, Repositories: []string{repo.Name}, Mode: "plan",
 			Size: spec.Size, Model: spec.Model, Autonomy: model.Autonomy(spec.Autonomy),
 			MaxTurns: &spec.MaxTurns, TimeoutSeconds: &spec.Timeout,
 			Integrate: true, BenchName: name, Title: "bench: " + name, Force: true,
-			trigger: trigger,
+			trigger: trigger, Class: class,
 		})
 		return werr
 	})
