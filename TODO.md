@@ -119,3 +119,40 @@ prompt-stuffed):
 
 Next concrete step: build parser + profile script + voice-ingest workflow
 against a dummy corpus, ready for the day the real export lands.
+
+## P2 — verify the loop holds for data work (2026-09-05)
+
+- [ ] Data-scraping bench spec: build a scraper + curated dataset from an
+      allowlisted source, with declared checks that validate the DATA
+      (schema, row counts, dedupe, freshness stamps) — not just the code.
+      Open questions this must answer: per-repo network egress policy (the
+      sandbox denies by default; scraping needs scoped allow_hosts, which is
+      a worker/config surface, not a prompt), long-poll jobs vs. the attempt
+      timeout envelope, and whether the merge queue behaves with large/
+      generated files (git-for-data caveats — maybe artifacts, not commits).
+- [ ] Data-science bench spec: an analysis with VERIFIABLE claims — L1 =
+      a validation suite over the outputs, L2 = an independent agent re-runs
+      the pipeline and checks the numbers match the report. The verification
+      ideology transfers exactly ("the agent said the correlation is 0.7" is
+      not a state); what's untested is whether supervise can judge analysis
+      quality vs. shippable-code quality with the same 1-5 rubric.
+
+## P2 — our own execution harness (2026-09-05)
+
+- [ ] Tonight's linger wedge is the case study: the claude CLI is an opaque
+      subprocess — telemetry retry loops we can't disable, version-skew
+      handshakes, exit behavior we work around from the outside
+      (resultLingerGrace). A first-party executor — the Agent SDK / API
+      tool-runner driving the loop directly — would own the turn loop,
+      retries, context assembly, and shutdown, and could stream structured
+      events natively instead of parsing stream-json. The seam already
+      exists and is proven: Executors config is pluggable and fake-claude
+      rides it; capability parity needed = allowed_tools, json_schema,
+      resume, steer, effort, max_budget_usd.
+      THE ECONOMIC CAVEAT that decides this: the CLI runs on the Max
+      subscription; an API harness pays per token. Likely answer is both —
+      keep claude-code as the subscription workhorse, add forge-runner for
+      the attempts where control matters more than price (supervise,
+      verify, benchmark judges) and measure with the cost columns we
+      already have. Prerequisite reading: whether the SDK can run against
+      subscription auth at all.
