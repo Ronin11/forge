@@ -10,7 +10,8 @@ package web
 // the createWorkTx write transaction — and rebuilt whenever the base library
 // pointer changes (the 30s hot reload, or a synchronous promptsReload), so
 // an arm never composes against stale sibling fragments. Assignment itself
-// is a map read plus a round-robin increment under a mutex.
+// is a map read plus an uncertainty-sampling pick under a mutex: the next
+// run goes to the arm whose posterior is widest.
 //
 // Drift authority: the pinned control hash must equal the current library
 // fragment's hash at every decide tick; any mismatch (human edit,
@@ -31,6 +32,7 @@ import (
 
 	"forge/internal/core/directives"
 	"forge/internal/core/model"
+	"forge/internal/core/stats"
 	"forge/internal/core/store"
 )
 
@@ -41,14 +43,21 @@ type liveArm struct {
 	lib                         *directives.Library
 }
 
-// liveExperiment is one cached, serving experiment.
+// liveExperiment is one cached, serving experiment. counts are per-arm
+// verified successes/failures from facts (reloaded every refresh); pending
+// counts assignments made since the last refresh so consecutive picks spread
+// before their outcomes land.
 type liveExperiment struct {
 	id, subjectKind, name string // subjectKind "directive" | "persona"
 	arms                  []liveArm
 	base                  *directives.Library
-	next                  uint64
+	counts                []armCount
+	pending               []int
 	suspended             string // non-empty reason => passthrough; the decide tick aborts
 }
+
+// armCount is one arm's outcome record, indexed like arms.
+type armCount struct{ succ, fail int }
 
 // experimentsLimits resolves [experiments] with defaults.
 func (s *Engine) experimentsLimits() (minRuns, maxArms int, maxAge time.Duration, promote string) {
@@ -72,8 +81,8 @@ func (s *Engine) experimentsLimits() (minRuns, maxArms int, maxAge time.Duration
 
 // refreshLiveExperiments rebuilds the assignment cache from the store and
 // the current library. Entries whose experiment id and base library are
-// unchanged are kept (preserving the round-robin cursor); everything else
-// is rebuilt outside the lock.
+// unchanged are kept; per-arm outcome counts reload every refresh (and
+// pending picks reset with them), so allocation follows the evidence.
 func (s *Engine) refreshLiveExperiments(ctx context.Context) {
 	lib := s.libraryNow()
 	rows, err := s.store.LiveExperiments(ctx)
@@ -105,13 +114,13 @@ func (s *Engine) refreshLiveExperiments(ctx context.Context) {
 		entry := old[row.ID]
 		if entry == nil || entry.base != lib {
 			entry = s.buildLiveEntry(row, kind, name, lib)
-			if old[row.ID] != nil {
-				entry.next = old[row.ID].next
-			} else if n, err := s.store.CountExperimentAssignments(ctx, row.ID); err == nil {
-				// A fresh cache (daemon restart) resumes the rotation where
-				// the stamped works left it — otherwise every deploy resets
-				// the cursor and control starves the variant arms.
-				entry.next = uint64(n)
+		}
+		if entry.suspended == "" {
+			counts, err := s.armOutcomeCounts(ctx, row.ID, entry)
+			if err != nil {
+				s.log.WarnContext(ctx, "live experiments: arm counts", "experiment", row.ID, "error", err)
+			} else {
+				entry.counts, entry.pending = counts, make([]int, len(entry.arms))
 			}
 		}
 		if kind == "directive" {
@@ -152,6 +161,7 @@ func (s *Engine) buildLiveEntry(row *store.Experiment, kind, name string, base *
 		}
 		e.arms = append(e.arms, arm)
 	}
+	e.pending = make([]int, len(e.arms))
 	return e
 }
 
@@ -183,18 +193,41 @@ func (s *Engine) assignLiveExperiment(rt *store.Routine, opts materializeOpts, b
 	if entry == nil || entry.suspended != "" || entry.base != base || len(entry.arms) == 0 {
 		return nil, "", ""
 	}
-	n := entry.next
-	entry.next++
-	arm := entry.arms[n%uint64(len(entry.arms))]
+	// Uncertainty sampling: the next run goes to the arm whose posterior is
+	// widest (Beta variance over its recorded outcomes), damped by picks
+	// still in flight — information gain per run, not rotation. With no
+	// outcomes yet this degenerates to spreading assignments evenly.
+	best, bestScore := 0, -1.0
+	for i := range entry.arms {
+		var c armCount
+		if i < len(entry.counts) {
+			c = entry.counts[i]
+		}
+		pending := 0
+		if i < len(entry.pending) {
+			pending = entry.pending[i]
+		}
+		score := stats.BetaVariance(c.succ, c.fail) / float64(1+pending)
+		if score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	if len(entry.pending) == len(entry.arms) {
+		entry.pending[best]++
+	}
+	arm := entry.arms[best]
 	return arm.lib, entry.id, arm.label
 }
 
 // liveExperimentTallies computes per-arm running tallies for one experiment
-// (the GET surface).
+// (the GET surface). RateLow/RateHigh are the Wilson 95% bounds — at the
+// small n live experiments run at, the interval is the honest number.
 type armTally struct {
 	Label        string  `json:"label"`
 	Runs         int     `json:"runs"`
 	VerifiedRate float64 `json:"verified_rate"`
+	RateLow      float64 `json:"rate_low"`
+	RateHigh     float64 `json:"rate_high"`
 }
 
 func (s *Engine) liveExperimentTallies(ctx context.Context, id string, minRuns int) ([]armTally, error) {
@@ -209,7 +242,9 @@ func (s *Engine) liveExperimentTallies(ctx context.Context, id string, minRuns i
 	var out []armTally
 	for label, fs := range byArm {
 		rate, _ := verifiedOutcome(fs)
-		out = append(out, armTally{Label: label, Runs: len(fs), VerifiedRate: rate})
+		tl := armTally{Label: label, Runs: len(fs), VerifiedRate: rate}
+		tl.RateLow, tl.RateHigh = stats.WilsonInterval(int(rate*float64(len(fs))+0.5), len(fs), 1.96)
+		out = append(out, tl)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out, nil
@@ -228,7 +263,8 @@ type liveResults struct {
 	Reason     string          `json:"reason"`
 	Winner     string          `json:"winner,omitempty"`
 	K          int             `json:"k"`
-	Margin     float64         `json:"margin"`
+	Confidence float64         `json:"confidence,omitempty"` // required P(variant > control)
+	Margin     float64         `json:"margin,omitempty"`     // legacy rows only
 	Arms       []liveArmResult `json:"arms,omitempty"`
 	ProposalID string          `json:"proposal_id,omitempty"`
 	AppliedRef string          `json:"applied_ref,omitempty"`
@@ -238,6 +274,7 @@ type liveArmResult struct {
 	Label            string   `json:"label"`
 	Runs             int      `json:"runs"`
 	VerifiedRate     float64  `json:"verified_rate"`
+	PSuperiority     *float64 `json:"p_superiority,omitempty"` // P(this arm > control)
 	CostPerSuccess   *float64 `json:"cost_per_success,omitempty"`
 	MeanScoreOverall *float64 `json:"mean_score_overall,omitempty"`
 }
@@ -245,7 +282,7 @@ type liveArmResult struct {
 // decideLiveExperiments is the sweep-tick pass: fail stale setups, abort on
 // drift, and once every arm has an equal-n window, pick the winner and
 // promote (or keep control / go inconclusive).
-func (s *Engine) decideLiveExperiments(ctx context.Context, margin float64) {
+func (s *Engine) decideLiveExperiments(ctx context.Context) {
 	rows, err := s.store.LiveExperiments(ctx)
 	if err != nil {
 		s.log.WarnContext(ctx, "live experiments: decide list", "error", err)
@@ -254,13 +291,13 @@ func (s *Engine) decideLiveExperiments(ctx context.Context, margin float64) {
 	lib := s.libraryNow()
 	for i := range rows {
 		row := &rows[i]
-		if err := s.decideLiveExperiment(ctx, row, lib, margin); err != nil {
+		if err := s.decideLiveExperiment(ctx, row, lib); err != nil {
 			s.log.WarnContext(ctx, "live experiment decide", "experiment", row.ID, "subject", row.Subject, "error", err)
 		}
 	}
 }
 
-func (s *Engine) decideLiveExperiment(ctx context.Context, row *store.Experiment, lib *directives.Library, margin float64) error {
+func (s *Engine) decideLiveExperiment(ctx context.Context, row *store.Experiment, lib *directives.Library) error {
 	// A setup that died with the daemon holds the one-live-per-subject index
 	// hostage; fail it like the offline stale rule does.
 	if row.Status == store.ExperimentRunning {
@@ -300,57 +337,72 @@ func (s *Engine) decideLiveExperiment(ctx context.Context, row *store.Experiment
 			byArm[f.Variant] = append(byArm[f.Variant], f)
 		}
 	}
+	confidence := s.experimentsCfg.Confidence
+	if confidence <= 0.5 || confidence >= 1 {
+		confidence = 0.90
+	}
 	short := false
-	results := &liveResults{K: minRuns, Margin: margin}
-	for _, a := range arms {
+	results := &liveResults{K: minRuns, Confidence: confidence}
+	succ := make([]int, len(arms))
+	fail := make([]int, len(arms))
+	for i, a := range arms {
 		window := byArm[a.Label]
 		ar := liveArmResult{Label: a.Label, Runs: len(window)}
 		if len(window) > 0 {
 			rate, cost := verifiedOutcome(window)
 			ar.VerifiedRate, ar.CostPerSuccess = rate, cost
 			ar.MeanScoreOverall = meanScoreOverall(window)
+			succ[i] = int(rate*float64(len(window)) + 0.5)
+			fail[i] = len(window) - succ[i]
 		}
 		results.Arms = append(results.Arms, ar)
 		if len(window) < minRuns {
 			short = true
 		}
 	}
+	deadline := !row.DecideBy.IsZero() && s.now().After(row.DecideBy)
 	if short {
-		if !row.DecideBy.IsZero() && s.now().After(row.DecideBy) {
+		if deadline {
 			results.Decision, results.Reason = string(store.ExperimentInconclusive), "deadline passed with insufficient runs"
 			return s.closeLive(ctx, row, store.ExperimentInconclusive, results, "")
 		}
 		return nil // keep collecting
 	}
-	control := results.Arms[0]
-	anyVerified := false
-	for _, ar := range results.Arms {
-		if ar.VerifiedRate > 0 {
-			anyVerified = true
-		}
-	}
-	if !anyVerified {
-		results.Decision, results.Reason = string(store.ExperimentInconclusive), "no verified successes in any arm"
-		return s.closeLive(ctx, row, store.ExperimentInconclusive, results, "")
-	}
-	// Eligibility: beat control relatively AND absolutely by the margin.
-	winner := -1
+	// Posterior decision: promote when some variant beats control with
+	// P ≥ confidence; keep control when every variant is inferior with the
+	// same confidence; otherwise keep collecting until the deadline. min_runs
+	// is the floor, not the trigger — undecided evidence buys more evidence.
+	winner, bestP := -1, 0.0
+	allInferior := true
 	for i := 1; i < len(results.Arms); i++ {
-		ar := results.Arms[i]
-		if ar.VerifiedRate < control.VerifiedRate*(1+margin) || ar.VerifiedRate-control.VerifiedRate < margin {
+		p := stats.BetaSuperiority(succ[i], fail[i], succ[0], fail[0])
+		pv := p
+		results.Arms[i].PSuperiority = &pv
+		if p > 1-confidence {
+			allInferior = false
+		}
+		if p < confidence {
 			continue
 		}
-		if winner < 0 || betterArm(ar, results.Arms[winner]) {
-			winner = i
+		if winner < 0 || p > bestP || (p == bestP && betterArm(results.Arms[i], results.Arms[winner])) {
+			winner, bestP = i, p
 		}
 	}
 	if winner < 0 {
-		results.Decision, results.Reason = string(store.ExperimentKeptControl), "no variant beat control by the margin"
-		return s.closeLive(ctx, row, store.ExperimentKeptControl, results, "")
+		if allInferior {
+			results.Decision = string(store.ExperimentKeptControl)
+			results.Reason = fmt.Sprintf("every variant inferior to control with ≥ %.0f%% probability", confidence*100)
+			return s.closeLive(ctx, row, store.ExperimentKeptControl, results, "")
+		}
+		if deadline {
+			results.Decision, results.Reason = string(store.ExperimentInconclusive), "deadline passed with the posterior undecided"
+			return s.closeLive(ctx, row, store.ExperimentInconclusive, results, "")
+		}
+		return nil // undecided: keep collecting past min_runs
 	}
 	win := results.Arms[winner]
 	results.Winner = win.Label
-	results.Reason = fmt.Sprintf("%s verified rate %.2f vs control %.2f over %d runs each", win.Label, win.VerifiedRate, control.VerifiedRate, minRuns)
+	results.Reason = fmt.Sprintf("%s beats control with probability %.2f (%.2f vs %.2f over ≥%d runs each)", win.Label, bestP, win.VerifiedRate, results.Arms[0].VerifiedRate, minRuns)
 	var winContent string
 	for _, a := range arms {
 		if a.Label == win.Label {
@@ -429,7 +481,7 @@ func (s *Engine) promoteLiveWinner(ctx context.Context, row *store.Experiment, n
 			Before:           mustJSONRaw(map[string]string{"content": row.Baseline}),
 			After:            mustJSONRaw(map[string]string{"prompt": content}),
 			Rationale:        fmt.Sprintf("live experiment %s: %s — per-arm stats: %s", model.ShortID(row.ID), results.Reason, rationale),
-			VerificationPlan: fmt.Sprintf("live A/B: auto-revert on regression vs pre-promotion runs (K=%d, margin=%.2f)", results.K, results.Margin),
+			VerificationPlan: fmt.Sprintf("live A/B: auto-revert on regression vs pre-promotion runs (K=%d, confidence=%.2f)", results.K, results.Confidence),
 		}
 		if err := tx.CreateProposal(ctx, p); err != nil {
 			return err
@@ -460,8 +512,24 @@ func (s *Engine) promoteLiveWinner(ctx context.Context, row *store.Experiment, n
 	results.AppliedRef = ref
 	results.Decision = string(store.ExperimentPromoted)
 	if err := s.store.Write(ctx, func(tx *store.Tx) error {
-		_, werr := tx.MarkProposalApplied(ctx, pid, ref)
-		return werr
+		if _, werr := tx.MarkProposalApplied(ctx, pid, ref); werr != nil {
+			return werr
+		}
+		// The promotion is a resolvable prediction: the winner holds unless
+		// the A/B net reverts this proposal within the horizon. Its stated
+		// probability is the posterior that promoted it — calibration will
+		// say whether our confidence threshold is honest.
+		var prob *float64
+		for _, ar := range results.Arms {
+			if ar.Label == results.Winner {
+				prob = ar.PSuperiority
+			}
+		}
+		return tx.InsertPrediction(ctx, &store.Prediction{
+			Source: "experiment", SourceRef: row.ID, ProposalID: pid, Subject: row.Subject,
+			Statement:   fmt.Sprintf("promoted %s of %s survives the A/B net", results.Winner, row.Subject),
+			Probability: prob, ResolveBy: s.now().Add(7 * 24 * time.Hour),
+		})
 	}); err != nil {
 		return err
 	}
@@ -599,4 +667,34 @@ func readFragmentFile(path string) (string, error) {
 		return "", fmt.Errorf("read subject file: %w", err)
 	}
 	return string(b), nil
+}
+
+// armOutcomeCounts reads one experiment's facts into per-arm verified
+// success/failure counts, indexed like the entry's arms — the allocation
+// evidence, reloaded every refresh.
+func (s *Engine) armOutcomeCounts(ctx context.Context, id string, entry *liveExperiment) ([]armCount, error) {
+	facts, err := s.store.FactsByExperiment(ctx, id, 200)
+	if err != nil {
+		return nil, err
+	}
+	byLabel := map[string]*armCount{}
+	for _, f := range facts {
+		c := byLabel[f.Variant]
+		if c == nil {
+			c = &armCount{}
+			byLabel[f.Variant] = c
+		}
+		if f.VerificationPass != nil && *f.VerificationPass && model.IsSuccess(f.State) {
+			c.succ++
+		} else {
+			c.fail++
+		}
+	}
+	out := make([]armCount, len(entry.arms))
+	for i, a := range entry.arms {
+		if c := byLabel[a.label]; c != nil {
+			out[i] = *c
+		}
+	}
+	return out, nil
 }

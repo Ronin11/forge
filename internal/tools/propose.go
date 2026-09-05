@@ -7,6 +7,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"forge/internal/core/model"
 	"forge/internal/core/store"
@@ -22,6 +24,7 @@ func (proposeTool) Where() string { return WhereDaemon }
 func (proposeTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
 		"kind":{"type":"string","enum":["routine","mode_prompt","doc","tool","process","code","workflow"]},
+		"prediction":{"type":"object","description":"optional falsifiable forecast: what will hold if this proposal is right, with your confidence — resolved against the A/B net and scored for calibration","properties":{"statement":{"type":"string"},"probability":{"type":"number","minimum":0,"maximum":1}},"required":["statement","probability"],"additionalProperties":false},
 		"target":{"type":"string","description":"what the proposal changes: a routine name (a routine whose target is a directive gets its prompt/model/effort updates written to the directive file in the library), a mode, a doc path, a tool name"},
 		"before":{"description":"the current value, when it helps the reviewer"},
 		"after":{"description":"the proposed value"},
@@ -40,6 +43,10 @@ func (proposeTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 		Rationale        string          `json:"rationale"`
 		VerificationPlan string          `json:"verification_plan"`
 		SourceNote       string          `json:"source_note"`
+		Prediction       *struct {
+			Statement   string  `json:"statement"`
+			Probability float64 `json:"probability"`
+		} `json:"prediction"`
 	}
 	if err := decodeInput(req.Input, &in); err != nil {
 		return nil, err
@@ -62,7 +69,27 @@ func (proposeTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 	// CreateProposal re-validates and enforces constitution 8 (a proposal may
 	// never target the constitution); that refusal wraps store.ErrConflict and
 	// keeps its status at the HTTP layer.
-	if err := req.Deps.Write(ctx, func(tx *store.Tx) error { return tx.CreateProposal(ctx, p) }); err != nil {
+	if err := req.Deps.Write(ctx, func(tx *store.Tx) error {
+		if err := tx.CreateProposal(ctx, p); err != nil {
+			return err
+		}
+		if in.Prediction == nil {
+			return nil
+		}
+		if in.Prediction.Probability < 0 || in.Prediction.Probability > 1 || in.Prediction.Statement == "" {
+			return BadInput("prediction: statement and probability in [0,1] are required")
+		}
+		// A stated forecast makes the proposal falsifiable: it resolves
+		// against the proposal's fate (reverted = failed, survived the
+		// horizon applied = held) and scores the source's calibration.
+		bucket, _, _ := strings.Cut(source, ":")
+		prob := in.Prediction.Probability
+		return tx.InsertPrediction(ctx, &store.Prediction{
+			Source: bucket, SourceRef: req.AttemptID, ProposalID: p.ID, Subject: in.Target,
+			Statement: in.Prediction.Statement, Probability: &prob,
+			ResolveBy: req.Deps.Clock().Add(7 * 24 * time.Hour),
+		})
+	}); err != nil {
 		return nil, err
 	}
 	return respond(map[string]any{"schema_version": SchemaVersion, "id": p.ID, "status": p.Status})

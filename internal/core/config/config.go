@@ -157,10 +157,11 @@ type PlanConfig struct {
 
 // ExperimentsConfig tunes live multivariant experiments (DESIGN.md §12).
 type ExperimentsConfig struct {
-	MinRuns    int    `toml:"min_runs"`     // facts per arm before deciding; default 5
-	MaxArms    int    `toml:"max_arms"`     // arms including control; default 3
-	MaxAgeDays int    `toml:"max_age_days"` // undecided past this => inconclusive; default 7
-	Promote    string `toml:"promote"`      // "auto" (apply via proposal) | "propose" (human applies); default auto
+	MinRuns    int     `toml:"min_runs"`     // facts per arm before deciding; default 5
+	MaxArms    int     `toml:"max_arms"`     // arms including control; default 3
+	MaxAgeDays int     `toml:"max_age_days"` // undecided past this => inconclusive; default 7
+	Promote    string  `toml:"promote"`      // "auto" (apply via proposal) | "propose" (human applies); default auto
+	Confidence float64 `toml:"confidence"`   // posterior P(variant beats control) to promote; default 0.90
 }
 
 // LearningConfig is the self-improvement budget: reflection runs, scratch

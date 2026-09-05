@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,17 +86,30 @@ func (s *Server) opportunisticLearning(ctx context.Context) {
 		s.log.ErrorContext(ctx, "opportunist: live experiments", "error", err)
 		return
 	}
+	// Information gain per run: rank candidates by how close they are to a
+	// decision — the experiment needing the fewest additional runs resolves
+	// the most uncertainty per unit of capacity spent.
+	type candidate struct {
+		row       *store.Experiment
+		remaining int
+	}
+	var candidates []candidate
 	for i := range rows {
 		row := &rows[i]
 		if row.Status != store.ExperimentLive {
 			continue
 		}
-		name, ok := strings.CutPrefix(row.Subject, "directive:")
-		if !ok {
+		remaining, err := s.experimentRunsRemaining(ctx, row)
+		if err != nil || remaining == 0 {
 			continue
 		}
-		short, err := s.experimentArmsShort(ctx, row)
-		if err != nil || !short {
+		candidates = append(candidates, candidate{row, remaining})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].remaining < candidates[j].remaining })
+	for _, cand := range candidates {
+		row := cand.row
+		name, ok := strings.CutPrefix(row.Subject, "directive:")
+		if !ok {
 			continue
 		}
 		rt, err := s.routineTargeting(ctx, "directive:"+name)
@@ -130,15 +144,12 @@ func (s *Server) opportunisticLearning(ctx context.Context) {
 	}
 }
 
-// experimentArmsShort reports whether any arm of a live experiment has fewer
-// facts than min_runs — the condition a top-up run relieves.
-func (s *Engine) experimentArmsShort(ctx context.Context, row *store.Experiment) (bool, error) {
+// experimentRunsRemaining sums how many runs each arm still needs to reach
+// min_runs — 0 means the decision needs no more data.
+func (s *Engine) experimentRunsRemaining(ctx context.Context, row *store.Experiment) (int, error) {
 	tallies, err := s.liveExperimentTallies(ctx, row.ID, row.MinRuns)
 	if err != nil {
-		return false, err
-	}
-	if len(tallies) == 0 {
-		return true, nil
+		return 0, err
 	}
 	seen := map[string]int{}
 	for _, t := range tallies {
@@ -146,14 +157,15 @@ func (s *Engine) experimentArmsShort(ctx context.Context, row *store.Experiment)
 	}
 	var arms []store.ExperimentArm
 	if err := json.Unmarshal(row.Arms, &arms); err != nil {
-		return false, err
+		return 0, err
 	}
+	remaining := 0
 	for _, a := range arms {
-		if seen[a.Label] < row.MinRuns {
-			return true, nil
+		if n := row.MinRuns - seen[a.Label]; n > 0 {
+			remaining += n
 		}
 	}
-	return false, nil
+	return remaining, nil
 }
 
 // routineTargeting finds the unarchived trigger routine for a target string.
@@ -168,4 +180,60 @@ func (s *Engine) routineTargeting(ctx context.Context, target string) (*store.Ro
 		}
 	}
 	return nil, nil
+}
+
+// resolvePredictions is the sweep-tick pass over the prediction ledger:
+// a proposal-backed prediction fails when the proposal was reverted, holds
+// once the horizon passes with the proposal still applied, and is marked
+// unresolvable when the proposal never landed.
+func (s *Engine) resolvePredictions(ctx context.Context) {
+	due, err := s.store.DuePredictions(ctx, s.now())
+	if err != nil {
+		s.log.WarnContext(ctx, "predictions: list due", "error", err)
+		return
+	}
+	for _, p := range due {
+		outcome, note, resolve := s.predictionOutcome(ctx, p)
+		if !resolve {
+			continue
+		}
+		if err := s.store.Write(ctx, func(tx *store.Tx) error {
+			return tx.ResolvePrediction(ctx, p.ID, outcome, note)
+		}); err != nil {
+			s.log.WarnContext(ctx, "predictions: resolve", "prediction", p.ID, "error", err)
+		}
+	}
+}
+
+func (s *Engine) predictionOutcome(ctx context.Context, p store.Prediction) (outcome *bool, note string, resolve bool) {
+	pastDue := !s.now().Before(p.ResolveBy)
+	if p.ProposalID == "" {
+		if pastDue {
+			return nil, "no resolver for this prediction", true
+		}
+		return nil, "", false
+	}
+	prop, err := s.store.GetProposal(ctx, p.ProposalID)
+	if err != nil {
+		if pastDue {
+			return nil, "proposal unreadable: " + err.Error(), true
+		}
+		return nil, "", false
+	}
+	f, t := false, true
+	switch prop.Status {
+	case model.ProposalReverted:
+		return &f, "the A/B net reverted the proposal", true
+	case model.ProposalApplied:
+		if pastDue {
+			return &t, "survived the horizon applied", true
+		}
+	case model.ProposalRejected:
+		return nil, "proposal rejected before applying", true
+	default:
+		if pastDue {
+			return nil, "proposal never applied", true
+		}
+	}
+	return nil, "", false
 }

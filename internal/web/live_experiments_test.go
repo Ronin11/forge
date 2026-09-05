@@ -185,7 +185,7 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.srv.decideLiveExperiments(actx(), 0.20)
+	f.srv.decideLiveExperiments(actx())
 
 	got, err := f.st.GetExperiment(actx(), expID)
 	if err != nil {
@@ -216,6 +216,28 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 		t.Fatalf("promotion proposal not applied: %+v", ps)
 	}
 
+	// The promotion recorded a resolvable prediction tied to its proposal,
+	// carrying the posterior that promoted it.
+	preds, err := f.st.RecentPredictions(actx(), 5)
+	if err != nil || len(preds) != 1 {
+		t.Fatalf("predictions = %d, %v", len(preds), err)
+	}
+	if preds[0].Source != "experiment" || preds[0].ProposalID != res.ProposalID ||
+		preds[0].Probability == nil || *preds[0].Probability < 0.9 {
+		t.Fatalf("prediction = %+v", preds[0])
+	}
+	// Resolution: the proposal is applied but the horizon has not passed —
+	// nothing resolves; jump the clock past it and it resolves as held.
+	f.srv.resolvePredictions(actx())
+	if preds, _ = f.st.RecentPredictions(actx(), 5); !preds[0].ResolvedAt.IsZero() {
+		t.Fatalf("resolved early: %+v", preds[0])
+	}
+	f.clock.Advance(8 * 24 * time.Hour)
+	f.srv.resolvePredictions(actx())
+	if preds, _ = f.st.RecentPredictions(actx(), 5); preds[0].ResolvedAt.IsZero() || preds[0].Outcome == nil || !*preds[0].Outcome {
+		t.Fatalf("not resolved held: %+v", preds[0])
+	}
+
 	drifted, err := f.st.GetExperiment(actx(), driftID)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +246,8 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 		t.Fatalf("drifted experiment = %s", drifted.Status)
 	}
 
-	// kept_control: a third subject whose variant does not clear the margin.
+	// kept_control: a third subject whose variant is clearly inferior
+	// (control 2/2, v1 0/2 → P(v1 > control) ≈ 0.05 ≤ 1 − confidence).
 	write("keepy", "keepy body {{objective}}")
 	git("add", "-A")
 	git("commit", "-q", "-m", "keepy")
@@ -250,9 +273,9 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 			})
 		}
 		seedK("control", true)
-		seedK("v1", true)
+		seedK("v1", false)
 	}
-	f.srv.decideLiveExperiments(actx(), 0.20)
+	f.srv.decideLiveExperiments(actx())
 	kept, err := f.st.GetExperiment(actx(), keepID)
 	if err != nil {
 		t.Fatal(err)
@@ -262,19 +285,32 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 	}
 }
 
-// A daemon restart rebuilds the assignment cache from the store; the rotation
-// cursor is seeded from the count of already-stamped works so a deploy never
-// resets arm rotation back to control (seen live: two deploys in a row gave
-// consecutive reflect runs control twice).
+// A daemon restart rebuilds the assignment cache from the store: outcome
+// counts reload from facts, so allocation resumes from the evidence — an arm
+// with recorded runs yields the next pick to the arm without any (seen live:
+// deploy-reset rotation gave three straight control runs).
 func TestLiveAssignmentSurvivesRestart(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
 	h.createRoutineWith("rrdir", "base {{objective}}")
-	openLiveExperiment(t, h.st, h.srv.promptLibrary(), "directive:rrdir", "rrdir",
+	expID := openLiveExperiment(t, h.st, h.srv.promptLibrary(), "directive:rrdir", "rrdir",
 		"---\nmode: run\nmodel: haiku\n---\nVARIANT {{objective}}\n")
 	h.srv.refreshLiveExperiments(context.Background())
 
-	h.run("rrdir") // control, cursor -> 1
+	h.run("rrdir") // control (arm order tiebreak at zero evidence)
+	// A recorded control outcome, as the completed run would leave it.
+	c := h.mustClaim("rs1")
+	pass := true
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		return tx.InsertFacts(context.Background(), &store.AttemptFacts{
+			AttemptID: c.AttemptID, TargetID: c.TargetID, Routine: "rrdir",
+			Project: "default", Repository: "equitizr", Worker: testWorkerID, Executor: "claude-code",
+			Model: "haiku", Mode: "run", Trigger: model.TriggerManual, Autonomy: model.AutonomyAuto,
+			FinishedAt: h.clock.Now(), State: model.Succeeded, VerificationPass: &pass,
+			ExperimentID: expID, Variant: "control"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate the restart: wipe the in-memory cache, refresh from the store.
 	h.srv.liveMu.Lock()
@@ -291,7 +327,7 @@ func TestLiveAssignmentSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if comp.Variant != "v1" {
-		t.Fatalf("post-restart arm = %q, want v1 (rotation reset)", comp.Variant)
+		t.Fatalf("post-restart arm = %q, want v1 (allocation ignored the evidence)", comp.Variant)
 	}
 }
 
@@ -302,7 +338,7 @@ func TestLiveExperimentDeadlineInconclusive(t *testing.T) {
 	h.createRoutineWith("latedir", "body {{objective}}")
 	expID := openLiveExperimentBy(t, h.st, h.srv.promptLibrary(), "directive:latedir", "latedir",
 		"---\nmode: run\nmodel: haiku\n---\nv {{objective}}\n", h.clock.Now().Add(-time.Hour))
-	h.srv.decideLiveExperiments(context.Background(), 0.20)
+	h.srv.decideLiveExperiments(context.Background())
 	got, err := h.st.GetExperiment(context.Background(), expID)
 	if err != nil || got.Status != store.ExperimentInconclusive {
 		t.Fatalf("past-deadline experiment = %+v, %v", got, err)

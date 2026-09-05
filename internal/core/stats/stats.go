@@ -81,6 +81,13 @@ type RoutineStats struct {
 	VerifiedSuccesses       int     `json:"verified_successes"`
 	VerifiedSuccessRate     float64 `json:"verified_success_rate"`
 	SelfReportedSuccessRate float64 `json:"self_reported_success_rate"`
+	// RateLow/RateHigh bound the verified rate (Wilson 95%): a 67% at n=3
+	// spans [0.21, 0.94] and is a measurement request, not a finding.
+	// InsufficientEvidence flags exactly that — do not diagnose from this
+	// row; buy more runs first.
+	RateLow              float64 `json:"rate_low"`
+	RateHigh             float64 `json:"rate_high"`
+	InsufficientEvidence bool    `json:"insufficient_evidence,omitempty"`
 
 	P50TotalUS int64 `json:"p50_total_us"`
 	P95TotalUS int64 `json:"p95_total_us"`
@@ -206,15 +213,18 @@ func Compute(current, prev []store.AttemptFacts) *Report {
 // S". ScoreOverallMean averages only the rows that carried a score; nil when
 // none did.
 type SizeStats struct {
-	Size                string   `json:"size"` // S, M, L, or "unsized"
-	Runs                int      `json:"runs"`
-	VerifiedSuccesses   int      `json:"verified_successes"`
-	VerifiedSuccessRate float64  `json:"verified_success_rate"`
-	CostUSDTotal        float64  `json:"cost_usd_total"`
-	CostPerRun          float64  `json:"cost_per_run"`
-	TurnsPerRun         float64  `json:"turns_per_run"`
-	DurationP50US       int64    `json:"duration_p50_us"`
-	ScoreOverallMean    *float64 `json:"score_overall_mean,omitempty"`
+	Size                 string   `json:"size"` // S, M, L, or "unsized"
+	Runs                 int      `json:"runs"`
+	VerifiedSuccesses    int      `json:"verified_successes"`
+	VerifiedSuccessRate  float64  `json:"verified_success_rate"`
+	RateLow              float64  `json:"rate_low"`
+	RateHigh             float64  `json:"rate_high"`
+	InsufficientEvidence bool     `json:"insufficient_evidence,omitempty"`
+	CostUSDTotal         float64  `json:"cost_usd_total"`
+	CostPerRun           float64  `json:"cost_per_run"`
+	TurnsPerRun          float64  `json:"turns_per_run"`
+	DurationP50US        int64    `json:"duration_p50_us"`
+	ScoreOverallMean     *float64 `json:"score_overall_mean,omitempty"`
 }
 
 // sizeBuckets groups the window by the work's size bucket. Order is fixed
@@ -266,6 +276,8 @@ func sizeBuckets(rows []store.AttemptFacts) []SizeStats {
 			continue
 		}
 		a.VerifiedSuccessRate = float64(a.VerifiedSuccesses) / float64(a.Runs)
+		a.RateLow, a.RateHigh = WilsonInterval(a.VerifiedSuccesses, a.Runs, 1.96)
+		a.InsufficientEvidence = a.RateHigh-a.RateLow > insufficientWidth
 		if a.costRuns > 0 {
 			a.CostPerRun = a.CostUSDTotal / float64(a.costRuns)
 		}
@@ -674,6 +686,9 @@ type RetroPack struct {
 	Stats           *Report          `json:"stats"`
 	Routines        []RetroRoutine   `json:"routines"`
 	ProblemAttempts []ProblemAttempt `json:"problem_attempts"`
+	// Calibration is the prediction ledger per source: how often each
+	// judge's forecasts held. The trust ladder reads this, not vibes.
+	Calibration []store.CalibrationRow `json:"calibration,omitempty"`
 	// Assessments are the window's supervise verdicts — outcome, scores, and
 	// the weakness prose, resolved to the ask they judged. Per-directive
 	// stats say WHICH prompt underperforms; these say WHAT the finished
@@ -743,5 +758,9 @@ func LoadRetroPack(ctx context.Context, st *store.Store, q Query) (*RetroPack, e
 	if err != nil {
 		return nil, fmt.Errorf("load assessments for retro: %w", err)
 	}
-	return &RetroPack{SchemaVersion: SchemaVersion, Window: q, Stats: report, Routines: rr, ProblemAttempts: problems, Assessments: assessments}, nil
+	calibration, err := st.Calibration(ctx, q.Since.Add(-21*24*time.Hour))
+	if err != nil {
+		return nil, fmt.Errorf("load calibration for retro: %w", err)
+	}
+	return &RetroPack{SchemaVersion: SchemaVersion, Window: q, Stats: report, Routines: rr, ProblemAttempts: problems, Assessments: assessments, Calibration: calibration}, nil
 }

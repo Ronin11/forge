@@ -48,6 +48,8 @@ type learningData struct {
 	WeekSpendUSD, BudgetUSD float64
 	// Capacity is the subscription-window line ("" when no policy is wired).
 	Capacity string
+	// Calibration is the prediction ledger per source ("experiment 3/4 held").
+	Calibration []store.CalibrationRow
 }
 
 func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +60,9 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 		data.WeekSpendUSD = spent
 	}
 	data.Capacity = u.capacityLine(ctx)
+	if cal, err := u.store.Calibration(ctx, u.clock().Add(-30*24*time.Hour)); err == nil {
+		data.Calibration = cal
+	}
 
 	proposals, err := u.store.ListProposals(ctx, "")
 	if err != nil {
