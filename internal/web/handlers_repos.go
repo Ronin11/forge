@@ -434,6 +434,14 @@ func (s *Server) addRepository(r *http.Request) (int, any, error) {
 	if err != nil {
 		return 0, nil, badRequest("%v", err)
 	}
+	// The provisional store row lands now, not on the worker's next refresh
+	// tick — a task submitted right after this call must find the repository
+	// registered (the bench CLI's shape).
+	if err := s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.UpsertProvisionalRepository(ctx, repo)
+	}); err != nil {
+		return 0, nil, err
+	}
 	s.log.InfoContext(ctx, "repository added", "repository", repo.Name, "path", repo.Path, "cloned", req.URL != "")
 	return http.StatusCreated, repo, nil
 }
