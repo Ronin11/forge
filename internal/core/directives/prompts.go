@@ -588,7 +588,7 @@ func Ensure(dir string) error {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
-		if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		if out, err := exec.Command("git", "-C", dir, "init", "-q", "-b", "master").CombinedOutput(); err != nil {
 			return fmt.Errorf("git init %s: %v: %s", dir, err, out)
 		}
 	}

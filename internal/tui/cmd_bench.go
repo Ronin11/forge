@@ -279,7 +279,18 @@ func initBenchRepo(ctx context.Context, path string) error {
 	if err := git("init", "-q", "-b", "main"); err != nil {
 		return err
 	}
-	if err := git("-c", "user.name=forge", "-c", "user.email=forge@localhost", "commit", "-q", "--allow-empty", "-m", "bench: empty start"); err != nil {
+	// Constitution 10: the integrator refuses to push anywhere a repo has
+	// not declared — found live when bench run 4's first green task landed
+	// `conflict` on "no integration_branch". The throwaway declares its
+	// branch from birth; checks arrive with the scaffold the plan builds.
+	toml := "# Bench throwaway repo: integrate onto main; checks arrive with the scaffold.\nintegration_branch = \"main\"\n[checks]\n"
+	if err := os.WriteFile(filepath.Join(path, "forge.toml"), []byte(toml), 0o644); err != nil {
+		return err
+	}
+	if err := git("add", "forge.toml"); err != nil {
+		return err
+	}
+	if err := git("-c", "user.name=forge", "-c", "user.email=forge@localhost", "commit", "-q", "-m", "bench: declare the integration branch"); err != nil {
 		return err
 	}
 	return git("remote", "add", "origin", path)

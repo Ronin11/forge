@@ -156,3 +156,45 @@ against a dummy corpus, ready for the day the real export lands.
       verify, benchmark judges) and measure with the cost columns we
       already have. Prerequisite reading: whether the SDK can run against
       subscription auth at all.
+
+
+## P2 — comms automation: the voice pipeline (2026-09-05 discussion)
+
+Goal: automate ~90% of a corporate-comms workflow (emails, send lists) with
+the missing 10% BY DESIGN — she is the L3 gate; nothing auto-sends, drafts
+land in her Drafts folder for review. Build it WITH her: corpus consent,
+and check her employer's stance on AI/data handling before real content flows.
+
+Architecture decided: voice is a PERSONA (library content), applied as a
+workflow step, delivered by the email plugin. Core changes: none — this is
+the "content in git, mechanisms in core" rule applied to a person's voice.
+
+Ingestion plan (thousands of her sent emails → three artifacts, never
+prompt-stuffed):
+- [ ] Corpus repo: one-time PST/mbox export; deterministic parser extracts
+      ONLY her authored text (strip quoted threads, signatures, footers —
+      colleagues' words stay out); one md file per email with frontmatter
+      (date, audience type, recipient count, fresh-vs-reply, situation tag).
+      Register as a forge repo — drafting Works run against it, so persona/
+      exemplars/stats are in the worktree; grep is the retrieval.
+- [ ] Statistical profile (script, not agent): sentence-length medians,
+      greeting/sign-off tables, contraction & punctuation habits, list-vs-
+      prose, subject patterns, reply length by audience. Persona quotes the
+      numbers — executable rules, not "warm but concise."
+- [ ] Distillation workflow (`voice-ingest`): map-reduce — plan batch reads
+      ~40 emails per attempt → style observations → synthesize
+      `personas/<her>.md` → HER review of the persona itself.
+- [ ] Exemplar library: ~40–60 real emails covering the situation matrix
+      (announce/request/decline/apology × exec/all-staff/external), filed by
+      category; `voice-pass` gets rules + 2–3 matched exemplars few-shot.
+- [ ] Directives: `voice-pass` (terminal workflow node: rewrite draft into
+      persona + checklist) and `voice-calibrate` (reflect-library pattern:
+      diff pipeline drafts vs. what she actually sent — her edits are free
+      labeled data — sharpen persona via merge pipeline).
+- [ ] Email plugin extension (plugins/email has IMAP/SMTP already): watch
+      intake, file asks as Work through a comms workflow, deliver to Drafts.
+      Send lists = a library script/workflow node assembling recipients.
+- [ ] Benchmark: hold out ~50 real emails, reconstruct each ask, run the
+      pipeline, score draft vs. her real send (judge + edit distance) —
+      same bench machinery as rebuild-equitizr. Done = she can't reliably
+      pick her own email out of a lineup.
