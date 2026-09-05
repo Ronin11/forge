@@ -29,6 +29,7 @@ type Config struct {
 	Scratch      ScratchConfig      `toml:"scratch"`
 	Plan         PlanConfig         `toml:"plan"`
 	Experiments  ExperimentsConfig  `toml:"experiments"`
+	Learning     LearningConfig     `toml:"learning"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
 	Supervision  SupervisionConfig  `toml:"supervision"`
@@ -159,6 +160,14 @@ type ExperimentsConfig struct {
 	MaxArms    int    `toml:"max_arms"`     // arms including control; default 3
 	MaxAgeDays int    `toml:"max_age_days"` // undecided past this => inconclusive; default 7
 	Promote    string `toml:"promote"`      // "auto" (apply via proposal) | "propose" (human applies); default auto
+}
+
+// LearningConfig is the self-improvement budget: reflection runs, scratch
+// promotions, and experiment spend draw from this pool instead of any
+// project's. Zero disables the ceiling (unlimited). The window is a rolling
+// seven days over attempt facts.
+type LearningConfig struct {
+	BudgetUSDPerWeek float64 `toml:"usd_per_week"` // 0 = unlimited
 }
 
 // BackupConfig tunes the nightly backup loop (DESIGN.md §23).

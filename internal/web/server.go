@@ -109,6 +109,7 @@ type Engine struct {
 	planCfg config.PlanConfig
 	// experimentsCfg + the live-assignment cache (live_experiments.go).
 	experimentsCfg  config.ExperimentsConfig
+	learningCfg     config.LearningConfig
 	liveMu          sync.Mutex
 	liveByDirective map[string]*liveExperiment
 	liveByPersona   map[string]*liveExperiment
@@ -259,6 +260,8 @@ type ServerOptions struct {
 	// Experiments tunes live multivariant experiments; zero values take the
 	// config defaults.
 	Experiments config.ExperimentsConfig
+	// Learning is the self-improvement budget pool; zero disables the ceiling.
+	Learning config.LearningConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -344,7 +347,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
-		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments,
+		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments, learningCfg: o.Learning,
 		liveByDirective: map[string]*liveExperiment{}, liveByPersona: map[string]*liveExperiment{},
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},
@@ -429,6 +432,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/workflows/{name}/run", s.handle(s.runWorkflow))
 	m.HandleFunc("GET /api/v1/workflows/{name}/estimate", s.handle(s.estimateWorkflow))
 	m.HandleFunc("GET /api/v1/workflows/{name}/runs", s.handle(s.workflowRuns))
+	m.HandleFunc("GET /api/v1/workflows/{name}/generations", s.handle(s.workflowGenerations))
+	m.HandleFunc("POST /api/v1/workflows/{name}/rollback", s.handle(s.rollbackWorkflow))
 	m.HandleFunc("GET /api/v1/workflow-runs/{id}", s.handle(s.getWorkflowRun))
 	m.HandleFunc("POST /api/v1/workflow-runs/{id}/cancel", s.handle(s.cancelWorkflowRun))
 	m.HandleFunc("POST /api/v1/workflow-runs/{id}/retry", s.handle(s.retryWorkflowRun))

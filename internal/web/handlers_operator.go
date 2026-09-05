@@ -580,6 +580,24 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	if len(rt.Deps) > 0 {
 		w.Deps = rt.Deps
 	}
+	// The learning ledger (DESIGN: [learning] usd_per_week): self-improvement
+	// roots — reflect-library runs and scratch promotions — draw from their
+	// own pool, never a project's. Only roots are gated: a mid-flight child
+	// (verify follow-up, continuation) must not wedge on an exhausted pool.
+	if req.CausedBy == "" && s.learningCfg.BudgetUSDPerWeek > 0 &&
+		(rt.Name == "reflect-library" || req.cause == model.CausePromotion) {
+		spent, err := s.store.LearningSpendSince(ctx, s.now().Add(-7*24*time.Hour))
+		if err != nil {
+			return workCreated{}, err
+		}
+		if spent >= s.learningCfg.BudgetUSDPerWeek {
+			if err := tx.Journal(ctx, "learning.budget_exhausted", store.EntityDaemon, "", map[string]any{
+				"spent_usd": spent, "budget_usd": s.learningCfg.BudgetUSDPerWeek, "routine": rt.Name}); err != nil {
+				return workCreated{}, err
+			}
+			return workCreated{}, fmt.Errorf("learning budget exhausted ($%.2f of $%.2f this week): %w", spent, s.learningCfg.BudgetUSDPerWeek, store.ErrConflict)
+		}
+	}
 	if w.Integrate && len(w.Deps) > 0 {
 		// M9 known gap: the serialized deps pre-step (a Forge-authored
 		// lockfile commit through the merge queue, DESIGN.md §20) is not

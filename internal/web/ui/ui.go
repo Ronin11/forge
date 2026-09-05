@@ -52,6 +52,9 @@ type UI struct {
 	// on). Zero attention (tests, a bare UI) shows no countdown.
 	attentionCfg config.AttentionConfig
 	quietHours   config.QuietHoursConfig
+	// learningCfg shows the self-improvement budget pool on the Learning
+	// page; zero hides the pool line.
+	learningCfg config.LearningConfig
 }
 
 // SetAppStatus wires the run supervisor's live app state into the Repos list:
@@ -70,6 +73,10 @@ func (u *UI) SetPluginHealth(fn func() []plugin.PluginHealth) { u.pluginHealth =
 func (u *UI) SetAttention(cfg config.AttentionConfig, quiet config.QuietHoursConfig) {
 	u.attentionCfg, u.quietHours = cfg, quiet
 }
+
+// SetLearning wires the [learning] budget into the Learning page's header;
+// the daemon calls it once at startup.
+func (u *UI) SetLearning(cfg config.LearningConfig) { u.learningCfg = cfg }
 
 // NewUI parses the embedded templates once; a template error is a startup error.
 func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn func() *directives.Library) (*UI, error) {

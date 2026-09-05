@@ -69,6 +69,23 @@ func (s *Store) LearningWorks(ctx context.Context, limit int) ([]LearningWorkRow
 	return out, nil
 }
 
+// LearningSpendSince sums what self-improvement cost since the given instant:
+// every fact whose Work is a reflect-library run or a promotion — the ledger
+// behind [learning] usd_per_week. Experiment optimizer calls that never
+// become attempts are not counted yet (they have no facts row).
+func (s *Store) LearningSpendSince(ctx context.Context, since time.Time) (float64, error) {
+	var usd sql.NullFloat64
+	err := s.queryRow(ctx, `
+		SELECT SUM(f.cost_usd) FROM attempt_facts f
+		JOIN work w ON w.id = f.work_id
+		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion')
+		  AND f.finished_at > ?`, formatTime(since)).Scan(&usd)
+	if err != nil {
+		return 0, fmt.Errorf("learning spend: %w", err)
+	}
+	return usd.Float64, nil
+}
+
 // CountExperimentAssignments reports how many Works were ever stamped with
 // this experiment — the round-robin cursor's seed after a daemon restart, so
 // redeploys don't reset arm rotation back to control every time.

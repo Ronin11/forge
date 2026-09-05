@@ -14,12 +14,13 @@ const (
 	ProposalTool       ProposalKind = "tool"        // new script tool under <home>/tools/
 	ProposalProcess    ProposalKind = "process"     // schedule / class / autonomy / deps
 	ProposalCode       ProposalKind = "code"        // forge/… branch on the Forge repo
+	ProposalWorkflow   ProposalKind = "workflow"    // a workflow graph, versioned in workflow_generations
 )
 
-// ValidProposalKind reports whether k is one of the six kinds.
+// ValidProposalKind reports whether k is one of the seven kinds.
 func ValidProposalKind(k ProposalKind) bool {
 	switch k {
-	case ProposalRoutine, ProposalModePrompt, ProposalDoc, ProposalTool, ProposalProcess, ProposalCode:
+	case ProposalRoutine, ProposalModePrompt, ProposalDoc, ProposalTool, ProposalProcess, ProposalCode, ProposalWorkflow:
 		return true
 	}
 	return false

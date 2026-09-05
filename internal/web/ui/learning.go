@@ -42,11 +42,17 @@ type learningData struct {
 	Landed, Refuted, Reverted int
 	ExpOpen, ExpPromoted      int
 	SpendUSD                  float64
+	// The [learning] pool: rolling-7d spend against the weekly budget.
+	WeekSpendUSD, BudgetUSD float64
 }
 
 func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var data learningData
+	data.BudgetUSD = u.learningCfg.BudgetUSDPerWeek
+	if spent, err := u.store.LearningSpendSince(ctx, u.clock().Add(-7*24*time.Hour)); err == nil {
+		data.WeekSpendUSD = spent
+	}
 
 	proposals, err := u.store.ListProposals(ctx, "")
 	if err != nil {
@@ -152,6 +158,21 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 			data.Reverted++
 		}
 		data.Entries = append(data.Entries, e)
+	}
+
+	if gens, err := u.store.RecentWorkflowGenerations(ctx, 30); err == nil {
+		for _, g := range gens {
+			e := learningEntry{At: g.CreatedAt, Kind: "workflow", Status: "landed", Cost: "-",
+				Title: g.WorkflowName + " @ generation " + strconv.Itoa(g.Generation),
+				Link:  "/workflows/" + g.WorkflowName + "/edit", Detail: "via " + g.Source}
+			if pid, ok := strings.CutPrefix(g.Source, "proposal:"); ok {
+				e.ProposalID = pid
+			}
+			if strings.HasPrefix(g.Source, "rollback:") {
+				e.Status = "reverted"
+			}
+			data.Entries = append(data.Entries, e)
+		}
 	}
 
 	sort.SliceStable(data.Entries, func(i, j int) bool { return data.Entries[i].At.After(data.Entries[j].At) })

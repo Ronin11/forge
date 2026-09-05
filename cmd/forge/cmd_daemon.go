@@ -281,6 +281,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		Scratch:      d.cfg.Scratch,
 		Plan:         d.cfg.Plan,
 		Experiments:  d.cfg.Experiments,
+		Learning:     d.cfg.Learning,
 		QuietHours:   d.cfg.Budget.QuietHours,
 		Supervision:  d.cfg.Supervision,
 		Store:        st, Policy: policy, Logger: d.handler.For("web.http"), Version: version, Token: token, Home: home, Modes: registry,
@@ -336,6 +337,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 	}
 	ui.SetPluginHealth(sup.Health)
 	ui.SetAttention(d.cfg.Attention, d.cfg.Budget.QuietHours)
+	ui.SetLearning(d.cfg.Learning)
 	ui.SetAppStatus(runSup.AppStatus)
 	srv.MountRoot(ui.Handler())
 	pid := os.Getpid()

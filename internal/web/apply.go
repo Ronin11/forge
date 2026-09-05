@@ -10,9 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"errors"
+
 	"github.com/BurntSushi/toml"
 
 	"forge/internal/core/directives"
+	"forge/internal/core/flow"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 	"forge/internal/tools"
@@ -41,6 +44,12 @@ func (s *Engine) applyProposal(ctx context.Context, tx *store.Tx, p *store.Propo
 		return s.applyTool(ctx, p)
 	case model.ProposalCode:
 		return s.applyCode(ctx, tx, p)
+	case model.ProposalWorkflow:
+		name, err := targetName(p.Target, "workflow:")
+		if err != nil {
+			return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
+		}
+		return s.applyWorkflowTarget(ctx, tx, p, name)
 	}
 	return "", fmt.Errorf("proposal %s: kind %q cannot be applied", model.ShortID(p.ID), p.Kind)
 }
@@ -68,6 +77,9 @@ func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Propos
 	}
 	if fname, ok := strings.CutPrefix(p.Target, "persona:"); ok {
 		return s.applyFragmentTarget(ctx, p, fname)
+	}
+	if wname, ok := strings.CutPrefix(p.Target, "workflow:"); ok {
+		return s.applyWorkflowTarget(ctx, tx, p, wname)
 	}
 	name, err := targetName(p.Target, "routine:")
 	if err != nil {
@@ -634,4 +646,123 @@ func gitTail(out []byte) string {
 		s = "…" + s[len(s)-n:]
 	}
 	return s
+}
+
+// applyWorkflowTarget lands a workflow-kind proposal: After carries the full
+// workflow spec (graph required; schedule, description, tool optional). An
+// existing workflow is replaced as a new generation, a missing one is
+// created — both sourced "proposal:<id>" in workflow_generations, which is
+// the rollback protection: POST /workflows/{name}/rollback restores any
+// prior generation as an audited forward step. Ref: workflow:<name>@<gen>.
+func (s *Engine) applyWorkflowTarget(ctx context.Context, tx *store.Tx, p *store.Proposal, name string) (string, error) {
+	var after struct {
+		Graph           *store.WorkflowGraph `json:"graph"`
+		Schedule        *string              `json:"schedule"`
+		ScheduleEnabled *bool                `json:"schedule_enabled"`
+		Description     *string              `json:"description"`
+		Tool            *bool                `json:"tool"`
+	}
+	if err := decodeAfter(p.After, &after); err != nil {
+		return "", fmt.Errorf("proposal %s (workflow): %w", model.ShortID(p.ID), err)
+	}
+	if after.Graph == nil {
+		return "", fmt.Errorf("proposal %s (workflow): after.graph is required", model.ShortID(p.ID))
+	}
+	source := "proposal:" + p.ID
+	current, err := tx.GetWorkflow(ctx, name)
+	switch {
+	case err == nil:
+		wf := *current
+		wf.Graph = after.Graph
+		if after.Schedule != nil {
+			wf.Schedule = *after.Schedule
+		}
+		if after.ScheduleEnabled != nil {
+			wf.ScheduleEnabled = *after.ScheduleEnabled
+		}
+		if after.Description != nil {
+			wf.Description = *after.Description
+		}
+		if after.Tool != nil {
+			wf.Tool = *after.Tool
+		}
+		if err := s.checkGraphNodes(&wf); err != nil {
+			return "", err
+		}
+		if err := tx.UpdateWorkflowFrom(ctx, &wf, current.Generation, source); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("workflow:%s@%d", name, wf.Generation), nil
+	case errors.Is(err, store.ErrNotFound):
+		wf := store.Workflow{Name: name, Graph: after.Graph}
+		if after.Schedule != nil {
+			wf.Schedule = *after.Schedule
+		}
+		if after.ScheduleEnabled != nil {
+			wf.ScheduleEnabled = *after.ScheduleEnabled
+		}
+		if after.Description != nil {
+			wf.Description = *after.Description
+		}
+		if after.Tool != nil {
+			wf.Tool = *after.Tool
+		}
+		if err := s.checkGraphNodes(&wf); err != nil {
+			return "", err
+		}
+		if err := tx.CreateWorkflowFrom(ctx, &wf, source); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("workflow:%s@%d", name, wf.Generation), nil
+	default:
+		return "", err
+	}
+}
+
+// checkGraphNodes refuses, at definition time where the mistake is cheap: a
+// directive node naming a directive the library lacks, and a script or
+// switch whose JavaScript does not compile (a 400 at save, not a runtime
+// failure mid-run).
+func (s *Engine) checkGraphNodes(wf *store.Workflow) error {
+	if wf.Graph == nil {
+		return nil // Validate in the store surfaces the real error
+	}
+	for _, n := range wf.Graph.Nodes {
+		switch n.Type {
+		case store.NodeDirective:
+			cfg, err := n.DirectiveConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			// The library may be absent (tests, a bare server) — then the name
+			// is taken on faith and node materialization is where a mistake
+			// fails the node.
+			if lib := s.libraryNow(); lib != nil && lib.Directive(cfg.Directive) == nil {
+				return badRequest("node %s: directive %q is not in the library (directives/%s.md)", n.ID, cfg.Directive, cfg.Directive)
+			}
+		case store.NodeScript:
+			cfg, err := n.ScriptConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			if cfg.Script != "" {
+				// The library may be absent (tests, a bare server) — then the
+				// name is taken on faith and execution fails the node.
+				if lib := s.libraryNow(); lib != nil && lib.Script(cfg.Script) == nil {
+					return badRequest("node %s: script %q is not in the library (scripts/%s.js)", n.ID, cfg.Script, cfg.Script)
+				}
+			} else if err := flow.CompileScript(cfg.Source); err != nil {
+				return badRequest("node %s: %v", n.ID, err)
+			}
+		case store.NodeSwitch:
+			cfg, err := n.SwitchConfig()
+			if err != nil {
+				return badRequest("%v", err)
+			}
+			if err := flow.CompileSwitch(cfg.Expression); err != nil {
+				return badRequest("node %s: %v", n.ID, err)
+			}
+		}
+	}
+	return nil
 }

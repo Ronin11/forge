@@ -16,12 +16,12 @@ type proposeTool struct{}
 
 func (proposeTool) Name() string { return "forge_propose" }
 func (proposeTool) Description() string {
-	return "File a self-improvement Proposal (kind routine, mode_prompt, doc, tool, process, or code) for a human to approve; nothing is applied until then."
+	return "File a self-improvement Proposal (kind routine, mode_prompt, doc, tool, process, code, or workflow) for a human to approve; nothing is applied until then."
 }
 func (proposeTool) Where() string { return WhereDaemon }
 func (proposeTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
-		"kind":{"type":"string","enum":["routine","mode_prompt","doc","tool","process","code"]},
+		"kind":{"type":"string","enum":["routine","mode_prompt","doc","tool","process","code","workflow"]},
 		"target":{"type":"string","description":"what the proposal changes: a routine name (a routine whose target is a directive gets its prompt/model/effort updates written to the directive file in the library), a mode, a doc path, a tool name"},
 		"before":{"description":"the current value, when it helps the reviewer"},
 		"after":{"description":"the proposed value"},
@@ -45,7 +45,7 @@ func (proposeTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 		return nil, err
 	}
 	if !model.ValidProposalKind(model.ProposalKind(in.Kind)) {
-		return nil, BadInput("kind %q: want routine, mode_prompt, doc, tool, process, or code", in.Kind)
+		return nil, BadInput("kind %q: want routine, mode_prompt, doc, tool, process, code, or workflow", in.Kind)
 	}
 	if in.Target == "" || in.Rationale == "" || in.VerificationPlan == "" {
 		return nil, BadInput("target, rationale, and verification_plan are required")

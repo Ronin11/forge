@@ -51,6 +51,12 @@ func (w *Workflow) Validate() error {
 
 // CreateWorkflow inserts a workflow at generation 1 and records the generation.
 func (tx *Tx) CreateWorkflow(ctx context.Context, w *Workflow) error {
+	return tx.CreateWorkflowFrom(ctx, w, "edit")
+}
+
+// CreateWorkflowFrom is CreateWorkflow with an explicit generation source
+// (`proposal:<id>` when an approved proposal creates the workflow).
+func (tx *Tx) CreateWorkflowFrom(ctx context.Context, w *Workflow, source string) error {
 	if err := w.Validate(); err != nil {
 		return err
 	}
@@ -72,7 +78,7 @@ func (tx *Tx) CreateWorkflow(ctx context.Context, w *Workflow) error {
 		}
 		return fmt.Errorf("insert workflow %s: %w", w.Name, err)
 	}
-	return tx.recordWorkflowGeneration(ctx, w, "edit")
+	return tx.recordWorkflowGeneration(ctx, w, source)
 }
 
 // UpdateWorkflow replaces every editable field, requires the caller's expected
@@ -268,4 +274,76 @@ func scanWorkflows(iter func(func(*sql.Rows) error) error) ([]Workflow, error) {
 		return nil, fmt.Errorf("read workflows: %w", err)
 	}
 	return out, nil
+}
+
+// WorkflowGenerationRow is one entry of a workflow's changelog: the full
+// snapshot taken at that generation, and what caused it ("edit",
+// "proposal:<id>", "rollback:<n>").
+type WorkflowGenerationRow struct {
+	WorkflowName string
+	Generation   int
+	Source       string
+	Snapshot     json.RawMessage
+	CreatedAt    time.Time
+}
+
+// WorkflowGenerations lists one workflow's changelog, newest first.
+func (s *Store) WorkflowGenerations(ctx context.Context, name string, limit int) ([]WorkflowGenerationRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return scanWorkflowGenerations(each(s.query(ctx, `
+		SELECT w.name, g.generation, g.source, g.snapshot, g.created_at
+		FROM workflow_generations g JOIN workflows w ON w.id = g.workflow_id
+		WHERE w.name = ? ORDER BY g.generation DESC LIMIT ?`, name, limit)))
+}
+
+// RecentWorkflowGenerations lists changelog entries across every workflow,
+// newest first — the Learning feed's workflow rows.
+func (s *Store) RecentWorkflowGenerations(ctx context.Context, limit int) ([]WorkflowGenerationRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return scanWorkflowGenerations(each(s.query(ctx, `
+		SELECT w.name, g.generation, g.source, g.snapshot, g.created_at
+		FROM workflow_generations g JOIN workflows w ON w.id = g.workflow_id
+		ORDER BY g.created_at DESC, g.generation DESC LIMIT ?`, limit)))
+}
+
+func scanWorkflowGenerations(iter func(func(*sql.Rows) error) error) ([]WorkflowGenerationRow, error) {
+	var out []WorkflowGenerationRow
+	err := iter(func(rows *sql.Rows) error {
+		var r WorkflowGenerationRow
+		var snap, created string
+		if err := rows.Scan(&r.WorkflowName, &r.Generation, &r.Source, &snap, &created); err != nil {
+			return fmt.Errorf("scan workflow generation: %w", err)
+		}
+		r.Snapshot = json.RawMessage(snap)
+		var err error
+		if r.CreatedAt, err = parseTime(sql.NullString{String: created, Valid: true}); err != nil {
+			return err
+		}
+		out = append(out, r)
+		return nil
+	})
+	return out, err
+}
+
+// WorkflowAtGeneration reads the snapshot a rollback restores.
+func (s *Store) WorkflowAtGeneration(ctx context.Context, name string, generation int) (*Workflow, error) {
+	var snap string
+	err := s.queryRow(ctx, `
+		SELECT g.snapshot FROM workflow_generations g JOIN workflows w ON w.id = g.workflow_id
+		WHERE w.name = ? AND g.generation = ?`, name, generation).Scan(&snap)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("workflow %s generation %d: %w", name, generation, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read workflow %s generation %d: %w", name, generation, err)
+	}
+	var w Workflow
+	if err := json.Unmarshal([]byte(snap), &w); err != nil {
+		return nil, fmt.Errorf("decode workflow %s generation %d: %w", name, generation, err)
+	}
+	return &w, nil
 }

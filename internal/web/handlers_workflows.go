@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"forge/internal/core/engine"
-	"forge/internal/core/flow"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -44,54 +44,6 @@ func decodeWorkflow(r *http.Request) (*store.Workflow, error) {
 		return nil, badRequest("%v", err)
 	}
 	return &wf, nil
-}
-
-// checkGraphNodes refuses, at definition time where the mistake is cheap: a
-// directive node naming a directive the library lacks, and a script or
-// switch whose JavaScript does not compile (a 400 at save, not a runtime
-// failure mid-run).
-func (s *Server) checkGraphNodes(wf *store.Workflow) error {
-	if wf.Graph == nil {
-		return nil // Validate in the store surfaces the real error
-	}
-	for _, n := range wf.Graph.Nodes {
-		switch n.Type {
-		case store.NodeDirective:
-			cfg, err := n.DirectiveConfig()
-			if err != nil {
-				return badRequest("%v", err)
-			}
-			// The library may be absent (tests, a bare server) — then the name
-			// is taken on faith and node materialization is where a mistake
-			// fails the node.
-			if lib := s.promptLibrary(); lib != nil && lib.Directive(cfg.Directive) == nil {
-				return badRequest("node %s: directive %q is not in the library (directives/%s.md)", n.ID, cfg.Directive, cfg.Directive)
-			}
-		case store.NodeScript:
-			cfg, err := n.ScriptConfig()
-			if err != nil {
-				return badRequest("%v", err)
-			}
-			if cfg.Script != "" {
-				// The library may be absent (tests, a bare server) — then the
-				// name is taken on faith and execution fails the node.
-				if lib := s.promptLibrary(); lib != nil && lib.Script(cfg.Script) == nil {
-					return badRequest("node %s: script %q is not in the library (scripts/%s.js)", n.ID, cfg.Script, cfg.Script)
-				}
-			} else if err := flow.CompileScript(cfg.Source); err != nil {
-				return badRequest("node %s: %v", n.ID, err)
-			}
-		case store.NodeSwitch:
-			cfg, err := n.SwitchConfig()
-			if err != nil {
-				return badRequest("%v", err)
-			}
-			if err := flow.CompileSwitch(cfg.Expression); err != nil {
-				return badRequest("node %s: %v", n.ID, err)
-			}
-		}
-	}
-	return nil
 }
 
 func (s *Server) createWorkflow(r *http.Request) (int, any, error) {
@@ -472,4 +424,62 @@ func (s *Server) workflowRuns(r *http.Request) (int, any, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return http.StatusOK, out, nil
+}
+
+// workflowGenerations is GET /api/v1/workflows/{name}/generations — the
+// changelog behind rollback: every generation with its source and snapshot.
+func (s *Server) workflowGenerations(r *http.Request) (int, any, error) {
+	rows, err := s.store.WorkflowGenerations(r.Context(), r.PathValue("name"), 50)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, rows, nil
+}
+
+// rollbackWorkflow is POST /api/v1/workflows/{name}/rollback {"generation":N}:
+// restore that generation's snapshot as a NEW generation (sourced
+// "rollback:<n>"), so the changelog keeps the full history — rollback is an
+// audited forward step, never a rewrite.
+func (s *Server) rollbackWorkflow(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	var req struct {
+		Generation int `json:"generation"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		return 0, nil, err
+	}
+	if req.Generation <= 0 {
+		return 0, nil, badRequest("generation is required: the generation to restore")
+	}
+	name := r.PathValue("name")
+	snap, err := s.store.WorkflowAtGeneration(ctx, name, req.Generation)
+	if err != nil {
+		return 0, nil, err
+	}
+	var restored *store.Workflow
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		current, err := tx.GetWorkflow(ctx, name)
+		if err != nil {
+			return err
+		}
+		if current.Generation == req.Generation {
+			return badRequest("workflow %s is already at generation %d", name, req.Generation)
+		}
+		wf := *snap
+		wf.ID = current.ID
+		if err := tx.UpdateWorkflowFrom(ctx, &wf, current.Generation, fmt.Sprintf("rollback:%d", req.Generation)); err != nil {
+			return err
+		}
+		restored = &wf
+		return tx.Journal(ctx, "workflow.rolled_back", store.EntityDaemon, wf.ID, map[string]any{
+			"workflow": name, "restored_generation": req.Generation, "new_generation": wf.Generation})
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "workflow rolled back", "workflow", name, "restored", req.Generation, "generation", restored.Generation)
+	return http.StatusOK, restored, nil
 }
