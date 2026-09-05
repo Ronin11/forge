@@ -84,6 +84,11 @@ var pluginScopeTable = []pluginRouteScope{
 	{"GET", "/api/v1/queue", plugin.ScopeWorkRead},
 	{"GET", "/api/v1/attention", plugin.ScopeWorkRead},
 	{"POST PATCH DELETE", "/api/v1/work", plugin.ScopeWorkWrite},
+	// The assistant route turns a channel message into tasks/status/replies —
+	// work creation by another name, so work:write governs it. Missing from
+	// this table, it silently cut every channel bridge off from the chat
+	// revamp until Signal messages went unanswered (2026-09-05).
+	{"POST", "/api/v1/assistant/message", plugin.ScopeWorkWrite},
 	{"POST PATCH DELETE", "/api/v1/tasks", plugin.ScopeWorkWrite},
 	{"POST", "/api/v1/questions/", plugin.ScopeWorkWrite},
 	{"GET", "/api/v1/usage", plugin.ScopeUsageRead},
