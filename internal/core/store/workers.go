@@ -351,8 +351,10 @@ func (tx *Tx) UpsertProvisionalRepository(ctx context.Context, r protocol.Reposi
 		return fmt.Errorf("read project %s: %w", project, err)
 	}
 	now := formatTime(tx.now)
+	// Re-adding an archived name is restore intent: the flag clears so the
+	// repository schedules again.
 	if _, err := tx.Exec(ctx, `INSERT INTO repositories (name, project_id, path, origin_identity, base_branch, worker_id, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET path = excluded.path, origin_identity = excluded.origin_identity, updated_at = excluded.updated_at`,
+		ON CONFLICT(name) DO UPDATE SET path = excluded.path, origin_identity = excluded.origin_identity, updated_at = excluded.updated_at, archived = 0, archived_at = NULL`,
 		r.Name, projectID, r.Path, r.OriginIdentity, nullString(r.BaseBranch), now, now, now); err != nil {
 		return fmt.Errorf("register repository %s on the fly: %w", r.Name, err)
 	}
