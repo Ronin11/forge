@@ -40,7 +40,7 @@ func (s *Store) LearningWorks(ctx context.Context, limit int) ([]LearningWorkRow
 		LEFT JOIN attempts a ON a.id = (
 			SELECT id FROM attempts WHERE target_id = t.id ORDER BY started_at DESC LIMIT 1
 		)
-		WHERE w.routine_name = 'reflect-library' OR w.cause = 'promotion'
+		WHERE w.routine_name IN ('reflect-library', 'learning-director') OR w.cause = 'promotion'
 		ORDER BY w.created_at DESC LIMIT ?`, limit)
 	var out []LearningWorkRow
 	err = each(rows, err)(func(r *sql.Rows) error {
@@ -137,7 +137,7 @@ func (s *Store) LearningSpendSince(ctx context.Context, since time.Time) (float6
 	err := s.queryRow(ctx, `
 		SELECT SUM(f.cost_usd) FROM attempt_facts f
 		JOIN work w ON w.id = f.work_id
-		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion'
+		WHERE (w.routine_name IN ('reflect-library', 'learning-director') OR w.cause = 'promotion'
 		   OR EXISTS (SELECT 1 FROM work r WHERE r.id = f.root_work_id AND r.submitted_by LIKE 'bench:%'))
 		  AND f.finished_at > ?`, formatTime(since)).Scan(&usd)
 	if err != nil {
@@ -187,7 +187,7 @@ func (s *Store) LearningAPISpendSince(ctx context.Context, since time.Time, apiR
 		SELECT SUM(f.cost_usd) FROM attempt_facts f
 		JOIN work w ON w.id = f.work_id
 		JOIN attempts a ON a.id = f.attempt_id
-		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion'
+		WHERE (w.routine_name IN ('reflect-library', 'learning-director') OR w.cause = 'promotion'
 		   OR EXISTS (SELECT 1 FROM work r WHERE r.id = f.root_work_id AND r.submitted_by LIKE 'bench:%'))
 		  AND a.runner IN (`+marks+`)
 		  AND f.finished_at > ?`, args...).Scan(&usd)

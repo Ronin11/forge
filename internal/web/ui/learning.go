@@ -86,6 +86,9 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, lw := range works {
 		e := learningEntry{At: lw.CreatedAt, Kind: "reflection", Title: lw.Title, Link: "/tasks/" + lw.ID, Cost: "-"}
+		if lw.RoutineName == "learning-director" {
+			e.Kind = "director"
+		}
 		if lw.CostUSD != nil {
 			e.Cost = "$" + strconv.FormatFloat(*lw.CostUSD, 'f', 2, 64)
 		}
