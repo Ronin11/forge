@@ -281,12 +281,12 @@ type workRequest struct {
 	Autonomy     model.Autonomy    `json:"autonomy"`
 	// Size is the optional S|M|L bucket for this ask; trusted when given (no
 	// sizing gate), frozen on the Work, copied into facts for calibration.
-	Size string `json:"size"`
-	Model        string            `json:"model"`
-	After        []string          `json:"after"`
-	Paths        []string          `json:"paths"`
-	Integrate    bool              `json:"integrate"`
-	Title        string            `json:"title"`
+	Size      string   `json:"size"`
+	Model     string   `json:"model"`
+	After     []string `json:"after"`
+	Paths     []string `json:"paths"`
+	Integrate bool     `json:"integrate"`
+	Title     string   `json:"title"`
 	// MaxTurns and TimeoutSeconds override the ad-hoc defaults (haiku/30 turns/
 	// 1800s) for an ad-hoc task; ignored when a routine is named. Pointers so
 	// "unset" is distinct from 0.

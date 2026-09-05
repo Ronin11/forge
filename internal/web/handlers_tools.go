@@ -67,7 +67,8 @@ func (s *Server) resolveToolAttempt(ctx context.Context, id string) (tools.Attem
 // toolDeps is what every tool call gets from the server.
 func (s *Server) toolDeps() tools.Deps {
 	return tools.Deps{Store: s.store, Write: s.store.Write, KbDir: s.kbDir, Clock: s.now, Logger: s.log, Adjudicate: s.AdjudicateBudgetRequest,
-		Library: s.promptLibrary, SpawnWork: s.spawnWorkForTool, StartWorkflowRun: s.startWorkflowRunForTool, Scratch: s.scratchForTool}
+		Library: s.promptLibrary, SpawnWork: s.spawnWorkForTool, StartWorkflowRun: s.startWorkflowRunForTool, Scratch: s.scratchForTool,
+		WorkOutcomes: s.workOutcomesForTool}
 }
 
 // toolInfo is one row of GET /api/v1/tools.

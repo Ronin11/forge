@@ -22,6 +22,7 @@ import (
 	"forge/internal/core/modes/retro"
 	"forge/internal/core/modes/review"
 	"forge/internal/core/modes/run"
+	"forge/internal/core/modes/supervise"
 	"forge/internal/core/modes/verify"
 )
 
@@ -42,6 +43,7 @@ func All() []modes.Mode {
 		retro.New(),
 		review.New(),
 		run.New(),
+		supervise.New(),
 		verify.New(),
 	}
 }

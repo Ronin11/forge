@@ -27,6 +27,7 @@ type Config struct {
 	Retention    RetentionConfig    `toml:"retention"`
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Scratch      ScratchConfig      `toml:"scratch"`
+	Plan         PlanConfig         `toml:"plan"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
 	Supervision  SupervisionConfig  `toml:"supervision"`
@@ -138,6 +139,19 @@ type ScratchConfig struct {
 	PromoteAttempts int `toml:"promote_attempts"` // distinct attempts before promotion; default 2
 }
 
+// PlanConfig governs plan decomposition follow-through (DESIGN.md §20): the
+// continuation review after each batch and the bounds on recursion.
+type PlanConfig struct {
+	// Supervise creates a continuation review Work after each plan batch;
+	// nil/absent means the default (on).
+	Supervise *bool `toml:"supervise"`
+	// SuperviseRounds bounds review rounds per subtree (0 = default 3).
+	SuperviseRounds int `toml:"supervise_rounds"`
+	// MaxNesting bounds plan-mode works on one lineage chain (0 = default 2:
+	// the root plan plus one nested level).
+	MaxNesting int `toml:"max_nesting"`
+}
+
 // BackupConfig tunes the nightly backup loop (DESIGN.md §23).
 type BackupConfig struct {
 	Keep int `toml:"keep"` // archives retained under <home>/backups; default 7
@@ -224,6 +238,7 @@ func DefaultConfig(home, userHome string) Config {
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 		Scratch:      ScratchConfig{Max: 200, PromoteRuns: 5, PromoteAttempts: 2},
+		Plan:         PlanConfig{SuperviseRounds: 3, MaxNesting: 2},
 		Backup:       BackupConfig{Keep: 7},
 		Attention:    AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"},
 		Supervision:  SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"},

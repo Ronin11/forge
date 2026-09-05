@@ -59,7 +59,7 @@ type Work struct {
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
 
-// ValidSize reports whether s is a legal work size bucket ('' = unsized).
+// ValidSize reports whether s is a legal work size bucket (” = unsized).
 func ValidSize(s string) bool { return s == "" || s == "S" || s == "M" || s == "L" }
 
 // Target is one repository within one Work.
@@ -248,6 +248,65 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 }
 
 const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, size, created_at, finished_at`
+
+// OpenDependants returns the ids of unfinished Works blocked on the given
+// one — the continuation re-block rule's input.
+func (tx *Tx) OpenDependants(ctx context.Context, blockedBy string) ([]string, error) {
+	var out []string
+	err := each(tx.Query(ctx, `SELECT d.work_id FROM work_dependencies d JOIN work w ON w.id = d.work_id
+		WHERE d.blocked_by_work_id = ? AND w.finished_at IS NULL`, blockedBy))(func(rows *sql.Rows) error {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		out = append(out, id)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open dependants of %s: %w", blockedBy, err)
+	}
+	return out, nil
+}
+
+// OpenBatchWorks returns the unfinished members of one plan batch — the
+// settlement cascade's input.
+func (tx *Tx) OpenBatchWorks(ctx context.Context, batchID string) ([]Work, error) {
+	return scanWork(each(tx.Query(ctx, `SELECT `+workColumns+` FROM work WHERE plan_batch_id = ? AND finished_at IS NULL`, batchID)))
+}
+
+// EdgesForWorks returns every dependency edge whose blocked side is one of
+// the given Works, whatever the blocker's state — the settlement cascade's
+// input.
+func (tx *Tx) EdgesForWorks(ctx context.Context, ids []string) ([]model.Edge, error) {
+	var out []model.Edge
+	for _, id := range ids {
+		err := each(tx.Query(ctx, `SELECT work_id, blocked_by_work_id, "on", stack_on FROM work_dependencies WHERE work_id = ?`, id))(func(rows *sql.Rows) error {
+			var e model.Edge
+			var on string
+			var stack int
+			if err := rows.Scan(&e.Work, &e.BlockedBy, &on, &stack); err != nil {
+				return err
+			}
+			e.On, e.StackOn = model.DependencyOn(on), stack == 1
+			out = append(out, e)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("edges for %s: %w", id, err)
+		}
+	}
+	return out, nil
+}
+
+// HasBatch reports whether any Work names the given one as its plan batch —
+// planFollowUps' idempotence guard against a reopened plan target.
+func (tx *Tx) HasBatch(ctx context.Context, batchID string) (bool, error) {
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM work WHERE plan_batch_id = ?`, batchID).Scan(&n); err != nil {
+		return false, fmt.Errorf("count batch of %s: %w", batchID, err)
+	}
+	return n > 0, nil
+}
 
 // CountToolSpawns counts the Works an agent spawned from one parent work
 // (forge_directive_run's fan-out cap).
@@ -439,6 +498,12 @@ const targetColumns = `id, work_id, repository_name, state, worker_id, lease_exp
 // TargetsForWork returns a Work's Targets.
 func (s *Store) TargetsForWork(ctx context.Context, workID string) ([]Target, error) {
 	return scanTargets(each(s.query(ctx, `SELECT `+targetColumns+` FROM targets WHERE work_id = ? ORDER BY repository_name`, workID)))
+}
+
+// TargetsForWork through the write transaction — a state changed earlier in
+// the same tx is seen (the settlement cascade's requirement).
+func (tx *Tx) TargetsForWork(ctx context.Context, workID string) ([]Target, error) {
+	return scanTargets(each(tx.Query(ctx, `SELECT `+targetColumns+` FROM targets WHERE work_id = ? ORDER BY repository_name`, workID)))
 }
 
 // TargetsForWorks fetches Targets for many Works in one query (no N+1 in lists).

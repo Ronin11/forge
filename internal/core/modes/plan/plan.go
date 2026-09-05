@@ -16,17 +16,9 @@ import (
 //go:embed preamble.md
 var preamble string
 
-// extras are plan's result fields beyond the envelope. blocked_by entries are
-// indexes into the same tasks array; the daemon turns them into edges.
-const extras = `{` +
-	`"tasks":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["title","prompt","paths"],"properties":{` +
-	`"title":{"type":"string"},` +
-	`"prompt":{"type":"string"},` +
-	`"paths":{"type":"array","items":{"type":"string"}},` +
-	`"blocked_by":{"type":"array","items":{"type":"integer","minimum":0}},` +
-	`"stack_on":{"type":"boolean"},` +
-	`"size":{"type":"string","enum":["S","M","L"]},` +
-	`"tier":{"type":"integer","minimum":0,"maximum":3}}}}}`
+// extras are plan's result fields beyond the envelope: the shared task-array
+// fragment (schema.PlanTasks — supervise emits the same shape).
+const extras = `{"tasks":` + schema.PlanTasks + `}`
 
 // New returns the plan mode.
 func New() modes.Mode { return mode{} }

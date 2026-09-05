@@ -56,6 +56,7 @@ func (s *Engine) sweep(ctx context.Context) {
 		if err != nil {
 			return err
 		}
+		settled := map[string]bool{}
 		for _, t := range swept {
 			w, err := tx.GetWork(ctx, t.WorkID)
 			if err != nil {
@@ -63,6 +64,14 @@ func (s *Engine) sweep(ctx context.Context) {
 			}
 			if !model.IsTerminal(t.State, w.Integrate) {
 				continue
+			}
+			// A swept batch member dies outside the complete handler, so the
+			// settlement cascade (handlers_supervise.go) runs here too.
+			if w.PlanBatchID != "" && !settled[w.PlanBatchID] {
+				settled[w.PlanBatchID] = true
+				if err := s.settlePlanBatch(ctx, tx, w.PlanBatchID); err != nil {
+					return err
+				}
 			}
 			a, err := s.store.AttemptForTarget(ctx, t.ID)
 			if err != nil {

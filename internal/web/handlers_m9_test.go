@@ -192,13 +192,28 @@ func TestPlanBatchCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	var batch []store.Work
+	var continuation *store.Work
 	for _, w := range open {
-		if w.PlanBatchID == created.Work.ID {
-			batch = append(batch, w)
+		if w.PlanBatchID != created.Work.ID {
+			continue
 		}
+		if w.Cause == model.CauseContinuation {
+			c := w
+			continuation = &c
+			continue
+		}
+		batch = append(batch, w)
 	}
 	if len(batch) != 3 {
 		t.Fatalf("batch = %d works, want 3 (%+v)", len(batch), open)
+	}
+	// The return path: a supervise continuation, blocked on:terminal on
+	// every batch member, never integrating.
+	if continuation == nil {
+		t.Fatal("no continuation work in the batch")
+	}
+	if continuation.RoutineName != "supervise" || continuation.Integrate || continuation.CausedByWorkID != created.Work.ID {
+		t.Errorf("continuation = %+v", continuation)
 	}
 	byTitle := map[string]store.Work{}
 	for _, w := range batch {
@@ -233,6 +248,18 @@ func TestPlanBatchCreated(t *testing.T) {
 	}
 	if stacked+plain != 2 || stacked != 2 {
 		t.Errorf("wire edges: stacked=%d plain=%d, want 2 stack_on edges", stacked, plain)
+	}
+	contEdges := 0
+	for _, e := range edges {
+		if e.Work == continuation.ID {
+			contEdges++
+			if e.On != model.OnTerminal || e.StackOn {
+				t.Errorf("continuation edge = %+v", e)
+			}
+		}
+	}
+	if contEdges != 3 {
+		t.Errorf("continuation edges = %d, want 3", contEdges)
 	}
 	// The journal carries the batch.
 	rows, err := h.st.JournalForEntity(context.Background(), store.EntityWork, created.Work.ID)

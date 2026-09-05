@@ -137,8 +137,8 @@ func TestLineageEndpoint(t *testing.T) {
 		if resp.RootID != created.Work.ID {
 			t.Errorf("from %s: root_id = %q, want %q", from[:8], resp.RootID, created.Work.ID)
 		}
-		if len(resp.Nodes) != 3 {
-			t.Fatalf("from %s: %d nodes, want 3 (plan + 2 tasks)", from[:8], len(resp.Nodes))
+		if len(resp.Nodes) != 4 {
+			t.Fatalf("from %s: %d nodes, want 4 (plan + 2 tasks + continuation)", from[:8], len(resp.Nodes))
 		}
 		depth := map[string]int{}
 		for _, n := range resp.Nodes {
@@ -150,9 +150,10 @@ func TestLineageEndpoint(t *testing.T) {
 		if depth[childID] != 1 {
 			t.Errorf("child depth = %d, want 1", depth[childID])
 		}
-		// The blocked_by edge between the two tasks is internal to the tree.
-		if len(resp.DependencyEdges) != 1 {
-			t.Errorf("dependency edges = %d, want 1", len(resp.DependencyEdges))
+		// The blocked_by edge between the two tasks, plus the continuation's
+		// on:terminal edge on each task.
+		if len(resp.DependencyEdges) != 3 {
+			t.Errorf("dependency edges = %d, want 3", len(resp.DependencyEdges))
 		}
 	}
 }

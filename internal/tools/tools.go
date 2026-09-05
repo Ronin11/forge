@@ -82,6 +82,10 @@ type Deps struct {
 	// Scratch stores, runs, counts, and (past the threshold) promotes an
 	// agent scratch script (forge_scratch). Nil disables the tool.
 	Scratch func(ctx context.Context, att Attempt, in ScratchInput) (json.RawMessage, ScratchMeta, error)
+	// WorkOutcomes returns the settled outcomes of the caller's plan batch
+	// (or the named work's subtree, same tree only) for supervise-style
+	// review (forge_work_outcomes). Nil disables the tool.
+	WorkOutcomes func(ctx context.Context, att Attempt, workID string) (json.RawMessage, error)
 	// Adjudicate routes a forge_request_budget call to the supervisor
 	// adjudicator's child-initiated path (supervision.go); nil disables the tool
 	// (it reports the seam is unavailable). The daemon injects s.AdjudicateBudgetRequest.
@@ -159,6 +163,7 @@ func Defaults() *Registry {
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
 		askTool{}, noteProgressTool{}, requestBudgetTool{}, proposeTool{},
 		libraryTool{}, scriptRunTool{}, directiveRunTool{}, workflowRunTool{}, scratchTool{},
+		workOutcomesTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

@@ -21,8 +21,9 @@ const (
 	planTaskMaxTurns = 50
 )
 
-// planTask is one entry of a plan result's "tasks" array (modes/plan).
-// BlockedBy entries are indexes into the same array.
+// planTask is one entry of a plan (or supervise-revise) result's "tasks"
+// array (schema.PlanTasks). BlockedBy entries are indexes into the same
+// array; Mode "plan" nests decomposition, depth-capped by createTaskBatch.
 type planTask struct {
 	Title     string   `json:"title"`
 	Prompt    string   `json:"prompt"`
@@ -30,6 +31,7 @@ type planTask struct {
 	BlockedBy []int    `json:"blocked_by"`
 	StackOn   bool     `json:"stack_on"`
 	Size      string   `json:"size"`
+	Mode      string   `json:"mode"`
 	Tier      *int     `json:"tier"`
 }
 
@@ -49,6 +51,13 @@ func (s *Engine) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attem
 	if len(tasks) == 0 {
 		return nil
 	}
+	// Idempotence: a reopened plan target that completes again must not
+	// duplicate its batch.
+	if has, err := tx.HasBatch(ctx, w.ID); err != nil {
+		return err
+	} else if has {
+		return tx.Journal(ctx, "plan.batch_exists", store.EntityWork, w.ID, map[string]any{"attempt_id": a.ID})
+	}
 	snap, err := snapshotRoutine(*w)
 	if err != nil {
 		return err
@@ -56,17 +65,66 @@ func (s *Engine) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attem
 	// integrate travels in the snapshot: the plan Work's own flag is cleared
 	// at creation (a plan has nothing to merge), the hint survives here.
 	integrate := w.Integrate || snap.Integrate
-	ids := make([]string, len(tasks))
+	ids, titles, err := s.createTaskBatch(ctx, tx, w, t.Repository, tasks, snap, integrate)
+	if err != nil {
+		return err
+	}
+	if err := tx.Journal(ctx, "plan.batch_created", store.EntityWork, w.ID, map[string]any{"tasks": ids, "repository": t.Repository, "attempt_id": a.ID}); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "plan batch created", "work_id", w.ID, "tasks", len(ids), "repository", t.Repository)
+	if supervise, _, _ := s.planLimits(); supervise {
+		goal := snap.Objective
+		if goal == "" {
+			goal = snap.Prompt
+		}
+		if _, err := s.createContinuation(ctx, tx, w, t, snap, ids, titles, 1, goal, env.Summary, integrate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// createTaskBatch creates one Work per task on repo, caused by creator, with
+// intra-batch edges; PlanBatchID = creator.ID. Shared by plan and by
+// supervise's revise rounds. A task asking for mode "plan" nests
+// decomposition, demoted to run past the [plan] max_nesting depth.
+func (s *Engine) createTaskBatch(ctx context.Context, tx *store.Tx, creator *store.Work, repo string, tasks []planTask, snap store.Routine, integrate bool) (ids, titles []string, err error) {
+	_, _, maxNesting := s.planLimits()
+	depth, err := s.planDepth(ctx, tx, creator)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids, titles = make([]string, len(tasks)), make([]string, len(tasks))
 	for i, task := range tasks {
 		rt := store.Routine{
-			Name: "plan-task", Mode: planTaskMode, Prompt: task.Prompt, Repositories: []string{t.Repository},
+			Name: "plan-task", Mode: planTaskMode, Prompt: task.Prompt, Repositories: []string{repo},
 			Executor: snap.Executor, Model: snap.Model, MaxTurns: planTaskMaxTurns, TimeoutSeconds: planTaskTimeout,
-			Autonomy: w.Autonomy, Priority: w.Priority, BudgetClass: w.BudgetClass, Concurrency: 1,
+			Autonomy: creator.Autonomy, Priority: creator.Priority, BudgetClass: creator.BudgetClass, Concurrency: 1,
 			Paths: task.Paths, Integrate: integrate, MaxQuestions: adHocMaxQuestions, RequireSandbox: snap.RequireSandbox,
+		}
+		workIntegrate := integrate
+		if task.Mode == "plan" {
+			if depth >= maxNesting {
+				// One over-eager task must not fail the whole completion tx:
+				// it still gets done, just not decomposed.
+				if err := tx.Journal(ctx, "plan.nesting_capped", store.EntityWork, creator.ID, map[string]any{"task": task.Title, "depth": depth}); err != nil {
+					return nil, nil, err
+				}
+			} else {
+				rt.Mode = "plan"
+				// A plan writes nothing to merge: the Work flag stays off and
+				// the hint travels in the snapshot (the handlers_operator.go
+				// modeWritesNothing trick, done by hand here).
+				workIntegrate = false
+				if depth+1 >= maxNesting {
+					rt.Prompt += "\n\nYou may not emit plan-mode tasks (the nesting limit is reached): every task must be directly executable."
+				}
+			}
 		}
 		blob, err := json.Marshal(rt)
 		if err != nil {
-			return fmt.Errorf("snapshot plan task %d: %w", i, err)
+			return nil, nil, fmt.Errorf("snapshot plan task %d: %w", i, err)
 		}
 		title := task.Title
 		if title == "" {
@@ -78,29 +136,25 @@ func (s *Engine) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attem
 		}
 		work := &store.Work{
 			RoutineName: "plan-task", Title: title, Trigger: model.TriggerDependency, Snapshot: blob,
-			Priority: w.Priority, BudgetClass: w.BudgetClass, Autonomy: w.Autonomy, Integrate: integrate,
-			Paths: task.Paths, Tier: task.Tier, Size: size, PlanBatchID: w.ID, PromptHash: promptHashOf(task.Prompt),
-			SubmittedBy:    "plan:" + model.ShortID(w.ID),
-			CausedByWorkID: w.ID, Cause: model.CausePlanTask,
+			Priority: creator.Priority, BudgetClass: creator.BudgetClass, Autonomy: creator.Autonomy, Integrate: workIntegrate,
+			Paths: task.Paths, Tier: task.Tier, Size: size, PlanBatchID: creator.ID, PromptHash: promptHashOf(rt.Prompt),
+			SubmittedBy:    "plan:" + model.ShortID(creator.ID),
+			CausedByWorkID: creator.ID, Cause: model.CausePlanTask,
 		}
-		if _, err := tx.CreateWork(ctx, work, []string{t.Repository}, nil); err != nil {
-			return fmt.Errorf("create plan task %d: %w", i, err)
+		if _, err := tx.CreateWork(ctx, work, []string{repo}, nil); err != nil {
+			return nil, nil, fmt.Errorf("create plan task %d: %w", i, err)
 		}
-		ids[i] = work.ID
+		ids[i], titles[i] = work.ID, title
 	}
 	// Edges second, once every id exists — blocked_by may point forward.
 	for i, task := range tasks {
 		for _, dep := range task.BlockedBy {
 			if err := tx.AddDependency(ctx, model.Edge{Work: ids[i], BlockedBy: ids[dep], On: model.OnSuccess, StackOn: task.StackOn}); err != nil {
-				return fmt.Errorf("edge for plan task %d: %w", i, err)
+				return nil, nil, fmt.Errorf("edge for plan task %d: %w", i, err)
 			}
 		}
 	}
-	if err := tx.Journal(ctx, "plan.batch_created", store.EntityWork, w.ID, map[string]any{"tasks": ids, "repository": t.Repository, "attempt_id": a.ID}); err != nil {
-		return err
-	}
-	s.log.InfoContext(ctx, "plan batch created", "work_id", w.ID, "tasks", len(ids), "repository", t.Repository)
-	return nil
+	return ids, titles, nil
 }
 
 // planTasks decodes and validates the tasks array. A malformed plan is an

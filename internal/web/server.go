@@ -104,6 +104,9 @@ type Engine struct {
 	quietHours   config.QuietHoursConfig
 	// scratchCfg bounds the organic script layer (tool_bridge.go).
 	scratchCfg config.ScratchConfig
+	// planCfg governs continuation reviews and plan-nesting bounds
+	// (handlers_supervise.go).
+	planCfg config.PlanConfig
 	// supervisionCfg drives the supervisor adjudication seam (supervision.go):
 	// child-initiated budget negotiation and the watchdog that reaps (or, in
 	// shadow mode, would-reap) wedged or spinning attempts.
@@ -245,6 +248,9 @@ type ServerOptions struct {
 	// Scratch tunes the agent scratch-script cache and its promotion
 	// threshold; zero values take the config defaults.
 	Scratch config.ScratchConfig
+	// Plan governs continuation reviews and plan-nesting bounds; zero values
+	// take the config defaults.
+	Plan config.PlanConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -330,7 +336,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
-		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch,
+		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan,
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},
 	}

@@ -781,6 +781,14 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 		if err := s.enqueueMerge(ctx, tx, work, out.Target.ID); err != nil {
 			return err
 		}
+		// A batch member ending badly can wedge siblings blocked on it
+		// (dependency_failed is not terminal): settle the batch so its
+		// continuation — the repair path — can fire.
+		if work.PlanBatchID != "" && model.IsTerminal(out.Target.State, work.Integrate) && out.Target.State != model.Succeeded && out.Target.State != model.Merged {
+			if err := s.settlePlanBatch(ctx, tx, work.PlanBatchID); err != nil {
+				return err
+			}
+		}
 		// The response reports where the Target actually landed (it may have
 		// just entered the merge queue).
 		out.Target, err = tx.GetTarget(ctx, out.Target.ID)

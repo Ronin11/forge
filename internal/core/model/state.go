@@ -273,12 +273,15 @@ const (
 	// CausePromotion: a scratch script crossed the promotion threshold and
 	// the daemon queued a curation Work to fold it into the library.
 	CausePromotion Cause = "promotion"
+	// CauseContinuation: the supervise Work that reviews a settled plan
+	// batch — the return path of recursive decomposition.
+	CauseContinuation Cause = "continuation"
 )
 
 // Valid reports whether c is empty (a root) or one of the known causes.
 func (c Cause) Valid() bool {
 	switch c {
-	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool, CausePromotion:
+	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool, CausePromotion, CauseContinuation:
 		return true
 	}
 	return false

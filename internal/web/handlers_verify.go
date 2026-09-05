@@ -341,6 +341,11 @@ func (s *Server) afterComplete(ctx context.Context, tx *store.Tx, a *store.Attem
 		// completion transaction, so the tasks appear together or not at all.
 		return s.planFollowUps(ctx, tx, a, w, t, decodeEnvelope(req.Result))
 	}
+	if a.Mode == "supervise" && t.State == model.Succeeded && req.Verification.Passed {
+		// The return path: done ends the subtree, revise fans out the next
+		// round (handlers_supervise.go).
+		return s.superviseFollowUps(ctx, tx, a, w, t, decodeEnvelope(req.Result))
+	}
 	return nil
 }
 

@@ -71,6 +71,20 @@ const Findings = `{"type":"array","items":{"type":"object","additionalProperties
 // shape has one home.
 const Commits = `{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sha","subject"],"properties":{"sha":{"type":"string"},"subject":{"type":"string"}}}}`
 
+// PlanTasks is the task-array schema plan and supervise share: how an agent
+// describes a batch for the daemon to create (blocked_by entries are indexes
+// into the same array; mode "plan" nests decomposition, depth-capped by the
+// daemon).
+const PlanTasks = `{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["title","prompt","paths"],"properties":{` +
+	`"title":{"type":"string"},` +
+	`"prompt":{"type":"string"},` +
+	`"paths":{"type":"array","items":{"type":"string"}},` +
+	`"blocked_by":{"type":"array","items":{"type":"integer","minimum":0}},` +
+	`"stack_on":{"type":"boolean"},` +
+	`"size":{"type":"string","enum":["S","M","L"]},` +
+	`"mode":{"type":"string","enum":["run","plan"]},` +
+	`"tier":{"type":"integer","minimum":0,"maximum":3}}}}`
+
 // Scores is the 1-5 quality-rating object the learning loop aggregates
 // (attempt_facts score_* columns): optional on run so any judging directive
 // can emit it, required inside supervise's assessment. `overall` is the one

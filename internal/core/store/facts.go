@@ -102,14 +102,14 @@ type AttemptFacts struct {
 	// size bucket ('' = unsized), the workflow (when node-spawned), and the
 	// 1-5 quality scores a judging attempt emitted in its result `scores`
 	// object — nullable, absent is not zero.
-	RootWorkID       string `json:"root_work_id,omitempty"`
-	Size             string `json:"size,omitempty"`
-	WorkflowName     string `json:"workflow_name,omitempty"`
-	ScoreOverall     *int   `json:"score_overall,omitempty"`
-	ScoreCorrectness *int   `json:"score_correctness,omitempty"`
-	ScoreCompleteness *int  `json:"score_completeness,omitempty"`
-	ScoreQuality     *int   `json:"score_quality,omitempty"`
-	ScoreEffortFit   *int   `json:"score_effort_fit,omitempty"`
+	RootWorkID        string `json:"root_work_id,omitempty"`
+	Size              string `json:"size,omitempty"`
+	WorkflowName      string `json:"workflow_name,omitempty"`
+	ScoreOverall      *int   `json:"score_overall,omitempty"`
+	ScoreCorrectness  *int   `json:"score_correctness,omitempty"`
+	ScoreCompleteness *int   `json:"score_completeness,omitempty"`
+	ScoreQuality      *int   `json:"score_quality,omitempty"`
+	ScoreEffortFit    *int   `json:"score_effort_fit,omitempty"`
 }
 
 // PhaseNames are the columns Phases maps to, in order.

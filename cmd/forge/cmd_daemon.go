@@ -279,6 +279,7 @@ func (d *daemonProcess) run(ctx context.Context, lockFD int) (err error) {
 		ModelCall:    d.modelCall,
 		Attention:    d.cfg.Attention,
 		Scratch:      d.cfg.Scratch,
+		Plan:         d.cfg.Plan,
 		QuietHours:   d.cfg.Budget.QuietHours,
 		Supervision:  d.cfg.Supervision,
 		Store:        st, Policy: policy, Logger: d.handler.For("web.http"), Version: version, Token: token, Home: home, Modes: registry,

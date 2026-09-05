@@ -223,6 +223,127 @@ func (s *Server) scratchForTool(ctx context.Context, att tools.Attempt, in tools
 // hot paths, so the curation task jumps the queue without being interactive.
 const promotionPriority = 80
 
+// Bounds for forge_work_outcomes: enough for any legal batch tree, small
+// enough that the response stays a prompt-sized object.
+const (
+	outcomesMaxWorks   = 200
+	outcomesSummaryCap = 500
+)
+
+// workOutcomeRow is one work's settled reality as forge_work_outcomes
+// reports it.
+type workOutcomeRow struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Mode        string   `json:"mode"`
+	Cause       string   `json:"cause,omitempty"`
+	State       string   `json:"state"`
+	Depth       int      `json:"depth"`
+	BlockedBy   []string `json:"blocked_by,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+	CostUSD     float64  `json:"cost_usd,omitempty"`
+	NumTurns    int      `json:"num_turns,omitempty"`
+	Attempts    int      `json:"attempts"`
+	PlanBatchID string   `json:"plan_batch_id,omitempty"`
+	Size        string   `json:"size,omitempty"`
+}
+
+// workOutcomesForTool is Deps.WorkOutcomes: the supervise agent's view of
+// what its batch actually did. Scope defaults to the caller's batch parent
+// (its work's caused_by — the plan or prior continuation), so the agent sees
+// its siblings' subtree; an explicit work_id must live in the caller's own
+// tree.
+func (s *Server) workOutcomesForTool(ctx context.Context, att tools.Attempt, workID string) (json.RawMessage, error) {
+	if att.WorkID == "" {
+		return nil, tools.BadInput("forge_work_outcomes needs a calling attempt")
+	}
+	caller, err := s.store.GetWork(ctx, att.WorkID)
+	if err != nil {
+		return nil, err
+	}
+	scope := workID
+	if scope == "" {
+		scope = caller.CausedByWorkID
+		if scope == "" {
+			scope = caller.ID
+		}
+	}
+	lin, err := ComputeLineage(ctx, s.store, scope)
+	if err != nil {
+		return nil, err
+	}
+	callerRoot := caller.RootWorkID
+	if callerRoot == "" {
+		callerRoot = caller.ID
+	}
+	if lin.RootID != callerRoot {
+		return nil, tools.BadInput("work %s is not in your tree", workID)
+	}
+	// Keep the subtree under scope (scope excluded only when it is the
+	// caller's parent — the agent asked "what did my batch do", not "what am
+	// I"), walking caused_by through the memoized ByID map.
+	inScope := func(id string) bool {
+		for hop := 0; hop < spawnAncestryBound*2 && id != ""; hop++ {
+			if id == scope {
+				return true
+			}
+			id = lin.ByID[id].CausedByWorkID
+		}
+		return false
+	}
+	var edgesByWork = map[string][]string{}
+	for _, e := range lin.Edges {
+		edgesByWork[e.Work] = append(edgesByWork[e.Work], e.BlockedBy)
+	}
+	rows := make([]workOutcomeRow, 0, 16)
+	for _, w := range lin.Works {
+		if w.ID == att.WorkID || !inScope(w.ID) {
+			continue
+		}
+		row := workOutcomeRow{
+			ID: w.ID, Title: w.Title, Cause: string(w.Cause), State: string(lin.State[w.ID]),
+			Depth: lin.Depth[w.ID], BlockedBy: edgesByWork[w.ID], PlanBatchID: w.PlanBatchID, Size: w.Size,
+		}
+		if snap, err := snapshotRoutine(w); err == nil {
+			row.Mode = snap.Mode
+		}
+		var targetIDs []string
+		for _, t := range lin.Targets[w.ID] {
+			targetIDs = append(targetIDs, t.ID)
+		}
+		atts, err := s.store.AttemptsForTargets(ctx, targetIDs)
+		if err != nil {
+			return nil, err
+		}
+		var latest *store.Attempt
+		for _, list := range atts {
+			for i := range list {
+				row.Attempts++
+				if latest == nil || list[i].CreatedAt.After(latest.CreatedAt) {
+					latest = &list[i]
+				}
+			}
+		}
+		if latest != nil {
+			if env := decodeEnvelope(latest.Result); env != nil {
+				row.Summary = env.Summary
+				if len(row.Summary) > outcomesSummaryCap {
+					row.Summary = row.Summary[:outcomesSummaryCap] + "…"
+				}
+			}
+			if latest.CostUSD != nil {
+				row.CostUSD = *latest.CostUSD
+			}
+			row.NumTurns = latest.NumTurns
+		}
+		rows = append(rows, row)
+		if len(rows) >= outcomesMaxWorks {
+			break
+		}
+	}
+	return json.Marshal(map[string]any{"scope": scope, "works": rows})
+}
+
 // queuePromotion creates the curation Work for one over-threshold scratch
 // row: directive promote-scratch, run against the repository registered at
 // the library's path, integrate-on-green with auto autonomy (the operator's
