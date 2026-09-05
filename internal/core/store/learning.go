@@ -196,3 +196,9 @@ func (s *Store) LearningAPISpendSince(ctx context.Context, since time.Time, apiR
 	}
 	return usd.Float64, nil
 }
+
+// ConflictedTargets lists targets sitting in conflict since before the given
+// instant — the conflict auto-recovery sweep's input.
+func (s *Store) ConflictedTargets(ctx context.Context, olderThan time.Time) ([]Target, error) {
+	return scanTargets(each(s.query(ctx, `SELECT `+targetColumns+` FROM targets WHERE state = 'conflict' AND updated_at < ?`, formatTime(olderThan))))
+}
