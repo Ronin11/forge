@@ -1,0 +1,13 @@
+{{template "head" .}}<h1>Commit <code>{{short .Data.SHA}}</code></h1>
+{{if .Data.Missing}}
+<p class="meta">This commit is not in the library's history — a refuted or failed edit lives only on its attempt's unpushed branch. The <a href="/learning">Learning feed</a> entry links to the task, whose result names the branch; <code>forge cleanup</code> lists retained worktrees.</p>
+{{else}}
+<p class="meta"><a href="/learning">← Learning</a> · {{.Data.Author}} · {{ago .Data.At}}</p>
+<h2>{{.Data.Subject}}</h2>
+{{if .Data.Body}}<pre class="commitmsg">{{.Data.Body}}</pre>{{end}}
+{{if .Data.Stat}}<pre class="diffstat">{{.Data.Stat}}</pre>{{end}}
+<div class="tablewrap"><pre class="diffview">{{range .Data.Lines}}<span class="d-{{.Class}}">{{.Text}}
+</span>{{end}}</pre></div>
+{{if .Data.Truncated}}<p class="meta">Diff truncated — run <code class="cmd-copy">git -C ~/.forge/directives show {{short .Data.SHA}}</code> for the rest.</p>{{end}}
+{{end}}
+{{template "foot" .}}

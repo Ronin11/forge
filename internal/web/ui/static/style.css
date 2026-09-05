@@ -461,3 +461,12 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .pr-detail .meta a:hover{text-decoration:underline}
 .pr-tree{min-width:0;overflow-x:hidden}
 .pr-item{min-width:0;overflow-wrap:anywhere}
+
+/* Learning commit view: a classified unified diff, no JS. */
+pre.commitmsg,pre.diffstat{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);padding:.6rem .8rem;border-radius:6px;margin:0 0 .8rem;font-size:.85rem}
+pre.diffview{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.6rem .8rem;margin:0;font-size:.82rem;line-height:1.45;overflow-x:auto}
+pre.diffview span{display:block;white-space:pre}
+.d-file{color:var(--muted);font-weight:600}
+.d-hunk{color:var(--run)}
+.d-add{color:var(--ok);background:rgba(47,143,78,.09)}
+.d-del{color:var(--bad);background:rgba(194,59,47,.08)}

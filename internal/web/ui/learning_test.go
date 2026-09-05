@@ -127,6 +127,40 @@ func TestLearningPage(t *testing.T) {
 			t.Errorf("learning page missing %q", want)
 		}
 	}
+	if !strings.Contains(string(body), `href="/learning/commits/`+sha+`"`) {
+		t.Error("commit row does not link to the diff view")
+	}
+
+	// The diff view: header, stat, classified add lines; a foreign sha gets
+	// the unpushed-branch explanation; a malformed sha 404s.
+	resp, err = http.Get(srv.URL + "/learning/commits/" + sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	// html/template renders "+" as "&#43;" in this context.
+	for _, want := range []string{"plan-project: add efficiency", "d-add", "d-file", "directives/plan-project.md", "&#43;body"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("commit page missing %q", want)
+		}
+	}
+	resp, err = http.Get(srv.URL + "/learning/commits/" + strings.Repeat("0", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "unpushed branch") {
+		t.Errorf("missing-commit page: %s", body)
+	}
+	if resp, err = http.Get(srv.URL + "/learning/commits/nothex!"); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("malformed sha = %d", resp.StatusCode)
+	}
 }
 
 func TestLearningClassifiers(t *testing.T) {

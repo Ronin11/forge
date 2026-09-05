@@ -30,6 +30,8 @@ type learningEntry struct {
 	Directives []string
 	Link       string // in-app drill-down, "" when none
 	Ref        string // short external identity: commit sha, experiment id
+	RefLink    string // where Ref leads (the commit diff view), "" when nowhere
+	ProposalID string // annotating proposal, "" when none
 	Cost       string // "$0.77", "-" when unknown
 	Metrics    string // compact outcome numbers (A/B verdict, arm rates)
 }
@@ -75,7 +77,13 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 			e.Kind = "promotion"
 		}
 		e.Status = learningWorkStatus(lw.State, lw.UnverifiedReason)
-		e.Detail, e.Directives = resultSummary(lw.Result)
+		var sha string
+		e.Detail, e.Directives, sha = resultSummary(lw.Result)
+		if sha != "" {
+			// Merged edits resolve in the library; refuted ones land on the
+			// commit view's "unpushed branch" explanation — both informative.
+			e.Ref, e.RefLink = sha, "/learning/commits/"+sha
+		}
 		if lw.CostUSD != nil {
 			data.SpendUSD += *lw.CostUSD
 		}
@@ -89,9 +97,10 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, c := range libraryCommits(ctx, u.libraryDir(), 60) {
-		e := learningEntry{At: c.at, Kind: "commit", Status: "landed", Title: c.subject, Directives: c.directives, Ref: c.sha, Cost: "-"}
+		e := learningEntry{At: c.at, Kind: "commit", Status: "landed", Title: c.subject, Directives: c.directives, Ref: c.sha, Cost: "-",
+			Link: "/learning/commits/" + c.sha, RefLink: "/learning/commits/" + c.sha}
 		if p := bySha[c.sha]; p != nil {
-			e.Link = "/proposals/" + p.ID
+			e.ProposalID = p.ID
 			e.Detail = "via " + p.Source
 			if p.Status == model.ProposalReverted {
 				e.Status = "reverted"
@@ -117,6 +126,9 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 		if pe.Kind == store.ExperimentKindLive {
 			e.Detail = "live · " + pe.Subject
 			e.Metrics = liveVerdict(pe.Results)
+			if _, sha, ok := cutFragmentRef(appliedRefOf(pe.Results)); ok {
+				e.Ref, e.RefLink = sha, "/learning/commits/"+sha
+			}
 		} else {
 			e.Detail = "offline · " + pe.Subject
 		}
@@ -178,20 +190,24 @@ func learningWorkStatus(state, unverifiedReason string) string {
 	}
 }
 
-// resultSummary lifts the envelope's summary line and the directive names its
-// changes touched (directives/plan-project.md → plan-project).
-func resultSummary(raw json.RawMessage) (string, []string) {
+// resultSummary lifts the envelope's summary line, the directive names its
+// changes touched (directives/plan-project.md → plan-project), and the first
+// commit sha it recorded.
+func resultSummary(raw json.RawMessage) (string, []string, string) {
 	if len(raw) == 0 {
-		return "", nil
+		return "", nil, ""
 	}
 	var env struct {
 		Summary string `json:"summary"`
 		Changes []struct {
 			Path string `json:"path"`
 		} `json:"changes"`
+		Commits []struct {
+			SHA string `json:"sha"`
+		} `json:"commits"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return "", nil
+		return "", nil, ""
 	}
 	var names []string
 	for _, c := range env.Changes {
@@ -199,7 +215,22 @@ func resultSummary(raw json.RawMessage) (string, []string) {
 			names = append(names, n)
 		}
 	}
-	return env.Summary, names
+	sha := ""
+	if len(env.Commits) > 0 && shaPattern.MatchString(env.Commits[0].SHA) {
+		sha = env.Commits[0].SHA
+	}
+	return env.Summary, names, sha
+}
+
+// appliedRefOf lifts applied_ref from a live experiment's results blob.
+func appliedRefOf(raw json.RawMessage) string {
+	var res struct {
+		AppliedRef string `json:"applied_ref"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return ""
+	}
+	return res.AppliedRef
 }
 
 // cutFragmentRef splits "directive:<name>@<sha>" / "persona:<name>@<sha>"

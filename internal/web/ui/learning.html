@@ -7,7 +7,7 @@
 <td class="nowrap">{{ago .At}}</td>
 <td><span class="chip">{{.Kind}}</span></td>
 <td>{{template "stateChip" .Status}}</td>
-<td class="prompt" title="{{.Detail}}">{{if .Link}}<a href="{{.Link}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{if .Ref}} <code>{{short .Ref}}</code>{{end}}{{if .Detail}}<br><span class="meta">{{trunc .Detail}}</span>{{end}}</td>
+<td class="prompt" title="{{.Detail}}">{{if .Link}}<a href="{{.Link}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{if .Ref}} {{if .RefLink}}<a href="{{.RefLink}}" title="what actually changed"><code>{{short .Ref}}</code></a>{{else}}<code>{{short .Ref}}</code>{{end}}{{end}}{{if .ProposalID}} <a href="/proposals/{{.ProposalID}}">proposal</a>{{end}}{{if .Detail}}<br><span class="meta">{{trunc .Detail}}</span>{{end}}</td>
 <td>{{range .Directives}}<span class="chip">{{.}}</span> {{end}}</td>
 <td class="meta">{{.Metrics}}</td>
 <td class="nowrap">{{.Cost}}</td>

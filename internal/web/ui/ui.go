@@ -279,6 +279,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn 
 	u.mux.HandleFunc("GET /kb/{id}", u.kbNote)
 	u.mux.HandleFunc("GET /stats", u.stats)
 	u.mux.HandleFunc("GET /learning", u.learning)
+	u.mux.HandleFunc("GET /learning/commits/{sha}", u.learningCommit)
 	return u, nil
 }
 
