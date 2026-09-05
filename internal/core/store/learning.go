@@ -69,6 +69,64 @@ func (s *Store) LearningWorks(ctx context.Context, limit int) ([]LearningWorkRow
 	return out, nil
 }
 
+// SuperviseAssessment is one recorded supervise verdict, resolved to the ask
+// it judged — the evidence reflection needs that per-directive stats can't
+// carry: what the finished product was actually missing.
+type SuperviseAssessment struct {
+	At         time.Time       `json:"at"`
+	RootWorkID string          `json:"root_work_id,omitempty"`
+	RootTitle  string          `json:"root_title,omitempty"`
+	Repository string          `json:"repository,omitempty"`
+	Outcome    string          `json:"outcome"`
+	Round      int             `json:"round"`
+	Scores     json.RawMessage `json:"scores,omitempty"`
+	Weakness   string          `json:"weakness,omitempty"`
+}
+
+// RecentAssessments lists supervise verdicts since the given instant, newest
+// first, each joined to its root Work (the original ask) and repository.
+func (s *Store) RecentAssessments(ctx context.Context, since time.Time, limit int) ([]SuperviseAssessment, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.query(ctx, `
+		SELECT j.ts, j.payload, w.root_work_id, COALESCE(rw.title, w.title), COALESCE(t.repository_name, '')
+		FROM journal j
+		JOIN work w ON w.id = j.entity_id
+		LEFT JOIN work rw ON rw.id = w.root_work_id
+		LEFT JOIN targets t ON t.work_id = w.id
+		WHERE j.kind = 'supervise.assessment' AND j.ts > ?
+		ORDER BY j.id DESC LIMIT ?`, formatTime(since), limit)
+	var out []SuperviseAssessment
+	err = each(rows, err)(func(r *sql.Rows) error {
+		var ts, payload, title, repo string
+		var root sql.NullString
+		if err := r.Scan(&ts, &payload, &root, &title, &repo); err != nil {
+			return err
+		}
+		var body struct {
+			Outcome  string          `json:"outcome"`
+			Round    int             `json:"round"`
+			Scores   json.RawMessage `json:"scores"`
+			Weakness string          `json:"weakness"`
+		}
+		if err := json.Unmarshal([]byte(payload), &body); err != nil {
+			return nil // a malformed old row never breaks the pack
+		}
+		a := SuperviseAssessment{RootWorkID: root.String, RootTitle: title, Repository: repo,
+			Outcome: body.Outcome, Round: body.Round, Scores: body.Scores, Weakness: body.Weakness}
+		if t, err := parseTime(sql.NullString{String: ts, Valid: true}); err == nil {
+			a.At = t
+		}
+		out = append(out, a)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("recent assessments: %w", err)
+	}
+	return out, nil
+}
+
 // LearningSpendSince sums what self-improvement cost since the given instant:
 // every fact whose Work is a reflect-library run or a promotion — the ledger
 // behind [learning] usd_per_week. Experiment optimizer calls that never

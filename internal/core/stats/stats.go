@@ -674,6 +674,13 @@ type RetroPack struct {
 	Stats           *Report          `json:"stats"`
 	Routines        []RetroRoutine   `json:"routines"`
 	ProblemAttempts []ProblemAttempt `json:"problem_attempts"`
+	// Assessments are the window's supervise verdicts — outcome, scores, and
+	// the weakness prose, resolved to the ask they judged. Per-directive
+	// stats say WHICH prompt underperforms; these say WHAT the finished
+	// products were missing — the reflection evidence for systemic failures
+	// that no single attempt exhibits (an overwrite between parallel tasks,
+	// docs drifting from code).
+	Assessments []store.SuperviseAssessment `json:"supervise_assessments,omitempty"`
 }
 
 // problem selects the rows worth a close read: anything that was not a clean
@@ -732,5 +739,9 @@ func LoadRetroPack(ctx context.Context, st *store.Store, q Query) (*RetroPack, e
 		}
 		problems = append(problems, ProblemAttempt{Facts: f, Result: a.Result, ResultText: text, Events: events})
 	}
-	return &RetroPack{SchemaVersion: SchemaVersion, Window: q, Stats: report, Routines: rr, ProblemAttempts: problems}, nil
+	assessments, err := st.RecentAssessments(ctx, q.Since, 12)
+	if err != nil {
+		return nil, fmt.Errorf("load assessments for retro: %w", err)
+	}
+	return &RetroPack{SchemaVersion: SchemaVersion, Window: q, Stats: report, Routines: rr, ProblemAttempts: problems, Assessments: assessments}, nil
 }

@@ -326,7 +326,7 @@ type retroPackTool struct{}
 
 func (retroPackTool) Name() string { return "forge_retro_pack" }
 func (retroPackTool) Description() string {
-	return "The retro data pack: all-routine stats with previous-window deltas, the current prompt and settings per routine, and the newest problem attempts (not verified successes) with their structured result and last span events."
+	return "The retro data pack: all-routine stats with previous-window deltas, the current prompt and settings per routine, the newest problem attempts (not verified successes) with their structured result and last span events, and the window's supervise assessments — scores and weakness prose per finished ask, the evidence for systemic failures no single attempt shows."
 }
 func (retroPackTool) Where() string { return WhereDaemon }
 func (retroPackTool) InputSchema() json.RawMessage {

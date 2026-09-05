@@ -495,3 +495,43 @@ func TestLoadFunnel(t *testing.T) {
 	}
 	approx(t, "cost per applied", *r.CostPerApplied, 3.0)
 }
+
+// The retro pack carries the window's supervise assessments — scores and
+// weakness prose resolved to the ask they judged — so reflection sees what
+// finished products were missing, not just which directive underperformed.
+func TestRetroPackAssessments(t *testing.T) {
+	f := newFixture(t)
+	a := f.attempt("as1")
+	_ = a
+	var superviseID string
+	f.write(func(tx *store.Tx) error {
+		w := &store.Work{RoutineName: "supervise", Generation: 1, Title: "supervise: bench: rebuild-equitizr", Trigger: model.TriggerManual,
+			Snapshot: []byte(`{}`), Priority: 100, BudgetClass: model.ClassInteractive, Autonomy: model.AutonomyAuto}
+		if _, err := tx.CreateWork(ctx(), w, []string{"equitizr"}, nil); err != nil {
+			return err
+		}
+		superviseID = w.ID
+		return tx.Journal(ctx(), "supervise.assessment", store.EntityWork, w.ID, map[string]any{
+			"attempt_id": "x", "outcome": "revise", "round": 1,
+			"scores":   map[string]int{"overall": 3},
+			"weakness": "search interface lost to a parallel overwrite"})
+	})
+	// A later round on the same work: listed newest first.
+	f.write(func(tx *store.Tx) error {
+		return tx.Journal(ctx(), "supervise.assessment", store.EntityWork, superviseID, map[string]any{
+			"attempt_id": "y", "outcome": "done", "round": 2, "weakness": "resolved"})
+	})
+
+	pack, err := stats.LoadRetroPack(ctx(), f.s, stats.Query{Since: f.now.Add(-time.Hour), Until: f.now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Assessments) != 2 {
+		t.Fatalf("assessments = %d (%+v)", len(pack.Assessments), pack.Assessments)
+	}
+	got := pack.Assessments[1]
+	if got.Outcome != "revise" || got.Round != 1 || !strings.Contains(got.Weakness, "parallel overwrite") ||
+		got.RootTitle == "" || !strings.Contains(string(got.Scores), `"overall":3`) {
+		t.Fatalf("assessment = %+v", got)
+	}
+}
