@@ -74,6 +74,16 @@ type RoutingConfig struct {
 	MinVerifiedSuccess float64 `toml:"min_verified_success"`
 	MinSamples         int     `toml:"min_samples"`
 	Explore            float64 `toml:"explore"`
+	// Ladder is the default retry-escalation ladder (weakest → strongest
+	// alias). A retry after a failed attempt climbs one rung above the failed
+	// attempt's model even when the routine declares no models allowlist —
+	// evidence-triggered escalation, never a first-attempt default. Empty
+	// disables. Routines with their own allowlist keep their explicit ladder.
+	Ladder []string `toml:"ladder"`
+	// BacklogCeiling is the highest ladder alias backlog-class work may reach
+	// (inclusive); the top rungs cost real money and backlog work shouldn't
+	// ride there unattended. Empty = the full ladder.
+	BacklogCeiling string `toml:"backlog_ceiling"`
 }
 
 // Weights scales each cost-vector term in the router's score; all non-negative.

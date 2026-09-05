@@ -238,3 +238,49 @@ func TestRouteClaimRunnerCapacity(t *testing.T) {
 		t.Fatalf("after the runner frees, the second target claims kimi, got %q", c3.Model)
 	}
 }
+
+// The default ladder ([routing] ladder): single-model work — no allowlist, no
+// tier — retries one rung up after a failed attempt; backlog-class work stops
+// at backlog_ceiling; first attempts never escalate.
+func TestDefaultLadderEscalation(t *testing.T) {
+	h := newRoutingHarness(t)
+	h.registerRunners(testWorkerID)
+	h.srv.routing.Ladder = []string{"haiku", "sonnet", "opus"}
+	h.srv.routing.BacklogCeiling = "sonnet"
+
+	h.writeDirective("plainjob", "---\nmode: run\nmodel: haiku\n---\ndo {{repo}}\n")
+	r := store.Routine{Name: "plainjob", Target: "directive:plainjob", Repositories: []string{"equitizr"},
+		TimeoutSeconds: 300, RequireSandbox: true, BudgetClass: model.ClassBacklog}
+	h.call(http.MethodPost, "/api/v1/routines", r, nil, http.StatusCreated)
+	work := h.run("plainjob")
+	target := work.Targets[0].ID
+
+	c1 := h.mustClaim("dl1")
+	a1, err := h.st.GetAttempt(context.Background(), c1.AttemptID)
+	if err != nil || a1.ModelAlias != "haiku" || a1.EscalatedFrom != "" {
+		t.Fatalf("first attempt = %+v, %v (want plain haiku)", a1, err)
+	}
+
+	fail := func(c *protocol.Claim, req string) *protocol.Claim {
+		h.heartbeat(c, model.Preparing, 0)
+		h.heartbeat(c, model.Running, 4321)
+		cr := completeRequest(model.Failed, h.clock.now)
+		cr.Verification = protocol.Verification{Level: 1, Passed: false}
+		h.complete(c, cr)
+		h.call(http.MethodPost, "/api/v1/targets/"+target+"/retry", nil, nil, http.StatusOK)
+		return h.mustClaim(req)
+	}
+
+	c2 := fail(c1, "dl2")
+	a2, err := h.st.GetAttempt(context.Background(), c2.AttemptID)
+	if err != nil || a2.ModelAlias != "sonnet" || a2.EscalatedFrom != "haiku" {
+		t.Fatalf("retry = alias %q escalated_from %q, %v (want sonnet from haiku)", a2.ModelAlias, a2.EscalatedFrom, err)
+	}
+
+	// Backlog stops at the ceiling: the third attempt stays sonnet, not opus.
+	c3 := fail(c2, "dl3")
+	a3, err := h.st.GetAttempt(context.Background(), c3.AttemptID)
+	if err != nil || a3.ModelAlias != "sonnet" {
+		t.Fatalf("capped retry = alias %q, %v (want sonnet — backlog_ceiling)", a3.ModelAlias, err)
+	}
+}

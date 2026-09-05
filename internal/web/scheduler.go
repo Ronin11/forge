@@ -108,6 +108,9 @@ func (s *Server) fireDueRoutines(ctx context.Context, now time.Time) {
 		} else if kind == store.TargetScript {
 			s.fireDueScriptRoutine(ctx, rt, target, now)
 			continue
+		} else if kind == store.TargetBench {
+			s.fireDueBenchRoutine(ctx, rt, target, now)
+			continue
 		}
 		open, err := s.store.OpenWorkCountForRoutine(ctx, rt.ID)
 		if err != nil {

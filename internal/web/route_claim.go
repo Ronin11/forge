@@ -11,6 +11,7 @@ import (
 
 	"forge/internal/core/config"
 	"forge/internal/core/engine"
+	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
 
@@ -55,6 +56,15 @@ func (s *Engine) routeClaim(ctx context.Context, worker store.Worker, w store.Wo
 		tier = *snap.Tier
 	}
 	if s.modelInfo == nil || (len(allowlist) == 0 && snap.Tier == nil) {
+		// The default ladder: single-model work whose prior attempt failed
+		// retries one rung up ([routing] ladder) — the evidence-triggered half
+		// of the escalation path. First attempts never escalate.
+		if s.modelInfo != nil && len(s.routing.Ladder) > 0 {
+			choice, handled, err := s.ladderEscalate(ctx, worker, w, t, snap)
+			if err != nil || handled {
+				return choice, err
+			}
+		}
 		info, ok := s.modelInfoFor(snap.Model)
 		if !ok {
 			return nil, fmt.Errorf("work %s: unknown model alias %q", w.ID, snap.Model)
@@ -274,4 +284,62 @@ func mustJSON(v any) string {
 		return ""
 	}
 	return string(b)
+}
+
+// ladderEscalate climbs [routing] ladder for single-model work: rungs are the
+// snapshot's model followed by every ladder alias above it (all of them when
+// the model is not on the ladder), capped at backlog_ceiling for
+// backlog-class work. handled=false means no prior finished attempt — the
+// caller takes the ordinary single-model path. A ready-but-busy runner skips
+// the claim (nil choice, handled=true), matching the allowlist ladder.
+func (s *Engine) ladderEscalate(ctx context.Context, worker store.Worker, w store.Work, t store.Target, snap store.Routine) (*routeChoice, bool, error) {
+	priors, err := s.store.AttemptsForTarget(ctx, t.ID)
+	if err != nil {
+		return nil, true, err
+	}
+	priorCount, prevAlias := 0, ""
+	for _, a := range priors {
+		if !a.FinishedAt.IsZero() {
+			priorCount++
+			prevAlias = a.ModelAlias
+		}
+	}
+	if priorCount == 0 {
+		return nil, false, nil
+	}
+	rungs := []string{snap.Model}
+	seen := map[string]bool{snap.Model: true}
+	base := -1
+	for i, alias := range s.routing.Ladder {
+		if alias == snap.Model {
+			base = i
+		}
+	}
+	for i, alias := range s.routing.Ladder {
+		if i > base && !seen[alias] {
+			rungs = append(rungs, alias)
+			seen[alias] = true
+		}
+		if w.BudgetClass == model.ClassBacklog && alias == s.routing.BacklogCeiling {
+			break
+		}
+	}
+	rung := priorCount
+	if rung > len(rungs)-1 {
+		rung = len(rungs) - 1
+	}
+	alias := rungs[rung]
+	if alias == snap.Model && prevAlias == snap.Model {
+		return nil, false, nil // nothing above the ceiling: the ordinary retry
+	}
+	info, ok := s.modelInfoFor(alias)
+	if !ok {
+		return nil, true, fmt.Errorf("routing ladder alias %q unknown", alias)
+	}
+	if !runnerReady(worker, info.Runner) {
+		return nil, true, nil
+	}
+	dec := engine.RoutingDecision{Chosen: alias, Why: fmt.Sprintf("default ladder: escalated from %s to rung %d (%s) after %d failed attempt(s)", prevAlias, rung, alias, priorCount)}
+	s.log.InfoContext(ctx, "ladder escalation", "work_id", w.ID, "target_id", t.ID, "from", prevAlias, "to", alias, "rung", rung)
+	return &routeChoice{Alias: alias, ModelID: info.ID, Runner: info.Runner, Executor: executorFor(info, snap), EscalatedFrom: prevAlias, RoutingJSON: mustJSON(dec)}, true, nil
 }

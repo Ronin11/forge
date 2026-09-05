@@ -30,6 +30,7 @@ type Config struct {
 	Plan         PlanConfig         `toml:"plan"`
 	Experiments  ExperimentsConfig  `toml:"experiments"`
 	Learning     LearningConfig     `toml:"learning"`
+	Bench        BenchConfig        `toml:"bench"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
 	Supervision  SupervisionConfig  `toml:"supervision"`
@@ -168,6 +169,14 @@ type ExperimentsConfig struct {
 // seven days over attempt facts.
 type LearningConfig struct {
 	BudgetUSDPerWeek float64 `toml:"usd_per_week"` // 0 = unlimited
+}
+
+// BenchConfig lets the daemon fire benchmark runs itself (a bench-target
+// trigger routine's schedule): where the spec files live and where throwaway
+// repos are created. Empty SpecsDir disables daemon-side bench runs.
+type BenchConfig struct {
+	SpecsDir   string `toml:"specs_dir"`   // directory of <name>.md spec files
+	RepoParent string `toml:"repo_parent"` // parent dir for throwaway repos; default ~/Projects
 }
 
 // BackupConfig tunes the nightly backup loop (DESIGN.md §23).

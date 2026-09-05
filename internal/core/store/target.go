@@ -15,6 +15,7 @@ const (
 	TargetDirective TargetKind = "directive" // a directives-library file, run as one Work
 	TargetWorkflow  TargetKind = "workflow"  // a workflow, run as a workflow run
 	TargetScript    TargetKind = "script"    // a scripts-library file, run as a one-node run
+	TargetBench     TargetKind = "bench"     // a bench spec, run as a fresh throwaway-repo root
 )
 
 // ParseTarget splits a routine target ("directive:<name>" | "workflow:<name>"
@@ -23,7 +24,7 @@ func ParseTarget(s string) (TargetKind, string, error) {
 	if s == "" {
 		return "", "", nil
 	}
-	for _, kind := range []TargetKind{TargetDirective, TargetWorkflow, TargetScript} {
+	for _, kind := range []TargetKind{TargetDirective, TargetWorkflow, TargetScript, TargetBench} {
 		prefix := string(kind) + ":"
 		name, ok := strings.CutPrefix(s, prefix)
 		if !ok || name == "" {
@@ -42,5 +43,5 @@ func ParseTarget(s string) (TargetKind, string, error) {
 		}
 		return kind, name, nil
 	}
-	return "", "", fmt.Errorf("target %q must be directive:<name>, workflow:<name>, or script:<name>", s)
+	return "", "", fmt.Errorf("target %q must be directive:<name>, workflow:<name>, script:<name>, or bench:<name>", s)
 }

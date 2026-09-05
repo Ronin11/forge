@@ -128,15 +128,17 @@ func (s *Store) RecentAssessments(ctx context.Context, since time.Time, limit in
 }
 
 // LearningSpendSince sums what self-improvement cost since the given instant:
-// every fact whose Work is a reflect-library run or a promotion — the ledger
-// behind [learning] usd_per_week. Experiment optimizer calls that never
-// become attempts are not counted yet (they have no facts row).
+// every fact whose Work is a reflect-library run, a promotion, or part of a
+// benchmark tree (measurement is R&D too) — the ledger behind [learning]
+// usd_per_week. Experiment optimizer calls that never become attempts are
+// not counted yet (they have no facts row).
 func (s *Store) LearningSpendSince(ctx context.Context, since time.Time) (float64, error) {
 	var usd sql.NullFloat64
 	err := s.queryRow(ctx, `
 		SELECT SUM(f.cost_usd) FROM attempt_facts f
 		JOIN work w ON w.id = f.work_id
-		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion')
+		WHERE (w.routine_name = 'reflect-library' OR w.cause = 'promotion'
+		   OR EXISTS (SELECT 1 FROM work r WHERE r.id = f.root_work_id AND r.submitted_by LIKE 'bench:%'))
 		  AND f.finished_at > ?`, formatTime(since)).Scan(&usd)
 	if err != nil {
 		return 0, fmt.Errorf("learning spend: %w", err)
@@ -161,4 +163,12 @@ func (s *Store) RecentExperiments(ctx context.Context, limit int) ([]Experiment,
 		limit = 100
 	}
 	return scanExperiments(each(s.query(ctx, `SELECT `+experimentColumns+` FROM experiments ORDER BY created_at DESC LIMIT ?`, limit)))
+}
+
+// OpenWorkCountForSubmitter counts unfinished Works with the given
+// submitted_by — the bench scheduler's skip-if-running key.
+func (s *Store) OpenWorkCountForSubmitter(ctx context.Context, submittedBy string) (int, error) {
+	var n int
+	err := s.queryRow(ctx, `SELECT COUNT(*) FROM work WHERE submitted_by = ? AND finished_at IS NULL`, submittedBy).Scan(&n)
+	return n, err
 }

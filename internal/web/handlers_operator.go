@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"forge/internal/core/bench"
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
@@ -90,6 +92,13 @@ func (s *Server) decodeRoutine(r *http.Request) (*store.Routine, error) {
 	case store.TargetScript:
 		if lib := s.promptLibrary(); lib != nil && lib.Script(target) == nil {
 			return nil, badRequest("routine %s: script %q is not in the library (scripts/%s.js)", rt.Name, target, target)
+		}
+	case store.TargetBench:
+		if s.benchCfg.SpecsDir == "" {
+			return nil, badRequest("routine %s: bench targets need [bench] specs_dir configured", rt.Name)
+		}
+		if _, err := bench.LoadSpec(filepath.Join(s.benchCfg.SpecsDir, target+".md")); err != nil {
+			return nil, badRequest("routine %s: %v", rt.Name, err)
 		}
 	}
 	return &rt, nil
@@ -205,6 +214,15 @@ func (s *Server) runRoutine(r *http.Request) (int, any, error) {
 		}
 		s.log.InfoContext(ctx, "routine fired script run", "routine", rt.Name, "script", target, "run_id", run.ID)
 		return http.StatusCreated, workflowRunCreated{RunID: run.ID, Workflow: "script:" + target}, nil
+	case store.TargetBench:
+		if s.Draining() {
+			return 0, nil, errDraining
+		}
+		created, err := s.startBenchRun(ctx, target, model.TriggerManual)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusCreated, created, nil
 	}
 	return s.submitWork(ctx, workRequest{Routine: name, Repositories: body.Repositories, Objective: body.Objective})
 }
@@ -399,6 +417,8 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 		}
 		if kind, target := targetOf(saved); kind == store.TargetWorkflow {
 			return workCreated{}, badRequest("routine %s targets workflow %q: run it as a workflow (POST /api/v1/routines/%s/run), not as a Work", saved.Name, target, saved.Name)
+		} else if kind == store.TargetBench {
+			return workCreated{}, badRequest("routine %s targets bench %q: it fires from its schedule or POST /api/v1/bench/%s/run", saved.Name, target, target)
 		}
 		rt = *saved
 		if len(req.Paths) > 0 {
