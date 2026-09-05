@@ -28,6 +28,7 @@ type Config struct {
 	Reflection   ReflectionConfig   `toml:"reflection"`
 	Scratch      ScratchConfig      `toml:"scratch"`
 	Plan         PlanConfig         `toml:"plan"`
+	Experiments  ExperimentsConfig  `toml:"experiments"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
 	Supervision  SupervisionConfig  `toml:"supervision"`
@@ -152,6 +153,14 @@ type PlanConfig struct {
 	MaxNesting int `toml:"max_nesting"`
 }
 
+// ExperimentsConfig tunes live multivariant experiments (DESIGN.md §12).
+type ExperimentsConfig struct {
+	MinRuns    int    `toml:"min_runs"`     // facts per arm before deciding; default 5
+	MaxArms    int    `toml:"max_arms"`     // arms including control; default 3
+	MaxAgeDays int    `toml:"max_age_days"` // undecided past this => inconclusive; default 7
+	Promote    string `toml:"promote"`      // "auto" (apply via proposal) | "propose" (human applies); default auto
+}
+
 // BackupConfig tunes the nightly backup loop (DESIGN.md §23).
 type BackupConfig struct {
 	Keep int `toml:"keep"` // archives retained under <home>/backups; default 7
@@ -239,6 +248,7 @@ func DefaultConfig(home, userHome string) Config {
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
 		Scratch:      ScratchConfig{Max: 200, PromoteRuns: 5, PromoteAttempts: 2},
 		Plan:         PlanConfig{SuperviseRounds: 3, MaxNesting: 2},
+		Experiments:  ExperimentsConfig{MinRuns: 5, MaxArms: 3, MaxAgeDays: 7, Promote: "auto"},
 		Backup:       BackupConfig{Keep: 7},
 		Attention:    AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"},
 		Supervision:  SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"},

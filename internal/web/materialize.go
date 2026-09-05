@@ -20,6 +20,10 @@ type materializeOpts struct {
 	// Lib overrides the daemon's library — the optimization loop's variant
 	// composition. Nil uses the live library.
 	Lib *directives.Library
+	// Assign enrolls this materialization in a live experiment when one
+	// covers the resolved directive or persona (live_experiments.go). Only
+	// root production works set it — previews and continuations never do.
+	Assign bool
 }
 
 func (s *Server) materializeLibrary(opts materializeOpts) *directives.Library {
@@ -36,6 +40,17 @@ func (s *Server) materializeLibrary(opts materializeOpts) *directives.Library {
 func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*directives.Composition, error) {
 	lib := s.materializeLibrary(opts)
 	var comp *directives.Composition
+	// Live-experiment assignment: substitute the arm's library BEFORE
+	// directive resolution so the directive body and any persona both
+	// compose from the same arm. Control stamps but keeps the base library.
+	expID, variant := "", ""
+	if opts.Assign && opts.Lib == nil {
+		var armLib *directives.Library
+		armLib, expID, variant = s.assignLiveExperiment(rt, opts, lib)
+		if armLib != nil {
+			lib = armLib
+		}
+	}
 
 	kind, name, err := store.ParseTarget(rt.Target)
 	if err != nil {
@@ -98,6 +113,9 @@ func (s *Server) materializeRoutine(rt *store.Routine, opts materializeOpts) (*d
 	}
 
 	rt.Prompt = injectObjective(rt.Prompt, firstNonEmpty(opts.Objective, rt.Objective))
+	if comp != nil && expID != "" {
+		comp.Experiment, comp.Variant = expID, variant
+	}
 	return comp, nil
 }
 

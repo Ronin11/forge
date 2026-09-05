@@ -443,6 +443,9 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	}
 	composition, err := s.materializeRoutine(&rt, materializeOpts{
 		Mode: req.Mode, Model: req.Model, Prompt: req.Prompt, Persona: req.Persona, Objective: req.Objective,
+		// Root works only: continuations and follow-ups must not switch
+		// arms mid-task (live_experiments.go).
+		Assign: req.CausedBy == "",
 	})
 	if err != nil {
 		return workCreated{}, err

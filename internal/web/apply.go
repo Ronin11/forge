@@ -60,6 +60,15 @@ type routineUpdates struct {
 // applyRoutine creates a new generation carrying only the fields the proposal
 // names (source = proposal:<id>); everything else keeps its current value.
 func (s *Engine) applyRoutine(ctx context.Context, tx *store.Tx, p *store.Proposal) (string, error) {
+	// A library-fragment target (experiment winners in promote="propose"
+	// mode, or a hand-filed content proposal) replaces the file wholesale —
+	// no routine row involved (workflow-node directives have none).
+	if fname, ok := strings.CutPrefix(p.Target, "directive:"); ok {
+		return s.applyFragmentTarget(ctx, p, fname)
+	}
+	if fname, ok := strings.CutPrefix(p.Target, "persona:"); ok {
+		return s.applyFragmentTarget(ctx, p, fname)
+	}
 	name, err := targetName(p.Target, "routine:")
 	if err != nil {
 		return "", fmt.Errorf("proposal %s: %w", model.ShortID(p.ID), err)
@@ -186,6 +195,67 @@ func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, n
 		return "directive:" + name + "@" + head, nil
 	}
 	return "directive:" + name, nil
+}
+
+// applyFragmentTarget applies a proposal whose After carries whole-file
+// content ({"prompt": …}) for a named library fragment.
+func (s *Engine) applyFragmentTarget(ctx context.Context, p *store.Proposal, name string) (string, error) {
+	var u struct {
+		Prompt *string `json:"prompt"`
+	}
+	if err := decodeAfter(p.After, &u); err != nil {
+		return "", fmt.Errorf("proposal %s (fragment): %w", model.ShortID(p.ID), err)
+	}
+	if u.Prompt == nil || *u.Prompt == "" {
+		return "", fmt.Errorf("proposal %s: a %s-target proposal needs after.prompt (the whole file)", model.ShortID(p.ID), p.Target)
+	}
+	return s.applyFragmentContent(ctx, name, *u.Prompt, "proposal:"+p.ID)
+}
+
+// applyFragmentContent replaces a library fragment file wholesale (any kind
+// — directive, persona) with the putPromptFragment discipline: write,
+// validate by reloading the whole tree, revert on failure, commit,
+// hot-reload. Returns the A/B attribution ref "<kind>:<name>@<head>". The
+// live-experiment promotion path lands winners through this.
+func (s *Engine) applyFragmentContent(ctx context.Context, name, content, commitTag string) (string, error) {
+	lib := s.libraryNow()
+	if lib == nil {
+		return "", fmt.Errorf("this process has no prompts library")
+	}
+	f := lib.Fragment(name)
+	if f == nil {
+		return "", fmt.Errorf("fragment %q is not in the library", name)
+	}
+	kind := "fragment"
+	switch {
+	case f.Directive:
+		kind = "directive"
+	case f.Persona:
+		kind = "persona"
+	}
+	old, err := os.ReadFile(f.Path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(f.Path, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	if _, err := directives.Load(lib.Dir); err != nil {
+		if rerr := os.WriteFile(f.Path, old, 0o644); rerr != nil {
+			s.log.ErrorContext(ctx, "revert refused fragment write", "path", f.Path, "error", rerr)
+		}
+		return "", fmt.Errorf("the edit breaks the library: %w", err)
+	}
+	directives.CommitEdit(lib.Dir, f.Path, commitTag)
+	if s.promptsReload != nil {
+		if err := s.promptsReload(); err != nil {
+			s.log.WarnContext(ctx, "prompts reload after fragment write", "error", err)
+		}
+	}
+	if head := directives.Head(lib.Dir); head != "" {
+		return kind + ":" + name + "@" + head, nil
+	}
+	return kind + ":" + name, nil
 }
 
 // libraryNow is promptLibrary for Engine methods (no HTTP imports here).

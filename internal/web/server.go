@@ -107,6 +107,11 @@ type Engine struct {
 	// planCfg governs continuation reviews and plan-nesting bounds
 	// (handlers_supervise.go).
 	planCfg config.PlanConfig
+	// experimentsCfg + the live-assignment cache (live_experiments.go).
+	experimentsCfg  config.ExperimentsConfig
+	liveMu          sync.Mutex
+	liveByDirective map[string]*liveExperiment
+	liveByPersona   map[string]*liveExperiment
 	// supervisionCfg drives the supervisor adjudication seam (supervision.go):
 	// child-initiated budget negotiation and the watchdog that reaps (or, in
 	// shadow mode, would-reap) wedged or spinning attempts.
@@ -251,6 +256,9 @@ type ServerOptions struct {
 	// Plan governs continuation reviews and plan-nesting bounds; zero values
 	// take the config defaults.
 	Plan config.PlanConfig
+	// Experiments tunes live multivariant experiments; zero values take the
+	// config defaults.
+	Experiments config.ExperimentsConfig
 	// StreamInterval overrides the SSE store poll cadence; 0 means 1 s.
 	// Tests shorten it.
 	StreamInterval time.Duration
@@ -336,7 +344,8 @@ func NewServer(o ServerOptions) (*Server, error) {
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
 		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
-		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan,
+		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments,
+		liveByDirective: map[string]*liveExperiment{}, liveByPersona: map[string]*liveExperiment{},
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},
 		flowLocks: map[string]*sync.Mutex{},
 	}
@@ -400,6 +409,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/directive-tests", s.handle(s.listPromptTests))
 	m.HandleFunc("POST /api/v1/experiments", s.handle(s.createExperiment))
 	m.HandleFunc("GET /api/v1/experiments", s.handle(s.listExperiments))
+	m.HandleFunc("POST /api/v1/experiments/{id}/abort", s.handle(s.abortExperiment))
 	m.HandleFunc("GET /api/v1/library/search", s.handle(s.librarySearch))
 	m.HandleFunc("POST /api/v1/script-test", s.handle(s.scriptTest))
 	m.HandleFunc("GET /api/v1/routines", s.handle(s.listRoutines))

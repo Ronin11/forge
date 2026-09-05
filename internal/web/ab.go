@@ -55,7 +55,7 @@ func (s *Engine) checkABReverts(ctx context.Context, cfg config.ReflectionConfig
 		if p.Kind != model.ProposalRoutine && p.Kind != model.ProposalProcess {
 			continue
 		}
-		if ref, ok := strings.CutPrefix(p.AppliedRef, "directive:"); ok {
+		if kind, ref, found := cutLibraryRef(p.AppliedRef); found {
 			// A library edit: the ref carries name@commit (apply.go). Older
 			// refs without the commit predate the attribution key and cannot
 			// be compared — skipped, not failed.
@@ -63,8 +63,8 @@ func (s *Engine) checkABReverts(ctx context.Context, cfg config.ReflectionConfig
 			if !ok || sha == "" {
 				continue
 			}
-			if err := s.checkABRevertDirective(ctx, p, name, sha, cfg); err != nil {
-				s.log.WarnContext(ctx, "ab check (directive)", "proposal_id", p.ID, "directive", name, "error", err)
+			if err := s.checkABRevertFragment(ctx, p, kind, name, sha, cfg); err != nil {
+				s.log.WarnContext(ctx, "ab check (library)", "proposal_id", p.ID, "kind", kind, "name", name, "error", err)
 			}
 			continue
 		}
@@ -86,17 +86,35 @@ func (s *Engine) checkABReverts(ctx context.Context, cfg config.ReflectionConfig
 	}
 }
 
-// checkABRevertDirective is the A/B rule for library edits: runs composed at
-// or after the applied commit (its descendants in the library's git DAG)
-// against the last runs before it. A regression git-reverts exactly that
-// commit; a revert conflict closes the proposal without a restore rather
-// than wedging the sweep.
-func (s *Engine) checkABRevertDirective(ctx context.Context, p *store.Proposal, name, sha string, cfg config.ReflectionConfig) error {
+// cutLibraryRef splits an applied ref of a library edit: "directive:x@sha"
+// or "persona:x@sha".
+func cutLibraryRef(ref string) (kind, rest string, ok bool) {
+	if r, found := strings.CutPrefix(ref, "directive:"); found {
+		return "directive", r, true
+	}
+	if r, found := strings.CutPrefix(ref, "persona:"); found {
+		return "persona", r, true
+	}
+	return "", "", false
+}
+
+// checkABRevertFragment is the A/B rule for library edits (directives and
+// personas): runs composed at or after the applied commit (its descendants
+// in the library's git DAG) against the last runs before it. A regression
+// git-reverts exactly that commit; a revert conflict closes the proposal
+// without a restore rather than wedging the sweep.
+func (s *Engine) checkABRevertFragment(ctx context.Context, p *store.Proposal, kind, name, sha string, cfg config.ReflectionConfig) error {
 	lib := s.libraryNow()
 	if lib == nil {
 		return nil
 	}
-	facts, err := s.store.FactsByDirective(ctx, name, 4*cfg.K)
+	var facts []store.AttemptFacts
+	var err error
+	if kind == "persona" {
+		facts, err = s.store.FactsByPersona(ctx, name, 4*cfg.K)
+	} else {
+		facts, err = s.store.FactsByDirective(ctx, name, 4*cfg.K)
+	}
 	if err != nil {
 		return err
 	}
@@ -113,6 +131,14 @@ func (s *Engine) checkABRevertDirective(ctx context.Context, p *store.Proposal, 
 	}
 	var newFacts, prevFacts []store.AttemptFacts
 	for _, f := range facts { // newest first
+		if f.Variant != "" && f.Variant != "control" {
+			// A variant arm ran synthetic content, not the library at its
+			// commit — counting it would bias toward spuriously reverting a
+			// good promotion (stragglers land on the prev side carrying the
+			// winner's own performance). Control-arm facts are honest
+			// members of whichever side ancestry puts them on.
+			continue
+		}
 		if classify(f.LibraryCommit) {
 			if len(newFacts) < cfg.K {
 				newFacts = append(newFacts, f)
@@ -164,7 +190,7 @@ func (s *Engine) checkABRevertDirective(ctx context.Context, p *store.Proposal, 
 	if err != nil {
 		return err
 	}
-	s.log.InfoContext(ctx, "directive proposal auto-reverted", "proposal_id", p.ID, "directive", name,
+	s.log.InfoContext(ctx, "library proposal auto-reverted", "proposal_id", p.ID, "kind", kind, "name", name,
 		"regressed_on", regressedOn, "applied_commit", sha, "revert_commit", outcome.RevertCommit, "restore_skipped", outcome.RestoreSkipped)
 	return nil
 }

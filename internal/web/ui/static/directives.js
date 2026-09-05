@@ -540,7 +540,9 @@
       if (!box.isConnected) return; // the detail pane moved on
       fetchJSON('/api/v1/experiments?id=' + encodeURIComponent(id)).then(function (pe) {
         render(pe);
+        // A live experiment collects for hours; poll it gently.
         if (pe.status === 'running') window.setTimeout(function () { poll(id); }, 3000);
+        else if (pe.status === 'live') window.setTimeout(function () { poll(id); }, 30000);
       }).catch(fail);
     }
 
@@ -574,6 +576,31 @@
       return cb;
     }
 
+    // renderLive: a live experiment's standing — per-arm tallies against
+    // min_runs, an Abort while it's collecting, the decision once closed.
+    function renderLive(pe) {
+      var lv = el('div', 'pr-run pr-live');
+      var head = el('p', '');
+      head.appendChild(el('strong', '', 'Live experiment'));
+      head.appendChild(chip(pe.status));
+      lv.appendChild(head);
+      (pe.tallies || []).forEach(function (a) {
+        lv.appendChild(el('p', 'meta', a.label + ': ' + a.runs + '/' + (pe.min_runs || '?') +
+          ' runs · ' + Math.round((a.verified_rate || 0) * 100) + '% verified'));
+      });
+      var res = pe.results || {};
+      if (res.winner) lv.appendChild(el('p', '', 'winner: ' + res.winner + (res.applied_ref ? ' — applied as ' + res.applied_ref : '')));
+      if (res.reason) lv.appendChild(el('p', 'meta', res.reason));
+      if (pe.status === 'running' || pe.status === 'live') {
+        lv.appendChild(button('Abort', '', function (e) {
+          e.currentTarget.disabled = true;
+          fetch('/api/v1/experiments/' + encodeURIComponent(pe.id) + '/abort', { method: 'POST' })
+            .then(function () { poll(pe.id); }).catch(fail);
+        }));
+      }
+      out.appendChild(lv);
+    }
+
     function render(pe) {
       out.textContent = '';
       startBtn.disabled = pe.status === 'running';
@@ -581,6 +608,7 @@
         out.appendChild(el('p', 'meta', 'experiment ' + relTime(pe.created_at) + ' · goal: ' + pe.goal +
           ' · ran on ' + pe.target_model + ', optimized by ' + pe.optimizer_model));
       }
+      if (pe.kind === 'live') { renderLive(pe); return; }
       if (pe.status === 'running') {
         out.appendChild(el('p', 'meta', 'running — ' + (pe.progress || 'starting') + ' …'));
         return;
@@ -591,6 +619,27 @@
       }
       var results = pe.results || {};
       if (results.summary) out.appendChild(el('p', '', results.summary));
+      // Trial live: run this experiment's best variants against control on
+      // real production traffic; the decision comes from verified outcomes.
+      if (pe.status === 'done' && (results.candidates || []).some(function (c) { return !c.baseline && !c.error; })) {
+        out.appendChild(button('Trial live on production traffic', '', function (e) {
+          e.currentTarget.disabled = true;
+          clearFail();
+          fetch('/api/v1/experiments', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subject: subject, goal: pe.goal, target_model: pe.target_model,
+              optimizer_model: pe.optimizer_model, live: true, from: pe.id,
+            }),
+          })
+            .then(function (resp) {
+              if (!resp.ok) return resp.json().then(function (er) { throw new Error(er.error || resp.status); });
+              return resp.json();
+            })
+            .then(function (r) { poll(r.id); })
+            .catch(function (err) { fail(err); e.target.disabled = false; });
+        }));
+      }
       (results.candidates || []).forEach(function (c) { out.appendChild(candidateBox(c)); });
     }
 
@@ -598,8 +647,12 @@
     // and picks the polling back up if one is still running.
     fetchJSON('/api/v1/experiments?subject=' + encodeURIComponent(subject)).then(function (list) {
       if (!list || !list.length) return;
-      render(list[0]);
-      if (list[0].status === 'running') window.setTimeout(function () { poll(list[0].id); }, 3000);
+      // Prefer an open live experiment over the latest offline row.
+      var pick = list[0];
+      list.forEach(function (pe) { if (pe.kind === 'live' && (pe.status === 'live' || pe.status === 'running')) pick = pe; });
+      render(pick);
+      if (pick.status === 'running') window.setTimeout(function () { poll(pick.id); }, 3000);
+      else if (pick.status === 'live') window.setTimeout(function () { poll(pick.id); }, 30000);
     }).catch(function () {});
   }
 

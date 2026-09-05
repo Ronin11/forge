@@ -37,6 +37,8 @@ func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflect
 			return
 		case <-ticker.C:
 			s.sweep(ctx)
+			s.refreshLiveExperiments(ctx)
+			s.decideLiveExperiments(ctx, reflection.Margin)
 			s.checkABReverts(ctx, reflection)
 			s.sweepAutoEval(ctx)
 		}

@@ -119,6 +119,12 @@ type AttemptFacts struct {
 	LibraryCommit    string `json:"library_commit,omitempty"`
 	SuperviseOutcome string `json:"supervise_outcome,omitempty"`
 	SuperviseRound   *int   `json:"supervise_round,omitempty"`
+	// Live-experiment arm attribution ('' = unenrolled), plus the composed
+	// persona — the persona analog of Directive, so promoted persona edits
+	// are A/B-guardable.
+	ExperimentID string `json:"experiment_id,omitempty"`
+	Variant      string `json:"variant,omitempty"`
+	Persona      string `json:"persona,omitempty"`
 }
 
 // PhaseNames are the columns Phases maps to, in order.
@@ -150,8 +156,8 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		declared_paths, touched_paths, write_set_precision, lease_wait_us,
 		usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from,
 		root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit,
-		directive, library_commit, supervise_outcome, supervise_round)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		directive, library_commit, supervise_outcome, supervise_round, experiment_id, variant, persona)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.AttemptID, f.TargetID, f.WorkID, f.Routine, f.Generation, f.Project, f.Repository, f.Worker, f.Executor, f.Model, nullString(f.Effort), f.Mode, string(f.Trigger), nullString(f.PromptVersionHash), string(f.Autonomy),
 		phase("queue_wait"), phase("fetch"), phase("resolve_base"), phase("worktree_add"), phase("manifest"), phase("agent"), phase("git_inspect"), phase("verify"), phase("cleanup"), phase("total"), nullTime(f.StartedAt), formatTime(f.FinishedAt),
 		ptrInt(f.Turns), ptrInt64(f.InputTokens), ptrInt64(f.OutputTokens), ptrInt64(f.CacheReadTokens), ptrInt64(f.CacheCreation), nullFloatPtr(f.CostUSD), ptrInt(f.ToolCallsTotal), string(byName), string(timeByName), ptrInt64(f.ToolP50US), ptrInt64(f.ToolMaxUS), ptrInt(f.ToolErrors), ptrInt(f.QuestionsAsked), ptrInt64(f.WaitHumanUS), ptrInt(f.EventsTotal), ptrInt(f.EventsDropped),
@@ -161,7 +167,7 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		jsonOrNull(f.DeclaredPaths), jsonOrNull(f.TouchedPaths), nullFloatPtr(f.WriteSetPrecision), ptrInt64(f.LeaseWaitUS),
 		nullFloatPtr(f.USD), nullFloatPtr(f.FiveHourDelta), nullFloatPtr(f.SevenDayDelta), nullFloatPtr(f.RunnerSeconds), nullString(f.Runner), nullString(f.ModelClass), nullString(f.EscalatedFrom),
 		nullString(f.RootWorkID), f.Size, f.WorkflowName, ptrInt(f.ScoreOverall), ptrInt(f.ScoreCorrectness), ptrInt(f.ScoreCompleteness), ptrInt(f.ScoreQuality), ptrInt(f.ScoreEffortFit),
-		f.Directive, f.LibraryCommit, f.SuperviseOutcome, ptrInt(f.SuperviseRound))
+		f.Directive, f.LibraryCommit, f.SuperviseOutcome, ptrInt(f.SuperviseRound), f.ExperimentID, f.Variant, f.Persona)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("facts for %s already exist: %w", f.AttemptID, ErrConflict)
@@ -226,6 +232,24 @@ func (s *Store) FactsByDirective(ctx context.Context, directive string, limit in
 	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE directive = ? AND library_commit != '' ORDER BY finished_at DESC LIMIT ?`, directive, limit)))
 }
 
+// FactsByPersona is FactsByDirective's persona analog — the A/B sweep's raw
+// material for promoted persona edits.
+func (s *Store) FactsByPersona(ctx context.Context, persona string, limit int) ([]AttemptFacts, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE persona = ? AND library_commit != '' ORDER BY finished_at DESC LIMIT ?`, persona, limit)))
+}
+
+// FactsByExperiment returns a live experiment's stamped runs, newest first —
+// the decide pass groups them by variant.
+func (s *Store) FactsByExperiment(ctx context.Context, id string, limit int) ([]AttemptFacts, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE experiment_id = ? ORDER BY finished_at DESC LIMIT ?`, id, limit)))
+}
+
 const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation, project, repository, worker, executor, model, effort, mode, trigger, prompt_version_hash, autonomy,
 	queue_wait_us, fetch_us, resolve_base_us, worktree_add_us, manifest_us, agent_us, git_inspect_us, verify_us, cleanup_us, total_us, started_at, finished_at,
 	turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
@@ -235,7 +259,7 @@ const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation,
 	declared_paths, touched_paths, write_set_precision, lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth,
 	usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from,
 	root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit,
-	directive, library_commit, supervise_outcome, supervise_round FROM attempt_facts`
+	directive, library_commit, supervise_outcome, supervise_round, experiment_id, variant, persona FROM attempt_facts`
 
 func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFacts, error) {
 	var out []AttemptFacts
@@ -263,7 +287,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 			&declared, &touched, &precision, &leaseWait, &mergeWait, &rebases, &mergeOutcome, &stackDepth,
 			&usd, &fhDelta, &sdDelta, &runnerSecs, &runner, &modelClass, &escalatedFrom,
 			&rootWork, &f.Size, &f.WorkflowName, &scoreOverall, &scoreCorrect, &scoreComplete, &scoreQuality, &scoreEffort,
-			&f.Directive, &f.LibraryCommit, &f.SuperviseOutcome, &superviseRound)
+			&f.Directive, &f.LibraryCommit, &f.SuperviseOutcome, &superviseRound, &f.ExperimentID, &f.Variant, &f.Persona)
 		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("scan facts: %w", err)
 		}

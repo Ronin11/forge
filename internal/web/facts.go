@@ -232,12 +232,16 @@ func computeAttribution(f *store.AttemptFacts, w store.Work) {
 			f.Directive = target
 		}
 	}
+	f.Persona = w.Persona
 	if len(w.Composition) > 0 {
 		var comp struct {
-			Commit string `json:"commit"`
+			Commit     string `json:"commit"`
+			Experiment string `json:"experiment"`
+			Variant    string `json:"variant"`
 		}
 		if json.Unmarshal(w.Composition, &comp) == nil {
 			f.LibraryCommit = comp.Commit
+			f.ExperimentID, f.Variant = comp.Experiment, comp.Variant
 		}
 	}
 }

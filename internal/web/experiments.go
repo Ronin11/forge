@@ -277,6 +277,11 @@ func (s *Server) createExperiment(r *http.Request) (int, any, error) {
 		OptimizerModel string          `json:"optimizer_model"`
 		Test           json.RawMessage `json:"test"`
 		Variants       int             `json:"variants"`
+		// Live experiments: arms assigned to real work at materialization.
+		Live    bool   `json:"live"`
+		From    string `json:"from"`     // offline experiment id to trial arms from
+		MaxArms int    `json:"max_arms"` // including control
+		MinRuns int    `json:"min_runs"` // per-arm decision window
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		return 0, nil, err
@@ -308,6 +313,25 @@ func (s *Server) createExperiment(r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	pe.Baseline = baseline
+	if req.Live {
+		minRuns, maxArms, _, _ := s.experimentsLimits()
+		if req.MinRuns > 0 {
+			pe.MinRuns = req.MinRuns
+		} else {
+			pe.MinRuns = minRuns
+		}
+		if req.MaxArms > 1 && req.MaxArms < maxArms {
+			maxArms = req.MaxArms
+		}
+		pe.Kind = store.ExperimentKindLive
+		pe.Progress = "preparing arms"
+		if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.InsertExperiment(ctx, &pe) }); err != nil {
+			return 0, nil, err
+		}
+		go s.runLiveSetup(pe, subject, maxArms, req.From)
+		s.log.InfoContext(ctx, "live experiment started", "id", pe.ID, "subject", pe.Subject, "max_arms", maxArms, "min_runs", pe.MinRuns)
+		return http.StatusCreated, map[string]string{"id": pe.ID}, nil
+	}
 	if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.InsertExperiment(ctx, &pe) }); err != nil {
 		return 0, nil, err
 	}
@@ -327,7 +351,7 @@ func (s *Server) listExperiments(r *http.Request) (int, any, error) {
 			return 0, nil, err
 		}
 		s.markStaleExperiment(pe)
-		return http.StatusOK, pe, nil
+		return http.StatusOK, s.experimentView(ctx, *pe), nil
 	}
 	subject := r.URL.Query().Get("subject")
 	if subject == "" {
@@ -340,10 +364,28 @@ func (s *Server) listExperiments(r *http.Request) (int, any, error) {
 	if list == nil {
 		list = []store.Experiment{}
 	}
+	out := make([]experimentView, 0, len(list))
 	for i := range list {
 		s.markStaleExperiment(&list[i])
+		out = append(out, s.experimentView(ctx, list[i]))
 	}
-	return http.StatusOK, list, nil
+	return http.StatusOK, out, nil
+}
+
+// experimentView decorates a live row with its per-arm running tallies.
+type experimentView struct {
+	store.Experiment
+	Tallies []armTally `json:"tallies,omitempty"`
+}
+
+func (s *Server) experimentView(ctx context.Context, pe store.Experiment) experimentView {
+	v := experimentView{Experiment: pe}
+	if pe.Kind == store.ExperimentKindLive && pe.Status == store.ExperimentLive {
+		if t, err := s.liveExperimentTallies(ctx, pe.ID, pe.MinRuns); err == nil {
+			v.Tallies = t
+		}
+	}
+	return v
 }
 
 func (s *Server) markStaleExperiment(pe *store.Experiment) {
@@ -560,4 +602,21 @@ THE TEST the candidates were given: %s
 // composition without touching the daemon's loaded tree.
 func (s *Server) renderPreviewLib(ctx context.Context, lib *directives.Library, rt store.Routine, objective, repo string) (routinePreview, error) {
 	return s.renderPreviewOpts(ctx, rt, materializeOpts{Objective: objective, Lib: lib}, repo)
+}
+
+// abortExperiment is POST /api/v1/experiments/{id}/abort.
+func (s *Server) abortExperiment(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	res := &liveResults{Decision: string(store.ExperimentAborted), Reason: "operator abort"}
+	b, _ := json.Marshal(res)
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.DecideLiveExperiment(ctx, id, store.ExperimentAborted, b, "")
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.refreshLiveExperiments(ctx)
+	s.log.InfoContext(ctx, "live experiment aborted", "id", id)
+	return http.StatusOK, map[string]string{"id": id, "status": store.ExperimentAborted}, nil
 }

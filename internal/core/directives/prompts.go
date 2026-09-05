@@ -119,6 +119,10 @@ type Composition struct {
 	Commit    string          `json:"commit,omitempty"`
 	Dirty     bool            `json:"dirty,omitempty"`
 	Fragments []ManifestEntry `json:"fragments"`
+	// Live-experiment arm attribution: which experiment assigned this
+	// composition and which arm it ran ("control", "v1", …).
+	Experiment string `json:"experiment,omitempty"`
+	Variant    string `json:"variant,omitempty"`
 }
 
 var (
