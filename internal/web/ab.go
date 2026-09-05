@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 
 	"forge/internal/core/config"
+	"forge/internal/core/directives"
 	"forge/internal/core/model"
 	"forge/internal/core/store"
 )
@@ -23,11 +25,15 @@ type abOutcome struct {
 	RegressedOn        string   `json:"regressed_on"` // "rate" | "cost"
 	RestoredGeneration int      `json:"restored_generation"`
 	NewGeneration      int      `json:"new_generation"`
-	// RestoreSkipped: the regression was real but the previous generation is
-	// a pre-restructure snapshot that cannot restore as a row (content lives
-	// in the directive's git history); the proposal is closed without a
-	// restore.
+	// RestoreSkipped: the regression was real but a restore was impossible —
+	// a pre-restructure snapshot that no longer maps to a row, or a library
+	// git revert that conflicts with later edits; the proposal is closed
+	// without one.
 	RestoreSkipped bool `json:"restore_skipped,omitempty"`
+	// Library-edit reverts (checkABRevertDirective): the commit the proposal
+	// applied and the revert commit that undid it.
+	AppliedCommit string `json:"applied_commit,omitempty"`
+	RevertCommit  string `json:"revert_commit,omitempty"`
 }
 
 // checkABReverts is the A/B rule of DESIGN.md §12, run every sweep tick: for
@@ -49,6 +55,19 @@ func (s *Engine) checkABReverts(ctx context.Context, cfg config.ReflectionConfig
 		if p.Kind != model.ProposalRoutine && p.Kind != model.ProposalProcess {
 			continue
 		}
+		if ref, ok := strings.CutPrefix(p.AppliedRef, "directive:"); ok {
+			// A library edit: the ref carries name@commit (apply.go). Older
+			// refs without the commit predate the attribution key and cannot
+			// be compared — skipped, not failed.
+			name, sha, ok := strings.Cut(ref, "@")
+			if !ok || sha == "" {
+				continue
+			}
+			if err := s.checkABRevertDirective(ctx, p, name, sha, cfg); err != nil {
+				s.log.WarnContext(ctx, "ab check (directive)", "proposal_id", p.ID, "directive", name, "error", err)
+			}
+			continue
+		}
 		genStr, ok := strings.CutPrefix(p.AppliedRef, "generation:")
 		if !ok {
 			continue
@@ -65,6 +84,89 @@ func (s *Engine) checkABReverts(ctx context.Context, cfg config.ReflectionConfig
 			s.log.WarnContext(ctx, "ab check", "proposal_id", p.ID, "routine", name, "error", err)
 		}
 	}
+}
+
+// checkABRevertDirective is the A/B rule for library edits: runs composed at
+// or after the applied commit (its descendants in the library's git DAG)
+// against the last runs before it. A regression git-reverts exactly that
+// commit; a revert conflict closes the proposal without a restore rather
+// than wedging the sweep.
+func (s *Engine) checkABRevertDirective(ctx context.Context, p *store.Proposal, name, sha string, cfg config.ReflectionConfig) error {
+	lib := s.libraryNow()
+	if lib == nil {
+		return nil
+	}
+	facts, err := s.store.FactsByDirective(ctx, name, 4*cfg.K)
+	if err != nil {
+		return err
+	}
+	isNew := map[string]bool{}
+	classify := func(commit string) bool {
+		if v, ok := isNew[commit]; ok {
+			return v
+		}
+		// The edit is "in" a run when the applied commit is an ancestor of
+		// (or equals) the commit the run's prompt was composed at.
+		v := commit == sha || exec.CommandContext(ctx, "git", "-C", lib.Dir, "merge-base", "--is-ancestor", sha, commit).Run() == nil
+		isNew[commit] = v
+		return v
+	}
+	var newFacts, prevFacts []store.AttemptFacts
+	for _, f := range facts { // newest first
+		if classify(f.LibraryCommit) {
+			if len(newFacts) < cfg.K {
+				newFacts = append(newFacts, f)
+			}
+		} else if len(prevFacts) < cfg.K {
+			prevFacts = append(prevFacts, f)
+		}
+	}
+	if len(newFacts) < cfg.K || len(prevFacts) == 0 {
+		return nil // not enough runs on the edit yet, or nothing to compare
+	}
+	newRate, newCost := verifiedOutcome(newFacts)
+	prevRate, prevCost := verifiedOutcome(prevFacts)
+	regressedOn := ""
+	switch {
+	case prevRate > 0 && newRate < prevRate*(1-cfg.Margin):
+		regressedOn = "rate"
+	case newCost != nil && prevCost != nil && *newCost > *prevCost*(1+cfg.Margin):
+		regressedOn = "cost"
+	}
+	if regressedOn == "" {
+		return nil
+	}
+	outcome := abOutcome{K: cfg.K, NewRate: newRate, PrevRate: prevRate,
+		NewCostPerSuccess: newCost, PrevCostPerSuccess: prevCost,
+		RegressedOn: regressedOn, AppliedCommit: sha}
+	if err := exec.CommandContext(ctx, "git", "-C", lib.Dir, "-c", "user.name=forge", "-c", "user.email=forge@localhost", "revert", "--no-edit", sha).Run(); err != nil {
+		if aerr := exec.CommandContext(ctx, "git", "-C", lib.Dir, "revert", "--abort").Run(); aerr != nil {
+			s.log.WarnContext(ctx, "ab revert: abort after conflict", "error", aerr)
+		}
+		outcome.RestoreSkipped = true
+		s.log.WarnContext(ctx, "ab revert: git revert conflicts (later edits touch the same lines); closing without a restore", "directive", name, "commit", sha)
+	} else {
+		outcome.RevertCommit = directives.Head(lib.Dir)
+		if s.promptsReload != nil {
+			if rerr := s.promptsReload(); rerr != nil {
+				s.log.WarnContext(ctx, "ab revert: reload", "error", rerr)
+			}
+		}
+	}
+	b, err := json.Marshal(outcome)
+	if err != nil {
+		return fmt.Errorf("encode outcome: %w", err)
+	}
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		_, werr := tx.MarkProposalReverted(ctx, p.ID, b)
+		return werr
+	})
+	if err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "directive proposal auto-reverted", "proposal_id", p.ID, "directive", name,
+		"regressed_on", regressedOn, "applied_commit", sha, "revert_commit", outcome.RevertCommit, "restore_skipped", outcome.RestoreSkipped)
+	return nil
 }
 
 // checkABRevert decides and, on regression, performs one proposal's revert.

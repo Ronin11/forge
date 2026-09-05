@@ -656,6 +656,16 @@ func ensureUpstream(dir string) {
 // CommitEdit commits one edited file — the UI's save path. Best-effort like
 // the bootstrap commit: where git balks (no identity, hooks) the tree just
 // stays dirty, which the next manifest records honestly.
+// Head returns the library's current commit, "" when unreadable — the
+// attribution key an applied edit is remembered by (A/B reverts).
+func Head(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func CommitEdit(dir, path, message string) {
 	if err := exec.Command("git", "-C", dir, "add", path).Run(); err != nil {
 		return

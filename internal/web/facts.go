@@ -50,6 +50,7 @@ func ComputeFacts(in FactsInput) *store.AttemptFacts {
 		RootWorkID: w.RootWorkID, Size: w.Size, WorkflowName: w.WorkflowName,
 	}
 	computeScores(f, a.Result)
+	computeAttribution(f, w)
 	if t.Retained {
 		f.RetainedReason = a.Cleanup.Reason
 	}
@@ -192,11 +193,15 @@ func computeScores(f *store.AttemptFacts, result json.RawMessage) {
 	var top struct {
 		Scores     map[string]int `json:"scores"`
 		Assessment struct {
-			Scores map[string]int `json:"scores"`
+			Outcome string         `json:"outcome"`
+			Scores  map[string]int `json:"scores"`
 		} `json:"assessment"`
 	}
 	if json.Unmarshal(result, &top) != nil {
 		return
+	}
+	if top.Assessment.Outcome == "done" || top.Assessment.Outcome == "revise" {
+		f.SuperviseOutcome = top.Assessment.Outcome
 	}
 	scores := top.Scores
 	if scores == nil {
@@ -214,6 +219,27 @@ func computeScores(f *store.AttemptFacts, result json.RawMessage) {
 	f.ScoreCompleteness = pick("completeness")
 	f.ScoreQuality = pick("quality")
 	f.ScoreEffortFit = pick("effort_fit")
+}
+
+// computeAttribution fills the learning-loop keys from the Work: the library
+// directive this attempt's prompt was composed from (the frozen snapshot's
+// target), and the library commit the composition manifest recorded. Works
+// without either (ad-hoc prompts, plan tasks) honestly leave them empty.
+func computeAttribution(f *store.AttemptFacts, w store.Work) {
+	var snap store.Routine
+	if json.Unmarshal(w.Snapshot, &snap) == nil {
+		if kind, target, err := store.ParseTarget(snap.Target); err == nil && kind == store.TargetDirective {
+			f.Directive = target
+		}
+	}
+	if len(w.Composition) > 0 {
+		var comp struct {
+			Commit string `json:"commit"`
+		}
+		if json.Unmarshal(w.Composition, &comp) == nil {
+			f.LibraryCommit = comp.Commit
+		}
+	}
 }
 
 func computeTools(f *store.AttemptFacts, events []store.StoredEvent) {
@@ -461,6 +487,11 @@ func (s *Engine) recordFacts(ctx context.Context, tx *store.Tx, attemptID string
 	}
 	info, _ := s.modelInfoFor(a.ModelAlias)
 	facts := ComputeFacts(FactsInput{Attempt: *a, Target: *t, Work: *w, Project: project.Name, Events: events, Questions: questions, Samples: append(fiveHour, sevenDay...), Now: tx.Now(), LeaseBlockedAt: leaseBlockedAt, Model: info})
+	if a.Mode == "supervise" {
+		if round, err := s.continuationRound(ctx, tx, w); err == nil && round > 0 {
+			facts.SuperviseRound = &round
+		}
+	}
 	if err := tx.InsertFacts(ctx, facts); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.log.DebugContext(ctx, "facts already recorded", "attempt_id", a.ID)

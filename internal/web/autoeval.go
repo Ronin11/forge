@@ -17,7 +17,7 @@ import (
 // no golden cases. In that case the proposal keeps its nil eval score and the
 // human uses the force override (handlers_proposals.go). It is a Server field
 // so tests inject a fake and never spin the real eval harness.
-type evalRunner func(ctx context.Context, mode string) (score float64, ok bool, err error)
+type evalRunner func(ctx context.Context, mode string) (score float64, cases []store.EvalCase, ok bool, err error)
 
 // sweepAutoEval satisfies the eval gate for the daemon itself: for each
 // ungraded routine/mode_prompt proposal it runs that mode's golden eval and
@@ -72,7 +72,7 @@ func (s *Engine) runOneAutoEval(ctx context.Context, id, mode string) {
 	defer func() { <-s.autoEvalSem }()
 	defer s.endEval(id)
 
-	score, ok, err := s.evalFn(ctx, mode)
+	score, cases, ok, err := s.evalFn(ctx, mode)
 	if err != nil {
 		s.log.WarnContext(ctx, "auto-eval failed", "proposal_id", id, "mode", mode, "error", err)
 		return
@@ -82,8 +82,13 @@ func (s *Engine) runOneAutoEval(ctx context.Context, id, mode string) {
 		return
 	}
 	if err := s.store.Write(ctx, func(tx *store.Tx) error {
-		_, werr := tx.SetProposalEvalScore(ctx, id, score)
-		return werr
+		if _, werr := tx.SetProposalEvalScore(ctx, id, score); werr != nil {
+			return werr
+		}
+		for i := range cases {
+			cases[i].ProposalID = id
+		}
+		return tx.InsertEvalCases(ctx, cases)
 	}); err != nil {
 		s.log.WarnContext(ctx, "auto-eval: record score", "proposal_id", id, "score", score, "error", err)
 		return
@@ -151,17 +156,17 @@ func (s *Engine) endEval(id string) {
 // the summary score. ok is false — not an error — when auto-eval is disabled
 // (the binary is not in its checkout) or the mode has no golden cases, so the
 // sweep leaves the score nil for the override rather than erroring or looping.
-func (s *Engine) runEval(ctx context.Context, mode string) (float64, bool, error) {
+func (s *Engine) runEval(ctx context.Context, mode string) (float64, []store.EvalCase, bool, error) {
 	root, ok := s.evalRootCached(ctx)
 	if !ok {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	if !modeHasCases(filepath.Join(root, "evals", mode)) {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	workDir, err := os.MkdirTemp("", "forge-autoeval-")
 	if err != nil {
-		return 0, false, fmt.Errorf("auto-eval work dir: %w", err)
+		return 0, nil, false, fmt.Errorf("auto-eval work dir: %w", err)
 	}
 	defer func() {
 		if rerr := os.RemoveAll(workDir); rerr != nil {
@@ -177,9 +182,15 @@ func (s *Engine) runEval(ctx context.Context, mode string) (float64, bool, error
 		Logger:      s.log,
 	})
 	if err != nil {
-		return 0, false, fmt.Errorf("run eval for mode %s: %w", mode, err)
+		return 0, nil, false, fmt.Errorf("run eval for mode %s: %w", mode, err)
 	}
-	return rep.Score, true, nil
+	cases := make([]store.EvalCase, 0, len(rep.Cases))
+	for _, r := range rep.Cases {
+		turns, cost := r.Turns, r.CostUSD
+		cases = append(cases, store.EvalCase{Mode: mode, CaseName: r.Name, Pass: r.Pass,
+			State: r.State, FailureReason: r.FailureReason, Turns: &turns, CostUSD: &cost, Details: r.Details})
+	}
+	return rep.Score, cases, true, nil
 }
 
 // evalRootCached returns the checkout root for auto-eval, discovered once from

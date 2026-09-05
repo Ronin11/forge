@@ -286,7 +286,7 @@ type ServerOptions struct {
 	Executable string
 	// EvalFn overrides the auto-eval runner (autoeval.go); nil installs the
 	// real s.runEval. Tests inject a fake so the suite never runs eval.Run.
-	EvalFn func(ctx context.Context, mode string) (score float64, ok bool, err error)
+	EvalFn func(ctx context.Context, mode string) (score float64, cases []store.EvalCase, ok bool, err error)
 }
 
 // NewServer wires the routes. It does not listen; Serve does.

@@ -178,6 +178,13 @@ func (s *Engine) applyDirectiveContent(ctx context.Context, p *store.Proposal, n
 			s.log.WarnContext(ctx, "prompts reload after proposal", "error", err)
 		}
 	}
+	// The @commit suffix is the A/B key: facts carry each attempt's
+	// library_commit, so the sweep can compare runs with this edit (the
+	// commit's descendants) against runs without it — and revert exactly
+	// this commit on regression.
+	if head := directives.Head(lib.Dir); head != "" {
+		return "directive:" + name + "@" + head, nil
+	}
 	return "directive:" + name, nil
 }
 

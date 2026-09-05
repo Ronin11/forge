@@ -219,6 +219,9 @@ func (s *Server) rejectProposal(r *http.Request) (int, any, error) {
 // --record-proposal` posting the summary score before an approval.
 type evalScoreRequest struct {
 	Score *float64 `json:"score"`
+	// Cases are the per-run verdicts behind the score (`forge eval
+	// --record-proposal` sends them); optional, persisted as eval history.
+	Cases []store.EvalCase `json:"cases"`
 }
 
 func (s *Server) recordProposalEval(r *http.Request) (int, any, error) {
@@ -241,7 +244,13 @@ func (s *Server) recordProposalEval(r *http.Request) (int, any, error) {
 	err = s.store.Write(ctx, func(tx *store.Tx) error {
 		var werr error
 		p, werr = tx.SetProposalEvalScore(ctx, resolved.ID, *req.Score)
-		return proposalWriteError(werr)
+		if werr != nil {
+			return proposalWriteError(werr)
+		}
+		for i := range req.Cases {
+			req.Cases[i].ProposalID = resolved.ID
+		}
+		return tx.InsertEvalCases(ctx, req.Cases)
 	})
 	if err != nil {
 		return 0, nil, err

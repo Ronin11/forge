@@ -110,6 +110,15 @@ type AttemptFacts struct {
 	ScoreCompleteness *int   `json:"score_completeness,omitempty"`
 	ScoreQuality      *int   `json:"score_quality,omitempty"`
 	ScoreEffortFit    *int   `json:"score_effort_fit,omitempty"`
+	// Attribution keys: which library directive composed this attempt's
+	// prompt and at which library commit — the before/after dimension for
+	// prompt edits (library changes never bump a routine generation) — plus
+	// the supervise verdict (done|revise) and its round, the leading
+	// indicator of planning quality.
+	Directive        string `json:"directive,omitempty"`
+	LibraryCommit    string `json:"library_commit,omitempty"`
+	SuperviseOutcome string `json:"supervise_outcome,omitempty"`
+	SuperviseRound   *int   `json:"supervise_round,omitempty"`
 }
 
 // PhaseNames are the columns Phases maps to, in order.
@@ -140,8 +149,9 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
 		declared_paths, touched_paths, write_set_precision, lease_wait_us,
 		usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from,
-		root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit,
+		directive, library_commit, supervise_outcome, supervise_round)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.AttemptID, f.TargetID, f.WorkID, f.Routine, f.Generation, f.Project, f.Repository, f.Worker, f.Executor, f.Model, nullString(f.Effort), f.Mode, string(f.Trigger), nullString(f.PromptVersionHash), string(f.Autonomy),
 		phase("queue_wait"), phase("fetch"), phase("resolve_base"), phase("worktree_add"), phase("manifest"), phase("agent"), phase("git_inspect"), phase("verify"), phase("cleanup"), phase("total"), nullTime(f.StartedAt), formatTime(f.FinishedAt),
 		ptrInt(f.Turns), ptrInt64(f.InputTokens), ptrInt64(f.OutputTokens), ptrInt64(f.CacheReadTokens), ptrInt64(f.CacheCreation), nullFloatPtr(f.CostUSD), ptrInt(f.ToolCallsTotal), string(byName), string(timeByName), ptrInt64(f.ToolP50US), ptrInt64(f.ToolMaxUS), ptrInt(f.ToolErrors), ptrInt(f.QuestionsAsked), ptrInt64(f.WaitHumanUS), ptrInt(f.EventsTotal), ptrInt(f.EventsDropped),
@@ -150,7 +160,8 @@ func (tx *Tx) InsertFacts(ctx context.Context, f *AttemptFacts) error {
 		nullFloatPtr(f.FiveHourBefore), nullFloatPtr(f.FiveHourAfter), nullFloatPtr(f.SevenDayBefore), nullFloatPtr(f.SevenDayAfter), nullFloatPtr(f.UtilizationDelta), ptrInt64(f.TokensToFirstEdit),
 		jsonOrNull(f.DeclaredPaths), jsonOrNull(f.TouchedPaths), nullFloatPtr(f.WriteSetPrecision), ptrInt64(f.LeaseWaitUS),
 		nullFloatPtr(f.USD), nullFloatPtr(f.FiveHourDelta), nullFloatPtr(f.SevenDayDelta), nullFloatPtr(f.RunnerSeconds), nullString(f.Runner), nullString(f.ModelClass), nullString(f.EscalatedFrom),
-		nullString(f.RootWorkID), f.Size, f.WorkflowName, ptrInt(f.ScoreOverall), ptrInt(f.ScoreCorrectness), ptrInt(f.ScoreCompleteness), ptrInt(f.ScoreQuality), ptrInt(f.ScoreEffortFit))
+		nullString(f.RootWorkID), f.Size, f.WorkflowName, ptrInt(f.ScoreOverall), ptrInt(f.ScoreCorrectness), ptrInt(f.ScoreCompleteness), ptrInt(f.ScoreQuality), ptrInt(f.ScoreEffortFit),
+		f.Directive, f.LibraryCommit, f.SuperviseOutcome, ptrInt(f.SuperviseRound))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("facts for %s already exist: %w", f.AttemptID, ErrConflict)
@@ -204,6 +215,17 @@ func (s *Store) FactsSince(ctx context.Context, since, until time.Time, routine 
 	return s.scanFacts(each(s.query(ctx, q+` ORDER BY finished_at`, args...)))
 }
 
+// FactsByDirective returns the newest facts composed from one library
+// directive that carry a library commit — the A/B sweep's raw material for
+// before/after-an-edit comparison (classification against the git DAG
+// happens in the caller, which owns the library checkout).
+func (s *Store) FactsByDirective(ctx context.Context, directive string, limit int) ([]AttemptFacts, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return s.scanFacts(each(s.query(ctx, factsSelect+` WHERE directive = ? AND library_commit != '' ORDER BY finished_at DESC LIMIT ?`, directive, limit)))
+}
+
 const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation, project, repository, worker, executor, model, effort, mode, trigger, prompt_version_hash, autonomy,
 	queue_wait_us, fetch_us, resolve_base_us, worktree_add_us, manifest_us, agent_us, git_inspect_us, verify_us, cleanup_us, total_us, started_at, finished_at,
 	turns, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, tool_calls_total, tool_calls_by_name, tool_time_us_by_name, tool_p50_us, tool_max_us, tool_errors, questions_asked, wait_human_us, events_total, events_dropped,
@@ -212,7 +234,8 @@ const factsSelect = `SELECT attempt_id, target_id, work_id, routine, generation,
 	five_hour_before, five_hour_after, seven_day_before, seven_day_after, utilization_delta_estimate, tokens_to_first_edit,
 	declared_paths, touched_paths, write_set_precision, lease_wait_us, merge_wait_us, rebase_attempts, merge_outcome, stack_depth,
 	usd, five_hour_delta, seven_day_delta, runner_seconds, runner, model_class, escalated_from,
-	root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit FROM attempt_facts`
+	root_work_id, size, workflow_name, score_overall, score_correctness, score_completeness, score_quality, score_effort_fit,
+	directive, library_commit, supervise_outcome, supervise_round FROM attempt_facts`
 
 func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFacts, error) {
 	var out []AttemptFacts
@@ -230,6 +253,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		var runner, modelClass, escalatedFrom sql.NullString
 		var rootWork sql.NullString
 		var scoreOverall, scoreCorrect, scoreComplete, scoreQuality, scoreEffort sql.NullInt64
+		var superviseRound sql.NullInt64
 		dest := []any{&f.AttemptID, &f.TargetID, &f.WorkID, &f.Routine, &f.Generation, &f.Project, &f.Repository, &f.Worker, &f.Executor, &f.Model, &effort, &f.Mode, &f.Trigger, &promptHash, &f.Autonomy}
 		for i := range phases {
 			dest = append(dest, &phases[i])
@@ -238,7 +262,8 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 			&f.State, &exit, &failure, &isErr, &vLevel, &vPass, &retained, &retainedReason, &commits, &files, &ins, &del, &dirty, &pushed, &branch, &base, &head, &fhb, &fha, &sdb, &sda, &delta, &firstEdit,
 			&declared, &touched, &precision, &leaseWait, &mergeWait, &rebases, &mergeOutcome, &stackDepth,
 			&usd, &fhDelta, &sdDelta, &runnerSecs, &runner, &modelClass, &escalatedFrom,
-			&rootWork, &f.Size, &f.WorkflowName, &scoreOverall, &scoreCorrect, &scoreComplete, &scoreQuality, &scoreEffort)
+			&rootWork, &f.Size, &f.WorkflowName, &scoreOverall, &scoreCorrect, &scoreComplete, &scoreQuality, &scoreEffort,
+			&f.Directive, &f.LibraryCommit, &f.SuperviseOutcome, &superviseRound)
 		if err := rows.Scan(dest...); err != nil {
 			return fmt.Errorf("scan facts: %w", err)
 		}
@@ -282,6 +307,7 @@ func (s *Store) scanFacts(iter func(func(*sql.Rows) error) error) ([]AttemptFact
 		f.Runner, f.ModelClass, f.EscalatedFrom = runner.String, modelClass.String, escalatedFrom.String
 		f.RootWorkID = rootWork.String
 		f.ScoreOverall, f.ScoreCorrectness, f.ScoreCompleteness, f.ScoreQuality, f.ScoreEffortFit = intPtr(scoreOverall), intPtr(scoreCorrect), intPtr(scoreComplete), intPtr(scoreQuality), intPtr(scoreEffort)
+		f.SuperviseRound = intPtr(superviseRound)
 		out = append(out, f)
 		return nil
 	})

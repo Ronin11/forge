@@ -203,14 +203,23 @@ func TestSuperviseLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scored := false
+	scored, sawRevise, sawDone := false, false, false
 	for _, f := range facts {
-		if f.Mode == "supervise" && f.ScoreOverall != nil && *f.ScoreOverall == 4 && f.RootWorkID == created.Work.ID {
+		if f.Mode != "supervise" || f.RootWorkID != created.Work.ID {
+			continue
+		}
+		if f.ScoreOverall != nil && *f.ScoreOverall == 4 {
 			scored = true
 		}
+		if f.SuperviseOutcome == "revise" && f.SuperviseRound != nil && *f.SuperviseRound == 1 {
+			sawRevise = true
+		}
+		if f.SuperviseOutcome == "done" && f.SuperviseRound != nil && *f.SuperviseRound == 2 {
+			sawDone = true
+		}
 	}
-	if !scored {
-		t.Fatalf("no scored supervise facts row: %+v", facts)
+	if !scored || !sawRevise || !sawDone {
+		t.Fatalf("supervise facts missing dimensions (scored=%v revise=%v done=%v): %+v", scored, sawRevise, sawDone, facts)
 	}
 	// The lineage rollup answers for the whole ask.
 	var lin lineageResponse

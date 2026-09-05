@@ -24,7 +24,7 @@ type fakeEval struct {
 	block chan struct{} // when non-nil, each call waits on it before returning
 }
 
-func (f *fakeEval) run(ctx context.Context, mode string) (float64, bool, error) {
+func (f *fakeEval) run(ctx context.Context, mode string) (float64, []store.EvalCase, bool, error) {
 	f.mu.Lock()
 	f.modes = append(f.modes, mode)
 	f.mu.Unlock()
@@ -32,7 +32,11 @@ func (f *fakeEval) run(ctx context.Context, mode string) (float64, bool, error) 
 		<-f.block
 	}
 	a := f.answers[mode]
-	return a.score, a.ok, nil
+	var cases []store.EvalCase
+	if a.ok {
+		cases = []store.EvalCase{{Mode: mode, CaseName: "golden-1", Pass: a.score >= 1, State: "succeeded"}}
+	}
+	return a.score, cases, a.ok, nil
 }
 
 func (f *fakeEval) calls() []string {

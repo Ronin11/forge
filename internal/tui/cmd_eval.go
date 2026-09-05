@@ -95,7 +95,12 @@ func RunEval(ctx context.Context, c *Context, args []string) int {
 		if err := cl.Connect(ctx); err != nil {
 			return c.Fail("eval", err)
 		}
-		if err := cl.Do(ctx, http.MethodPost, "/api/v1/proposals/"+*recordProposal+"/eval", map[string]float64{"score": rep.Score}, nil); err != nil {
+		cases := make([]map[string]any, 0, len(rep.Cases))
+		for _, r := range rep.Cases {
+			cases = append(cases, map[string]any{"mode": *mode, "case": r.Name, "pass": r.Pass,
+				"state": r.State, "failure_reason": r.FailureReason, "turns": r.Turns, "cost_usd": r.CostUSD, "details": r.Details})
+		}
+		if err := cl.Do(ctx, http.MethodPost, "/api/v1/proposals/"+*recordProposal+"/eval", map[string]any{"score": rep.Score, "cases": cases}, nil); err != nil {
 			return c.Fail("eval", err)
 		}
 		fmt.Fprintf(c.Stdout, "recorded eval score %.2f on proposal %s\n", rep.Score, short(*recordProposal))
