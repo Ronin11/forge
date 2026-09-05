@@ -1,3 +1,6 @@
 [submodule "internal/core/directives/starter"]
 	path = internal/core/directives/starter
 	url = git@github.com:Ronin11/forge-library.git
+[submodule "site"]
+	path = site
+	url = git@github.com:Ronin11/ashbyforge.git

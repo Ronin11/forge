@@ -6,10 +6,11 @@ staticcheck_version := "v0.8.1"
 errcheck_version := "v1.20.0"
 
 # Build the binary into ./forge with the git describe as its version. The
-# base library (internal/core/directives/starter) is a submodule; a fresh
-# clone needs it before go:embed has anything to embed.
+# base library (internal/core/directives/starter) is a submodule and so is
+# the public site (site/ → ashbyforge.com); a fresh clone needs the library
+# before go:embed has anything to embed.
 submodules:
-    test -f internal/core/directives/starter/UPSTREAM || git submodule update --init
+    test -f internal/core/directives/starter/UPSTREAM -a -f site/index.html || git submodule update --init
 
 build: submodules
     go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o forge ./cmd/forge
