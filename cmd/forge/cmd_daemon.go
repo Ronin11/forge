@@ -883,8 +883,20 @@ func (d *daemonProcess) registerRepoOnTheFly(ctx context.Context, nameOrPath str
 	// with nothing to fall back to (M6 smoke 7), so detect the base branch
 	// now: origin/HEAD when set, else the checkout's current branch.
 	base := detectBaseBranch(vctx, r.Path)
-	if err := worker.AddRepository(filepath.Join(d.c.ForgeHome, "worker.toml"), name, r.Path, base); err != nil {
-		return protocol.Repository{}, err
+	// Idempotent when the exact name+path already sits in worker.toml (a
+	// re-add clears an archive flag through the provisional-row upsert); a
+	// name collision on a different path still refuses.
+	cfgPath := filepath.Join(d.c.ForgeHome, "worker.toml")
+	already := false
+	if wcfg, err := worker.LoadConfig(cfgPath); err == nil {
+		if existing, ok := wcfg.Repositories[name]; ok && filepath.Clean(existing.Path) == r.Path {
+			already = true
+		}
+	}
+	if !already {
+		if err := worker.AddRepository(cfgPath, name, r.Path, base); err != nil {
+			return protocol.Repository{}, err
+		}
 	}
 	return protocol.Repository{Name: name, Path: r.Path, OriginIdentity: r.OriginIdentity, BaseBranch: base, Project: "default"}, nil
 }
