@@ -290,6 +290,28 @@ func TestClaudeStreamResultText(t *testing.T) {
 	}
 }
 
+// A steer delivered as the session ends can make the CLI open a bonus session
+// and emit a second, text-only result frame. A structured result is only
+// superseded by another structured result — a delivered supervise assessment
+// was clobbered this way live (2026-09-05). Text-after-text keeps last-wins.
+func TestClaudeStreamStructuredResultSurvivesTextFrame(t *testing.T) {
+	p := newClaudeParser(t, "agent-1")
+	p.Line([]byte(`{"type":"result","result":"done","structured_output":{"assessment":{"outcome":"revise"}},"num_turns":38,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}`))
+	events := p.Line([]byte(`{"type":"result","result":"I already called StructuredOutput","num_turns":2,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}`))
+	res := p.Result()
+	if res.Text != "done" || !strings.Contains(string(res.Structured), `"revise"`) || res.NumTurns != 38 {
+		t.Fatalf("text frame clobbered the structured result: Text=%q Structured=%s NumTurns=%d", res.Text, res.Structured, res.NumTurns)
+	}
+	if len(events) != 1 || events[0].Kind != protocol.KindLifecycle || !strings.Contains(string(events[0].Attrs), `"ignored":true`) {
+		t.Fatalf("ignored frame events = %+v", events)
+	}
+	// A later structured frame is a deliberate resubmission: it wins.
+	p.Line([]byte(`{"type":"result","result":"redone","structured_output":{"assessment":{"outcome":"done"}},"num_turns":40,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}`))
+	if res = p.Result(); !strings.Contains(string(res.Structured), `"done"`) || res.NumTurns != 40 {
+		t.Fatalf("structured resubmission ignored: %s turns=%d", res.Structured, res.NumTurns)
+	}
+}
+
 func TestClaudeStreamLongNonJSONLineIsCapped(t *testing.T) {
 	p := newClaudeParser(t, "agent-1")
 	line := strings.Repeat("é", protocol.MaxLineEventBytes) // 2 bytes each, well under MaxLine

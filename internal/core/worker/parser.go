@@ -348,6 +348,31 @@ func (p *claudeStreamParser) finalResult(line []byte) []protocol.Event {
 		p.result.UnknownLines++
 		return nil
 	}
+	// Multiple result frames: the last one normally wins (a steered run's
+	// final state), but a structured result is only superseded by another
+	// structured result. A steer delivered as the session ends makes the CLI
+	// open a bonus session whose text result would otherwise clobber the
+	// delivered envelope — seen live when a budget nudge landed as a
+	// supervise agent submitted, and the follow-up "I already called
+	// StructuredOutput" frame failed the attempt.
+	var candText string
+	if err := json.Unmarshal(msg.Result, &candText); err != nil {
+		candText = ""
+	}
+	candStructured := len(msg.Structured) > 0 && !bytes.Equal(msg.Structured, []byte("null")) ||
+		isJSONObject([]byte(candText))
+	if p.result.HasResult && len(p.result.Structured) > 0 && !candStructured {
+		return []protocol.Event{{
+			Kind:    protocol.KindLifecycle,
+			Message: "result",
+			Attrs: encodeAttrs(map[string]any{
+				"ignored":   true,
+				"is_error":  msg.IsError,
+				"num_turns": msg.NumTurns,
+				"subtype":   msg.Subtype,
+			}),
+		}}
+	}
 	p.result.HasResult = true
 	p.result.IsError = msg.IsError
 	p.result.NumTurns = msg.NumTurns
@@ -357,10 +382,7 @@ func (p *claudeStreamParser) finalResult(line []byte) []protocol.Event {
 	p.result.Usage = protocol.Usage{}
 
 	// result is documented as a string; anything else is left as text-less.
-	var text string
-	if err := json.Unmarshal(msg.Result, &text); err == nil {
-		p.result.Text = text
-	}
+	p.result.Text = candText
 	switch {
 	case len(msg.Structured) > 0 && !bytes.Equal(msg.Structured, []byte("null")):
 		p.result.Structured = append(json.RawMessage(nil), msg.Structured...)
