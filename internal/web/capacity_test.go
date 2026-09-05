@@ -145,3 +145,58 @@ func TestOpportunisticLearning(t *testing.T) {
 		t.Fatalf("post-cooldown fire = %d opportunist works, want 2", n)
 	}
 }
+
+// forge_experiment: an agent's uncertain hypothesis becomes a live
+// experiment with its stated variant as an arm.
+func TestExperimentTool(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutineWith("trialdir", "base {{objective}}")
+	h.run("trialdir")
+	c := h.runningAttempt("et1")
+
+	status, body := h.bridgeTool(c.AttemptID, "forge_experiment", map[string]any{
+		"subject": "directive:trialdir",
+		"goal":    "stop guessing on thin evidence",
+		"variants": []map[string]string{{
+			"title":   "cautious",
+			"content": "---\nmode: run\nmodel: haiku\n---\ncautious base {{objective}}\n",
+		}},
+	})
+	if status != 200 {
+		t.Fatalf("tool = %d %s", status, body)
+	}
+	var resp struct {
+		Output struct {
+			ID string `json:"id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || resp.Output.ID == "" {
+		t.Fatalf("tool body = %s (%v)", body, err)
+	}
+	// Setup is async but model-free with provided variants; wait for live.
+	var got *store.Experiment
+	for i := 0; i < 100; i++ {
+		e, err := h.st.GetExperiment(context.Background(), resp.Output.ID)
+		if err == nil && e.Status == store.ExperimentLive {
+			got = e
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got == nil {
+		e, _ := h.st.GetExperiment(context.Background(), resp.Output.ID)
+		t.Fatalf("experiment never went live: %+v", e)
+	}
+	var arms []store.ExperimentArm
+	if err := json.Unmarshal(got.Arms, &arms); err != nil || len(arms) != 2 || arms[1].Title != "cautious" {
+		t.Fatalf("arms = %s (%v)", got.Arms, err)
+	}
+	// A second experiment on the same subject is refused.
+	if status, body = h.bridgeTool(c.AttemptID, "forge_experiment", map[string]any{
+		"subject": "directive:trialdir", "goal": "another",
+		"variants": []map[string]string{{"content": "---\nmode: run\nmodel: haiku\n---\nx {{objective}}\n"}},
+	}); status == 200 {
+		t.Fatalf("duplicate subject accepted: %s", body)
+	}
+}

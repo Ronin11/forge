@@ -26,6 +26,10 @@ func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflect
 	} else {
 		s.log.InfoContext(ctx, "leases extended", "targets", extended, "grace", store.RestartGrace.String())
 	}
+	// The assignment cache must exist before the first claim, not a tick
+	// later: a work created in the restart-to-first-tick gap ran unenrolled
+	// (reflect 5, 2026-09-05) and its experiment lost the sample.
+	s.refreshLiveExperiments(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// Auto-eval runs its scoring in goroutines this loop owns; wait for them

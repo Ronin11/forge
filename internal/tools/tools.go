@@ -72,6 +72,9 @@ type Deps struct {
 	// Library returns the daemon's current directives library; nil disables
 	// forge_library and forge_script_run (they report the seam unavailable).
 	Library func() *directives.Library
+	// OpenExperiment opens a live experiment on an agent's behalf
+	// (forge_experiment); nil disables the tool.
+	OpenExperiment func(ctx context.Context, att Attempt, in ExperimentInput) (id string, err error)
 	// SpawnWork creates one Work on an agent's behalf (forge_directive_run):
 	// the daemon injects a closure that applies the depth/spawn guardrails
 	// and provenance stamps. Nil disables the tool.
@@ -163,7 +166,7 @@ func Defaults() *Registry {
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
 		askTool{}, noteProgressTool{}, requestBudgetTool{}, proposeTool{},
 		libraryTool{}, scriptRunTool{}, directiveRunTool{}, workflowRunTool{}, scratchTool{},
-		workOutcomesTool{},
+		workOutcomesTool{}, experimentTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

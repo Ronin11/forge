@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ func (h *harness) wireBench(t *testing.T) string {
 func TestBenchRoutineFires(t *testing.T) {
 	h := newHarness(t, transportUnix)
 	h.register(testWorkerID)
+	h.writeDirective("plan-project", "---\nmode: plan\nmodel: sonnet\n---\nPlan it: {{objective}}\n")
 	h.wireBench(t)
 
 	r := store.Routine{Name: "nightly-bench", Target: "bench:quick", Repositories: []string{"equitizr"},
@@ -63,8 +65,11 @@ func TestBenchRoutineFires(t *testing.T) {
 		t.Fatalf("bench root = %+v", root)
 	}
 	var snap store.Routine
-	if err := json.Unmarshal(root.Snapshot, &snap); err != nil || snap.Mode != "plan" || snap.Model != "haiku" || snap.MaxTurns != 20 {
+	if err := json.Unmarshal(root.Snapshot, &snap); err != nil || snap.MaxTurns != 20 || snap.TimeoutSeconds != 900 {
 		t.Fatalf("snapshot = %+v, %v", snap, err)
+	}
+	if snap.Target != "directive:plan-project" || !strings.Contains(snap.Prompt, "Build the thing.") {
+		t.Fatalf("root not keyed through plan-project: target=%s prompt=%q", snap.Target, snap.Prompt)
 	}
 
 	// Still open: the next due firing skips instead of stacking a second run.

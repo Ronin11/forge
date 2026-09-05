@@ -18,6 +18,10 @@ import (
 // the improvement loop without anyone babysitting a shell script. Bench
 // spend is learning spend: an exhausted [learning] pool skips the firing.
 
+// benchPlanDirective is the library directive every bench root materializes
+// through.
+const benchPlanDirective = "plan-project"
+
 // startBenchRun creates one benchmark run for the named spec.
 func (s *Server) startBenchRun(ctx context.Context, name string, trigger model.Trigger) (workCreated, error) {
 	if s.benchCfg.SpecsDir == "" {
@@ -76,10 +80,16 @@ func (s *Server) startBenchRun(ctx context.Context, name string, trigger model.T
 			// burn-down line instead of competing with interactive work.
 			class = model.ClassBacklog
 		}
+		// The root materializes through the plan-project directive with the
+		// spec as its objective — planner content, model, and composition all
+		// come from the library, so the planner is attributable in facts and
+		// experimentable like any other directive. The spec keeps the
+		// operational envelope (turns, timeout).
 		created, werr = s.createWorkTx(ctx, tx, workRequest{
-			Prompt: spec.Body, Repositories: []string{repo.Name}, Mode: "plan",
-			Size: spec.Size, Model: spec.Model, Autonomy: model.Autonomy(spec.Autonomy),
-			MaxTurns: &spec.MaxTurns, TimeoutSeconds: &spec.Timeout,
+			directive: benchPlanDirective, Objective: spec.Body,
+			Repositories: []string{repo.Name},
+			Size:         spec.Size, Autonomy: model.Autonomy(spec.Autonomy),
+			nodeMaxTurns: spec.MaxTurns, nodeTimeout: spec.Timeout,
 			Integrate: true, BenchName: name, Title: "bench: " + name, Force: true,
 			trigger: trigger, Class: class,
 		})

@@ -548,7 +548,7 @@ func mustJSONRaw(v any) json.RawMessage {
 // candidates (an offline experiment's results, or fresh generation),
 // validate each against the CURRENT library, optionally judge-prescreen to
 // rank, pin control, and open assignment.
-func (s *Server) runLiveSetup(pe store.Experiment, subject experimentSubject, maxArms int, from string) {
+func (s *Server) runLiveSetup(pe store.Experiment, subject experimentSubject, maxArms int, from string, provided []experimentCandidate) {
 	ctx, cancel := context.WithTimeout(context.Background(), experimentTotalTimeout)
 	defer cancel()
 	fail := func(err error) {
@@ -566,7 +566,9 @@ func (s *Server) runLiveSetup(pe store.Experiment, subject experimentSubject, ma
 	}
 
 	var candidates []experimentCandidate
-	if from != "" {
+	if len(provided) > 0 {
+		candidates = provided
+	} else if from != "" {
 		src, err := s.store.GetExperiment(ctx, from)
 		if err != nil {
 			fail(fmt.Errorf("from experiment: %w", err))

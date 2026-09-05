@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"forge/internal/core/directives"
 	"forge/internal/core/engine"
@@ -504,4 +505,78 @@ func (s *Server) clearPromotion(ctx context.Context, row store.ScratchScript, re
 	if err != nil {
 		s.log.WarnContext(ctx, "clear scratch promotion", "script", row.Name, "error", err)
 	}
+}
+
+// openExperimentForTool is Deps.OpenExperiment: an agent's "uncertain →
+// trial it" move. The experiment machinery is itself the guardrail —
+// posterior decisions, drift aborts, guarded promotion — so agents open
+// experiments directly; the one-live-per-subject index and the learning
+// pool bound the blast radius.
+func (s *Server) openExperimentForTool(ctx context.Context, att tools.Attempt, in tools.ExperimentInput) (string, error) {
+	in.Goal = strings.TrimSpace(in.Goal)
+	if in.Goal == "" {
+		return "", tools.BadInput("goal is required: what should the subject do better, and how would we know")
+	}
+	kind, _, err := store.ParseTarget(in.Subject)
+	if err != nil || (kind != store.TargetDirective && kind != "persona") {
+		return "", tools.BadInput("subject %q: want directive:<name> or persona:<name>", in.Subject)
+	}
+	minRuns, maxArms, _, _ := s.experimentsLimits()
+	if in.MinRuns > 0 {
+		minRuns = in.MinRuns
+	}
+	if len(in.Variants) > maxArms-1 {
+		return "", tools.BadInput("at most %d variants (arms include control)", maxArms-1)
+	}
+	if len(in.Variants) == 0 && s.modelCall == nil {
+		return "", tools.BadInput("no variants given and this process has no model access to generate them")
+	}
+	target, optimizer := "", ""
+	for _, alias := range []string{"sonnet", "haiku", "opus"} {
+		if _, ok := s.resolveModel(alias); ok {
+			target = alias
+			break
+		}
+	}
+	for _, alias := range []string{"fable", "opus", "sonnet"} {
+		if _, ok := s.resolveModel(alias); ok {
+			optimizer = alias
+			break
+		}
+	}
+	if target == "" || optimizer == "" {
+		return "", fmt.Errorf("no resolvable models for an experiment")
+	}
+	pe := store.Experiment{
+		Subject: in.Subject, Goal: in.Goal, TargetModel: target, OptimizerModel: optimizer,
+		VariantCount: max(len(in.Variants), 2), Progress: "starting", Kind: store.ExperimentKindLive, MinRuns: minRuns,
+	}
+	subject, baseline, err := s.experimentSubjectFor(ctx, &pe)
+	if err != nil {
+		return "", tools.BadInput("%v", err)
+	}
+	pe.Baseline = baseline
+	var provided []experimentCandidate
+	for i, v := range in.Variants {
+		if strings.TrimSpace(v.Content) == "" {
+			return "", tools.BadInput("variant %d: content is required", i+1)
+		}
+		title := v.Title
+		if title == "" {
+			title = fmt.Sprintf("variant %d", i+1)
+		}
+		provided = append(provided, experimentCandidate{Title: title, Content: v.Content})
+	}
+	if err := s.store.Write(ctx, func(tx *store.Tx) error {
+		if err := tx.InsertExperiment(ctx, &pe); err != nil {
+			return err
+		}
+		return tx.Journal(ctx, "experiment.agent_opened", store.EntityDaemon, pe.ID, map[string]any{
+			"subject": in.Subject, "attempt_id": att.ID, "goal": in.Goal, "provided_variants": len(provided)})
+	}); err != nil {
+		return "", err
+	}
+	go s.runLiveSetup(pe, subject, maxArms, "", provided)
+	s.log.InfoContext(ctx, "agent opened live experiment", "id", pe.ID, "subject", in.Subject, "attempt_id", att.ID)
+	return pe.ID, nil
 }

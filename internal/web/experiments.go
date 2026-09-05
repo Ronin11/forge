@@ -328,7 +328,7 @@ func (s *Server) createExperiment(r *http.Request) (int, any, error) {
 		if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.InsertExperiment(ctx, &pe) }); err != nil {
 			return 0, nil, err
 		}
-		go s.runLiveSetup(pe, subject, maxArms, req.From)
+		go s.runLiveSetup(pe, subject, maxArms, req.From, nil)
 		s.log.InfoContext(ctx, "live experiment started", "id", pe.ID, "subject", pe.Subject, "max_arms", maxArms, "min_runs", pe.MinRuns)
 		return http.StatusCreated, map[string]string{"id": pe.ID}, nil
 	}
