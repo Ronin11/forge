@@ -66,6 +66,21 @@ func TestVerifyScopesAndLevels(t *testing.T) {
 			wantPass: true, wantLevel: 1,
 		},
 		{
+			// An analysis run may execute the product it assesses; installs and
+			// build artifacts dirty the throwaway worktree without shipping
+			// anything. Two bench supervise rounds died here (2026-09-05).
+			name: "kb_only side-effect dirt passes", env: mkEnv(),
+			git:      protocol.GitOutcome{Dirty: true, ChangedPaths: []string{"node_modules/.package-lock.json", "package-lock.json"}},
+			scope:    model.WritesKbOnly,
+			wantPass: true, wantLevel: 1,
+		},
+		{
+			name: "none side-effect dirt passes", env: mkEnv(),
+			git:      protocol.GitOutcome{Dirty: true, ChangedPaths: []string{"dist/app.js"}},
+			scope:    model.WritesNone,
+			wantPass: true, wantLevel: 1,
+		},
+		{
 			name: "docs_only default globs pass", env: mkEnv("docs/a/b.md", "README.md"),
 			git:      protocol.GitOutcome{Commits: 1, ChangedPaths: []string{"docs/a/b.md", "README.md"}},
 			scope:    model.WritesDocsOnly,

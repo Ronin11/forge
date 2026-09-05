@@ -306,7 +306,13 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 	// diffs are still recorded but never fail (VERIFICATION.md §L0). Greenfield
 	// is an L2 mode, verified against its declared checks.
 	if hasEnvelope && env != nil {
-		exact := scope != model.WritesNewProject
+		// Analysis modes (supervise, verify follow-ups) legitimately dirty the
+		// throwaway worktree by RUNNING the product under assessment — npm
+		// installs, build artifacts. Their contract is "nothing ships",
+		// enforced below by commits and declared changes, not by dirt: two
+		// bench supervise rounds died l0:changes_mismatch on node_modules and
+		// their revise verdicts were silently dropped (2026-09-05).
+		exact := scope != model.WritesNewProject && scope != model.WritesNone && scope != model.WritesKbOnly
 		verdict["l0_changes_exact"] = exact
 		changed := map[string]bool{}
 		for _, p := range git.ChangedPaths {
@@ -336,10 +342,10 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 	// L0.3: write scope against what git measured.
 	switch scope {
 	case model.WritesNone, model.WritesKbOnly:
+		// Uncommitted dirt is tolerated (see L0.2): running the assessed
+		// product dirties the worktree and the worktree is discarded. Commits
+		// and declared changes are the ship-shaped violations.
 		var offending []string
-		if git.Dirty {
-			offending = append(offending, "worktree dirty")
-		}
 		if git.Commits > 0 {
 			offending = append(offending, fmt.Sprintf("%d commits", git.Commits))
 		}
