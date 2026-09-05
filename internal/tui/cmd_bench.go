@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,6 +26,8 @@ type benchSpec struct {
 	Size     string // S|M|L, default L
 	Model    string // model alias for the plan (tasks inherit), default sonnet
 	Autonomy string // default auto
+	MaxTurns int    // plan-attempt turns, default 40 (the ad-hoc 30 is too tight)
+	Timeout  int    // plan-attempt seconds, default 3600 (the ad-hoc 1800 timed out)
 	Body     string
 }
 
@@ -76,11 +79,13 @@ func runBenchRun(ctx context.Context, c *Context, args []string) int {
 	}
 	repoName := fmt.Sprintf("bench-%s-%s", name, time.Now().Format("20060102-1504"))
 	repoPath := filepath.Join(parent, repoName)
-	if err := initBenchRepo(ctx, repoPath); err != nil {
-		return c.Fail("bench run", err)
-	}
+	// Connect before touching the filesystem: a refused connection must not
+	// leave an orphan checkout behind.
 	cl := c.Client(log)
 	if err := cl.Connect(ctx); err != nil {
+		return c.Fail("bench run", err)
+	}
+	if err := initBenchRepo(ctx, repoPath); err != nil {
 		return c.Fail("bench run", err)
 	}
 	if err := cl.Do(ctx, http.MethodPost, "/api/v1/repositories", map[string]any{"path": repoPath}, nil); err != nil {
@@ -94,6 +99,7 @@ func runBenchRun(ctx context.Context, c *Context, args []string) int {
 	req := map[string]any{
 		"prompt": spec.Body, "repositories": []string{repoName}, "mode": "plan",
 		"size": spec.Size, "model": spec.Model, "autonomy": spec.Autonomy,
+		"max_turns": spec.MaxTurns, "timeout_seconds": spec.Timeout,
 		"integrate": true, "bench_name": name, "title": "bench: " + name, "force": true,
 	}
 	if err := cl.Do(ctx, http.MethodPost, "/api/v1/tasks", req, &created); err != nil {
@@ -213,7 +219,7 @@ func loadBenchSpec(path string) (*benchSpec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("spec: %w", err)
 	}
-	spec := &benchSpec{Size: "L", Model: "sonnet", Autonomy: "auto", Body: string(raw)}
+	spec := &benchSpec{Size: "L", Model: "sonnet", Autonomy: "auto", MaxTurns: 40, Timeout: 3600, Body: string(raw)}
 	body := string(raw)
 	if strings.HasPrefix(body, "---\n") {
 		end := strings.Index(body[4:], "\n---")
@@ -233,6 +239,14 @@ func loadBenchSpec(path string) (*benchSpec, error) {
 				spec.Model = v
 			case "autonomy":
 				spec.Autonomy = v
+			case "max_turns":
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					spec.MaxTurns = n
+				}
+			case "timeout":
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					spec.Timeout = n
+				}
 			default:
 				return nil, fmt.Errorf("spec %s: unknown key %q", path, strings.TrimSpace(k))
 			}
