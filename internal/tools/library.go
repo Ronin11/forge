@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"forge/internal/core/directives"
+	"forge/internal/core/store"
 )
 
 type libraryTool struct{}
@@ -28,7 +29,7 @@ func (libraryTool) Where() string { return WhereDaemon }
 func (libraryTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
 		"query":{"type":"string","description":"search terms; all must match name, description, or body"},
-		"kind":{"type":"string","enum":["directive","persona","fragment","script","workflow"],"description":"restrict search, or (with name) select the item to fetch"},
+		"kind":{"type":"string","enum":["directive","persona","fragment","script","workflow","scratch"],"description":"restrict search, or (with name) select the item to fetch"},
 		"name":{"type":"string","description":"fetch this item's full content (requires kind)"},
 		"limit":{"type":"integer","minimum":1,"maximum":50}
 	},"additionalProperties":false}`)
@@ -63,8 +64,8 @@ func (libraryTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 		kinds[in.Kind] = true
 	}
 	hits := lib.Search(in.Query, kinds, 0)
+	terms := strings.Fields(strings.ToLower(in.Query))
 	if in.Kind == "" || in.Kind == "workflow" {
-		terms := strings.Fields(strings.ToLower(in.Query))
 		wfs, err := req.Deps.Store.ListWorkflows(ctx, false)
 		if err != nil {
 			return nil, err
@@ -74,8 +75,19 @@ func (libraryTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 				hits = append(hits, directives.SearchHit{Name: wf.Name, Kind: "workflow", Description: wf.Description, Tool: wf.Tool, Score: score})
 			}
 		}
-		directives.SortHits(hits)
 	}
+	if in.Kind == "" || in.Kind == "scratch" {
+		scratch, err := req.Deps.Store.ListScratch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, sc := range scratch {
+			if score, ok := directives.ScoreTerms(terms, sc.Name, sc.Description, sc.Source); ok {
+				hits = append(hits, directives.SearchHit{Name: sc.Name, Kind: "scratch", Description: sc.Description, InputSchema: sc.InputSchema, Score: score})
+			}
+		}
+	}
+	directives.SortHits(hits)
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
@@ -84,6 +96,24 @@ func (libraryTool) Call(ctx context.Context, req Request) (json.RawMessage, erro
 
 // libraryGet returns one item's full content.
 func libraryGet(ctx context.Context, req Request, lib *directives.Library, kind, name string) (json.RawMessage, error) {
+	if kind == "scratch" {
+		var row *store.ScratchScript
+		err := req.Deps.Write(ctx, func(tx *store.Tx) error {
+			var err error
+			row, err = tx.GetScratch(ctx, name)
+			return err
+		})
+		if err != nil {
+			return nil, BadInput("scratch %q: %v", name, err)
+		}
+		return respond(map[string]any{
+			"schema_version": SchemaVersion,
+			"name":           row.Name, "kind": "scratch", "description": row.Description,
+			"language": row.Language, "run_count": row.RunCount, "content": row.Source,
+			"input_schema": json.RawMessage(orEmptySchema(row.InputSchema)),
+			"note":         "run it with forge_scratch {name}; it promotes to the permanent library with continued use",
+		})
+	}
 	if kind == "workflow" {
 		wf, err := req.Deps.Store.GetWorkflow(ctx, name)
 		if err != nil {

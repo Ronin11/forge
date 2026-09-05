@@ -79,6 +79,9 @@ type Deps struct {
 	// StartWorkflowRun fires a tool-flagged workflow (forge_workflow_run).
 	// Nil disables the tool.
 	StartWorkflowRun func(ctx context.Context, att Attempt, workflow, objective string, repos []string) (runID string, err error)
+	// Scratch stores, runs, counts, and (past the threshold) promotes an
+	// agent scratch script (forge_scratch). Nil disables the tool.
+	Scratch func(ctx context.Context, att Attempt, in ScratchInput) (json.RawMessage, ScratchMeta, error)
 	// Adjudicate routes a forge_request_budget call to the supervisor
 	// adjudicator's child-initiated path (supervision.go); nil disables the tool
 	// (it reports the seam is unavailable). The daemon injects s.AdjudicateBudgetRequest.
@@ -155,7 +158,7 @@ func Defaults() *Registry {
 		statsTool{}, retroPackTool{},
 		kbSearchTool{}, kbNoteTool{}, kbNewTool{}, kbBacklinksTool{}, kbLinksTool{},
 		askTool{}, noteProgressTool{}, requestBudgetTool{}, proposeTool{},
-		libraryTool{}, scriptRunTool{}, directiveRunTool{}, workflowRunTool{},
+		libraryTool{}, scriptRunTool{}, directiveRunTool{}, workflowRunTool{}, scratchTool{},
 	}
 	all = append(all, localTools()...)
 	for _, t := range all {

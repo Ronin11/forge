@@ -40,9 +40,10 @@ func (s *Server) librarySearch(r *http.Request) (int, any, error) {
 		limit = n
 	}
 	hits := lib.Search(q.Get("q"), kinds, 0)
-	// Workflows are SQLite definitions; merge them with identical scoring.
+	// Workflows and scratch scripts are SQLite rows; merge them with
+	// identical scoring.
+	terms := strings.Fields(strings.ToLower(q.Get("q")))
 	if len(kinds) == 0 || kinds["workflow"] {
-		terms := strings.Fields(strings.ToLower(q.Get("q")))
 		wfs, err := s.store.ListWorkflows(r.Context(), false)
 		if err != nil {
 			return 0, nil, err
@@ -52,8 +53,19 @@ func (s *Server) librarySearch(r *http.Request) (int, any, error) {
 				hits = append(hits, directives.SearchHit{Name: wf.Name, Kind: "workflow", Description: wf.Description, Tool: wf.Tool, Score: score})
 			}
 		}
-		directives.SortHits(hits)
 	}
+	if len(kinds) == 0 || kinds["scratch"] {
+		scratch, err := s.store.ListScratch(r.Context())
+		if err != nil {
+			return 0, nil, err
+		}
+		for _, sc := range scratch {
+			if score, ok := directives.ScoreTerms(terms, sc.Name, sc.Description, sc.Source); ok {
+				hits = append(hits, directives.SearchHit{Name: sc.Name, Kind: "scratch", Description: sc.Description, InputSchema: sc.InputSchema, Score: score})
+			}
+		}
+	}
+	directives.SortHits(hits)
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}

@@ -193,8 +193,8 @@ func TestRegistry(t *testing.T) {
 		"forge_events",
 		"forge_kb_backlinks", "forge_kb_links", "forge_kb_new", "forge_kb_note", "forge_kb_search",
 		"forge_library", "forge_note_progress", "forge_prompt_version", "forge_propose", "forge_queue",
-		"forge_repo_status", "forge_request_budget", "forge_retro_pack", "forge_script_run",
-		"forge_stats", "forge_usage", "forge_workflow_run",
+		"forge_repo_status", "forge_request_budget", "forge_retro_pack", "forge_scratch",
+		"forge_script_run", "forge_stats", "forge_usage", "forge_workflow_run",
 	}
 	all := reg.All()
 	names := make([]string, len(all))

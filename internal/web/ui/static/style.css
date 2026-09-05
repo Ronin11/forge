@@ -452,6 +452,7 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .pr-sec summary.pr-folder::before{content:"▸";display:inline-block;width:1em;color:var(--muted);transition:transform .12s}
 .pr-sec[open] summary.pr-folder::before{transform:rotate(90deg)}
 .pr-sec:not([open]) ul{display:none}
+.pr-scratch{color:var(--muted);padding:.15rem 0}
 .pr-optimize .pr-controls textarea{flex:1 1 22rem;min-width:0}
 .pr-cand p{margin:.2rem 0}
 .pr-cand details{margin:.3rem 0}

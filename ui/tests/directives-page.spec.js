@@ -205,6 +205,13 @@ test.describe('directives', () => {
     await page.locator('[data-tree-filter]').fill('');
     await page.locator('.pr-sec[data-sec="fragments"] summary').click(); // restore open for later specs
   });
+
+  test('the scratch section shows the agent cache empty state', async ({ page }) => {
+    await page.goto('/directives');
+    const sec = page.locator('.pr-sec[data-sec="scratch"]');
+    await expect(sec).toContainText('scratch/');
+    await expect(sec).toContainText('agents fill this via forge_scratch');
+  });
 });
 
 test.describe('scripts and search', () => {

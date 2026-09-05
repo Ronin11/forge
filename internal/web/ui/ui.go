@@ -669,9 +669,15 @@ func (u *UI) directives(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	scratch, err := u.store.ListScratch(r.Context())
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
 	u.render(w, r, "directives.html", "Directives", map[string]any{
 		"Repositories": names,
-		"Personas":     personas, "Fragments": fragments, "Directives": directives, "Scripts": scripts, "LibDir": libDir,
+		"Personas":     personas, "Fragments": fragments, "Directives": directives, "Scripts": scripts,
+		"Scratch": scratch, "LibDir": libDir,
 	})
 }
 

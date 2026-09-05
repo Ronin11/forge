@@ -28,6 +28,12 @@
 {{else}}<li class="empty pr-empty">none yet — add fragments/&lt;name&gt;.md</li>{{end}}
 </ul>
 </details>
+<details class="pr-sec" data-sec="scratch" open><summary class="pr-folder">scratch/ <span class="meta">(agent cache)</span></summary>
+<ul>
+{{range .Data.Scratch}}<li class="pr-scratch" title="{{.Description}}"><svg class="i"><use href="#i-gv-js"/></svg> {{.Name}}.{{.Language}} <span class="chip">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span></li>
+{{else}}<li class="empty pr-empty">empty — agents fill this via forge_scratch; hot scripts promote into scripts/</li>{{end}}
+</ul>
+</details>
 </div>
 <div class="pr-detail card" data-prompt-detail>
 <p class="hint">Select a persona to see and compose it, a directive or script to test it, or a fragment to read it.</p>

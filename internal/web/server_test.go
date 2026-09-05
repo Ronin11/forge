@@ -72,7 +72,7 @@ func newHarness(t *testing.T, transport string) *harness {
 	}
 	levels := "info"
 	srv, err := NewServer(ServerOptions{
-		Store: st, Clock: clock.Now, Version: "test", Token: testToken, TransportOverride: transport,
+		Store: st, Clock: clock.Now, Version: "test", Token: testToken, TransportOverride: transport, Home: t.TempDir(),
 		AllowHosts: []string{"api.anthropic.com"}, GitConfig: map[string]string{"merge.conflictstyle": "zdiff3"},
 		LogLevels: func() string { return levels }, SetLogLevels: func(spec string) error { levels = spec; return nil },
 	})

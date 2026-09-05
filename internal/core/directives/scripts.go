@@ -80,7 +80,7 @@ func parseScript(raw []byte, path, name string) (*Fragment, error) {
 		return nil, err
 	}
 	if external {
-		f.Interpreter, err = resolveInterpreter(f.Body, path)
+		f.Interpreter, err = ResolveInterpreter(f.Body, path)
 		if err != nil {
 			return nil, err
 		}
@@ -103,9 +103,10 @@ func parseScript(raw []byte, path, name string) (*Fragment, error) {
 	return f, nil
 }
 
-// resolveInterpreter picks the argv prefix for a subprocess script: the
-// shebang when present, else the extension map.
-func resolveInterpreter(body, path string) ([]string, error) {
+// ResolveInterpreter picks the argv prefix for a subprocess script: the
+// shebang when present, else the extension map. Exported for the scratch
+// layer, which runs agent-cached scripts through the same rules.
+func ResolveInterpreter(body, path string) ([]string, error) {
 	if strings.HasPrefix(body, "#!") {
 		line := body
 		if i := strings.IndexByte(body, '\n'); i >= 0 {

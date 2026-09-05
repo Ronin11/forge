@@ -26,6 +26,7 @@ type Config struct {
 	Run          RunConfig          `toml:"run"`
 	Retention    RetentionConfig    `toml:"retention"`
 	Reflection   ReflectionConfig   `toml:"reflection"`
+	Scratch      ScratchConfig      `toml:"scratch"`
 	Backup       BackupConfig       `toml:"backup"`
 	Attention    AttentionConfig    `toml:"attention"`
 	Supervision  SupervisionConfig  `toml:"supervision"`
@@ -127,6 +128,16 @@ type ReflectionConfig struct {
 	Margin float64 `toml:"margin"` // relative regression tolerance; default 0.20
 }
 
+// ScratchConfig tunes the organic script layer: agents save-and-run quick
+// scripts through forge_scratch; the cache keeps Max rows (LRU by last use),
+// and a script run PromoteRuns times across PromoteAttempts distinct
+// attempts is promoted automatically into the git library.
+type ScratchConfig struct {
+	Max             int `toml:"max"`              // cache size; default 200
+	PromoteRuns     int `toml:"promote_runs"`     // runs before promotion; default 5
+	PromoteAttempts int `toml:"promote_attempts"` // distinct attempts before promotion; default 2
+}
+
 // BackupConfig tunes the nightly backup loop (DESIGN.md §23).
 type BackupConfig struct {
 	Keep int `toml:"keep"` // archives retained under <home>/backups; default 7
@@ -212,6 +223,7 @@ func DefaultConfig(home, userHome string) Config {
 		Run:          RunConfig{PortMin: 3000, PortMax: 3099},
 		Retention:    RetentionConfig{TranscriptDays: 90, OutputDays: 30, ArtifactDays: 90},
 		Reflection:   ReflectionConfig{K: 5, Margin: 0.20},
+		Scratch:      ScratchConfig{Max: 200, PromoteRuns: 5, PromoteAttempts: 2},
 		Backup:       BackupConfig{Keep: 7},
 		Attention:    AttentionConfig{WaitActiveMinutes: 240, WaitQuietMinutes: 20, Model: "opus"},
 		Supervision:  SupervisionConfig{HardCeilingTurns: 200, SoftTurns: 80, SilenceMinutes: 5, SpinWindowTurns: 25, MaxAutoExtensions: 3, DeciderModel: "opus"},
