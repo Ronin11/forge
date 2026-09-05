@@ -282,6 +282,12 @@ func (s *Server) createExperiment(r *http.Request) (int, any, error) {
 		From    string `json:"from"`     // offline experiment id to trial arms from
 		MaxArms int    `json:"max_arms"` // including control
 		MinRuns int    `json:"min_runs"` // per-arm decision window
+		// Arms are operator-provided variant bodies (whole file content);
+		// they skip generation, like the forge_experiment tool's variants.
+		Arms []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		} `json:"arms"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		return 0, nil, err
@@ -328,7 +334,15 @@ func (s *Server) createExperiment(r *http.Request) (int, any, error) {
 		if err := s.store.Write(ctx, func(tx *store.Tx) error { return tx.InsertExperiment(ctx, &pe) }); err != nil {
 			return 0, nil, err
 		}
-		go s.runLiveSetup(pe, subject, maxArms, req.From, nil)
+		var provided []experimentCandidate
+		for i, a := range req.Arms {
+			title := a.Title
+			if title == "" {
+				title = fmt.Sprintf("variant %d", i+1)
+			}
+			provided = append(provided, experimentCandidate{Title: title, Content: a.Content})
+		}
+		go s.runLiveSetup(pe, subject, maxArms, req.From, provided)
 		s.log.InfoContext(ctx, "live experiment started", "id", pe.ID, "subject", pe.Subject, "max_arms", maxArms, "min_runs", pe.MinRuns)
 		return http.StatusCreated, map[string]string{"id": pe.ID}, nil
 	}
