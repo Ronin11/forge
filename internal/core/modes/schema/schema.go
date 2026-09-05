@@ -70,3 +70,15 @@ const Findings = `{"type":"array","items":{"type":"object","additionalProperties
 // Commits is the commit-list schema implement and maintain share, so the
 // shape has one home.
 const Commits = `{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sha","subject"],"properties":{"sha":{"type":"string"},"subject":{"type":"string"}}}}`
+
+// Scores is the 1-5 quality-rating object the learning loop aggregates
+// (attempt_facts score_* columns): optional on run so any judging directive
+// can emit it, required inside supervise's assessment. `overall` is the one
+// mandatory axis; `weakness` names the biggest remaining gap.
+const Scores = `{"type":"object","additionalProperties":false,"required":["overall"],"properties":{` +
+	`"correctness":{"type":"integer","minimum":1,"maximum":5},` +
+	`"completeness":{"type":"integer","minimum":1,"maximum":5},` +
+	`"quality":{"type":"integer","minimum":1,"maximum":5},` +
+	`"effort_fit":{"type":"integer","minimum":1,"maximum":5},` +
+	`"overall":{"type":"integer","minimum":1,"maximum":5},` +
+	`"weakness":{"type":"string"}}}`

@@ -279,6 +279,9 @@ type workRequest struct {
 	Priority     *int              `json:"priority"`
 	Class        model.BudgetClass `json:"class"`
 	Autonomy     model.Autonomy    `json:"autonomy"`
+	// Size is the optional S|M|L bucket for this ask; trusted when given (no
+	// sizing gate), frozen on the Work, copied into facts for calibration.
+	Size string `json:"size"`
 	Model        string            `json:"model"`
 	After        []string          `json:"after"`
 	Paths        []string          `json:"paths"`
@@ -453,6 +456,10 @@ func (s *Server) createWorkTx(ctx context.Context, tx *store.Tx, req workRequest
 	if req.Autonomy != "" && !req.Autonomy.Valid() {
 		return workCreated{}, badRequest("autonomy %q: want ask, checkpoint, notify, or auto", req.Autonomy)
 	}
+	if !store.ValidSize(req.Size) {
+		return workCreated{}, badRequest("size %q: want S, M, or L", req.Size)
+	}
+	w.Size = req.Size
 	if _, ok := s.resolveModel(rt.Model); !ok {
 		return workCreated{}, badRequest("unknown model alias %q", rt.Model)
 	}

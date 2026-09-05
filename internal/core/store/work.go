@@ -51,9 +51,16 @@ type Work struct {
 	CausedByWorkID string      `json:"caused_by_work_id,omitempty"`
 	RootWorkID     string      `json:"root_work_id,omitempty"`
 	Cause          model.Cause `json:"cause,omitempty"`
-	CreatedAt      time.Time   `json:"created_at"`
-	FinishedAt     time.Time   `json:"finished_at,omitempty"`
+	// Size is the S|M|L bucket the submitter or the planning agent assigned
+	// ('' = unsized). Frozen at creation; copied into attempt_facts so the
+	// size-vs-actual-cost calibration has a queryable dimension.
+	Size       string    `json:"size,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
+
+// ValidSize reports whether s is a legal work size bucket ('' = unsized).
+func ValidSize(s string) bool { return s == "" || s == "S" || s == "M" || s == "L" }
 
 // Target is one repository within one Work.
 type Target struct {
@@ -124,9 +131,12 @@ func (tx *Tx) CreateWork(ctx context.Context, w *Work, repositories []string, ed
 		}
 		open = append(open, e)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullString(w.Persona), jsonRaw(w.Composition), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), nullString(w.CausedByWorkID), w.RootWorkID, nullString(string(w.Cause)), formatTime(w.CreatedAt))
+	if !ValidSize(w.Size) {
+		return nil, fmt.Errorf("size %q: want S, M, L, or empty", w.Size)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO work (id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, size, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, nullString(w.RoutineID), w.RoutineName, w.Generation, w.Title, string(w.Trigger), string(w.Snapshot), w.Priority, string(w.BudgetClass), string(w.Autonomy), boolInt(w.Integrate), jsonOrNull(w.Paths), jsonOrNull(w.Deps), nullIntPtr(w.Tier), jsonOrNull(w.Models), nullString(w.PlanBatchID), nullString(w.WorkflowRunID), nullString(w.WorkflowName), nullString(w.WorkflowStep), nullString(w.PromptHash), nullString(w.Persona), jsonRaw(w.Composition), nullTime(w.ScheduledFor), nullString(w.SubmittedBy), jsonRaw(w.ExternalRefs), nullString(w.CausedByWorkID), w.RootWorkID, nullString(string(w.Cause)), w.Size, formatTime(w.CreatedAt))
 	if err != nil {
 		return nil, fmt.Errorf("insert work: %w", err)
 	}
@@ -237,7 +247,7 @@ func (tx *Tx) FinishWork(ctx context.Context, workID string) error {
 	return tx.Journal(ctx, "work.finished", EntityWork, workID, nil)
 }
 
-const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, created_at, finished_at`
+const workColumns = `id, routine_id, routine_name, generation, title, trigger, snapshot, priority, budget_class, autonomy, integrate, paths, deps, tier, models, plan_batch_id, workflow_run_id, workflow_name, workflow_step, prompt_hash, persona, composition, scheduled_for, submitted_by, external_refs, caused_by_work_id, root_work_id, cause, size, created_at, finished_at`
 
 // CountToolSpawns counts the Works an agent spawned from one parent work
 // (forge_directive_run's fan-out cap).
@@ -379,7 +389,7 @@ func scanWork(iter func(func(*sql.Rows) error) error) ([]Work, error) {
 		var tier sql.NullInt64
 		var snapshot, created string
 		var integrate int
-		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &persona, &composition, &scheduled, &submitted, &refs, &causedBy, &root, &cause, &created, &finished); err != nil {
+		if err := rows.Scan(&w.ID, &routineID, &w.RoutineName, &w.Generation, &w.Title, &w.Trigger, &snapshot, &w.Priority, &w.BudgetClass, &w.Autonomy, &integrate, &paths, &deps, &tier, &models, &batch, &wfRun, &wfName, &wfStep, &hash, &persona, &composition, &scheduled, &submitted, &refs, &causedBy, &root, &cause, &w.Size, &created, &finished); err != nil {
 			return fmt.Errorf("scan work: %w", err)
 		}
 		w.RoutineID, w.PlanBatchID, w.PromptHash, w.SubmittedBy = routineID.String, batch.String, hash.String, submitted.String

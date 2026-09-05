@@ -31,8 +31,12 @@ func (mode) AllowedTools() []string {
 		"forge_library", "forge_script_run", "forge_directive_run", "forge_workflow_run")
 }
 
-// ResultSchema is the plain envelope: run adds no fields.
-func (mode) ResultSchema() json.RawMessage { return schema.MustExtend("") }
+// ResultSchema is the envelope plus an optional scores object, so any
+// judging directive running in run mode (flow-eval and friends) can emit
+// ratings the learning loop stores.
+func (mode) ResultSchema() json.RawMessage {
+	return schema.MustExtend(`{"scores":` + schema.Scores + `}`)
+}
 
 func (mode) Level() model.VerificationLevel  { return model.L1 }
 func (mode) Checkpoints() []string           { return nil }

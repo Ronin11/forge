@@ -47,7 +47,9 @@ func ComputeFacts(in FactsInput) *store.AttemptFacts {
 		Phases: map[string]*int64{}, StartedAt: a.StartedAt, FinishedAt: finishedAt(a, t, in.Now),
 		State: t.State, ExitCode: a.ExitCode, FailureReason: t.FailureReason, VerificationLevel: a.VerificationLevel,
 		VerificationPass: a.VerificationPass, Retained: t.Retained, Branch: a.Branch, Base: a.BaseCommit, Head: a.HeadCommit,
+		RootWorkID: w.RootWorkID, Size: w.Size, WorkflowName: w.WorkflowName,
 	}
+	computeScores(f, a.Result)
 	if t.Retained {
 		f.RetainedReason = a.Cleanup.Reason
 	}
@@ -178,6 +180,42 @@ func isPhase(name string) bool {
 // computeTools derives tool counts and durations from tool spans (children of
 // an agent span) and mcp spans. Duration is span_end.elapsed − span_start.elapsed
 // when the parser left duration_us zero.
+// computeScores lifts the 1-5 quality ratings out of the attempt's result —
+// a top-level `scores` object (run-mode judges like flow-eval), or
+// `assessment.scores` (supervise mode) — into the facts columns. Absent or
+// malformed scores leave the columns NULL; a rating outside 1-5 is dropped
+// (the schema enforced it upstream, this is belt and braces).
+func computeScores(f *store.AttemptFacts, result json.RawMessage) {
+	if len(result) == 0 {
+		return
+	}
+	var top struct {
+		Scores     map[string]int `json:"scores"`
+		Assessment struct {
+			Scores map[string]int `json:"scores"`
+		} `json:"assessment"`
+	}
+	if json.Unmarshal(result, &top) != nil {
+		return
+	}
+	scores := top.Scores
+	if scores == nil {
+		scores = top.Assessment.Scores
+	}
+	pick := func(key string) *int {
+		v, ok := scores[key]
+		if !ok || v < 1 || v > 5 {
+			return nil
+		}
+		return &v
+	}
+	f.ScoreOverall = pick("overall")
+	f.ScoreCorrectness = pick("correctness")
+	f.ScoreCompleteness = pick("completeness")
+	f.ScoreQuality = pick("quality")
+	f.ScoreEffortFit = pick("effort_fit")
+}
+
 func computeTools(f *store.AttemptFacts, events []store.StoredEvent) {
 	starts := map[string]store.StoredEvent{}
 	byName, timeByName := map[string]int{}, map[string]int64{}

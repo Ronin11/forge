@@ -23,7 +23,7 @@ var wantTable = map[string]struct {
 	extra       string // one spot-checked schema property beyond the envelope
 	required    []string
 }{
-	"run":        {model.L1, model.WritesRepo, model.ClassNormal, "", nil, "", nil},
+	"run":        {model.L1, model.WritesRepo, model.ClassNormal, "", nil, "scores", nil},
 	"greenfield": {model.L2, model.WritesNewProject, model.ClassNormal, model.AutonomyCheckpoint, []string{"after_spec", "after_plan", "before_report"}, "spec_note", nil},
 	"intake":     {model.L0, model.WritesKbOnly, model.ClassNormal, model.AutonomyCheckpoint, []string{"before_handoff"}, "issue", nil},
 	"implement":  {model.L2, model.WritesRepo, model.ClassNormal, "", []string{"before_report"}, "commits", nil},

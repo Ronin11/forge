@@ -72,10 +72,14 @@ func (s *Engine) planFollowUps(ctx context.Context, tx *store.Tx, a *store.Attem
 		if title == "" {
 			title = titleFromPrompt(task.Prompt, "plan-task")
 		}
+		size := task.Size
+		if !store.ValidSize(size) {
+			size = ""
+		}
 		work := &store.Work{
 			RoutineName: "plan-task", Title: title, Trigger: model.TriggerDependency, Snapshot: blob,
 			Priority: w.Priority, BudgetClass: w.BudgetClass, Autonomy: w.Autonomy, Integrate: integrate,
-			Paths: task.Paths, Tier: task.Tier, PlanBatchID: w.ID, PromptHash: promptHashOf(task.Prompt),
+			Paths: task.Paths, Tier: task.Tier, Size: size, PlanBatchID: w.ID, PromptHash: promptHashOf(task.Prompt),
 			SubmittedBy:    "plan:" + model.ShortID(w.ID),
 			CausedByWorkID: w.ID, Cause: model.CausePlanTask,
 		}
