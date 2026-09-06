@@ -241,9 +241,17 @@ func (s *Engine) liveExperimentTallies(ctx context.Context, id string, minRuns i
 	}
 	var out []armTally
 	for label, fs := range byArm {
-		rate, _ := verifiedOutcome(fs)
-		tl := armTally{Label: label, Runs: len(fs), VerifiedRate: rate}
-		tl.RateLow, tl.RateHigh = stats.WilsonInterval(int(rate*float64(len(fs))+0.5), len(fs), 1.96)
+		succ := 0
+		for _, f := range fs {
+			if s.experimentFactSuccess(ctx, f) {
+				succ++
+			}
+		}
+		tl := armTally{Label: label, Runs: len(fs)}
+		if len(fs) > 0 {
+			tl.VerifiedRate = float64(succ) / float64(len(fs))
+		}
+		tl.RateLow, tl.RateHigh = stats.WilsonInterval(succ, len(fs), 1.96)
 		out = append(out, tl)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
@@ -349,11 +357,15 @@ func (s *Engine) decideLiveExperiment(ctx context.Context, row *store.Experiment
 		window := byArm[a.Label]
 		ar := liveArmResult{Label: a.Label, Runs: len(window)}
 		if len(window) > 0 {
-			rate, cost := verifiedOutcome(window)
-			ar.VerifiedRate, ar.CostPerSuccess = rate, cost
-			ar.MeanScoreOverall = meanScoreOverall(window)
-			succ[i] = int(rate*float64(len(window)) + 0.5)
+			for _, f := range window {
+				if s.experimentFactSuccess(ctx, f) {
+					succ[i]++
+				}
+			}
 			fail[i] = len(window) - succ[i]
+			ar.VerifiedRate = float64(succ[i]) / float64(len(window))
+			_, ar.CostPerSuccess = verifiedOutcome(window)
+			ar.MeanScoreOverall = meanScoreOverall(window)
 		}
 		results.Arms = append(results.Arms, ar)
 		if len(window) < minRuns {
@@ -671,6 +683,24 @@ func readFragmentFile(path string) (string, error) {
 	return string(b), nil
 }
 
+// experimentFactSuccess is THE outcome predicate for an enrolled fact. An
+// experiment on a planning directive must be judged by what the plan
+// PRODUCED: when the enrolled work's tree carries a supervise score, success
+// is score ≥ 4; a 1/5 tree behind a cleanly-verified plan root is a failure
+// of the arm, not a success (seen live: the broken-build bench counted as a
+// control win). Only an unassessed tree falls back to the fact's own
+// verification.
+const experimentScoreBar = 4
+
+func (s *Engine) experimentFactSuccess(ctx context.Context, f store.AttemptFacts) bool {
+	if f.WorkID != "" {
+		if score, err := s.store.TreeScore(ctx, f.WorkID); err == nil && score != nil {
+			return *score >= experimentScoreBar
+		}
+	}
+	return f.VerificationPass != nil && *f.VerificationPass && model.IsSuccess(f.State)
+}
+
 // armOutcomeCounts reads one experiment's facts into per-arm verified
 // success/failure counts, indexed like the entry's arms — the allocation
 // evidence, reloaded every refresh.
@@ -686,7 +716,7 @@ func (s *Engine) armOutcomeCounts(ctx context.Context, id string, entry *liveExp
 			c = &armCount{}
 			byLabel[f.Variant] = c
 		}
-		if f.VerificationPass != nil && *f.VerificationPass && model.IsSuccess(f.State) {
+		if s.experimentFactSuccess(ctx, f) {
 			c.succ++
 		} else {
 			c.fail++

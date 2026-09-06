@@ -155,8 +155,12 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 	driftID := openLiveExperiment(t, f.st, current, "directive:drifty", "drifty", variant)
 
 	// Facts: control 0/2 verified, v1 2/2 — v1 clears both margin clauses.
-	seed := func(exp, arm string, verified bool, when time.Time) {
+	seed := func(exp, arm string, verified bool, when time.Time) *store.Attempt {
 		a := f.attempt()
+		tgt, terr := f.st.GetTarget(actx(), a.TargetID)
+		if terr != nil {
+			t.Fatal(terr)
+		}
 		state, pass := model.Failed, (*bool)(nil)
 		if verified {
 			v := true
@@ -164,12 +168,13 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 		}
 		cost := 0.1
 		f.write(func(tx *store.Tx) error {
-			return tx.InsertFacts(actx(), &store.AttemptFacts{AttemptID: a.ID, TargetID: a.TargetID, Routine: "subj",
+			return tx.InsertFacts(actx(), &store.AttemptFacts{AttemptID: a.ID, TargetID: a.TargetID, WorkID: tgt.WorkID, Routine: "subj",
 				Project: "default", Repository: "equitizr", Worker: testWorkerID, Executor: "claude-code",
 				Model: "haiku", Mode: "run", Trigger: model.TriggerManual, Autonomy: model.AutonomyAuto,
 				FinishedAt: when, State: state, VerificationPass: pass, CostUSD: &cost,
 				Directive: "subj", LibraryCommit: directives.Head(libDir), ExperimentID: exp, Variant: arm})
 		})
+		return a
 	}
 	at := f.clock.Now().Add(-time.Hour)
 	for i := 0; i < 2; i++ {
@@ -458,5 +463,52 @@ func TestLiveExperimentAbortEndpoint(t *testing.T) {
 	}
 	if status, _ := h.do(http.MethodPost, "/api/v1/experiments/"+expID+"/abort", nil, nil, ""); status == http.StatusOK {
 		t.Fatal("second abort should not succeed")
+	}
+}
+
+// The outcome predicate judges an enrolled planning root by its TREE: a
+// verified plan whose product scored 1/5 is an arm failure (seen live — a
+// broken-build bench counted as a control win); a 5/5 tree is a success;
+// an unassessed tree falls back to the fact's own verification.
+func TestExperimentTreeScoreOutcome(t *testing.T) {
+	f := newABFixture(t)
+	enrolled := func(score *int) store.AttemptFacts {
+		a := f.attempt()
+		tgt, err := f.st.GetTarget(actx(), a.TargetID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pass := true
+		fact := store.AttemptFacts{AttemptID: a.ID, TargetID: a.TargetID, WorkID: tgt.WorkID, Routine: "plan-project",
+			Project: "default", Repository: "equitizr", Worker: testWorkerID, Executor: "claude-code",
+			Model: "haiku", Mode: "plan", Trigger: model.TriggerManual, Autonomy: model.AutonomyAuto,
+			FinishedAt: f.clock.Now(), State: model.Succeeded, VerificationPass: &pass,
+			ExperimentID: "e-tree", Variant: "control"}
+		f.write(func(tx *store.Tx) error { return tx.InsertFacts(actx(), &fact) })
+		if score != nil {
+			b := f.attempt()
+			bt, err := f.st.GetTarget(actx(), b.TargetID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.write(func(tx *store.Tx) error {
+				return tx.InsertFacts(actx(), &store.AttemptFacts{AttemptID: b.ID, TargetID: b.TargetID, WorkID: bt.WorkID,
+					RootWorkID: tgt.WorkID, Routine: "supervise", Project: "default", Repository: "equitizr",
+					Worker: testWorkerID, Executor: "claude-code", Model: "haiku", Mode: "supervise",
+					Trigger: model.TriggerManual, Autonomy: model.AutonomyAuto,
+					FinishedAt: f.clock.Now(), State: model.Succeeded, ScoreOverall: score})
+			})
+		}
+		return fact
+	}
+	one, five := 1, 5
+	if f.srv.experimentFactSuccess(actx(), enrolled(&one)) {
+		t.Fatal("a 1/5 tree behind a verified plan root counted as success")
+	}
+	if !f.srv.experimentFactSuccess(actx(), enrolled(&five)) {
+		t.Fatal("a 5/5 tree counted as failure")
+	}
+	if !f.srv.experimentFactSuccess(actx(), enrolled(nil)) {
+		t.Fatal("an unassessed tree should fall back to the fact's own verification")
 	}
 }

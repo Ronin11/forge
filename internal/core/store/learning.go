@@ -305,3 +305,24 @@ func (s *Store) RepoWorkAges(ctx context.Context, repo string) (open int, newest
 	newest, _ = parseTime(newestStr)
 	return open, newest, nil
 }
+
+// TreeScore returns the newest supervise overall score anywhere in a Work's
+// tree (facts carry root_work_id), or nil when the tree was never assessed —
+// the outcome an experiment on a PLANNING directive must be judged by: the
+// plan-root's own verification only says the plan parsed; the supervise
+// score says whether what the plan produced was any good.
+func (s *Store) TreeScore(ctx context.Context, rootWorkID string) (*int, error) {
+	var score sql.NullInt64
+	err := s.queryRow(ctx, `
+		SELECT score_overall FROM attempt_facts
+		WHERE root_work_id = ? AND score_overall IS NOT NULL
+		ORDER BY finished_at DESC LIMIT 1`, rootWorkID).Scan(&score)
+	if err == sql.ErrNoRows || !score.Valid {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tree score: %w", err)
+	}
+	v := int(score.Int64)
+	return &v, nil
+}
