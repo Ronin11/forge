@@ -146,7 +146,10 @@ against a dummy corpus, ready for the day the real export lands.
 - [ ] Voice mode plugins: speech in/out as a channel class — voice notes over
       the existing bridges and/or a live voice loop; the concierge already
       speaks sender-scoped sessions, so this is transcription + TTS at the
-      plugin layer.
+      plugin layer. First slice (Nate, 2026-09-06): a Signal voice note gets
+      transcribed to text and executed like any typed message — signal-cli
+      receive exposes attachments, so this is STT (local whisper.cpp or API)
+      wired into the intake loop.
 - [ ] Google Home integration: "Hey Google, ask Forge…" — smart-speaker
       intake/status through the assistant route; approvals stay on
       phone-confirmed channels, never voice-only.

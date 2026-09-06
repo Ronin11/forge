@@ -35,6 +35,7 @@ type assistantRequest struct {
 type assistantResponse struct {
 	Reply  string `json:"reply"`
 	Action string `json:"action"`
+	Ref    string `json:"ref,omitempty"` // "work:<id>" when the action filed a task
 }
 
 // assistantSessionGap is the idle time that closes a chat session: turns
@@ -71,23 +72,22 @@ func (s *Server) assistantMessage(r *http.Request) (int, any, error) {
 	if req.Text == "" {
 		return 0, nil, badRequest("text is required")
 	}
-	reply, action := s.runAssistant(r.Context(), req.Sender, req.Text)
-	return http.StatusOK, assistantResponse{Reply: reply, Action: action}, nil
+	reply, action, ref := s.runAssistant(r.Context(), req.Sender, req.Text)
+	return http.StatusOK, assistantResponse{Reply: reply, Action: action, Ref: ref}, nil
 }
 
 // runAssistant interprets one message and executes the chosen action, returning
 // the reply and the action name. Any failure becomes a plain-language reply, not
 // an HTTP error — a chat front door should always answer.
-func (s *Server) runAssistant(ctx context.Context, sender, text string) (reply, action string) {
+func (s *Server) runAssistant(ctx context.Context, sender, text string) (reply, action, ref string) {
 	system := s.assistantSystemPrompt(ctx)
 	user := s.assistantUserPrompt(ctx, sender, text)
 	raw, err := s.modelCall(ctx, system, user, assistantModel)
 	if err != nil {
 		s.log.WarnContext(ctx, "assistant model call", "err", err)
-		return "Sorry — I couldn't reach my brain just now. Try again in a moment.", "error"
+		return "Sorry — I couldn't reach my brain just now. Try again in a moment.", "error", ""
 	}
 	act := parseAssistantAction(raw)
-	var ref string
 	reply, action, ref = s.dispatchAssistant(ctx, act)
 	if err := s.store.Write(ctx, func(tx *store.Tx) error {
 		return tx.InsertAssistantTurn(ctx, &store.AssistantTurn{Sender: sender, UserText: text, AssistantText: reply, Action: action, Ref: ref})
@@ -95,7 +95,7 @@ func (s *Server) runAssistant(ctx context.Context, sender, text string) (reply, 
 		s.log.WarnContext(ctx, "record assistant turn", "err", err)
 	}
 	s.log.InfoContext(ctx, "assistant handled message", "sender", sender, "action", action, "ref", ref)
-	return reply, action
+	return reply, action, ref
 }
 
 // dispatchAssistant executes one action and returns the message to send back
