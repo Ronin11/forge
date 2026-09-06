@@ -202,3 +202,41 @@ func (s *Store) LearningAPISpendSince(ctx context.Context, since time.Time, apiR
 func (s *Store) ConflictedTargets(ctx context.Context, olderThan time.Time) ([]Target, error) {
 	return scanTargets(each(s.query(ctx, `SELECT `+targetColumns+` FROM targets WHERE state = 'conflict' AND updated_at < ?`, formatTime(olderThan))))
 }
+
+// DeadDependant is one open Work whose on:success dependency can never be
+// satisfied: the blocker finished in a non-success state.
+type DeadDependant struct {
+	WorkID       string
+	BlockedBy    string
+	BlockerState string
+}
+
+// DeadSuccessDependants lists open Works blocked on:success of a finished
+// blocker none of whose targets reached a success state (succeeded or
+// merged) — permanent wedges the sweep cancels.
+func (s *Store) DeadSuccessDependants(ctx context.Context) ([]DeadDependant, error) {
+	rows, err := s.query(ctx, `
+		SELECT d.work_id, d.blocked_by_work_id,
+		       (SELECT GROUP_CONCAT(state) FROM targets WHERE work_id = d.blocked_by_work_id)
+		FROM work_dependencies d
+		JOIN work w  ON w.id  = d.work_id            AND w.finished_at IS NULL
+		JOIN work wb ON wb.id = d.blocked_by_work_id AND wb.finished_at IS NOT NULL
+		WHERE d."on" = 'success'
+		  AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.work_id = wb.id AND t.state IN ('succeeded', 'merged'))
+		LIMIT 50`)
+	var out []DeadDependant
+	err = each(rows, err)(func(r *sql.Rows) error {
+		var d DeadDependant
+		var states sql.NullString
+		if err := r.Scan(&d.WorkID, &d.BlockedBy, &states); err != nil {
+			return err
+		}
+		d.BlockerState = states.String
+		out = append(out, d)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dead dependants: %w", err)
+	}
+	return out, nil
+}

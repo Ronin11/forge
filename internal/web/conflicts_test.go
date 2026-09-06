@@ -68,3 +68,48 @@ func TestConflictAutoRecovery(t *testing.T) {
 		t.Fatalf("second recovery = %s, want cancelled", got)
 	}
 }
+
+// A work blocked on:success of a creator that terminated without success is
+// a permanent wedge; the sweep cancels it (and cancellation cascades: the
+// next tick sees the cancelled work as a dead blocker in turn).
+func TestDeadDependantCascade(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutineWith("wedgy", "do {{objective}}")
+	blocker := h.run("wedgy")
+
+	var child, grandchild workCreated
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		var err error
+		child, err = h.srv.createWorkTx(context.Background(), tx, workRequest{
+			Routine: "wedgy", Objective: "child", Force: true,
+			After: []string{blocker.Work.ID}, Autonomy: model.AutonomyAuto,
+		})
+		if err != nil {
+			return err
+		}
+		grandchild, err = h.srv.createWorkTx(context.Background(), tx, workRequest{
+			Routine: "wedgy", Objective: "grandchild", Force: true,
+			After: []string{child.Work.ID}, Autonomy: model.AutonomyAuto,
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The blocker fails (non-success terminal).
+	c := h.mustClaim("dd1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 111)
+	h.complete(c, completeRequest(model.Failed, h.clock.now))
+
+	h.srv.cancelDeadDependants(context.Background())
+	if w, err := h.st.GetWork(context.Background(), child.Work.ID); err != nil || w.FinishedAt.IsZero() {
+		t.Fatalf("child not cancelled: %+v, %v", w, err)
+	}
+	// The cascade reaches the grandchild on the next tick.
+	h.srv.cancelDeadDependants(context.Background())
+	if w, err := h.st.GetWork(context.Background(), grandchild.Work.ID); err != nil || w.FinishedAt.IsZero() {
+		t.Fatalf("grandchild not cancelled: %+v, %v", w, err)
+	}
+}

@@ -70,3 +70,32 @@ func (s *Engine) recoverConflicts(ctx context.Context) {
 		s.log.InfoContext(ctx, "conflict recovered", "target_id", t.ID, "work_id", t.WorkID)
 	}
 }
+
+// cancelDeadDependants is the sweep pass for the wedge class the conflict
+// recovery does not cover: a work blocked on:success of a creator that
+// terminated WITHOUT success (unverified, failed, cancelled) can never
+// release — the settlement cascade handles failed batch siblings, but a
+// non-success CREATOR left eight works parked at the head of the queue for
+// 19 hours (director proposal 7c56089b). Cancelling cascades naturally: each
+// cancellation is itself a non-success terminal the next tick sees.
+func (s *Engine) cancelDeadDependants(ctx context.Context) {
+	dead, err := s.store.DeadSuccessDependants(ctx)
+	if err != nil {
+		s.log.ErrorContext(ctx, "dead dependants: list", "error", err)
+		return
+	}
+	for _, d := range dead {
+		err := s.store.Write(ctx, func(tx *store.Tx) error {
+			if err := tx.CancelWork(ctx, d.WorkID, "dead-dependency"); err != nil {
+				return err
+			}
+			return tx.Journal(ctx, "work.dep_dead_cancelled", store.EntityWork, d.WorkID, map[string]any{
+				"blocked_by": d.BlockedBy, "blocker_state": d.BlockerState, "reason": "on:success dependency terminated without success"})
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "dead dependants: cancel", "work_id", d.WorkID, "error", err)
+			continue
+		}
+		s.log.InfoContext(ctx, "dead dependant cancelled", "work_id", d.WorkID, "blocked_by", d.BlockedBy, "blocker_state", d.BlockerState)
+	}
+}

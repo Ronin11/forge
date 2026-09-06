@@ -42,6 +42,7 @@ func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflect
 		case <-ticker.C:
 			s.sweep(ctx)
 			s.recoverConflicts(ctx)
+			s.cancelDeadDependants(ctx)
 			s.refreshLiveExperiments(ctx)
 			s.decideLiveExperiments(ctx)
 			s.checkABReverts(ctx, reflection)

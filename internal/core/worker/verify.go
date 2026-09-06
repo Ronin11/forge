@@ -335,7 +335,17 @@ func Verify(env *ResultEnvelope, hasEnvelope bool, git protocol.GitOutcome, chec
 		sort.Strings(undeclared)
 		verdict["l0_claimed_not_changed"], verdict["l0_changed_not_claimed"] = missing, undeclared
 		if exact && (len(missing) > 0 || len(undeclared) > 0) {
-			fail("l0:changes_mismatch")
+			// Imperfect changes[] bookkeeping on real work is a WARNING, not a
+			// verdict: the exactness gate was discarding committed work
+			// (13 attempts in one week; four with commits later reported as
+			// missing deliverables — proposal 9a87814a). The verdict records
+			// the discrepancy for audit either way; only a fabricated
+			// envelope — changes claimed while git saw nothing at all —
+			// still fails.
+			verdict["l0_changes_warned"] = true
+			if len(env.Changes) > 0 && !git.Dirty && git.Commits == 0 && len(git.ChangedPaths) == 0 {
+				fail("l0:changes_fabricated")
+			}
 		}
 	}
 

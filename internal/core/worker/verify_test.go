@@ -42,11 +42,19 @@ func TestVerifyScopesAndLevels(t *testing.T) {
 			wantPass: true, wantLevel: 1,
 		},
 		{
-			name: "changes mismatch stops at level 0", env: mkEnv("a.go"),
-			git:      protocol.GitOutcome{ChangedPaths: []string{"b.go"}},
+			// Imperfect bookkeeping on real work: recorded, not fatal.
+			name: "changes mismatch warns but passes", env: mkEnv("a.go"),
+			git:      protocol.GitOutcome{Dirty: true, ChangedPaths: []string{"b.go"}},
 			scope:    model.WritesRepo,
-			wantPass: false, wantLevel: 0, wantReason: "l0:changes_mismatch",
-			wantVerdict: `"l0_changed_not_claimed":["b.go"]`,
+			wantPass: true, wantLevel: 1,
+			wantVerdict: `"l0_changes_warned":true`,
+		},
+		{
+			// A fabricated envelope — changes claimed, git saw nothing — fails.
+			name: "fabricated changes still fail", env: mkEnv("a.go"),
+			git:      protocol.GitOutcome{},
+			scope:    model.WritesRepo,
+			wantPass: false, wantLevel: 0, wantReason: "l0:changes_fabricated",
 		},
 		{
 			name: "none dirty fails scope", env: mkEnv("x.go"),
@@ -122,12 +130,14 @@ func TestVerifyScopesAndLevels(t *testing.T) {
 			wantVerdict: `"l0_changes_exact":false`,
 		},
 		{
-			name: "same coarse changes under repo scope still mismatch", env: mkEnv("cmd/app", "internal/"),
+			// Coarse changes under repo scope: recorded discrepancy, real work
+			// keeps its verdict (proposal 9a87814a).
+			name: "same coarse changes under repo scope warn only", env: mkEnv("cmd/app", "internal/"),
 			git: protocol.GitOutcome{Commits: 1, ChangedPaths: []string{
 				"cmd/app/main.go", "internal/store/store.go", "go.mod", "README.md",
 			}},
 			scope:    model.WritesRepo,
-			wantPass: false, wantLevel: 0, wantReason: "l0:changes_mismatch",
+			wantPass: true, wantLevel: 1,
 			wantVerdict: `"l0_claimed_not_changed":["cmd/app","internal/"]`,
 		},
 		{
