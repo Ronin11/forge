@@ -2,6 +2,10 @@ package web
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"forge/internal/core/model"
@@ -97,5 +101,61 @@ func (s *Engine) cancelDeadDependants(ctx context.Context) {
 			continue
 		}
 		s.log.InfoContext(ctx, "dead dependant cancelled", "work_id", d.WorkID, "blocked_by", d.BlockedBy, "blocker_state", d.BlockerState)
+	}
+}
+
+// benchReapAge is how long a settled benchmark's throwaway repo survives.
+const benchReapAge = 7 * 24 * time.Hour
+
+// reapBenchRepos is the daemon half of the disk janitor: a bench-* repository
+// whose whole tree settled past the window is archived and its directory
+// deleted — the scores, facts, and learning live in the store; the checkout
+// is scaffolding. Also trims pre-migration DB snapshots to the newest three.
+func (s *Engine) reapBenchRepos(ctx context.Context) {
+	repos, err := s.store.Repositories(ctx)
+	if err != nil {
+		s.log.ErrorContext(ctx, "bench reaper: repos", "error", err)
+		return
+	}
+	cutoff := s.now().Add(-benchReapAge)
+	for _, r := range repos {
+		if r.Archived || !strings.HasPrefix(r.Name, "bench-") {
+			continue
+		}
+		open, newest, err := s.store.RepoWorkAges(ctx, r.Name)
+		if err != nil || open > 0 || newest.IsZero() || newest.After(cutoff) {
+			continue
+		}
+		if s.archiveRepo != nil {
+			if _, err := s.archiveRepo(ctx, r.Name, r.Path); err != nil {
+				s.log.WarnContext(ctx, "bench reaper: archive", "repository", r.Name, "error", err)
+				continue
+			}
+		}
+		if strings.Contains(r.Path, "bench-") { // belt and suspenders before rm -rf
+			if err := os.RemoveAll(r.Path); err != nil {
+				s.log.WarnContext(ctx, "bench reaper: remove dir", "path", r.Path, "error", err)
+			}
+		}
+		if err := s.store.Write(ctx, func(tx *store.Tx) error {
+			return tx.Journal(ctx, "repo.bench_reaped", store.EntityDaemon, r.Name, map[string]any{"path": r.Path, "settled": newest})
+		}); err == nil {
+			s.log.InfoContext(ctx, "bench repo reaped", "repository", r.Name, "path", r.Path)
+		}
+	}
+	s.trimDBSnapshots()
+}
+
+// trimDBSnapshots keeps the newest three pre-migration database snapshots.
+func (s *Engine) trimDBSnapshots() {
+	snaps, err := filepath.Glob(filepath.Join(s.home, "forge.sqlite3.pre-*"))
+	if err != nil || len(snaps) <= 3 {
+		return
+	}
+	sort.Strings(snaps) // ULID-named: lexical order is chronological
+	for _, old := range snaps[:len(snaps)-3] {
+		if err := os.Remove(old); err == nil {
+			s.log.InfoContext(context.Background(), "pre-migration snapshot trimmed", "path", old)
+		}
 	}
 }

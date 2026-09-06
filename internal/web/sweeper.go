@@ -47,6 +47,7 @@ func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflect
 			s.decideLiveExperiments(ctx)
 			s.checkABReverts(ctx, reflection)
 			s.resolvePredictions(ctx)
+			s.reapBenchRepos(ctx)
 			s.sweepAutoEval(ctx)
 		}
 	}

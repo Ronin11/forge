@@ -49,7 +49,29 @@ func (w *Worker) reconcile(ctx context.Context) error {
 		}
 	}
 	w.log.InfoContext(ctx, "reconcile", "scanned", rep.Scanned, "orphans", rep.Orphans, "cleaned", rep.Cleaned, "retained", rep.Retained, "untouched", rep.Untouched, "corrupt", rep.Corrupt)
+	w.reapRetained(ctx, manifests)
 	return errs
+}
+
+// reapRetained is the janitor: a retained worktree is kept for inspection and
+// revise-mining, not forever — past the retention window it goes through the
+// same removal path an operator's `forge cleanup --confirm` takes.
+func (w *Worker) reapRetained(ctx context.Context, manifests []*Manifest) {
+	days := w.cfg.RetainDays
+	if days <= 0 {
+		days = 7
+	}
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	for _, m := range manifests {
+		if m.Lifecycle != ManifestRetained || m.UpdatedAt.After(cutoff) {
+			continue
+		}
+		if err := CleanupConfirm(ctx, w.cfg, m.AttemptID, w.log); err != nil {
+			w.log.WarnContext(ctx, "reap retained worktree", "attempt_id", m.AttemptID, "error", err)
+			continue
+		}
+		w.log.InfoContext(ctx, "retained worktree reaped", "attempt_id", m.AttemptID, "age_days", days, "path", m.WorktreePath)
+	}
 }
 
 func (w *Worker) reconcileOne(ctx context.Context, m *Manifest, rep *ReconcileReport) error {

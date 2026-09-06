@@ -27,6 +27,12 @@ type Config struct {
 	MaxConcurrent int    `toml:"max_concurrent"`
 	DataDir       string `toml:"data_dir"`
 
+	// RetainDays bounds how long a retained worktree (kept for inspection or
+	// revise-mining) survives before reconcile removes it; 0 = default 7.
+	// Retained worktrees are the disk hog: a bench app's node_modules is
+	// ~90MB, and they were accumulating without bound.
+	RetainDays int `toml:"retain_days"`
+
 	Executors    map[string]ExecutorConfig   `toml:"executors"`
 	Repositories map[string]RepositoryConfig `toml:"repositories"`
 	Runners      map[string]RunnerConfig     `toml:"runners"`

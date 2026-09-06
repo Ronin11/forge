@@ -291,3 +291,17 @@ func (s *Store) VerifyChildOf(ctx context.Context, workID string) (string, error
 	}
 	return id.String, err
 }
+
+// RepoWorkAges reports a repository's open-work count and its newest
+// finished_at — the bench reaper's "fully settled and stale" test.
+func (s *Store) RepoWorkAges(ctx context.Context, repo string) (open int, newest time.Time, err error) {
+	var newestStr sql.NullString
+	err = s.queryRow(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN w.finished_at IS NULL THEN 1 ELSE 0 END), 0), MAX(w.finished_at)
+		FROM work w JOIN targets t ON t.work_id = w.id WHERE t.repository_name = ?`, repo).Scan(&open, &newestStr)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("repo work ages: %w", err)
+	}
+	newest, _ = parseTime(newestStr)
+	return open, newest, nil
+}
