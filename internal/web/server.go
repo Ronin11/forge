@@ -91,12 +91,9 @@ type Engine struct {
 	appStatus  func(ctx context.Context, name, repoPath string) (protocol.AppStatus, error)
 	// modelCall is the concierge's one LLM primitive (daemon-injected); the
 	// session maps hold per-sender conversation context.
-	modelCall         func(ctx context.Context, system, user, model string) (string, error)
-	prompts           func() *directives.Library
-	promptsReload     func() error
-	assistantMu       sync.Mutex
-	assistantSessions map[string][]assistantTurn
-	assistantLastSeen map[string]time.Time
+	modelCall     func(ctx context.Context, system, user, model string) (string, error)
+	prompts       func() *directives.Library
+	promptsReload func() error
 	// attention + quietHours drive the fuzzy Human Queue sweep (attention.go):
 	// a non-critical question past its time-of-day SLA is auto-decided by the
 	// decider model so its Work resumes.
@@ -356,7 +353,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		pluginHealth: o.PluginHealth, pluginStart: o.PluginStart, pluginStop: o.PluginStop, pluginRoots: o.PluginRoots,
 		registerRepo: o.RegisterRepo, addRepo: o.AddRepo, archiveRepo: o.ArchiveRepo, restoreRepo: o.RestoreRepo,
 		startApp: o.StartApp, stopApp: o.StopApp, rebuildApp: o.RebuildApp, appStatus: o.AppStatus,
-		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload, assistantSessions: map[string][]assistantTurn{}, assistantLastSeen: map[string]time.Time{},
+		modelCall: o.ModelCall, prompts: o.Prompts, promptsReload: o.PromptsReload,
 		attentionCfg: o.Attention, quietHours: o.QuietHours, supervisionCfg: o.Supervision, scratchCfg: o.Scratch, planCfg: o.Plan, experimentsCfg: o.Experiments, learningCfg: o.Learning, benchCfg: o.Bench, apiBilledRunners: o.APIBilledRunners,
 		liveByDirective: map[string]*liveExperiment{}, liveByPersona: map[string]*liveExperiment{},
 		exe: o.Executable, autoEvalSem: make(chan struct{}, 1), inflightEval: map[string]bool{},

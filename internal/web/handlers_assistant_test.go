@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAssistantAction(t *testing.T) {
@@ -47,8 +49,47 @@ func TestAssistantEndpoint(t *testing.T) {
 		t.Fatalf("status = %+v", out)
 	}
 
-	// Session context: the second call sees the first turn.
-	if got := h.srv.assistantUserPrompt("s1", "again"); got == "Operator: again" {
-		t.Error("expected prior turns in the prompt")
+	// Session context: the second call sees the first turn — from the STORE,
+	// so it survives what a daemon restart used to wipe.
+	if got := h.srv.assistantUserPrompt(context.Background(), "s1", "again"); !strings.Contains(got, "hello there") {
+		t.Errorf("expected prior turns in the prompt: %q", got)
+	}
+}
+
+// Sessionization: referents ride into the prompt with live state, and an
+// idle gap closes the session down to a one-line bridge.
+func TestAssistantSessionContext(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.srv.modelCall = func(_ context.Context, _, user, _ string) (string, error) {
+		return `{"action":"create_task","prompt":"fix the flaky test","repo":"equitizr","reply":"On it."}`, nil
+	}
+	var out assistantResponse
+	h.call(http.MethodPost, "/api/v1/assistant/message", assistantRequest{Sender: "nate", Text: "fix that flaky test in equitizr"}, &out, http.StatusOK)
+	if out.Action != "create_task" || !strings.Contains(out.Reply, "task ") {
+		t.Fatalf("create = %+v", out)
+	}
+
+	// The referent appears with live state, and the transcript is present.
+	prompt := h.srv.assistantUserPrompt(context.Background(), "nate", "how did it go?")
+	if !strings.Contains(prompt, "Ongoing from this chat") || !strings.Contains(prompt, "fix the flaky test") {
+		t.Fatalf("no referent in prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "pending") && !strings.Contains(prompt, "running") {
+		t.Fatalf("referent lacks live state:\n%s", prompt)
+	}
+
+	// An idle gap collapses the session to the bridge line; the referent
+	// still rides (previous session's entities stay addressable).
+	h.clock.Advance(2 * time.Hour)
+	prompt = h.srv.assistantUserPrompt(context.Background(), "nate", "morning")
+	if !strings.Contains(prompt, "Previous session ended") {
+		t.Fatalf("no session bridge after idle gap:\n%s", prompt)
+	}
+	if strings.Count(prompt, "\nOperator: ") > 1 { // only the new message; the old turn survives solely in the bridge line
+		t.Fatalf("old transcript leaked into the new session:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Ongoing from this chat") {
+		t.Fatalf("referents dropped across sessions:\n%s", prompt)
 	}
 }
