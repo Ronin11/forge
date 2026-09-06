@@ -91,6 +91,7 @@ var pluginScopeTable = []pluginRouteScope{
 	{"POST", "/api/v1/assistant/message", plugin.ScopeWorkWrite},
 	{"POST PATCH DELETE", "/api/v1/tasks", plugin.ScopeWorkWrite},
 	{"POST", "/api/v1/questions/", plugin.ScopeWorkWrite},
+	{"GET", "/api/v1/questions/", plugin.ScopeWorkRead},
 	{"GET", "/api/v1/usage", plugin.ScopeUsageRead},
 	{"GET", "/api/v1/kb/", plugin.ScopeKbRead},
 	{"POST", "/api/v1/kb/", plugin.ScopeKbWrite},

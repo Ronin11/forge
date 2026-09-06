@@ -1262,3 +1262,18 @@ func (s *Server) requeueTarget(r *http.Request) (int, any, error) {
 	s.log.InfoContext(ctx, "target requeued for merge", "target_id", id)
 	return http.StatusOK, target, nil
 }
+
+// getQuestion is GET /api/v1/questions/{id} — the purchase-authorization
+// lookup: a plugin verifies a question was answered approvingly before
+// spending money on the caller's behalf.
+func (s *Server) getQuestion(r *http.Request) (int, any, error) {
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	q, err := s.store.GetQuestion(r.Context(), id)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, q, nil
+}

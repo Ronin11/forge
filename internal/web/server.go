@@ -460,6 +460,7 @@ func (s *Server) routes() {
 	s.proposalRoutes(m)
 	m.HandleFunc("GET /api/v1/queue", s.handle(s.queue))
 	m.HandleFunc("POST /api/v1/questions/{id}/answer", s.handle(s.answer))
+	m.HandleFunc("GET /api/v1/questions/{id}", s.handle(s.getQuestion))
 	m.HandleFunc("POST /api/v1/rpc/{method}", s.handle(s.rpc))
 	m.HandleFunc("POST /api/v1/assistant/message", s.handle(s.assistantMessage))
 	m.HandleFunc("GET /api/v1/attempts/{id}", s.handle(s.getAttempt))

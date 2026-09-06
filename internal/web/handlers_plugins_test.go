@@ -189,6 +189,7 @@ func TestPluginScopeTable(t *testing.T) {
 		{"DELETE", "/api/v1/tasks/0123456789abcdef0123456789abcdef", plugin.ScopeWorkWrite, true},
 		{"POST", "/api/v1/questions/0123456789abcdef0123456789abcdef/answer", plugin.ScopeWorkWrite, true},
 		{"POST", "/api/v1/assistant/message", plugin.ScopeWorkWrite, true},
+		{"GET", "/api/v1/questions/0123456789abcdef0123456789abcdef", plugin.ScopeWorkRead, true},
 		{"GET", "/api/v1/assistant/message", "", false},
 		{"GET", "/api/v1/usage", plugin.ScopeUsageRead, true},
 		{"GET", "/api/v1/kb/search", plugin.ScopeKbRead, true},

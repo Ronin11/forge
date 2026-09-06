@@ -199,3 +199,16 @@ func scanQuestions(iter func(func(*sql.Rows) error) error) ([]Question, error) {
 	}
 	return out, nil
 }
+
+// GetQuestion reads one question by id — the purchase-authorization gate's
+// lookup (a plugin verifies an approval before spending money).
+func (s *Store) GetQuestion(ctx context.Context, id string) (*Question, error) {
+	qs, err := scanQuestions(each(s.query(ctx, `SELECT `+questionColumns+` FROM questions WHERE id = ?`, id)))
+	if err != nil {
+		return nil, err
+	}
+	if len(qs) == 0 {
+		return nil, fmt.Errorf("question %s: %w", id, ErrNotFound)
+	}
+	return &qs[0], nil
+}
