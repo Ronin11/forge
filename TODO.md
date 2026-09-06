@@ -11,19 +11,11 @@ voice-pipeline section that was pasted twice.
       gate is armed — registers only on Nate's explicit approve via the
       pending question. Then: dns_set → GitHub Pages for the ashbyforge site
       (launch checklist lives in the site repo).
-- [ ] Workflow proposal 543c254d (task-integration): held pending a week of
-      post-L0-fix evidence — re-review ~2026-09-13 against fresh bench trees.
-- [ ] Five backfilled product-review works sit waiting_human (cadence's first
-      tick swept a 14-day window; the window is now 36h). They pitch against
-      stale bench snapshots — answer or cancel them (`forge task cancel`).
 
 ## P1 — near-term hardening
 - [ ] HTTPS on tailscale serve: needs cert enablement on the tailnet
       (`tailscale serve --bg --https=443 localhost:7340` once certs are on);
       today it's plain HTTP inside the tailnet.
-- [ ] Doctor check for plugin.denied journals — a plugin repeatedly bouncing
-      off scopes (like signal's 403 week) should surface in `forge doctor`,
-      not in a confused chat.
 - [ ] Family multi-sender activation: signal plugin already takes a
       recipients list with sender-scoped sessions; add family numbers when
       ready. The cloud/family plan is docs/FAMILY.md.
@@ -56,15 +48,6 @@ voice-pipeline section that was pasted twice.
       accumulate below the threshold — a periodic curation sweep could merge
       them.
 - [ ] Run-scoped SSE for the run view (the poller swap is ~20 lines).
-
-## P2 — UI
-- [ ] Diagramize the Workflows page (idea 2026-09-06): render each workflow
-      graph as a real diagram — mermaid flowchart generated from the graph
-      model is the cheap road (client-side mermaid.js, nodes/edges are
-      already in the store); the editor's palette could share it. Live runs
-      could highlight the active node. Decide mermaid-vs-existing graph.js
-      before building — graph.js already draws something; the ask is
-      "better", so compare first.
 
 ## P2 — comms automation: the voice pipeline (2026-09-05 discussion)
 
