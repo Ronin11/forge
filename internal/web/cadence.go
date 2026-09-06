@@ -19,7 +19,10 @@ import (
 // infrastructure. Journal markers make each step fire exactly once; a
 // missing user-trial or product-review routine disables the cadence quietly.
 
-const cadenceWindow = 14 * 24 * time.Hour
+// Wide enough to survive daemon downtime, narrow enough that a fresh deploy
+// never backfills history: the feature's first tick fired reviews for every
+// root in a 14-day window (2026-09-06), five of them stale.
+const cadenceWindow = 36 * time.Hour
 
 func (s *Server) assessmentCadence(ctx context.Context) {
 	roots, err := s.store.SettledBenchRoots(ctx, s.now().Add(-cadenceWindow))
