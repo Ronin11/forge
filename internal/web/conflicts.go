@@ -159,3 +159,32 @@ func (s *Engine) trimDBSnapshots() {
 		}
 	}
 }
+
+// retryGrantedEscalations is the sweep half of model escalation: an attempt
+// whose escalation was granted finishes with a handoff (usually non-success);
+// its target auto-retries exactly once, and routeClaim's ladder then climbs
+// one rung with the prior failure injected into the new prompt.
+func (s *Engine) retryGrantedEscalations(ctx context.Context) {
+	rows, err := s.store.GrantedEscalationTargets(ctx)
+	if err != nil {
+		s.log.ErrorContext(ctx, "escalation retries: list", "error", err)
+		return
+	}
+	for _, targetID := range rows {
+		err := s.store.Write(ctx, func(tx *store.Tx) error {
+			done, err := tx.HasJournal(ctx, store.EntityTarget, targetID, "escalation.retried")
+			if err != nil || done {
+				return err
+			}
+			if _, err := tx.RetryTarget(ctx, targetID, ""); err != nil {
+				return err
+			}
+			return tx.Journal(ctx, "escalation.retried", store.EntityTarget, targetID, nil)
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "escalation retry", "target_id", targetID, "error", err)
+			continue
+		}
+		s.log.InfoContext(ctx, "escalation retry fired", "target_id", targetID)
+	}
+}

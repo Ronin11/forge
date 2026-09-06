@@ -88,7 +88,7 @@ func (requestBudgetTool) Description() string {
 func (requestBudgetTool) Where() string { return WhereDaemon }
 func (requestBudgetTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{
-		"dimension":{"type":"string","enum":["turns","seconds","tokens","usd"],"description":"which budget to extend"},
+		"dimension":{"type":"string","enum":["turns","seconds","tokens","usd","model"],"description":"which budget to extend; \"model\" asks for a STRONGER MODEL to take over — if granted, finish by writing a handoff summary (what you tried, where you are stuck) and stop; the retry escalates automatically"},
 		"amount":{"type":"number","description":"how much more you are asking for"},
 		"reason":{"type":"string","description":"concrete description of the remaining work justifying the ask"}
 	},"required":["dimension","amount","reason"],"additionalProperties":false}`)
@@ -106,7 +106,7 @@ func (requestBudgetTool) Call(ctx context.Context, req Request) (json.RawMessage
 	switch in.Dimension {
 	case store.BudgetTurns, store.BudgetSeconds, store.BudgetTokens, store.BudgetUSD:
 	default:
-		return nil, BadInput("dimension %q: want turns, seconds, tokens, or usd", in.Dimension)
+		return nil, BadInput("dimension %q: want turns, seconds, tokens, usd, or model", in.Dimension)
 	}
 	if in.Amount <= 0 {
 		return nil, BadInput("amount must be > 0")

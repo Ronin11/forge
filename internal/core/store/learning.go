@@ -326,3 +326,54 @@ func (s *Store) TreeScore(ctx context.Context, rootWorkID string) (*int, error) 
 	v := int(score.Int64)
 	return &v, nil
 }
+
+// SettledBenchRoots lists bench root works whose whole tree is finished and
+// carries a supervise score — the assessment cadence's trigger set.
+func (s *Store) SettledBenchRoots(ctx context.Context, since time.Time) ([]string, error) {
+	rows, err := s.query(ctx, `
+		SELECT w.id FROM work w
+		WHERE w.submitted_by LIKE 'bench:%' AND (w.caused_by_work_id IS NULL OR w.caused_by_work_id = '')
+		  AND w.created_at > ?
+		  AND NOT EXISTS (SELECT 1 FROM work c WHERE c.root_work_id = w.id AND c.finished_at IS NULL)
+		  AND w.finished_at IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM attempt_facts f WHERE f.root_work_id = w.id AND f.score_overall IS NOT NULL)
+		ORDER BY w.created_at`, formatTime(since))
+	var out []string
+	err = each(rows, err)(func(r *sql.Rows) error {
+		var id string
+		if err := r.Scan(&id); err != nil {
+			return err
+		}
+		out = append(out, id)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settled bench roots: %w", err)
+	}
+	return out, nil
+}
+
+// GrantedEscalationTargets lists finished, non-success targets holding an
+// escalation.granted journal marker — the sweep retries each once and the
+// routing ladder does the climbing.
+func (s *Store) GrantedEscalationTargets(ctx context.Context) ([]string, error) {
+	rows, err := s.query(ctx, `
+		SELECT DISTINCT t.id FROM targets t
+		JOIN journal j ON j.entity_type = 'target' AND j.entity_id = t.id AND j.kind = 'escalation.granted'
+		WHERE t.finished_at IS NOT NULL AND t.state NOT IN ('succeeded', 'merged', 'cancelled')
+		  AND NOT EXISTS (SELECT 1 FROM journal j2 WHERE j2.entity_type = 'target' AND j2.entity_id = t.id AND j2.kind = 'escalation.retried')
+		LIMIT 20`)
+	var out []string
+	err = each(rows, err)(func(r *sql.Rows) error {
+		var id string
+		if err := r.Scan(&id); err != nil {
+			return err
+		}
+		out = append(out, id)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("granted escalations: %w", err)
+	}
+	return out, nil
+}

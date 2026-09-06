@@ -43,6 +43,7 @@ func (s *Engine) RunSweeper(ctx context.Context, interval time.Duration, reflect
 			s.sweep(ctx)
 			s.recoverConflicts(ctx)
 			s.cancelDeadDependants(ctx)
+			s.retryGrantedEscalations(ctx)
 			s.refreshLiveExperiments(ctx)
 			s.decideLiveExperiments(ctx)
 			s.checkABReverts(ctx, reflection)

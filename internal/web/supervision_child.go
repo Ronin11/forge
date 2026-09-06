@@ -112,6 +112,9 @@ func (s *Engine) AdjudicateBudgetRequest(ctx context.Context, attemptID, dimensi
 	if err != nil {
 		return store.BudgetOutcome{}, err
 	}
+	if dimension == "model" {
+		return s.adjudicateModelEscalation(ctx, ev, reason)
+	}
 	ask := &budgetAsk{Dimension: dimension, Amount: amount, Reason: reason}
 	v, err := s.recordDecision(ctx, ev, ask, reason)
 	if err != nil {
@@ -122,4 +125,56 @@ func (s *Engine) AdjudicateBudgetRequest(ctx context.Context, attemptID, dimensi
 			Message: fmt.Sprintf("granted %g more %s: %s", v.GrantedAmount, v.Dimension, v.Rationale)}, nil
 	}
 	return store.BudgetOutcome{Decision: "denied", Message: "not granted: " + v.Rationale}, nil
+}
+
+// adjudicateModelEscalation handles dimension="model": the agent believes the
+// task exceeds its model. Self-assessment alone is not trusted — the decider
+// weighs it against the objective evidence (turns, artifact growth, spin) —
+// but a grant here does not extend the run: it journals escalation.granted on
+// the target, tells the agent to finish with a handoff summary and stop, and
+// the sweep auto-retries the non-success completion once, which the routing
+// ladder then escalates one rung.
+func (s *Engine) adjudicateModelEscalation(ctx context.Context, ev supervisionEvidence, reason string) (store.BudgetOutcome, error) {
+	if len(s.routing.Ladder) == 0 {
+		return store.BudgetOutcome{Decision: "denied", Message: "no escalation ladder is configured; do your best within this model"}, nil
+	}
+	if ev.RunningTurns < 5 {
+		return store.BudgetOutcome{Decision: "denied", Message: "too early to conclude the task exceeds this model — make a real attempt first"}, nil
+	}
+	att, err := s.store.GetAttempt(ctx, ev.AttemptID)
+	if err != nil {
+		return store.BudgetOutcome{}, err
+	}
+	targetID := att.TargetID
+	if has, _ := s.hasTargetJournal(ctx, targetID, "escalation.granted"); has {
+		return store.BudgetOutcome{Decision: "denied", Message: "escalation was already granted for this target; finish your handoff and stop"}, nil
+	}
+	ask := &budgetAsk{Dimension: "model", Amount: 1, Reason: "MODEL ESCALATION REQUEST (grant=extend, refuse=continue): " + reason}
+	v, err := s.recordDecision(ctx, ev, ask, reason)
+	if err != nil {
+		return store.BudgetOutcome{}, err
+	}
+	if v.Action != store.BudgetExtend {
+		return store.BudgetOutcome{Decision: "denied", Message: "escalation not granted: " + v.Rationale + " — continue within this model"}, nil
+	}
+	if err := s.store.Write(ctx, func(tx *store.Tx) error {
+		return tx.Journal(ctx, "escalation.granted", store.EntityTarget, targetID, map[string]any{
+			"attempt_id": ev.AttemptID, "reason": reason, "decided_by": v.DecidedBy})
+	}); err != nil {
+		return store.BudgetOutcome{}, err
+	}
+	s.log.InfoContext(ctx, "model escalation granted", "attempt_id", ev.AttemptID, "target_id", targetID, "decided_by", v.DecidedBy)
+	return store.BudgetOutcome{Decision: "granted", GrantedAmount: 1,
+		Message: "ESCALATION APPROVED. Stop working the task now: write a handoff summary in your result — what you tried, what you ruled out, exactly where you are stuck — then finish. A stronger model resumes from your notes."}, nil
+}
+
+// hasTargetJournal is HasJournal through the reader pool (no tx on this path).
+func (s *Engine) hasTargetJournal(ctx context.Context, targetID, kind string) (bool, error) {
+	var has bool
+	err := s.store.Write(ctx, func(tx *store.Tx) error {
+		var herr error
+		has, herr = tx.HasJournal(ctx, store.EntityTarget, targetID, kind)
+		return herr
+	})
+	return has, err
 }
