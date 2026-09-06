@@ -16,6 +16,12 @@ could not be extracted is REPORTED rather than silently dropped or
 invented, and a reviewer can trace any field back to the exact page and
 element it came from.
 
+HARD SEQUENCING RULE (three benches have now shipped with an empty
+[checks] table): the FIRST task of the plan must wire forge.toml's [checks]
+with at least a build/typecheck command that runs green on the scaffold,
+and every later task keeps it green and extends it. A final product whose
+[checks] is empty scores as a failure regardless of anything else.
+
 HARD CONSTRAINTS (this is a demo you could hand a client):
 
 - HERMETIC. This repository is built and checked in a sandbox with NO

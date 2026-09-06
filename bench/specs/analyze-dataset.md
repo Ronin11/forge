@@ -15,6 +15,12 @@ recovers the planted effect with honest uncertainty, a report a
 non-statistician can read in five minutes, and checks that prove the
 whole thing rebuilds from an empty directory to the same numbers.
 
+HARD SEQUENCING RULE (three benches have now shipped with an empty
+[checks] table): the FIRST task of the plan must wire forge.toml's [checks]
+with at least a build/typecheck command that runs green on the scaffold,
+and every later task keeps it green and extends it. A final product whose
+[checks] is empty scores as a failure regardless of anything else.
+
 HARD CONSTRAINTS (this is a demo you could hand a client):
 
 - HERMETIC. This repository is built and checked in a sandbox with NO

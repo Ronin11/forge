@@ -13,6 +13,12 @@ through, every link carrying its own source (type + URL) and an as-of date.
 There is no single public registry of "this storefront is PE-owned," so the
 value is the triangulation and showing your work.
 
+HARD SEQUENCING RULE (three benches have now shipped with an empty
+[checks] table): the FIRST task of the plan must wire forge.toml's [checks]
+with at least a build/typecheck command that runs green on the scaffold,
+and every later task keeps it green and extends it. A final product whose
+[checks] is empty scores as a failure regardless of anything else.
+
 HARD CONSTRAINTS (this is a demo you could hand a client):
 
 - Runs fully OFFLINE with NO external API keys and no paid services. Ship a
