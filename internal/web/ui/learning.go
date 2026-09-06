@@ -86,7 +86,7 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, lw := range works {
-		e := learningEntry{At: lw.CreatedAt, Kind: "reflection", Title: lw.Title, Link: "/tasks/" + lw.ID, Cost: "-"}
+		e := learningEntry{At: lw.CreatedAt, Kind: "reflection", Title: lw.Title, Link: "/learning/runs/" + lw.ID, Cost: "-"}
 		if lw.RoutineName == "learning-director" {
 			e.Kind = "director"
 		}
@@ -505,4 +505,63 @@ func (u *UI) experimentPage(w http.ResponseWriter, r *http.Request) {
 		data["History"] = hist
 	}
 	u.render(w, r, "experiment.html", "Experiment "+e.Subject, data)
+}
+
+// learningRun renders one self-improvement run as an argument and its
+// rebuttal: what the run did and claimed, what changed (diff links), and
+// what the verifier said back — the readable form of a learning, as opposed
+// to the raw task page's attempt plumbing.
+func (u *UI) learningRun(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	run, err := u.store.LearningRun(ctx, r.PathValue("id"))
+	if err != nil || run == nil {
+		http.NotFound(w, r)
+		return
+	}
+	data := map[string]any{"Run": run, "Status": learningWorkStatus(run.State, run.UnverifiedReason)}
+	role := "Reflection"
+	switch {
+	case run.RoutineName == "learning-director":
+		role = "Director"
+	case run.Cause == string(model.CausePromotion):
+		role = "Promotion"
+	case run.RoutineName == "product-review":
+		role = "Product review"
+	}
+	data["RoleName"] = role
+	var env struct {
+		Summary string `json:"summary"`
+		Changes []struct {
+			Path    string `json:"path"`
+			Summary string `json:"summary"`
+		} `json:"changes"`
+		Commits []struct {
+			SHA     string `json:"sha"`
+			Subject string `json:"subject"`
+		} `json:"commits"`
+		Claims []struct {
+			Claim    string `json:"claim"`
+			Evidence string `json:"evidence"`
+		} `json:"claims"`
+	}
+	if json.Unmarshal(run.Result, &env) == nil {
+		data["Summary"], data["Changes"], data["Commits"], data["Claims"] = env.Summary, env.Changes, env.Commits, env.Claims
+	}
+	// The rebuttal: the verify follow-up's verdict and per-claim results.
+	if vid, err := u.store.VerifyChildOf(ctx, run.ID); err == nil && vid != "" {
+		if vrun, err := u.store.LearningRun(ctx, vid); err == nil && vrun != nil {
+			var v struct {
+				Verdict       string `json:"verdict"`
+				ClaimsChecked []struct {
+					Claim    string `json:"claim"`
+					Result   string `json:"result"`
+					Evidence string `json:"evidence"`
+				} `json:"claims_checked"`
+			}
+			if json.Unmarshal(vrun.Result, &v) == nil && (v.Verdict != "" || len(v.ClaimsChecked) > 0) {
+				data["Verdict"], data["VerifyChecked"] = v.Verdict, v.ClaimsChecked
+			}
+		}
+	}
+	u.render(w, r, "learning-run.html", role+" run", data)
 }

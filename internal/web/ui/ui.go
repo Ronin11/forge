@@ -308,6 +308,7 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn 
 	u.mux.HandleFunc("GET /learning", u.learning)
 	u.mux.HandleFunc("GET /learning/commits/{sha}", u.learningCommit)
 	u.mux.HandleFunc("GET /experiments/{id}", u.experimentPage)
+	u.mux.HandleFunc("GET /learning/runs/{id}", u.learningRun)
 	return u, nil
 }
 

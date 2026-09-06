@@ -134,8 +134,61 @@ func TestLearningPage(t *testing.T) {
 		t.Error("experiment row is not clickable into its page")
 	}
 
+	// The learning-run page renders the argument (seed a result on the
+	// reflect attempt first, plus a verify child with a rebuttal).
+	var runID string
+	{
+		works, _ := st.ListWork(ctx, 10)
+		for _, w := range works {
+			if w.RoutineName == "reflect-library" {
+				runID = w.ID
+			}
+		}
+		if err := st.Write(ctx, func(tx *store.Tx) error {
+			if _, err := tx.Exec(ctx, `UPDATE attempts SET result = ? WHERE target_id IN (SELECT id FROM targets WHERE work_id = ?)`,
+				`{"summary":"tightened the widget prompt","claims":[{"claim":"widgets fail 80% of the time","evidence":"forge_stats row"}],"changes":[{"path":"directives/widget.md","summary":"added guardrail"}],"commits":[{"sha":"`+sha+`","subject":"widget: guardrail"}]}`, runID); err != nil {
+				return err
+			}
+			vw := &store.Work{RoutineName: "verify", Generation: 1, Title: "verify", Trigger: model.TriggerManual,
+				Snapshot: []byte(`{}`), Priority: 50, BudgetClass: model.ClassNormal, Autonomy: model.AutonomyAuto,
+				CausedByWorkID: runID, Cause: model.CauseVerify}
+			vt, err := tx.CreateWork(ctx, vw, []string{"directives"}, nil)
+			if err != nil {
+				return err
+			}
+			a, err := tx.Claim(ctx, store.ClaimParams{TargetID: vt[0].ID, WorkerID: workerID, ClaimRequestID: "rv", LeaseToken: "lv", MCPToken: "mv",
+				Executor: "claude-code", Model: "claude-haiku-4-5", ModelAlias: "haiku", Mode: "verify", Autonomy: model.AutonomyAuto})
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE attempts SET result = ? WHERE id = ?`,
+				`{"verdict":"fail","claims_checked":[{"claim":"widgets fail 80% of the time","result":"refuted","evidence":"actual rate 40%"}]}`, a.ID)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err = http.Get(srv.URL + "/learning/runs/" + runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{"tightened the widget prompt", "widgets fail 80%", "forge_stats row", "refuted", "actual rate 40%", "raw task", "/learning/commits/" + sha} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("learning-run page missing %q", want)
+		}
+	}
+
 	// The experiment detail page renders (arms come from the row; this one
-	// has none yet, so the header and goal are the assertion).
+	// has none yet, so the header and goal are the assertion). Re-fetch the
+	// feed: body currently holds the learning-run page.
+	resp, err = http.Get(srv.URL + "/learning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
 	expID := strings.Split(strings.Split(string(body), `data-href="/experiments/`)[1], `"`)[0]
 	resp, err = http.Get(srv.URL + "/experiments/" + expID)
 	if err != nil {

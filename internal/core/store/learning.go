@@ -240,3 +240,54 @@ func (s *Store) DeadSuccessDependants(ctx context.Context) ([]DeadDependant, err
 	}
 	return out, nil
 }
+
+// LearningRun reads one self-improvement Work the way the Learning detail
+// page needs it: the work row, its target's fate, and the newest attempt's
+// result envelope. ok=false when the work does not exist.
+func (s *Store) LearningRun(ctx context.Context, workID string) (*LearningWorkRow, error) {
+	rows, err := s.query(ctx, `
+		SELECT w.id, w.title, w.routine_name, w.cause, w.created_at,
+		       t.state, t.unverified_reason, a.result, a.cost_usd
+		FROM work w
+		JOIN targets t ON t.work_id = w.id
+		LEFT JOIN attempts a ON a.id = (
+			SELECT id FROM attempts WHERE target_id = t.id ORDER BY started_at DESC LIMIT 1
+		)
+		WHERE w.id = ? LIMIT 1`, workID)
+	var out *LearningWorkRow
+	err = each(rows, err)(func(r *sql.Rows) error {
+		var row LearningWorkRow
+		var cause, unverified, result, created sql.NullString
+		var cost sql.NullFloat64
+		if err := r.Scan(&row.ID, &row.Title, &row.RoutineName, &cause, &created, &row.State, &unverified, &result, &cost); err != nil {
+			return err
+		}
+		row.Cause, row.UnverifiedReason = cause.String, unverified.String
+		row.Result = rawOrNil(result)
+		if cost.Valid {
+			v := cost.Float64
+			row.CostUSD = &v
+		}
+		var perr error
+		if row.CreatedAt, perr = parseTime(created); perr != nil {
+			return perr
+		}
+		out = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("learning run: %w", err)
+	}
+	return out, nil
+}
+
+// VerifyChildOf finds the verify follow-up Work for a subject Work (cause
+// "verify", caused_by the subject) — the rebuttal half of a learning.
+func (s *Store) VerifyChildOf(ctx context.Context, workID string) (string, error) {
+	var id sql.NullString
+	err := s.queryRow(ctx, `SELECT id FROM work WHERE caused_by_work_id = ? AND cause = 'verify' ORDER BY created_at DESC LIMIT 1`, workID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return id.String, err
+}

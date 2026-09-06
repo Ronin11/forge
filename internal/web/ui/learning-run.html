@@ -1,0 +1,20 @@
+{{template "head" .}}{{$r := .Data.Run}}
+<div class="page-head"><h1>{{.Data.RoleName}} run {{short $r.ID}} {{template "stateChip" .Data.Status}}</h1><span><a class="btn" href="/learning">← Learning</a> <a class="btn" href="/tasks/{{$r.ID}}">raw task</a></span></div>
+<p class="meta">{{ago $r.CreatedAt}}{{if $r.CostUSD}} · ${{printf "%.2f" (dereff $r.CostUSD)}}{{end}}{{if $r.UnverifiedReason}} · {{$r.UnverifiedReason}}{{end}}</p>
+
+{{with .Data.Summary}}<section class="card"><h2>What it did</h2><p>{{.}}</p></section>{{end}}
+
+{{if .Data.Changes}}<section class="card"><h2>What changed</h2><ul>
+{{range .Data.Changes}}<li><code>{{.Path}}</code> — {{.Summary}}</li>{{end}}
+</ul>{{range .Data.Commits}}<p class="meta"><a href="/learning/commits/{{.SHA}}"><code>{{short .SHA}}</code></a> {{.Subject}}</p>{{end}}</section>{{end}}
+
+{{if .Data.Claims}}<section class="card"><h2>The case it made</h2>
+<div class="tablewrap"><table class="list"><thead><tr><th class="grow">Claim</th><th class="grow">Evidence cited</th></tr></thead><tbody>
+{{range .Data.Claims}}<tr><td>{{.Claim}}</td><td class="meta">{{.Evidence}}</td></tr>{{end}}
+</tbody></table></div></section>{{end}}
+
+{{if .Data.VerifyChecked}}<section class="card"><h2>The verifier's response{{with .Data.Verdict}} — verdict: {{template "stateChip" .}}{{end}}</h2>
+<div class="tablewrap"><table class="list"><thead><tr><th class="grow">Claim checked</th><th>Result</th><th class="grow">Verifier's evidence</th></tr></thead><tbody>
+{{range .Data.VerifyChecked}}<tr><td>{{.Claim}}</td><td><span class="chip{{if eq .Result "refuted"}} warn{{end}}">{{.Result}}</span></td><td class="meta">{{.Evidence}}</td></tr>{{end}}
+</tbody></table></div></section>{{end}}
+{{template "foot" .}}
