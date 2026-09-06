@@ -449,6 +449,25 @@ func (i *Integrator) merge(ctx context.Context, log *slog.Logger, t store.Target
 	if scratchFT == nil {
 		scratchFT = ft
 	}
+	// A fresh clone has never installed or generated anything; the declared
+	// setup command makes the checks meaningful ("vite: command not found"
+	// killed every npm-repo merge before this). Setup failure is
+	// infrastructure — retried and capped — not a checks_failed verdict.
+	if len(scratchFT.Setup) > 0 && len(scratchFT.Checks) > 0 {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		cmd := exec.CommandContext(sctx, scratchFT.Setup[0], scratchFT.Setup[1:]...)
+		cmd.Dir = scratch
+		cmd.Env = os.Environ()
+		out, serr := cmd.CombinedOutput()
+		cancel()
+		if serr != nil {
+			tail := string(out)
+			if len(tail) > 2<<10 {
+				tail = tail[len(tail)-2<<10:]
+			}
+			return mergeOutcome{reason: "setup failed: " + serr.Error() + ": " + tail}
+		}
+	}
 	for _, res := range worker.RunChecks(ctx, scratch, scratchFT, os.Environ()) {
 		if !res.Passed {
 			tail := res.OutputTail

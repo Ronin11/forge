@@ -26,7 +26,12 @@ import (
 // IntegrationBranch and TaskBranches are the M9 push policy (constitution 10):
 // Forge pushes only to a branch this file lists.
 type ForgeToml struct {
-	Checks   map[string][]string `toml:"checks"`
+	Checks map[string][]string `toml:"checks"`
+	// Setup is run once before the checks in a tree that has never built —
+	// dependency install, codegen. The integrator's scratch clone needs it
+	// (a worker's worktree usually has the agent's own install); a check
+	// like "npm run build" is meaningless in a clone with no node_modules.
+	Setup    []string            `toml:"setup"`
 	Defaults struct {
 		Autonomy   string `toml:"autonomy"`
 		BaseBranch string `toml:"base_branch"`

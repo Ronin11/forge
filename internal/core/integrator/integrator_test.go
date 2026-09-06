@@ -312,6 +312,23 @@ func TestChecksFailOnRebasedResult(t *testing.T) {
 	}
 }
 
+// Declared setup runs in the scratch clone before the checks: a check that
+// depends on a setup artifact (the node_modules case) passes and the merge
+// lands.
+func TestSetupRunsBeforeChecks(t *testing.T) {
+	h := newHarness(t, "integration_branch = \"master\"\nsetup = [\"sh\", \"-c\", \"echo ok > setup-ran\"]\n\n[checks]\nbuilt = [\"test\", \"-f\", \"setup-ran\"]\n")
+	before := h.remoteHead(t)
+	head := taskBranch(t, h.checkout, "forge/setup", map[string]string{"s.txt": "x\n"})
+	id, _ := h.queue("forge/setup", head)
+	h.integ.Tick(context.Background())
+	if tg := h.target(id); tg.State != model.Merged {
+		t.Fatalf("target = %s (%s), want merged", tg.State, tg.UnverifiedReason)
+	}
+	if h.remoteHead(t) == before {
+		t.Fatal("remote must advance when setup satisfies the check")
+	}
+}
+
 // No integration_branch declared: the merge is refused into conflict and
 // journaled; nothing is pushed (constitution 10).
 func TestNoIntegrationBranchRefused(t *testing.T) {

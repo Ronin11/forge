@@ -19,7 +19,10 @@ element it came from.
 HARD SEQUENCING RULE (three benches have now shipped with an empty
 [checks] table): the FIRST task of the plan must wire forge.toml's [checks]
 with at least a build/typecheck command that runs green on the scaffold,
-and every later task keeps it green and extends it. A final product whose
+AND a `setup` command (e.g. `setup = ["npm", "ci"]`) that makes a fresh
+clone check-ready — the merge gate runs checks in a clone that has never
+installed anything, so without setup every merge dies on missing
+dependencies. Every later task keeps both green and extends the checks. A final product whose
 [checks] is empty scores as a failure regardless of anything else.
 
 HARD CONSTRAINTS (this is a demo you could hand a client):
