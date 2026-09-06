@@ -5,6 +5,19 @@ greenfield stress-run postmortem that used to fill this file: 10/10 apps
 demo-ready, 0/10 initially verified, every failure Forge's own — all of its
 P0/P1 fixes have since landed.)
 
+## P3 — interface ideas (jotted 2026-09-06)
+- [ ] Companion app: a proper mobile front end — sessions/chat, queue,
+      Learning feed, and one-tap Human Queue approvals (the purchase gate on
+      a button). Tailscale already carries the transport; today's UI is
+      operator-grade, not thumb-grade.
+- [ ] Voice mode plugins: speech in/out as a channel class — voice notes over
+      the existing bridges and/or a live voice loop; the concierge already
+      speaks sender-scoped sessions, so this is transcription + TTS at the
+      plugin layer.
+- [ ] Google Home integration: "Hey Google, ask Forge…" — smart-speaker
+      intake/status through the assistant route; approvals stay on
+      phone-confirmed channels, never voice-only.
+
 ## P1 — remote access (tomorrow morning, 2026-09-06)
 - [ ] Tailscale: `sudo pacman -S tailscale && sudo systemctl enable --now
       tailscaled && sudo tailscale up --operator=ronin` → auth URL on phone;
