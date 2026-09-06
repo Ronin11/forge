@@ -264,7 +264,20 @@ func (s *Server) assistantWorkLine(ctx context.Context, id string) string {
 	}
 	state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(targets), Integrate: w.Integrate})
 	title := clip(w.Title, 60)
-	return fmt.Sprintf("task %s %q — %s", model.ShortID(w.ID), title, state)
+	line := fmt.Sprintf("task %s %q — %s", model.ShortID(w.ID), title, state)
+	// A settled task carries its findings: that is usually what the operator
+	// is asking about ("how'd it go?"), so the model can answer directly.
+	if len(targets) == 1 && !targets[0].FinishedAt.IsZero() {
+		if a, err := s.store.AttemptForTarget(ctx, targets[0].ID); err == nil && a != nil {
+			var env struct {
+				Summary string `json:"summary"`
+			}
+			if json.Unmarshal(a.Result, &env) == nil && env.Summary != "" {
+				line += " — outcome: " + clip(env.Summary, 220)
+			}
+		}
+	}
+	return line
 }
 
 func clip(s string, n int) string {
