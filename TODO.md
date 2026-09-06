@@ -17,6 +17,14 @@ P0/P1 fixes have since landed.)
 - [ ] Google Home integration: "Hey Google, ask Forge…" — smart-speaker
       intake/status through the assistant route; approvals stay on
       phone-confirmed channels, never voice-only.
+- [ ] Google Voice number, fully automatic setup: research feasibility —
+      GV has no provisioning API, so this is browser-executor + credential-
+      broker territory (the deferred layer), and signup has CAPTCHA/verify
+      steps that may cap it at semi-automated. Honest alternative if the
+      goal is "a phone number forge owns": Twilio/Telnyx numbers provision
+      entirely by API (~$1/mo + usage) — SMS/voice channel plugin becomes
+      an afternoon instead of a browser fight. Decide goal first: a number
+      for forge, or specifically Google Voice.
 
 ## P1 — remote access (tomorrow morning, 2026-09-06)
 - [ ] Tailscale: `sudo pacman -S tailscale && sudo systemctl enable --now
