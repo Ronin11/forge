@@ -35,16 +35,6 @@ P0/P1 fixes have since landed.)
 
 ## P1 — integrator observability
 
-- [ ] `merges` rows store no check output: when the merge gate fails a check,
-  the operator gets `check_failed:lint` and nothing else, and must reproduce
-  by hand (scratch clone → detach head → rebase → run the check). Persist at
-  least the failing check's tail (like attempts do) on the merge row and show
-  it in `task show` / the web UI. Found 2026-09-02 diagnosing equitizr's
-  with-deps scratch-clone bug — three verify cycles were burned on a failure
-  whose output was never visible.
-- [ ] Doctor check for "local base ahead of origin" (from the stale-base
-  overnight incident): forge worktrees base on `refs/remotes/origin/<base>`,
-  so unpushed local commits are invisible to every agent.
 
 ## P2 — housekeeping
 
