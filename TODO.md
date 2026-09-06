@@ -46,6 +46,15 @@ voice-pipeline section that was pasted twice.
       them.
 - [ ] Run-scoped SSE for the run view (the poller swap is ~20 lines).
 
+## P2 — UI
+- [ ] Diagramize the Workflows page (idea 2026-09-06): render each workflow
+      graph as a real diagram — mermaid flowchart generated from the graph
+      model is the cheap road (client-side mermaid.js, nodes/edges are
+      already in the store); the editor's palette could share it. Live runs
+      could highlight the active node. Decide mermaid-vs-existing graph.js
+      before building — graph.js already draws something; the ask is
+      "better", so compare first.
+
 ## P2 — comms automation: the voice pipeline (2026-09-05 discussion)
 
 Goal: automate ~90% of a corporate-comms workflow (emails, send lists) with

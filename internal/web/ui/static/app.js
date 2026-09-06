@@ -62,20 +62,28 @@ document.querySelectorAll('[data-timeline]').forEach(function (tl) {
   }
 })();
 
-// Human queue: answer a question in place.
+// Human queue: answer a question in place — an option button submits its
+// text directly; the freeform field is the "none of these fit" path.
+function submitAnswer(id, answer) {
+  fetch('/api/v1/questions/' + id + '/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer: answer, by: 'human' }),
+  }).then(function (resp) {
+    if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+    window.location.reload();
+  }).catch(function (err) { window.alert('Answer failed: ' + err.message); });
+}
 document.querySelectorAll('[data-answer-form]').forEach(function (form) {
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    var id = form.dataset.answerForm;
-    var answer = form.querySelector('[name=answer]').value;
-    fetch('/api/v1/questions/' + id + '/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answer: answer, by: 'human' }),
-    }).then(function (resp) {
-      if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
-      window.location.reload();
-    }).catch(function (err) { window.alert('Answer failed: ' + err.message); });
+    submitAnswer(form.dataset.answerForm, form.querySelector('[name=answer]').value);
+  });
+});
+document.querySelectorAll('[data-answer-option]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    btn.closest('.card').querySelectorAll('[data-answer-option]').forEach(function (b) { b.disabled = true; });
+    submitAnswer(btn.dataset.answerOption, btn.dataset.answerText);
   });
 });
 

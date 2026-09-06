@@ -10,8 +10,8 @@
 </div>
 <a class="prov-view" href="/work/{{.RootID}}">View work →</a>
 </nav>{{end}}{{end}}
-{{range .Data.Questions}}<div class="card question" data-question="{{.ID}}"><b>Question</b> {{.Text}}{{if .Options}} <small>options: {{join .Options ", "}}</small>{{end}}
-{{if .AnsweredAt.IsZero}}<form data-answer-form="{{.ID}}"><input type="text" name="answer" placeholder="your answer" size="60" required> <button type="submit">Answer &amp; resume</button></form>
+{{range .Data.Questions}}<div class="card question" data-question="{{.ID}}"><b>Question</b> {{.Text}}
+{{if .AnsweredAt.IsZero}}{{if .Options}}{{$q := .}}<div class="answer-options">{{range $q.Options}}<button type="button" data-answer-option="{{$q.ID}}" data-answer-text="{{.}}">{{.}}</button>{{end}}</div>{{end}}<form data-answer-form="{{.ID}}"><input type="text" name="answer" placeholder="{{if .Options}}or your own answer, if none fit{{else}}your answer{{end}}" size="60" required> <button type="submit">Answer &amp; resume</button></form>
 <p class="meta">or: <code>forge task answer {{short .WorkID}} "…"</code></p>{{else if .IsAuto}}<div class="auto-answer"><span class="chip warn">decided by Forge ({{.AutoModel}})</span> {{.Answer}}{{if .Rationale}}<p class="meta">rationale: {{.Rationale}}</p>{{end}}</div>{{else}}<div>Answered by {{.AnsweredBy}}: {{.Answer}}</div>{{end}}</div>{{end}}
 {{range .Data.Targets}}
 <section class="card">

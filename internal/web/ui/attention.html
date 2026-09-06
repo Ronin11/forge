@@ -7,9 +7,9 @@
 <b>Question</b> from <a href="/tasks/{{.Work.ID}}">{{short .Work.ID}}</a> ({{.Work.RoutineName}}@{{.Work.Generation}}) · asked {{ago .Question.AskedAt}}
 {{if .AutoDecide}}<span class="chip">{{.Question.Criticality}}</span> <span class="chip" title="{{.Deadline}}">Forge decides in {{until .Deadline}}</span>{{else}}<span class="chip warn">critical · needs you</span>{{end}}
 <p>{{.Question.Text}}</p>
-{{if .Question.Options}}<p class="meta">options: {{join .Question.Options ", "}}</p>{{end}}
+{{if .Question.Options}}{{$q := .Question}}<div class="answer-options">{{range $q.Options}}<button type="button" data-answer-option="{{$q.ID}}" data-answer-text="{{.}}">{{.}}</button>{{end}}</div>{{end}}
 {{if .Actions}}<p>{{range .Actions}}{{if .URL}}<a href="{{.URL}}">{{.Label}} →</a>{{else}}<button data-rpc="{{.RPC}}"{{if .Args}} data-rpc-args="{{.Args}}"{{end}}>{{.Label}}</button>{{end}} {{end}}</p>{{end}}
-<form data-answer-form="{{.Question.ID}}"><input type="text" name="answer" placeholder="your answer" size="60" required> <button type="submit">Answer &amp; resume</button></form>
+<form data-answer-form="{{.Question.ID}}"><input type="text" name="answer" placeholder="{{if .Question.Options}}or your own answer, if none fit{{else}}your answer{{end}}" size="60" required> <button type="submit">Answer &amp; resume</button></form>
 <p class="meta">or: <code>forge task answer {{short .Work.ID}} "…"</code></p>
 </div>
 {{end}}
