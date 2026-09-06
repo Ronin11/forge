@@ -12,6 +12,7 @@ import (
 
 	"forge/internal/core/engine"
 	"forge/internal/core/model"
+	"forge/internal/core/stats"
 	"forge/internal/core/store"
 )
 
@@ -136,7 +137,7 @@ func (u *UI) learning(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, pe := range experiments {
-		e := learningEntry{At: pe.CreatedAt, Kind: "experiment", Status: pe.Status, Title: pe.Goal, Ref: pe.ID, Cost: "-"}
+		e := learningEntry{At: pe.CreatedAt, Kind: "experiment", Status: pe.Status, Title: pe.Goal, Ref: pe.ID, Cost: "-", Link: "/experiments/" + pe.ID}
 		if name, ok := strings.CutPrefix(pe.Subject, "directive:"); ok {
 			e.Directives = []string{name}
 		} else if name, ok := strings.CutPrefix(pe.Subject, "persona:"); ok {
@@ -425,4 +426,83 @@ func (u *UI) capacityLine(ctx context.Context) string {
 		return five
 	}
 	return five + " · " + seven
+}
+
+// experimentArmView is one arm on the experiment detail page: live tallies
+// with intervals, plus the decision-time posterior when recorded.
+type experimentArmView struct {
+	Label, Title string
+	Runs         int
+	VerifiedRate float64
+	RateLow      float64
+	RateHigh     float64
+	PSup         *float64
+}
+
+func (u *UI) experimentPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	e, err := u.store.GetExperiment(ctx, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	data := map[string]any{"Experiment": e}
+	// Arms: definition from the row; runs/rates from facts; posterior from
+	// the results blob when the decision recorded one.
+	var defs []struct {
+		Label string `json:"label"`
+		Title string `json:"title"`
+	}
+	_ = json.Unmarshal(e.Arms, &defs)
+	var res struct {
+		Winner     string  `json:"winner"`
+		Reason     string  `json:"reason"`
+		ProposalID string  `json:"proposal_id"`
+		AppliedRef string  `json:"applied_ref"`
+		Confidence float64 `json:"confidence"`
+		Arms       []struct {
+			Label        string   `json:"label"`
+			PSuperiority *float64 `json:"p_superiority"`
+		} `json:"arms"`
+	}
+	_ = json.Unmarshal(e.Results, &res)
+	psup := map[string]*float64{}
+	for _, a := range res.Arms {
+		psup[a.Label] = a.PSuperiority
+	}
+	counts := map[string][]bool{}
+	if facts, err := u.store.FactsByExperiment(ctx, id, 200); err == nil {
+		for _, f := range facts {
+			ok := f.VerificationPass != nil && *f.VerificationPass
+			counts[f.Variant] = append(counts[f.Variant], ok)
+		}
+	}
+	var arms []experimentArmView
+	for _, d := range defs {
+		v := experimentArmView{Label: d.Label, Title: d.Title, PSup: psup[d.Label]}
+		outcomes := counts[d.Label]
+		succ := 0
+		for _, ok := range outcomes {
+			if ok {
+				succ++
+			}
+		}
+		v.Runs = len(outcomes)
+		if v.Runs > 0 {
+			v.VerifiedRate = float64(succ) / float64(v.Runs)
+		}
+		v.RateLow, v.RateHigh = stats.WilsonInterval(succ, v.Runs, 1.96)
+		arms = append(arms, v)
+	}
+	data["Arms"] = arms
+	data["Winner"], data["Reason"], data["ProposalID"] = res.Winner, res.Reason, res.ProposalID
+	data["Confidence"] = res.Confidence
+	if _, sha, ok := cutFragmentRef(res.AppliedRef); ok {
+		data["AppliedSHA"] = sha
+	}
+	if hist, err := u.store.JournalForEntity(ctx, store.EntityDaemon, id); err == nil {
+		data["History"] = hist
+	}
+	u.render(w, r, "experiment.html", "Experiment "+e.Subject, data)
 }

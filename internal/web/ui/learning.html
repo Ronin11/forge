@@ -3,7 +3,7 @@
 <p class="meta"><span class="chip">{{.Data.Landed}} landed</span> <span class="chip">{{.Data.Refuted}} refuted by verify</span> <span class="chip">{{.Data.Reverted}} reverted by A/B</span> <span class="chip">{{.Data.ExpOpen}} experiments open</span> <span class="chip">{{.Data.ExpPromoted}} promoted</span> <span class="chip">${{printf "%.2f" .Data.SpendUSD}} learning spend</span>{{if .Data.BudgetUSD}} <span class="chip{{if ge .Data.WeekSpendUSD .Data.BudgetUSD}} warn{{end}}">API pool ${{printf "%.2f" .Data.WeekSpendUSD}} / ${{printf "%.2f" .Data.BudgetUSD}} this week</span>{{end}}{{if .Data.Capacity}} <span class="chip">{{.Data.Capacity}}</span>{{end}}{{range .Data.Calibration}} <span class="chip" title="prediction calibration: forecasts that held / resolved{{if .Brier}} · Brier {{printf "%.2f" (dereff .Brier)}}{{end}}">{{.Source}} {{.Held}}/{{.Resolved}} held{{if .Open}} · {{.Open}} open{{end}}</span>{{end}}</p>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter the feed — text, kind:experiment, status:refuted, directive:plan-project" "Keys" "kind,status,directive"}}
 <div class="tablewrap"><table class="list"><thead><tr><th>When</th><th>Kind</th><th>Status</th><th class="grow">What</th><th>Touched</th><th>Outcome</th><th>Cost</th></tr></thead><tbody>
-{{range .Data.Entries}}<tr data-sf-item data-f-kind="{{.Kind}}" data-f-status="{{.Status}}" data-f-directive="{{range .Directives}}{{.}} {{end}}">
+{{range .Data.Entries}}<tr {{with .Link}}data-href="{{.}}"{{end}} data-sf-item data-f-kind="{{.Kind}}" data-f-status="{{.Status}}" data-f-directive="{{range .Directives}}{{.}} {{end}}">
 <td class="nowrap">{{ago .At}}</td>
 <td><span class="chip">{{.Kind}}</span></td>
 <td>{{template "stateChip" .Status}}</td>

@@ -130,6 +130,24 @@ func TestLearningPage(t *testing.T) {
 	if !strings.Contains(string(body), `href="/learning/commits/`+sha+`"`) {
 		t.Error("commit row does not link to the diff view")
 	}
+	if !strings.Contains(string(body), `data-href="/experiments/`) {
+		t.Error("experiment row is not clickable into its page")
+	}
+
+	// The experiment detail page renders (arms come from the row; this one
+	// has none yet, so the header and goal are the assertion).
+	expID := strings.Split(strings.Split(string(body), `data-href="/experiments/`)[1], `"`)[0]
+	resp, err = http.Get(srv.URL + "/experiments/" + expID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{"Experiment", "quote numbers exactly", "directive:reflect-library"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("experiment page missing %q", want)
+		}
+	}
 
 	// The diff view: header, stat, classified add lines; a foreign sha gets
 	// the unpushed-branch explanation; a malformed sha 404s.

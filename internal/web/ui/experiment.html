@@ -1,0 +1,28 @@
+{{template "head" .}}{{$e := .Data.Experiment}}
+<div class="page-head"><h1>Experiment {{short $e.ID}} {{template "stateChip" $e.Status}}</h1><a class="btn" href="/learning">← Learning</a></div>
+<p class="meta"><span class="chip">{{$e.Kind}}</span> {{$e.Subject}} · created {{ago $e.CreatedAt}}{{if $e.MinRuns}} · min {{$e.MinRuns}} runs/arm{{end}}{{if .Data.Confidence}} · decides at {{printf "%.0f%%" (mulf .Data.Confidence 100)}} posterior{{end}}</p>
+<section class="card"><h2>Goal</h2><p>{{$e.Goal}}</p></section>
+
+{{if .Data.Arms}}<section class="card"><h2>Arms</h2>
+<div class="tablewrap"><table class="list"><thead><tr><th>Arm</th><th class="grow">Title</th><th>Runs</th><th>Verified</th><th>95% interval</th><th>P(beats control)</th></tr></thead><tbody>
+{{range .Data.Arms}}<tr>
+<td><span class="chip">{{.Label}}</span></td>
+<td>{{.Title}}</td>
+<td>{{.Runs}}</td>
+<td>{{printf "%.0f%%" (mulf .VerifiedRate 100)}}</td>
+<td class="meta">[{{printf "%.0f%%" (mulf .RateLow 100)}} – {{printf "%.0f%%" (mulf .RateHigh 100)}}]</td>
+<td>{{if .PSup}}{{printf "%.0f%%" (mulf .PSup 100)}}{{else}}–{{end}}</td>
+</tr>{{end}}
+</tbody></table></div></section>{{end}}
+
+{{if $e.Results}}<section class="card"><h2>Decision</h2>{{with .Data.Winner}}<p><b>Winner: {{.}}</b></p>{{end}}{{with .Data.Reason}}<p>{{.}}</p>{{end}}
+{{if .Data.ProposalID}}<p class="meta"><a href="/proposals/{{.Data.ProposalID}}">promotion proposal</a>{{with .Data.AppliedSHA}} · <a href="/learning/commits/{{.}}">what changed</a>{{end}}</p>{{end}}
+<details><summary>Raw results</summary><pre class="result">{{prettyJSON $e.Results}}</pre></details></section>{{end}}
+{{with $e.Error}}<section class="card"><h2>Error</h2><p>{{.}}</p></section>{{end}}
+
+<h2>History</h2>
+<div class="tablewrap"><table class="list"><thead><tr><th>When</th><th>Event</th><th class="grow">Detail</th></tr></thead><tbody>
+{{range .Data.History}}<tr><td title="{{.Time}}">{{ago .Time}}</td><td><span class="chip">{{.Kind}}</span></td><td><code>{{printf "%s" .Payload}}</code></td></tr>
+{{else}}<tr><td colspan="3" class="empty">No recorded history.</td></tr>{{end}}
+</tbody></table></div>
+{{template "foot" .}}
