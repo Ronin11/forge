@@ -34,11 +34,22 @@ voice-pipeline section that was pasted twice.
       the learning budget/ladder ceiling to calibration (well-calibrated,
       improving → keep spending; flat curves → taper) instead of a static
       usd_per_week.
-- [ ] Workflow experiments: third `experimentSubject` implementation
-      (`workflow:<name>`) where a variant is a graph edit and a run is a real
-      workflow run — store/pipeline/API are already generic
-      (internal/web/experiments.go); open questions are what "variant" means
-      for a graph and how to judge a multi-step run's output.
+- [ ] Workflows as the first-class reach (operator direction 2026-09-06:
+      "reach for workflows more than just directives... recurring ad-hoc
+      chains should become standard like scratch directives"):
+      a. Bench-through-workflow: teach startBenchRun a workflow root
+         (create bench repo, fire e.g. flow-standard with the spec as
+         objective, key scoring off the run) so the two orchestration
+         styles compete on the same spec. First concrete consumer.
+      b. Distillation loop: reflect/director mandates now require it
+         (directives d553dda+) — recurring plan-batch shapes get proposed
+         as standing workflows WITH the runnable graph in the after body;
+         verify applyWorkflow handles a graph-bearing proposal end to end.
+      c. Workflow experiments: third `experimentSubject`
+         (`workflow:<name>`) where a variant is a graph edit and a run is
+         a real workflow run — store/pipeline/API are already generic;
+         open questions are what "variant" means for a graph and how to
+         judge a multi-step run's output.
 - [ ] Scratch promotion follow-through: watch the first real promote-scratch
       Works land (auto-merge is on); if curators mangle headers or dedupe
       badly, the directive is the knob. Near-duplicate SCRATCH rows still
