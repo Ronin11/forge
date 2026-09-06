@@ -392,7 +392,12 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .gv-port.gv-p-in{fill:var(--muted)}
 .gv-port-hit{fill:transparent;cursor:crosshair}
 .gv-port.gv-p-open{stroke:var(--run);stroke-width:2.5}
-.wf-preview-svg{display:block;height:78px;width:auto;max-width:100%}
+.wf-grid{display:flex;flex-direction:column;gap:1rem}
+.wf-card .wf-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+.wf-card .wf-title{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;min-width:0}
+.wf-card .wf-notes{margin:.35rem 0 .5rem;max-width:var(--measure)}
+.wf-diagram{margin-top:.5rem;overflow-x:auto}
+.wf-preview-svg{display:block;width:100%;height:auto;max-height:240px}
 .wf-preview-svg .gv-node{cursor:default}
 .wf-preview-svg line{vector-effect:non-scaling-stroke}
 .wf-preview-svg .gv-node rect.gv-body{vector-effect:non-scaling-stroke}

@@ -1377,7 +1377,7 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
     var pad = 16;
     var svg = el('svg', {
       viewBox: (minX - pad) + ' ' + (minY - pad) + ' ' + (maxX - minX + 2 * pad) + ' ' + (maxY - minY + 2 * pad),
-      class: 'wf-preview-svg', role: 'img',
+      class: 'wf-preview-svg', role: 'img', preserveAspectRatio: 'xMinYMid meet',
     });
     var mid = 'wfp-' + cell.dataset.wfPreview.replace(/[^a-z0-9_-]/gi, '');
     var marker = el('marker', { id: mid, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
