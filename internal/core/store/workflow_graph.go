@@ -99,6 +99,10 @@ type DirectiveNodeConfig struct {
 	MaxTurns       int               `json:"max_turns,omitempty"`
 	BudgetClass    model.BudgetClass `json:"budget_class,omitempty"`
 	Model          string            `json:"model,omitempty"`
+	// Integrate queues the node's work (and any plan batch it spawns) for
+	// merge onto the repo's integration branch — without it a review node's
+	// repair tasks strand on branches (the cadence bug, 2026-09-06).
+	Integrate bool `json:"integrate,omitempty"`
 }
 
 // ScriptNodeConfig is a script node's typed view: inline Source, or a named

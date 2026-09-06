@@ -495,6 +495,7 @@ func (s *Server) startFlowWork(ctx context.Context, tx *store.Tx, run *store.Wor
 		Class:        st.Directive.BudgetClass,
 		nodeTimeout:  st.Directive.TimeoutSeconds,
 		nodeMaxTurns: st.Directive.MaxTurns,
+		Integrate:    st.Directive.Integrate,
 	}
 	if len(req.Repositories) == 0 {
 		req.Repositories = run.Context.Repositories
