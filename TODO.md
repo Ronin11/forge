@@ -5,6 +5,13 @@ greenfield stress-run postmortem that used to fill this file: 10/10 apps
 demo-ready, 0/10 initially verified, every failure Forge's own — all of its
 P0/P1 fixes have since landed.)
 
+## P1 — remote access (tomorrow morning, 2026-09-06)
+- [ ] Tailscale: `sudo pacman -S tailscale && sudo systemctl enable --now
+      tailscaled && sudo tailscale up --operator=ronin` → auth URL on phone;
+      then Claude runs `tailscale serve` to publish the UI at
+      https://omarchy.<tailnet>.ts.net (daemon stays bound to 127.0.0.1;
+      nothing public). Phone gets the Tailscale app on the same account.
+
 ## P1 — integrator observability
 
 - [ ] `merges` rows store no check output: when the merge gate fails a check,
