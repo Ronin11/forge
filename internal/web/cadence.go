@@ -84,6 +84,11 @@ func (s *Server) cadenceStep(ctx context.Context, rootID string) {
 		created, err := s.createWorkTx(ctx, tx, workRequest{
 			Routine: "product-review", Repositories: []string{repo}, Force: true, trigger: model.TriggerSchedule,
 			CausedBy: trialID, cause: model.CauseFollowUp, submittedBy: "cadence:review",
+			// The review's repair batch must land on the integration branch:
+			// without this the whole child tree strands on task branches —
+			// three rounds of correct, unmerged work on 20260905-1009
+			// (proposal 543c254d's 83%-missing-deliverables pattern).
+			Integrate: true,
 			Objective: b.String(),
 		})
 		if err != nil {
