@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,5 +113,57 @@ func TestDeadDependantCascade(t *testing.T) {
 	h.srv.cancelDeadDependants(context.Background())
 	if w, err := h.st.GetWork(context.Background(), grandchild.Work.ID); err != nil || w.FinishedAt.IsZero() {
 		t.Fatalf("grandchild not cancelled: %+v, %v", w, err)
+	}
+}
+
+// Reverting a merged task files a new integrate task chained cause=revert,
+// carrying the pushed range; unmerged work is refused.
+func TestRevertWork(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	var created workCreated
+	h.call(http.MethodPost, "/api/v1/tasks", map[string]any{
+		"prompt": "add the widget", "repositories": []string{"equitizr"}, "integrate": true,
+	}, &created, http.StatusCreated)
+	target := created.Targets[0].ID
+
+	// Not merged yet: refused.
+	if status, _ := h.do(http.MethodPost, "/api/v1/work/"+created.Work.ID+"/revert", nil, nil, testToken); status != http.StatusBadRequest {
+		t.Fatalf("revert before merge = %d", status)
+	}
+
+	c := h.mustClaim("rv1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 42)
+	h.complete(c, completeRequest(model.Succeeded, h.clock.now))
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		if _, err := tx.Transition(context.Background(), target, model.Merging, store.TransitionOptions{Actor: "test"}); err != nil {
+			return err
+		}
+		m, err := tx.BeginMerge(context.Background(), target, "equitizr", "main")
+		if err != nil {
+			return err
+		}
+		if err := tx.FinishMerge(context.Background(), m.ID, "merged", "aaaa1111", "bbbb2222", nil); err != nil {
+			return err
+		}
+		_, err = tx.Transition(context.Background(), target, model.Merged, store.TransitionOptions{Actor: "test"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var revert workCreated
+	h.call(http.MethodPost, "/api/v1/work/"+created.Work.ID+"/revert", nil, &revert, http.StatusCreated)
+	if revert.Work.Cause != model.CauseRevert || revert.Work.CausedByWorkID != created.Work.ID {
+		t.Fatalf("revert provenance = %+v", revert.Work)
+	}
+	var snap store.Routine
+	if err := json.Unmarshal(revert.Work.Snapshot, &snap); err != nil ||
+		!strings.Contains(snap.Prompt, "aaaa1111..bbbb2222") || !strings.Contains(snap.Prompt, "CASCADE") {
+		t.Fatalf("revert prompt = %q, %v", snap.Prompt, err)
+	}
+	if !snap.Integrate {
+		t.Fatal("revert task must integrate")
 	}
 }

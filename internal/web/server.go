@@ -451,6 +451,7 @@ func (s *Server) routes() {
 		m.HandleFunc("GET "+base+"/{id}", s.handle(s.getWork))
 		m.HandleFunc("GET "+base+"/{id}/lineage", s.handle(s.workLineage))
 		m.HandleFunc("DELETE "+base+"/{id}", s.handle(s.cancelWork))
+		m.HandleFunc("POST "+base+"/{id}/revert", s.handle(s.revertWork))
 		m.HandleFunc("PATCH "+base+"/{id}", s.handle(s.patchWork))
 	}
 	m.HandleFunc("GET /api/v1/bench/{name}", s.handle(s.benchRuns))

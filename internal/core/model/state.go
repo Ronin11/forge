@@ -273,6 +273,11 @@ const (
 	// CausePromotion: a scratch script crossed the promotion threshold and
 	// the daemon queued a curation Work to fold it into the library.
 	CausePromotion Cause = "promotion"
+	// CauseRevert: a human asked for a merged task's changes to be backed
+	// out; the revert is itself a task, chained to what it undoes, and the
+	// ordinary pipeline (checks, merge queue, conflict recovery) carries
+	// the cascade.
+	CauseRevert Cause = "revert"
 	// CauseContinuation: the supervise Work that reviews a settled plan
 	// batch — the return path of recursive decomposition.
 	CauseContinuation Cause = "continuation"
@@ -281,7 +286,7 @@ const (
 // Valid reports whether c is empty (a root) or one of the known causes.
 func (c Cause) Valid() bool {
 	switch c {
-	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool, CausePromotion, CauseContinuation:
+	case "", CausePlanTask, CauseVerify, CauseFollowUp, CauseTool, CausePromotion, CauseContinuation, CauseRevert:
 		return true
 	}
 	return false

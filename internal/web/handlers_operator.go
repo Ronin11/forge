@@ -1277,3 +1277,71 @@ func (s *Server) getQuestion(r *http.Request) (int, any, error) {
 	}
 	return http.StatusOK, q, nil
 }
+
+// revertWork is POST /api/v1/work/{id}/revert: back out a merged task's
+// changes. The revert is a new task chained cause=revert to the original —
+// the agent reverts the pushed range, adapts whatever built on top so checks
+// pass (the cascade), and the result rides the ordinary merge queue.
+func (s *Server) revertWork(r *http.Request) (int, any, error) {
+	ctx := r.Context()
+	if s.Draining() {
+		return 0, nil, errDraining
+	}
+	id, err := pathID(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	w, err := s.store.GetWork(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	targets, err := s.store.TargetsForWork(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	var merged *store.Target
+	for i := range targets {
+		if targets[i].State == model.Merged {
+			merged = &targets[i]
+		}
+	}
+	if merged == nil {
+		return 0, nil, badRequest("work %s has no merged target — only merged changes can be reverted", model.ShortID(id))
+	}
+	m, err := s.store.MergeForTarget(ctx, merged.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if m == nil || m.AfterSHA == "" || m.BeforeSHA == "" {
+		return 0, nil, badRequest("work %s has no recorded pushed range to revert", model.ShortID(id))
+	}
+	title := w.Title
+	if len(title) > 60 {
+		title = title[:60]
+	}
+	prompt := fmt.Sprintf(
+		"REVERT the changes task %s (%q) merged into %s. The pushed range is %s..%s on the integration branch.\n\n"+
+			"1. `git revert --no-edit %s..%s` (oldest-first; use -m 1 on merge commits). If a revert conflicts, resolve it in favor of REMOVING the original change.\n"+
+			"2. THE CASCADE IS YOURS: later work may have built on what you are removing. Adapt call sites, tests, and docs so the repository is coherent without the reverted change — the declared checks must pass. If something genuinely cannot be unwound without destroying later work, STOP and report exactly what depends on it instead of forcing.\n"+
+			"3. Commit as 'revert: %s' and summarize what was backed out and what you had to adapt.",
+		model.ShortID(id), title, m.Repository, m.BeforeSHA, m.AfterSHA, m.BeforeSHA, m.AfterSHA, title)
+	var created workCreated
+	err = s.store.Write(ctx, func(tx *store.Tx) error {
+		var werr error
+		created, werr = s.createWorkTx(ctx, tx, workRequest{
+			Prompt: prompt, Repositories: []string{m.Repository}, Integrate: true, Force: true,
+			Title: "revert: " + title, Class: model.ClassInteractive,
+			CausedBy: id, cause: model.CauseRevert,
+		})
+		if werr != nil {
+			return werr
+		}
+		return tx.Journal(ctx, "work.revert_requested", store.EntityWork, id, map[string]any{
+			"revert_work": created.Work.ID, "range": m.BeforeSHA + ".." + m.AfterSHA, "repository": m.Repository})
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	s.log.InfoContext(ctx, "revert task filed", "work_id", id, "revert_work", created.Work.ID, "range", m.BeforeSHA+".."+m.AfterSHA)
+	return http.StatusCreated, created, nil
+}
