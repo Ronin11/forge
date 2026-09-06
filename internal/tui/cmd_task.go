@@ -22,11 +22,16 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 // taskView is what GET /api/v1/tasks/{id} returns.
 type taskView struct {
-	Work      store.Work       `json:"work"`
-	State     model.WorkState  `json:"state"`
-	Targets   []store.Target   `json:"targets"`
-	Attempts  []store.Attempt  `json:"attempts"`
-	Questions []store.Question `json:"questions"`
+	Work          store.Work       `json:"work"`
+	State         model.WorkState  `json:"state"`
+	Targets       []store.Target   `json:"targets"`
+	Attempts      []store.Attempt  `json:"attempts"`
+	Questions     []store.Question `json:"questions"`
+	MergeFailures map[string]struct {
+		Check        string   `json:"check"`
+		Output       string   `json:"output"`
+		FailingTests []string `json:"failing_tests"`
+	} `json:"merge_failures"`
 }
 
 func RunTask(ctx context.Context, c *Context, args []string) int {
@@ -328,6 +333,16 @@ func runTaskShow(ctx context.Context, c *Context, args []string) int {
 			line += "  retained"
 		}
 		fmt.Fprintln(c.Stdout, line)
+		if mf, ok := v.MergeFailures[t.ID]; ok {
+			fmt.Fprintf(c.Stdout, "    merge gate failed check %q", mf.Check)
+			if len(mf.FailingTests) > 0 {
+				fmt.Fprintf(c.Stdout, "  failing: %s", strings.Join(mf.FailingTests, ", "))
+			}
+			fmt.Fprintln(c.Stdout)
+			for _, l := range strings.Split(strings.TrimSpace(tailLines(mf.Output, 20)), "\n") {
+				fmt.Fprintln(c.Stdout, "      "+l)
+			}
+		}
 	}
 	now := time.Now()
 	for _, a := range v.Attempts {
@@ -775,4 +790,13 @@ func runTaskRequeue(ctx context.Context, c *Context, args []string) int {
 	}
 	fmt.Fprintf(c.Stdout, "target %s (%s) requeued -> %s\n", short(out.ID), out.Repository, out.State)
 	return 0
+}
+
+// tailLines keeps the last n lines of s.
+func tailLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

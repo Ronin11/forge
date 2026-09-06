@@ -32,8 +32,13 @@ type DaemonInput struct {
 	RetainedCount   int       // rows in retained_worktrees
 	FiveHourSample  *store.RateLimitSample
 	SevenDaySample  *store.RateLimitSample
-	Plugins         []store.Plugin        // installed plugin rows
-	PluginHealth    []plugin.PluginHealth // the supervisor's live state
+	// AheadOfOrigin lists repositories whose local default branch carries
+	// commits origin does not have. Agents base worktrees on the ORIGIN ref,
+	// so unpushed local commits are invisible to every agent — the stale-base
+	// overnight incident.
+	AheadOfOrigin []RepoAhead
+	Plugins       []store.Plugin        // installed plugin rows
+	PluginHealth  []plugin.PluginHealth // the supervisor's live state
 	// PricingPairs are recent attempts' notional cost (tokens × Forge's price
 	// table) beside the executor's self-reported cost (M10, DESIGN.md §21);
 	// large drift means the price table is stale.
@@ -52,6 +57,7 @@ func Daemon(in DaemonInput) []Check {
 	checks = append(checks, workers(in)...)
 	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in), pricing(in))
 	checks = append(checks, plugins(in)...)
+	checks = append(checks, aheadOfOriginCheck(in.AheadOfOrigin)...)
 	return checks
 }
 
@@ -247,4 +253,28 @@ func budget(in DaemonInput) Check {
 		return Check{Name: "budget", Status: StatusWarn, Detail: detail, Hint: "no recent samples; the budget policy is deciding on stale data"}
 	}
 	return Check{Name: "budget", Status: StatusOK, Detail: detail}
+}
+
+// RepoAhead is one repository whose local branch outruns its origin.
+type RepoAhead struct {
+	Name   string `json:"name"`
+	Branch string `json:"branch"`
+	Ahead  int    `json:"ahead"`
+}
+
+// aheadOfOriginCheck warns per repository with unpushed local commits.
+func aheadOfOriginCheck(ahead []RepoAhead) []Check {
+	var out []Check
+	for _, r := range ahead {
+		if r.Ahead <= 0 {
+			continue
+		}
+		out = append(out, Check{
+			Name:   "repo_ahead_of_origin:" + r.Name,
+			Status: "warn",
+			Detail: fmt.Sprintf("%s: local %s is %d commit(s) ahead of origin — agents base on origin and cannot see them", r.Name, r.Branch, r.Ahead),
+			Hint:   "push the branch (or drop the local commits); until then every agent works from stale code",
+		})
+	}
+	return out
 }

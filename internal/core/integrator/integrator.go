@@ -166,6 +166,12 @@ type mergeOutcome struct {
 	scratch    string // retained on conflict
 	touched    []string
 	checkName  string // first failing check, for the unverified reason
+	// checkTail and checkFailing are the failing check's evidence — the tail
+	// of its output and any parsed failing tests — so the operator never has
+	// to reproduce the merge gate by hand to see WHY (three verify cycles
+	// were once burned on a failure whose output was never persisted).
+	checkTail    string
+	checkFailing []string
 }
 
 // process runs one Target through merging and lands the outcome. Every store
@@ -237,6 +243,12 @@ func (i *Integrator) process(ctx context.Context, t store.Target) {
 // and the one-time integration-facts fill.
 func (i *Integrator) landOutcome(ctx context.Context, log *slog.Logger, t store.Target, a *store.Attempt, m *store.Merge, out mergeOutcome) {
 	detail := map[string]any{"target_id": t.ID, "reason": out.reason, "conflicted": out.conflicted, "scratch": out.scratch, "branch": m.IntegrationBranch, "repository": t.Repository}
+	if out.checkTail != "" {
+		detail["check"], detail["check_output"] = out.checkName, out.checkTail
+		if len(out.checkFailing) > 0 {
+			detail["failing_tests"] = out.checkFailing
+		}
+	}
 	switch out.outcome {
 	case outcomeMerged:
 		err := i.st.Write(ctx, func(tx *store.Tx) error {
@@ -439,7 +451,12 @@ func (i *Integrator) merge(ctx context.Context, log *slog.Logger, t store.Target
 	}
 	for _, res := range worker.RunChecks(ctx, scratch, scratchFT, os.Environ()) {
 		if !res.Passed {
-			return mergeOutcome{outcome: outcomeChecksFail, checkName: res.Check, reason: "check failed: " + res.Check, before: before, after: after, touched: touched}
+			tail := res.OutputTail
+			if len(tail) > 8<<10 {
+				tail = tail[len(tail)-8<<10:]
+			}
+			return mergeOutcome{outcome: outcomeChecksFail, checkName: res.Check, reason: "check failed: " + res.Check,
+				checkTail: tail, checkFailing: res.Failing, before: before, after: after, touched: touched}
 		}
 	}
 

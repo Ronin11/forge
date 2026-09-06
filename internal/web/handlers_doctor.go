@@ -3,11 +3,15 @@ package web
 import (
 	"context"
 	"net/http"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"forge/internal/core/daemon"
 	"forge/internal/core/doctor"
 	"forge/internal/core/plugin"
+	"forge/internal/core/store"
 )
 
 // doctorRoutes registers GET /api/v1/doctor: the daemon-side checks `forge
@@ -66,7 +70,8 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 		Version: s.version, SchemaVersion: s.store.SchemaVersion(), StartedAt: startedAt, Now: now,
 		Workers: workers, Repositories: repos, KbLastIndexedAt: kbAt, RetainedCount: retained,
 		FiveHourSample: fiveHour, SevenDaySample: sevenDay,
-		Plugins: plugins, PluginHealth: pluginHealth, PricingPairs: pricing,
+		AheadOfOrigin: s.reposAheadOfOrigin(ctx, repos),
+		Plugins:       plugins, PluginHealth: pluginHealth, PricingPairs: pricing,
 	})
 	return http.StatusOK, checks, nil
 }
@@ -90,4 +95,30 @@ func (s *Server) pricingPairs(ctx context.Context, now time.Time) ([]doctor.Pric
 		pairs = append(pairs, doctor.PricingPair{Notional: *f.USD, Reported: *f.CostUSD})
 	}
 	return pairs, nil
+}
+
+// reposAheadOfOrigin measures, per live non-bench repository, how far the
+// local checked-out branch outruns its upstream — the stale-base check's
+// input. A repo without an upstream (or any git failure) contributes nothing.
+func (s *Server) reposAheadOfOrigin(ctx context.Context, repos []store.Repository) []doctor.RepoAhead {
+	var out []doctor.RepoAhead
+	for _, r := range repos {
+		if r.Archived || strings.HasPrefix(r.Name, "bench-") || r.Path == "" {
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		branchB, err := exec.CommandContext(cctx, "git", "-C", r.Path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		if err != nil {
+			cancel()
+			continue
+		}
+		countB, err := exec.CommandContext(cctx, "git", "-C", r.Path, "rev-list", "--count", "@{u}..HEAD").Output()
+		cancel()
+		if err != nil {
+			continue // no upstream configured: nothing to compare
+		}
+		n, _ := strconv.Atoi(strings.TrimSpace(string(countB)))
+		out = append(out, doctor.RepoAhead{Name: r.Name, Branch: strings.TrimSpace(string(branchB)), Ahead: n})
+	}
+	return out
 }

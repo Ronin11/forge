@@ -784,6 +784,17 @@ type workDetail struct {
 	Targets   []store.Target   `json:"targets"`
 	Attempts  []store.Attempt  `json:"attempts"`
 	Questions []store.Question `json:"questions"`
+	// MergeFailures carries the merge gate's evidence per target whose
+	// checks failed at integration: the check name and its output tail, so
+	// nobody reproduces the gate by hand to see why.
+	MergeFailures map[string]mergeFailure `json:"merge_failures,omitempty"`
+}
+
+// mergeFailure is one target's failed merge-gate check, from the merge journal.
+type mergeFailure struct {
+	Check        string   `json:"check"`
+	Output       string   `json:"output"`
+	FailingTests []string `json:"failing_tests,omitempty"`
 }
 
 func (s *Server) workDetail(ctx context.Context, id string) (int, any, error) {
@@ -830,7 +841,47 @@ func (s *Server) workDetail(ctx context.Context, id string) (int, any, error) {
 		qs = []store.Question{}
 	}
 	state := model.DeriveWorkState(model.WorkInputs{Targets: engine.TargetStates(ts), Integrate: wk.Integrate})
-	return http.StatusOK, workDetail{Work: *wk, State: state, Targets: ts, Attempts: attempts, Questions: qs}, nil
+	detail := workDetail{Work: *wk, State: state, Targets: ts, Attempts: attempts, Questions: qs}
+	for _, t := range ts {
+		if !strings.HasPrefix(t.UnverifiedReason, "check_failed:") {
+			continue
+		}
+		if mf := s.mergeFailureFor(ctx, t.ID); mf != nil {
+			if detail.MergeFailures == nil {
+				detail.MergeFailures = map[string]mergeFailure{}
+			}
+			detail.MergeFailures[t.ID] = *mf
+		}
+	}
+	return http.StatusOK, detail, nil
+}
+
+// mergeFailureFor reads the newest checks-failed payload from a target's
+// merge journal.
+func (s *Server) mergeFailureFor(ctx context.Context, targetID string) *mergeFailure {
+	m, err := s.store.MergeForTarget(ctx, targetID)
+	if err != nil || m == nil {
+		return nil
+	}
+	rows, err := s.store.JournalForEntity(ctx, store.EntityMerge, m.ID)
+	if err != nil {
+		return nil
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Kind != "merge.checks_failed" {
+			continue
+		}
+		var p struct {
+			Check        string   `json:"check"`
+			CheckOutput  string   `json:"check_output"`
+			FailingTests []string `json:"failing_tests"`
+		}
+		if json.Unmarshal(rows[i].Payload, &p) != nil || p.CheckOutput == "" {
+			return nil
+		}
+		return &mergeFailure{Check: p.Check, Output: p.CheckOutput, FailingTests: p.FailingTests}
+	}
+	return nil
 }
 
 func (s *Server) getWork(r *http.Request) (int, any, error) {
