@@ -1337,3 +1337,82 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       .catch(function () { cell.textContent = ''; });
   });
 })();
+
+// Workflow list previews: each [data-wf-preview] cell fetches its graph and
+// draws a read-only thumbnail with the editor's own node/edge classes, so the
+// list shows the real shape — branches, switch cases, loops — instead of a
+// flattened arrow list. Failure leaves the text fallback in place.
+(function () {
+  var cells = document.querySelectorAll('[data-wf-preview]');
+  if (!cells.length) return;
+  var SVG = 'http://www.w3.org/2000/svg';
+  var W = 180, H = 54; // the editor's node box; stored positions use this space
+  function el(name, attrs) {
+    var n = document.createElementNS(SVG, name);
+    for (var k in attrs || {}) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  // border returns the point on `of`'s rect border along the line to `toward`.
+  function border(of, toward) {
+    var cx = of.x + W / 2, cy = of.y + H / 2;
+    var dx = (toward.x + W / 2) - cx, dy = (toward.y + H / 2) - cy;
+    if (!dx && !dy) return { x: cx, y: cy };
+    var s = Math.min((W / 2 + 5) / Math.abs(dx || 1e-9), (H / 2 + 5) / Math.abs(dy || 1e-9));
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+  function render(cell, graph) {
+    var nodes = graph.nodes || [], edges = graph.edges || [];
+    if (!nodes.length) return;
+    var pos = {};
+    nodes.forEach(function (n, i) {
+      var p = n.position || {};
+      pos[n.id] = { x: p.x == null ? i * (W + 60) : p.x, y: p.y == null ? 0 : p.y };
+    });
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    nodes.forEach(function (n) {
+      var p = pos[n.id];
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + W); maxY = Math.max(maxY, p.y + H);
+    });
+    var pad = 16;
+    var svg = el('svg', {
+      viewBox: (minX - pad) + ' ' + (minY - pad) + ' ' + (maxX - minX + 2 * pad) + ' ' + (maxY - minY + 2 * pad),
+      class: 'wf-preview-svg', role: 'img',
+    });
+    var mid = 'wfp-' + cell.dataset.wfPreview.replace(/[^a-z0-9_-]/gi, '');
+    var marker = el('marker', { id: mid, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
+    var tip = el('path', { d: 'M 0 0 L 10 5 L 0 10 z' });
+    tip.setAttribute('fill', 'var(--muted)');
+    marker.appendChild(tip);
+    var defs = el('defs');
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+    edges.forEach(function (e) {
+      var a = pos[e.from], b = pos[e.to];
+      if (!a || !b) return;
+      var p1 = border(a, b), p2 = border(b, a);
+      var cls = 'gv-edge gv-e-' + (e.case ? 'case' : (e.when || 'always')) + (e.loop ? ' gv-e-loop' : '');
+      svg.appendChild(el('line', { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, class: cls, 'marker-end': 'url(#' + mid + ')' }));
+    });
+    nodes.forEach(function (n) {
+      var p = pos[n.id];
+      var g = el('g', { class: 'gv-node gv-t-' + n.type, transform: 'translate(' + p.x + ',' + p.y + ')' });
+      g.appendChild(el('rect', { class: 'gv-body', width: W, height: H, rx: 10 }));
+      var t = el('text', { x: W / 2, y: H / 2 + 5, 'text-anchor': 'middle' });
+      t.textContent = n.id;
+      g.appendChild(t);
+      var title = el('title');
+      title.textContent = n.id + ' (' + n.type + (n.config && n.config.directive ? ': ' + n.config.directive : '') + ')';
+      g.appendChild(title);
+      svg.appendChild(g);
+    });
+    cell.textContent = '';
+    cell.appendChild(svg);
+  }
+  cells.forEach(function (cell) {
+    fetch('/api/v1/workflows/' + encodeURIComponent(cell.dataset.wfPreview))
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(r.status)); })
+      .then(function (wf) { render(cell, (wf && wf.graph) || {}); })
+      .catch(function () { /* text fallback stands */ });
+  });
+})();

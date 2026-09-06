@@ -55,6 +55,38 @@ func (s *Store) JournalSince(ctx context.Context, since int64, limit int) ([]Jou
 	return s.journalRows(each(s.query(ctx, `SELECT id, ts, kind, entity_type, entity_id, payload FROM journal WHERE id > ? ORDER BY id LIMIT ?`, since, limit)))
 }
 
+// PluginDenialRow is one plugin's recent scope-denial tally for the doctor.
+type PluginDenialRow struct {
+	Plugin   string
+	Count    int
+	LastPath string
+}
+
+// PluginDenialsSince tallies plugin.denied journal rows per plugin after the
+// cutoff, with the most recently denied path as the sample.
+func (s *Store) PluginDenialsSince(ctx context.Context, since time.Time) ([]PluginDenialRow, error) {
+	rows, err := s.query(ctx, `
+		SELECT entity_id, COUNT(*),
+		       COALESCE((SELECT json_extract(j2.payload, '$.path') FROM journal j2
+		         WHERE j2.kind = 'plugin.denied' AND j2.entity_id = j.entity_id
+		         ORDER BY j2.id DESC LIMIT 1), '')
+		FROM journal j WHERE j.kind = 'plugin.denied' AND j.ts > ?
+		GROUP BY entity_id ORDER BY entity_id`, formatTime(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PluginDenialRow
+	for rows.Next() {
+		var r PluginDenialRow
+		if err := rows.Scan(&r.Plugin, &r.Count, &r.LastPath); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // JournalForEntity returns an entity's history, oldest first.
 func (s *Store) JournalForEntity(ctx context.Context, entityType, entityID string) ([]JournalEntry, error) {
 	return s.journalRows(each(s.query(ctx, `SELECT id, ts, kind, entity_type, entity_id, payload FROM journal WHERE entity_type = ? AND entity_id = ? ORDER BY id`, entityType, entityID)))

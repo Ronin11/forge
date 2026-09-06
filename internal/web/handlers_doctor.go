@@ -72,6 +72,7 @@ func (s *Server) doctor(r *http.Request) (int, any, error) {
 		FiveHourSample: fiveHour, SevenDaySample: sevenDay,
 		AheadOfOrigin: s.reposAheadOfOrigin(ctx, repos),
 		Plugins:       plugins, PluginHealth: pluginHealth, PricingPairs: pricing,
+		PluginDenials: s.pluginDenials(ctx, now),
 	})
 	return http.StatusOK, checks, nil
 }
@@ -95,6 +96,21 @@ func (s *Server) pricingPairs(ctx context.Context, now time.Time) ([]doctor.Pric
 		pairs = append(pairs, doctor.PricingPair{Notional: *f.USD, Reported: *f.CostUSD})
 	}
 	return pairs, nil
+}
+
+// pluginDenials tallies recent scope-table denials for the doctor; best
+// effort — an error just drops the check.
+func (s *Server) pluginDenials(ctx context.Context, now time.Time) []doctor.PluginDenial {
+	rows, err := s.store.PluginDenialsSince(ctx, now.Add(-48*time.Hour))
+	if err != nil {
+		s.log.WarnContext(ctx, "doctor: plugin denials", "error", err)
+		return nil
+	}
+	var out []doctor.PluginDenial
+	for _, r := range rows {
+		out = append(out, doctor.PluginDenial{Plugin: r.Plugin, Count: r.Count, LastPath: r.LastPath})
+	}
+	return out
 }
 
 // reposAheadOfOrigin measures, per live non-bench repository, how far the

@@ -66,3 +66,21 @@ func TestCapabilitySandbox(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginDenialsCheck(t *testing.T) {
+	t.Parallel()
+	checks := pluginDenialsCheck([]PluginDenial{
+		{Plugin: "signal", Count: 3, LastPath: "/api/v1/assistant/message"},
+		{Plugin: "quiet", Count: 0},
+	})
+	if len(checks) != 1 {
+		t.Fatalf("got %d checks, want 1 (zero-count rows are skipped): %+v", len(checks), checks)
+	}
+	c := checks[0]
+	if c.Name != "plugin_denied:signal" || c.Status != "warn" {
+		t.Fatalf("check = %+v", c)
+	}
+	if !strings.Contains(c.Detail, "3 scope denial(s)") || !strings.Contains(c.Detail, "/api/v1/assistant/message") {
+		t.Fatalf("detail lacks tally or path: %s", c.Detail)
+	}
+}

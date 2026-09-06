@@ -392,6 +392,11 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .gv-port.gv-p-in{fill:var(--muted)}
 .gv-port-hit{fill:transparent;cursor:crosshair}
 .gv-port.gv-p-open{stroke:var(--run);stroke-width:2.5}
+.wf-preview-svg{display:block;height:78px;width:auto;max-width:100%}
+.wf-preview-svg .gv-node{cursor:default}
+.wf-preview-svg line{vector-effect:non-scaling-stroke}
+.wf-preview-svg .gv-node rect.gv-body{vector-effect:non-scaling-stroke}
+.wf-preview-svg .gv-node text{font-size:16px}
 .gv-edge{fill:none;stroke:var(--muted);stroke-width:1.6}
 .gv-edge.gv-e-success{stroke:var(--ok)}
 .gv-edge.gv-e-failure{stroke:var(--bad)}

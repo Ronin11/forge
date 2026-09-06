@@ -43,6 +43,18 @@ type DaemonInput struct {
 	// table) beside the executor's self-reported cost (M10, DESIGN.md §21);
 	// large drift means the price table is stale.
 	PricingPairs []PricingPair
+	// PluginDenials are recent plugin.denied journal rows grouped by plugin —
+	// a bridge bouncing off the deny-by-default scope table 403s silently
+	// (the signal plugin went mute for a day this way; the operator's only
+	// symptom was "no response").
+	PluginDenials []PluginDenial
+}
+
+// PluginDenial summarizes one plugin's recent scope denials.
+type PluginDenial struct {
+	Plugin   string `json:"plugin"`
+	Count    int    `json:"count"`
+	LastPath string `json:"last_path"`
 }
 
 // PricingPair is one attempt's notional-vs-reported cost, both in dollars.
@@ -58,6 +70,7 @@ func Daemon(in DaemonInput) []Check {
 	checks = append(checks, repositories(in), kbIndex(in), worktrees(in), budget(in), pricing(in))
 	checks = append(checks, plugins(in)...)
 	checks = append(checks, aheadOfOriginCheck(in.AheadOfOrigin)...)
+	checks = append(checks, pluginDenialsCheck(in.PluginDenials)...)
 	return checks
 }
 
@@ -260,6 +273,23 @@ type RepoAhead struct {
 	Name   string `json:"name"`
 	Branch string `json:"branch"`
 	Ahead  int    `json:"ahead"`
+}
+
+// pluginDenialsCheck warns per plugin recently refused by the scope table.
+func pluginDenialsCheck(denials []PluginDenial) []Check {
+	var out []Check
+	for _, d := range denials {
+		if d.Count <= 0 {
+			continue
+		}
+		out = append(out, Check{
+			Name:   "plugin_denied:" + d.Plugin,
+			Status: "warn",
+			Detail: fmt.Sprintf("%s: %d scope denial(s) in the last 48h (last path %s) — the plugin is silently getting 403s", d.Plugin, d.Count, d.LastPath),
+			Hint:   "grant the route in pluginScopeTable (internal/web/server.go) or fix the plugin's requested scopes, then restart the plugin",
+		})
+	}
+	return out
 }
 
 // aheadOfOriginCheck warns per repository with unpushed local commits.
