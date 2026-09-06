@@ -183,14 +183,22 @@ func (s *Server) runWorkflow(r *http.Request) (int, any, error) {
 		if !wf.ArchivedAt.IsZero() {
 			return badRequest("workflow %s is archived", wf.Name)
 		}
-		// A directive node cannot materialize without a repository; refuse
-		// up front instead of minting a run that fails at its first node
-		// with no feedback (the silent Run-button bug, 2026-09-06).
+		// A directive node cannot materialize without a repository — from
+		// the run context or its own config; refuse up front instead of
+		// minting a run that fails at its first node with no feedback
+		// (the silent Run-button bug, 2026-09-06).
 		if len(body.Repositories) == 0 {
 			for _, n := range wf.Graph.Nodes {
-				if n.Type == "directive" {
-					return badRequest("workflow %s has directive nodes: at least one repository is required", wf.Name)
+				if n.Type != "directive" {
+					continue
 				}
+				if rs, ok := n.Config["repositories"].([]any); ok && len(rs) > 0 {
+					continue
+				}
+				if rs, ok := n.Config["repositories"].([]string); ok && len(rs) > 0 {
+					continue
+				}
+				return badRequest("workflow %s: node %s has no repository — pass at least one repository for the run", wf.Name, n.ID)
 			}
 		}
 		run.WorkflowID, run.WorkflowName, run.WorkflowGeneration, run.Graph = wf.ID, wf.Name, wf.Generation, wf.Graph
