@@ -1,6 +1,6 @@
 {{template "head" .}}{{$p := .Data.Proposal}}
 <div class="page-head"><h1>Proposal {{short $p.ID}} {{template "stateChip" $p.Status}}</h1><a class="btn" href="/proposals">← All proposals</a></div>
-<p class="meta"><span class="chip">{{$p.Kind}}</span> {{$p.Target}} · source {{$p.Source}} · created {{ago $p.CreatedAt}}{{if $p.DecidedBy}} · decided by {{$p.DecidedBy}} {{ago $p.DecidedAt}}{{end}}{{if $p.EvalScore}} · eval {{deref $p.EvalScore}}{{end}}{{if $p.AppliedRef}} · applied <code>{{$p.AppliedRef}}</code>{{end}}</p>
+<p class="meta"><span class="chip">{{$p.Kind}}</span> {{$p.Target}} · source {{$p.Source}} · created {{ago $p.CreatedAt}}{{if $p.DecidedBy}} · decided by {{$p.DecidedBy}} {{ago $p.DecidedAt}}{{end}}{{if $p.EvalScore}} · eval {{deref $p.EvalScore}}{{end}}{{if $p.AppliedRef}} · applied {{with refCommit $p.AppliedRef}}<a href="/learning/commits/{{.}}" title="what actually changed"><code>{{$p.AppliedRef}}</code></a>{{else}}<code>{{$p.AppliedRef}}</code>{{end}}{{end}}</p>
 {{if eq (printf "%s" $p.Status) "proposed"}}<p><button data-proposal-approve="{{$p.ID}}">Approve</button> <button data-proposal-reject="{{$p.ID}}">Reject</button></p>{{end}}
 <p id="proposal-error" class="error" hidden></p>
 
@@ -10,6 +10,16 @@
 {{with prettyJSON $p.After}}<section class="card"><h2>After</h2><pre class="result">{{.}}</pre></section>{{end}}
 {{with prettyJSON $p.OutcomeMetrics}}<section class="card"><h2>A/B outcome (reverted)</h2><pre class="result">{{.}}</pre></section>{{end}}
 {{with prettyJSON $p.ExternalRefs}}<section class="card"><h2>External refs</h2><pre class="result">{{.}}</pre></section>{{end}}
+
+{{if .Data.Predictions}}<section class="card"><h2>Predictions staked on this proposal</h2>
+<div class="tablewrap"><table class="list"><thead><tr><th>Source</th><th class="grow">Statement</th><th>Confidence</th><th>Outcome</th></tr></thead><tbody>
+{{range .Data.Predictions}}<tr>
+<td><span class="chip">{{.Source}}</span></td>
+<td>{{.Statement}}</td>
+<td>{{if .Probability}}{{printf "%.0f%%" (mulf (dereff .Probability) 100)}}{{else}}-{{end}}</td>
+<td>{{if .ResolvedAt.IsZero}}<span class="chip">open · resolves by {{ago .ResolveBy}}</span>{{else if .Outcome}}{{if deref2bool .Outcome}}{{template "stateChip" "held"}}{{else}}{{template "stateChip" "failed"}}{{end}}{{else}}<span class="chip" title="{{.Note}}">unresolvable</span>{{end}}</td>
+</tr>{{end}}
+</tbody></table></div></section>{{end}}
 
 <h2>Decision history</h2>
 <div class="tablewrap"><table class="list"><thead><tr><th>When</th><th>Event</th><th class="grow">Detail</th></tr></thead><tbody>

@@ -5,7 +5,7 @@ input,select,textarea{max-width:100%;box-sizing:border-box}
 /* The bar spans the window; its contents line up with main's content column. */
 nav.top{display:flex;gap:1.2rem;align-items:center;border-bottom:1px solid var(--line);background:var(--card);padding:.6rem max(var(--gutter),calc((100% - var(--page))/2 + var(--gutter)))}
 .nav-links{display:flex;flex:1;align-items:center;gap:1.2rem}
-.nav-toggle{display:none;background:none;border:0;color:var(--fg);cursor:pointer;padding:.2rem;margin-left:auto}
+.nav-toggle{display:none;background:none;border:0;color:var(--fg);cursor:pointer;padding:.2rem}
 .nav-toggle .i{width:22px;height:22px}
 nav.top a{color:var(--muted);text-decoration:none}nav.top a.active,nav.top a:hover{color:var(--fg)}nav.top .brand{font-weight:700;color:var(--fg)}
 /* Fluid page: the content column grows with the window up to --page, so a wide
@@ -61,7 +61,7 @@ table.list td.chips{white-space:normal;max-width:24rem}
 table td{padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
 tr[data-href]{cursor:pointer}tr[data-href]:hover{background:rgba(127,127,127,.08)}
 .state{display:inline-block;padding:0 .45rem;border-radius:999px;font-size:.75rem;border:1px solid var(--line);color:var(--muted)}
-.state-succeeded,.state-merged{color:var(--ok);border-color:var(--ok)}
+.state-succeeded,.state-merged,.state-held{color:var(--ok);border-color:var(--ok)}
 .state-failed,.state-partial,.state-cancelled,.state-conflict{color:var(--bad);border-color:var(--bad)}
 .state-unverified{color:var(--warn);border-color:var(--warn)}
 .state-running,.state-claimed,.state-preparing,.state-verifying,.state-merging{color:var(--run);border-color:var(--run)}
@@ -256,13 +256,15 @@ dialog{max-width:94vw}
 /* --- Responsive: keep everything inside the viewport on phones/tablets --- */
 /* Nav collapses to a hamburger + vertical popout once the links stop fitting. */
 @media (max-width:900px){
-  nav.top{position:relative;gap:.6rem}
+  /* The bar stays pinned so the hamburger can always close the drawer. */
+  nav.top{position:sticky;top:0;gap:.6rem;z-index:80}
   .nav-toggle{display:inline-flex;align-items:center}
-  .nav-links{display:none;position:absolute;top:100%;left:0;right:0;flex-direction:column;align-items:stretch;gap:.1rem;background:var(--card);border-bottom:1px solid var(--line);box-shadow:0 8px 20px rgba(0,0,0,.18);padding:.4rem .8rem;z-index:60}
+  /* The menu is a full-height drawer, not a dropdown sliver. */
+  .nav-links{display:none;position:fixed;top:0;left:0;right:0;bottom:0;flex-direction:column;align-items:stretch;gap:.1rem;background:var(--card);padding:3.6rem .9rem .9rem;overflow-y:auto;z-index:70}
   .nav-links.open{display:flex}
-  .nav-links a{padding:.55rem .3rem;border-radius:6px}
+  .nav-links a{padding:.7rem .4rem;border-radius:6px;font-size:1.02rem}
   .nav-links a:hover{background:rgba(127,127,127,.1)}
-  .chat-toggle{margin-left:0;justify-content:flex-start;margin-top:.3rem}
+  .chat-toggle .i{width:16px;height:16px}
 }
 @media (max-width:760px){
   main{padding:.8rem}

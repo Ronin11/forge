@@ -159,3 +159,11 @@ func (s *Store) Calibration(ctx context.Context, since time.Time) ([]Calibration
 	}
 	return out, nil
 }
+
+// PredictionsForProposal lists the predictions staked on one proposal —
+// the falsifiable commitments its detail page shows.
+func (s *Store) PredictionsForProposal(ctx context.Context, proposalID string) ([]Prediction, error) {
+	return scanPredictions(each(s.query(ctx, `
+		SELECT id, source, source_ref, proposal_id, subject, statement, probability, created_at, resolve_by, resolved_at, outcome, note
+		FROM predictions WHERE proposal_id = ? ORDER BY created_at`, proposalID)))
+}

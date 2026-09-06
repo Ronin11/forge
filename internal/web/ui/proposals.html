@@ -7,7 +7,7 @@
 </div>
 {{template "searchbar" dict "Mode" "client" "Placeholder" "Filter proposals — text, status:proposed, kind:prompt, -status:rejected" "Keys" "status,kind,target,source"}}
 <div class="tablewrap"><table class="list"><thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Target</th><th class="grow">Rationale</th><th>Decided</th><th>Applied ref</th><th></th></tr></thead><tbody>
-{{range .Data.Proposals}}<tr data-proposal="{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
+{{range .Data.Proposals}}<tr data-proposal="{{.ID}}" data-href="/proposals/{{.ID}}" data-sf-item data-f-status="{{.Status}}" data-f-kind="{{.Kind}}" data-f-target="{{.Target}}" data-f-source="{{.Source}}">
 <td><a href="/proposals/{{.ID}}"><code>{{short .ID}}</code></a></td>
 <td>{{template "stateChip" .Status}}</td>
 <td><span class="chip">{{.Kind}}</span></td>

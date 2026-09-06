@@ -3,7 +3,6 @@
 <title>{{.Title}} · Forge</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"></head>
 <body>{{template "iconSprite"}}<nav class="top">
 <a class="brand" href="/"><svg class="i i-brand"><use href="#i-anvil"/></svg> Forge</a>
-<button type="button" class="nav-toggle" data-nav-toggle aria-label="Menu" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
 <div class="nav-links" data-nav-links>
 <a href="/" {{if eq .Active "dashboard.html"}}class="active"{{end}}><svg class="i"><use href="#i-dashboard"/></svg> Dashboard</a>
 <a href="/tasks" {{if or (eq .Active "tasks.html") (eq .Active "task.html") (eq .Active "work.html")}}class="active"{{end}}><svg class="i"><use href="#i-tasks"/></svg> Tasks</a>
@@ -18,8 +17,9 @@
 <a href="/stats" {{if eq .Active "stats.html"}}class="active"{{end}}><svg class="i"><use href="#i-stats"/></svg> Stats</a>
 <a href="/learning" {{if eq .Active "learning.html"}}class="active"{{end}}><svg class="i"><use href="#i-hammer"/></svg> Learning</a>
 <a href="/settings" {{if or (eq .Active "settings.html") (eq .Active "system.html") (eq .Active "settings-plugins.html")}}class="active"{{end}}><svg class="i"><use href="#i-system"/></svg> Settings</a>
-<button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false"><svg class="i"><use href="#i-hammer"/></svg> Ask Forge</button>
 </div>
+<button type="button" class="btn chat-toggle" data-chat-toggle aria-haspopup="dialog" aria-expanded="false"><svg class="i"><use href="#i-hammer"/></svg> Ask Forge</button>
+<button type="button" class="nav-toggle" data-nav-toggle aria-label="Menu" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
 </nav><main>{{end}}
 
 {{define "stateChip"}}<span class="state {{stateClass .}}">{{$ic := stateIcon .}}{{if $ic}}<svg class="i i-pill"><use href="#{{$ic}}"/></svg>{{end}}{{.}}</span>{{end}}

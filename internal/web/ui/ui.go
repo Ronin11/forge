@@ -216,8 +216,21 @@ func NewUI(st *store.Store, log *slog.Logger, clock func() time.Time, promptsFn 
 			}
 			return ""
 		},
-		"mulf":   func(a, b float64) float64 { return a * b },
-		"dereff": func(p *float64) float64 { return *p },
+		// refCommit extracts the commit sha from a fragment applied_ref
+		// ("directive:x@<sha>"), "" for every other ref shape — the proposal
+		// detail page links it to the diff view.
+		"refCommit": func(ref string) string {
+			if i := strings.LastIndex(ref, "@"); i > 0 && (strings.HasPrefix(ref, "directive:") || strings.HasPrefix(ref, "persona:")) {
+				sha := ref[i+1:]
+				if len(sha) >= 7 {
+					return sha
+				}
+			}
+			return ""
+		},
+		"mulf":       func(a, b float64) float64 { return a * b },
+		"dereff":     func(p *float64) float64 { return *p },
+		"deref2bool": func(p *bool) bool { return p != nil && *p },
 		// prettyJSON indents a raw JSON value for the proposal detail page's
 		// before/after and outcome blocks; malformed or empty yields the raw text.
 		"prettyJSON": func(raw json.RawMessage) string {
@@ -1083,6 +1096,11 @@ func (u *UI) proposal(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, r, err)
 		return
 	}
+	predictions, err := u.store.PredictionsForProposal(ctx, id)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
 	history, err := u.store.JournalForEntity(ctx, store.EntityProposal, id)
 	if err != nil {
 		u.fail(w, r, err)
@@ -1092,7 +1110,7 @@ func (u *UI) proposal(w http.ResponseWriter, r *http.Request) {
 	if len(id) > 8 {
 		title = "Proposal " + id[:8]
 	}
-	u.render(w, r, "proposal-detail.html", title, map[string]any{"Proposal": p, "History": history})
+	u.render(w, r, "proposal-detail.html", title, map[string]any{"Proposal": p, "History": history, "Predictions": predictions})
 }
 
 // proposalsData backs proposals.html: the current scope, the proposals in it,
