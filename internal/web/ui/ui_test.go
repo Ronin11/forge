@@ -93,7 +93,7 @@ func TestUIPagesRender(t *testing.T) {
 		"/tasks/" + work.ID:              {"inventory@1", "claimed", "fetch", "1ms"},
 		"/directives":                    {"Directives", "personas/", "directives/", "scripts/", "fragments/", "data-tree-filter", "directives.js"},
 		"/routines":                      {"Routines", "inventory", "data-routine-new", "directive:inventory"},
-		"/workflows":                     {"nightly", "scan → fix", `href="/workflows/new"`, `href="/workflows/nightly/edit"`, `data-action-post="/api/v1/workflows/nightly/run"`, `href="/workflows/nightly/runs"`},
+		"/workflows":                     {"nightly", "scan → fix", `href="/workflows/new"`, `href="/workflows/nightly/edit"`, `data-wf-run="nightly"`, `data-wf-preview="nightly"`, `href="/workflows/nightly/runs"`},
 		"/workflows/new":                 {"New workflow", "data-graph-editor", "data-gv-stage", "graph.js"},
 		"/workflows/nightly/edit":        {"Edit nightly", `data-workflow-name="nightly"`, "data-graph-editor"},
 		"/workflows/nightly/runs":        {"nightly · Runs", "No runs yet"},

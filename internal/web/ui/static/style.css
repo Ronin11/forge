@@ -397,6 +397,9 @@ nav.top a,nav.top .brand,.chat-toggle{display:inline-flex;align-items:center;gap
 .wf-card .wf-title{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;min-width:0}
 .wf-card .wf-notes{margin:.35rem 0 .5rem;max-width:var(--measure)}
 .wf-diagram{margin-top:.5rem;overflow-x:auto}
+.wf-run-form{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem}
+.wf-run-form select,.wf-run-form input{font:inherit;padding:.35rem .5rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.wf-run-form input{flex:1 1 14rem;min-width:0}
 .wf-preview-svg{display:block;width:100%;height:auto;max-height:240px}
 .wf-preview-svg .gv-node{cursor:default}
 .wf-preview-svg line{vector-effect:non-scaling-stroke}

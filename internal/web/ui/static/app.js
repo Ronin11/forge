@@ -1416,3 +1416,61 @@ document.querySelectorAll('[data-rpc]').forEach(function (btn) {
       .catch(function () { /* text fallback stands */ });
   });
 })();
+
+// Running a workflow needs inputs — a bare POST created a run that failed at
+// its first node ("at least one repository is required") with nothing visible
+// on the page. The Run button now opens an inline form (repository +
+// optional objective); success navigates straight to the new run's page.
+(function () {
+  var btns = document.querySelectorAll('[data-wf-run]');
+  if (!btns.length) return;
+  var repos = fetch('/api/v1/repositories')
+    .then(function (r) { return r.ok ? r.json() : []; })
+    .catch(function () { return []; });
+  btns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var open = document.querySelector('.wf-run-form');
+      if (open) { open.remove(); if (open.dataset.wfFor === btn.dataset.wfRun) return; }
+      var name = btn.dataset.wfRun;
+      var form = document.createElement('form');
+      form.className = 'wf-run-form';
+      form.dataset.wfFor = name;
+      form.innerHTML = '<select name="repo" required></select> ' +
+        '<input name="objective" type="text" placeholder="objective (optional)"> ' +
+        '<button type="submit" class="btn primary">Start run</button> ' +
+        '<button type="button" class="btn" data-close>Cancel</button>';
+      (btn.closest('.wf-card') || btn.closest('.page-head') || btn.parentElement).appendChild(form);
+      repos.then(function (list) {
+        var sel = form.querySelector('select');
+        (list || [])
+          .slice()
+          .sort(function (a, b) {
+            var ab = a.name.indexOf('bench-') === 0, bb = b.name.indexOf('bench-') === 0;
+            return ab === bb ? (a.name < b.name ? -1 : 1) : (ab ? 1 : -1);
+          })
+          .forEach(function (r) {
+            var o = document.createElement('option');
+            o.value = r.name; o.textContent = r.name;
+            sel.appendChild(o);
+          });
+      });
+      form.querySelector('[data-close]').addEventListener('click', function () { form.remove(); });
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var body = { repositories: [form.querySelector('select').value] };
+        var obj = form.querySelector('[name=objective]').value.trim();
+        if (obj) body.objective = obj;
+        fetch('/api/v1/workflows/' + encodeURIComponent(name) + '/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then(function (resp) {
+          if (!resp.ok) return resp.json().then(function (e) { throw new Error(e.error || resp.status); });
+          return resp.json();
+        }).then(function (out) {
+          window.location.href = '/workflows/' + encodeURIComponent(name) + '/runs/' + out.run_id;
+        }).catch(function (err) { window.alert('Run failed: ' + err.message); });
+      });
+    });
+  });
+})();

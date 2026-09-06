@@ -4,7 +4,7 @@
 {{range .Data.Workflows}}<div class="card wf-card">
 <div class="wf-head">
 <div class="wf-title"><b>{{.Name}}</b>{{if .Tool}} <span class="chip">tool</span>{{end}} <span class="chip">gen {{.Generation}}</span>{{if .Schedule}} <span class="chip">{{.Schedule}}{{if not .ScheduleEnabled}} (off){{end}}</span>{{end}} <span class="meta wf-est" data-wf-est="{{.Name}}">…</span></div>
-<div class="actions"><a class="btn" href="/workflows/{{.Name}}/edit">Edit</a> <button class="btn" data-action-post="/api/v1/workflows/{{.Name}}/run">Run</button> <a class="btn" href="/workflows/{{.Name}}/runs">Runs</a></div>
+<div class="actions"><a class="btn" href="/workflows/{{.Name}}/edit">Edit</a> <button class="btn" data-wf-run="{{.Name}}">Run</button> <a class="btn" href="/workflows/{{.Name}}/runs">Runs</a></div>
 </div>
 {{if .Description}}<p class="meta wf-notes">{{.Description}}</p>{{end}}
 <div class="wf-diagram" data-wf-preview="{{.Name}}"><span class="meta">{{join .StepNames " → "}}</span></div>
