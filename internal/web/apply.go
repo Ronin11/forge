@@ -656,6 +656,9 @@ func gitTail(out []byte) string {
 // prior generation as an audited forward step. Ref: workflow:<name>@<gen>.
 func (s *Engine) applyWorkflowTarget(ctx context.Context, tx *store.Tx, p *store.Proposal, name string) (string, error) {
 	var after struct {
+		// Name is tolerated (and ignored — the target names the workflow) so
+		// a create-shaped body {name, description, tool, graph} applies.
+		Name            string               `json:"name"`
 		Graph           *store.WorkflowGraph `json:"graph"`
 		Schedule        *string              `json:"schedule"`
 		ScheduleEnabled *bool                `json:"schedule_enabled"`

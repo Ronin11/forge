@@ -51,10 +51,28 @@ func (tx *Tx) CreateProposal(ctx context.Context, p *Proposal) error {
 	// them). This is the create-time guard against advisory-only routine/etc.
 	// proposals (an early retro filed some before its prompt required `after`).
 	switch p.Kind {
-	case model.ProposalRoutine, model.ProposalModePrompt, model.ProposalProcess, model.ProposalTool, model.ProposalCode:
+	case model.ProposalRoutine, model.ProposalModePrompt, model.ProposalProcess, model.ProposalTool, model.ProposalCode, model.ProposalWorkflow:
 		a := strings.TrimSpace(string(p.After))
 		if a == "" || a == "null" || a == "{}" {
 			return fmt.Errorf("proposal of kind %s requires a concrete 'after' (the change to apply)", p.Kind)
+		}
+	}
+	// Shape validation at filing, not at approval: a malformed body used to
+	// be accepted here and dead-end on the applier weeks of evidence later
+	// (543c254d shipped no body at all; the director's escalation 481d1918
+	// bounced off the applier as prose). Reject with a usable error now.
+	switch p.Kind {
+	case model.ProposalWorkflow:
+		var after struct {
+			Graph *WorkflowGraph `json:"graph"`
+		}
+		if err := json.Unmarshal(p.After, &after); err != nil || after.Graph == nil || len(after.Graph.Nodes) == 0 {
+			return fmt.Errorf("workflow proposal 'after' must be a JSON object carrying graph.nodes (the runnable graph), e.g. {\"graph\":{\"nodes\":[...],\"edges\":[...]}}")
+		}
+	case model.ProposalCode:
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(p.After, &m); err != nil {
+			return fmt.Errorf("code proposal 'after' must be a JSON object describing the concrete change, not prose")
 		}
 	}
 	p.ID = model.NewID()
