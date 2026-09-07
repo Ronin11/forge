@@ -1,6 +1,6 @@
 # The Forge constitution
 
-These nine principles are the fixed points of the system. Every design, every line of
+These eleven principles are the fixed points of the system. Every design, every line of
 code, every prompt, and every self-improvement proposal is measured against them.
 
 **No proposal can change this file.** Reflection (`retro` mode) may propose changes to
@@ -52,3 +52,10 @@ these principles.
     with the user's credentials outside the sandbox, and every push is journaled
     with before/after SHAs. `main` in the user's local checkout is never modified
     by Forge; the human pulls.
+
+11. **Deterministic work products are software, not transcripts.** When a task
+    involves repeatable computation — derived data, generation, formatting,
+    validation — the deliverable includes the script that owns it, committed and
+    wired into the repository's declared checks. A hand-maintained derived fact
+    is a defect. Principle 3 governs what Forge records; this governs what
+    agents build.
