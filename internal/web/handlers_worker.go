@@ -755,6 +755,20 @@ func (s *Server) complete(r *http.Request) (int, any, error) {
 				return err
 			}
 		}
+		// A malformed plan is the attempt's failure, not the transport's:
+		// erroring the completion sent the worker into a 500-retry wall
+		// until the lease expired and the root read as infrastructure death
+		// (nightly bench, 2026-09-07: "task 5 blocks on itself"). Land it as
+		// a failed attempt with the validation error on record; a retry
+		// rerolls the plan.
+		if a.Mode == "plan" && req.State == model.Succeeded {
+			if _, perr := planTasks(decodeEnvelope(req.Result)); perr != nil {
+				if err := tx.Journal(ctx, "plan.invalid", store.EntityTarget, a.TargetID, map[string]any{"attempt_id": a.ID, "error": perr.Error()}); err != nil {
+					return err
+				}
+				req.State, req.FailureReason = model.Failed, model.ReasonResultUnparseable
+			}
+		}
 		out, err = tx.Complete(ctx, id, req, s.modeRequiredLevel(a.Mode))
 		if err != nil {
 			return err

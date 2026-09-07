@@ -157,3 +157,29 @@ func TestLineageEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// A malformed plan (self-blocking task) fails the ATTEMPT with the error on
+// record — it must never 500 the completion into a lease-expiry death.
+func TestPlanInvalidFailsAttemptNotTransport(t *testing.T) {
+	h := newVerifyHarness(t, []modes.Mode{planMode()})
+	h.register(testWorkerID)
+	created := submitTask(h, "plan")
+
+	c := h.mustClaim("r1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 5)
+	req := completeRequest(model.Succeeded, h.clock.Now())
+	req.Result = json.RawMessage(`{"schema_version":1,"summary":"planned","tasks":[{"title":"a","prompt":"p","blocked_by":[0]}]}`)
+	done := h.complete(c, req)
+	if done.State != model.Failed {
+		t.Fatalf("complete = %+v, want failed (not a 500)", done)
+	}
+	tg := h.target(created.Targets[0].ID)
+	if tg.State != model.Failed || tg.FailureReason != model.ReasonResultUnparseable {
+		t.Errorf("target = %s/%s, want failed/result_unparseable", tg.State, tg.FailureReason)
+	}
+	entries, err := h.st.JournalForEntity(context.Background(), "target", created.Targets[0].ID)
+	if err != nil || !hasKind(entries, "plan.invalid") {
+		t.Errorf("journal lacks plan.invalid (%v)", err)
+	}
+}
