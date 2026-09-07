@@ -9,6 +9,10 @@ voice-pipeline section that was pasted twice.
 ## Waiting on a human decision
 
 ## P1 — anti-fragility: failures end as questions, not autopsies
+- [ ] (QUEUED as forge task) rate_limited first-class: CLI limit-hit ->
+      FailureReason rate_limited carrying provider resets_at -> sweeper
+      auto-requeues after the declared reset. Closes the silent-stall gap
+      found in the 2026-09-07 stress test.
 (Nate, 2026-09-07, after the crashbyforge night): every terminal failure
 must resolve to (a) auto-fixed/retried, or (b) a crisp actionable human
 question with resume-on-answer — never a state someone must diagnose.
