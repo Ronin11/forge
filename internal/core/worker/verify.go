@@ -31,7 +31,7 @@ type ForgeToml struct {
 	// dependency install, codegen. The integrator's scratch clone needs it
 	// (a worker's worktree usually has the agent's own install); a check
 	// like "npm run build" is meaningless in a clone with no node_modules.
-	Setup    []string            `toml:"setup"`
+	Setup    []string `toml:"setup"`
 	Defaults struct {
 		Autonomy   string `toml:"autonomy"`
 		BaseBranch string `toml:"base_branch"`
