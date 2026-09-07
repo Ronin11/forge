@@ -7,10 +7,6 @@ routines, the directives-repo reflection routine) and deduped the
 voice-pipeline section that was pasted twice.
 
 ## Waiting on a human decision
-- [ ] crashbyforge.com: available at $10.98/yr, Namecheap plugin's purchase
-      gate is armed — registers only on Nate's explicit approve via the
-      pending question. Then: dns_set → GitHub Pages for the ashbyforge site
-      (launch checklist lives in the site repo).
 
 ## P1 — near-term hardening
 - [ ] HTTPS on tailscale serve: needs cert enablement on the tailnet
