@@ -829,7 +829,7 @@ func (s *Server) enforceAskBudget(ctx context.Context, tx *store.Tx, a *store.At
 	if snap.MaxQuestions <= 0 {
 		return nil // no budget declared (follow-up Work snapshots, old rows)
 	}
-	asked, err := tx.QuestionCount(ctx, t.ID)
+	asked, err := tx.QuestionCount(ctx, a.ID)
 	if err != nil {
 		return err
 	}

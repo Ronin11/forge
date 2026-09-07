@@ -62,3 +62,46 @@ func TestAskBudgetExhausted(t *testing.T) {
 		t.Errorf("facts questions_asked = %+v (%v)", facts, err)
 	}
 }
+
+// A retry is a fresh attempt with a fresh ask budget: exhausting the budget
+// fails the Target, but the retried Target's new attempt may ask again — an
+// inherited spent budget doomed any approval-gated task's second life
+// (crashbyforge, 2026-09-07).
+func TestAskBudgetResetsOnRetry(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	var out workCreated
+	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: "needs many answers", Repositories: []string{"equitizr"}}, &out, http.StatusCreated)
+	targetID := out.Targets[0].ID
+
+	ask := func(n int) protocol.CompleteResponse {
+		c := h.mustClaim(fmt.Sprintf("ask-rr%d", n))
+		h.heartbeat(c, model.Preparing, 0)
+		h.heartbeat(c, model.Running, n)
+		req := completeRequest(model.WaitingHuman, h.clock.Now())
+		req.Question = &protocol.QuestionRequest{Text: fmt.Sprintf("q%d?", n)}
+		return h.complete(c, req)
+	}
+	answer := func() {
+		var att attention
+		h.call(http.MethodGet, "/api/v1/attention", nil, &att, http.StatusOK)
+		h.call(http.MethodPost, "/api/v1/questions/"+att.Questions[0].ID+"/answer", answerRequest{Answer: "a"}, nil, http.StatusOK)
+	}
+	for i := 1; i <= 3; i++ {
+		if done := ask(i); done.State != model.WaitingHuman {
+			t.Fatalf("question %d refused: %+v", i, done)
+		}
+		answer()
+	}
+	if done := ask(4); done.State != model.Failed {
+		t.Fatalf("fourth question = %+v, want failed", done)
+	}
+
+	h.call(http.MethodPost, "/api/v1/targets/"+targetID+"/retry", nil, nil, http.StatusOK)
+	if done := ask(5); done.State != model.WaitingHuman {
+		t.Fatalf("post-retry question refused: %+v — the retry must reset the ask budget", done)
+	}
+	if tg := h.target(targetID); tg.State != model.WaitingHuman {
+		t.Errorf("target = %s, want waiting_human", tg.State)
+	}
+}
