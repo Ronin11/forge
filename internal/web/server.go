@@ -635,6 +635,17 @@ func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
 		return fmt.Errorf("serve: no listener")
 	}
 	h := s.Handler()
+	// Connections a client opened but never sent a request on sit in StateNew,
+	// and net/http's Shutdown only counts those as idle once they are five
+	// seconds old (net/http #22682). One of them — a browser preconnect, or a
+	// transport that dialed a spare while a pooled connection won the race —
+	// therefore holds every clean shutdown open for the whole grace and makes
+	// Serve report a deadline error for a shutdown that had nothing to wait
+	// for. Track them and close them ourselves: no request has been read from
+	// one, so closing it drops no work, and Shutdown has already stopped the
+	// listeners by then.
+	var freshMu sync.Mutex
+	fresh := map[net.Conn]struct{}{}
 	var servers []*http.Server
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -652,6 +663,15 @@ func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, transportKey{}, transport)
 			},
+			ConnState: func(c net.Conn, st http.ConnState) {
+				freshMu.Lock()
+				defer freshMu.Unlock()
+				if st == http.StateNew {
+					fresh[c] = struct{}{}
+					return
+				}
+				delete(fresh, c)
+			},
 		}
 		servers = append(servers, srv)
 		wg.Add(1)
@@ -668,6 +688,18 @@ func (s *Server) Serve(ctx context.Context, unix, tcp net.Listener) error {
 	case err = <-errs:
 	}
 	s.closeStreams()
+	freshMu.Lock()
+	idle := make([]net.Conn, 0, len(fresh))
+	for c := range fresh {
+		idle = append(idle, c)
+	}
+	clear(fresh)
+	freshMu.Unlock()
+	for _, c := range idle {
+		if cerr := c.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close unused connection: %w", cerr)
+		}
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
 	for _, srv := range servers {
