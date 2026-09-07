@@ -74,6 +74,13 @@ overwriting it — delete the release first (`gh release delete v0.2.0`).
   not wired.
 - **Playwright.** `just ui-test` skips itself without chromium; CI installs it
   (`npx playwright install --with-deps chromium`) so the browser tests run.
+- **Runner speed.** A GitHub-hosted runner is far slower than the reference
+  laptop, and two recipes are calibrated against it. `just test` runs with
+  `-timeout 40m` because `store` and `web` cross `go test`'s 10-minute default
+  there, and CI sets `BENCH_SCALE=8` so `bench/threshold.txt`'s laptop ceilings
+  are read relative to the runner (BenchmarkInsertEvents: 0.33 ms/op on the
+  laptop, 2.08 ms/op on a runner). The tight benchmark gate stays local; CI
+  catches only a catastrophic regression.
 
 ## Windows
 

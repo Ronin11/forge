@@ -61,6 +61,10 @@ jobs:
 
       - name: just check
         run: just check
+        env:
+          # bench/threshold.txt is calibrated on the reference laptop; a runner
+          # is ~6x slower on SQLite writes. See scripts/bench-check.sh.
+          BENCH_SCALE: 8
 
       - name: Cross-compile release targets
         run: just cross
