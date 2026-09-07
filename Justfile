@@ -15,6 +15,23 @@ submodules:
 build: submodules
     go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o forge ./cmd/forge
 
+# Every release target must compile (CI runs this after the gate). Windows is
+# absent on purpose — the daemon's process model is POSIX; docs/RELEASING.md
+# lists what a port touches.
+cross:
+    for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+        echo "cross: $t"; CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/forge || exit 1; \
+    done
+
+# The release matrix into dist/ (tarballs + checksums), exactly as release.yml
+# builds it. Version defaults to `git describe`.
+dist version="": submodules
+    scripts/release.sh {{version}}
+
+# Notes for a tag from the commits since the previous one.
+release-notes tag:
+    scripts/release-notes.sh {{tag}}
+
 # Run the daemon in the foreground (it spawns the worker) — M1.
 run: build
     ./forge daemon start --foreground

@@ -1,0 +1,74 @@
+# The gate, on GitHub: every push to main and every PR runs `just check` — the
+# same recipe that gates milestones locally — plus a cross-compile of every
+# release target so a portability regression fails here, not on tag day.
+# release.yml calls this workflow before building binaries.
+#
+# Submodules: the base library (go:embed needs it), the site, and the plugins
+# module ride along. Their URLs are ssh, which actions/checkout rewrites to
+# https with its token. GITHUB_TOKEN only reaches THIS repository, so while
+# the submodule repos are private a fine-grained PAT with contents:read on
+# Ronin11/{forge,forge-library,forge-plugins,ashbyforge} must be stored as the
+# SUBMODULE_TOKEN secret. Once they are public the fallback token suffices and
+# the secret can be deleted.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # git describe wants tags for the build version
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            plugins/go.sum
+
+      - uses: extractions/setup-just@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # `just ui-test` skips itself when chromium is absent; install it here
+      # (with the system libraries it needs) so the browser tests actually run.
+      - name: Install Playwright chromium
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: just check
+        run: just check
+
+      - name: Cross-compile release targets
+        run: just cross
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ui/playwright-report
+          if-no-files-found: ignore

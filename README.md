@@ -4,11 +4,25 @@ Forge is a local-first system that runs coding agents against local Git reposito
 
 One Go binary, one SQLite database, one machine, one developer.
 
+## Installing
+
+Prebuilt binaries for Linux (x86_64, arm64) and macOS (Apple silicon, Intel)
+are on [GitHub Releases](https://github.com/Ronin11/forge/releases); the
+[site](https://crashbyforge.com/docs/start.html#install) has a one-line
+installer. Windows runs the Linux build under WSL2.
+
+```bash
+curl -fsSL https://crashbyforge.com/install.sh | sh
+```
+
 ## Building
 
 ```bash
 just build
 ```
+
+Every push runs the gate in CI; pushing a `v*` tag publishes a release — see
+[RELEASING.md](docs/RELEASING.md).
 
 ## Running
 
@@ -44,3 +58,4 @@ Forge's Go packages.
 - [STYLE.md](docs/STYLE.md) — Code standards
 - [VERIFICATION.md](docs/VERIFICATION.md) — Verification levels
 - [SMOKE.md](docs/SMOKE.md) — Smoke tests
+- [RELEASING.md](docs/RELEASING.md) — CI and the release pipeline

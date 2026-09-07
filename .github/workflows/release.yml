@@ -1,0 +1,61 @@
+# Tag → GitHub release. Push a tag like v0.2.0 and this runs the gate (ci.yml),
+# cross-compiles the release matrix with scripts/release.sh, writes notes from
+# the commits since the previous tag (scripts/release-notes.sh), and publishes
+# the tarballs + checksums.txt on the release. A tag with a hyphen (v0.2.0-rc1)
+# is marked a pre-release, so `/releases/latest/download/…` keeps pointing at
+# the last stable one. See docs/RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # release notes need the previous tag
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the release matrix
+        run: scripts/release.sh "$GITHUB_REF_NAME"
+
+      - name: Smoke the linux/amd64 binary
+        run: |
+          tar -xzf dist/forge_linux_amd64.tar.gz -C "$RUNNER_TEMP" forge
+          out="$("$RUNNER_TEMP/forge" version)"
+          echo "$out"
+          [ "$out" = "forge $GITHUB_REF_NAME" ]
+
+      - name: Write release notes
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $pre \
+            --title "Forge $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag \
+            dist/*.tar.gz dist/checksums.txt

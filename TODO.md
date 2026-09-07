@@ -131,6 +131,11 @@ against a dummy corpus, ready for the day the real export lands.
       auth at all.
 
 ## P2 — housekeeping
+- [ ] Windows build: the daemon's process model is POSIX (process groups,
+      flock, exec-in-place restart, SIGUSR1, statfs, umask) and does not
+      compile for windows/amd64; the site says "WSL2" for now. The file
+      list and the shape of a port are in docs/RELEASING.md §Windows; once
+      it compiles, add the target to scripts/release.sh and `just cross`.
 - [ ] All 10 demo repos carry `.forge/config.toml` (checks + `[run]`);
       remember this file **shadows** `forge.toml`, so future edits to checks
       must go there.
