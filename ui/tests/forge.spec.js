@@ -294,14 +294,15 @@ test.describe('human queue', () => {
     await page.goto(`/tasks/${s.waiting.work_id}`);
     const question = page.locator('.card.question');
     await expect(question).toContainText('Which branch should I target?');
-    await expect(question).toContainText('main, dev');
+    // Options render as tappable answer buttons, one per option.
+    await expect(question.locator('button[data-answer-option]')).toHaveText(['main', 'dev']);
 
     await page.goto('/attention');
     const card = page.locator(`[data-question="${s.waiting.question_id}"]`);
     if ((await card.count()) > 0) {
       // First run: the question is open on the human queue; answer it in place.
       await expect(card).toContainText('Which branch should I target?');
-      await expect(card).toContainText('options: main, dev');
+      await expect(card.locator('button[data-answer-option]')).toHaveText(['main', 'dev']);
       // The context actions render: the doc link routes into the UI, and the
       // registered RPC action button fires its method and confirms in place.
       await expect(card.locator('a[href="/kb/ui-test-brief"]')).toBeVisible();

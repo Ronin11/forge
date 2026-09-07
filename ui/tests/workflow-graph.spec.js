@@ -220,8 +220,9 @@ test.describe('workflow metadata', () => {
     const saved = await api('GET', '/api/v1/workflows/graphy');
     expect(saved.description).toBe('routes by lint outcome');
     expect(saved.tool).toBe(true);
-    // The list shows both.
-    await expect(page.locator('td', { hasText: 'graphy' }).first()).toContainText('routes by lint outcome');
-    await expect(page.locator('td', { hasText: 'graphy' }).first().locator('.chip', { hasText: 'tool' })).toBeVisible();
+    // The list shows both — one card per workflow.
+    const card = page.locator('.wf-card', { has: page.locator('.wf-title b', { hasText: 'graphy' }) }).first();
+    await expect(card.locator('.wf-notes')).toContainText('routes by lint outcome');
+    await expect(card.locator('.wf-title .chip', { hasText: 'tool' })).toBeVisible();
   });
 });
