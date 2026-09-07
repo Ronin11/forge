@@ -8,6 +8,23 @@ voice-pipeline section that was pasted twice.
 
 ## Waiting on a human decision
 
+## P1 — anti-fragility: failures end as questions, not autopsies
+(Nate, 2026-09-07, after the crashbyforge night): every terminal failure
+must resolve to (a) auto-fixed/retried, or (b) a crisp actionable human
+question with resume-on-answer — never a state someone must diagnose.
+- [ ] Human-actionable failure causes become resumable questions: map
+      recognizable errors (Namecheap INSUFFICIENTFUNDS, missing plugin
+      config, auth expiry) to an auto-filed question ("top up the balance,
+      answer 'funded' to retry") that parks the target waiting_human and
+      retries on answer — instead of failing terminally.
+- [ ] Plugin self-serve config asks: a plugin missing operator data should
+      let the agent collect NON-SECRET values via forge_ask and write its
+      own config (e.g. namecheap_registrant_set) — addresses/phones may
+      flow through the question channel; only credentials stay config-only.
+- [ ] Retry-after-fix reminder (KB: halted-on-tool-bug note): doctor or
+      reflect flags settled tasks that blamed a tool whose plugin binary or
+      config changed since — suggest task retry.
+
 ## P1 — near-term hardening
 - [ ] HTTPS on tailscale serve: needs cert enablement on the tailnet
       (`tailscale serve --bg --https=443 localhost:7340` once certs are on);
