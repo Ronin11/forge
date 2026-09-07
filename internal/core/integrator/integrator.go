@@ -434,6 +434,16 @@ func (i *Integrator) merge(ctx context.Context, log *slog.Logger, t store.Target
 	if err != nil {
 		return mergeOutcome{reason: "resolve rebased head: " + err.Error()}
 	}
+	// A branch with no commits beyond the integration head has nothing to
+	// land: fast-forwarding it and reporting "merged" is a lie the operator
+	// discovers later (five agents wrote files, never committed, and the
+	// pipeline read merged — 2026-09-07). Uncommitted work does not exist.
+	if after == before {
+		return mergeOutcome{outcome: outcomeChecksFail, checkName: "nothing_to_merge",
+			reason:    "the task branch carries no commits beyond the integration head — uncommitted work does not exist",
+			checkTail: "the attempt claimed changes but committed nothing; its worktree may hold uncommitted files (cleanup=retained)",
+			before:    before, after: after}
+	}
 	touched, err := i.touchedPaths(ctx, scratch, before, after)
 	if err != nil {
 		log.WarnContext(ctx, "touched paths after rebase", "error", err)

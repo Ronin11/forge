@@ -380,3 +380,18 @@ func must[T any](v T, err error) T {
 	}
 	return v
 }
+
+// A task branch with no commits beyond the integration head must not read
+// "merged": five uncommitted-work attempts fast-forwarded to success before
+// this (2026-09-07). It lands unverified with the evidence in the check tail.
+func TestEmptyBranchIsNotMerged(t *testing.T) {
+	h := newHarness(t, "integration_branch = \"master\"\n")
+	head := gitRun(t, h.checkout, "rev-parse", "HEAD")
+	gitRun(t, h.checkout, "branch", "forge/empty", head)
+	id, _ := h.queue("forge/empty", strings.TrimSpace(head))
+	h.integ.Tick(context.Background())
+	tg := h.target(id)
+	if tg.State != model.Unverified || tg.UnverifiedReason != "check_failed:nothing_to_merge" {
+		t.Fatalf("target = %s (%s), want unverified/check_failed:nothing_to_merge", tg.State, tg.UnverifiedReason)
+	}
+}
