@@ -8,6 +8,7 @@ import (
 
 	"forge/internal/core/model"
 	"forge/internal/core/protocol"
+	"forge/internal/core/store"
 )
 
 // The ask budget (routines.max_questions, default 3): three questions pass,
@@ -103,5 +104,71 @@ func TestAskBudgetResetsOnRetry(t *testing.T) {
 	}
 	if tg := h.target(targetID); tg.State != model.WaitingHuman {
 		t.Errorf("target = %s, want waiting_human", tg.State)
+	}
+}
+
+// The completion's needs_input restates the question forge_ask already
+// created mid-turn; the twin sent the operator a duplicate approval message
+// on every checkpoint (2026-09-07). Same attempt + same text dedupes: an
+// open prior is the gate (one row, one message), and an answered prior
+// skips the wait entirely — the human beat the checkpoint.
+func TestCheckpointQuestionDeduplicated(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	var out workCreated
+	h.call(http.MethodPost, "/api/v1/tasks", workRequest{Prompt: "approval flow", Repositories: []string{"equitizr"}}, &out, http.StatusCreated)
+
+	c := h.mustClaim("dedupe-r1")
+	h.heartbeat(c, model.Preparing, 0)
+	h.heartbeat(c, model.Running, 2)
+	// forge_ask mid-turn.
+	err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		a, err := tx.GetAttempt(context.Background(), c.AttemptID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.CreateQuestion(context.Background(), a, protocol.QuestionRequest{Text: "Approve the thing?"})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint exit restates it.
+	req := completeRequest(model.WaitingHuman, h.clock.Now())
+	req.Question = &protocol.QuestionRequest{Text: "Approve the thing?"}
+	if done := h.complete(c, req); done.State != model.WaitingHuman {
+		t.Fatalf("complete = %+v", done)
+	}
+	qs, err := h.st.QuestionsForWork(context.Background(), out.Work.ID)
+	if err != nil || len(qs) != 1 {
+		t.Fatalf("questions = %d (%v), want 1 — no twin", len(qs), err)
+	}
+
+	// Answer, resume, ask again mid-turn, human answers BEFORE the exit:
+	// the checkpoint completion must skip the wait and requeue.
+	h.call(http.MethodPost, "/api/v1/questions/"+qs[0].ID+"/answer", answerRequest{Answer: "yes"}, nil, http.StatusOK)
+	c2 := h.mustClaim("dedupe-r2")
+	h.heartbeat(c2, model.Preparing, 0)
+	h.heartbeat(c2, model.Running, 4)
+	err = h.st.Write(context.Background(), func(tx *store.Tx) error {
+		a, err := tx.GetAttempt(context.Background(), c2.AttemptID)
+		if err != nil {
+			return err
+		}
+		q, err := tx.CreateQuestion(context.Background(), a, protocol.QuestionRequest{Text: "Approve round two?"})
+		if err != nil {
+			return err
+		}
+		_, err = tx.AnswerQuestion(context.Background(), q.ID, "yes", "human")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2 := completeRequest(model.WaitingHuman, h.clock.Now())
+	req2.Question = &protocol.QuestionRequest{Text: "Approve round two?"}
+	h.complete(c2, req2)
+	if tg := h.target(out.Targets[0].ID); tg.State != model.Pending {
+		t.Fatalf("target = %s, want pending (answered prior skips the wait)", tg.State)
 	}
 }

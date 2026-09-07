@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -41,6 +42,30 @@ func (q Question) AutoModel() string {
 		return ""
 	}
 	return strings.TrimPrefix(q.AnsweredBy, "auto:")
+}
+
+// PriorQuestion returns the attempt's most recent question with exactly this
+// text (nil if none) — the completion path's dedupe input.
+func (tx *Tx) PriorQuestion(ctx context.Context, attemptID, text string) (*Question, error) {
+	var q Question
+	var answeredAt, answeredBy, answer sql.NullString
+	err := tx.QueryRow(ctx, `SELECT id, target_id, work_id, answered_at, answered_by, answer FROM questions
+		WHERE attempt_id = ? AND text = ? ORDER BY asked_at DESC LIMIT 1`, attemptID, text).
+		Scan(&q.ID, &q.TargetID, &q.WorkID, &answeredAt, &answeredBy, &answer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("prior question of %s: %w", attemptID, err)
+	}
+	q.AttemptID, q.Text = attemptID, text
+	if answeredAt.Valid {
+		if q.AnsweredAt, err = parseTime(answeredAt); err != nil {
+			return nil, err
+		}
+	}
+	q.AnsweredBy, q.Answer = answeredBy.String, answer.String
+	return &q, nil
 }
 
 // CreateQuestion records a question for an attempt.

@@ -281,13 +281,31 @@ func (tx *Tx) Complete(ctx context.Context, attemptID string, req protocol.Compl
 		if req.Question == nil {
 			return nil, fmt.Errorf("waiting_human without a question")
 		}
-		if _, err := tx.CreateQuestion(ctx, a, *req.Question); err != nil {
+		// The agent usually asked this exact question mid-turn (forge_ask)
+		// before exiting at the checkpoint; the completion's needs_input is
+		// then a restatement, not a new ask. Minting a twin sent the
+		// operator a duplicate approval message on every checkpoint (three
+		// in a row, 2026-09-07). Same attempt + same text: an open prior IS
+		// the gate; an answered prior means the human beat the checkpoint —
+		// skip the wait and requeue so the answer is picked up immediately.
+		prior, err := tx.PriorQuestion(ctx, a.ID, req.Question.Text)
+		if err != nil {
+			return nil, err
+		}
+		if prior == nil {
+			if _, err := tx.CreateQuestion(ctx, a, *req.Question); err != nil {
+				return nil, err
+			}
+		} else if err := tx.Journal(ctx, "question.deduplicated", EntityQuestion, prior.ID, map[string]any{"attempt_id": a.ID, "answered": !prior.AnsweredAt.IsZero()}); err != nil {
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `UPDATE attempts SET finished_at = NULL WHERE id = ?`, attemptID); err != nil {
 			return nil, fmt.Errorf("keep attempt %s open: %w", attemptID, err)
 		}
 		t, err = tx.Transition(ctx, t.ID, model.WaitingHuman, TransitionOptions{Actor: actor})
+		if err == nil && prior != nil && !prior.AnsweredAt.IsZero() {
+			t, err = tx.Transition(ctx, t.ID, model.Pending, TransitionOptions{Actor: actor})
+		}
 	case model.Failed, model.Cancelled:
 		if req.State == model.Failed && req.FailureReason == model.ReasonBudgetExceeded && req.Git.Commits > 0 {
 			// A max-turns cliff that left commits is unfinished-but-real
