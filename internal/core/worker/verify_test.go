@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -199,5 +201,47 @@ func TestGlobMatch(t *testing.T) {
 		if got := globMatch(tc.glob, tc.path); got != tc.want {
 			t.Errorf("globMatch(%q, %q) = %v, want %v", tc.glob, tc.path, got, tc.want)
 		}
+	}
+}
+
+// forge.toml is the base and .forge/config.toml overlays per field — the old
+// shadow rule made a run-only config.toml silently blind the merge gate.
+func TestReadForgeTomlMerges(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.toml"), []byte(
+		"integration_branch = \"main\"\nsetup = [\"npm\", \"ci\"]\n\n[checks]\nbuild = [\"npm\", \"run\", \"build\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".forge", "config.toml"), []byte(
+		"[run]\nstart = [\"npm\", \"run\", \"dev\"]\nport_env = \"PORT\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ft, err := ReadForgeToml(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ft.IntegrationBranch != "main" || len(ft.Checks["build"]) == 0 || len(ft.Setup) == 0 {
+		t.Errorf("base fields lost under overlay: %+v", ft)
+	}
+	if len(ft.Run.Start) == 0 || ft.Run.PortEnv != "PORT" {
+		t.Errorf("overlay run table not applied: %+v", ft.Run)
+	}
+	// Overlay checks replace base checks when declared.
+	if err := os.WriteFile(filepath.Join(dir, ".forge", "config.toml"), []byte(
+		"[checks]\ntest = [\"npm\", \"test\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ft, err = ReadForgeToml(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ft.Checks["test"]) == 0 || len(ft.Checks["build"]) != 0 {
+		t.Errorf("overlay checks should replace base checks: %+v", ft.Checks)
+	}
+	if ft.IntegrationBranch != "main" {
+		t.Errorf("unset overlay field must fall through: %+v", ft)
 	}
 }

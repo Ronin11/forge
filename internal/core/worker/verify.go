@@ -65,23 +65,70 @@ type RepoRun struct {
 	Env           map[string]string `toml:"env"`           // extra environment for the app
 }
 
-// ReadForgeToml reads the repository's Forge configuration: .forge/config.toml
-// wins over a top-level forge.toml (the per-repo .forge/ directory is the
-// repo-scoped home — config here, mode prompt overlays in .forge/modes/, notes
-// in .forge/notes/); absent is (nil, nil).
+// ReadForgeToml reads the repository's Forge configuration: forge.toml is the
+// base and .forge/config.toml overlays it PER FIELD (a set field in the
+// overlay wins; an absent one falls through). The files used to shadow —
+// whichever existed first won wholesale — which made "add a [run] table to
+// .forge/config.toml" a trap on any repo whose checks lived in forge.toml:
+// the new file silently blinded the merge gate. Absent both is (nil, nil).
 func ReadForgeToml(worktree string) (*ForgeToml, error) {
-	for _, rel := range []string{filepath.Join(".forge", "config.toml"), "forge.toml"} {
+	read := func(rel string) (*ForgeToml, error) {
 		path := filepath.Join(worktree, rel)
 		var ft ForgeToml
 		if _, err := toml.DecodeFile(path, &ft); err != nil {
 			if os.IsNotExist(err) {
-				continue
+				return nil, nil
 			}
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		return &ft, nil
 	}
-	return nil, nil
+	base, err := read("forge.toml")
+	if err != nil {
+		return nil, err
+	}
+	overlay, err := read(filepath.Join(".forge", "config.toml"))
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case overlay == nil:
+		return base, nil
+	case base == nil:
+		return overlay, nil
+	}
+	merged := *base
+	if len(overlay.Checks) > 0 {
+		merged.Checks = overlay.Checks
+	}
+	if len(overlay.Setup) > 0 {
+		merged.Setup = overlay.Setup
+	}
+	if overlay.Defaults.Autonomy != "" {
+		merged.Defaults.Autonomy = overlay.Defaults.Autonomy
+	}
+	if overlay.Defaults.BaseBranch != "" {
+		merged.Defaults.BaseBranch = overlay.Defaults.BaseBranch
+	}
+	if overlay.IntegrationBranch != "" {
+		merged.IntegrationBranch = overlay.IntegrationBranch
+	}
+	if overlay.TaskBranches != "" {
+		merged.TaskBranches = overlay.TaskBranches
+	}
+	if len(overlay.Modes) > 0 {
+		merged.Modes = overlay.Modes
+	}
+	if overlay.Verify.UI {
+		merged.Verify.UI = true
+	}
+	if len(overlay.CheckTimeouts) > 0 {
+		merged.CheckTimeouts = overlay.CheckTimeouts
+	}
+	if len(overlay.Run.Build) > 0 || len(overlay.Run.Start) > 0 {
+		merged.Run = overlay.Run
+	}
+	return &merged, nil
 }
 
 // CheckResult is one declared check as Forge ran it (VERIFICATION.md L1).
