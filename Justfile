@@ -51,8 +51,10 @@ errcheck:
     go run github.com/kisielk/errcheck@{{errcheck_version}} -blank -asserts -exclude .errcheck_excludes ./...
 
 # Race detector always on; tests use real git repos and real child processes.
+# -timeout 40m: store and web run 4 and 10 minutes here and past go test's
+# default 10-minute per-package limit on a GitHub runner.
 test:
-    go test -race -count=1 ./...
+    go test -race -count=1 -timeout 40m ./...
 
 # End-to-end integration tests: a real daemon, the worker child it spawns, and
 # the store, driven over the HTTP-on-unix-socket API with the fake-claude
