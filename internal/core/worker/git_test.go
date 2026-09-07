@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -621,5 +622,47 @@ func TestLimitBuffer(t *testing.T) {
 	}
 	if b.buf.String() != "abcd" || !b.truncated {
 		t.Errorf("limitBuffer = %q truncated=%v", b.buf.String(), b.truncated)
+	}
+}
+
+// A linked worktree gets its submodules populated from the shared modules
+// store — offline — so embedded submodule content builds in worktrees.
+func TestWorktreeAddInitsSubmodules(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	run := func(cwd string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(sub, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(sub, "data.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(sub, "add", "-A")
+	run(sub, "commit", "-q", "-m", "sub")
+	super := filepath.Join(dir, "super")
+	if err := os.MkdirAll(super, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(super, "init", "-q", "-b", "main")
+	run(super, "-c", "protocol.file.allow=always", "submodule", "add", sub, "lib")
+	run(super, "commit", "-q", "-m", "super")
+	head := run(super, "rev-parse", "HEAD")
+
+	g := Git{Env: []string{"GIT_ALLOW_PROTOCOL=file", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=protocol.file.allow", "GIT_CONFIG_VALUE_0=always"}}
+	wt := filepath.Join(dir, "wt")
+	if err := g.WorktreeAdd(context.Background(), &Repository{Name: "super", Path: super}, wt, "forge/test", head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "lib", "data.txt")); err != nil {
+		t.Fatalf("submodule content missing in worktree: %v", err)
 	}
 }

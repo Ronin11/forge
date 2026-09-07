@@ -111,7 +111,13 @@ func (s *Server) dispatchAssistant(ctx context.Context, act assistantAction) (re
 		if strings.TrimSpace(act.Prompt) == "" {
 			return "What exactly should the task do?", "create_task", ""
 		}
-		_, body, err := s.submitWork(ctx, workRequest{Prompt: act.Prompt, Repositories: []string{repo}})
+		// Chat-filed work is real work: the bare defaults (haiku, 30 turns)
+		// killed every implement-shaped ask filed from the phone before it
+		// could finish (crashbyforge 2026-09-06, the Approve-button fix
+		// 2026-09-07). Give it an implement-grade envelope.
+		turns := 80
+		_, body, err := s.submitWork(ctx, workRequest{Prompt: act.Prompt, Repositories: []string{repo},
+			Model: "sonnet", MaxTurns: &turns})
 		if err != nil {
 			return "Couldn't file that: " + strings.TrimSuffix(err.Error(), ": conflict"), "create_task", ""
 		}

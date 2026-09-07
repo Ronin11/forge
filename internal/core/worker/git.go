@@ -452,6 +452,17 @@ func (g Git) WorktreeAdd(ctx context.Context, r *Repository, path, branch, commi
 	if _, err := g.Run(ctx, r.Path, "worktree", "add", "-b", branch, path, commit); err != nil {
 		return fail(err)
 	}
+	// Populate submodules from the shared .git/modules store — offline for
+	// modules the checkout already cloned. A linked worktree leaves them
+	// empty, which broke forge's own build in every worktree (the starter
+	// embed: "contains no embeddable files"). Best effort: repos without
+	// submodules no-op instantly, and a failure here must not kill the
+	// attempt — the agent sees the same tree it would have seen before.
+	if out, err := g.Run(ctx, path, "submodule", "update", "--init"); err != nil {
+		// No logger on Git; surface through the error-free channel git
+		// offers — the worktree is still valid without submodules.
+		_ = out
+	}
 	return nil
 }
 
