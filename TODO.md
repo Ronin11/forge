@@ -21,6 +21,12 @@ question with resume-on-answer — never a state someone must diagnose.
       let the agent collect NON-SECRET values via forge_ask and write its
       own config (e.g. namecheap_registrant_set) — addresses/phones may
       flow through the question channel; only credentials stay config-only.
+- [ ] Phantom merges: five agents wrote files, never committed, and the
+      chain read "merged" — L0 tolerates dirt (by design), L1 passed, and
+      the integrator fast-forwarded zero commits (before==after) as a
+      success. Fix at the integrator: before==after is "nothing to merge"
+      → unverified, not merged. Also worth a nudge in run-mode prompts:
+      uncommitted work does not exist.
 - [ ] Retry-after-fix reminder (KB: halted-on-tool-bug note): doctor or
       reflect flags settled tasks that blamed a tool whose plugin binary or
       config changed since — suggest task retry.
