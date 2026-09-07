@@ -43,6 +43,14 @@ question with resume-on-answer — never a state someone must diagnose.
       recipients list with sender-scoped sessions; add family numbers when
       ready. The cloud/family plan is docs/FAMILY.md.
 
+## P2 — headroom trial (low priority, operator-acked 2026-09-07)
+- [ ] github.com/headroomlabs-ai/headroom — local context compression
+      (20-60% input reduction, proxy mode, KV-cache aligned). Gate 1: does
+      the claude CLI's subscription auth tolerate a proxy base URL? (ten-
+      minute manual test; decides everything). Gate 2 if yes: benched A/B —
+      same spec, proxy on/off, compare score + tokens-per-point + cost.
+      Exclude verification-evidence paths from compression on principle.
+
 ## P2 — learning-system follow-ups
 - [ ] Spend thermostat: "err on the side of better at the beginning, then
       taper" — once the prediction ledger has enough resolved history, tie
