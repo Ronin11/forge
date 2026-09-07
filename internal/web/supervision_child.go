@@ -23,6 +23,22 @@ import (
 // enforce_kill gate). The verdict is returned for the caller to act on.
 func (s *Engine) recordDecision(ctx context.Context, ev supervisionEvidence, ask *budgetAsk, reason string) (budgetVerdict, error) {
 	v := s.adjudicate(ctx, ev, ask)
+	// At a cliff the executor dies at its cap regardless of the verdict, so
+	// "continue" is only actionable as turns: an attempt with evident
+	// progress gets a bounded extension instead of dying mid-flight with the
+	// supervisor's approval on record (three continue verdicts preceded a
+	// budget_cliff death on 2026-09-06). Flailing attempts still get kill.
+	if reason == "cliff" && ask == nil && v.Action == store.BudgetContinue && ev.GrewSinceLast &&
+		(s.supervisionCfg.MaxAutoExtensions <= 0 || ev.PriorGrants < s.supervisionCfg.MaxAutoExtensions) {
+		slot := s.supervisionCfg.SoftTurns
+		if slot <= 0 {
+			slot = 20
+		}
+		if amt := boundedGrant(s.supervisionCfg, ev, &budgetAsk{Dimension: store.BudgetTurns, Amount: float64(slot)}); amt > 0 {
+			v.Action, v.Dimension, v.GrantedAmount, v.DecidedBy = store.BudgetExtend, store.BudgetTurns, amt, v.DecidedBy
+			v.Rationale = "cliff with evident progress — continue converted to extension: " + v.Rationale
+		}
+	}
 
 	dimension, amount := store.BudgetTurns, 0.0
 	if ask != nil {

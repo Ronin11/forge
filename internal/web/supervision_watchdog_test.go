@@ -139,3 +139,71 @@ func TestSweepSilenceEscalatesShadow(t *testing.T) {
 		t.Error("shadow mode must not cancel on a silence escalation")
 	}
 }
+
+// A cliff-triggered adjudication that comes back "continue" on a progressing
+// attempt converts to a bounded turns extension: at the cap, continue is only
+// actionable as turns — three continue verdicts preceded a budget_cliff death
+// on 2026-09-06, with the supervisor's approval of the progress on record.
+func TestSweepCliffContinueBecomesExtension(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutine("inventory")
+	h.run("inventory")
+	c := h.runningAttempt("req-1")
+
+	h.srv.modelCall = func(_ context.Context, _, _, _ string) (string, error) {
+		return `{"action":"continue","rationale":"healthy, finishing up"}`, nil
+	}
+	h.srv.supervisionCfg = config.SupervisionConfig{HardCeilingTurns: 20, SoftTurns: 10, SilenceMinutes: 60, SpinWindowTurns: 25, MaxAutoExtensions: 3}
+	h.seedUsage(c.AttemptID, 7, h.clock.Now()) // 7 >= 20-15: inside the cliff margin
+	// One file-mutating span: ArtifactGrowth > 0 with no ledger → GrewSinceLast.
+	attrs, _ := json.Marshal(map[string]any{})
+	err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		_, err := tx.InsertEvents(context.Background(), c.AttemptID, protocol.SourceWorker,
+			[]protocol.Event{{Seq: 100, Time: h.clock.Now(), Kind: protocol.KindSpanStart, SpanID: "s1", Name: "Write", Message: "Write", Attrs: attrs}})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h.srv.sweepSupervision(context.Background())
+
+	k := h.journalKinds(c.AttemptID)
+	if k["attempt.budget_granted"] != 1 {
+		t.Fatalf("journals = %+v, want one attempt.budget_granted", k)
+	}
+	if k["attempt.would_reap"] != 0 || k["attempt.reaped"] != 0 {
+		t.Errorf("no reap expected: %+v", k)
+	}
+	ledger, err := h.st.BudgetLedger(context.Background(), c.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := ledger[len(ledger)-1]
+	if last.Decision != store.BudgetExtend || last.GrantedAmount <= 0 || last.GrantedAmount > 10 {
+		t.Errorf("ledger = %+v, want extend with 0 < amount <= soft slot", last)
+	}
+}
+
+// The same cliff with a flailing attempt (no artifact growth) stays a
+// continue/kill call — no free extension for spinning.
+func TestSweepCliffNoGrowthNoExtension(t *testing.T) {
+	h := newHarness(t, transportUnix)
+	h.register(testWorkerID)
+	h.createRoutine("inventory")
+	h.run("inventory")
+	c := h.runningAttempt("req-1")
+
+	h.srv.modelCall = func(_ context.Context, _, _, _ string) (string, error) {
+		return `{"action":"continue","rationale":"unsure"}`, nil
+	}
+	h.srv.supervisionCfg = config.SupervisionConfig{HardCeilingTurns: 20, SoftTurns: 10, SilenceMinutes: 60, SpinWindowTurns: 25, MaxAutoExtensions: 3}
+	h.seedUsage(c.AttemptID, 7, h.clock.Now())
+
+	h.srv.sweepSupervision(context.Background())
+
+	if k := h.journalKinds(c.AttemptID); k["attempt.budget_granted"] != 0 {
+		t.Errorf("journals = %+v, want no grant without growth", k)
+	}
+}
