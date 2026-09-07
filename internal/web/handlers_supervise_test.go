@@ -148,7 +148,10 @@ func TestSuperviseLifecycle(t *testing.T) {
 	if kinds := h.workJournalKinds(cont.ID); kinds["supervise.assessment"] != 1 || kinds["plan.batch_created"] != 1 {
 		t.Fatalf("round-1 journal = %v", kinds)
 	}
-	open, _ = h.st.OpenWork(context.Background())
+	open, err = h.st.OpenWork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var round2 *store.Work
 	var cont2 *store.Work
 	for _, w := range open {
@@ -192,7 +195,10 @@ func TestSuperviseLifecycle(t *testing.T) {
 	if kinds := h.workJournalKinds(cont2.ID); kinds["supervise.done"] != 1 {
 		t.Fatalf("round-2 journal = %v", kinds)
 	}
-	open, _ = h.st.OpenWork(context.Background())
+	open, err = h.st.OpenWork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range open {
 		if w.RootWorkID == created.Work.ID {
 			t.Fatalf("subtree still open: %+v", w)
@@ -255,7 +261,10 @@ func TestSuperviseRoundCap(t *testing.T) {
 	if kinds := h.workJournalKinds(cs.WorkID); kinds["supervise.rounds_exhausted"] != 1 {
 		t.Fatalf("journal = %v", kinds)
 	}
-	open, _ := h.st.OpenWork(context.Background())
+	open, err := h.st.OpenWork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range open {
 		if w.RootWorkID == created.Work.ID {
 			t.Fatalf("work spawned past the cap: %+v", w)
@@ -288,7 +297,10 @@ func TestNestedPlanHoldsOuterContinuation(t *testing.T) {
 	if kinds := h.workJournalKinds(cn.WorkID); kinds["plan.nesting_capped"] != 1 {
 		t.Fatalf("nested journal = %v", kinds)
 	}
-	open, _ := h.st.OpenWork(context.Background())
+	open, err := h.st.OpenWork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var outerCont, nestedCont *store.Work
 	leaves := 0
 	for _, w := range open {
@@ -364,7 +376,10 @@ func TestBatchSettlementCascade(t *testing.T) {
 	h.complete(ca, completeRequest(model.Failed, h.clock.Now()))
 
 	// b was cancelled in the same transaction; the continuation is next.
-	open, _ := h.st.OpenWork(context.Background())
+	open, err := h.st.OpenWork(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range open {
 		if w.RootWorkID == created.Work.ID && w.Cause == model.CausePlanTask {
 			t.Fatalf("batch member still open: %+v", w)

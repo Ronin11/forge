@@ -14,7 +14,10 @@ import (
 func TestLiveExperimentLifecycle(t *testing.T) {
 	st := openTest(t)
 	ctx := context.Background()
-	arms, _ := json.Marshal([]ExperimentArm{{Label: "control", Content: "c"}, {Label: "v1", Content: "v"}})
+	arms, err := json.Marshal([]ExperimentArm{{Label: "control", Content: "c"}, {Label: "v1", Content: "v"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(24 * time.Hour)
 
 	pe := Experiment{Subject: "directive:flow-plan", Goal: "g", TargetModel: "haiku", OptimizerModel: "haiku", Kind: ExperimentKindLive}
@@ -23,7 +26,7 @@ func TestLiveExperimentLifecycle(t *testing.T) {
 	}
 
 	// A second open live row on the same subject conflicts; another subject is fine.
-	err := st.Write(ctx, func(tx *Tx) error {
+	err = st.Write(ctx, func(tx *Tx) error {
 		return tx.InsertExperiment(ctx, &Experiment{Subject: "directive:flow-plan", Goal: "g", TargetModel: "haiku", OptimizerModel: "haiku", Kind: ExperimentKindLive})
 	})
 	if !errors.Is(err, ErrConflict) {

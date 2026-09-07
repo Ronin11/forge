@@ -79,7 +79,11 @@ func TestBenchRoutineFires(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.srv.fireDueRoutines(context.Background(), h.clock.Now())
-	if open, _ = h.st.OpenWorkCountForSubmitter(context.Background(), "bench:quick"); open != 1 {
+	open, err = h.st.OpenWorkCountForSubmitter(context.Background(), "bench:quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
 		t.Fatalf("open after skip = %d, want still 1", open)
 	}
 
@@ -91,7 +95,11 @@ func TestBenchRoutineFires(t *testing.T) {
 	// The direct endpoint (a different minute so the repo name is fresh).
 	h.clock.Advance(2 * time.Minute)
 	h.call(http.MethodPost, "/api/v1/bench/quick/run", nil, nil, http.StatusCreated)
-	if open, _ = h.st.OpenWorkCountForSubmitter(context.Background(), "bench:quick"); open != 2 {
+	open, err = h.st.OpenWorkCountForSubmitter(context.Background(), "bench:quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open != 2 {
 		t.Fatalf("open after manual run = %d, want 2", open)
 	}
 }

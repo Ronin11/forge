@@ -174,7 +174,11 @@ func (s *Engine) assignLiveExperiment(rt *store.Routine, opts materializeOpts, b
 	if base == nil {
 		return nil, "", ""
 	}
-	_, directiveName, _ := store.ParseTarget(rt.Target)
+	_, directiveName, err := store.ParseTarget(rt.Target)
+	if err != nil {
+		// A malformed target names no directive; the persona path below still applies.
+		s.log.Warn("live experiment: routine target unparseable", "routine", rt.Name, "target", rt.Target, "error", err)
+	}
 	persona := opts.Persona
 	if persona == "" && directiveName != "" {
 		if d := base.Directive(directiveName); d != nil {
@@ -485,7 +489,7 @@ func (s *Engine) closeLive(ctx context.Context, row *store.Experiment, status st
 // other library edit. promote="propose" files the proposal and stops.
 func (s *Engine) promoteLiveWinner(ctx context.Context, row *store.Experiment, name, content string, results *liveResults) error {
 	_, _, _, promote := s.experimentsLimits()
-	rationale, _ := json.Marshal(results.Arms)
+	rationale := mustJSON(results.Arms)
 	var pid string
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
 		p := &store.Proposal{

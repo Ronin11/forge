@@ -623,9 +623,8 @@ func (s *Server) abortExperiment(r *http.Request) (int, any, error) {
 	ctx := r.Context()
 	id := r.PathValue("id")
 	res := &liveResults{Decision: string(store.ExperimentAborted), Reason: "operator abort"}
-	b, _ := json.Marshal(res)
 	err := s.store.Write(ctx, func(tx *store.Tx) error {
-		return tx.DecideLiveExperiment(ctx, id, store.ExperimentAborted, b, "")
+		return tx.DecideLiveExperiment(ctx, id, store.ExperimentAborted, mustJSONRaw(res), "")
 	})
 	if err != nil {
 		return 0, nil, err

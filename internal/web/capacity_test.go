@@ -121,7 +121,10 @@ func TestOpportunisticLearning(t *testing.T) {
 	// open-work skip is not what stops it).
 	h.call(http.MethodDelete, "/api/v1/work/"+fired.ID, nil, nil, http.StatusOK)
 	h.srv.opportunisticLearning(context.Background())
-	rows, _ = h.st.ListWork(context.Background(), 10)
+	rows, err = h.st.ListWork(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := 0
 	for _, w := range rows {
 		if w.SubmittedBy == "learning:opportunist" {
@@ -134,7 +137,10 @@ func TestOpportunisticLearning(t *testing.T) {
 	// Past the cooldown it fires again.
 	h.clock.Advance(opportunistCooldown + time.Minute)
 	h.srv.opportunisticLearning(context.Background())
-	rows, _ = h.st.ListWork(context.Background(), 10)
+	rows, err = h.st.ListWork(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n = 0
 	for _, w := range rows {
 		if w.SubmittedBy == "learning:opportunist" {
@@ -185,8 +191,8 @@ func TestExperimentTool(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if got == nil {
-		e, _ := h.st.GetExperiment(context.Background(), resp.Output.ID)
-		t.Fatalf("experiment never went live: %+v", e)
+		e, err := h.st.GetExperiment(context.Background(), resp.Output.ID)
+		t.Fatalf("experiment never went live: %+v (%v)", e, err)
 	}
 	var arms []store.ExperimentArm
 	if err := json.Unmarshal(got.Arms, &arms); err != nil || len(arms) != 2 || arms[1].Title != "cautious" {

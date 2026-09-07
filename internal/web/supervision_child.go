@@ -35,7 +35,7 @@ func (s *Engine) recordDecision(ctx context.Context, ev supervisionEvidence, ask
 			slot = 20
 		}
 		if amt := boundedGrant(s.supervisionCfg, ev, &budgetAsk{Dimension: store.BudgetTurns, Amount: float64(slot)}); amt > 0 {
-			v.Action, v.Dimension, v.GrantedAmount, v.DecidedBy = store.BudgetExtend, store.BudgetTurns, amt, v.DecidedBy
+			v.Action, v.Dimension, v.GrantedAmount = store.BudgetExtend, store.BudgetTurns, amt
 			v.Rationale = "cliff with evident progress — continue converted to extension: " + v.Rationale
 		}
 	}
@@ -162,7 +162,11 @@ func (s *Engine) adjudicateModelEscalation(ctx context.Context, ev supervisionEv
 		return store.BudgetOutcome{}, err
 	}
 	targetID := att.TargetID
-	if has, _ := s.hasTargetJournal(ctx, targetID, "escalation.granted"); has {
+	has, err := s.hasTargetJournal(ctx, targetID, "escalation.granted")
+	if err != nil {
+		return store.BudgetOutcome{}, err
+	}
+	if has {
 		return store.BudgetOutcome{Decision: "denied", Message: "escalation was already granted for this target; finish your handoff and stop"}, nil
 	}
 	ask := &budgetAsk{Dimension: "model", Amount: 1, Reason: "MODEL ESCALATION REQUEST (grant=extend, refuse=continue): " + reason}

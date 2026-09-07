@@ -71,11 +71,14 @@ func (s *Server) cadenceStep(ctx context.Context, rootID string) {
 	if trialID == "" || !trialDone {
 		return
 	}
-	_, _ = s.cadenceOnce(ctx, rootID, "cadence.review_fired", func(tx *store.Tx) (string, error) {
+	if _, err := s.cadenceOnce(ctx, rootID, "cadence.review_fired", func(tx *store.Tx) (string, error) {
 		if _, err := tx.GetRoutine(ctx, "product-review"); err != nil {
 			return "", err
 		}
-		assessments, _ := s.store.RecentAssessments(ctx, s.now().Add(-7*24*time.Hour), 6)
+		assessments, err := s.store.RecentAssessments(ctx, s.now().Add(-7*24*time.Hour), 6)
+		if err != nil {
+			return "", err
+		}
 		var b strings.Builder
 		b.WriteString("USER TRIAL REPORT for " + root.Title + ":\n" + summary + "\n\nRecent supervise assessments:\n")
 		for _, a := range assessments {
@@ -95,7 +98,9 @@ func (s *Server) cadenceStep(ctx context.Context, rootID string) {
 			return "", err
 		}
 		return created.Work.ID, nil
-	})
+	}); err != nil {
+		return // cadenceOnce logged the skip; the marker is absent so the next tick retries
+	}
 }
 
 // cadenceOnce runs the step unless its marker exists; fired=true when this

@@ -133,7 +133,11 @@ func (s *Server) reposAheadOfOrigin(ctx context.Context, repos []store.Repositor
 		if err != nil {
 			continue // no upstream configured: nothing to compare
 		}
-		n, _ := strconv.Atoi(strings.TrimSpace(string(countB)))
+		n, err := strconv.Atoi(strings.TrimSpace(string(countB)))
+		if err != nil {
+			s.log.WarnContext(ctx, "doctor: unparseable ahead count", "repo", r.Name, "output", strings.TrimSpace(string(countB)), "error", err)
+			continue
+		}
 		out = append(out, doctor.RepoAhead{Name: r.Name, Branch: strings.TrimSpace(string(branchB)), Ahead: n})
 	}
 	return out

@@ -302,7 +302,9 @@ func (s *Store) RepoWorkAges(ctx context.Context, repo string) (open int, newest
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("repo work ages: %w", err)
 	}
-	newest, _ = parseTime(newestStr)
+	if newest, err = parseTime(newestStr); err != nil {
+		return 0, time.Time{}, fmt.Errorf("repo work ages: %w", err)
+	}
 	return open, newest, nil
 }
 

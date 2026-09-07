@@ -288,9 +288,12 @@ func (tx *Tx) Complete(ctx context.Context, attemptID string, req protocol.Compl
 		// in a row, 2026-09-07). Same attempt + same text: an open prior IS
 		// the gate; an answered prior means the human beat the checkpoint —
 		// skip the wait and requeue so the answer is picked up immediately.
-		prior, err := tx.PriorQuestion(ctx, a.ID, req.Question.Text)
-		if err != nil {
-			return nil, err
+		// perr, not err: `prior, err :=` would shadow the function's err for
+		// the rest of this case, and the Transition failures below would be
+		// silently dropped by the check after the switch (staticcheck SA4006).
+		prior, perr := tx.PriorQuestion(ctx, a.ID, req.Question.Text)
+		if perr != nil {
+			return nil, perr
 		}
 		if prior == nil {
 			if _, err := tx.CreateQuestion(ctx, a, *req.Question); err != nil {

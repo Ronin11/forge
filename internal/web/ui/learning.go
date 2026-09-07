@@ -454,7 +454,12 @@ func (u *UI) experimentPage(w http.ResponseWriter, r *http.Request) {
 		Label string `json:"label"`
 		Title string `json:"title"`
 	}
-	_ = json.Unmarshal(e.Arms, &defs)
+	if len(e.Arms) > 0 {
+		if err := json.Unmarshal(e.Arms, &defs); err != nil {
+			u.fail(w, r, err)
+			return
+		}
+	}
 	var res struct {
 		Winner     string  `json:"winner"`
 		Reason     string  `json:"reason"`
@@ -466,7 +471,12 @@ func (u *UI) experimentPage(w http.ResponseWriter, r *http.Request) {
 			PSuperiority *float64 `json:"p_superiority"`
 		} `json:"arms"`
 	}
-	_ = json.Unmarshal(e.Results, &res)
+	if len(e.Results) > 0 {
+		if err := json.Unmarshal(e.Results, &res); err != nil {
+			u.fail(w, r, err)
+			return
+		}
+	}
 	psup := map[string]*float64{}
 	for _, a := range res.Arms {
 		psup[a.Label] = a.PSuperiority

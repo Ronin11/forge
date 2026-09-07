@@ -109,8 +109,13 @@ func TestLearningPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
@@ -138,7 +143,10 @@ func TestLearningPage(t *testing.T) {
 	// reflect attempt first, plus a verify child with a rebuttal).
 	var runID string
 	{
-		works, _ := st.ListWork(ctx, 10)
+		works, err := st.ListWork(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, w := range works {
 			if w.RoutineName == "reflect-library" {
 				runID = w.ID
@@ -172,8 +180,13 @@ func TestLearningPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{"tightened the widget prompt", "widgets fail 80%", "forge_stats row", "refuted", "actual rate 40%", "raw task", "/learning/commits/" + sha} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("learning-run page missing %q", want)
@@ -187,15 +200,25 @@ func TestLearningPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	expID := strings.Split(strings.Split(string(body), `data-href="/experiments/`)[1], `"`)[0]
 	resp, err = http.Get(srv.URL + "/experiments/" + expID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{"Experiment", "quote numbers exactly", "directive:reflect-library"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("experiment page missing %q", want)
@@ -208,8 +231,13 @@ func TestLearningPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	// html/template renders "+" as "&#43;" in this context.
 	for _, want := range []string{"plan-project: add efficiency", "d-add", "d-file", "directives/plan-project.md", "&#43;body"} {
 		if !strings.Contains(string(body), want) {
@@ -220,15 +248,22 @@ func TestLearningPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(body), "unpushed branch") {
 		t.Errorf("missing-commit page: %s", body)
 	}
 	if resp, err = http.Get(srv.URL + "/learning/commits/nothex!"); err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("malformed sha = %d", resp.StatusCode)
 	}

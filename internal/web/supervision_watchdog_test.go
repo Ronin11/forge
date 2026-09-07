@@ -157,8 +157,11 @@ func TestSweepCliffContinueBecomesExtension(t *testing.T) {
 	h.srv.supervisionCfg = config.SupervisionConfig{HardCeilingTurns: 20, SoftTurns: 10, SilenceMinutes: 60, SpinWindowTurns: 25, MaxAutoExtensions: 3}
 	h.seedUsage(c.AttemptID, 7, h.clock.Now()) // 7 >= 20-15: inside the cliff margin
 	// One file-mutating span: ArtifactGrowth > 0 with no ledger → GrewSinceLast.
-	attrs, _ := json.Marshal(map[string]any{})
-	err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+	attrs, err := json.Marshal(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.st.Write(context.Background(), func(tx *store.Tx) error {
 		_, err := tx.InsertEvents(context.Background(), c.AttemptID, protocol.SourceWorker,
 			[]protocol.Event{{Seq: 100, Time: h.clock.Now(), Kind: protocol.KindSpanStart, SpanID: "s1", Name: "Write", Message: "Write", Attrs: attrs}})
 		return err

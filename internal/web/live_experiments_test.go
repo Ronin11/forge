@@ -34,10 +34,13 @@ func openLiveExperimentBy(t *testing.T, st *store.Store, lib *directives.Library
 	if err != nil {
 		t.Fatal(err)
 	}
-	arms, _ := json.Marshal([]store.ExperimentArm{
+	arms, err := json.Marshal([]store.ExperimentArm{
 		{Label: "control", Content: string(raw), Hash: frag.Hash},
 		{Label: "v1", Title: "variant", Content: variantBody, Hash: hashContent(variantBody)},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	pe := store.Experiment{Subject: subject, Goal: "test", TargetModel: "haiku", OptimizerModel: "haiku", Kind: store.ExperimentKindLive}
 	if err := st.Write(context.Background(), func(tx *store.Tx) error {
 		if err := tx.InsertExperiment(context.Background(), &pe); err != nil {
@@ -203,7 +206,10 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 	if err := json.Unmarshal(got.Results, &res); err != nil || res.Winner != "v1" || res.ProposalID == "" || !strings.HasPrefix(res.AppliedRef, "directive:subj@") {
 		t.Fatalf("results = %s (%v)", got.Results, err)
 	}
-	raw, _ := os.ReadFile(filepath.Join(libDir, "directives", "subj.md"))
+	raw, err := os.ReadFile(filepath.Join(libDir, "directives", "subj.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(raw), "winning body") {
 		t.Fatalf("winner not applied: %s", raw)
 	}
@@ -234,12 +240,20 @@ func TestLiveExperimentDecideAndPromote(t *testing.T) {
 	// Resolution: the proposal is applied but the horizon has not passed —
 	// nothing resolves; jump the clock past it and it resolves as held.
 	f.srv.resolvePredictions(actx())
-	if preds, _ = f.st.RecentPredictions(actx(), 5); !preds[0].ResolvedAt.IsZero() {
+	preds, err = f.st.RecentPredictions(actx(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preds[0].ResolvedAt.IsZero() {
 		t.Fatalf("resolved early: %+v", preds[0])
 	}
 	f.clock.Advance(8 * 24 * time.Hour)
 	f.srv.resolvePredictions(actx())
-	if preds, _ = f.st.RecentPredictions(actx(), 5); preds[0].ResolvedAt.IsZero() || preds[0].Outcome == nil || !*preds[0].Outcome {
+	preds, err = f.st.RecentPredictions(actx(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preds[0].ResolvedAt.IsZero() || preds[0].Outcome == nil || !*preds[0].Outcome {
 		t.Fatalf("not resolved held: %+v", preds[0])
 	}
 
@@ -446,7 +460,10 @@ func TestABRevertIgnoresVariantFacts(t *testing.T) {
 			t.Fatal("variant facts caused a revert")
 		}
 	}
-	raw, _ := os.ReadFile(filepath.Join(libDir, "directives", "triage-y.md"))
+	raw, err := os.ReadFile(filepath.Join(libDir, "directives", "triage-y.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(raw), "edited prompt") {
 		t.Fatalf("edit reverted on disk: %s", raw)
 	}

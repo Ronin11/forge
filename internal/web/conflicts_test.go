@@ -225,7 +225,10 @@ func TestAssessmentCadence(t *testing.T) {
 	}
 	h.srv.assessmentCadence(context.Background())
 	h.srv.assessmentCadence(context.Background())
-	tree, _ = h.st.WorkTree(context.Background(), created.Work.ID)
+	tree, err = h.st.WorkTree(context.Background(), created.Work.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	reviews := 0
 	for _, w := range tree {
 		if w.SubmittedBy == "cadence:review" {
@@ -267,7 +270,11 @@ func TestModelEscalationFlow(t *testing.T) {
 		t.Fatalf("escalation = %+v, %v", out, err)
 	}
 	// Second ask on the same target is refused.
-	if out, _ = h.srv.AdjudicateBudgetRequest(context.Background(), c.AttemptID, "model", 1, "again"); out.Decision != "denied" {
+	out, err = h.srv.AdjudicateBudgetRequest(context.Background(), c.AttemptID, "model", 1, "again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "denied" {
 		t.Fatalf("double grant = %+v", out)
 	}
 
