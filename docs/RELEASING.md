@@ -54,6 +54,67 @@ and remotely, re-tag, push. `gh release create --verify-tag` refuses a release
 whose tag is missing, and a re-run on an existing release fails rather than
 overwriting it — delete the release first (`gh release delete v0.2.0`).
 
+## The runner
+
+Both workflows run on a **self-hosted runner: the development laptop**, labelled
+`self-hosted, linux, x64`. Forge commits to its own main branch dozens of times
+a day and the gate takes 20-25 minutes, which would exhaust a private
+repository's monthly Actions allowance in a few days. The laptop is also the
+machine `bench/threshold.txt` was calibrated on, so the benchmark gate means
+something there.
+
+Two consequences worth keeping in mind:
+
+- **Fork pull requests must never reach it.** A self-hosted runner executes
+  workflow code as the logged-in user, so `ci.yml` guards its job with a
+  same-repository condition. Do not remove that guard, especially once the
+  repository is public.
+- **The runner shares the machine with the daemon.** `just check` competes with
+  the running `forge.service` and `forge-worker.service` for cores, which is why
+  CI sets `BENCH_SCALE=2`. The browser tests bind 127.0.0.1:7346, deliberately
+  not the daemon's 7340, so a CI run and a live daemon coexist. Two simultaneous
+  `just ui-test` runs would still collide on 7346.
+
+Installing it (once):
+
+```bash
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -fsSL -o runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v<VERSION>/actions-runner-linux-x64-<VERSION>.tar.gz"
+tar xzf runner.tar.gz && rm runner.tar.gz
+./config.sh --url https://github.com/Ronin11/forge \
+  --token "$(gh api -X POST repos/Ronin11/forge/actions/runners/registration-token --jq .token)" \
+  --name "$(hostname)" --labels self-hosted,linux,x64 --work _work --unattended --replace
+```
+
+Then run it as a user service, matching how the daemon itself is supervised
+(`~/.config/systemd/user/github-runner.service`):
+
+```ini
+[Unit]
+Description=GitHub Actions runner (Ronin11/forge)
+After=network-online.target
+
+[Service]
+ExecStart=/home/ronin/actions-runner/run.sh
+WorkingDirectory=/home/ronin/actions-runner
+Restart=always
+RestartSec=5
+Environment=PATH=/home/ronin/.local/bin:/home/ronin/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now github-runner
+gh api repos/Ronin11/forge/actions/runners --jq '.runners[] | "\(.name) \(.status)"'
+```
+
+To fall back to GitHub-hosted runners, change `runs-on` in both workflows to
+`ubuntu-latest` and set `BENCH_SCALE: 8` in `ci.yml`.
+
 ## Prerequisites and secrets
 
 - **Submodules.** CI checks out all three (base library for `go:embed`, site,

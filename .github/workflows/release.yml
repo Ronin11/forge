@@ -20,7 +20,7 @@ jobs:
 
   publish:
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 20
     permissions:
       contents: write   # create the release and upload its assets

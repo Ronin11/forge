@@ -21,13 +21,23 @@ on:
 permissions:
   contents: read
 
+# Forge commits to main on its own all day (29 commits in the 24 hours before
+# this pipeline existed), and the gate takes 20-25 minutes on a runner. Cancel
+# a superseded run rather than gating every intermediate commit: the newest
+# commit's run covers the ones it was stacked on. Tag runs are never cancelled.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Self-hosted: the reference laptop. It is 6x faster than a GitHub runner on
+    # the SQLite benchmark and costs no Actions minutes, which matters because
+    # Forge commits to main on its own all day. The guard below is the price of
+    # that: a self-hosted runner executes the workflow as this user, so a pull
+    # request from a fork must never reach it. Same-repo events only.
+    runs-on: [self-hosted, linux, x64]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -51,20 +61,24 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      # `just ui-test` skips itself when chromium is absent; install it here
-      # (with the system libraries it needs) so the browser tests actually run.
+      # `just ui-test` skips itself when chromium is absent; install it here so
+      # the browser tests actually run. No --with-deps: that installs system
+      # packages with sudo, which a self-hosted runner should not be doing, and
+      # the desktop this runs on already has the libraries.
       - name: Install Playwright chromium
         working-directory: ui
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
       - name: just check
         run: just check
         env:
-          # bench/threshold.txt is calibrated on the reference laptop; a runner
-          # is ~6x slower on SQLite writes. See scripts/bench-check.sh.
-          BENCH_SCALE: 8
+          # This IS the reference laptop bench/threshold.txt was calibrated on,
+          # so the ceilings apply almost as written. 2x absorbs the daemon and
+          # the worker competing for the same cores mid-run. A GitHub-hosted
+          # runner needs 8. See scripts/bench-check.sh.
+          BENCH_SCALE: 2
 
       - name: Cross-compile release targets
         run: just cross
