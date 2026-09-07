@@ -76,8 +76,10 @@ func TestComputeUsagePastReset(t *testing.T) {
 		sample(now.Add(-2*time.Hour), "seven_day", 0.5, now.Add(-time.Hour)),
 	}}
 	w := ComputeUsage(now, budgetCfg, samples, nil, nil, nil).SevenDay
-	// Past the reset: hours_to_reset floors at 0, f clamps to 1.
-	if w.TargetRate != 0 || !near(w.FractionElapsed, 1) || !near(w.ForecastAtReset, 0.5) {
+	// Past the reset the sample's window is gone: utilization restarts at 0
+	// (carrying it deadlocked the hard stop, 2026-09-07), resets_at rolls
+	// forward a window, and the fraction restarts near the window's start.
+	if w.Utilization != 0 || !w.ResetsAt.After(now) || w.FractionElapsed > 0.05 || !near(w.ForecastAtReset, 0) {
 		t.Errorf("past reset: %+v", w)
 	}
 }
@@ -367,5 +369,34 @@ func TestBudgetResets(t *testing.T) {
 	}
 	if got := BudgetResets(budgetCfg, prev, []store.RateLimitSample{sample(now, "seven_day", 0.1, resetsB)}); len(got) != 0 {
 		t.Errorf("first-ever sample journals nothing: %+v", got)
+	}
+}
+
+// A sample whose resets_at has passed must not govern the window: the
+// hard-stop deadlock of 2026-09-07 — saturation deferred every class, samples
+// only come from attempts, so a 99% reading held the gate shut hours past the
+// reset. Past the recorded reset, utilization restarts at zero and the reset
+// rolls forward.
+func TestStaleSampleCannotHoldHardStop(t *testing.T) {
+	now := time.Date(2026, 9, 7, 18, 0, 0, 0, time.UTC)
+	cfg := config.BudgetConfig{FiveHourTarget: 0.85, SevenDayTarget: 0.85, FiveHourHardStop: 0.97, SevenDayHardStop: 0.97}
+	samples := map[string][]store.RateLimitSample{
+		"five_hour": {{Window: "five_hour", Utilization: 0.99, Time: now.Add(-3 * time.Hour), ResetsAt: now.Add(-2 * time.Hour)}},
+	}
+	u := ComputeUsage(now, cfg, samples, nil, nil, nil)
+	if u.FiveHour.Utilization != 0 {
+		t.Fatalf("utilization past reset = %v, want 0", u.FiveHour.Utilization)
+	}
+	if !u.FiveHour.ResetsAt.After(now) {
+		t.Fatalf("resets_at not rolled forward: %v", u.FiveHour.ResetsAt)
+	}
+	if admit, reason := Decide(now, u, model.ClassBacklog, cfg); !admit {
+		t.Fatalf("backlog still deferred (%s) after the window reset", reason)
+	}
+	// A FRESH saturated sample still hard-stops.
+	samples["five_hour"] = []store.RateLimitSample{{Window: "five_hour", Utilization: 0.99, Time: now.Add(-time.Minute), ResetsAt: now.Add(2 * time.Hour)}}
+	u = ComputeUsage(now, cfg, samples, nil, nil, nil)
+	if admit, reason := Decide(now, u, model.ClassInteractive, cfg); admit || reason != "hard_stop:five_hour" {
+		t.Fatalf("fresh saturation must still stop: admit=%v reason=%s", admit, reason)
 	}
 }

@@ -109,22 +109,37 @@ func windowUsage(now time.Time, name string, length time.Duration, target float6
 	}
 	last := samples[len(samples)-1]
 	w.Utilization, w.ResetsAt, w.SampledAt = last.Utilization, last.ResetsAt, last.Time
-	if !last.ResetsAt.IsZero() {
+	// A sample whose own resets_at has passed describes a window that no
+	// longer exists — its utilization must not govern this one. This is not
+	// theoretical: samples only come from running attempts, so once a
+	// hard stop deferred every class, no fresh sample could ever be taken
+	// and a 99% reading held the gate shut 3h+ past the reset (2026-09-07).
+	// Past the recorded reset, utilization restarts at zero (the next real
+	// sample corrects it within one attempt — and if the account is truly
+	// still saturated, that attempt's sample re-engages the stop) and the
+	// reset time rolls forward by whole window lengths.
+	if !last.ResetsAt.IsZero() && !now.Before(w.ResetsAt) {
+		w.Utilization = 0
+		for !now.Before(w.ResetsAt) {
+			w.ResetsAt = w.ResetsAt.Add(length)
+		}
+	}
+	if !w.ResetsAt.IsZero() {
 		// f = (now − window_start) / L_w with window_start = resets_at − L_w,
 		// clamped to [0, 1]. Wall-clock arithmetic by necessity (§10.1).
-		f := now.Sub(last.ResetsAt.Add(-length)).Hours() / length.Hours()
+		f := now.Sub(w.ResetsAt.Add(-length)).Hours() / length.Hours()
 		w.FractionElapsed = min(max(f, 0), 1)
 	}
 	w.Rate1h = rate(now, samples, 1)
 	w.Rate6h = rate(now, samples, 6)
 	w.Rate24h = rate(now, samples, 24)
-	hrs := max(last.ResetsAt.Sub(now).Hours(), 0)
+	hrs := max(w.ResetsAt.Sub(now).Hours(), 0)
 	if hrs > 0 {
 		// target_rate_w = max(0, target_w − u_w) / hours_to_reset.
-		w.TargetRate = max(target-last.Utilization, 0) / hrs
+		w.TargetRate = max(target-w.Utilization, 0) / hrs
 	}
 	w.Delta = w.Rate1h - w.TargetRate
-	w.ForecastAtReset = last.Utilization + w.Rate1h*hrs + queued
+	w.ForecastAtReset = w.Utilization + w.Rate1h*hrs + queued
 	w.LastResetUnspent = lastResetUnspent(samples, target)
 	return w
 }
