@@ -69,6 +69,13 @@ Two consequences worth keeping in mind:
   workflow code as the logged-in user, so `ci.yml` guards its job with a
   same-repository condition. Do not remove that guard, especially once the
   repository is public.
+- **The runner shares HOME with the operator.** A self-hosted runner runs as
+  the logged-in user, so `~/.forge` — the live database, socket, and knowledge
+  base — is visible to every workflow step. `ci.yml` sets `FORGE_HOME` to a
+  scratch directory for the whole gate so CI neither grades operator data nor
+  reaches the running daemon. `just kb-check` is therefore a no-op in CI, by
+  design: the knowledge base is operator state, not repository state, and it is
+  still gated locally where it means something.
 - **The runner shares the machine with the daemon.** `just check` competes with
   the running `forge.service` and `forge-worker.service` for cores, which is why
   CI sets `BENCH_SCALE=2`. The browser tests bind 127.0.0.1:7346, deliberately

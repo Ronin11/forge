@@ -74,6 +74,14 @@ jobs:
       - name: just check
         run: just check
         env:
+          # A self-hosted runner shares HOME with the operator, so the gate would
+          # otherwise read and reach the LIVE ~/.forge: `kb check` graded Nate's
+          # real knowledge base (and failed on a dangling link that has nothing
+          # to do with the commit), and any forge command would find the running
+          # daemon's socket. Point FORGE_HOME at scratch so CI is hermetic. The
+          # tests and the eval harness already isolate themselves; this covers
+          # the recipes that shell out to ./forge directly.
+          FORGE_HOME: ${{ runner.temp }}/forge-home
           # This IS the reference laptop bench/threshold.txt was calibrated on,
           # so the ceilings apply almost as written. 2x absorbs the daemon and
           # the worker competing for the same cores mid-run. A GitHub-hosted
