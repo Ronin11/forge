@@ -149,6 +149,55 @@ against a dummy corpus, ready for the day the real export lands.
       real specs. Settle it with bench rather than argument — spec-for-spec
       against claude-code, which is the one comparison that would justify it.
 
+## P2 — graceful redeploy: quiesce, don't kill (2026-09-08)
+
+Operator direction: "if we can track all open processes, do the redeploy, and
+resync them, then as soon as they hit the next step, they are updated."
+
+Today's behaviour is self-defeating: both user units set `KillMode=process`, so
+systemd stops ONLY the main process and every attempt child (bwrap → claude)
+survives the restart — and then the new worker's reconcileOne finds each orphan
+by its manifest, confirms ProcessAlive, and KILLS it ("killing orphaned agent
+process", reconcile.go:87). We pay to keep them alive across the restart and
+then throw the work away.
+
+The constraint that rules out the most ambitious version: forge is not IN a
+running attempt. The claude subprocess contains no forge code — forge launches
+it, parses its stream-json stdout, supervises, verifies. So "updating" an
+in-flight attempt means nothing; what has to survive a redeploy is forge's
+RELATIONSHIP to it, which is a pipe.
+
+- [ ] A. Quiesce (do this one). Worker stops claiming new attempts, finishes
+      what it holds, exits; systemd restarts on the new binary; the next
+      attempt runs new code. That is exactly "updated at the next step", where
+      the step is the attempt boundary. Pieces already exist: `slots` is a
+      buffered channel (runner.go:204) so in-flight is len(w.slots), and
+      registration already reports Active/MaxConcurrent. Needed: a quiescing
+      state the daemon honours in the claim path, and a `forge daemon redeploy`
+      that sequences build → quiesce → restart → verify. Must be bounded — an
+      attempt may run to hard_ceiling_turns=200.
+- [ ] C. Resume as the quiesce deadline's fallback, not a separate feature.
+      CapResume + SessionID + `--resume` already exist and are proven; if the
+      drain does not finish in N minutes, kill and resume after restart rather
+      than waiting forever. Costs the current turn's tokens, needs almost no
+      new machinery.
+- [ ] B. Reattach — the real "resync", and possible only because stdout is
+      ALREADY mirrored to a file (supervisor.go:176, newOutputMirror, "raw
+      stdout+stderr mirror"). A restarted worker could reopen the mirror at a
+      recorded byte offset and resume parsing instead of killing the orphan.
+      Costs: a parse offset in the manifest, an adopt path in reconcileOne
+      beside the kill path, and adopted attempts lose stdin — so no steering
+      unless that is brokered through a file or socket too. Do this ONLY if we
+      find ourselves redeploying mid-attempt often; it is the version that
+      sounds best and costs the most.
+- [ ] The daemon half is much easier than the worker half and could ship
+      first: the worker's API client already retries, so a daemon restart is
+      largely transparent. The worker is where process state lives.
+- [ ] While here: the `KillMode=process` + kill-on-reconcile combination should
+      be made coherent whichever way this lands. Either children are meant to
+      survive (then adopt them) or they are not (then let systemd reap the
+      cgroup and drop the orphan-killing path).
+
 ## P2 — model system: roles, not another scale (2026-09-08)
 
 Operator direction: "I think it needs to be a tad more flexible... I want to be
