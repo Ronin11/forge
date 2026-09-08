@@ -149,6 +149,76 @@ against a dummy corpus, ready for the day the real export lands.
       real specs. Settle it with bench rather than argument — spec-for-spec
       against claude-code, which is the one comparison that would justify it.
 
+## P2 — model system: roles, not another scale (2026-09-08)
+
+Operator direction: "I think it needs to be a tad more flexible... I want to be
+able to use this local box a bit more... a better model do the prompting and
+supervision"; and "maybe we should have like a power level? Then a recommended
+level that can help with routing... lets say I think [OpenAI] do a better job of
+planning and optimizing, so I want to put my thumb on the scale for those jobs."
+
+The symptom: six separate one-off ways to name a model for a job, no shared
+concept — `[attention] model`, `[supervision] decider_model`, experiments'
+`target_model`/`optimizer_model`, routines' `model`/`models[]`, workflow nodes'
+`DirectiveNodeConfig.Model`, and `assistantModel = "haiku"` which is a Go
+CONSTANT in handlers_assistant.go and not configurable at all. Every new role
+costs another config field and another plumb-through.
+
+- [ ] A model-role table is the revamp: named roles (decider, assistant,
+      optimizer, drafter, planner, judge) → alias, in one place, with
+      routine- and node-level override. Kills assistantModel-as-constant,
+      makes "move this job to the local box" a config line instead of a code
+      change, and gives the Resources page something coherent to render.
+- [ ] Do NOT add a "power level" scale. `ModelConfig.Class` (frontier | mid |
+      small | local) already IS one, and already drives the
+      `modes/<mode>.<class>.md` prompt overlays. Two real problems to fix
+      instead of adding a third concept:
+      a. `local` is a LOCATION, not a capability — qwen3-coder:30b is ~small
+         in capability and local in deployment, and `runner.billing = "local"`
+         already encodes the location. Conflating them means a better local
+         model (or a cheap hosted small one) cannot be described. Split the
+         axes; keep class capability-only.
+      b. `model.BudgetClass` (ClassNormal/ClassBacklog) is a DIFFERENT Class
+         already in the tree. A third Class-ish noun would be a mess — name
+         carefully.
+- [ ] The thumb on the scale is per-ROLE, not a level, and this is the crux: a
+      scalar can say "gpt5 ≈ opus" but can never say "better at planning, worse
+      at coding," which is exactly the preference wanted. Model it as
+      `[roles.planner] prefer = ["gpt5","opus"]` (ordered bias) plus
+      `min_class = "frontier"` (the "recommended level", as a hard floor).
+      Floor filters; preference biases.
+- [ ] `prefer` must be a PRIOR, not an override. Routing already has a Wilson
+      lower bound on verified success per routine/model, a cost vector and an
+      explore probability; a hard override switches off the part that makes
+      forge forge. A new subscription has zero samples, so min_samples would
+      otherwise leave the router exploring blind — a prior is the right way to
+      seed it, and accumulated evidence must be able to overturn it. Operator
+      intuition seeds; measurement decides.
+- [ ] Explicit composition stays in workflows, not routing.
+      `DirectiveNodeConfig.Model` already overrides per node, so "plan on the
+      strong model, build on the cheap one, review on the strong one" is
+      expressible TODAY. The ladder is an escalation mechanism; composition is
+      a different idea and should not get a second mechanism inside routing.
+- [ ] Prerequisite before trusting any weak model with a role: there are ZERO
+      class overlays in ~/.forge/modes (fifteen base modes, no
+      `<mode>.local.md`). Every prompt there was written for frontier models —
+      move roles onto a 30B without overlays and you measure the prompts, not
+      the model. Cheapest high-leverage win in this section.
+
+### If an OpenAI subscription enters the picture
+- [ ] The two purchases are NOT interchangeable and need deciding before
+      buying. A ChatGPT *subscription* is not an API credential and will not
+      work with the openai-compatible runner modelCall uses; its path is
+      `codex exec`, i.e. a SECOND CLI executor — command template plus one new
+      output parser — which would also get real attempts, not just decisions.
+      codex-cli 0.153.4 is already installed here and exposes `--json`,
+      `--output-schema <FILE>`, `-m/--model` and a bypass-approvals flag, which
+      map onto TemplateExecutor and the json_schema capability almost exactly;
+      the open questions are allowed_tools, resume and steer parity. An OpenAI
+      *API key* is the opposite trade: works with modelCall today for zero new
+      code, but bills per token (billing = "api", real dollars, unlike the
+      subscription's notional cost).
+
 ## P2 — resource telemetry: a long-running signal, page on top (2026-09-08)
 
 Operator direction: "we want a long running signal here, especially as we play
