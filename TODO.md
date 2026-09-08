@@ -141,6 +141,74 @@ against a dummy corpus, ready for the day the real export lands.
       benchmark judges) and measure with the cost columns we already have.
       Prerequisite reading: whether the SDK can run against subscription
       auth at all.
+      UPDATE 2026-09-08: a local runner now exists (dev.home ollama, billing
+      "local"), which changes the economic caveat — a local executor pays no
+      per-token price at all, so "control matters more than price" stops being
+      a trade. It does not change the build cost: capability parity is still
+      the whole job, and qwen3-coder's tool-calling works but is unproven on
+      real specs. Settle it with bench rather than argument — spec-for-spec
+      against claude-code, which is the one comparison that would justify it.
+
+## P2 — resource telemetry: a long-running signal, page on top (2026-09-08)
+
+Operator direction: "we want a long running signal here, especially as we play
+with different models and load times... second to minute level data. Dashboard
+is a nice front of it."
+
+The motivating failure: dev.home's ollama ran 100% on CPU for three weeks
+because its driver (470/CUDA 11.4) was too old for ollama's cuda_v12 runners,
+and nothing noticed — it was found by hand while wiring the local runner. A
+page alone would not have caught it either; something has to be sampling.
+
+- [ ] Time series, not current state. `runners` (name, kind, billing, capacity,
+      endpoint, health, last_probe_at) holds only the newest probe. A signal at
+      second-to-minute resolution needs its own table AND a retention/rollup
+      policy decided up front ([retention] already has the shape) — 1Hz across
+      a handful of gauges is ~86k rows/day/host, and keeping raw forever is not
+      an option.
+- [ ] Sampling rate picks the collector, and this is the real fork. At the
+      current 2-minute probe interval, `ssh dev.home nvidia-smi` polls fine and
+      deploys nothing. At 1Hz that is 86k ssh handshakes/day and clearly wrong.
+      Two candidates: (a) ONE long-lived ssh streaming `nvidia-smi --query-gpu
+      ... -l 1`, supervised and ingested line by line — zero deploy, but needs
+      reconnect logic and forge holds the ssh creds; (b) a small exporter on
+      the box — robust and conventional, but something to deploy and version.
+      If (b), build it as a forge PLUGIN (manifest, process, token, scopes,
+      journal all exist already) rather than inventing a second extension
+      mechanism beside the plugin system.
+- [ ] Two sources, very different costs. ollama's `/api/ps` is plain HTTP to a
+      port forge already talks to and carries exactly the field that regressed
+      silently (PROCESSOR = "100% GPU" vs "100% CPU"), plus resident model,
+      size and context — cheap to sample often, nothing to install. GPU
+      utilization / VRAM / temperature / power need nvidia-smi on the host.
+      Temperature earns its place: thermal throttling appears as a tok/s cliff
+      with no other symptom.
+- [ ] Load time and throughput come free, but only from the RIGHT endpoint.
+      ollama's native `/api/generate` and `/api/chat` return `load_duration`,
+      `prompt_eval_duration`, `eval_duration` and `eval_count` per request —
+      exact cold-load cost and tok/s, which is precisely the "load times"
+      signal wanted. The OpenAI-compatible `/v1/chat/completions` that
+      modelCall uses does NOT return them. So telemetry either calls the native
+      endpoint or the client records wall-clock itself; decide before building,
+      because it changes model_openai.go.
+- [ ] Load-bearing before decorative. probeOpenAI returns
+      ready|down|unauthenticated, but a runner that answers while pinned to CPU
+      is DEGRADED, not ready. Feed that distinction into doctor (read daily)
+      and into routing. This is the anti-fragility rule applied to hardware:
+      the three-week regression should have surfaced as a question rather than
+      waiting for someone to benchmark it by hand.
+- [ ] Only then the page. `system.html` is a 9-line stub titled "Settings"
+      (Workers + Repositories) that wants to grow into this, and runnerHealth()
+      in ui.go already folds runner:<name> across workers for the dashboard —
+      so the health half is largely a view over data forge already has.
+- [ ] Scope the subscription half honestly: forge knows five-hour/seven-day
+      window percentages and per-attempt cost_usd with a billing class per
+      runner, but nothing about renewal dates, plan tier or seats — those would
+      be operator-entered config, not live data. Decide whether a half-live
+      panel earns its place before building it.
+- [ ] Do not conflate with bench. Bench measures task-level quality and cost
+      per spec; this measures infrastructure throughput. Different questions,
+      and they should not share a scoreboard.
 
 ## P2 — housekeeping
 - [ ] Windows build: the daemon's process model is POSIX (process groups,

@@ -61,7 +61,7 @@ type ExecutorConfig struct {
 type RunnerConfig struct {
 	Kind     string `toml:"kind"`     // claude-cli | openai-compatible
 	Endpoint string `toml:"endpoint"` // …/v1 for openai-compatible
-	Probe    string `toml:"probe"`    // probe path; default /v1/models
+	Probe    string `toml:"probe"`    // probe path appended to Endpoint; default /models
 	Executor string `toml:"executor"` // claude-cli: the executor whose readiness stands in; default claude-code
 }
 

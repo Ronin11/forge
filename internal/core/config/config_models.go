@@ -31,8 +31,9 @@ type RunnerConfig struct {
 	Capacity int `toml:"capacity"`
 	// Endpoint is the OpenAI-compatible base URL (…/v1); empty for claude-cli.
 	Endpoint string `toml:"endpoint"`
-	// Probe overrides the health-probe path (default /v1/models for
-	// openai-compatible); empty uses the default.
+	// Probe overrides the health-probe path for openai-compatible runners;
+	// empty uses the default /models, appended to the version-carrying
+	// Endpoint above.
 	Probe string `toml:"probe"`
 	// DailyUSDCap and USDPerHour bound spend on an api/local runner; zero is no
 	// cap. They are advisory to the operator (surfaced by doctor); the budget

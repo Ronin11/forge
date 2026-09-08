@@ -70,10 +70,13 @@ func probeRunner(ctx context.Context, rc RunnerConfig, executors map[string]stri
 
 // probeOpenAI does a bounded GET against the models endpoint: 2xx is ready,
 // 401/403 is unauthenticated (reachable but no valid key), anything else — a
-// non-2xx status or a transport error — is down.
+// non-2xx status or a transport error — is down. The endpoint already carries
+// the API version (…/v1), so the default probe path is version-free: defaulting
+// it to /v1/models instead produced …/v1/v1/models and reported every healthy
+// runner down.
 func probeOpenAI(ctx context.Context, endpoint, probe string) string {
 	if probe == "" {
-		probe = "/v1/models"
+		probe = "/models"
 	}
 	ctx, cancel := context.WithTimeout(ctx, runnerProbeTimeout)
 	defer cancel()

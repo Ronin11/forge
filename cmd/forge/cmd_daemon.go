@@ -1078,10 +1078,21 @@ func detectBaseBranch(ctx context.Context, path string) string {
 	return ""
 }
 
-// modelCall runs one cheap headless claude completion for the concierge
-// (handlers_assistant.go): the system prompt as --append-system-prompt, the user
-// text on stdin, and the model's text pulled from --output-format json's result.
+// modelCall runs one cheap completion for the concierge
+// (handlers_assistant.go) and every other consumer of the seam. The model alias
+// selects the runner: an openai-compatible runner is called over HTTP
+// (model_openai.go), and everything else goes to a headless claude — the system
+// prompt as --append-system-prompt, the user text on stdin, and the model's text
+// pulled from --output-format json's result.
+//
+// Routing here rather than in the callers is what lets a local runner absorb
+// these calls when the subscription is exhausted: they are the decisions Forge
+// needs to keep making (auto-answer, watchdog) when it can no longer afford to
+// write code.
 func (d *daemonProcess) modelCall(ctx context.Context, system, user, model string) (string, error) {
+	if info, ok := d.cfg.ModelInfoFor(model); ok && info.RunnerKind == "openai-compatible" {
+		return openAIModelCall(ctx, d.cfg.Runners[info.Runner], info, system, user)
+	}
 	bin, err := resolveClaude()
 	if err != nil {
 		return "", err
