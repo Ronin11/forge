@@ -123,8 +123,15 @@ func defaultModels() map[string]ModelConfig {
 			Context: 200_000, Price: Price{Input: 3.00, Output: 15.00, CacheRead: 0.30, CacheWrite: 6.00},
 		},
 		"opus": {
+			// Priced at the current Opus rate, not the 4.1-era $15/$75 this
+			// table carried: 98 attempts reported $219.65 against a $657.98
+			// notional — dead-on 3×, and the single cause of doctor's 54%
+			// pricing drift. At $5/$25 the same attempts notionalise to
+			// $219.33 (99.85%). The ID below still reads claude-opus-4-1 and
+			// is billed at these rates, so it is stale rather than wrong;
+			// changing it changes which model runs, which is not a pricing fix.
 			Runner: "claude", ID: "claude-opus-4-1", Class: "frontier", MaxTier: 3,
-			Context: 200_000, Price: Price{Input: 15.00, Output: 75.00, CacheRead: 1.50, CacheWrite: 30.00},
+			Context: 200_000, Price: Price{Input: 5.00, Output: 25.00, CacheRead: 0.50, CacheWrite: 10.00},
 		},
 		"fable": {
 			Runner: "claude", ID: "claude-fable-5", Class: "frontier", MaxTier: 3,
