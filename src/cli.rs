@@ -2,7 +2,7 @@
 
 use crate::ctx::Forge;
 use crate::store::{Task, TaskState};
-use crate::{config, git, unix_now, worker};
+use crate::{config, doctor, git, unix_now, worker};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::io::Write;
@@ -78,6 +78,8 @@ enum Cmd {
     },
     /// Show one task and its attempts
     Show { id: i64 },
+    /// Check this machine can run attempts and nothing is stuck
+    Doctor,
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -110,6 +112,7 @@ pub async fn main() -> Result<()> {
         Cmd::Log { limit } => log(limit),
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
+        Cmd::Doctor => run_doctor(),
     }
 }
 
@@ -168,6 +171,29 @@ async fn add(args: TaskArgs) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
     out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    Ok(())
+}
+
+fn run_doctor() -> Result<()> {
+    let checks = doctor::run()?;
+    let mut failed = false;
+    for c in &checks {
+        let tag = match c.status {
+            doctor::Status::Ok => "OK  ",
+            doctor::Status::Warn => "WARN",
+            doctor::Status::Fail => {
+                failed = true;
+                "FAIL"
+            }
+        };
+        out!("{tag} {:<12} {}", c.name, c.detail);
+        if !c.hint.is_empty() && c.status != doctor::Status::Ok {
+            out!("     {:<12} → {}", "", c.hint);
+        }
+    }
+    if failed {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -301,13 +327,41 @@ fn show(id: i64) -> Result<()> {
         {
             for c in checks {
                 out!(
-                    "  {} {} {} ({:.1}s)",
+                    "  {} {} {} ({:.1}s){}",
                     if c.ok { "✓" } else { "✗" },
                     c.level,
                     c.name,
-                    c.ms as f64 / 1000.0
+                    c.ms as f64 / 1000.0,
+                    if c.failing_tests.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  failing: {}", c.failing_tests.join(", "))
+                    }
                 );
             }
+        }
+        if let Ok(Some(e)) = crate::envelope::parse(Some(&a.envelope_json), "") {
+            out!(
+                "  reported {} change(s), {} check(s) run, {} claim(s)",
+                e.changes.len(),
+                e.checks_run.len(),
+                e.claims.len()
+            );
+            for c in &e.claims {
+                out!("    claim   {} [{}]", c.claim, c.evidence);
+            }
+            if let Some(q) = &e.needs_input {
+                out!("    QUESTION {}", q.question);
+            }
+        }
+        if a.rl_five_hour.is_some() || a.rl_seven_day.is_some() {
+            out!(
+                "  usage   5h {} · 7d {}",
+                a.rl_five_hour
+                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+                a.rl_seven_day
+                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
+            );
         }
         if !a.result_text.is_empty() {
             let first: String = a

@@ -27,6 +27,20 @@ pub struct Outcome {
     pub cost_usd: Option<f64>,
     pub wall_ms: u128,
     pub result_text: String,
+    /// The structured result the CLI produced against the envelope schema,
+    /// as raw JSON; `None` when the result frame carried none.
+    pub structured: Option<String>,
+    /// Last rate-limit sample seen on the stream, per window.
+    pub rate_limits: RateLimits,
+}
+
+/// Subscription usage as the CLI reports it: utilization is 0..1 of the
+/// window, resets_at is unix seconds. On subscription billing this, not
+/// the notional dollar figure, is the real budget.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct RateLimits {
+    pub five_hour: Option<(f64, i64)>,
+    pub seven_day: Option<(f64, i64)>,
 }
 
 pub fn agent_bin() -> String {
@@ -96,6 +110,8 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         l.model,
         "--max-turns",
         &l.max_turns.to_string(),
+        "--json-schema",
+        crate::envelope::SCHEMA,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -174,6 +190,26 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
                     out.cost_usd = v["total_cost_usd"].as_f64();
                     out.result_text = v["result"].as_str().unwrap_or("").to_string();
+                    out.structured = match &v["structured_output"] {
+                        Value::Null => None,
+                        other => Some(other.to_string()),
+                    };
+                }
+                Some("rate_limit_event") => {
+                    let w = &v["rate_limit_info"]["unifiedWindows"];
+                    let read = |name: &str| {
+                        let win = &w[name];
+                        Some((
+                            win["utilization"].as_f64()?,
+                            win["resetsAt"].as_i64().unwrap_or(0),
+                        ))
+                    };
+                    if let Some(s) = read("five_hour") {
+                        out.rate_limits.five_hour = Some(s);
+                    }
+                    if let Some(s) = read("seven_day") {
+                        out.rate_limits.seven_day = Some(s);
+                    }
                 }
                 _ => {}
             }

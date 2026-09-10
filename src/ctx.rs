@@ -67,6 +67,18 @@ impl Forge {
         })
     }
 
+    /// For commands that already hold the paths and store (doctor).
+    pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
+        let budget = config::load_budget(&paths.home)?;
+        Ok(Forge {
+            paths,
+            store,
+            budget,
+            sandbox: None,
+            report: Reporter::new(false),
+        })
+    }
+
     pub fn sandboxed(&self) -> bool {
         self.sandbox.is_some()
     }

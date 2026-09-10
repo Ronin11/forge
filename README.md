@@ -10,6 +10,7 @@ forge work [--jobs N] [--poll SECS] [--once]  # run the queue and stay up
 forge log                                     # tasks, newest first
 forge show <id>                               # one task, its attempts, every check
 forge gc [--dry-run]                          # remove worktrees that are safe to remove
+forge doctor                                  # can this machine run attempts; is anything stuck
 ```
 
 ## What happens to a task
@@ -22,20 +23,40 @@ forge gc [--dry-run]                          # remove worktrees that are safe t
 2. **Worktree.** `forge/<id>-<slug>` from the base branch. The registered
    checkout is never touched beyond `worktree add`. The checks are then read
    from the base commit, never from the branch under test.
-3. **Agent.** `claude --print --output-format stream-json` in the worktree
-   under bubblewrap: read-only system, private `/tmp` `/run` `/proc`, a tmpfs
-   `$HOME` holding only the worktree, the repo's `.git`, the agent binary,
-   and the claude CLI's state. Network shared. Killed at `--timeout-secs`
-   (default 1800); `--max-turns` (default 30) is the other cliff. The raw
-   stream is the attempt's log, prompt first.
+3. **Agent.** `claude --print --output-format stream-json --json-schema …`
+   in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
+   `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
+   the agent binary, and the claude CLI's state. Network shared. Killed at
+   `--timeout-secs` (default 1800); `--max-turns` (default 30) is the other
+   cliff. The raw stream is the attempt's log, prompt first.
+
+   The schema makes the agent's final result structured, never parsed out
+   of prose: `summary`, `changes[]` (every path touched), `checks_run[]`
+   (only checks it actually ran, with the real outcome), `claims[]` each
+   with evidence, and `needs_input` when it cannot proceed without the
+   operator. All of it is a claim; step 4 compares it with what Forge
+   measured. The stream's rate-limit frames (five-hour and seven-day
+   utilization) are recorded per attempt: on subscription billing that,
+   not the notional dollar figure, is the real budget.
 4. **Verify.** Three levels, each run by Forge after the agent exits, each
    a row in the attempt's verdict. A level runs only if the one before it
    passed.
-   - **L0** consistency: clean tree, at least one commit, `forge.toml`
-     untouched.
+   - **L0** consistency with git: a structured result exists, clean tree,
+     at least one commit, `forge.toml` untouched, the reported `changes[]`
+     match what git saw in both directions, every claim has evidence. A
+     `needs_input` question ends the task here with the question as its
+     reason; retrying cannot answer it.
    - **L1** the repo's declared checks, in the sandbox, each under
-     `check_timeout_secs`.
+     `check_timeout_secs`. Then the claim rule, one-directional: a check
+     the agent reported as passed that Forge could not reproduce is a
+     `claim:<name>` row that fails. The agent may be conservative, never
+     optimistic. Failing test names are extracted from go test, pytest,
+     and jest output and fed to the retry by name.
    - **L2** the task's `--check` commands, same treatment.
+
+   A check's exit decides it. Its process group is killed after it exits
+   and the output drained with a short grace, so a check that backgrounds
+   a server cannot hold the attempt open.
 5. **Retry.** On failure the next attempt is told exactly which rows failed
    and their output (`--retries`, default 1), on the same branch. A task
    stops early when its cost reaches its cap.
@@ -78,7 +99,9 @@ src/main.rs     entry, unix_now
 src/cli.rs      commands and all terminal output
 src/ctx.rs      Forge: paths, store, budget, sandbox, reporter, built once
 src/engine.rs   run_task / run_attempt, Fault::{Task, Env}
-src/verify.rs   L0/L1/L2 and the pure verdict table
+src/verify.rs   L0/L1/L2, the claim rule, and the pure verdict table
+src/envelope.rs the result contract: schema and parser
+src/doctor.rs   forge doctor
 src/worker.rs   drive, the queue loop, signals
 src/agent.rs    spawn the CLI, parse stream-json, timeout
 src/checks.rs   run one command as a check under a timeout
@@ -103,9 +126,10 @@ tests/e2e.rs    the real binary against fake agents in tests/fakes/
 ## Deliberately absent
 
 No web UI, no merge queue, no GitHub issue source, no L2 by an independent
-agent session, no human sign-off queue, no claim-versus-fact comparison of
-what the agent says it ran, no personas, no plugins, no learning loop. Each
-is added only when a real run demonstrates the need.
+agent session, no human sign-off queue, no answering of `needs_input`
+questions (the question is recorded; the task ends), no personas, no
+plugins, no learning loop. Each is added only when a real run demonstrates
+the need.
 
 ```sh
 cargo build --release

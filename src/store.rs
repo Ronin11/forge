@@ -57,6 +57,8 @@ pub enum AttemptState {
     ChecksFailed,
     AgentFailed,
     Unverified,
+    /// The agent asked the operator a question; retrying cannot answer it.
+    NeedsInput,
 }
 
 impl AttemptState {
@@ -67,6 +69,7 @@ impl AttemptState {
             AttemptState::ChecksFailed => "checks_failed",
             AttemptState::AgentFailed => "agent_failed",
             AttemptState::Unverified => "unverified",
+            AttemptState::NeedsInput => "needs_input",
         }
     }
 }
@@ -80,6 +83,7 @@ impl TryFrom<&str> for AttemptState {
             "checks_failed" => AttemptState::ChecksFailed,
             "agent_failed" => AttemptState::AgentFailed,
             "unverified" => AttemptState::Unverified,
+            "needs_input" => AttemptState::NeedsInput,
             other => {
                 return Err(std::io::Error::other(format!(
                     "unknown attempt state {other:?}"
@@ -137,6 +141,18 @@ pub struct Attempt {
     pub verdict_json: String,
     pub result_text: String,
     pub log_path: String,
+    /// The structured result as the CLI produced it, raw JSON; empty if none.
+    pub envelope_json: String,
+    pub rl_five_hour: Option<f64>,
+    pub rl_seven_day: Option<f64>,
+    pub rl_five_hour_resets: Option<i64>,
+    pub rl_seven_day_resets: Option<i64>,
+}
+
+pub struct RateLimitSample {
+    pub seen_at: i64,
+    pub five_hour: Option<f64>,
+    pub seven_day: Option<f64>,
 }
 
 pub struct TaskSummary {
@@ -154,7 +170,8 @@ pub struct Store {
 }
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
-const MIGRATIONS: &[&str] = &["
+pub const MIGRATIONS: &[&str] = &[
+    "
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY,
   repo TEXT NOT NULL,
@@ -201,7 +218,15 @@ CREATE TABLE attempts (
 );
 CREATE INDEX attempts_task ON attempts(task_id, attempt_no);
 CREATE INDEX tasks_state ON tasks(state, id);
-"];
+",
+    "
+ALTER TABLE attempts ADD COLUMN envelope_json TEXT NOT NULL DEFAULT '';
+ALTER TABLE attempts ADD COLUMN rl_five_hour REAL;
+ALTER TABLE attempts ADD COLUMN rl_seven_day REAL;
+ALTER TABLE attempts ADD COLUMN rl_five_hour_resets INTEGER;
+ALTER TABLE attempts ADD COLUMN rl_seven_day_resets INTEGER;
+",
+];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
@@ -241,7 +266,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
 }
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
-    num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path";
+    num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -264,6 +290,11 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         verdict_json: r.get(16)?,
         result_text: r.get(17)?,
         log_path: r.get(18)?,
+        envelope_json: r.get(19)?,
+        rl_five_hour: r.get(20)?,
+        rl_seven_day: r.get(21)?,
+        rl_five_hour_resets: r.get(22)?,
+        rl_seven_day_resets: r.get(23)?,
     })
 }
 
@@ -422,7 +453,8 @@ impl Store {
         self.lock().execute(
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
-             result_text=?15 WHERE id=?1",
+             result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
+             rl_seven_day_resets=?20 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -438,10 +470,35 @@ impl Store {
                 a.files_changed,
                 a.dirty as i64,
                 a.verdict_json,
-                a.result_text
+                a.result_text,
+                a.envelope_json,
+                a.rl_five_hour,
+                a.rl_seven_day,
+                a.rl_five_hour_resets,
+                a.rl_seven_day_resets
             ],
         )?;
         Ok(())
+    }
+
+    pub fn running_ids(&self) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT id FROM tasks WHERE state='running' ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The most recent rate-limit sample any attempt recorded.
+    pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day FROM attempts
+                 WHERE rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)? }),
+            )
+            .optional()?)
     }
 
     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
