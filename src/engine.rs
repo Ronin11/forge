@@ -1,23 +1,25 @@
 //! Drive one task through its workflow to a terminal state. Every task runs
-//! a workflow; each agent step is attempted until it is verified or the
-//! attempt or cost budget is spent, each retry told exactly what failed;
-//! the kernel verifies after every step and pushes after the last. Every
-//! error is classified: a `Task` fault is this task's problem and it fails;
-//! an `Env` fault means the worker itself cannot do its job and must stop
-//! without blaming the task.
+//! a resolved workflow: an ordered list of actions, each a directive (an
+//! LLM step, attempted until verified or the budget is spent, every retry
+//! told what failed) or an operation (a deterministic command, one shot).
+//! The kernel inserts verify after every directive and push after the last
+//! action; those are recorded as operations too, so the trace is complete.
+//! Every error is classified: a `Task` fault is this task's problem and it
+//! fails; an `Env` fault means the worker itself cannot do its job and must
+//! stop without blaming the task.
 
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Attempt, AttemptState, Task, TaskState};
+use crate::store::{Attempt, AttemptState, Op, Task, TaskState};
 use crate::verify::{self, Subject, TestsSubject, Verdict};
-use crate::workflows::{self, Step};
-use crate::{agent, config, git, unix_now};
+use crate::workflows::{self, Kind, ResolvedStep};
+use crate::{agent, checks, config, git, unix_now};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub enum Fault {
     Task(anyhow::Error),
@@ -70,6 +72,49 @@ fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 
+/// Record one operation row, kernel or user.
+#[allow(clippy::too_many_arguments)]
+fn op(
+    f: &Forge,
+    task_id: i64,
+    seq: i64,
+    name: &str,
+    kernel: bool,
+    started_at: i64,
+    start: Instant,
+    ok: bool,
+    exit: Option<i32>,
+    detail: &str,
+    attempt_id: Option<i64>,
+) -> Result<(), Fault> {
+    f.store
+        .insert_op(&Op {
+            task_id,
+            seq,
+            name: name.into(),
+            kernel,
+            started_at,
+            ms: start.elapsed().as_millis() as i64,
+            ok,
+            exit,
+            detail: detail.into(),
+            attempt_id,
+            ..Default::default()
+        })
+        .env()?;
+    f.report.emit(
+        task_id,
+        Event::Op {
+            name,
+            kernel,
+            ok,
+            ms: start.elapsed().as_millis(),
+            detail,
+        },
+    );
+    Ok(())
+}
+
 pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut t = f
         .store
@@ -78,20 +123,39 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         .with_context(|| format!("no task {id}"))
         .env()?;
     let repo = PathBuf::from(&t.repo);
-    let workflow = workflows::get(&f.paths.home, &t.workflow)
-        .env()?
-        .with_context(|| format!("unknown workflow {}", t.workflow))
-        .task()?;
-    if t.workflow_hash.is_empty() {
-        t.workflow_hash = workflow.hash.clone();
-    } else if t.workflow_hash != workflow.hash {
-        f.report.emit(id, Event::Note { text: &format!("workflow {} changed since the task was created ({} → {}); running the current one", t.workflow, t.workflow_hash, workflow.hash) });
-        t.workflow_hash = workflow.hash.clone();
-    }
 
     t.state = TaskState::Running;
     t.started_at = Some(unix_now());
     t.worker_pid = Some(std::process::id() as i64);
+
+    // Resolve the workflow once, at start: the latest versions of every
+    // file now, recorded on the task and read from that record from here
+    // on. A resumed task keeps what it resolved.
+    let resolved: workflows::Resolved = if t.actions_json.is_empty() {
+        // A broken workflow directory would fail every task the same way:
+        // that is the worker's environment, not this task's fault.
+        let problems = workflows::check(&f.paths.home).env()?;
+        if let Some(p) = problems.iter().find(|p| p.blocking) {
+            return Err(Fault::Env(anyhow::anyhow!(
+                "workflow directory is broken: {} {}",
+                p.file,
+                p.what
+            )));
+        }
+        let r = workflows::resolve(&f.paths.home, &t.workflow).task()?;
+        let wf = workflows::get(&f.paths.home, &t.workflow)
+            .env()?
+            .with_context(|| format!("unknown workflow {}", t.workflow))
+            .task()?;
+        t.workflow_hash = wf.hash.clone();
+        t.workflow_text = wf.text.clone();
+        t.actions_json = serde_json::to_string(&r).env()?;
+        r
+    } else {
+        serde_json::from_str(&t.actions_json)
+            .context("the task's recorded resolution does not parse")
+            .task()?
+    };
 
     // The repository's remote, from its forge.toml at the base branch.
     let base_cfg = config::load_at(&repo, &repo, &t.base_branch).await.task()?;
@@ -100,6 +164,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         None => None,
     };
 
+    let mut seq: i64 = 0;
     if t.worktree.is_empty() {
         let base_name = format!("forge/{}-{}", t.id, slug(&t.task));
         t.branch = base_name.clone();
@@ -112,9 +177,25 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             }
         }
         let dir = f.paths.worktrees.join(t.id.to_string());
-        t.base_sha = git::clone_task(&repo, &t.base_branch, &dir, &t.branch)
-            .await
-            .task()?;
+        let started = unix_now();
+        let start = Instant::now();
+        let r = git::clone_task(&repo, &t.base_branch, &dir, &t.branch).await;
+        op(
+            &f,
+            id,
+            seq,
+            "clone",
+            true,
+            started,
+            start,
+            r.is_ok(),
+            None,
+            &r.as_ref()
+                .map(|s| s[..8].to_string())
+                .unwrap_or_else(|e| format!("{e:#}")),
+            None,
+        )?;
+        t.base_sha = r.task()?;
         t.worktree = dir.display().to_string();
     }
     f.store.update_task(&t).env()?;
@@ -141,133 +222,196 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         Event::Note {
             text: &format!(
                 "workflow {} {} ({})",
-                workflow.name,
-                workflow.hash,
-                workflow.steps_text()
+                t.workflow,
+                &t.workflow_hash[..t.workflow_hash.len().min(8)],
+                resolved
+                    .steps
+                    .iter()
+                    .map(|s| s.action.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
             ),
         },
     );
 
     let task_cap = t.budget_usd.unwrap_or(f.budget.per_task_usd);
     let prior = f.store.attempts(id).env()?;
-    let done: HashSet<String> = prior
+    let prior_ops = f.store.ops(id).env()?;
+    let done_directives: HashSet<i64> = prior
         .iter()
         .filter(|a| a.state == AttemptState::Succeeded)
-        .map(|a| a.step.clone())
+        .map(|a| a.step_seq)
+        .collect();
+    let done_ops: HashSet<i64> = prior_ops
+        .iter()
+        .filter(|o| !o.kernel && o.ok)
+        .map(|o| o.seq)
         .collect();
     let mut attempt_no = prior.len() as i64;
     let mut last = AttemptState::Running;
     let mut last_reason = String::new();
     let mut budget_stop: Option<String> = None;
-    let mut all_steps_ok = true;
+    let mut all_ok = true;
 
-    'steps: for def in &workflow.steps {
-        let step = &def.kind;
-        if done.contains(step.as_str()) {
-            f.report.emit(
-                id,
-                Event::Note {
-                    text: &format!("step     {} already verified; resuming", step.as_str()),
-                },
-            );
-            continue;
-        }
-        // Per-step overrides from the workflow file.
-        let mut ts = t.clone();
-        if let Some(m) = &def.model {
-            ts.model = m.clone();
-        }
-        if let Some(n) = def.max_turns {
-            ts.max_turns = n as i64;
-        }
-        if let Some(n) = def.timeout_secs {
-            ts.timeout_secs = n as i64;
-        }
-        let mut feedback: Option<String> = None;
-        let mut step_ok = false;
-        for n in 1..=t.max_attempts {
-            let spent = f.store.task_cost(id).env()?;
-            if spent >= task_cap {
-                budget_stop = Some(format!(
-                    "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
-                ));
-                all_steps_ok = false;
-                break 'steps;
-            }
-            attempt_no += 1;
-            f.report.emit(
-                id,
-                Event::AttemptStarted {
-                    n,
-                    of: t.max_attempts,
-                },
-            );
-            f.report.emit(
-                id,
-                Event::Note {
-                    text: &format!("step     {}", step.as_str()),
-                },
-            );
-            let (a, verdict, outcome) = match step {
-                Step::Code => {
-                    run_code_attempt(&f, &ts, &cfg, attempt_no, feedback.as_deref()).await?
+    'steps: for (idx, step) in resolved.steps.iter().enumerate() {
+        seq = idx as i64 + 1;
+        match step.action.kind {
+            Kind::Operation => {
+                if done_ops.contains(&seq) {
+                    continue;
                 }
-                Step::Tests => {
-                    run_tests_attempt(&f, &ts, &cfg, attempt_no, feedback.as_deref()).await?
-                }
-            };
-            last = a.state;
-            last_reason = a.reason.clone();
-            match a.state {
-                AttemptState::Succeeded => {
-                    if *step == Step::Tests {
-                        // Publish the tests where the kernel overlays from, and
-                        // hand the coder the interface, never the assertions.
-                        let tests_dir = tests_clone_dir(&t.worktree);
-                        git::push_to_repo(&tests_dir, &repo, &format!("verify/{}", t.id))
-                            .await
-                            .task()?;
-                        if let Some(url) = &remote_url
-                            && let Err(e) =
-                                git::push(&tests_dir, url, &format!("verify/{}", t.id)).await
-                        {
-                            f.report.emit(
-                                id,
-                                Event::Note {
-                                    text: &format!(
-                                        "tests    push of verify/{} failed: {e:#}",
-                                        t.id
-                                    ),
-                                },
-                            );
-                        }
-                        t.interface = verdict
-                            .envelope
-                            .as_ref()
-                            .map(|e| e.summary.clone())
-                            .unwrap_or_default();
-                        f.store.update_task(&t).env()?;
-                    }
-                    step_ok = true;
+                let (ok, exit, detail) = run_operation(&f, &t, &cfg, step, seq).await?;
+                if !ok {
+                    last = AttemptState::ChecksFailed;
+                    last_reason = format!(
+                        "operation {} failed: {}",
+                        step.action.name,
+                        detail.lines().next().unwrap_or("")
+                    );
+                    all_ok = false;
                     break;
                 }
-                AttemptState::Unverified | AttemptState::NeedsInput => break,
-                AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                    feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
-                }
-                AttemptState::Running => unreachable!("attempt returned in running state"),
+                let _ = exit;
             }
-        }
-        if !step_ok {
-            all_steps_ok = false;
-            break;
+            Kind::Directive => {
+                if done_directives.contains(&seq) {
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!(
+                                "step     {} already verified; resuming",
+                                step.action.name
+                            ),
+                        },
+                    );
+                    continue;
+                }
+                // Per-step parameters: the workflow's override, else the action's default, else the task's.
+                let mut ts = t.clone();
+                if let Some(m) = &step.model {
+                    ts.model = m.clone();
+                }
+                if let Some(n) = step.max_turns {
+                    ts.max_turns = n as i64;
+                }
+                if let Some(n) = step.timeout_secs {
+                    ts.timeout_secs = n as i64;
+                }
+                let mut feedback: Option<String> = None;
+                let mut step_ok = false;
+                for n in 1..=t.max_attempts {
+                    let spent = f.store.task_cost(id).env()?;
+                    if spent >= task_cap {
+                        budget_stop = Some(format!(
+                            "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
+                        ));
+                        all_ok = false;
+                        break 'steps;
+                    }
+                    attempt_no += 1;
+                    f.report.emit(
+                        id,
+                        Event::AttemptStarted {
+                            n,
+                            of: t.max_attempts,
+                        },
+                    );
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!(
+                                "step     {} ({})",
+                                step.action.name,
+                                step.via.join(" → ")
+                            ),
+                        },
+                    );
+                    let started = unix_now();
+                    let (a, verdict, outcome) = match step.action.name.as_str() {
+                        "code" => {
+                            run_code_attempt(&f, &ts, &cfg, seq, attempt_no, feedback.as_deref())
+                                .await?
+                        }
+                        "tests" => {
+                            run_tests_attempt(&f, &ts, &cfg, seq, attempt_no, feedback.as_deref())
+                                .await?
+                        }
+                        other => {
+                            return Err(Fault::Task(anyhow::anyhow!(
+                                "directive {other:?} has no kernel contract"
+                            )));
+                        }
+                    };
+                    // The kernel's verify, as a row of its own.
+                    op(
+                        &f,
+                        id,
+                        seq,
+                        "verify",
+                        true,
+                        started,
+                        Instant::now(),
+                        a.state == AttemptState::Succeeded,
+                        None,
+                        &a.reason,
+                        Some(a.id),
+                    )?;
+                    last = a.state;
+                    last_reason = a.reason.clone();
+                    match a.state {
+                        AttemptState::Succeeded => {
+                            if step.action.name == "tests" {
+                                let tests_dir = tests_clone_dir(&t.worktree);
+                                git::push_to_repo(&tests_dir, &repo, &format!("verify/{}", t.id))
+                                    .await
+                                    .task()?;
+                                if let Some(url) = &remote_url
+                                    && let Err(e) =
+                                        git::push(&tests_dir, url, &format!("verify/{}", t.id))
+                                            .await
+                                {
+                                    f.report.emit(
+                                        id,
+                                        Event::Note {
+                                            text: &format!(
+                                                "tests    push of verify/{} failed: {e:#}",
+                                                t.id
+                                            ),
+                                        },
+                                    );
+                                }
+                                t.interface = verdict
+                                    .envelope
+                                    .as_ref()
+                                    .map(|e| e.summary.clone())
+                                    .unwrap_or_default();
+                                f.store.update_task(&t).env()?;
+                            }
+                            step_ok = true;
+                            break;
+                        }
+                        AttemptState::Unverified | AttemptState::NeedsInput => break,
+                        AttemptState::ChecksFailed | AttemptState::AgentFailed => {
+                            feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
+                        }
+                        AttemptState::Running => unreachable!("attempt returned in running state"),
+                    }
+                }
+                if !step_ok {
+                    all_ok = false;
+                    break;
+                }
+            }
         }
     }
 
     let mut compare: Option<String> = None;
-    if all_steps_ok && budget_stop.is_none() {
+    if all_ok && budget_stop.is_none() {
         last = AttemptState::Succeeded;
+        seq += 1;
         if let Some(url) = &remote_url {
+            let started = unix_now();
+            let start = Instant::now();
             match git::push(&wt, url, &t.branch).await {
                 Ok(()) => {
                     t.pushed = true;
@@ -279,6 +423,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             branch: &t.branch,
                         },
                     );
+                    op(
+                        &f, id, seq, "push", true, started, start, true, None, &t.branch, None,
+                    )?;
                 }
                 Err(e) => {
                     last_reason = format!("push failed: {e:#}");
@@ -288,6 +435,19 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             error: &format!("{e:#}"),
                         },
                     );
+                    op(
+                        &f,
+                        id,
+                        seq,
+                        "push",
+                        true,
+                        started,
+                        start,
+                        false,
+                        None,
+                        &format!("{e:#}"),
+                        None,
+                    )?;
                 }
             }
         } else {
@@ -307,6 +467,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         (Some(b), _) => b,
         (None, AttemptState::Succeeded | AttemptState::NeedsInput) => last_reason,
         (None, AttemptState::Running) => "no attempts ran".into(),
+        (None, _) if last_reason.starts_with("operation ") => last_reason,
         (None, _) => format!("{last_reason} (after {} attempt(s))", attempts.len()),
     };
     t.finished_at = Some(unix_now());
@@ -327,6 +488,83 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         },
     );
     Ok(t.state)
+}
+
+/// A user operation: one command in the sandbox against the clone, or the
+/// repository's declared check of that name. Exit code decides. A `check`
+/// the repository does not declare is skipped and recorded as such.
+async fn run_operation(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    seq: i64,
+) -> Result<(bool, Option<i32>, String), Fault> {
+    let wt = Path::new(&t.worktree);
+    let started = unix_now();
+    let start = Instant::now();
+    let timeout = Duration::from_secs(
+        step.timeout_secs
+            .map(u64::from)
+            .unwrap_or(cfg.check_timeout_secs),
+    );
+    let argv: Vec<String> = match (&step.action.run, &step.action.check) {
+        (Some(run), _) => run.clone(),
+        (None, Some(name)) => match cfg.checks.get(name) {
+            Some(argv) => argv.clone(),
+            None => {
+                let detail = format!("skipped: the repository declares no check named {name:?}");
+                op(
+                    f,
+                    t.id,
+                    seq,
+                    &step.action.name,
+                    false,
+                    started,
+                    start,
+                    true,
+                    None,
+                    &detail,
+                    None,
+                )?;
+                return Ok((true, None, detail));
+            }
+        },
+        (None, None) => {
+            return Err(Fault::Task(anyhow::anyhow!(
+                "operation {} has neither run nor check",
+                step.action.name
+            )));
+        }
+    };
+    let r = checks::run_one(
+        "OP",
+        &step.action.name,
+        &argv,
+        wt,
+        f.sandbox.as_ref(),
+        timeout,
+    )
+    .await;
+    let detail = if r.ok {
+        format!("exit 0 in {:.1}s", r.ms as f64 / 1000.0)
+    } else {
+        checks::last_lines(&r.tail, 20)
+    };
+    op(
+        f,
+        t.id,
+        seq,
+        &step.action.name,
+        false,
+        started,
+        start,
+        r.ok,
+        r.exit,
+        &detail,
+        None,
+    )?;
+    Ok((r.ok, r.exit, detail))
 }
 
 fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
@@ -425,7 +663,8 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
 async fn new_attempt(
     f: &Forge,
     t: &Task,
-    step: Step,
+    step: &str,
+    seq: i64,
     dir: &Path,
     attempt_no: i64,
     mut inputs: Inputs,
@@ -434,7 +673,7 @@ async fn new_attempt(
     let start_sha = git::head(dir).await.task()?;
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
-    inputs.step = step.as_str().to_string();
+    inputs.step = step.to_string();
     inputs.model = t.model.clone();
     inputs.max_turns = t.max_turns;
     inputs.timeout_secs = t.timeout_secs;
@@ -443,7 +682,8 @@ async fn new_attempt(
     let mut a = Attempt {
         task_id: t.id,
         attempt_no,
-        step: step.as_str().to_string(),
+        step: step.to_string(),
+        step_seq: seq,
         start_sha,
         inputs_json: serde_json::to_string(&inputs).env()?,
         state: AttemptState::Running,
@@ -458,7 +698,7 @@ async fn new_attempt(
 async fn launch(
     f: &Forge,
     t: &Task,
-    step: Step,
+    step: &str,
     worktree: &Path,
     prompt: &str,
     log_path: &Path,
@@ -473,7 +713,7 @@ async fn launch(
         log_path,
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
-        step: step.as_str(),
+        step,
     })
     .await
     .env()?;
@@ -541,7 +781,7 @@ async fn record(
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
     f.store.finish_attempt(a).env()?;
     f.report.emit(
-        t_id(a),
+        a.task_id,
         Event::AttemptDone {
             state: a.state.as_str(),
             reason: &a.reason,
@@ -549,14 +789,12 @@ async fn record(
     );
     Ok(())
 }
-fn t_id(a: &Attempt) -> i64 {
-    a.task_id
-}
 
 async fn run_code_attempt(
     f: &Forge,
     t: &Task,
     cfg: &config::Config,
+    seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
@@ -582,8 +820,8 @@ async fn run_code_attempt(
         prompt_chars: prompt_text.chars().count(),
         ..Default::default()
     };
-    let (mut a, log_path) = new_attempt(f, t, Step::Code, wt, attempt_no, inputs).await?;
-    let outcome = launch(f, t, Step::Code, wt, &prompt_text, &log_path).await?;
+    let (mut a, log_path) = new_attempt(f, t, "code", seq, wt, attempt_no, inputs).await?;
+    let outcome = launch(f, t, "code", wt, &prompt_text, &log_path).await?;
     let verdict = verify::verify(
         Subject {
             task_id: t.id,
@@ -610,6 +848,7 @@ async fn run_tests_attempt(
     f: &Forge,
     t: &Task,
     cfg: &config::Config,
+    seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
@@ -629,8 +868,8 @@ async fn run_tests_attempt(
         prompt_chars: prompt_text.chars().count(),
         ..Default::default()
     };
-    let (mut a, log_path) = new_attempt(f, t, Step::Tests, &dir, attempt_no, inputs).await?;
-    let outcome = launch(f, t, Step::Tests, &dir, &prompt_text, &log_path).await?;
+    let (mut a, log_path) = new_attempt(f, t, "tests", seq, &dir, attempt_no, inputs).await?;
+    let outcome = launch(f, t, "tests", &dir, &prompt_text, &log_path).await?;
     let scratch = scratch_dir(&t.worktree);
     let verdict = verify::verify_tests(
         TestsSubject {

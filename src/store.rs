@@ -127,9 +127,12 @@ pub struct Task {
     pub workflow: String,
     /// Content hash of the workflow file the task ran under.
     pub workflow_hash: String,
-    /// The workflow file's exact text at task creation, so the run is
+    /// The workflow file's exact text at resolution, so the run is
     /// self-describing even after the file changes.
     pub workflow_text: String,
+    /// workflows::Resolved as JSON: every action version the task runs,
+    /// recorded at start; empty until then.
+    pub actions_json: String,
     /// The tests step's summary: what the coder is told about the tests.
     pub interface: String,
     /// Show the L2 acceptance commands to the coder (default hidden).
@@ -142,6 +145,8 @@ pub struct Attempt {
     pub task_id: i64,
     pub attempt_no: i64,
     pub step: String,
+    /// Index of the step in the resolved workflow, for resumption.
+    pub step_seq: i64,
     /// HEAD when the attempt started: "what you changed" means since here.
     pub start_sha: String,
     pub end_sha: String,
@@ -202,6 +207,22 @@ pub struct StepStat {
     pub mean_turns: f64,
     pub cost: f64,
     pub mean_ms: f64,
+}
+
+/// One operation, kernel or user, as it ran.
+#[derive(Default, Debug, Clone)]
+pub struct Op {
+    pub id: i64,
+    pub task_id: i64,
+    pub seq: i64,
+    pub name: String,
+    pub kernel: bool,
+    pub started_at: i64,
+    pub ms: i64,
+    pub ok: bool,
+    pub exit: Option<i32>,
+    pub detail: String,
+    pub attempt_id: Option<i64>,
 }
 
 pub struct TaskSummary {
@@ -295,11 +316,29 @@ ALTER TABLE attempts ADD COLUMN end_sha TEXT NOT NULL DEFAULT '';
 ALTER TABLE attempts ADD COLUMN inputs_json TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE attempts ADD COLUMN outputs_json TEXT NOT NULL DEFAULT '{}';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN actions_json TEXT NOT NULL DEFAULT '';
+ALTER TABLE attempts ADD COLUMN step_seq INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE ops (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  seq INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  kernel INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  ms INTEGER NOT NULL DEFAULT 0,
+  ok INTEGER NOT NULL DEFAULT 0,
+  exit INTEGER,
+  detail TEXT NOT NULL DEFAULT '',
+  attempt_id INTEGER
+);
+CREATE INDEX ops_task ON ops(task_id, id);
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -337,12 +376,13 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         show_checks: r.get::<_, i64>(24)? != 0,
         workflow_hash: r.get(25)?,
         workflow_text: r.get(26)?,
+        actions_json: r.get(27)?,
     })
 }
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -375,6 +415,7 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         end_sha: r.get(26)?,
         inputs_json: r.get(27)?,
         outputs_json: r.get(28)?,
+        step_seq: r.get(29)?,
     })
 }
 
@@ -432,7 +473,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -445,7 +486,9 @@ impl Store {
                 t.pushed as i64,
                 t.worker_pid,
                 t.interface,
-                t.workflow_hash
+                t.workflow_hash,
+                t.workflow_text,
+                t.actions_json
             ],
         )?;
         Ok(())
@@ -530,9 +573,9 @@ impl Store {
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json],
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -589,6 +632,39 @@ impl Store {
                 |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)? }),
             )
             .optional()?)
+    }
+
+    pub fn insert_op(&self, o: &Op) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    pub fn ops(&self, task_id: i64) -> Result<Vec<Op>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id FROM ops WHERE task_id=?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            Ok(Op {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                seq: r.get(2)?,
+                name: r.get(3)?,
+                kernel: r.get::<_, i64>(4)? != 0,
+                started_at: r.get(5)?,
+                ms: r.get(6)?,
+                ok: r.get::<_, i64>(7)? != 0,
+                exit: r.get(8)?,
+                detail: r.get(9)?,
+                attempt_id: r.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {

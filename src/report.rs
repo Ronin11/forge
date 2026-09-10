@@ -69,6 +69,13 @@ pub enum Event<'a> {
     Note {
         text: &'a str,
     },
+    Op {
+        name: &'a str,
+        kernel: bool,
+        ok: bool,
+        ms: u128,
+        detail: &'a str,
+    },
 }
 
 /// Prints events to stderr, one line at a time under a lock so concurrent
@@ -224,5 +231,23 @@ fn render(ev: Event) -> Vec<String> {
             v
         }
         Event::Note { text } => vec![text.to_string()],
+        Event::Op {
+            name,
+            kernel,
+            ok,
+            ms,
+            detail,
+        } => vec![format!(
+            "op       {} {}{} ({:.1}s){}",
+            if ok { "✓" } else { "✗" },
+            name,
+            if kernel { "" } else { " [user]" },
+            ms as f64 / 1000.0,
+            if detail.is_empty() || (ok && kernel) {
+                String::new()
+            } else {
+                format!(": {}", detail.lines().next().unwrap_or(""))
+            }
+        )],
     }
 }

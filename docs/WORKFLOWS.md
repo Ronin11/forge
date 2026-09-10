@@ -37,13 +37,16 @@ written with the built-ins on first use and edited by the operator.
 name = "tdd"
 description = "one agent writes hidden tests that fail on base; another makes them pass"
 steps = [
-  { kind = "tests", max_turns = 40 },
-  { kind = "code" },
+  { action = "tests" },
+  { action = "setup" },
+  { action = "code" },
 ]
 ```
 
-A step is a `kind` from the kernel's closed set plus optional `model`,
-`max_turns`, and `timeout_secs` overriding the task's own. A `[meta]`
+A step references an action (a directive or an operation, one file each
+under `workflows/actions/`, see docs/ACTIONS.md) or another workflow,
+spliced inline, plus optional `model`, `max_turns`, and `timeout_secs`
+overriding the action's own defaults and the task's. A `[meta]`
 table declares what the author knows, for a human or an agent choosing a
 workflow: `use_when`, `avoid_when`, `requires`, and `cost_factor` relative
 to `direct`. Declared only. What is measured, success rate and cost per

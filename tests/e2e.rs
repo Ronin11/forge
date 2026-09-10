@@ -440,14 +440,14 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("unknown workflow"));
     let o = e.forge("ok.sh", &["workflows"]);
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("tests → code"), "{out}");
+    assert!(out.contains("tests → setup → code"), "{out}");
     assert!(out.contains("cost       2.5x direct (declared)"), "{out}");
     let o = e.forge("ok.sh", &["workflows", "--json"]);
     let docs: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(docs[1]["name"], "tdd");
-    assert_eq!(docs[1]["meta"]["cost_factor"], 2.5);
+    assert_eq!(docs["workflows"][1]["name"], "tdd");
+    assert_eq!(docs["workflows"][1]["meta"]["cost_factor"], 2.5);
     assert!(
-        docs[1]["measured"].as_array().unwrap().is_empty(),
+        docs["workflows"][1]["measured"].as_array().unwrap().is_empty(),
         "nothing measured yet"
     );
 }
@@ -495,7 +495,10 @@ fn trace_requests_and_stats_expose_the_whole_run() {
         out.contains("| name = \"tdd\""),
         "the exact workflow text is recorded:\n{out}"
     );
-    assert!(out.contains("=== attempt 1 [tests] checks_failed"), "{out}");
+    assert!(
+        out.contains("=== attempt 1 [tests seq 1] checks_failed"),
+        "{out}"
+    );
     assert!(
         out.contains("inputs     model=sonnet max_turns=40"),
         "per-step params are recorded:\n{out}"
@@ -594,6 +597,295 @@ fn a_broken_workflow_file_fails_doctor_and_blocks_task_creation() {
 }
 
 #[test]
+fn operations_run_in_order_and_appear_as_rows() {
+    let e = Env::new();
+    // The built-in direct workflow is setup → code; add a user operation after code.
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/stamp.toml"),
+        "name = \"stamp\"\nkind = \"operation\"\ndescription = \"proves the change was made\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"grep -qx 42 answer.txt && echo stamped\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/stamped.toml"),
+        "name = \"stamped\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"stamp\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "stamped",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let ops: Vec<(String, bool, bool, i64)> = doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["kernel"].as_bool().unwrap(),
+                o["ok"].as_bool().unwrap(),
+                o["seq"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ops,
+        vec![
+            ("clone".to_string(), true, true, 0),
+            ("setup".to_string(), false, true, 1),
+            ("verify".to_string(), true, true, 2),
+            ("stamp".to_string(), false, true, 3),
+            ("push".to_string(), true, true, 4),
+        ],
+        "{ops:?}"
+    );
+    let setup = &doc["ops"][1];
+    assert!(
+        setup["detail"]
+            .as_str()
+            .unwrap()
+            .contains("declares no check named"),
+        "the test repo has no setup check, so it is skipped and says so"
+    );
+    assert_eq!(doc["resolved"]["steps"][2]["action"]["name"], "stamp");
+    assert_eq!(
+        doc["resolved"]["pins"].as_array().unwrap().len(),
+        4,
+        "workflow + setup + code + stamp"
+    );
+    assert!(doc["resolved"]["pins"][0]["hash"].as_str().unwrap().len() == 40);
+    assert_eq!(doc["attempts"][0]["step"], "code");
+
+    // A failing operation fails the task, without retrying the directive.
+    std::fs::write(
+        e.home.join("workflows/actions/stamp.toml"),
+        "name = \"stamp\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"echo boom; exit 3\"]\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "stamped",
+        ],
+    );
+    assert!(!o.status.success());
+    let (state, reason, pushed) = e.task(2);
+    assert_eq!(state, "failed");
+    assert_eq!(reason, "operation stamp failed: boom");
+    assert!(!pushed);
+    assert_eq!(
+        e.attempts(2).len(),
+        1,
+        "the directive is not retried for an operation failure"
+    );
+}
+
+#[test]
+fn inline_composition_runs_the_child_and_records_every_pin() {
+    let e = Env::new();
+    tdd_repo(&e);
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/outer.toml"),
+        "name = \"outer\"\ndescription = \"d\"\nsteps = [{ workflow = \"tdd\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let mut c = e.cmd("ok.sh");
+    c.env(
+        "FORGE2_CLAUDE_BIN_TESTS",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh"),
+    );
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "make answer.txt contain 42",
+            "--workflow",
+            "outer",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let names: Vec<&str> = doc["resolved"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["action"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["tests", "setup", "code"]);
+    assert_eq!(
+        doc["resolved"]["steps"][0]["via"],
+        serde_json::json!(["outer", "tdd"])
+    );
+    let pins: Vec<(&str, &str)> = doc["resolved"]["pins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["kind"].as_str().unwrap(), p["name"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        pins,
+        vec![
+            ("workflow", "outer"),
+            ("workflow", "tdd"),
+            ("action", "tests"),
+            ("action", "setup"),
+            ("action", "code")
+        ]
+    );
+}
+
+#[test]
+fn a_resumed_task_keeps_the_versions_it_resolved() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    // Resolve by starting a task whose agent commits then dies, so it is left running.
+    let mut child = e
+        .cmd("hang.sh")
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "x",
+            "--retries",
+            "0",
+            "--timeout-secs",
+            "600",
+        ])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let pins_before: String = e
+        .db()
+        .query_row("SELECT actions_json FROM tasks WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(
+        pins_before.contains("\"pins\""),
+        "resolution is recorded at start: {pins_before}"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // Change the code action after the task resolved it.
+    let code = e.home.join("workflows/actions/code.toml");
+    std::fs::write(
+        &code,
+        std::fs::read_to_string(&code).unwrap() + "max_turns = 7\n",
+    )
+    .unwrap();
+    // The worker is dead: the next worker requeues and resumes from the recorded resolution.
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let pins_after: String = e
+        .db()
+        .query_row("SELECT actions_json FROM tasks WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(pins_before, pins_after, "a running task never re-resolves");
+    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["task"]["state"], "succeeded");
+    let inputs_turns = doc["attempts"].as_array().unwrap().last().unwrap()["inputs"]["max_turns"]
+        .as_i64()
+        .unwrap();
+    assert_ne!(
+        inputs_turns, 7,
+        "the edited file did not reach the running task"
+    );
+    // A new task picks up the edit.
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let o = e.forge("ok.sh", &["trace", "2", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 7);
+    let pins_new: String = e
+        .db()
+        .query_row("SELECT actions_json FROM tasks WHERE id=2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_ne!(
+        pins_before, pins_new,
+        "the new task resolved the new version"
+    );
+}
+
+#[test]
+fn broken_references_are_refused_at_creation_and_reported_by_doctor() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/loop-a.toml"),
+        "name = \"loop-a\"\nsteps = [{ workflow = \"loop-b\" }]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/loop-b.toml"),
+        "name = \"loop-b\"\nsteps = [{ workflow = \"loop-a\" }]\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["add", e.repo.to_str().unwrap(), "x", "--workflow", "loop-a"],
+    );
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("references itself"));
+    std::fs::write(
+        e.home.join("workflows/ghost.toml"),
+        "name = \"ghost\"\nsteps = [{ action = \"nope\" }]\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &["add", e.repo.to_str().unwrap(), "x", "--workflow", "direct"],
+    );
+    assert!(
+        !o.status.success(),
+        "a broken directory blocks every task, not just the broken workflow"
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("FAIL workflows"), "{out}");
+    assert!(
+        out.contains("references itself") || out.contains("unknown action"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_directory_broken_after_queueing_stops_the_worker_and_keeps_the_task() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    std::fs::write(
+        e.home.join("workflows/actions/code.toml"),
+        "name = \"code\"\nkind = \"directive\"\nrun = [\"x\"]\n",
+    )
+    .unwrap();
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(!o.status.success(), "the worker stops");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("workflow directory is broken"));
+    assert_eq!(e.task(id).0, "queued", "the task is not blamed");
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
@@ -663,8 +955,22 @@ fn setup_runs_first_and_gates_the_other_checks() {
         .filter(|c| c["level"] == "L1")
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(l1, vec!["setup", "answer"]);
+    assert_eq!(
+        l1,
+        vec!["setup", "answer"],
+        "within L1, setup still runs first"
+    );
+    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let setup = &doc["ops"][1];
+    assert_eq!(setup["name"], "setup");
+    assert_eq!(setup["ok"], true);
+    assert_eq!(
+        setup["exit"], 0,
+        "the direct workflow's setup operation ran the repo's setup check before the coder started"
+    );
 
+    // A failing setup fails the task at the operation, before any agent money is spent.
     std::fs::write(
         e.repo.join("forge.toml"),
         "[checks]\nanswer = [\"true\"]\nsetup = [\"false\"]\n",
@@ -672,13 +978,10 @@ fn setup_runs_first_and_gates_the_other_checks() {
     .unwrap();
     git(&e.repo, &["commit", "-qam", "broken setup"]);
     assert!(!e.run("ok.sh", &["--retries", "0"]).status.success());
-    let a = e.attempts(2);
-    assert_eq!(a[0].2, "L1 failed: setup");
-    assert_eq!(
-        check(&a[0].4, "L1", "answer"),
-        None,
-        "nothing after a failed setup"
-    );
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(reason.starts_with("operation setup failed"), "{reason}");
+    assert_eq!(e.attempts(2).len(), 0, "no directive ran");
 }
 
 #[test]

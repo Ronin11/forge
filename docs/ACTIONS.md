@@ -16,10 +16,14 @@ file, readable from history without checking anything out.
 
 Latest by default, no pins, no lockfile. What makes that safe:
 
-- **Resolve once at task creation, read by hash during the run.** A task
-  records the hash of every workflow and action it resolved, as a flat
-  list, and reads those versions from git objects thereafter. An edit
-  landing mid-run cannot change a running task.
+- **Resolve once at task start, run from the record.** Creation only
+  checks that resolution is possible and that the whole directory is
+  sound. When a task starts it resolves the latest versions, records
+  every workflow and action hash as a flat list of pins together with each
+  file's text, and runs from that record; a resumed task keeps it. An edit
+  landing mid-run cannot change a running task, and a task queued Monday
+  and started Wednesday runs Wednesday's files, which is what "latest by
+  default" means.
 - **Revert is git.** `forge stats` shows which hash had the good numbers,
   `forge workflows` shows the commit that introduced each hash, and
   reverting is checking that file out of that commit and committing.
@@ -41,7 +45,8 @@ A directive is a prompt template, a capability set, and a contract.
 - The prompt is the smallest part.
 
 Directives are code-defined for now: `code` and `tests`. Their files carry
-parameters, description, and `[meta]`, not prose. A user-authored
+parameters and a description, not prose, and a directive file with any
+other name is rejected by the validator until custom directives exist. A user-authored
 directive arrives when a workflow request shows the need, with one rule:
 it names the operations that verify its output. The Forge 1 directives
 library was prose agents could also bypass; a directive here is bound to
@@ -90,7 +95,7 @@ forms, one now and one later.
 name = "tdd"
 description = "hidden tests first, then code"
 steps = [
-  { action = "tests", max_turns = 40 },
+  { action = "tests" },
   { action = "setup" },
   { action = "code" },
   { workflow = "review-pass" },
