@@ -1,0 +1,21 @@
+--- src/checks.rs
++++ replace > with < in Tail::write
+@@ -39,17 +39,17 @@
+ 
+ /// Keeps the last `TAIL_BYTES` written to it.
+ #[derive(Default)]
+ struct Tail(Vec<u8>);
+ 
+ impl Tail {
+     fn write(&mut self, chunk: &[u8]) {
+         self.0.extend_from_slice(chunk);
+-        if self.0.len() > TAIL_BYTES {
++        if self.0.len() < /* ~ changed by cargo-mutants ~ */ TAIL_BYTES {
+             let cut = self.0.len() - TAIL_BYTES;
+             self.0.drain(..cut);
+         }
+     }
+     fn string(&self) -> String {
+         String::from_utf8_lossy(&self.0).into_owned()
+     }
+ }

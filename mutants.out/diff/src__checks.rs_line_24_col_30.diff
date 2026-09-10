@@ -1,0 +1,21 @@
+--- src/checks.rs
++++ replace * with +
+@@ -16,17 +16,17 @@
+ use std::process::Stdio;
+ use std::sync::{Arc, Mutex};
+ use std::time::{Duration, Instant};
+ use tokio::io::AsyncReadExt;
+ use tokio::process::Command;
+ 
+ /// How much of a check's output Forge keeps: the tail, which is where a
+ /// test runner puts its failures.
+-const TAIL_BYTES: usize = 16 * 1024;
++const TAIL_BYTES: usize = 16 + /* ~ changed by cargo-mutants ~ */ 1024;
+ const DRAIN_GRACE: Duration = Duration::from_secs(2);
+ 
+ #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+ pub struct CheckResult {
+     pub level: String,
+     pub name: String,
+     pub ok: bool,
+     pub exit: Option<i32>,

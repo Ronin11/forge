@@ -1,0 +1,21 @@
+--- src/agent.rs
++++ replace || with && in agent_env
+@@ -50,17 +50,17 @@
+ /// The environment the agent and the checks see, sandboxed or not. This is
+ /// the one list; the sandbox overrides HOME on top of it.
+ pub fn agent_env() -> Vec<(String, String)> {
+     std::env::vars()
+         .filter(|(k, _)| {
+             matches!(
+                 k.as_str(),
+                 "PATH" | "HOME" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR"
+-            ) || ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p))
++            ) && /* ~ changed by cargo-mutants ~ */ ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p))
+         })
+         .collect()
+ }
+ 
+ /// A command for `argv` in the worktree, through the sandbox when there is
+ /// one, with the agent environment plus `extra_env`.
+ pub fn command_in(
+     sandbox: Option<&Sandbox>,

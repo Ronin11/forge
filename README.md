@@ -4,8 +4,9 @@ The Forge rebuild, in Rust. One binary, no daemon: the worker is the
 long-running process.
 
 ```sh
-forge run  <repo> "<task>" [--check CMD]...   # do one task now
-forge add  <repo> "<task>" [--check CMD]...   # queue it
+forge run  <repo> "<task>" [--workflow W] [--check CMD]...   # do one task now
+forge add  <repo> "<task>" [--workflow W] [--check CMD]...   # queue it
+forge workflows                               # the workflows a task can run
 forge work [--jobs N] [--poll SECS] [--once]  # run the queue and stay up
 forge log                                     # tasks, newest first
 forge show <id>                               # one task, its attempts, every check
@@ -20,9 +21,11 @@ forge doctor                                  # can this machine run attempts; i
    (default `true`), `check_timeout_secs` (default 600). A task may add its
    own acceptance commands with `--check`. A task nothing would verify, no
    repo checks and no `--check`, is refused at creation.
-2. **Worktree.** `forge/<id>-<slug>` from the base branch. The registered
-   checkout is never touched beyond `worktree add`. The checks are then read
-   from the base commit, never from the branch under test.
+2. **Clone.** A single-branch clone of the base branch on `forge/<id>-<slug>`,
+   with no remote: the agent inside cannot fetch anything, and the
+   registered checkout and its `.git` are never mounted in the sandbox.
+   Forge pushes by URL. The checks are then read from the base commit,
+   never from the branch under test.
 3. **Agent.** `claude --print --output-format stream-json --json-schema …`
    in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
    `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
@@ -68,7 +71,8 @@ forge doctor                                  # can this machine run attempts; i
    as text.
 
 Task states: `queued`, `running`, `succeeded`, `failed` (with the reason),
-`unverified` (nothing verified the work; not pushed). Attempt states:
+`unverified` (nothing verified the work; not pushed), `blocked` (the agent
+asked a question or for another workflow). Attempt states:
 `succeeded`, `checks_failed`, `agent_failed`, `unverified`.
 
 ## The worker
@@ -115,6 +119,7 @@ src/verify.rs   L0/L1/L2, the claim rule, and the pure verdict table
 src/envelope.rs the result contract: schema and parser
 src/doctor.rs   forge doctor
 src/worker.rs   drive, the queue loop, signals
+src/workflows.rs the workflow table
 src/agent.rs    spawn the CLI, parse stream-json, timeout
 src/checks.rs   run one command as a check under a timeout
 src/sandbox.rs  bubblewrap

@@ -1,0 +1,123 @@
+
+*** src/agent.rs:72:5: replace command_in -> std::process::Command with Default::default()
+
+*** mutation diff:
+--- src/agent.rs
++++ replace command_in -> std::process::Command with Default::default()
+@@ -64,29 +64,17 @@
+ /// one, with the agent environment plus `extra_env`.
+ pub fn command_in(
+     sandbox: Option<&Sandbox>,
+     worktree: &Path,
+     repo_git_dir: &Path,
+     argv: &[String],
+     extra_env: &[(String, String)],
+ ) -> std::process::Command {
+-    let mut env = agent_env();
+-    env.extend(extra_env.iter().cloned());
+-    match sandbox {
+-        Some(sb) => sb.command(worktree, repo_git_dir, argv, &env),
+-        None => {
+-            let mut c = std::process::Command::new(&argv[0]);
+-            c.args(&argv[1..])
+-                .current_dir(worktree)
+-                .env_clear()
+-                .envs(env);
+-            c
+-        }
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub struct Launch<'a> {
+     pub task_id: i64,
+     pub worktree: &'a Path,
+     pub repo_git_dir: &'a Path,
+     pub prompt: &'a str,
+     pub model: &'a str,
+
+
+*** /home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=forge@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.12
+       Fresh pkg-config v0.3.34
+       Fresh utf8parse v0.2.2
+       Fresh proc-macro2 v1.0.107
+       Fresh cc v1.4.5
+       Fresh vcpkg v0.2.15
+       Fresh anstyle-parse v1.0.0
+       Fresh bitflags v2.13.1
+       Fresh quote v1.0.47
+       Fresh libc v0.2.189
+       Fresh serde_core v1.0.229
+       Fresh anstyle v1.0.14
+       Fresh foldhash v0.2.0
+       Fresh anstyle-query v1.1.5
+       Fresh colorchoice v1.0.5
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh syn v3.0.5
+       Fresh hashbrown v0.17.1
+       Fresh errno v0.3.14
+       Fresh anstream v1.0.0
+       Fresh clap_lex v1.1.0
+       Fresh heck v0.5.0
+       Fresh strsim v0.11.1
+       Fresh winnow v1.0.4
+       Fresh hashlink v0.12.2
+       Fresh tokio-macros v2.7.2
+       Fresh clap_derive v4.6.4
+       Fresh clap_builder v4.6.6
+       Fresh toml_parser v1.1.3+spec-1.1.0
+       Fresh libsqlite3-sys v0.38.2
+       Fresh signal-hook-registry v1.4.8
+       Fresh serde_derive v1.0.229
+       Fresh zmij v1.0.23
+       Fresh mio v1.2.3
+       Fresh serde_spanned v1.1.1
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh smallvec v1.16.0
+       Fresh pin-project-lite v0.2.17
+       Fresh toml_writer v1.1.2+spec-1.1.0
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh cfg-if v1.0.4
+       Fresh fallible-iterator v0.3.0
+       Fresh itoa v1.0.18
+       Fresh linux-raw-sys v0.12.1
+       Fresh bytes v1.12.1
+       Fresh memchr v2.8.3
+       Fresh winnow v0.7.15
+       Fresh serde v1.0.229
+       Fresh anyhow v1.0.104
+       Fresh toml v0.9.12+spec-1.1.0
+       Fresh getrandom v0.4.3
+       Fresh rusqlite v0.40.2
+       Fresh serde_json v1.0.151
+       Fresh rustix v1.1.4
+       Fresh tokio v1.53.1
+       Fresh clap v4.6.6
+       Fresh once_cell v1.21.4
+       Fresh fastrand v2.5.0
+       Fresh tempfile v3.27.0
+       Dirty forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp): the file `src/agent.rs` has changed (1789057814.727911392s, 3s after last build at 1789057811.942552011s)
+   Compiling forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp)
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=592c850fd687c3e6 -C extra-filename=-4efbaec9ca5b4941 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c124c663fbad2c10 -C extra-filename=-30a1a36b6b5abe51 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tempfile=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtempfile-8d9a0fc204d233f8.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+error[E0277]: the trait bound `std::process::Command: Default` is not satisfied
+  --> src/agent.rs:72:5
+   |
+72 |     Default::default() /* ~ changed by cargo-mutants ~ */
+   |     ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `std::process::Command`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `forge` (bin "forge") due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=592c850fd687c3e6 -C extra-filename=-4efbaec9ca5b4941 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `forge` (bin "forge" test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c124c663fbad2c10 -C extra-filename=-30a1a36b6b5abe51 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tempfile=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtempfile-8d9a0fc204d233f8.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out` (exit status: 1)
+
+*** result: Failure(101)

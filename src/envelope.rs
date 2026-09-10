@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Ported verbatim from Forge 1 (VERIFICATION.md, worker/verify.go).
-pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{"schema_version":{"type":"integer"},"summary":{"type":"string"},"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question"],"properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]}}}]},"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}"#;
+pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{"schema_version":{"type":"integer"},"summary":{"type":"string"},"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question"],"properties":{"question":{"type":"string"},"kind":{"type":"string","enum":["question","workflow"]},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]}}}]},"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}"#;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Envelope {
@@ -25,6 +25,10 @@ pub struct Envelope {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NeedsInput {
     pub question: String,
+    /// "question" (default): the operator must answer. "workflow": the
+    /// workflow given is wrong for the task or a needed step does not exist.
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub options: Vec<String>,
     #[serde(default)]

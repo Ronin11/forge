@@ -1,0 +1,2391 @@
+
+*** src/main.rs:33:5: replace main -> anyhow::Result<()> with Ok(())
+
+*** mutation diff:
+--- src/main.rs
++++ replace main -> anyhow::Result<()> with Ok(())
+@@ -25,10 +25,10 @@
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .map(|d| d.as_secs() as i64)
+         .unwrap_or(0)
+ }
+ 
+ #[tokio::main]
+ async fn main() -> anyhow::Result<()> {
+-    cli::main().await
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+
+
+*** /home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=forge@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh syn v3.0.5
+       Fresh libc v0.2.189
+       Fresh serde_core v1.0.229
+       Fresh find-msvc-tools v0.1.12
+       Fresh shlex v2.0.1
+       Fresh vcpkg v0.2.15
+       Fresh cc v1.4.5
+       Fresh utf8parse v0.2.2
+       Fresh pkg-config v0.3.34
+       Fresh foldhash v0.2.0
+       Fresh anstyle-parse v1.0.0
+       Fresh colorchoice v1.0.5
+       Fresh anstyle v1.0.14
+       Fresh anstyle-query v1.1.5
+       Fresh bitflags v2.13.1
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh hashbrown v0.17.1
+       Fresh anstream v1.0.0
+       Fresh errno v0.3.14
+       Fresh winnow v1.0.4
+       Fresh heck v0.5.0
+       Fresh clap_lex v1.1.0
+       Fresh strsim v0.11.1
+       Fresh clap_builder v4.6.6
+       Fresh clap_derive v4.6.4
+       Fresh signal-hook-registry v1.4.8
+       Fresh toml_parser v1.1.3+spec-1.1.0
+       Fresh hashlink v0.12.2
+       Fresh libsqlite3-sys v0.38.2
+       Fresh zmij v1.0.23
+       Fresh serde_spanned v1.1.1
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh mio v1.2.3
+       Fresh tokio-macros v2.7.2
+       Fresh serde_derive v1.0.229
+       Fresh bytes v1.12.1
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh fallible-iterator v0.3.0
+       Fresh smallvec v1.16.0
+       Fresh linux-raw-sys v0.12.1
+       Fresh pin-project-lite v0.2.17
+       Fresh winnow v0.7.15
+       Fresh cfg-if v1.0.4
+       Fresh toml_writer v1.1.2+spec-1.1.0
+       Fresh memchr v2.8.3
+       Fresh itoa v1.0.18
+       Fresh tokio v1.53.1
+       Fresh serde_json v1.0.151
+       Fresh toml v0.9.12+spec-1.1.0
+       Fresh getrandom v0.4.3
+       Fresh rustix v1.1.4
+       Fresh rusqlite v0.40.2
+       Fresh serde v1.0.229
+       Fresh anyhow v1.0.104
+       Fresh clap v4.6.6
+       Fresh fastrand v2.5.0
+       Fresh once_cell v1.21.4
+       Fresh tempfile v3.27.0
+       Dirty forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp): the file `src/main.rs` has changed (1789057801.839421351s, 3s after last build at 1789057798.799613103s)
+   Compiling forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp)
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=592c850fd687c3e6 -C extra-filename=-4efbaec9ca5b4941 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c124c663fbad2c10 -C extra-filename=-30a1a36b6b5abe51 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tempfile=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtempfile-8d9a0fc204d233f8.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+warning: struct `Outcome` is never constructed
+  --> src/agent.rs:20:12
+   |
+20 | pub struct Outcome {
+   |            ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `RateLimits` is never constructed
+  --> src/agent.rs:41:12
+   |
+41 | pub struct RateLimits {
+   |            ^^^^^^^^^^
+
+warning: function `agent_bin` is never used
+  --> src/agent.rs:46:8
+   |
+46 | pub fn agent_bin() -> String {
+   |        ^^^^^^^^^
+
+warning: function `agent_env` is never used
+  --> src/agent.rs:52:8
+   |
+52 | pub fn agent_env() -> Vec<(String, String)> {
+   |        ^^^^^^^^^
+
+warning: function `command_in` is never used
+  --> src/agent.rs:65:8
+   |
+65 | pub fn command_in(
+   |        ^^^^^^^^^^
+
+warning: struct `Launch` is never constructed
+  --> src/agent.rs:87:12
+   |
+87 | pub struct Launch<'a> {
+   |            ^^^^^^
+
+warning: function `run` is never used
+   --> src/agent.rs:100:14
+    |
+100 | pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    |              ^^^
+
+warning: constant `TAIL_BYTES` is never used
+  --> src/checks.rs:24:7
+   |
+24 | const TAIL_BYTES: usize = 16 * 1024;
+   |       ^^^^^^^^^^
+
+warning: constant `DRAIN_GRACE` is never used
+  --> src/checks.rs:25:7
+   |
+25 | const DRAIN_GRACE: Duration = Duration::from_secs(2);
+   |       ^^^^^^^^^^^
+
+warning: struct `CheckResult` is never constructed
+  --> src/checks.rs:28:12
+   |
+28 | pub struct CheckResult {
+   |            ^^^^^^^^^^^
+
+warning: struct `Tail` is never constructed
+  --> src/checks.rs:42:8
+   |
+42 | struct Tail(Vec<u8>);
+   |        ^^^^
+
+warning: methods `write` and `string` are never used
+  --> src/checks.rs:45:8
+   |
+44 | impl Tail {
+   | --------- methods in this implementation
+45 |     fn write(&mut self, chunk: &[u8]) {
+   |        ^^^^^
+...
+52 |     fn string(&self) -> String {
+   |        ^^^^^^
+
+warning: function `drain` is never used
+  --> src/checks.rs:57:10
+   |
+57 | async fn drain(mut r: impl AsyncReadExt + Unpin, tail: Arc<Mutex<Tail>>) {
+   |          ^^^^^
+
+warning: function `failing_tests` is never used
+  --> src/checks.rs:71:8
+   |
+71 | pub fn failing_tests(out: &str) -> Vec<String> {
+   |        ^^^^^^^^^^^^^
+
+warning: function `run_one` is never used
+  --> src/checks.rs:92:14
+   |
+92 | pub async fn run_one(
+   |              ^^^^^^^
+
+warning: function `last_lines` is never used
+   --> src/checks.rs:174:8
+    |
+174 | pub fn last_lines(s: &str, n: usize) -> String {
+    |        ^^^^^^^^^^
+
+warning: function `main` is never used
+  --> src/cli.rs:94:14
+   |
+94 | pub async fn main() -> Result<()> {
+   |              ^^^^
+
+warning: function `enqueue` is never used
+   --> src/cli.rs:124:10
+    |
+124 | async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
+    |          ^^^^^^^
+
+warning: function `run` is never used
+   --> src/cli.rs:155:10
+    |
+155 | async fn run(args: TaskArgs) -> Result<()> {
+    |          ^^^
+
+warning: function `add` is never used
+   --> src/cli.rs:174:10
+    |
+174 | async fn add(args: TaskArgs) -> Result<()> {
+    |          ^^^
+
+warning: function `run_doctor` is never used
+   --> src/cli.rs:181:4
+    |
+181 | fn run_doctor() -> Result<()> {
+    |    ^^^^^^^^^^
+
+warning: function `log` is never used
+   --> src/cli.rs:204:4
+    |
+204 | fn log(limit: u32) -> Result<()> {
+    |    ^^^
+
+warning: function `show` is never used
+   --> src/cli.rs:240:4
+    |
+240 | fn show(id: i64) -> Result<()> {
+    |    ^^^^
+
+warning: function `gc` is never used
+   --> src/cli.rs:390:10
+    |
+390 | async fn gc(dry_run: bool) -> Result<()> {
+    |          ^^
+
+warning: struct `Raw` is never constructed
+  --> src/config.rs:12:8
+   |
+12 | struct Raw {
+   |        ^^^
+
+warning: struct `VerifyRaw` is never constructed
+  --> src/config.rs:22:8
+   |
+22 | struct VerifyRaw {
+   |        ^^^^^^^^^
+
+warning: struct `Defaults` is never constructed
+  --> src/config.rs:31:8
+   |
+31 | struct Defaults {
+   |        ^^^^^^^^
+
+warning: struct `Config` is never constructed
+  --> src/config.rs:38:12
+   |
+38 | pub struct Config {
+   |            ^^^^^^
+
+warning: function `is_protected` is never used
+  --> src/config.rs:49:8
+   |
+49 | pub fn is_protected(protected: &[String], path: &str) -> bool {
+   |        ^^^^^^^^^^^^
+
+warning: function `parse` is never used
+  --> src/config.rs:59:10
+   |
+59 | async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
+   |          ^^^^^
+
+warning: function `load_working` is never used
+  --> src/config.rs:89:14
+   |
+89 | pub async fn load_working(repo: &Path) -> Result<Config> {
+   |              ^^^^^^^^^^^^
+
+warning: function `load_at` is never used
+   --> src/config.rs:101:14
+    |
+101 | pub async fn load_at(repo: &Path, rev: &str) -> Result<Config> {
+    |              ^^^^^^^
+
+warning: struct `HomeRaw` is never constructed
+   --> src/config.rs:109:8
+    |
+109 | struct HomeRaw {
+    |        ^^^^^^^
+
+warning: struct `SandboxRaw` is never constructed
+   --> src/config.rs:117:8
+    |
+117 | struct SandboxRaw {
+    |        ^^^^^^^^^^
+
+warning: struct `SandboxPaths` is never constructed
+   --> src/config.rs:125:12
+    |
+125 | pub struct SandboxPaths {
+    |            ^^^^^^^^^^^^
+
+warning: struct `HomeConfig` is never constructed
+   --> src/config.rs:130:12
+    |
+130 | pub struct HomeConfig {
+    |            ^^^^^^^^^^
+
+warning: function `expand` is never used
+   --> src/config.rs:135:4
+    |
+135 | fn expand(p: &str) -> PathBuf {
+    |    ^^^^^^
+
+warning: struct `BudgetRaw` is never constructed
+   --> src/config.rs:143:8
+    |
+143 | struct BudgetRaw {
+    |        ^^^^^^^^^
+
+warning: struct `Budget` is never constructed
+   --> src/config.rs:150:12
+    |
+150 | pub struct Budget {
+    |            ^^^^^^
+
+warning: constant `DEFAULT_HOME_CONFIG` is never used
+   --> src/config.rs:155:7
+    |
+155 | const DEFAULT_HOME_CONFIG: &str = "\
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_home` is never used
+   --> src/config.rs:171:8
+    |
+171 | pub fn load_home(home: &Path) -> Result<HomeConfig> {
+    |        ^^^^^^^^^
+
+warning: struct `Paths` is never constructed
+  --> src/ctx.rs:12:12
+   |
+12 | pub struct Paths {
+   |            ^^^^^
+
+warning: associated function `resolve` is never used
+  --> src/ctx.rs:21:12
+   |
+18 | impl Paths {
+   | ---------- associated function in this implementation
+...
+21 |     pub fn resolve() -> Result<Paths> {
+   |            ^^^^^^^
+
+warning: struct `Forge` is never constructed
+  --> src/ctx.rs:41:12
+   |
+41 | pub struct Forge {
+   |            ^^^^^
+
+warning: associated items `open`, `open_with`, and `sandboxed` are never used
+  --> src/ctx.rs:52:12
+   |
+49 | impl Forge {
+   | ---------- associated items in this implementation
+...
+52 |     pub fn open(need_agent: bool, prefix: bool) -> Result<Forge> {
+   |            ^^^^
+...
+71 |     pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
+   |            ^^^^^^^^^
+...
+82 |     pub fn sandboxed(&self) -> bool {
+   |            ^^^^^^^^^
+
+warning: enum `Status` is never used
+  --> src/doctor.rs:10:10
+   |
+10 | pub enum Status {
+   |          ^^^^^^
+
+warning: struct `Check` is never constructed
+  --> src/doctor.rs:16:12
+   |
+16 | pub struct Check {
+   |            ^^^^^
+
+warning: function `check` is never used
+  --> src/doctor.rs:23:4
+   |
+23 | fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<String>) -> Check {
+   |    ^^^^^
+
+warning: function `binary` is never used
+  --> src/doctor.rs:32:4
+   |
+32 | fn binary(name: &str, required: bool, why_optional: &str) -> Check {
+   |    ^^^^^^
+
+warning: function `run` is never used
+  --> src/doctor.rs:55:8
+   |
+55 | pub fn run() -> Result<Vec<Check>> {
+   |        ^^^
+
+warning: enum `Fault` is never used
+  --> src/engine.rs:17:10
+   |
+17 | pub enum Fault {
+   |          ^^^^^
+
+warning: trait `Classify` is never used
+  --> src/engine.rs:22:11
+   |
+22 | pub trait Classify<T> {
+   |           ^^^^^^^^
+
+warning: function `slug` is never used
+  --> src/engine.rs:37:8
+   |
+37 | pub fn slug(task: &str) -> String {
+   |        ^^^^
+
+warning: function `run_task` is never used
+  --> src/engine.rs:60:14
+   |
+60 | pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
+   |              ^^^^^^^^
+
+warning: function `prompt` is never used
+   --> src/engine.rs:207:4
+    |
+207 | fn prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) -> String {
+    |    ^^^^^^
+
+warning: function `run_attempt` is never used
+   --> src/engine.rs:252:10
+    |
+252 | async fn run_attempt(
+    |          ^^^^^^^^^^^
+
+warning: constant `SCHEMA` is never used
+  --> src/envelope.rs:10:11
+   |
+10 | pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes",...
+   |           ^^^^^^
+
+warning: struct `Envelope` is never constructed
+  --> src/envelope.rs:13:12
+   |
+13 | pub struct Envelope {
+   |            ^^^^^^^^
+
+warning: struct `NeedsInput` is never constructed
+  --> src/envelope.rs:26:12
+   |
+26 | pub struct NeedsInput {
+   |            ^^^^^^^^^^
+
+warning: struct `Change` is never constructed
+  --> src/envelope.rs:36:12
+   |
+36 | pub struct Change {
+   |            ^^^^^^
+
+warning: struct `CheckRun` is never constructed
+  --> src/envelope.rs:44:12
+   |
+44 | pub struct CheckRun {
+   |            ^^^^^^^^
+
+warning: struct `Claim` is never constructed
+  --> src/envelope.rs:52:12
+   |
+52 | pub struct Claim {
+   |            ^^^^^
+
+warning: function `parse` is never used
+  --> src/envelope.rs:60:8
+   |
+60 | pub fn parse(structured: Option<&str>, result_text: &str) -> Result<Option<Envelope>, String> {
+   |        ^^^^^
+
+warning: function `git` is never used
+ --> src/git.rs:9:10
+  |
+9 | async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+  |          ^^^
+
+warning: function `current_branch` is never used
+  --> src/git.rs:29:14
+   |
+29 | pub async fn current_branch(repo: &Path) -> Result<String> {
+   |              ^^^^^^^^^^^^^^
+
+warning: function `branch_exists` is never used
+  --> src/git.rs:35:14
+   |
+35 | pub async fn branch_exists(repo: &Path, branch: &str) -> bool {
+   |              ^^^^^^^^^^^^^
+
+warning: function `worktree_add` is never used
+  --> src/git.rs:49:14
+   |
+49 | pub async fn worktree_add(repo: &Path, wt: &Path, branch: &str, base: &str) -> Result<()> {
+   |              ^^^^^^^^^^^^
+
+warning: function `worktree_remove` is never used
+  --> src/git.rs:55:14
+   |
+55 | pub async fn worktree_remove(repo: &Path, wt: &Path) -> Result<()> {
+   |              ^^^^^^^^^^^^^^^
+
+warning: function `worktree_prune` is never used
+  --> src/git.rs:61:14
+   |
+61 | pub async fn worktree_prune(repo: &Path) -> Result<()> {
+   |              ^^^^^^^^^^^^^^
+
+warning: function `rev_parse` is never used
+  --> src/git.rs:66:14
+   |
+66 | pub async fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
+   |              ^^^^^^^^^
+
+warning: function `show_file` is never used
+  --> src/git.rs:71:14
+   |
+71 | pub async fn show_file(dir: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+   |              ^^^^^^^^^
+
+warning: function `count_commits` is never used
+  --> src/git.rs:86:14
+   |
+86 | pub async fn count_commits(wt: &Path, base_sha: &str) -> Result<i64> {
+   |              ^^^^^^^^^^^^^
+
+warning: function `changed_paths` is never used
+  --> src/git.rs:95:14
+   |
+95 | pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
+   |              ^^^^^^^^^^^^^
+
+warning: function `dirty_paths` is never used
+   --> src/git.rs:105:14
+    |
+105 | pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
+    |              ^^^^^^^^^^^
+
+warning: function `remote_url` is never used
+   --> src/git.rs:114:14
+    |
+114 | pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
+    |              ^^^^^^^^^^
+
+warning: function `remote_contains_head` is never used
+   --> src/git.rs:120:14
+    |
+120 | pub async fn remote_contains_head(wt: &Path) -> Result<bool> {
+    |              ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `push` is never used
+   --> src/git.rs:129:14
+    |
+129 | pub async fn push(wt: &Path, remote: &str, branch: &str) -> Result<()> {
+    |              ^^^^
+
+warning: function `identity` is never used
+   --> src/git.rs:137:14
+    |
+137 | pub async fn identity(repo_git_dir: &Path) -> Vec<(String, String)> {
+    |              ^^^^^^^^
+
+warning: function `compare_url` is never used
+   --> src/git.rs:166:8
+    |
+166 | pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String> {
+    |        ^^^^^^^^^^^
+
+warning: enum `Event` is never used
+ --> src/report.rs:8:10
+  |
+8 | pub enum Event<'a> {
+  |          ^^^^^
+
+warning: struct `Reporter` is never constructed
+  --> src/report.rs:77:12
+   |
+77 | pub struct Reporter {
+   |            ^^^^^^^^
+
+warning: static `OUT` is never used
+  --> src/report.rs:81:8
+   |
+81 | static OUT: Mutex<()> = Mutex::new(());
+   |        ^^^
+
+warning: associated items `new` and `emit` are never used
+  --> src/report.rs:84:12
+   |
+83 | impl Reporter {
+   | ------------- associated items in this implementation
+84 |     pub fn new(prefix: bool) -> Reporter {
+   |            ^^^
+...
+88 |     pub fn emit(&self, task_id: i64, ev: Event) {
+   |            ^^^^
+
+warning: function `money` is never used
+   --> src/report.rs:102:4
+    |
+102 | fn money(c: Option<f64>) -> String {
+    |    ^^^^^
+
+warning: function `render` is never used
+   --> src/report.rs:106:4
+    |
+106 | fn render(ev: Event) -> Vec<String> {
+    |    ^^^^^^
+
+warning: struct `Sandbox` is never constructed
+  --> src/sandbox.rs:16:12
+   |
+16 | pub struct Sandbox {
+   |            ^^^^^^^
+
+warning: function `resolve_binary` is never used
+  --> src/sandbox.rs:30:8
+   |
+30 | pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
+   |        ^^^^^^^^^^^^^^
+
+warning: associated items `detect` and `command` are never used
+  --> src/sandbox.rs:50:12
+   |
+48 | impl Sandbox {
+   | ------------ associated items in this implementation
+49 |     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
+50 |     pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
+   |            ^^^^^^
+...
+81 |     pub fn command(
+   |            ^^^^^^^
+
+warning: enum `TaskState` is never used
+  --> src/store.rs:13:10
+   |
+13 | pub enum TaskState {
+   |          ^^^^^^^^^
+
+warning: method `as_str` is never used
+  --> src/store.rs:23:12
+   |
+22 | impl TaskState {
+   | -------------- method in this implementation
+23 |     pub fn as_str(self) -> &'static str {
+   |            ^^^^^^
+
+warning: enum `AttemptState` is never used
+  --> src/store.rs:53:10
+   |
+53 | pub enum AttemptState {
+   |          ^^^^^^^^^^^^
+
+warning: method `as_str` is never used
+  --> src/store.rs:65:12
+   |
+64 | impl AttemptState {
+   | ----------------- method in this implementation
+65 |     pub fn as_str(self) -> &'static str {
+   |            ^^^^^^
+
+warning: struct `Task` is never constructed
+  --> src/store.rs:97:12
+   |
+97 | pub struct Task {
+   |            ^^^^
+
+warning: struct `Attempt` is never constructed
+   --> src/store.rs:126:12
+    |
+126 | pub struct Attempt {
+    |            ^^^^^^^
+
+warning: struct `RateLimitSample` is never constructed
+   --> src/store.rs:154:12
+    |
+154 | pub struct RateLimitSample {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `TaskSummary` is never constructed
+   --> src/store.rs:160:12
+    |
+160 | pub struct TaskSummary {
+    |            ^^^^^^^^^^^
+
+warning: struct `Store` is never constructed
+   --> src/store.rs:170:12
+    |
+170 | pub struct Store {
+    |            ^^^^^
+
+warning: constant `MIGRATIONS` is never used
+   --> src/store.rs:175:11
+    |
+175 | pub const MIGRATIONS: &[&str] = &[
+    |           ^^^^^^^^^^
+
+warning: constant `TASK_COLS` is never used
+   --> src/store.rs:236:7
+    |
+236 | const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
+    |       ^^^^^^^^^
+
+warning: function `conv` is never used
+   --> src/store.rs:240:4
+    |
+240 | fn conv<T, E: std::error::Error + Send + Sync + 'static>(
+    |    ^^^^
+
+warning: function `task_from_row` is never used
+   --> src/store.rs:247:4
+    |
+247 | fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
+    |    ^^^^^^^^^^^^^
+
+warning: constant `ATTEMPT_COLS` is never used
+   --> src/store.rs:274:7
+    |
+274 | const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
+    |       ^^^^^^^^^^^^
+
+warning: function `attempt_from_row` is never used
+   --> src/store.rs:278:4
+    |
+278 | fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/store.rs:308:12
+    |
+307 | impl Store {
+    | ---------- associated items in this implementation
+308 |     pub fn open(path: &Path) -> Result<Store> {
+    |            ^^^^
+...
+319 |     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    |        ^^^^
+...
+330 |     pub fn insert_task(&self, t: &Task) -> Result<i64> {
+    |            ^^^^^^^^^^^
+...
+354 |     pub fn update_task(&self, t: &Task) -> Result<()> {
+    |            ^^^^^^^^^^^
+...
+374 |     pub fn task(&self, id: i64) -> Result<Option<Task>> {
+    |            ^^^^
+...
+386 |     pub fn claim_next(&self, pid: i64) -> Result<Option<Task>> {
+    |            ^^^^^^^^^^
+...
+404 |     pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
+    |            ^^^^^
+...
+412 |     pub fn queued_count(&self) -> Result<i64> {
+    |            ^^^^^^^^^^^^
+...
+423 |     pub fn requeue(&self, id: i64, why: &str) -> Result<()> {
+    |            ^^^^^^^
+...
+437 |     pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+    |            ^^^^^^^
+...
+450 |     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
+    |            ^^^^^^^^^^^^^^
+...
+459 |     pub fn finish_attempt(&self, a: &Attempt) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+...
+491 |     pub fn running_ids(&self) -> Result<Vec<i64>> {
+    |            ^^^^^^^^^^^
+...
+499 |     pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+511 |     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
+    |            ^^^^^^^^
+...
+521 |     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
+    |            ^^^^^^^^^
+...
+530 |     pub fn spent_since(&self, since: i64) -> Result<f64> {
+    |            ^^^^^^^^^^^
+...
+539 |     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+548 |     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+556 |     pub fn list_tasks(&self, limit: u32) -> Result<Vec<TaskSummary>> {
+    |            ^^^^^^^^^^
+
+warning: function `migrate` is never used
+   --> src/store.rs:579:4
+    |
+579 | fn migrate(conn: &Connection) -> Result<()> {
+    |    ^^^^^^^
+
+warning: struct `Subject` is never constructed
+  --> src/verify.rs:31:12
+   |
+31 | pub struct Subject<'a> {
+   |            ^^^^^^^
+
+warning: struct `Verdict` is never constructed
+  --> src/verify.rs:43:12
+   |
+43 | pub struct Verdict {
+   |            ^^^^^^^
+
+warning: function `l0` is never used
+  --> src/verify.rs:53:4
+   |
+53 | fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
+   |    ^^
+
+warning: function `verify` is never used
+  --> src/verify.rs:63:14
+   |
+63 | pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
+   |              ^^^^^^
+
+warning: function `agent_failure` is never used
+   --> src/verify.rs:310:8
+    |
+310 | pub fn agent_failure(a: &Outcome) -> Option<String> {
+    |        ^^^^^^^^^^^^^
+
+warning: function `decide` is never used
+   --> src/verify.rs:328:8
+    |
+328 | pub fn decide(
+    |        ^^^^^^
+
+warning: function `feedback` is never used
+   --> src/verify.rs:363:8
+    |
+363 | pub fn feedback(v: &Verdict, agent: &Outcome, max_turns: i64) -> String {
+    |        ^^^^^^^^
+
+warning: function `pid_alive` is never used
+  --> src/worker.rs:22:8
+   |
+22 | pub fn pid_alive(pid: i64) -> bool {
+   |        ^^^^^^^^^
+
+warning: function `drive` is never used
+  --> src/worker.rs:28:14
+   |
+28 | pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
+   |              ^^^^^
+
+warning: function `day_budget_reached` is never used
+  --> src/worker.rs:57:8
+   |
+57 | pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `p_config` is never used
+  --> src/worker.rs:68:4
+   |
+68 | fn p_config(f: &Forge) -> String {
+   |    ^^^^^^^^
+
+warning: struct `WorkOpts` is never constructed
+  --> src/worker.rs:72:12
+   |
+72 | pub struct WorkOpts {
+   |            ^^^^^^^^
+
+warning: function `shutdown_signal` is never used
+  --> src/worker.rs:79:10
+   |
+79 | async fn shutdown_signal() {
+   |          ^^^^^^^^^^^^^^^
+
+warning: function `work` is never used
+  --> src/worker.rs:88:14
+   |
+88 | pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
+   |              ^^^^
+
+warning: fields `tool_calls`, `cost_usd`, `wall_ms`, `result_text`, `structured`, and `rate_limits` are never read
+  --> src/agent.rs:26:9
+   |
+20 | pub struct Outcome {
+   |            ------- fields in this struct
+...
+26 |     pub tool_calls: i64,
+   |         ^^^^^^^^^^
+27 |     pub cost_usd: Option<f64>,
+   |         ^^^^^^^^
+28 |     pub wall_ms: u128,
+   |         ^^^^^^^
+29 |     pub result_text: String,
+   |         ^^^^^^^^^^^
+...
+32 |     pub structured: Option<String>,
+   |         ^^^^^^^^^^
+33 |     /// Last rate-limit sample seen on the stream, per window.
+34 |     pub rate_limits: RateLimits,
+   |         ^^^^^^^^^^^
+   |
+   = note: `Outcome` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `five_hour` and `seven_day` are never read
+  --> src/agent.rs:42:9
+   |
+41 | pub struct RateLimits {
+   |            ---------- fields in this struct
+42 |     pub five_hour: Option<(f64, i64)>,
+   |         ^^^^^^^^^
+43 |     pub seven_day: Option<(f64, i64)>,
+   |         ^^^^^^^^^
+   |
+   = note: `RateLimits` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `detect` is never used
+  --> src/sandbox.rs:50:12
+   |
+48 | impl Sandbox {
+   | ------------ associated function in this implementation
+49 |     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
+50 |     pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
+   |            ^^^^^^
+
+warning: multiple fields are never read
+   --> src/store.rs:102:9
+    |
+ 97 | pub struct Task {
+    |            ---- fields in this struct
+...
+102 |     pub base_sha: String,
+    |         ^^^^^^^^
+103 |     pub branch: String,
+    |         ^^^^^^
+104 |     pub worktree: String,
+    |         ^^^^^^^^
+...
+112 |     pub reason: String,
+    |         ^^^^^^
+113 |     pub created_at: i64,
+114 |     pub started_at: Option<i64>,
+    |         ^^^^^^^^^^
+115 |     pub finished_at: Option<i64>,
+    |         ^^^^^^^^^^^
+116 |     pub pushed: bool,
+    |         ^^^^^^
+117 |     pub worker_pid: Option<i64>,
+    |         ^^^^^^^^^^
+...
+120 |     pub worktree_removed_at: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `Task` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple fields are never read
+   --> src/store.rs:127:9
+    |
+126 | pub struct Attempt {
+    |            ------- fields in this struct
+127 |     pub id: i64,
+    |         ^^
+...
+133 |     pub finished_at: Option<i64>,
+    |         ^^^^^^^^^^^
+134 |     pub agent_exit: Option<i32>,
+    |         ^^^^^^^^^^
+135 |     pub timed_out: bool,
+    |         ^^^^^^^^^
+136 |     pub num_turns: i64,
+    |         ^^^^^^^^^
+137 |     pub tool_calls: i64,
+    |         ^^^^^^^^^^
+138 |     pub cost_usd: Option<f64>,
+    |         ^^^^^^^^
+139 |     pub agent_ms: i64,
+    |         ^^^^^^^^
+140 |     pub commits: i64,
+    |         ^^^^^^^
+141 |     pub files_changed: i64,
+    |         ^^^^^^^^^^^^^
+142 |     pub dirty: bool,
+    |         ^^^^^
+143 |     pub verdict_json: String,
+    |         ^^^^^^^^^^^^
+144 |     pub result_text: String,
+    |         ^^^^^^^^^^^
+...
+147 |     pub envelope_json: String,
+    |         ^^^^^^^^^^^^^
+148 |     pub rl_five_hour: Option<f64>,
+    |         ^^^^^^^^^^^^
+149 |     pub rl_seven_day: Option<f64>,
+    |         ^^^^^^^^^^^^
+150 |     pub rl_five_hour_resets: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+151 |     pub rl_seven_day_resets: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `Attempt` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple methods are never used
+   --> src/store.rs:354:12
+    |
+307 | impl Store {
+    | ---------- methods in this implementation
+...
+354 |     pub fn update_task(&self, t: &Task) -> Result<()> {
+    |            ^^^^^^^^^^^
+...
+412 |     pub fn queued_count(&self) -> Result<i64> {
+    |            ^^^^^^^^^^^^
+...
+437 |     pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+    |            ^^^^^^^
+...
+459 |     pub fn finish_attempt(&self, a: &Attempt) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+...
+491 |     pub fn running_ids(&self) -> Result<Vec<i64>> {
+    |            ^^^^^^^^^^^
+...
+499 |     pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+521 |     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
+    |            ^^^^^^^^^
+...
+530 |     pub fn spent_since(&self, since: i64) -> Result<f64> {
+    |            ^^^^^^^^^^^
+...
+539 |     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+548 |     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+556 |     pub fn list_tasks(&self, limit: u32) -> Result<Vec<TaskSummary>> {
+    |            ^^^^^^^^^^
+
+warning: fields `commits`, `files_changed`, `dirty`, and `envelope` are never read
+  --> src/verify.rs:44:9
+   |
+43 | pub struct Verdict {
+   |            ------- fields in this struct
+44 |     pub commits: i64,
+   |         ^^^^^^^
+45 |     pub files_changed: i64,
+   |         ^^^^^^^^^^^^^
+46 |     pub dirty: bool,
+   |         ^^^^^
+47 |     pub envelope: Option<Envelope>,
+   |         ^^^^^^^^
+
+warning: `forge` (bin "forge" test) generated 74 warnings (67 duplicates)
+warning: `forge` (bin "forge") generated 119 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+  Executable `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/forge-30a1a36b6b5abe51`
+  Executable `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/e2e-ec5b46a137667371`
+
+*** result: Success
+
+*** /home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=forge@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh find-msvc-tools v0.1.12
+       Fresh shlex v2.0.1
+       Fresh vcpkg v0.2.15
+       Fresh utf8parse v0.2.2
+       Fresh proc-macro2 v1.0.107
+       Fresh cc v1.4.5
+       Fresh pkg-config v0.3.34
+       Fresh anstyle-parse v1.0.0
+       Fresh anstyle v1.0.14
+       Fresh anstyle-query v1.1.5
+       Fresh quote v1.0.47
+       Fresh libc v0.2.189
+       Fresh serde_core v1.0.229
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh foldhash v0.2.0
+       Fresh bitflags v2.13.1
+       Fresh colorchoice v1.0.5
+       Fresh syn v3.0.5
+       Fresh errno v0.3.14
+       Fresh hashbrown v0.17.1
+       Fresh anstream v1.0.0
+       Fresh strsim v0.11.1
+       Fresh clap_lex v1.1.0
+       Fresh winnow v1.0.4
+       Fresh heck v0.5.0
+       Fresh tokio-macros v2.7.2
+       Fresh zmij v1.0.23
+       Fresh clap_builder v4.6.6
+       Fresh toml_parser v1.1.3+spec-1.1.0
+       Fresh clap_derive v4.6.4
+       Fresh hashlink v0.12.2
+       Fresh serde_derive v1.0.229
+       Fresh libsqlite3-sys v0.38.2
+       Fresh signal-hook-registry v1.4.8
+       Fresh mio v1.2.3
+       Fresh serde_spanned v1.1.1
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh itoa v1.0.18
+       Fresh toml_writer v1.1.2+spec-1.1.0
+       Fresh linux-raw-sys v0.12.1
+       Fresh smallvec v1.16.0
+       Fresh fallible-iterator v0.3.0
+       Fresh pin-project-lite v0.2.17
+       Fresh memchr v2.8.3
+       Fresh bytes v1.12.1
+       Fresh winnow v0.7.15
+       Fresh cfg-if v1.0.4
+       Fresh rustix v1.1.4
+       Fresh clap v4.6.6
+       Fresh serde_json v1.0.151
+       Fresh toml v0.9.12+spec-1.1.0
+       Fresh tokio v1.53.1
+       Fresh rusqlite v0.40.2
+       Fresh getrandom v0.4.3
+       Fresh serde v1.0.229
+       Fresh anyhow v1.0.104
+       Fresh once_cell v1.21.4
+       Fresh fastrand v2.5.0
+       Fresh tempfile v3.27.0
+warning: struct `Outcome` is never constructed
+  --> src/agent.rs:20:12
+   |
+20 | pub struct Outcome {
+   |            ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `RateLimits` is never constructed
+  --> src/agent.rs:41:12
+   |
+41 | pub struct RateLimits {
+   |            ^^^^^^^^^^
+
+warning: function `agent_bin` is never used
+  --> src/agent.rs:46:8
+   |
+46 | pub fn agent_bin() -> String {
+   |        ^^^^^^^^^
+
+warning: function `agent_env` is never used
+  --> src/agent.rs:52:8
+   |
+52 | pub fn agent_env() -> Vec<(String, String)> {
+   |        ^^^^^^^^^
+
+warning: function `command_in` is never used
+  --> src/agent.rs:65:8
+   |
+65 | pub fn command_in(
+   |        ^^^^^^^^^^
+
+warning: struct `Launch` is never constructed
+  --> src/agent.rs:87:12
+   |
+87 | pub struct Launch<'a> {
+   |            ^^^^^^
+
+warning: function `run` is never used
+   --> src/agent.rs:100:14
+    |
+100 | pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    |              ^^^
+
+warning: constant `TAIL_BYTES` is never used
+  --> src/checks.rs:24:7
+   |
+24 | const TAIL_BYTES: usize = 16 * 1024;
+   |       ^^^^^^^^^^
+
+warning: constant `DRAIN_GRACE` is never used
+  --> src/checks.rs:25:7
+   |
+25 | const DRAIN_GRACE: Duration = Duration::from_secs(2);
+   |       ^^^^^^^^^^^
+
+warning: struct `CheckResult` is never constructed
+  --> src/checks.rs:28:12
+   |
+28 | pub struct CheckResult {
+   |            ^^^^^^^^^^^
+
+warning: struct `Tail` is never constructed
+  --> src/checks.rs:42:8
+   |
+42 | struct Tail(Vec<u8>);
+   |        ^^^^
+
+warning: methods `write` and `string` are never used
+  --> src/checks.rs:45:8
+   |
+44 | impl Tail {
+   | --------- methods in this implementation
+45 |     fn write(&mut self, chunk: &[u8]) {
+   |        ^^^^^
+...
+52 |     fn string(&self) -> String {
+   |        ^^^^^^
+
+warning: function `drain` is never used
+  --> src/checks.rs:57:10
+   |
+57 | async fn drain(mut r: impl AsyncReadExt + Unpin, tail: Arc<Mutex<Tail>>) {
+   |          ^^^^^
+
+warning: function `failing_tests` is never used
+  --> src/checks.rs:71:8
+   |
+71 | pub fn failing_tests(out: &str) -> Vec<String> {
+   |        ^^^^^^^^^^^^^
+
+warning: function `run_one` is never used
+  --> src/checks.rs:92:14
+   |
+92 | pub async fn run_one(
+   |              ^^^^^^^
+
+warning: function `last_lines` is never used
+   --> src/checks.rs:174:8
+    |
+174 | pub fn last_lines(s: &str, n: usize) -> String {
+    |        ^^^^^^^^^^
+
+warning: function `main` is never used
+  --> src/cli.rs:94:14
+   |
+94 | pub async fn main() -> Result<()> {
+   |              ^^^^
+
+warning: function `enqueue` is never used
+   --> src/cli.rs:124:10
+    |
+124 | async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
+    |          ^^^^^^^
+
+warning: function `run` is never used
+   --> src/cli.rs:155:10
+    |
+155 | async fn run(args: TaskArgs) -> Result<()> {
+    |          ^^^
+
+warning: function `add` is never used
+   --> src/cli.rs:174:10
+    |
+174 | async fn add(args: TaskArgs) -> Result<()> {
+    |          ^^^
+
+warning: function `run_doctor` is never used
+   --> src/cli.rs:181:4
+    |
+181 | fn run_doctor() -> Result<()> {
+    |    ^^^^^^^^^^
+
+warning: function `log` is never used
+   --> src/cli.rs:204:4
+    |
+204 | fn log(limit: u32) -> Result<()> {
+    |    ^^^
+
+warning: function `show` is never used
+   --> src/cli.rs:240:4
+    |
+240 | fn show(id: i64) -> Result<()> {
+    |    ^^^^
+
+warning: function `gc` is never used
+   --> src/cli.rs:390:10
+    |
+390 | async fn gc(dry_run: bool) -> Result<()> {
+    |          ^^
+
+warning: struct `Raw` is never constructed
+  --> src/config.rs:12:8
+   |
+12 | struct Raw {
+   |        ^^^
+
+warning: struct `VerifyRaw` is never constructed
+  --> src/config.rs:22:8
+   |
+22 | struct VerifyRaw {
+   |        ^^^^^^^^^
+
+warning: struct `Defaults` is never constructed
+  --> src/config.rs:31:8
+   |
+31 | struct Defaults {
+   |        ^^^^^^^^
+
+warning: struct `Config` is never constructed
+  --> src/config.rs:38:12
+   |
+38 | pub struct Config {
+   |            ^^^^^^
+
+warning: function `is_protected` is never used
+  --> src/config.rs:49:8
+   |
+49 | pub fn is_protected(protected: &[String], path: &str) -> bool {
+   |        ^^^^^^^^^^^^
+
+warning: function `parse` is never used
+  --> src/config.rs:59:10
+   |
+59 | async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
+   |          ^^^^^
+
+warning: function `load_working` is never used
+  --> src/config.rs:89:14
+   |
+89 | pub async fn load_working(repo: &Path) -> Result<Config> {
+   |              ^^^^^^^^^^^^
+
+warning: function `load_at` is never used
+   --> src/config.rs:101:14
+    |
+101 | pub async fn load_at(repo: &Path, rev: &str) -> Result<Config> {
+    |              ^^^^^^^
+
+warning: struct `HomeRaw` is never constructed
+   --> src/config.rs:109:8
+    |
+109 | struct HomeRaw {
+    |        ^^^^^^^
+
+warning: struct `SandboxRaw` is never constructed
+   --> src/config.rs:117:8
+    |
+117 | struct SandboxRaw {
+    |        ^^^^^^^^^^
+
+warning: struct `SandboxPaths` is never constructed
+   --> src/config.rs:125:12
+    |
+125 | pub struct SandboxPaths {
+    |            ^^^^^^^^^^^^
+
+warning: struct `HomeConfig` is never constructed
+   --> src/config.rs:130:12
+    |
+130 | pub struct HomeConfig {
+    |            ^^^^^^^^^^
+
+warning: function `expand` is never used
+   --> src/config.rs:135:4
+    |
+135 | fn expand(p: &str) -> PathBuf {
+    |    ^^^^^^
+
+warning: struct `BudgetRaw` is never constructed
+   --> src/config.rs:143:8
+    |
+143 | struct BudgetRaw {
+    |        ^^^^^^^^^
+
+warning: struct `Budget` is never constructed
+   --> src/config.rs:150:12
+    |
+150 | pub struct Budget {
+    |            ^^^^^^
+
+warning: constant `DEFAULT_HOME_CONFIG` is never used
+   --> src/config.rs:155:7
+    |
+155 | const DEFAULT_HOME_CONFIG: &str = "\
+    |       ^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_home` is never used
+   --> src/config.rs:171:8
+    |
+171 | pub fn load_home(home: &Path) -> Result<HomeConfig> {
+    |        ^^^^^^^^^
+
+warning: struct `Paths` is never constructed
+  --> src/ctx.rs:12:12
+   |
+12 | pub struct Paths {
+   |            ^^^^^
+
+warning: associated function `resolve` is never used
+  --> src/ctx.rs:21:12
+   |
+18 | impl Paths {
+   | ---------- associated function in this implementation
+...
+21 |     pub fn resolve() -> Result<Paths> {
+   |            ^^^^^^^
+
+warning: struct `Forge` is never constructed
+  --> src/ctx.rs:41:12
+   |
+41 | pub struct Forge {
+   |            ^^^^^
+
+warning: associated items `open`, `open_with`, and `sandboxed` are never used
+  --> src/ctx.rs:52:12
+   |
+49 | impl Forge {
+   | ---------- associated items in this implementation
+...
+52 |     pub fn open(need_agent: bool, prefix: bool) -> Result<Forge> {
+   |            ^^^^
+...
+71 |     pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
+   |            ^^^^^^^^^
+...
+82 |     pub fn sandboxed(&self) -> bool {
+   |            ^^^^^^^^^
+
+warning: enum `Status` is never used
+  --> src/doctor.rs:10:10
+   |
+10 | pub enum Status {
+   |          ^^^^^^
+
+warning: struct `Check` is never constructed
+  --> src/doctor.rs:16:12
+   |
+16 | pub struct Check {
+   |            ^^^^^
+
+warning: function `check` is never used
+  --> src/doctor.rs:23:4
+   |
+23 | fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<String>) -> Check {
+   |    ^^^^^
+
+warning: function `binary` is never used
+  --> src/doctor.rs:32:4
+   |
+32 | fn binary(name: &str, required: bool, why_optional: &str) -> Check {
+   |    ^^^^^^
+
+warning: function `run` is never used
+  --> src/doctor.rs:55:8
+   |
+55 | pub fn run() -> Result<Vec<Check>> {
+   |        ^^^
+
+warning: enum `Fault` is never used
+  --> src/engine.rs:17:10
+   |
+17 | pub enum Fault {
+   |          ^^^^^
+
+warning: trait `Classify` is never used
+  --> src/engine.rs:22:11
+   |
+22 | pub trait Classify<T> {
+   |           ^^^^^^^^
+
+warning: function `slug` is never used
+  --> src/engine.rs:37:8
+   |
+37 | pub fn slug(task: &str) -> String {
+   |        ^^^^
+
+warning: function `run_task` is never used
+  --> src/engine.rs:60:14
+   |
+60 | pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
+   |              ^^^^^^^^
+
+warning: function `prompt` is never used
+   --> src/engine.rs:207:4
+    |
+207 | fn prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) -> String {
+    |    ^^^^^^
+
+warning: function `run_attempt` is never used
+   --> src/engine.rs:252:10
+    |
+252 | async fn run_attempt(
+    |          ^^^^^^^^^^^
+
+warning: constant `SCHEMA` is never used
+  --> src/envelope.rs:10:11
+   |
+10 | pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes",...
+   |           ^^^^^^
+
+warning: struct `Envelope` is never constructed
+  --> src/envelope.rs:13:12
+   |
+13 | pub struct Envelope {
+   |            ^^^^^^^^
+
+warning: struct `NeedsInput` is never constructed
+  --> src/envelope.rs:26:12
+   |
+26 | pub struct NeedsInput {
+   |            ^^^^^^^^^^
+
+warning: struct `Change` is never constructed
+  --> src/envelope.rs:36:12
+   |
+36 | pub struct Change {
+   |            ^^^^^^
+
+warning: struct `CheckRun` is never constructed
+  --> src/envelope.rs:44:12
+   |
+44 | pub struct CheckRun {
+   |            ^^^^^^^^
+
+warning: struct `Claim` is never constructed
+  --> src/envelope.rs:52:12
+   |
+52 | pub struct Claim {
+   |            ^^^^^
+
+warning: function `parse` is never used
+  --> src/envelope.rs:60:8
+   |
+60 | pub fn parse(structured: Option<&str>, result_text: &str) -> Result<Option<Envelope>, String> {
+   |        ^^^^^
+
+warning: function `git` is never used
+ --> src/git.rs:9:10
+  |
+9 | async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+  |          ^^^
+
+warning: function `current_branch` is never used
+  --> src/git.rs:29:14
+   |
+29 | pub async fn current_branch(repo: &Path) -> Result<String> {
+   |              ^^^^^^^^^^^^^^
+
+warning: function `branch_exists` is never used
+  --> src/git.rs:35:14
+   |
+35 | pub async fn branch_exists(repo: &Path, branch: &str) -> bool {
+   |              ^^^^^^^^^^^^^
+
+warning: function `worktree_add` is never used
+  --> src/git.rs:49:14
+   |
+49 | pub async fn worktree_add(repo: &Path, wt: &Path, branch: &str, base: &str) -> Result<()> {
+   |              ^^^^^^^^^^^^
+
+warning: function `worktree_remove` is never used
+  --> src/git.rs:55:14
+   |
+55 | pub async fn worktree_remove(repo: &Path, wt: &Path) -> Result<()> {
+   |              ^^^^^^^^^^^^^^^
+
+warning: function `worktree_prune` is never used
+  --> src/git.rs:61:14
+   |
+61 | pub async fn worktree_prune(repo: &Path) -> Result<()> {
+   |              ^^^^^^^^^^^^^^
+
+warning: function `rev_parse` is never used
+  --> src/git.rs:66:14
+   |
+66 | pub async fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
+   |              ^^^^^^^^^
+
+warning: function `show_file` is never used
+  --> src/git.rs:71:14
+   |
+71 | pub async fn show_file(dir: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+   |              ^^^^^^^^^
+
+warning: function `count_commits` is never used
+  --> src/git.rs:86:14
+   |
+86 | pub async fn count_commits(wt: &Path, base_sha: &str) -> Result<i64> {
+   |              ^^^^^^^^^^^^^
+
+warning: function `changed_paths` is never used
+  --> src/git.rs:95:14
+   |
+95 | pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
+   |              ^^^^^^^^^^^^^
+
+warning: function `dirty_paths` is never used
+   --> src/git.rs:105:14
+    |
+105 | pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
+    |              ^^^^^^^^^^^
+
+warning: function `remote_url` is never used
+   --> src/git.rs:114:14
+    |
+114 | pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
+    |              ^^^^^^^^^^
+
+warning: function `remote_contains_head` is never used
+   --> src/git.rs:120:14
+    |
+120 | pub async fn remote_contains_head(wt: &Path) -> Result<bool> {
+    |              ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `push` is never used
+   --> src/git.rs:129:14
+    |
+129 | pub async fn push(wt: &Path, remote: &str, branch: &str) -> Result<()> {
+    |              ^^^^
+
+warning: function `identity` is never used
+   --> src/git.rs:137:14
+    |
+137 | pub async fn identity(repo_git_dir: &Path) -> Vec<(String, String)> {
+    |              ^^^^^^^^
+
+warning: function `compare_url` is never used
+   --> src/git.rs:166:8
+    |
+166 | pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String> {
+    |        ^^^^^^^^^^^
+
+warning: enum `Event` is never used
+ --> src/report.rs:8:10
+  |
+8 | pub enum Event<'a> {
+  |          ^^^^^
+
+warning: struct `Reporter` is never constructed
+  --> src/report.rs:77:12
+   |
+77 | pub struct Reporter {
+   |            ^^^^^^^^
+
+warning: static `OUT` is never used
+  --> src/report.rs:81:8
+   |
+81 | static OUT: Mutex<()> = Mutex::new(());
+   |        ^^^
+
+warning: associated items `new` and `emit` are never used
+  --> src/report.rs:84:12
+   |
+83 | impl Reporter {
+   | ------------- associated items in this implementation
+84 |     pub fn new(prefix: bool) -> Reporter {
+   |            ^^^
+...
+88 |     pub fn emit(&self, task_id: i64, ev: Event) {
+   |            ^^^^
+
+warning: function `money` is never used
+   --> src/report.rs:102:4
+    |
+102 | fn money(c: Option<f64>) -> String {
+    |    ^^^^^
+
+warning: function `render` is never used
+   --> src/report.rs:106:4
+    |
+106 | fn render(ev: Event) -> Vec<String> {
+    |    ^^^^^^
+
+warning: struct `Sandbox` is never constructed
+  --> src/sandbox.rs:16:12
+   |
+16 | pub struct Sandbox {
+   |            ^^^^^^^
+
+warning: function `resolve_binary` is never used
+  --> src/sandbox.rs:30:8
+   |
+30 | pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
+   |        ^^^^^^^^^^^^^^
+
+warning: associated items `detect` and `command` are never used
+  --> src/sandbox.rs:50:12
+   |
+48 | impl Sandbox {
+   | ------------ associated items in this implementation
+49 |     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
+50 |     pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
+   |            ^^^^^^
+...
+81 |     pub fn command(
+   |            ^^^^^^^
+
+warning: enum `TaskState` is never used
+  --> src/store.rs:13:10
+   |
+13 | pub enum TaskState {
+   |          ^^^^^^^^^
+
+warning: method `as_str` is never used
+  --> src/store.rs:23:12
+   |
+22 | impl TaskState {
+   | -------------- method in this implementation
+23 |     pub fn as_str(self) -> &'static str {
+   |            ^^^^^^
+
+warning: enum `AttemptState` is never used
+  --> src/store.rs:53:10
+   |
+53 | pub enum AttemptState {
+   |          ^^^^^^^^^^^^
+
+warning: method `as_str` is never used
+  --> src/store.rs:65:12
+   |
+64 | impl AttemptState {
+   | ----------------- method in this implementation
+65 |     pub fn as_str(self) -> &'static str {
+   |            ^^^^^^
+
+warning: struct `Task` is never constructed
+  --> src/store.rs:97:12
+   |
+97 | pub struct Task {
+   |            ^^^^
+
+warning: struct `Attempt` is never constructed
+   --> src/store.rs:126:12
+    |
+126 | pub struct Attempt {
+    |            ^^^^^^^
+
+warning: struct `RateLimitSample` is never constructed
+   --> src/store.rs:154:12
+    |
+154 | pub struct RateLimitSample {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `TaskSummary` is never constructed
+   --> src/store.rs:160:12
+    |
+160 | pub struct TaskSummary {
+    |            ^^^^^^^^^^^
+
+warning: struct `Store` is never constructed
+   --> src/store.rs:170:12
+    |
+170 | pub struct Store {
+    |            ^^^^^
+
+warning: constant `MIGRATIONS` is never used
+   --> src/store.rs:175:11
+    |
+175 | pub const MIGRATIONS: &[&str] = &[
+    |           ^^^^^^^^^^
+
+warning: constant `TASK_COLS` is never used
+   --> src/store.rs:236:7
+    |
+236 | const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
+    |       ^^^^^^^^^
+
+warning: function `conv` is never used
+   --> src/store.rs:240:4
+    |
+240 | fn conv<T, E: std::error::Error + Send + Sync + 'static>(
+    |    ^^^^
+
+warning: function `task_from_row` is never used
+   --> src/store.rs:247:4
+    |
+247 | fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
+    |    ^^^^^^^^^^^^^
+
+warning: constant `ATTEMPT_COLS` is never used
+   --> src/store.rs:274:7
+    |
+274 | const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
+    |       ^^^^^^^^^^^^
+
+warning: function `attempt_from_row` is never used
+   --> src/store.rs:278:4
+    |
+278 | fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/store.rs:308:12
+    |
+307 | impl Store {
+    | ---------- associated items in this implementation
+308 |     pub fn open(path: &Path) -> Result<Store> {
+    |            ^^^^
+...
+319 |     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    |        ^^^^
+...
+330 |     pub fn insert_task(&self, t: &Task) -> Result<i64> {
+    |            ^^^^^^^^^^^
+...
+354 |     pub fn update_task(&self, t: &Task) -> Result<()> {
+    |            ^^^^^^^^^^^
+...
+374 |     pub fn task(&self, id: i64) -> Result<Option<Task>> {
+    |            ^^^^
+...
+386 |     pub fn claim_next(&self, pid: i64) -> Result<Option<Task>> {
+    |            ^^^^^^^^^^
+...
+404 |     pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
+    |            ^^^^^
+...
+412 |     pub fn queued_count(&self) -> Result<i64> {
+    |            ^^^^^^^^^^^^
+...
+423 |     pub fn requeue(&self, id: i64, why: &str) -> Result<()> {
+    |            ^^^^^^^
+...
+437 |     pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+    |            ^^^^^^^
+...
+450 |     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
+    |            ^^^^^^^^^^^^^^
+...
+459 |     pub fn finish_attempt(&self, a: &Attempt) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+...
+491 |     pub fn running_ids(&self) -> Result<Vec<i64>> {
+    |            ^^^^^^^^^^^
+...
+499 |     pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+511 |     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
+    |            ^^^^^^^^
+...
+521 |     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
+    |            ^^^^^^^^^
+...
+530 |     pub fn spent_since(&self, since: i64) -> Result<f64> {
+    |            ^^^^^^^^^^^
+...
+539 |     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+548 |     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+556 |     pub fn list_tasks(&self, limit: u32) -> Result<Vec<TaskSummary>> {
+    |            ^^^^^^^^^^
+
+warning: function `migrate` is never used
+   --> src/store.rs:579:4
+    |
+579 | fn migrate(conn: &Connection) -> Result<()> {
+    |    ^^^^^^^
+
+warning: struct `Subject` is never constructed
+  --> src/verify.rs:31:12
+   |
+31 | pub struct Subject<'a> {
+   |            ^^^^^^^
+
+warning: struct `Verdict` is never constructed
+  --> src/verify.rs:43:12
+   |
+43 | pub struct Verdict {
+   |            ^^^^^^^
+
+warning: function `l0` is never used
+  --> src/verify.rs:53:4
+   |
+53 | fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
+   |    ^^
+
+warning: function `verify` is never used
+  --> src/verify.rs:63:14
+   |
+63 | pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
+   |              ^^^^^^
+
+warning: function `agent_failure` is never used
+   --> src/verify.rs:310:8
+    |
+310 | pub fn agent_failure(a: &Outcome) -> Option<String> {
+    |        ^^^^^^^^^^^^^
+
+warning: function `decide` is never used
+   --> src/verify.rs:328:8
+    |
+328 | pub fn decide(
+    |        ^^^^^^
+
+warning: function `feedback` is never used
+   --> src/verify.rs:363:8
+    |
+363 | pub fn feedback(v: &Verdict, agent: &Outcome, max_turns: i64) -> String {
+    |        ^^^^^^^^
+
+warning: function `pid_alive` is never used
+  --> src/worker.rs:22:8
+   |
+22 | pub fn pid_alive(pid: i64) -> bool {
+   |        ^^^^^^^^^
+
+warning: function `drive` is never used
+  --> src/worker.rs:28:14
+   |
+28 | pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
+   |              ^^^^^
+
+warning: function `day_budget_reached` is never used
+  --> src/worker.rs:57:8
+   |
+57 | pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `p_config` is never used
+  --> src/worker.rs:68:4
+   |
+68 | fn p_config(f: &Forge) -> String {
+   |    ^^^^^^^^
+
+warning: struct `WorkOpts` is never constructed
+  --> src/worker.rs:72:12
+   |
+72 | pub struct WorkOpts {
+   |            ^^^^^^^^
+
+warning: function `shutdown_signal` is never used
+  --> src/worker.rs:79:10
+   |
+79 | async fn shutdown_signal() {
+   |          ^^^^^^^^^^^^^^^
+
+warning: function `work` is never used
+  --> src/worker.rs:88:14
+   |
+88 | pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
+   |              ^^^^
+
+warning: `forge` (bin "forge") generated 119 warnings
+warning: fields `tool_calls`, `cost_usd`, `wall_ms`, `result_text`, `structured`, and `rate_limits` are never read
+  --> src/agent.rs:26:9
+   |
+20 | pub struct Outcome {
+   |            ------- fields in this struct
+...
+26 |     pub tool_calls: i64,
+   |         ^^^^^^^^^^
+27 |     pub cost_usd: Option<f64>,
+   |         ^^^^^^^^
+28 |     pub wall_ms: u128,
+   |         ^^^^^^^
+29 |     pub result_text: String,
+   |         ^^^^^^^^^^^
+...
+32 |     pub structured: Option<String>,
+   |         ^^^^^^^^^^
+33 |     /// Last rate-limit sample seen on the stream, per window.
+34 |     pub rate_limits: RateLimits,
+   |         ^^^^^^^^^^^
+   |
+   = note: `Outcome` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `five_hour` and `seven_day` are never read
+  --> src/agent.rs:42:9
+   |
+41 | pub struct RateLimits {
+   |            ---------- fields in this struct
+42 |     pub five_hour: Option<(f64, i64)>,
+   |         ^^^^^^^^^
+43 |     pub seven_day: Option<(f64, i64)>,
+   |         ^^^^^^^^^
+   |
+   = note: `RateLimits` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `detect` is never used
+  --> src/sandbox.rs:50:12
+   |
+48 | impl Sandbox {
+   | ------------ associated function in this implementation
+49 |     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
+50 |     pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
+   |            ^^^^^^
+
+warning: multiple fields are never read
+   --> src/store.rs:102:9
+    |
+ 97 | pub struct Task {
+    |            ---- fields in this struct
+...
+102 |     pub base_sha: String,
+    |         ^^^^^^^^
+103 |     pub branch: String,
+    |         ^^^^^^
+104 |     pub worktree: String,
+    |         ^^^^^^^^
+...
+112 |     pub reason: String,
+    |         ^^^^^^
+113 |     pub created_at: i64,
+114 |     pub started_at: Option<i64>,
+    |         ^^^^^^^^^^
+115 |     pub finished_at: Option<i64>,
+    |         ^^^^^^^^^^^
+116 |     pub pushed: bool,
+    |         ^^^^^^
+117 |     pub worker_pid: Option<i64>,
+    |         ^^^^^^^^^^
+...
+120 |     pub worktree_removed_at: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `Task` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple fields are never read
+   --> src/store.rs:127:9
+    |
+126 | pub struct Attempt {
+    |            ------- fields in this struct
+127 |     pub id: i64,
+    |         ^^
+...
+133 |     pub finished_at: Option<i64>,
+    |         ^^^^^^^^^^^
+134 |     pub agent_exit: Option<i32>,
+    |         ^^^^^^^^^^
+135 |     pub timed_out: bool,
+    |         ^^^^^^^^^
+136 |     pub num_turns: i64,
+    |         ^^^^^^^^^
+137 |     pub tool_calls: i64,
+    |         ^^^^^^^^^^
+138 |     pub cost_usd: Option<f64>,
+    |         ^^^^^^^^
+139 |     pub agent_ms: i64,
+    |         ^^^^^^^^
+140 |     pub commits: i64,
+    |         ^^^^^^^
+141 |     pub files_changed: i64,
+    |         ^^^^^^^^^^^^^
+142 |     pub dirty: bool,
+    |         ^^^^^
+143 |     pub verdict_json: String,
+    |         ^^^^^^^^^^^^
+144 |     pub result_text: String,
+    |         ^^^^^^^^^^^
+...
+147 |     pub envelope_json: String,
+    |         ^^^^^^^^^^^^^
+148 |     pub rl_five_hour: Option<f64>,
+    |         ^^^^^^^^^^^^
+149 |     pub rl_seven_day: Option<f64>,
+    |         ^^^^^^^^^^^^
+150 |     pub rl_five_hour_resets: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+151 |     pub rl_seven_day_resets: Option<i64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `Attempt` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple methods are never used
+   --> src/store.rs:354:12
+    |
+307 | impl Store {
+    | ---------- methods in this implementation
+...
+354 |     pub fn update_task(&self, t: &Task) -> Result<()> {
+    |            ^^^^^^^^^^^
+...
+412 |     pub fn queued_count(&self) -> Result<i64> {
+    |            ^^^^^^^^^^^^
+...
+437 |     pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+    |            ^^^^^^^
+...
+459 |     pub fn finish_attempt(&self, a: &Attempt) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+...
+491 |     pub fn running_ids(&self) -> Result<Vec<i64>> {
+    |            ^^^^^^^^^^^
+...
+499 |     pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+521 |     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
+    |            ^^^^^^^^^
+...
+530 |     pub fn spent_since(&self, since: i64) -> Result<f64> {
+    |            ^^^^^^^^^^^
+...
+539 |     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+548 |     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+556 |     pub fn list_tasks(&self, limit: u32) -> Result<Vec<TaskSummary>> {
+    |            ^^^^^^^^^^
+
+warning: fields `commits`, `files_changed`, `dirty`, and `envelope` are never read
+  --> src/verify.rs:44:9
+   |
+43 | pub struct Verdict {
+   |            ------- fields in this struct
+44 |     pub commits: i64,
+   |         ^^^^^^^
+45 |     pub files_changed: i64,
+   |         ^^^^^^^^^^^^^
+46 |     pub dirty: bool,
+   |         ^^^^^
+47 |     pub envelope: Option<Envelope>,
+   |         ^^^^^^^^
+
+       Fresh forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp)
+warning: `forge` (bin "forge" test) generated 74 warnings (67 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/forge-30a1a36b6b5abe51`
+
+running 16 tests
+test git::tests::github_remotes_get_compare_urls ... ok
+test envelope::tests::schema_is_valid_json_and_parses_its_own_example ... ok
+test envelope::tests::falls_back_to_json_result_text_and_reports_absence ... ok
+test git::tests::other_remotes_get_none ... ok
+test checks::tests::extracts_go_pytest_and_jest_failures_only ... ok
+test config::tests::protected_matches_files_and_directories ... ok
+test store::tests::claim_is_exclusive_and_requeue_closes_the_open_attempt ... ok
+test config::tests::home_config_defaults_and_overrides ... ok
+test checks::tests::tail_keeps_only_the_end ... ok
+test store::tests::unknown_state_is_an_error_not_a_default ... ok
+test verify::tests::agent_failure_reasons ... ok
+test verify::tests::feedback_names_failing_tests_first ... ok
+test checks::tests::a_backgrounded_child_does_not_hold_the_check_open ... ok
+test verify::tests::verdict_table ... ok
+test store::tests::refuses_a_newer_schema ... ok
+test store::tests::migrates_fresh_db_to_latest_and_is_idempotent ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/e2e-ec5b46a137667371`
+
+running 25 tests
+test a_crashing_agent_is_retried_then_fails ... FAILED
+test a_question_ends_the_task_without_retrying ... FAILED
+test a_missing_agent_binary_fails_fast_with_nothing_claimed ... FAILED
+test a_false_claim_of_a_passing_check_fails_l1 ... FAILED
+test a_second_signal_aborts_and_requeues ... FAILED
+test a_dirty_tree_fails_l0 ... FAILED
+test a_check_that_backgrounds_a_server_does_not_hang ... FAILED
+test a_hanging_agent_is_killed_at_the_timeout ... FAILED
+test an_environment_fault_requeues_and_stops_the_worker ... FAILED
+test an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt ... FAILED
+test daily_budget_stops_the_worker ... FAILED
+test an_unreported_change_fails_l0 ... FAILED
+test failing_tests_are_named_in_the_feedback ... FAILED
+test a_task_nothing_would_verify_is_refused ... FAILED
+test doctor_runs_and_reports_the_essentials ... FAILED
+test gc_removes_only_what_is_published_and_clean ... FAILED
+test jobs_run_in_parallel ... FAILED
+test l1_failure_is_fed_to_the_next_attempt ... FAILED
+test protected_paths_fail_l0_unless_the_task_allows_them ... FAILED
+test tampering_with_forge_toml_fails_l0_and_skips_l1 ... FAILED
+test no_structured_result_fails_l0 ... FAILED
+test success_is_verified_at_l0_and_l1_and_pushed ... FAILED
+test task_budget_stops_retries ... FAILED
+test setup_runs_first_and_gates_the_other_checks ... FAILED
+test task_checks_are_l2_and_decide ... FAILED
+
+failures:
+
+---- a_crashing_agent_is_retried_then_fails stdout ----
+--- forge run /tmp/.tmpElv8it/repo write 42 to answer.txt --retries 1 ---
+
+
+thread 'a_crashing_agent_is_retried_then_fails' (592940) panicked at tests/e2e.rs:453:5:
+assertion failed: !e.run("crash.sh", &["--retries", "1"]).status.success()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_question_ends_the_task_without_retrying stdout ----
+--- forge run /tmp/.tmpkb1hVb/repo write 42 to answer.txt --retries 2 ---
+
+
+thread 'a_question_ends_the_task_without_retrying' (592966) panicked at tests/e2e.rs:238:5:
+assertion failed: !e.run("needsinput.sh", &["--retries", "2"]).status.success()
+
+---- a_missing_agent_binary_fails_fast_with_nothing_claimed stdout ----
+--- forge add /tmp/.tmpyY0rzj/repo write 42 to answer.txt ---
+
+
+thread 'a_missing_agent_binary_fails_fast_with_nothing_claimed' (592965) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- a_false_claim_of_a_passing_check_fails_l1 stdout ----
+--- forge run /tmp/.tmpFZPuKP/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'a_false_claim_of_a_passing_check_fails_l1' (592942) panicked at tests/e2e.rs:224:5:
+assertion failed: !e.run("falseclaim.sh", &["--retries", "0"]).status.success()
+
+---- a_second_signal_aborts_and_requeues stdout ----
+--- forge add /tmp/.tmpZvznpb/repo write 42 to answer.txt ---
+
+
+thread 'a_second_signal_aborts_and_requeues' (592967) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- a_dirty_tree_fails_l0 stdout ----
+--- forge run /tmp/.tmpiFkdZb/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'a_dirty_tree_fails_l0' (592941) panicked at tests/e2e.rs:422:5:
+assertion failed: !e.run("dirty.sh", &["--retries", "0"]).status.success()
+
+---- a_check_that_backgrounds_a_server_does_not_hang stdout ----
+--- forge run /tmp/.tmpEHNp5x/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'a_check_that_backgrounds_a_server_does_not_hang' (592939) panicked at tests/e2e.rs:119:54:
+called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: CannotOpen, extended_code: 14 }, Some("unable to open database file: /tmp/.tmpEHNp5x/home/forge.db"))
+
+---- a_hanging_agent_is_killed_at_the_timeout stdout ----
+--- forge run /tmp/.tmp1z1Njp/repo write 42 to answer.txt --retries 0 --timeout-secs 2 ---
+
+
+thread 'a_hanging_agent_is_killed_at_the_timeout' (592943) panicked at tests/e2e.rs:434:5:
+assertion failed: !e.run("hang.sh", &["--retries", "0", "--timeout-secs", "2"]).status.success()
+
+---- an_environment_fault_requeues_and_stops_the_worker stdout ----
+--- forge add /tmp/.tmpcdzcsD/repo write 42 to answer.txt ---
+
+
+thread 'an_environment_fault_requeues_and_stops_the_worker' (593167) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt stdout ----
+--- forge add /tmp/.tmpbtaAS7/repo write 42 to answer.txt ---
+
+
+thread 'an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt' (593176) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- daily_budget_stops_the_worker stdout ----
+--- forge add /tmp/.tmpisahFS/repo write 42 to answer.txt ---
+
+
+thread 'daily_budget_stops_the_worker' (593199) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- an_unreported_change_fails_l0 stdout ----
+--- forge run /tmp/.tmppYga9e/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'an_unreported_change_fails_l0' (593194) panicked at tests/e2e.rs:263:5:
+assertion failed: !e.run("unreported.sh", &["--retries", "0"]).status.success()
+
+---- failing_tests_are_named_in_the_feedback stdout ----
+--- forge run /tmp/.tmpSERVjd/repo write 42 to answer.txt --retries 1 ---
+
+
+thread 'failing_tests_are_named_in_the_feedback' (593241) panicked at tests/e2e.rs:298:5:
+assertion failed: !e.run("wrong.sh", &["--retries", "1"]).status.success()
+
+---- a_task_nothing_would_verify_is_refused stdout ----
+--- forge add /tmp/.tmpp7FP22/repo x ---
+
+
+thread 'a_task_nothing_would_verify_is_refused' (593113) panicked at tests/e2e.rs:503:5:
+assertion failed: !o.status.success()
+
+---- doctor_runs_and_reports_the_essentials stdout ----
+--- forge run /tmp/.tmpXIAUDv/repo write 42 to answer.txt ---
+
+--- forge doctor ---
+
+
+thread 'doctor_runs_and_reports_the_essentials' (593237) panicked at tests/e2e.rs:384:9:
+missing binary.git in:
+
+
+---- gc_removes_only_what_is_published_and_clean stdout ----
+--- forge run /tmp/.tmpUpRRFn/repo write 42 to answer.txt ---
+
+--- forge run /tmp/.tmpUpRRFn/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'gc_removes_only_what_is_published_and_clean' (593245) panicked at tests/e2e.rs:651:5:
+assertion failed: !e.run("wrong.sh", &["--retries", "0"]).status.success()
+
+---- jobs_run_in_parallel stdout ----
+--- forge add /tmp/.tmpY2eukS/repo write 42 to answer.txt ---
+
+
+thread 'jobs_run_in_parallel' (593341) panicked at tests/e2e.rs:113:14:
+called `Option::unwrap()` on a `None` value
+
+---- l1_failure_is_fed_to_the_next_attempt stdout ----
+--- forge run /tmp/.tmpEY3Dm4/repo write 42 to answer.txt ---
+
+
+thread 'l1_failure_is_fed_to_the_next_attempt' (593401) panicked at tests/e2e.rs:119:54:
+called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: CannotOpen, extended_code: 14 }, Some("unable to open database file: /tmp/.tmpEY3Dm4/home/forge.db"))
+
+---- protected_paths_fail_l0_unless_the_task_allows_them stdout ----
+--- forge run /tmp/.tmpRbJ7J0/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'protected_paths_fail_l0_unless_the_task_allows_them' (593424) panicked at tests/e2e.rs:346:5:
+assertion failed: !e.run("protect.sh", &["--retries", "0"]).status.success()
+
+---- tampering_with_forge_toml_fails_l0_and_skips_l1 stdout ----
+--- forge run /tmp/.tmpKP4bOS/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'tampering_with_forge_toml_fails_l0_and_skips_l1' (593502) panicked at tests/e2e.rs:407:5:
+assertion failed: !e.run("tamper.sh", &["--retries", "0"]).status.success()
+
+---- no_structured_result_fails_l0 stdout ----
+--- forge run /tmp/.tmp6yvFVB/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'no_structured_result_fails_l0' (593423) panicked at tests/e2e.rs:254:5:
+assertion failed: !e.run("noenvelope.sh", &["--retries", "0"]).status.success()
+
+---- success_is_verified_at_l0_and_l1_and_pushed stdout ----
+--- forge run /tmp/.tmpRrDWEt/repo write 42 to answer.txt ---
+
+
+thread 'success_is_verified_at_l0_and_l1_and_pushed' (593484) panicked at tests/e2e.rs:119:54:
+called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: CannotOpen, extended_code: 14 }, Some("unable to open database file: /tmp/.tmpRrDWEt/home/forge.db"))
+
+---- task_budget_stops_retries stdout ----
+--- forge run /tmp/.tmpC1P0cp/repo write 42 to answer.txt --retries 3 --budget 0.005 ---
+
+
+thread 'task_budget_stops_retries' (593539) panicked at tests/e2e.rs:515:5:
+assertion failed: !e.run("flaky.sh", &["--retries", "3", "--budget", "0.005"]).status.success()
+
+---- setup_runs_first_and_gates_the_other_checks stdout ----
+--- forge run /tmp/.tmpridYy3/repo write 42 to answer.txt --retries 0 ---
+
+
+thread 'setup_runs_first_and_gates_the_other_checks' (593475) panicked at tests/e2e.rs:119:54:
+called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: CannotOpen, extended_code: 14 }, Some("unable to open database file: /tmp/.tmpridYy3/home/forge.db"))
+
+---- task_checks_are_l2_and_decide stdout ----
+--- forge run /tmp/.tmpnzVDNM/repo write 42 to answer.txt --retries 0 --check grep -qx 43 answer.txt ---
+
+
+thread 'task_checks_are_l2_and_decide' (593604) panicked at tests/e2e.rs:466:5:
+assertion failed: !e.run("ok.sh",
+                &["--retries", "0", "--check",
+                            "grep -qx 43 answer.txt"]).status.success()
+
+
+failures:
+    a_check_that_backgrounds_a_server_does_not_hang
+    a_crashing_agent_is_retried_then_fails
+    a_dirty_tree_fails_l0
+    a_false_claim_of_a_passing_check_fails_l1
+    a_hanging_agent_is_killed_at_the_timeout
+    a_missing_agent_binary_fails_fast_with_nothing_claimed
+    a_question_ends_the_task_without_retrying
+    a_second_signal_aborts_and_requeues
+    a_task_nothing_would_verify_is_refused
+    an_environment_fault_requeues_and_stops_the_worker
+    an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt
+    an_unreported_change_fails_l0
+    daily_budget_stops_the_worker
+    doctor_runs_and_reports_the_essentials
+    failing_tests_are_named_in_the_feedback
+    gc_removes_only_what_is_published_and_clean
+    jobs_run_in_parallel
+    l1_failure_is_fed_to_the_next_attempt
+    no_structured_result_fails_l0
+    protected_paths_fail_l0_unless_the_task_allows_them
+    setup_runs_first_and_gates_the_other_checks
+    success_is_verified_at_l0_and_l1_and_pushed
+    tampering_with_forge_toml_fails_l0_and_skips_l1
+    task_budget_stops_retries
+    task_checks_are_l2_and_decide
+
+test result: FAILED. 0 passed; 25 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `-p forge --test e2e`
+
+*** result: Failure(101)

@@ -1,0 +1,1263 @@
+
+*** src/agent.rs:101:5: replace run -> Result<Outcome> with Ok(Default::default())
+
+*** mutation diff:
+--- src/agent.rs
++++ replace run -> Result<Outcome> with Ok(Default::default())
+@@ -93,158 +93,10 @@
+     pub max_turns: u32,
+     pub timeout: Duration,
+     pub log_path: &'a Path,
+     pub sandbox: Option<&'a Sandbox>,
+     pub report: &'a Reporter,
+ }
+ 
+ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+-    let bin = agent_bin();
+-    let argv: Vec<String> = [
+-        bin.as_str(),
+-        "--print",
+-        "--verbose",
+-        "--output-format",
+-        "stream-json",
+-        "--dangerously-skip-permissions",
+-        "--model",
+-        l.model,
+-        "--max-turns",
+-        &l.max_turns.to_string(),
+-        "--json-schema",
+-        crate::envelope::SCHEMA,
+-    ]
+-    .iter()
+-    .map(|s| s.to_string())
+-    .collect();
+-    let identity = crate::git::identity(l.repo_git_dir).await;
+-    let start = Instant::now();
+-    let deadline = tokio::time::Instant::now() + l.timeout;
+-    let mut child = Command::from(command_in(
+-        l.sandbox,
+-        l.worktree,
+-        l.repo_git_dir,
+-        &argv,
+-        &identity,
+-    ))
+-    .stdin(Stdio::piped())
+-    .stdout(Stdio::piped())
+-    .stderr(Stdio::piped())
+-    .kill_on_drop(true)
+-    .spawn()
+-    .with_context(|| format!("spawning {bin}"))?;
+-
+-    {
+-        let mut stdin = child.stdin.take().context("agent stdin")?;
+-        stdin.write_all(l.prompt.as_bytes()).await?;
+-        stdin.shutdown().await?;
+-    }
+-    let stderr = child.stderr.take().context("agent stderr")?;
+-    let stderr_task = tokio::spawn(async move {
+-        let mut s = String::new();
+-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
+-        s
+-    });
+-
+-    let mut log =
+-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+-    writeln!(
+-        log,
+-        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+-        serde_json::to_string(l.prompt)?
+-    )?;
+-    let mut out = Outcome::default();
+-    let mut seen_tools: HashSet<String> = HashSet::new();
+-    let stdout = child.stdout.take().context("agent stdout")?;
+-    let mut lines = BufReader::new(stdout).lines();
+-
+-    let read = async {
+-        while let Some(line) = lines.next_line().await? {
+-            writeln!(log, "{line}")?;
+-            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+-                continue;
+-            };
+-            match v["type"].as_str() {
+-                Some("assistant") => {
+-                    // The CLI repeats a message once per content block; count
+-                    // each tool_use id once.
+-                    if let Some(blocks) = v["message"]["content"].as_array() {
+-                        for b in blocks {
+-                            if b["type"] == "tool_use" {
+-                                let id = b["id"].as_str().unwrap_or("").to_string();
+-                                if seen_tools.insert(id) {
+-                                    out.tool_calls += 1;
+-                                    l.report.emit(
+-                                        l.task_id,
+-                                        Event::ToolCall {
+-                                            name: b["name"].as_str().unwrap_or("?"),
+-                                        },
+-                                    );
+-                                }
+-                            }
+-                        }
+-                    }
+-                }
+-                Some("result") => {
+-                    out.got_result = true;
+-                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
+-                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+-                    out.cost_usd = v["total_cost_usd"].as_f64();
+-                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
+-                    out.structured = match &v["structured_output"] {
+-                        Value::Null => None,
+-                        other => Some(other.to_string()),
+-                    };
+-                }
+-                Some("rate_limit_event") => {
+-                    let w = &v["rate_limit_info"]["unifiedWindows"];
+-                    let read = |name: &str| {
+-                        let win = &w[name];
+-                        Some((
+-                            win["utilization"].as_f64()?,
+-                            win["resetsAt"].as_i64().unwrap_or(0),
+-                        ))
+-                    };
+-                    if let Some(s) = read("five_hour") {
+-                        out.rate_limits.five_hour = Some(s);
+-                    }
+-                    if let Some(s) = read("seven_day") {
+-                        out.rate_limits.seven_day = Some(s);
+-                    }
+-                }
+-                _ => {}
+-            }
+-        }
+-        Ok::<(), anyhow::Error>(())
+-    };
+-
+-    match tokio::time::timeout_at(deadline, read).await {
+-        Ok(r) => {
+-            r?;
+-            match tokio::time::timeout_at(deadline, child.wait()).await {
+-                Ok(status) => out.exit_code = status?.code(),
+-                Err(_) => out.timed_out = true,
+-            }
+-        }
+-        Err(_) => out.timed_out = true,
+-    }
+-    if out.timed_out {
+-        child.kill().await.ok();
+-        child.wait().await.ok();
+-        writeln!(
+-            log,
+-            "{{\"type\":\"forge_timeout\",\"after_secs\":{}}}",
+-            l.timeout.as_secs()
+-        )?;
+-    }
+-    out.wall_ms = start.elapsed().as_millis();
+-
+-    let stderr_text = stderr_task.await.unwrap_or_default();
+-    if !stderr_text.trim().is_empty() {
+-        writeln!(
+-            log,
+-            "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+-            serde_json::to_string(&stderr_text)?
+-        )?;
+-    }
+-    Ok(out)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+
+
+*** /home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=forge@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh syn v3.0.5
+       Fresh libc v0.2.189
+       Fresh serde_core v1.0.229
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.12
+       Fresh utf8parse v0.2.2
+       Fresh vcpkg v0.2.15
+       Fresh pkg-config v0.3.34
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh bitflags v2.13.1
+       Fresh foldhash v0.2.0
+       Fresh colorchoice v1.0.5
+       Fresh cc v1.4.5
+       Fresh anstyle-parse v1.0.0
+       Fresh anstyle-query v1.1.5
+       Fresh anstyle v1.0.14
+       Fresh hashbrown v0.17.1
+       Fresh errno v0.3.14
+       Fresh anstream v1.0.0
+       Fresh heck v0.5.0
+       Fresh strsim v0.11.1
+       Fresh clap_lex v1.1.0
+       Fresh winnow v1.0.4
+       Fresh clap_builder v4.6.6
+       Fresh clap_derive v4.6.4
+       Fresh toml_parser v1.1.3+spec-1.1.0
+       Fresh zmij v1.0.23
+       Fresh libsqlite3-sys v0.38.2
+       Fresh signal-hook-registry v1.4.8
+       Fresh hashlink v0.12.2
+       Fresh serde_spanned v1.1.1
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh mio v1.2.3
+       Fresh serde_derive v1.0.229
+       Fresh tokio-macros v2.7.2
+       Fresh fallible-iterator v0.3.0
+       Fresh cfg-if v1.0.4
+       Fresh winnow v0.7.15
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh linux-raw-sys v0.12.1
+       Fresh smallvec v1.16.0
+       Fresh itoa v1.0.18
+       Fresh pin-project-lite v0.2.17
+       Fresh toml_writer v1.1.2+spec-1.1.0
+       Fresh bytes v1.12.1
+       Fresh memchr v2.8.3
+       Fresh rusqlite v0.40.2
+       Fresh getrandom v0.4.3
+       Fresh rustix v1.1.4
+       Fresh toml v0.9.12+spec-1.1.0
+       Fresh anyhow v1.0.104
+       Fresh serde v1.0.229
+       Fresh clap v4.6.6
+       Fresh tokio v1.53.1
+       Fresh serde_json v1.0.151
+       Fresh once_cell v1.21.4
+       Fresh fastrand v2.5.0
+       Fresh tempfile v3.27.0
+       Dirty forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp): couldn't read metadata for file `target/debug/deps/forge-4efbaec9ca5b4941`
+   Compiling forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp)
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=592c850fd687c3e6 -C extra-filename=-4efbaec9ca5b4941 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+     Running `/home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name forge --edition=2024 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=c124c663fbad2c10 -C extra-filename=-30a1a36b6b5abe51 --out-dir /tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps --extern anyhow=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libanyhow-1154da83e424c784.rlib --extern clap=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libclap-2009ee8564d8f923.rlib --extern rusqlite=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/librusqlite-1ef5b8dac8099b8a.rlib --extern serde=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde-efe6c2cd98734bfc.rlib --extern serde_json=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libserde_json-520e8785637d0423.rlib --extern tempfile=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtempfile-8d9a0fc204d233f8.rlib --extern tokio=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtokio-e2f9ec44844eba22.rlib --extern toml=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/libtoml-db5be2afabc8cf40.rlib -L native=/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/build/libsqlite3-sys-0dba940a0cab43e7/out`
+warning: unused import: `Event`
+ --> src/agent.rs:6:21
+  |
+6 | use crate::report::{Event, Reporter};
+  |                     ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Context`
+ --> src/agent.rs:8:14
+  |
+8 | use anyhow::{Context, Result};
+  |              ^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/agent.rs:9:5
+  |
+9 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+  --> src/agent.rs:10:5
+   |
+10 | use std::collections::HashSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::fs::File`
+  --> src/agent.rs:11:5
+   |
+11 | use std::fs::File;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Write`
+  --> src/agent.rs:12:5
+   |
+12 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::Stdio`
+  --> src/agent.rs:14:5
+   |
+14 | use std::process::Stdio;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Instant`
+  --> src/agent.rs:15:27
+   |
+15 | use std::time::{Duration, Instant};
+   |                           ^^^^^^^
+
+warning: unused imports: `AsyncBufReadExt`, `AsyncReadExt`, `AsyncWriteExt`, and `BufReader`
+  --> src/agent.rs:16:17
+   |
+16 | use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+   |                 ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `tokio::process::Command`
+  --> src/agent.rs:17:5
+   |
+17 | use tokio::process::Command;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `l`
+   --> src/agent.rs:100:18
+    |
+100 | pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    |                  ^ help: if this is intentional, prefix it with an underscore: `_l`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: multiple fields are never read
+  --> src/agent.rs:88:9
+   |
+87 | pub struct Launch<'a> {
+   |            ------ fields in this struct
+88 |     pub task_id: i64,
+   |         ^^^^^^^
+89 |     pub worktree: &'a Path,
+   |         ^^^^^^^^
+90 |     pub repo_git_dir: &'a Path,
+   |         ^^^^^^^^^^^^
+91 |     pub prompt: &'a str,
+   |         ^^^^^^
+92 |     pub model: &'a str,
+   |         ^^^^^
+93 |     pub max_turns: u32,
+   |         ^^^^^^^^^
+94 |     pub timeout: Duration,
+   |         ^^^^^^^
+95 |     pub log_path: &'a Path,
+   |         ^^^^^^^^
+96 |     pub sandbox: Option<&'a Sandbox>,
+   |         ^^^^^^^
+97 |     pub report: &'a Reporter,
+   |         ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SCHEMA` is never used
+  --> src/envelope.rs:10:11
+   |
+10 | pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes",...
+   |           ^^^^^^
+
+warning: function `identity` is never used
+   --> src/git.rs:137:14
+    |
+137 | pub async fn identity(repo_git_dir: &Path) -> Vec<(String, String)> {
+    |              ^^^^^^^^
+
+warning: variant `ToolCall` is never constructed
+  --> src/report.rs:24:5
+   |
+ 8 | pub enum Event<'a> {
+   |          ----- variant in this enum
+...
+24 |     ToolCall {
+   |     ^^^^^^^^
+
+warning: `forge` (bin "forge" test) generated 14 warnings (14 duplicates)
+warning: `forge` (bin "forge") generated 15 warnings (run `cargo fix --bin "forge" -p forge` to apply 11 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.70s
+  Executable `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/forge-30a1a36b6b5abe51`
+  Executable `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/e2e-ec5b46a137667371`
+
+*** result: Success
+
+*** /home/ronin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=forge@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.12
+       Fresh vcpkg v0.2.15
+       Fresh utf8parse v0.2.2
+       Fresh pkg-config v0.3.34
+       Fresh proc-macro2 v1.0.107
+       Fresh cc v1.4.5
+       Fresh anstyle-parse v1.0.0
+       Fresh colorchoice v1.0.5
+       Fresh foldhash v0.2.0
+       Fresh anstyle v1.0.14
+       Fresh quote v1.0.47
+       Fresh libc v0.2.189
+       Fresh serde_core v1.0.229
+       Fresh anstyle-query v1.1.5
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh bitflags v2.13.1
+       Fresh hashbrown v0.17.1
+       Fresh syn v3.0.5
+       Fresh anstream v1.0.0
+       Fresh errno v0.3.14
+       Fresh heck v0.5.0
+       Fresh strsim v0.11.1
+       Fresh winnow v1.0.4
+       Fresh clap_lex v1.1.0
+       Fresh serde_derive v1.0.229
+       Fresh signal-hook-registry v1.4.8
+       Fresh clap_builder v4.6.6
+       Fresh toml_parser v1.1.3+spec-1.1.0
+       Fresh clap_derive v4.6.4
+       Fresh zmij v1.0.23
+       Fresh tokio-macros v2.7.2
+       Fresh libsqlite3-sys v0.38.2
+       Fresh hashlink v0.12.2
+       Fresh serde_spanned v1.1.1
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh mio v1.2.3
+       Fresh smallvec v1.16.0
+       Fresh fallible-iterator v0.3.0
+       Fresh winnow v0.7.15
+       Fresh pin-project-lite v0.2.17
+       Fresh cfg-if v1.0.4
+       Fresh toml_writer v1.1.2+spec-1.1.0
+       Fresh itoa v1.0.18
+       Fresh fallible-streaming-iterator v0.1.9
+       Fresh memchr v2.8.3
+       Fresh bytes v1.12.1
+       Fresh linux-raw-sys v0.12.1
+       Fresh getrandom v0.4.3
+       Fresh clap v4.6.6
+       Fresh serde v1.0.229
+       Fresh toml v0.9.12+spec-1.1.0
+       Fresh rustix v1.1.4
+       Fresh serde_json v1.0.151
+       Fresh tokio v1.53.1
+       Fresh rusqlite v0.40.2
+       Fresh anyhow v1.0.104
+       Fresh once_cell v1.21.4
+       Fresh fastrand v2.5.0
+       Fresh tempfile v3.27.0
+warning: unused import: `Event`
+ --> src/agent.rs:6:21
+  |
+6 | use crate::report::{Event, Reporter};
+  |                     ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Context`
+ --> src/agent.rs:8:14
+  |
+8 | use anyhow::{Context, Result};
+  |              ^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/agent.rs:9:5
+  |
+9 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::collections::HashSet`
+  --> src/agent.rs:10:5
+   |
+10 | use std::collections::HashSet;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::fs::File`
+  --> src/agent.rs:11:5
+   |
+11 | use std::fs::File;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Write`
+  --> src/agent.rs:12:5
+   |
+12 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::Stdio`
+  --> src/agent.rs:14:5
+   |
+14 | use std::process::Stdio;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Instant`
+  --> src/agent.rs:15:27
+   |
+15 | use std::time::{Duration, Instant};
+   |                           ^^^^^^^
+
+warning: unused imports: `AsyncBufReadExt`, `AsyncReadExt`, `AsyncWriteExt`, and `BufReader`
+  --> src/agent.rs:16:17
+   |
+16 | use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+   |                 ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `tokio::process::Command`
+  --> src/agent.rs:17:5
+   |
+17 | use tokio::process::Command;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `l`
+   --> src/agent.rs:100:18
+    |
+100 | pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    |                  ^ help: if this is intentional, prefix it with an underscore: `_l`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: multiple fields are never read
+  --> src/agent.rs:88:9
+   |
+87 | pub struct Launch<'a> {
+   |            ------ fields in this struct
+88 |     pub task_id: i64,
+   |         ^^^^^^^
+89 |     pub worktree: &'a Path,
+   |         ^^^^^^^^
+90 |     pub repo_git_dir: &'a Path,
+   |         ^^^^^^^^^^^^
+91 |     pub prompt: &'a str,
+   |         ^^^^^^
+92 |     pub model: &'a str,
+   |         ^^^^^
+93 |     pub max_turns: u32,
+   |         ^^^^^^^^^
+94 |     pub timeout: Duration,
+   |         ^^^^^^^
+95 |     pub log_path: &'a Path,
+   |         ^^^^^^^^
+96 |     pub sandbox: Option<&'a Sandbox>,
+   |         ^^^^^^^
+97 |     pub report: &'a Reporter,
+   |         ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SCHEMA` is never used
+  --> src/envelope.rs:10:11
+   |
+10 | pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes",...
+   |           ^^^^^^
+
+warning: function `identity` is never used
+   --> src/git.rs:137:14
+    |
+137 | pub async fn identity(repo_git_dir: &Path) -> Vec<(String, String)> {
+    |              ^^^^^^^^
+
+warning: variant `ToolCall` is never constructed
+  --> src/report.rs:24:5
+   |
+ 8 | pub enum Event<'a> {
+   |          ----- variant in this enum
+...
+24 |     ToolCall {
+   |     ^^^^^^^^
+
+warning: `forge` (bin "forge") generated 15 warnings (run `cargo fix --bin "forge" -p forge` to apply 11 suggestions)
+       Fresh forge v0.2.0 (/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp)
+warning: `forge` (bin "forge" test) generated 14 warnings (14 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/forge-30a1a36b6b5abe51`
+
+running 16 tests
+test git::tests::github_remotes_get_compare_urls ... ok
+test checks::tests::extracts_go_pytest_and_jest_failures_only ... ok
+test config::tests::protected_matches_files_and_directories ... ok
+test checks::tests::tail_keeps_only_the_end ... ok
+test envelope::tests::schema_is_valid_json_and_parses_its_own_example ... ok
+test git::tests::other_remotes_get_none ... ok
+test store::tests::unknown_state_is_an_error_not_a_default ... ok
+test envelope::tests::falls_back_to_json_result_text_and_reports_absence ... ok
+test verify::tests::agent_failure_reasons ... ok
+test verify::tests::feedback_names_failing_tests_first ... ok
+test verify::tests::verdict_table ... ok
+test config::tests::home_config_defaults_and_overrides ... ok
+test store::tests::refuses_a_newer_schema ... ok
+test checks::tests::a_backgrounded_child_does_not_hold_the_check_open ... ok
+test store::tests::migrates_fresh_db_to_latest_and_is_idempotent ... ok
+test store::tests::claim_is_exclusive_and_requeue_closes_the_open_attempt ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-forge_2_electric_boogaloo-sHHzjT.tmp/target/debug/deps/e2e-ec5b46a137667371`
+
+running 25 tests
+======== task 1 starting (0 queued, 1 running)
+test a_missing_agent_binary_fails_fast_with_nothing_claimed ... ok
+worktree /tmp/.tmpwfh1dd/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+test a_false_claim_of_a_passing_check_fails_l1 ... FAILED
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+test a_hanging_agent_is_killed_at_the_timeout ... FAILED
+test a_check_that_backgrounds_a_server_does_not_hang ... FAILED
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpwfh1dd/repo worktree remove /tmp/.tmpwfh1dd/home/worktrees/1
+======== task 1 failed
+
+worked 1 task(s): 0 succeeded, 1 not
+test a_dirty_tree_fails_l0 ... FAILED
+test a_crashing_agent_is_retried_then_fails ... FAILED
+test a_question_ends_the_task_without_retrying ... FAILED
+test a_task_nothing_would_verify_is_refused ... ok
+test an_unreported_change_fails_l0 ... FAILED
+test doctor_runs_and_reports_the_essentials ... FAILED
+test an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt ... FAILED
+test failing_tests_are_named_in_the_feedback ... FAILED
+test gc_removes_only_what_is_published_and_clean ... FAILED
+test an_environment_fault_requeues_and_stops_the_worker ... FAILED
+test no_structured_result_fails_l0 ... FAILED
+test daily_budget_stops_the_worker ... FAILED
+test protected_paths_fail_l0_unless_the_task_allows_them ... FAILED
+test l1_failure_is_fed_to_the_next_attempt ... FAILED
+test setup_runs_first_and_gates_the_other_checks ... FAILED
+test jobs_run_in_parallel ... FAILED
+test success_is_verified_at_l0_and_l1_and_pushed ... FAILED
+test tampering_with_forge_toml_fails_l0_and_skips_l1 ... FAILED
+test task_checks_are_l2_and_decide ... FAILED
+test task_budget_stops_retries ... FAILED
+test a_second_signal_aborts_and_requeues ... FAILED
+
+failures:
+
+---- a_false_claim_of_a_passing_check_fails_l1 stdout ----
+--- forge run /tmp/.tmpeUlBj5/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpeUlBj5/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpeUlBj5/repo worktree remove /tmp/.tmpeUlBj5/home/worktrees/1
+
+
+thread 'a_false_claim_of_a_passing_check_fails_l1' (611836) panicked at tests/e2e.rs:226:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L1 failed: answer, claim:answer"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_hanging_agent_is_killed_at_the_timeout stdout ----
+--- forge run /tmp/.tmpFXL6lC/repo write 42 to answer.txt --retries 0 --timeout-secs 2 ---
+task     1
+worktree /tmp/.tmpFXL6lC/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 2s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpFXL6lC/repo worktree remove /tmp/.tmpFXL6lC/home/worktrees/1
+
+
+thread 'a_hanging_agent_is_killed_at_the_timeout' (611837) panicked at tests/e2e.rs:445:5:
+timed_out
+
+---- a_check_that_backgrounds_a_server_does_not_hang stdout ----
+--- forge run /tmp/.tmpIaU8co/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpIaU8co/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ b06fb117)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpIaU8co/repo worktree remove /tmp/.tmpIaU8co/home/worktrees/1
+
+
+thread 'a_check_that_backgrounds_a_server_does_not_hang' (611833) panicked at tests/e2e.rs:282:5:
+assertion failed: e.run("ok.sh", &["--retries", "0"]).status.success()
+
+---- a_dirty_tree_fails_l0 stdout ----
+--- forge run /tmp/.tmpsaHJuO/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpsaHJuO/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpsaHJuO/repo worktree remove /tmp/.tmpsaHJuO/home/worktrees/1
+
+
+thread 'a_dirty_tree_fails_l0' (611835) panicked at tests/e2e.rs:423:5:
+agent exit signal
+
+---- a_crashing_agent_is_retried_then_fails stdout ----
+--- forge run /tmp/.tmpGtHADd/repo write 42 to answer.txt --retries 1 ---
+task     1
+worktree /tmp/.tmpGtHADd/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpGtHADd/repo worktree remove /tmp/.tmpGtHADd/home/worktrees/1
+
+
+thread 'a_crashing_agent_is_retried_then_fails' (611834) panicked at tests/e2e.rs:456:5:
+assertion failed: a.iter().all(|x| x.1 == "agent_failed" && x.2 == "agent exit 1")
+
+---- a_question_ends_the_task_without_retrying stdout ----
+--- forge run /tmp/.tmps4V6J3/repo write 42 to answer.txt --retries 2 ---
+task     1
+worktree /tmp/.tmps4V6J3/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 3 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 3
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 3
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 3 of 3
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (3 attempt(s), $0.0000): agent exit signal (after 3 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmps4V6J3/repo worktree remove /tmp/.tmps4V6J3/home/worktrees/1
+
+
+thread 'a_question_ends_the_task_without_retrying' (611839) panicked at tests/e2e.rs:240:5:
+assertion `left == right` failed: retrying cannot answer a question
+  left: 3
+ right: 1
+
+---- an_unreported_change_fails_l0 stdout ----
+--- forge run /tmp/.tmppvG46k/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmppvG46k/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmppvG46k/repo worktree remove /tmp/.tmppvG46k/home/worktrees/1
+
+
+thread 'an_unreported_change_fails_l0' (612131) panicked at tests/e2e.rs:265:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L0 failed: changes-match-git"
+
+---- doctor_runs_and_reports_the_essentials stdout ----
+--- forge run /tmp/.tmphGfCEN/repo write 42 to answer.txt ---
+task     1
+worktree /tmp/.tmphGfCEN/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmphGfCEN/repo worktree remove /tmp/.tmphGfCEN/home/worktrees/1
+
+
+thread 'doctor_runs_and_reports_the_essentials' (612169) panicked at tests/e2e.rs:369:5:
+assertion failed: e.run("ok.sh", &[]).status.success()
+
+---- an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt stdout ----
+--- forge add /tmp/.tmpTpu3FV/repo write 42 to answer.txt ---
+queued task 1 (1 queued)
+
+--- forge work --once ---
+requeued task 1: its previous worker exited
+======== task 1 starting (0 queued, 1 running)
+worktree /tmp/.tmpTpu3FV/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpTpu3FV/repo worktree remove /tmp/.tmpTpu3FV/home/worktrees/1
+======== task 1 failed
+
+worked 1 task(s): 0 succeeded, 1 not
+
+
+thread 'an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt' (612127) panicked at tests/e2e.rs:566:5:
+assertion `left == right` failed
+  left: "agent_failed"
+ right: "succeeded"
+
+---- failing_tests_are_named_in_the_feedback stdout ----
+--- forge run /tmp/.tmp536g1F/repo write 42 to answer.txt --retries 1 ---
+task     1
+worktree /tmp/.tmp536g1F/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 3b59801a)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmp536g1F/repo worktree remove /tmp/.tmp536g1F/home/worktrees/1
+
+
+thread 'failing_tests_are_named_in_the_feedback' (612171) panicked at tests/e2e.rs:162:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+---- gc_removes_only_what_is_published_and_clean stdout ----
+--- forge run /tmp/.tmpkBARCX/repo write 42 to answer.txt ---
+task     1
+worktree /tmp/.tmpkBARCX/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpkBARCX/repo worktree remove /tmp/.tmpkBARCX/home/worktrees/1
+
+
+thread 'gc_removes_only_what_is_published_and_clean' (612248) panicked at tests/e2e.rs:650:5:
+assertion failed: e.run("ok.sh", &[]).status.success()
+
+---- an_environment_fault_requeues_and_stops_the_worker stdout ----
+--- forge add /tmp/.tmpvuperZ/repo write 42 to answer.txt ---
+queued task 1 (1 queued)
+
+--- forge add /tmp/.tmpvuperZ/repo write 42 to answer.txt ---
+queued task 2 (2 queued)
+
+--- forge work --once ---
+======== task 1 starting (1 queued, 1 running)
+worktree /tmp/.tmpvuperZ/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpvuperZ/repo worktree remove /tmp/.tmpvuperZ/home/worktrees/1
+======== task 1 failed
+
+======== task 2 starting (0 queued, 1 running)
+worktree /tmp/.tmpvuperZ/home/worktrees/2
+branch   forge/2-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/2-write-42-to-answertxt
+  remove   git -C /tmp/.tmpvuperZ/repo worktree remove /tmp/.tmpvuperZ/home/worktrees/2
+======== task 2 failed
+
+worked 2 task(s): 0 succeeded, 2 not
+
+
+thread 'an_environment_fault_requeues_and_stops_the_worker' (612100) panicked at tests/e2e.rs:581:5:
+assertion failed: !o.status.success()
+
+---- no_structured_result_fails_l0 stdout ----
+--- forge run /tmp/.tmp4igWH7/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmp4igWH7/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmp4igWH7/repo worktree remove /tmp/.tmp4igWH7/home/worktrees/1
+
+
+thread 'no_structured_result_fails_l0' (612463) panicked at tests/e2e.rs:256:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L0 failed: result-structured"
+
+---- daily_budget_stops_the_worker stdout ----
+--- forge add /tmp/.tmpsNeRro/repo write 42 to answer.txt ---
+queued task 1 (1 queued)
+
+--- forge add /tmp/.tmpsNeRro/repo write 42 to answer.txt ---
+queued task 2 (2 queued)
+
+--- forge work --once ---
+======== task 1 starting (1 queued, 1 running)
+worktree /tmp/.tmpsNeRro/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpsNeRro/repo worktree remove /tmp/.tmpsNeRro/home/worktrees/1
+======== task 1 failed
+
+======== task 2 starting (0 queued, 1 running)
+worktree /tmp/.tmpsNeRro/home/worktrees/2
+branch   forge/2-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/2-write-42-to-answertxt
+  remove   git -C /tmp/.tmpsNeRro/repo worktree remove /tmp/.tmpsNeRro/home/worktrees/2
+======== task 2 failed
+
+worked 2 task(s): 0 succeeded, 2 not
+
+
+thread 'daily_budget_stops_the_worker' (612136) panicked at tests/e2e.rs:541:5:
+assertion failed: String::from_utf8_lossy(&o.stderr).contains("daily budget reached")
+
+---- protected_paths_fail_l0_unless_the_task_allows_them stdout ----
+--- forge run /tmp/.tmpnwEwlv/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpnwEwlv/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 68c11dea)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpnwEwlv/repo worktree remove /tmp/.tmpnwEwlv/home/worktrees/1
+
+
+thread 'protected_paths_fail_l0_unless_the_task_allows_them' (612475) panicked at tests/e2e.rs:348:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L0 failed: protected-paths"
+
+---- l1_failure_is_fed_to_the_next_attempt stdout ----
+--- forge run /tmp/.tmp4hVdk4/repo write 42 to answer.txt ---
+task     1
+worktree /tmp/.tmp4hVdk4/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmp4hVdk4/repo worktree remove /tmp/.tmp4hVdk4/home/worktrees/1
+
+
+thread 'l1_failure_is_fed_to_the_next_attempt' (612450) panicked at tests/e2e.rs:392:5:
+assertion failed: e.run("flaky.sh", &[]).status.success()
+
+---- setup_runs_first_and_gates_the_other_checks stdout ----
+--- forge run /tmp/.tmpQPzkpn/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpQPzkpn/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ c8a64655)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpQPzkpn/repo worktree remove /tmp/.tmpQPzkpn/home/worktrees/1
+
+
+thread 'setup_runs_first_and_gates_the_other_checks' (612524) panicked at tests/e2e.rs:314:5:
+assertion failed: e.run("ok.sh", &["--retries", "0"]).status.success()
+
+---- jobs_run_in_parallel stdout ----
+--- forge add /tmp/.tmpGUJdch/repo write 42 to answer.txt ---
+queued task 1 (1 queued)
+
+--- forge add /tmp/.tmpGUJdch/repo write 42 to answer.txt ---
+queued task 2 (2 queued)
+
+--- forge add /tmp/.tmpGUJdch/repo write 42 to answer.txt ---
+queued task 3 (3 queued)
+
+--- forge work --once --jobs 3 ---
+======== task 1 starting (2 queued, 1 running)
+======== task 2 starting (1 queued, 2 running)
+======== task 3 starting (0 queued, 3 running)
+[3] worktree /tmp/.tmpGUJdch/home/worktrees/3
+[3] branch   forge/3-write-42-to-answertxt (from main @ 4b145e8e)
+[3] agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+[3] --- attempt 1 of 2
+[3] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[1] worktree /tmp/.tmpGUJdch/home/worktrees/1
+[1] branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+[1] agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+[1] --- attempt 1 of 2
+[1] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[2] worktree /tmp/.tmpGUJdch/home/worktrees/2
+[2] branch   forge/2-write-42-to-answertxt (from main @ 4b145e8e)
+[2] agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+[2] --- attempt 1 of 2
+[2] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[3] git      0 commit(s), 0 file(s) changed
+[3] attempt  agent_failed: agent exit signal
+[3] --- attempt 2 of 2
+[3] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[1] git      0 commit(s), 0 file(s) changed
+[1] attempt  agent_failed: agent exit signal
+[1] --- attempt 2 of 2
+[1] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[2] git      0 commit(s), 0 file(s) changed
+[2] attempt  agent_failed: agent exit signal
+[2] --- attempt 2 of 2
+[2] agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+[3] git      0 commit(s), 0 file(s) changed
+[3] attempt  agent_failed: agent exit signal
+[3] 
+[3] FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+[3]   branch   forge/3-write-42-to-answertxt
+[3]   remove   git -C /tmp/.tmpGUJdch/repo worktree remove /tmp/.tmpGUJdch/home/worktrees/3
+======== task 3 failed
+
+[1] git      0 commit(s), 0 file(s) changed
+[1] attempt  agent_failed: agent exit signal
+[1] 
+[1] FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+[1]   branch   forge/1-write-42-to-answertxt
+[1]   remove   git -C /tmp/.tmpGUJdch/repo worktree remove /tmp/.tmpGUJdch/home/worktrees/1
+======== task 1 failed
+
+[2] git      0 commit(s), 0 file(s) changed
+[2] attempt  agent_failed: agent exit signal
+[2] 
+[2] FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+[2]   branch   forge/2-write-42-to-answertxt
+[2]   remove   git -C /tmp/.tmpGUJdch/repo worktree remove /tmp/.tmpGUJdch/home/worktrees/2
+======== task 2 failed
+
+worked 3 task(s): 0 succeeded, 3 not
+
+
+thread 'jobs_run_in_parallel' (612415) panicked at tests/e2e.rs:625:9:
+assertion `left == right` failed
+  left: "failed"
+ right: "succeeded"
+
+---- success_is_verified_at_l0_and_l1_and_pushed stdout ----
+--- forge run /tmp/.tmptrlAeu/repo write 42 to answer.txt ---
+task     1
+worktree /tmp/.tmptrlAeu/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 2 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 2
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (2 attempt(s), $0.0000): agent exit signal (after 2 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmptrlAeu/repo worktree remove /tmp/.tmptrlAeu/home/worktrees/1
+
+
+thread 'success_is_verified_at_l0_and_l1_and_pushed' (612626) panicked at tests/e2e.rs:176:5:
+assertion failed: e.run("ok.sh", &[]).status.success()
+
+---- tampering_with_forge_toml_fails_l0_and_skips_l1 stdout ----
+--- forge run /tmp/.tmpmTCMoD/repo write 42 to answer.txt --retries 0 ---
+task     1
+worktree /tmp/.tmpmTCMoD/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpmTCMoD/repo worktree remove /tmp/.tmpmTCMoD/home/worktrees/1
+
+
+thread 'tampering_with_forge_toml_fails_l0_and_skips_l1' (612700) panicked at tests/e2e.rs:409:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L0 failed: forge.toml-untouched"
+
+---- task_checks_are_l2_and_decide stdout ----
+--- forge run /tmp/.tmpvNIbiO/repo write 42 to answer.txt --retries 0 --check grep -qx 43 answer.txt ---
+task     1
+worktree /tmp/.tmpvNIbiO/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 1 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 1
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (1 attempt(s), $0.0000): agent exit signal (after 1 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpvNIbiO/repo worktree remove /tmp/.tmpvNIbiO/home/worktrees/1
+
+
+thread 'task_checks_are_l2_and_decide' (612730) panicked at tests/e2e.rs:474:5:
+assertion `left == right` failed
+  left: "agent exit signal"
+ right: "L2 failed: task-check-1"
+
+---- task_budget_stops_retries stdout ----
+--- forge run /tmp/.tmpHpcxyB/repo write 42 to answer.txt --retries 3 --budget 0.005 ---
+task     1
+worktree /tmp/.tmpHpcxyB/home/worktrees/1
+branch   forge/1-write-42-to-answertxt (from main @ 4b145e8e)
+agent    sonnet, max 30 turns, max 4 attempts, 1800s timeout, sandboxed
+--- attempt 1 of 4
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 2 of 4
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 3 of 4
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+--- attempt 4 of 4
+agent    exit signal · 0 turns · 0 tool calls · 0.0s · cost n/a
+git      0 commit(s), 0 file(s) changed
+attempt  agent_failed: agent exit signal
+
+FAILED  (4 attempt(s), $0.0000): agent exit signal (after 4 attempt(s))
+  branch   forge/1-write-42-to-answertxt
+  remove   git -C /tmp/.tmpHpcxyB/repo worktree remove /tmp/.tmpHpcxyB/home/worktrees/1
+
+
+thread 'task_budget_stops_retries' (612709) panicked at tests/e2e.rs:520:5:
+assertion `left == right` failed
+  left: 4
+ right: 1
+
+---- a_second_signal_aborts_and_requeues stdout ----
+--- forge add /tmp/.tmpwfh1dd/repo write 42 to answer.txt ---
+queued task 1 (1 queued)
+
+
+thread 'a_second_signal_aborts_and_requeues' (611840) panicked at tests/e2e.rs:642:5:
+assertion `left == right` failed
+  left: "failed"
+ right: "queued"
+
+
+failures:
+    a_check_that_backgrounds_a_server_does_not_hang
+    a_crashing_agent_is_retried_then_fails
+    a_dirty_tree_fails_l0
+    a_false_claim_of_a_passing_check_fails_l1
+    a_hanging_agent_is_killed_at_the_timeout
+    a_question_ends_the_task_without_retrying
+    a_second_signal_aborts_and_requeues
+    an_environment_fault_requeues_and_stops_the_worker
+    an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt
+    an_unreported_change_fails_l0
+    daily_budget_stops_the_worker
+    doctor_runs_and_reports_the_essentials
+    failing_tests_are_named_in_the_feedback
+    gc_removes_only_what_is_published_and_clean
+    jobs_run_in_parallel
+    l1_failure_is_fed_to_the_next_attempt
+    no_structured_result_fails_l0
+    protected_paths_fail_l0_unless_the_task_allows_them
+    setup_runs_first_and_gates_the_other_checks
+    success_is_verified_at_l0_and_l1_and_pushed
+    tampering_with_forge_toml_fails_l0_and_skips_l1
+    task_budget_stops_retries
+    task_checks_are_l2_and_decide
+
+test result: FAILED. 2 passed; 23 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
+
+error: test failed, to rerun pass `-p forge --test e2e`
+
+*** result: Failure(101)

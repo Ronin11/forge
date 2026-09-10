@@ -1,0 +1,36 @@
+--- src/agent.rs
++++ delete match arm Some("rate_limit_event") in run
+@@ -190,32 +190,17 @@
+                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+                     out.cost_usd = v["total_cost_usd"].as_f64();
+                     out.result_text = v["result"].as_str().unwrap_or("").to_string();
+                     out.structured = match &v["structured_output"] {
+                         Value::Null => None,
+                         other => Some(other.to_string()),
+                     };
+                 }
+-                Some("rate_limit_event") => {
+-                    let w = &v["rate_limit_info"]["unifiedWindows"];
+-                    let read = |name: &str| {
+-                        let win = &w[name];
+-                        Some((
+-                            win["utilization"].as_f64()?,
+-                            win["resetsAt"].as_i64().unwrap_or(0),
+-                        ))
+-                    };
+-                    if let Some(s) = read("five_hour") {
+-                        out.rate_limits.five_hour = Some(s);
+-                    }
+-                    if let Some(s) = read("seven_day") {
+-                        out.rate_limits.seven_day = Some(s);
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 _ => {}
+             }
+         }
+         Ok::<(), anyhow::Error>(())
+     };
+ 
+     match tokio::time::timeout_at(deadline, read).await {
+         Ok(r) => {

@@ -18,6 +18,7 @@ mod sandbox;
 mod store;
 mod verify;
 mod worker;
+mod workflows;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

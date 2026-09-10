@@ -1,0 +1,2 @@
+src/agent.rs:72:5: replace command_in -> std::process::Command with Default::default()
+src/agent.rs:121:48: replace + with * in run

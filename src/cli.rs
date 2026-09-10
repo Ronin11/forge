@@ -2,7 +2,7 @@
 
 use crate::ctx::Forge;
 use crate::store::{Task, TaskState};
-use crate::{config, doctor, git, unix_now, worker};
+use crate::{config, doctor, engine, git, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::io::Write;
@@ -51,6 +51,12 @@ pub struct TaskArgs {
     /// Let this task change the repo's [verify] protected paths
     #[arg(long)]
     allow_protected: bool,
+    /// Which workflow runs the task (see `forge workflows`)
+    #[arg(long, default_value = "direct")]
+    workflow: String,
+    /// Show the --check commands to the coder (hidden by default)
+    #[arg(long)]
+    show_checks: bool,
 }
 
 #[derive(Subcommand)]
@@ -83,6 +89,8 @@ enum Cmd {
     Show { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
     Doctor,
+    /// List the workflows a task can run
+    Workflows,
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -116,6 +124,21 @@ pub async fn main() -> Result<()> {
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
+        Cmd::Workflows => {
+            for w in workflows::WORKFLOWS {
+                out!(
+                    "{:<8} {:<16} {}",
+                    w.name,
+                    w.steps
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" → "),
+                    w.blurb
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -127,6 +150,37 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         bail!("{} is not a git repository", repo.display());
     }
     let cfg = config::load_working(&repo).await?;
+    let wf = workflows::get(&args.workflow).with_context(|| {
+        format!(
+            "unknown workflow {:?}; see `forge workflows`",
+            args.workflow
+        )
+    })?;
+    if wf.steps.contains(&workflows::Step::Tests) {
+        if cfg.namespace.is_empty() {
+            bail!(
+                "the {} workflow needs [verify] namespace in forge.toml: where the tests step may write",
+                wf.name
+            );
+        }
+        if !cfg.checks.contains_key("test") {
+            bail!(
+                "the {} workflow needs a check named `test` in forge.toml: what runs the hidden tests",
+                wf.name
+            );
+        }
+    }
+    if !cfg.namespace.is_empty() {
+        let present = git::ls_tree(&repo, &cfg.base_branch, &cfg.namespace).await?;
+        if !present.is_empty() {
+            bail!(
+                "the verification namespace ({}) must not exist on {}; it is overlaid at verify time. Found: {}",
+                cfg.namespace.join(", "),
+                cfg.base_branch,
+                present.join(", ")
+            );
+        }
+    }
     if cfg.checks.is_empty() && args.checks.is_empty() {
         bail!(
             "{} declares no [checks] and the task declares no --check; nothing would verify the work",
@@ -146,6 +200,8 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         created_at: unix_now(),
         budget_usd: args.budget,
         allow_protected: args.allow_protected,
+        workflow: args.workflow.clone(),
+        show_checks: args.show_checks,
         ..Default::default()
     };
     t.id = f.store.insert_task(&t)?;
@@ -204,9 +260,10 @@ fn run_doctor() -> Result<()> {
 fn log(limit: u32) -> Result<()> {
     let f = Forge::open(false, false)?;
     out!(
-        "{:<5} {:<11} {:<3} {:<8} {:<19} {:<18} TASK",
+        "{:<5} {:<11} {:<7} {:<3} {:<8} {:<19} {:<18} TASK",
         "ID",
         "STATE",
+        "WF",
         "ATT",
         "COST",
         "CREATED",
@@ -224,9 +281,10 @@ fn log(limit: u32) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<3} {:<8} {:<19} {:<18} {}",
+            "{:<5} {:<11} {:<7} {:<3} {:<8} {:<19} {:<18} {}",
             s.id,
             s.state,
+            s.workflow,
             s.attempts,
             format!("${:.4}", s.cost),
             s.created,
@@ -301,12 +359,20 @@ fn show(id: i64) -> Result<()> {
     if t.allow_protected {
         out!("protected  changes allowed");
     }
+    out!("workflow   {}", t.workflow);
+    if !t.interface.is_empty() {
+        out!(
+            "interface  {}",
+            t.interface.lines().collect::<Vec<_>>().join(" / ")
+        );
+    }
     out!("text       {}", t.task);
     for a in &attempts {
         out!();
         out!(
-            "attempt {}  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
+            "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
             a.attempt_no,
+            a.step,
             a.state.as_str(),
             if a.reason.is_empty() {
                 String::new()
@@ -392,10 +458,8 @@ async fn gc(dry_run: bool) -> Result<()> {
     let (mut removed, mut kept) = (0, 0);
     for t in f.store.tasks_with_worktrees()? {
         let wt = Path::new(&t.worktree);
-        let repo = Path::new(&t.repo);
         let verdict: Result<Result<(), String>> = async {
             if !wt.exists() {
-                git::worktree_prune(repo).await?;
                 return Ok(Ok(()));
             }
             if t.state == TaskState::Running {
@@ -405,11 +469,23 @@ async fn gc(dry_run: bool) -> Result<()> {
                 return Ok(Err("uncommitted changes".into()));
             }
             let commits = git::count_commits(wt, &t.base_sha).await?;
-            if commits > 0 && !git::remote_contains_head(wt).await? {
-                return Ok(Err(format!("{commits} commit(s) not on any remote")));
+            if commits > 0 {
+                let repo = Path::new(&t.repo);
+                let url = match config::load_working(repo).await?.push_remote {
+                    Some(name) => git::remote_url(repo, &name).await,
+                    None => None,
+                };
+                let published = match url {
+                    Some(u) => git::published(wt, &u, &t.branch).await?,
+                    None => false,
+                };
+                if !published {
+                    return Ok(Err(format!("{commits} commit(s) not on the remote")));
+                }
             }
             if !dry_run {
-                git::worktree_remove(repo, wt).await?;
+                std::fs::remove_dir_all(wt)?;
+                let _ = std::fs::remove_dir_all(engine::tests_clone_dir(&t.worktree));
             }
             Ok(Ok(()))
         }
@@ -434,11 +510,7 @@ async fn gc(dry_run: bool) -> Result<()> {
             Ok(Err(reason)) => {
                 kept += 1;
                 out!("task {:<4} kept ({reason})", t.id);
-                out!(
-                    "           git -C {} worktree remove --force {}",
-                    t.repo,
-                    t.worktree
-                );
+                out!("           rm -rf {}", t.worktree);
             }
             Err(e) => {
                 kept += 1;

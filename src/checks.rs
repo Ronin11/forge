@@ -94,7 +94,6 @@ pub async fn run_one(
     name: &str,
     argv: &[String],
     cwd: &Path,
-    repo_git_dir: &Path,
     sandbox: Option<&Sandbox>,
     timeout: Duration,
 ) -> CheckResult {
@@ -104,7 +103,7 @@ pub async fn run_one(
         name: name.to_string(),
         ..Default::default()
     };
-    let mut std_cmd = crate::agent::command_in(sandbox, cwd, repo_git_dir, argv, &[]);
+    let mut std_cmd = crate::agent::command_in(sandbox, cwd, argv, &[]);
     // Unsandboxed checks get their own process group so a backgrounded
     // child can be killed with them; bwrap's --new-session does the same.
     std_cmd.process_group(0);
@@ -222,16 +221,7 @@ random FAIL text
             "sleep 30 & echo started; exit 3".into(),
         ];
         let start = Instant::now();
-        let r = run_one(
-            "L1",
-            "bg",
-            &argv,
-            dir.path(),
-            dir.path(),
-            None,
-            Duration::from_secs(20),
-        )
-        .await;
+        let r = run_one("L1", "bg", &argv, dir.path(), None, Duration::from_secs(20)).await;
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "took {:?}",

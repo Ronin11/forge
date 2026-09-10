@@ -1,0 +1,21 @@
+--- src/checks.rs
++++ replace Tail::string -> String with "xyzzy".into()
+@@ -45,17 +45,17 @@
+     fn write(&mut self, chunk: &[u8]) {
+         self.0.extend_from_slice(chunk);
+         if self.0.len() > TAIL_BYTES {
+             let cut = self.0.len() - TAIL_BYTES;
+             self.0.drain(..cut);
+         }
+     }
+     fn string(&self) -> String {
+-        String::from_utf8_lossy(&self.0).into_owned()
++        "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ async fn drain(mut r: impl AsyncReadExt + Unpin, tail: Arc<Mutex<Tail>>) {
+     let mut buf = [0u8; 8192];
+     while let Ok(n) = r.read(&mut buf).await {
+         if n == 0 {
+             break;

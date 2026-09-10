@@ -47,6 +47,17 @@ pub fn agent_bin() -> String {
     std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
 }
 
+/// The tests step may run a different agent binary (FORGE2_CLAUDE_BIN_TESTS),
+/// which is how the test suite plays both halves of a TDD pair.
+pub fn agent_bin_for(step: &str) -> String {
+    if step == "tests"
+        && let Ok(b) = std::env::var("FORGE2_CLAUDE_BIN_TESTS")
+    {
+        return b;
+    }
+    agent_bin()
+}
+
 /// The environment the agent and the checks see, sandboxed or not. This is
 /// the one list; the sandbox overrides HOME on top of it.
 pub fn agent_env() -> Vec<(String, String)> {
@@ -65,14 +76,13 @@ pub fn agent_env() -> Vec<(String, String)> {
 pub fn command_in(
     sandbox: Option<&Sandbox>,
     worktree: &Path,
-    repo_git_dir: &Path,
     argv: &[String],
     extra_env: &[(String, String)],
 ) -> std::process::Command {
     let mut env = agent_env();
     env.extend(extra_env.iter().cloned());
     match sandbox {
-        Some(sb) => sb.command(worktree, repo_git_dir, argv, &env),
+        Some(sb) => sb.command(worktree, argv, &env),
         None => {
             let mut c = std::process::Command::new(&argv[0]);
             c.args(&argv[1..])
@@ -87,7 +97,6 @@ pub fn command_in(
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
-    pub repo_git_dir: &'a Path,
     pub prompt: &'a str,
     pub model: &'a str,
     pub max_turns: u32,
@@ -95,10 +104,11 @@ pub struct Launch<'a> {
     pub log_path: &'a Path,
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
+    pub step: &'a str,
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    let bin = agent_bin();
+    let bin = agent_bin_for(l.step);
     let argv: Vec<String> = [
         bin.as_str(),
         "--print",
@@ -116,22 +126,16 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let identity = crate::git::identity(l.repo_git_dir).await;
+    let identity = crate::git::identity(&l.worktree.join(".git")).await;
     let start = Instant::now();
     let deadline = tokio::time::Instant::now() + l.timeout;
-    let mut child = Command::from(command_in(
-        l.sandbox,
-        l.worktree,
-        l.repo_git_dir,
-        &argv,
-        &identity,
-    ))
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .kill_on_drop(true)
-    .spawn()
-    .with_context(|| format!("spawning {bin}"))?;
+    let mut child = Command::from(command_in(l.sandbox, l.worktree, &argv, &identity))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawning {bin}"))?;
 
     {
         let mut stdin = child.stdin.take().context("agent stdin")?;

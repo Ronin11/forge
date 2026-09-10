@@ -1,0 +1,22 @@
+--- src/main.rs
++++ replace unix_now -> i64 with 0
+@@ -17,18 +17,15 @@
+ mod sandbox;
+ mod store;
+ mod verify;
+ mod worker;
+ 
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ pub fn unix_now() -> i64 {
+-    SystemTime::now()
+-        .duration_since(UNIX_EPOCH)
+-        .map(|d| d.as_secs() as i64)
+-        .unwrap_or(0)
++    0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[tokio::main]
+ async fn main() -> anyhow::Result<()> {
+     cli::main().await
+ }

@@ -25,6 +25,10 @@ struct VerifyRaw {
     /// with a trailing slash.
     #[serde(default)]
     protected: Vec<String>,
+    /// Directories owned by verification: hidden from the coder, overlaid
+    /// from the trusted refs at verify time. Must not exist in the base tree.
+    #[serde(default)]
+    namespace: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -43,6 +47,7 @@ pub struct Config {
     pub push_remote: Option<String>,
     pub check_timeout_secs: u64,
     pub protected: Vec<String>,
+    pub namespace: Vec<String>,
 }
 
 /// Whether `path` falls under one of the protected entries.
@@ -81,6 +86,12 @@ async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
         push_remote,
         check_timeout_secs: raw.defaults.check_timeout_secs.unwrap_or(600),
         protected: raw.verify.protected,
+        namespace: raw
+            .verify
+            .namespace
+            .into_iter()
+            .map(|d| if d.ends_with('/') { d } else { format!("{d}/") })
+            .collect(),
     })
 }
 
@@ -98,8 +109,10 @@ pub async fn load_working(repo: &Path) -> Result<Config> {
 }
 
 /// The repository's forge.toml at `rev`: the trusted base for an attempt.
-pub async fn load_at(repo: &Path, rev: &str) -> Result<Config> {
-    let text = crate::git::show_file(repo, rev, "forge.toml")
+/// `repo` answers questions about remotes; `show_dir` is where `rev` is read
+/// from (the task's clone, which has the same objects).
+pub async fn load_at(repo: &Path, show_dir: &Path, rev: &str) -> Result<Config> {
+    let text = crate::git::show_file(show_dir, rev, "forge.toml")
         .await?
         .with_context(|| format!("forge.toml does not exist at {rev}"))?;
     parse(repo, &text, &format!("forge.toml at {rev}")).await

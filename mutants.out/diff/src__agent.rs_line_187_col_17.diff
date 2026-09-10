@@ -1,0 +1,31 @@
+--- src/agent.rs
++++ delete match arm Some("result") in run
+@@ -179,27 +179,17 @@
+                                             name: b["name"].as_str().unwrap_or("?"),
+                                         },
+                                     );
+                                 }
+                             }
+                         }
+                     }
+                 }
+-                Some("result") => {
+-                    out.got_result = true;
+-                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
+-                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+-                    out.cost_usd = v["total_cost_usd"].as_f64();
+-                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
+-                    out.structured = match &v["structured_output"] {
+-                        Value::Null => None,
+-                        other => Some(other.to_string()),
+-                    };
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 Some("rate_limit_event") => {
+                     let w = &v["rate_limit_info"]["unifiedWindows"];
+                     let read = |name: &str| {
+                         let win = &w[name];
+                         Some((
+                             win["utilization"].as_f64()?,
+                             win["resetsAt"].as_i64().unwrap_or(0),
+                         ))

@@ -1,6 +1,7 @@
-//! Git as mechanism. The only operations run inside the registered checkout
-//! are `worktree add/remove/prune` and read-only queries; everything else
-//! runs in the attempt's own worktree.
+//! Git as mechanism. Every task works in its own single-branch clone of the
+//! base branch: the registered checkout is only ever read, the clone's
+//! object store never holds the verification refs, and the sandbox never
+//! sees the repository's own .git.
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
@@ -32,39 +33,43 @@ pub async fn current_branch(repo: &Path) -> Result<String> {
         .context("repo is on a detached HEAD; set defaults.base_branch in forge.toml")
 }
 
-pub async fn branch_exists(repo: &Path, branch: &str) -> bool {
-    git(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
+pub async fn ref_exists(repo: &Path, full_ref: &str) -> bool {
+    git(repo, &["rev-parse", "--verify", "--quiet", full_ref])
+        .await
+        .is_ok()
+}
+
+/// A single-branch clone of `base` from the registered checkout, on a new
+/// task branch, with no remote at all: the agent inside cannot fetch
+/// anything, in particular not the verification refs. Forge pushes by URL.
+/// Returns the base commit.
+pub async fn clone_task(repo: &Path, base: &str, dir: &Path, branch: &str) -> Result<String> {
+    let dir_s = dir.to_str().context("clone path is not UTF-8")?;
+    let repo_s = repo.to_str().context("repo path is not UTF-8")?;
+    let out = Command::new("git")
+        .args([
+            "clone",
             "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .await
-    .is_ok()
-}
-
-pub async fn worktree_add(repo: &Path, wt: &Path, branch: &str, base: &str) -> Result<()> {
-    let wt_s = wt.to_str().context("worktree path is not UTF-8")?;
-    git(repo, &["worktree", "add", "-b", branch, wt_s, base]).await?;
-    Ok(())
-}
-
-pub async fn worktree_remove(repo: &Path, wt: &Path) -> Result<()> {
-    let wt_s = wt.to_str().context("worktree path is not UTF-8")?;
-    git(repo, &["worktree", "remove", wt_s]).await?;
-    Ok(())
-}
-
-pub async fn worktree_prune(repo: &Path) -> Result<()> {
-    git(repo, &["worktree", "prune"]).await?;
-    Ok(())
-}
-
-pub async fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
-    git(dir, &["rev-parse", rev]).await
+            "--single-branch",
+            "--no-tags",
+            "--branch",
+            base,
+            repo_s,
+            dir_s,
+        ])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "git clone of {} at {base} failed: {}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let base_sha = git(dir, &["rev-parse", "HEAD"]).await?;
+    git(dir, &["checkout", "--quiet", "-b", branch]).await?;
+    git(dir, &["remote", "remove", "origin"]).await?;
+    Ok(base_sha)
 }
 
 /// The content of `path` at `rev`, or `None` if it does not exist there.
@@ -115,30 +120,106 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     git(repo, &["remote", "get-url", remote]).await.ok()
 }
 
-/// Whether the worktree's HEAD is reachable from any remote-tracking ref,
-/// i.e. every commit it added has been published somewhere.
-pub async fn remote_contains_head(wt: &Path) -> Result<bool> {
-    Ok(!git(wt, &["branch", "-r", "--contains", "HEAD"])
-        .await?
-        .is_empty())
+/// Whether the clone's HEAD is exactly what the remote holds for `branch`,
+/// i.e. every commit it added has been published.
+pub async fn published(wt: &Path, url: &str, branch: &str) -> Result<bool> {
+    let head = git(wt, &["rev-parse", "HEAD"]).await?;
+    let full = format!("refs/heads/{branch}");
+    let out = Command::new("git")
+        .args(["ls-remote", url, &full])
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!(
+            "git ls-remote {url} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        == Some(head.as_str()))
 }
 
-/// Push exactly one branch to one remote by explicit refspec. Never forced,
-/// never the base branch, never a deletion. Runs on the host with the
-/// operator's credentials, never inside the sandbox.
-pub async fn push(wt: &Path, remote: &str, branch: &str) -> Result<()> {
+/// Push exactly one branch to one remote URL by explicit refspec. Never
+/// forced, never the base branch, never a deletion. Runs on the host with
+/// the operator's credentials, never inside the sandbox.
+pub async fn push(wt: &Path, url: &str, branch: &str) -> Result<()> {
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    git(wt, &["push", remote, &refspec]).await?;
+    git(wt, &["push", "--quiet", url, &refspec]).await?;
     Ok(())
 }
 
-/// The committer identity the repo would use, for passing into the sandbox
+/// Push a branch from a clone into the registered checkout's refs (never
+/// its working tree): how the tests step publishes `verify/<id>` for the
+/// kernel to overlay from. The refspec is explicit and unforced.
+pub async fn push_to_repo(wt: &Path, repo: &Path, branch: &str) -> Result<()> {
+    let repo_s = repo.to_str().context("repo path is not UTF-8")?;
+    let refspec = format!("HEAD:refs/heads/{branch}");
+    git(wt, &["push", "--quiet", repo_s, &refspec]).await?;
+    Ok(())
+}
+
+/// Files under `paths` present in `rev`, for an overlay.
+pub async fn ls_tree(repo: &Path, rev: &str, paths: &[String]) -> Result<Vec<String>> {
+    let mut args = vec!["ls-tree", "-r", "--name-only", rev, "--"];
+    let owned: Vec<&str> = paths.iter().map(String::as_str).collect();
+    args.extend(owned);
+    let out = git(repo, &args).await?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Extract `files` at `rev` from `repo` into `dest`, without touching
+/// `dest`'s git state: the files simply appear on disk.
+pub async fn archive_into(repo: &Path, rev: &str, files: &[String], dest: &Path) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<String> = vec![
+        "-C".into(),
+        repo.display().to_string(),
+        "archive".into(),
+        "--format=tar".into(),
+        rev.into(),
+        "--".into(),
+    ];
+    args.extend(files.iter().cloned());
+    let tar = Command::new("git").args(&args).output().await?;
+    if !tar.status.success() {
+        bail!(
+            "git archive {rev} failed: {}",
+            String::from_utf8_lossy(&tar.stderr).trim()
+        );
+    }
+    let mut untar = Command::new("tar")
+        .args(["-x", "-C"])
+        .arg(dest)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = untar.stdin.take().context("tar stdin")?;
+        stdin.write_all(&tar.stdout).await?;
+        stdin.shutdown().await?;
+    }
+    let status = untar.wait().await?;
+    if !status.success() {
+        bail!("tar extraction into {} failed", dest.display());
+    }
+    Ok(())
+}
+
+/// The committer identity the clone would use, for passing into the sandbox
 /// where ~/.gitconfig is invisible.
-pub async fn identity(repo_git_dir: &Path) -> Vec<(String, String)> {
+pub async fn identity(git_dir: &Path) -> Vec<(String, String)> {
     let get = |key: &'static str| async move {
         Command::new("git")
             .arg("--git-dir")
-            .arg(repo_git_dir)
+            .arg(git_dir)
             .args(["config", "--get", key])
             .output()
             .await
@@ -172,6 +253,49 @@ pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String>
     Some(format!(
         "https://github.com/{path}/compare/{base}...{branch}?expand=1"
     ))
+}
+
+/// Whether `branch` already exists on the remote at `url`.
+pub async fn remote_branch_exists(url: &str, branch: &str) -> bool {
+    let full = format!("refs/heads/{branch}");
+    Command::new("git")
+        .args(["ls-remote", "--heads", url, &full])
+        .output()
+        .await
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// The whole tree at `rev` extracted into `dest`, with no git state.
+pub async fn archive_all(repo: &Path, rev: &str, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    let tar = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["archive", "--format=tar", rev])
+        .output()
+        .await?;
+    if !tar.status.success() {
+        bail!(
+            "git archive {rev} failed: {}",
+            String::from_utf8_lossy(&tar.stderr).trim()
+        );
+    }
+    let mut untar = Command::new("tar")
+        .args(["-x", "-C"])
+        .arg(dest)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = untar.stdin.take().context("tar stdin")?;
+        stdin.write_all(&tar.stdout).await?;
+        stdin.shutdown().await?;
+    }
+    if !untar.wait().await?.success() {
+        bail!("tar extraction into {} failed", dest.display());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

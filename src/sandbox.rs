@@ -1,8 +1,8 @@
 //! The agent and the checks run under bubblewrap. Read-only system, private
 //! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
-//! needs: the worktree, the repository's .git (a worktree cannot commit
-//! without it), the agent binary, and the claude CLI's own state. Nothing
-//! else on the host is visible. Network stays shared: the agent has to
+//! needs: the task's clone (its .git included), the agent binary, and the
+//! claude CLI's own state. Nothing else on the host is visible, and in
+//! particular not the registered checkout or its .git. Network stays shared: the agent has to
 //! reach the API.
 //!
 //! Sandboxing is on by default and refuses to run without bwrap unless
@@ -55,11 +55,17 @@ impl Sandbox {
             bail!("bwrap not found; install bubblewrap or set FORGE2_SANDBOX=0 to run unsandboxed");
         };
         let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
-        let (named, canonical) = resolve_binary(agent_bin)?;
         let mut agent_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        for p in [named, canonical] {
-            if let Some(d) = p.parent() {
-                agent_dirs.insert(d.to_path_buf());
+        let mut bins = vec![agent_bin.to_string()];
+        if let Ok(b) = std::env::var("FORGE2_CLAUDE_BIN_TESTS") {
+            bins.push(b);
+        }
+        for b in &bins {
+            let (named, canonical) = resolve_binary(b)?;
+            for p in [named, canonical] {
+                if let Some(d) = p.parent() {
+                    agent_dirs.insert(d.to_path_buf());
+                }
             }
         }
         let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
@@ -78,13 +84,7 @@ impl Sandbox {
 
     /// Build the bwrap command that runs `argv` inside the worktree with
     /// exactly `env` (HOME is forced to the tmpfs home).
-    pub fn command(
-        &self,
-        worktree: &Path,
-        repo_git_dir: &Path,
-        argv: &[String],
-        env: &[(String, String)],
-    ) -> Command {
+    pub fn command(&self, worktree: &Path, argv: &[String], env: &[(String, String)]) -> Command {
         let mut cmd = Command::new(&self.bwrap);
         cmd.args([
             "--die-with-parent",
@@ -134,7 +134,6 @@ impl Sandbox {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
-        cmd.arg("--bind-try").arg(repo_git_dir).arg(repo_git_dir);
         for p in self.write_paths.iter().chain(&self.extra_rw) {
             cmd.arg("--bind-try").arg(p).arg(p);
         }

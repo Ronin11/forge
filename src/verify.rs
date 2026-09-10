@@ -2,40 +2,47 @@
 //! by Forge after the agent has exited, each a row in the verdict.
 //!
 //! - L0: is the result consistent with git? A structured result exists,
-//!   the tree is clean, there is at least one commit, `forge.toml` is
-//!   untouched, the reported `changes[]` match what git saw, and every
-//!   claim carries evidence.
+//!   the tree is clean, there is at least one commit, `forge.toml`,
+//!   protected paths, and the verification namespace are untouched, the
+//!   reported `changes[]` match what git saw, every claim has evidence.
 //! - L1: do the repository's declared checks pass, read from the trusted
-//!   base commit and run by Forge in the sandbox? And for every check the
+//!   base commit and run by Forge in the sandbox, with the verification
+//!   namespace overlaid from the trusted refs? And for every check the
 //!   agent reported as passed, did Forge's run pass too? A claimed pass
-//!   Forge cannot reproduce is the canonical false claim. The rule is
-//!   one-directional: the agent may be conservative, never optimistic.
-//! - L2: do the task's own acceptance commands pass? These are the
-//!   operator's definition of done, declared with `--check`.
+//!   Forge cannot reproduce is the canonical false claim.
+//! - L2: do the task's own acceptance commands pass?
 //!
-//! A level runs only if the one before it passed. `decide` maps the rows to
-//! a terminal state and is a pure function with a table test.
+//! A level runs only if the one before it passed. The overlay is removed
+//! afterwards so the next attempt starts blind. `decide` maps the rows to a
+//! terminal state and is a pure function with a table test.
+//!
+//! The tests step has its own verdict: only the namespace changed, and the
+//! tests fail on the base commit.
 
 use crate::agent::Outcome;
 use crate::checks::{CheckResult, last_lines, run_one};
-use crate::config::Config;
+use crate::config::{Config, is_protected};
 use crate::envelope::{self, Envelope};
 use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
 use crate::store::AttemptState;
 use anyhow::Result;
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub struct Subject<'a> {
     pub task_id: i64,
+    /// The registered checkout: where the trusted verify refs live.
+    pub repo: &'a Path,
     pub worktree: &'a Path,
-    pub repo_git_dir: &'a Path,
     pub base_sha: &'a str,
     pub cfg: &'a Config,
     pub task_checks: &'a [String],
     pub allow_protected: bool,
+    /// Refs whose namespace files are overlaid before L1: `forge-verify`
+    /// for standing suites, `verify/<id>` for the task's own tests.
+    pub overlay_refs: &'a [String],
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
 }
@@ -60,74 +67,211 @@ fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
     }
 }
 
-pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
-    let commits = crate::git::count_commits(s.worktree, s.base_sha).await?;
-    let changed = crate::git::changed_paths(s.worktree, s.base_sha).await?;
-    let dirty = crate::git::dirty_paths(s.worktree).await?;
-    s.report.emit(
-        s.task_id,
+fn in_namespace(namespace: &[String], path: &str) -> bool {
+    namespace.iter().any(|d| path.starts_with(d.as_str()))
+}
+
+/// What every step's L0 shares: git facts, the envelope, the rows that do
+/// not depend on the step. Returns the rows, the envelope, and a question.
+async fn common_l0(
+    worktree: &Path,
+    base_sha: &str,
+    agent: &Outcome,
+    report: &Reporter,
+    task_id: i64,
+) -> Result<(
+    Vec<CheckResult>,
+    Option<Envelope>,
+    Option<(String, String)>,
+    i64,
+    Vec<String>,
+    Vec<String>,
+)> {
+    let commits = crate::git::count_commits(worktree, base_sha).await?;
+    let changed = crate::git::changed_paths(worktree, base_sha).await?;
+    let dirty = crate::git::dirty_paths(worktree).await?;
+    report.emit(
+        task_id,
         Event::GitCounted {
             commits,
             files: changed.len() as i64,
             dirty: !dirty.is_empty(),
         },
     );
+    let mut rows = Vec::new();
+    let parsed = envelope::parse(agent.structured.as_deref(), &agent.result_text);
+    let env = match &parsed {
+        Ok(Some(e)) => Some(e.clone()),
+        _ => None,
+    };
+    rows.push(l0(
+        "result-structured",
+        env.is_some(),
+        match &parsed {
+            Ok(None) => "the agent produced no structured result".into(),
+            Err(e) => format!("the structured result does not fit the contract: {e}"),
+            Ok(Some(_)) => String::new(),
+        },
+    ));
+    let question = env.as_ref().and_then(|e| e.needs_input.as_ref()).map(|q| {
+        (
+            if q.kind == "workflow" {
+                "workflow".to_string()
+            } else {
+                "question".to_string()
+            },
+            q.question.clone(),
+        )
+    });
+    rows.push(l0(
+        "clean-tree",
+        dirty.is_empty(),
+        format!("uncommitted: {}", dirty.join(", ")),
+    ));
+    let touched = changed
+        .iter()
+        .chain(dirty.iter())
+        .any(|p| p == "forge.toml");
+    rows.push(l0(
+        "forge.toml-untouched",
+        !touched,
+        "the attempt modified forge.toml".into(),
+    ));
+    rows.push(l0(
+        "has-commits",
+        commits > 0,
+        "no commits on the branch".into(),
+    ));
+    if let Some(e) = &env {
+        let reported: BTreeSet<&str> = e.changes.iter().map(|c| c.path.as_str()).collect();
+        let actual: BTreeSet<&str> = changed
+            .iter()
+            .chain(dirty.iter())
+            .map(String::as_str)
+            .collect();
+        let unreported: Vec<&str> = actual.difference(&reported).copied().collect();
+        let phantom: Vec<&str> = reported.difference(&actual).copied().collect();
+        let mut detail = String::new();
+        if !unreported.is_empty() {
+            detail.push_str(&format!(
+                "changed in git but not reported: {}\n",
+                unreported.join(", ")
+            ));
+        }
+        if !phantom.is_empty() {
+            detail.push_str(&format!(
+                "reported but unchanged in git: {}",
+                phantom.join(", ")
+            ));
+        }
+        rows.push(l0(
+            "changes-match-git",
+            unreported.is_empty() && phantom.is_empty(),
+            detail.trim().to_string(),
+        ));
+        let bare: Vec<&str> = e
+            .claims
+            .iter()
+            .filter(|c| c.evidence.trim().is_empty())
+            .map(|c| c.claim.as_str())
+            .collect();
+        rows.push(l0(
+            "claims-have-evidence",
+            bare.is_empty(),
+            format!("claims without evidence: {}", bare.join("; ")),
+        ));
+    }
+    Ok((rows, env, question, commits, changed, dirty))
+}
+
+fn emit_rows(report: &Reporter, task_id: i64, rows: &[CheckResult]) {
+    for c in rows {
+        report.emit(
+            task_id,
+            Event::Check {
+                level: &c.level,
+                name: &c.name,
+                ok: c.ok,
+                ms: c.ms,
+                tail: &last_lines(&c.tail, 20),
+            },
+        );
+    }
+}
+
+/// Overlay the namespace files from each trusted ref into the tree.
+/// Returns the files placed, for removal afterwards.
+async fn overlay(
+    repo: &Path,
+    refs: &[String],
+    namespace: &[String],
+    dest: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut placed = Vec::new();
+    if namespace.is_empty() {
+        return Ok(placed);
+    }
+    for r in refs {
+        let files = crate::git::ls_tree(repo, r, namespace).await?;
+        crate::git::archive_into(repo, r, &files, dest).await?;
+        placed.extend(files.iter().map(|f| dest.join(f)));
+    }
+    Ok(placed)
+}
+
+fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
+    for f in placed {
+        let _ = std::fs::remove_file(f);
+    }
+    for d in namespace {
+        let dir = dest.join(d.trim_end_matches('/'));
+        let _ = remove_empty_dirs(&dir);
+    }
+}
+
+fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let p = entry?.path();
+        if p.is_dir() {
+            remove_empty_dirs(&p)?;
+        }
+    }
+    if std::fs::read_dir(dir)?.next().is_none() {
+        std::fs::remove_dir(dir)?;
+    }
+    Ok(())
+}
+
+/// The code step's verdict.
+pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
+    let agent_reason = agent_failure(agent);
     let mut v = Verdict {
-        commits,
-        files_changed: changed.len() as i64,
-        dirty: !dirty.is_empty(),
+        commits: 0,
+        files_changed: 0,
+        dirty: false,
         envelope: None,
         checks: Vec::new(),
         state: AttemptState::Running,
         reason: String::new(),
     };
-
-    let agent_reason = agent_failure(agent);
-    let mut needs_input: Option<String> = None;
+    let mut question: Option<(String, String)> = None;
+    let (rows, env, q, commits, changed, dirty) =
+        common_l0(s.worktree, s.base_sha, agent, s.report, s.task_id).await?;
+    v.commits = commits;
+    v.files_changed = changed.len() as i64;
+    v.dirty = !dirty.is_empty();
     if agent_reason.is_none() {
-        // L0
-        let parsed = envelope::parse(agent.structured.as_deref(), &agent.result_text);
-        let env = match &parsed {
-            Ok(Some(e)) => Some(e.clone()),
-            _ => None,
-        };
-        v.checks.push(l0(
-            "result-structured",
-            env.is_some(),
-            match &parsed {
-                Ok(None) => "the agent produced no structured result".into(),
-                Err(e) => format!("the structured result does not fit the contract: {e}"),
-                Ok(Some(_)) => String::new(),
-            },
-        ));
-        if let Some(q) = env.as_ref().and_then(|e| e.needs_input.as_ref()) {
-            needs_input = Some(q.question.clone());
-        }
-        v.checks.push(l0(
-            "clean-tree",
-            dirty.is_empty(),
-            format!("uncommitted: {}", dirty.join(", ")),
-        ));
-        let touched = changed
-            .iter()
-            .chain(dirty.iter())
-            .any(|p| p == "forge.toml");
-        v.checks.push(l0(
-            "forge.toml-untouched",
-            !touched,
-            "the attempt modified forge.toml".into(),
-        ));
-        v.checks.push(l0(
-            "has-commits",
-            commits > 0,
-            "no commits on the branch".into(),
-        ));
+        v.checks = rows;
+        question = q;
         if !s.cfg.protected.is_empty() && !s.allow_protected {
             let hit: Vec<&str> = changed
                 .iter()
                 .chain(dirty.iter())
                 .map(String::as_str)
-                .filter(|p| crate::config::is_protected(&s.cfg.protected, p))
+                .filter(|p| is_protected(&s.cfg.protected, p))
                 .collect();
             v.checks.push(l0(
                 "protected-paths",
@@ -138,78 +282,42 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
                 ),
             ));
         }
-        if let Some(e) = &env {
-            let reported: BTreeSet<&str> = e.changes.iter().map(|c| c.path.as_str()).collect();
-            let actual: BTreeSet<&str> = changed
+        if !s.cfg.namespace.is_empty() {
+            let hit: Vec<&str> = changed
                 .iter()
                 .chain(dirty.iter())
                 .map(String::as_str)
-                .collect();
-            let unreported: Vec<&str> = actual.difference(&reported).copied().collect();
-            let phantom: Vec<&str> = reported.difference(&actual).copied().collect();
-            let mut detail = String::new();
-            if !unreported.is_empty() {
-                detail.push_str(&format!(
-                    "changed in git but not reported: {}\n",
-                    unreported.join(", ")
-                ));
-            }
-            if !phantom.is_empty() {
-                detail.push_str(&format!(
-                    "reported but unchanged in git: {}",
-                    phantom.join(", ")
-                ));
-            }
-            v.checks.push(l0(
-                "changes-match-git",
-                unreported.is_empty() && phantom.is_empty(),
-                detail.trim().to_string(),
-            ));
-            let bare: Vec<&str> = e
-                .claims
-                .iter()
-                .filter(|c| c.evidence.trim().is_empty())
-                .map(|c| c.claim.as_str())
+                .filter(|p| in_namespace(&s.cfg.namespace, p))
                 .collect();
             v.checks.push(l0(
-                "claims-have-evidence",
-                bare.is_empty(),
-                format!("claims without evidence: {}", bare.join("; ")),
+                "namespace-untouched",
+                hit.is_empty(),
+                format!("files created under the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
             ));
         }
-        for c in &v.checks {
-            s.report.emit(
-                s.task_id,
-                Event::Check {
-                    level: &c.level,
-                    name: &c.name,
-                    ok: c.ok,
-                    ms: c.ms,
-                    tail: &c.tail,
-                },
-            );
-        }
-        let l0_ok = v.checks.iter().all(|c| c.ok) && needs_input.is_none();
+        emit_rows(s.report, s.task_id, &v.checks);
+        let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
 
-        // L1
         if l0_ok {
+            let placed = overlay(s.repo, s.overlay_refs, &s.cfg.namespace, s.worktree).await?;
+            if !placed.is_empty() {
+                s.report.emit(
+                    s.task_id,
+                    Event::Note {
+                        text: &format!(
+                            "overlay  {} verification file(s) from {}",
+                            placed.len(),
+                            s.overlay_refs.join(", ")
+                        ),
+                    },
+                );
+            }
             let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
-            // `setup` runs first and gates the rest: without dependencies
-            // installed the other checks would fail for the wrong reason.
             let mut names: Vec<&String> = s.cfg.checks.keys().collect();
             names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
             for name in names {
                 let argv = &s.cfg.checks[name];
-                let r = run_one(
-                    "L1",
-                    name,
-                    argv,
-                    s.worktree,
-                    s.repo_git_dir,
-                    s.sandbox,
-                    timeout,
-                )
-                .await;
+                let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout).await;
                 s.report.emit(
                     s.task_id,
                     Event::Check {
@@ -262,27 +370,138 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
                     }
                 }
             }
+            let l1_ok = v.checks.iter().filter(|c| c.level == "L1").all(|c| c.ok);
+            if l1_ok {
+                for (i, cmd) in s.task_checks.iter().enumerate() {
+                    let name = format!("task-check-{}", i + 1);
+                    let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
+                    let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout).await;
+                    if !r.ok {
+                        r.tail = format!("$ {cmd}\n{}", r.tail);
+                    }
+                    s.report.emit(
+                        s.task_id,
+                        Event::Check {
+                            level: &r.level,
+                            name: &r.name,
+                            ok: r.ok,
+                            ms: r.ms,
+                            tail: &last_lines(&r.tail, 20),
+                        },
+                    );
+                    v.checks.push(r);
+                }
+            }
+            remove_overlay(&placed, &s.cfg.namespace, s.worktree);
         }
-        let l1_ok = v.checks.iter().filter(|c| c.level == "L1").all(|c| c.ok);
+        v.envelope = env;
+    }
+    let (state, reason) = decide(
+        agent_reason.as_deref(),
+        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        &v.checks,
+    );
+    v.state = state;
+    v.reason = reason;
+    Ok(v)
+}
 
-        // L2
-        if l0_ok && l1_ok {
+pub struct TestsSubject<'a> {
+    pub task_id: i64,
+    /// The tests step's own clone.
+    pub worktree: &'a Path,
+    /// Scratch directory for the red-on-base run; created and removed here.
+    pub scratch: &'a Path,
+    pub base_sha: &'a str,
+    pub cfg: &'a Config,
+    pub sandbox: Option<&'a Sandbox>,
+    pub report: &'a Reporter,
+}
+
+/// The tests step's verdict: L0, only the namespace changed, and the new
+/// tests fail against the base commit (so they specify the task rather than
+/// the status quo). Runs the repo's `setup` and `test` checks in a scratch
+/// copy of base with the tests overlaid.
+pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdict> {
+    let agent_reason = agent_failure(agent);
+    let mut v = Verdict {
+        commits: 0,
+        files_changed: 0,
+        dirty: false,
+        envelope: None,
+        checks: Vec::new(),
+        state: AttemptState::Running,
+        reason: String::new(),
+    };
+    let mut question: Option<(String, String)> = None;
+    let (rows, env, q, commits, changed, dirty) =
+        common_l0(s.worktree, s.base_sha, agent, s.report, s.task_id).await?;
+    v.commits = commits;
+    v.files_changed = changed.len() as i64;
+    v.dirty = !dirty.is_empty();
+    if agent_reason.is_none() {
+        v.checks = rows;
+        question = q;
+        let outside: Vec<&str> = changed
+            .iter()
+            .chain(dirty.iter())
+            .map(String::as_str)
+            .filter(|p| !in_namespace(&s.cfg.namespace, p))
+            .collect();
+        v.checks.push(l0(
+            "namespace-only",
+            outside.is_empty(),
+            format!(
+                "the tests step may only change {}; it changed: {}",
+                s.cfg.namespace.join(", "),
+                outside.join(", ")
+            ),
+        ));
+        let has_summary = env.as_ref().is_some_and(|e| e.summary.trim().len() >= 40);
+        v.checks.push(l0(
+            "interface-described",
+            has_summary,
+            "the summary must describe the interface the tests expect; it is all the implementer will see".into(),
+        ));
+        emit_rows(s.report, s.task_id, &v.checks);
+        let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
+
+        if l0_ok {
+            // Red on base: base tree plus the new tests, `setup` then `test`.
+            let _ = std::fs::remove_dir_all(s.scratch);
+            crate::git::archive_all(s.worktree, s.base_sha, s.scratch).await?;
+            let files = crate::git::ls_tree(s.worktree, "HEAD", &s.cfg.namespace).await?;
+            crate::git::archive_into(s.worktree, "HEAD", &files, s.scratch).await?;
             let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
-            for (i, cmd) in s.task_checks.iter().enumerate() {
-                let name = format!("task-check-{}", i + 1);
-                let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
-                let mut r = run_one(
-                    "L2",
-                    &name,
-                    &argv,
-                    s.worktree,
-                    s.repo_git_dir,
-                    s.sandbox,
-                    timeout,
-                )
-                .await;
-                if !r.ok {
-                    r.tail = format!("$ {cmd}\n{}", r.tail);
+            let mut setup_ok = true;
+            if let Some(argv) = s.cfg.checks.get("setup") {
+                let r = run_one("L1", "setup", argv, s.scratch, s.sandbox, timeout).await;
+                s.report.emit(
+                    s.task_id,
+                    Event::Check {
+                        level: &r.level,
+                        name: &r.name,
+                        ok: r.ok,
+                        ms: r.ms,
+                        tail: &last_lines(&r.tail, 20),
+                    },
+                );
+                setup_ok = r.ok;
+                v.checks.push(r);
+            }
+            if setup_ok {
+                let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
+                let mut r =
+                    run_one("L1", "red-on-base", &argv, s.scratch, s.sandbox, timeout).await;
+                // The row passes when the tests FAIL on base.
+                let failed_on_base = !r.ok && !r.timed_out;
+                r.ok = failed_on_base;
+                if !failed_on_base {
+                    r.tail = format!(
+                        "the new tests {} on the base commit, so they do not specify the task\n{}",
+                        if r.timed_out { "timed out" } else { "pass" },
+                        r.tail
+                    );
                 }
                 s.report.emit(
                     s.task_id,
@@ -296,11 +515,15 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
                 );
                 v.checks.push(r);
             }
+            let _ = std::fs::remove_dir_all(s.scratch);
         }
         v.envelope = env;
     }
-
-    let (state, reason) = decide(agent_reason.as_deref(), needs_input.as_deref(), &v.checks);
+    let (state, reason) = decide(
+        agent_reason.as_deref(),
+        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        &v.checks,
+    );
     v.state = state;
     v.reason = reason;
     Ok(v)
@@ -325,16 +548,22 @@ pub fn agent_failure(a: &Outcome) -> Option<String> {
 }
 
 /// The verdict table. Pure: the same rows always give the same answer.
+/// `question` is (kind, text): kind "workflow" or "question".
 pub fn decide(
     agent_failure: Option<&str>,
-    needs_input: Option<&str>,
+    question: Option<(&str, &str)>,
     checks: &[CheckResult],
 ) -> (AttemptState, String) {
     if let Some(why) = agent_failure {
         return (AttemptState::AgentFailed, why.to_string());
     }
-    if let Some(q) = needs_input {
-        return (AttemptState::NeedsInput, format!("needs input: {q}"));
+    if let Some((kind, q)) = question {
+        let label = if kind == "workflow" {
+            "needs workflow"
+        } else {
+            "needs input"
+        };
+        return (AttemptState::NeedsInput, format!("{label}: {q}"));
     }
     for level in ["L0", "L1", "L2"] {
         let failed: Vec<&str> = checks
@@ -415,7 +644,7 @@ mod tests {
     fn verdict_table() {
         type Case = (
             Option<&'static str>,
-            Option<&'static str>,
+            Option<(&'static str, &'static str)>,
             Vec<CheckResult>,
             AttemptState,
             &'static str,
@@ -430,17 +659,24 @@ mod tests {
             ),
             (
                 Some("agent exit 1"),
-                Some("q"),
+                Some(("question", "q")),
                 vec![c("L1", "test", true)],
                 AttemptState::AgentFailed,
                 "agent exit 1",
             ),
             (
                 None,
-                Some("which db?"),
+                Some(("question", "which db?")),
                 vec![c("L0", "a", false)],
                 AttemptState::NeedsInput,
                 "needs input: which db?",
+            ),
+            (
+                None,
+                Some(("workflow", "need e2e")),
+                vec![],
+                AttemptState::NeedsInput,
+                "needs workflow: need e2e",
             ),
             (None, None, vec![], AttemptState::Unverified, "no L1 or L2"),
             (
@@ -556,6 +792,14 @@ mod tests {
             .as_deref(),
             Some("agent reported an error")
         );
+    }
+
+    #[test]
+    fn namespace_membership() {
+        let ns = vec!["tests/acceptance/".to_string()];
+        assert!(in_namespace(&ns, "tests/acceptance/a.sh"));
+        assert!(!in_namespace(&ns, "tests/acceptance.sh"));
+        assert!(!in_namespace(&ns, "src/a.ts"));
     }
 
     #[test]

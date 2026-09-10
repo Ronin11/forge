@@ -240,12 +240,206 @@ fn a_question_ends_the_task_without_retrying() {
     assert_eq!(a.len(), 1, "retrying cannot answer a question");
     assert_eq!(a[0].1, "needs_input");
     let (state, reason, pushed) = e.task(1);
-    assert_eq!(state, "failed");
+    assert_eq!(state, "blocked");
     assert!(
         reason.starts_with("needs input: Which answer file"),
         "{reason}"
     );
     assert!(!pushed);
+}
+
+#[test]
+fn a_workflow_request_blocks_the_task_with_the_request_as_reason() {
+    let e = Env::new();
+    assert!(
+        !e.run("workflowreq.sh", &["--retries", "2"])
+            .status
+            .success()
+    );
+    assert_eq!(e.attempts(1).len(), 1);
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert_eq!(
+        reason,
+        "needs workflow: This needs a browser e2e step; no workflow has one."
+    );
+}
+
+#[test]
+fn acceptance_checks_are_hidden_unless_shown() {
+    let e = Env::new();
+    assert!(
+        e.run(
+            "promptdump.sh",
+            &["--retries", "0", "--check", "grep -qx 42 answer.txt"]
+        )
+        .status
+        .success()
+    );
+    let p1 = e.log_text(1, 1);
+    assert!(
+        !p1.contains("grep -qx 42 answer.txt"),
+        "hidden by default:\n{p1}"
+    );
+    assert!(
+        p1.contains("Acceptance commands exist and are hidden"),
+        "{p1}"
+    );
+    assert!(p1.contains("Two honest exits"), "{p1}");
+    assert!(
+        e.run(
+            "promptdump.sh",
+            &[
+                "--retries",
+                "0",
+                "--check",
+                "grep -qx 42 answer.txt",
+                "--show-checks"
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(e.log_text(2, 1).contains("grep -qx 42 answer.txt"));
+}
+
+fn tdd_repo(e: &Env) {
+    let test_cmd = "shopt -s nullglob; n=0; for f in tests/acceptance/*.sh; do n=$((n+1)); bash \"$f\" || exit 1; done; test $n -gt 0";
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        format!(
+            "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\ntest = [\"bash\", \"-c\", {}]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n",
+            serde_json::to_string(test_cmd).unwrap()
+        ),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "tdd layout"]);
+}
+
+fn run_tdd(e: &Env, coder: &str, writer: &str, task: &str) -> Output {
+    let mut c = e.cmd(coder);
+    c.env(
+        "FORGE2_CLAUDE_BIN_TESTS",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fakes")
+            .join(writer),
+    );
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            task,
+            "--workflow",
+            "tdd",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!(
+        "--- tdd {coder}+{writer} ---\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
+
+#[test]
+fn tdd_hides_the_tests_and_verifies_the_coder_against_them() {
+    let e = Env::new();
+    tdd_repo(&e);
+    assert!(
+        run_tdd(&e, "ok.sh", "testwriter.sh", "make answer.txt contain 42")
+            .status
+            .success()
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    let c = e.db();
+    let steps: Vec<String> = c
+        .prepare("SELECT step FROM attempts WHERE task_id=1 ORDER BY attempt_no")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(steps, vec!["tests", "code"]);
+    assert_eq!(check(&a[0].4, "L0", "namespace-only"), Some(true));
+    assert_eq!(check(&a[0].4, "L1", "red-on-base"), Some(true));
+    assert_eq!(check(&a[1].4, "L0", "namespace-untouched"), Some(true));
+    assert_eq!(
+        check(&a[1].4, "L1", "test"),
+        Some(true),
+        "the hidden test ran against the coder's tree"
+    );
+    let coder_prompt = e.log_text(1, 2);
+    assert!(
+        coder_prompt.contains("They expect this interface"),
+        "{coder_prompt}"
+    );
+    assert!(
+        coder_prompt.contains("entire content is the line 42"),
+        "{coder_prompt}"
+    );
+    assert!(
+        !coder_prompt.contains("grep -qx"),
+        "assertions stay hidden:\n{coder_prompt}"
+    );
+    assert!(
+        !e.home
+            .join("worktrees/1/tests/acceptance/answer.sh")
+            .exists(),
+        "the overlay is removed afterwards"
+    );
+    assert_eq!(
+        git(&e.home.join("worktrees/1"), &["remote"]),
+        "",
+        "the coder's clone has no remote to fetch hidden tests from"
+    );
+    assert!(
+        git(&e.repo, &["branch"]).contains("verify/1"),
+        "the tests live on verify/<id> in the repo"
+    );
+    assert!(
+        e.origin_branches().contains("verify/1"),
+        "and on the remote for review"
+    );
+    assert!(e.task(1).2, "pushed");
+}
+
+#[test]
+fn tdd_rejects_tests_that_pass_on_base_and_coders_that_shadow_the_namespace() {
+    let e = Env::new();
+    tdd_repo(&e);
+    assert!(!run_tdd(&e, "ok.sh", "greentests.sh", "x").status.success());
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 1, "the code step never runs");
+    assert_eq!(a[0].2, "L1 failed: red-on-base");
+
+    assert!(
+        !run_tdd(&e, "shadow.sh", "testwriter.sh", "y")
+            .status
+            .success()
+    );
+    let a = e.attempts(2);
+    assert_eq!(a[1].2, "L0 failed: namespace-untouched");
+}
+
+#[test]
+fn tdd_is_refused_without_a_namespace_or_a_test_check() {
+    let e = Env::new();
+    let o = e.forge(
+        "ok.sh",
+        &["add", e.repo.to_str().unwrap(), "x", "--workflow", "tdd"],
+    );
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("needs [verify] namespace"));
+    let o = e.forge(
+        "ok.sh",
+        &["add", e.repo.to_str().unwrap(), "x", "--workflow", "nope"],
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown workflow"));
+    let o = e.forge("ok.sh", &["workflows"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("tests → code"));
 }
 
 #[test]
@@ -653,13 +847,14 @@ fn gc_removes_only_what_is_published_and_clean() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("task 1    removed"), "{out}");
     assert!(
-        out.contains("task 2    kept (1 commit(s) not on any remote)"),
+        out.contains("task 2    kept (1 commit(s) not on the remote)"),
         "{out}"
     );
     assert!(!e.home.join("worktrees/1").exists());
     assert!(e.home.join("worktrees/2").exists());
     assert!(
-        git(&e.repo, &["branch"]).contains("forge/1-"),
-        "branches are never deleted"
+        e.origin_branches().contains("forge/1-"),
+        "published branches are never deleted"
     );
+    assert!(!e.home.join("worktrees/1").exists());
 }

@@ -17,6 +17,8 @@ pub enum TaskState {
     Succeeded,
     Failed,
     Unverified,
+    /// The agent asked a question or for a different workflow; not a failure.
+    Blocked,
 }
 
 impl TaskState {
@@ -27,6 +29,7 @@ impl TaskState {
             TaskState::Succeeded => "succeeded",
             TaskState::Failed => "failed",
             TaskState::Unverified => "unverified",
+            TaskState::Blocked => "blocked",
         }
     }
 }
@@ -40,6 +43,7 @@ impl TryFrom<&str> for TaskState {
             "succeeded" => TaskState::Succeeded,
             "failed" => TaskState::Failed,
             "unverified" => TaskState::Unverified,
+            "blocked" => TaskState::Blocked,
             other => {
                 return Err(std::io::Error::other(format!(
                     "unknown task state {other:?}"
@@ -120,6 +124,11 @@ pub struct Task {
     pub worktree_removed_at: Option<i64>,
     /// The operator said this task may change protected paths.
     pub allow_protected: bool,
+    pub workflow: String,
+    /// The tests step's summary: what the coder is told about the tests.
+    pub interface: String,
+    /// Show the L2 acceptance commands to the coder (default hidden).
+    pub show_checks: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -127,6 +136,7 @@ pub struct Attempt {
     pub id: i64,
     pub task_id: i64,
     pub attempt_no: i64,
+    pub step: String,
     pub state: AttemptState,
     pub reason: String,
     pub started_at: i64,
@@ -160,6 +170,7 @@ pub struct RateLimitSample {
 pub struct TaskSummary {
     pub id: i64,
     pub state: String,
+    pub workflow: String,
     pub created: String,
     pub repo: String,
     pub task: String,
@@ -231,11 +242,17 @@ ALTER TABLE attempts ADD COLUMN rl_seven_day_resets INTEGER;
     "
 ALTER TABLE tasks ADD COLUMN allow_protected INTEGER NOT NULL DEFAULT 0;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN workflow TEXT NOT NULL DEFAULT 'direct';
+ALTER TABLE tasks ADD COLUMN interface TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN show_checks INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempts ADD COLUMN step TEXT NOT NULL DEFAULT 'code';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -268,12 +285,15 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         budget_usd: r.get(19)?,
         worktree_removed_at: r.get(20)?,
         allow_protected: r.get::<_, i64>(21)? != 0,
+        workflow: r.get(22)?,
+        interface: r.get(23)?,
+        show_checks: r.get::<_, i64>(24)? != 0,
     })
 }
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -301,6 +321,7 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         rl_seven_day: r.get(21)?,
         rl_five_hour_resets: r.get(22)?,
         rl_seven_day_resets: r.get(23)?,
+        step: r.get(24)?,
     })
 }
 
@@ -331,8 +352,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 t.repo,
                 t.task,
@@ -345,7 +366,9 @@ impl Store {
                 t.state.as_str(),
                 t.created_at,
                 t.budget_usd,
-                t.allow_protected as i64
+                t.allow_protected as i64,
+                t.workflow,
+                t.show_checks as i64
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -354,7 +377,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -365,7 +388,8 @@ impl Store {
                 t.started_at,
                 t.finished_at,
                 t.pushed as i64,
-                t.worker_pid
+                t.worker_pid,
+                t.interface
             ],
         )?;
         Ok(())
@@ -450,8 +474,8 @@ impl Store {
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path],
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -558,7 +582,8 @@ impl Store {
         let mut stmt = c.prepare(
             "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
-                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id)
+                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
+                    t.workflow
              FROM tasks t ORDER BY t.id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
@@ -570,6 +595,7 @@ impl Store {
                 task: r.get(4)?,
                 attempts: r.get(5)?,
                 cost: r.get(6)?,
+                workflow: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

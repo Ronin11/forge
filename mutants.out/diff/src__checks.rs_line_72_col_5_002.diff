@@ -1,0 +1,38 @@
+--- src/checks.rs
++++ replace failing_tests -> Vec<String> with vec!["xyzzy".into()]
+@@ -64,34 +64,17 @@
+             .unwrap_or_else(|p| p.into_inner())
+             .write(&buf[..n]);
+     }
+ }
+ 
+ /// Test names from the formats Forge recognises; unknown output yields
+ /// nothing rather than a guess.
+ pub fn failing_tests(out: &str) -> Vec<String> {
+-    let mut names = Vec::new();
+-    for line in out.lines().map(str::trim) {
+-        if let Some(rest) = line.strip_prefix("--- FAIL: ") {
+-            // go test
+-            if let Some(n) = rest.split_whitespace().next() {
+-                names.push(n.to_string());
+-            }
+-        } else if let Some(rest) = line.strip_prefix("FAILED ").filter(|r| r.contains("::")) {
+-            // pytest
+-            if let Some(n) = rest.split_whitespace().next() {
+-                names.push(n.to_string());
+-            }
+-        } else if let Some(rest) = line.strip_prefix("✕ ").or_else(|| line.strip_prefix("✗ ")) {
+-            // jest
+-            names.push(rest.trim().to_string());
+-        }
+-    }
+-    names
++    vec!["xyzzy".into()] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub async fn run_one(
+     level: &str,
+     name: &str,
+     argv: &[String],
+     cwd: &Path,
+     repo_git_dir: &Path,

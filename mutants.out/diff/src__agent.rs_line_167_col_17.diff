@@ -1,0 +1,40 @@
+--- src/agent.rs
++++ delete match arm Some("assistant") in run
+@@ -159,36 +159,17 @@
+ 
+     let read = async {
+         while let Some(line) = lines.next_line().await? {
+             writeln!(log, "{line}")?;
+             let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                 continue;
+             };
+             match v["type"].as_str() {
+-                Some("assistant") => {
+-                    // The CLI repeats a message once per content block; count
+-                    // each tool_use id once.
+-                    if let Some(blocks) = v["message"]["content"].as_array() {
+-                        for b in blocks {
+-                            if b["type"] == "tool_use" {
+-                                let id = b["id"].as_str().unwrap_or("").to_string();
+-                                if seen_tools.insert(id) {
+-                                    out.tool_calls += 1;
+-                                    l.report.emit(
+-                                        l.task_id,
+-                                        Event::ToolCall {
+-                                            name: b["name"].as_str().unwrap_or("?"),
+-                                        },
+-                                    );
+-                                }
+-                            }
+-                        }
+-                    }
+-                }
++                 /* ~ changed by cargo-mutants ~ */
+                 Some("result") => {
+                     out.got_result = true;
+                     out.is_error = v["is_error"].as_bool().unwrap_or(false);
+                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+                     out.cost_usd = v["total_cost_usd"].as_f64();
+                     out.result_text = v["result"].as_str().unwrap_or("").to_string();
+                     out.structured = match &v["structured_output"] {
+                         Value::Null => None,
