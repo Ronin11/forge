@@ -548,8 +548,21 @@ async fn run_operation(
     .await;
     let detail = if r.ok {
         format!("exit 0 in {:.1}s", r.ms as f64 / 1000.0)
+    } else if r.timed_out {
+        format!(
+            "timed out after {}s\n{}",
+            timeout.as_secs(),
+            checks::last_lines(&r.tail, 20)
+        )
     } else {
-        checks::last_lines(&r.tail, 20)
+        let tail = checks::last_lines(&r.tail, 20);
+        let first = tail.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        let head = if first.is_empty() {
+            format!("exit {}", r.exit.map_or("signal".into(), |c| c.to_string()))
+        } else {
+            first.to_string()
+        };
+        format!("{head}\n{tail}")
     };
     op(
         f,

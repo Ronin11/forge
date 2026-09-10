@@ -102,6 +102,18 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             "Raise --budget for the task or per_task_usd in config.toml, or split the task.",
         ));
     }
+    if let Some(rest) = t.reason.strip_prefix("operation ") {
+        let name = rest.split_whitespace().next().unwrap_or("?");
+        let timed_out = t.reason.contains("timed out after");
+        out.push(d(
+            &t.reason,
+            &if timed_out {
+                format!("Operation `{name}` hit its timeout. Raise timeout_secs in workflows/actions/{name}.toml or make the command faster; operations are deterministic, so a retry would time out again.")
+            } else {
+                format!("Operation `{name}` is deterministic, so a retry would fail the same way. Fix the command in workflows/actions/{name}.toml, or, for a `check` operation, the repository's own check on its base branch; then re-add the task.")
+            },
+        ));
+    }
     if t.reason.starts_with("error:") {
         out.push(d(&t.reason, "An internal error on this task, not the agent's work. Read the message; if it names the repo or git, fix that and re-add."));
     }
@@ -305,6 +317,20 @@ mod tests {
             &[],
         );
         assert!(budget[0].action.contains("per_task_usd"));
+
+        let opf = diagnose(
+            &task(TaskState::Failed, "operation stamp failed: boom"),
+            &[],
+        );
+        assert!(opf[0].action.contains("actions/stamp.toml"), "{opf:?}");
+        let opt = diagnose(
+            &task(
+                TaskState::Failed,
+                "operation slowop failed: timed out after 1s",
+            ),
+            &[],
+        );
+        assert!(opt[0].action.contains("timeout_secs"), "{opt:?}");
 
         let unknown = diagnose(&task(TaskState::Failed, "something new"), &[]);
         assert!(unknown[0].action.contains("forge trace"));

@@ -696,6 +696,34 @@ fn operations_run_in_order_and_appear_as_rows() {
         1,
         "the directive is not retried for an operation failure"
     );
+    let o = e.forge("ok.sh", &["show", "2"]);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("actions/stamp.toml"),
+        "the diagnosis names the file to fix"
+    );
+
+    // A timed-out operation says so in its reason.
+    std::fs::write(
+        e.home.join("workflows/actions/stamp.toml"),
+        "name = \"stamp\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"sleep\", \"5\"]\ntimeout_secs = 1\n",
+    )
+    .unwrap();
+    let start = Instant::now();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "stamped",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(!o.status.success());
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(e.task(3).1, "operation stamp failed: timed out after 1s");
 }
 
 #[test]
