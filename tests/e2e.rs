@@ -565,6 +565,47 @@ fn trace_requests_and_stats_expose_the_whole_run() {
 }
 
 #[test]
+fn workflow_check_new_and_commit_are_deterministic_gates() {
+    let e = Env::new();
+    let o = e.forge("ok.sh", &["workflow", "check"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("uncommitted"));
+    let o = e.forge("ok.sh", &["workflow", "commit", "-m", "built-ins"]);
+    assert!(String::from_utf8_lossy(&o.stdout).starts_with("committed "));
+    let o = e.forge("ok.sh", &["workflow", "new", "review-first"]);
+    assert!(o.status.success());
+    assert!(e.home.join("workflows/review-first.toml").exists());
+    std::fs::write(
+        e.home.join("workflows/broken.toml"),
+        "name = \"broken\"\nsteps = [{ kind = \"deploy\" }]\n",
+    )
+    .unwrap();
+    let o = e.forge("ok.sh", &["workflow", "check"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("FAIL broken.toml"));
+    let o = e.forge("ok.sh", &["workflow", "commit"]);
+    assert!(!o.status.success(), "a blocking problem stops the commit");
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "x",
+            "--workflow",
+            "review-first",
+        ],
+    );
+    assert!(
+        !o.status.success(),
+        "a broken directory blocks task creation: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    std::fs::remove_file(e.home.join("workflows/broken.toml")).unwrap();
+    let o = e.forge("ok.sh", &["workflow", "commit", "-m", "add review-first"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

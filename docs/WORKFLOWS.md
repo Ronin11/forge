@@ -102,6 +102,24 @@ cheapest workflow that clears a bar. It never changes what verification
 means: a workflow may add verifiers, never remove one, and only the
 kernel's verdict promotes.
 
+## The tool
+
+`forge workflow check` validates every file structurally and
+deterministically: name matches file name, kinds from the closed set, at
+least one step, positive cost factor, no duplicates, no zero limits; it
+warns on missing description or metadata and on uncommitted changes, and
+exits 1 on anything blocking. `forge workflow new <name>` writes a correct
+template. `forge workflow commit` checks, then records the directory in
+git (it is its own repository). A blocking problem anywhere in the
+directory also refuses task creation, since load fails.
+
+Not Temporal, not Ansible. The engine is two hundred lines and the
+workflows are one to three steps on one machine with state in SQLite;
+durable-execution infrastructure is ahead of demand until there is more
+than one worker machine or a wait measured in days. What is borrowed from
+Temporal is the discipline: definitions as data, an event history per run,
+idempotent resumption, explicit timeouts.
+
 ## Visibility
 
 Every attempt records `inputs` (workflow and its exact text, step, model,

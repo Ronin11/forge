@@ -61,6 +61,19 @@ pub struct TaskArgs {
 }
 
 #[derive(Subcommand)]
+enum WorkflowCmd {
+    /// Validate every workflow file; exit 1 on a blocking problem
+    Check,
+    /// Write a correct template for a new workflow
+    New { name: String },
+    /// Check, then record the workflows directory in git
+    Commit {
+        #[arg(short, long, default_value = "update workflows")]
+        message: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Run one task now
     Run(TaskArgs),
@@ -95,6 +108,11 @@ enum Cmd {
         /// Machine-readable, for an agent choosing a workflow
         #[arg(long)]
         json: bool,
+    },
+    /// Manage the workflow files deterministically: check, new, commit
+    Workflow {
+        #[command(subcommand)]
+        cmd: WorkflowCmd,
     },
     /// Everything about one task: every step's inputs, outputs, verdict rows, and a diagnosis
     Trace {
@@ -140,6 +158,7 @@ pub async fn main() -> Result<()> {
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
+        Cmd::Workflow { cmd } => workflow_cmd(cmd).await,
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests => requests(),
         Cmd::Stats => stats(),
@@ -262,6 +281,80 @@ fn run_doctor() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+async fn workflow_cmd(cmd: WorkflowCmd) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let home = &f.paths.home;
+    match cmd {
+        WorkflowCmd::Check => {
+            let problems = workflows::check(home)?;
+            let uncommitted = workflows::uncommitted(home).await?;
+            for p in &problems {
+                out!(
+                    "{} {:<14} {}",
+                    if p.blocking { "FAIL" } else { "WARN" },
+                    p.file,
+                    p.what
+                );
+            }
+            if !uncommitted.is_empty() {
+                out!(
+                    "WARN {:<14} uncommitted: {}  (forge workflow commit)",
+                    "git",
+                    uncommitted.join(", ")
+                );
+            }
+            let blocking = problems.iter().filter(|p| p.blocking).count();
+            out!(
+                "{} file(s) checked, {} blocking, {} warning(s)",
+                workflows::load_all(home).map(|w| w.len()).unwrap_or(0),
+                blocking,
+                problems.len() - blocking
+            );
+            if blocking > 0 {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        WorkflowCmd::New { name } => {
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                || name.is_empty()
+            {
+                bail!("a workflow name is letters, digits, - and _");
+            }
+            let path = home.join("workflows").join(format!("{name}.toml"));
+            if path.exists() {
+                bail!("{} already exists", path.display());
+            }
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(&path, workflows::template(&name))?;
+            out!("wrote {}", path.display());
+            out!(
+                "fill in description and [meta], then: forge workflow check && forge workflow commit"
+            );
+            Ok(())
+        }
+        WorkflowCmd::Commit { message } => {
+            let blocking: Vec<_> = workflows::check(home)?
+                .into_iter()
+                .filter(|p| p.blocking)
+                .collect();
+            if !blocking.is_empty() {
+                for p in &blocking {
+                    out!("FAIL {:<14} {}", p.file, p.what);
+                }
+                bail!("not committing: {} blocking problem(s)", blocking.len());
+            }
+            match workflows::commit(home, &message).await? {
+                Some(sha) => out!("committed {sha}: {message}"),
+                None => out!("nothing to commit"),
+            }
+            Ok(())
+        }
+    }
 }
 
 fn list_workflows(json: bool) -> Result<()> {

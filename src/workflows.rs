@@ -196,10 +196,10 @@ fn parse(path: &Path, text: &str) -> Result<Workflow> {
 
 /// Every workflow in `<home>/workflows/`, writing the built-ins first when
 /// the directory is empty. Sorted by name.
-pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
-    let dir = home.join("workflows");
-    std::fs::create_dir_all(&dir)?;
-    let has_any = std::fs::read_dir(&dir)?
+/// The directory exists and, if it holds no workflow at all, the built-ins.
+fn ensure_builtins(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let has_any = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .any(|e| e.path().extension().is_some_and(|x| x == "toml"));
     if !has_any {
@@ -207,6 +207,12 @@ pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
             std::fs::write(dir.join(file), text)?;
         }
     }
+    Ok(())
+}
+
+pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
+    let dir = home.join("workflows");
+    ensure_builtins(&dir)?;
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let path = entry?.path();
@@ -222,6 +228,195 @@ pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
 
 pub fn get(home: &Path, name: &str) -> Result<Option<Workflow>> {
     Ok(load_all(home)?.into_iter().find(|w| w.name == name))
+}
+
+/// One thing wrong with a workflow file, and whether it blocks use.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub file: String,
+    pub blocking: bool,
+    pub what: String,
+}
+
+/// Every file in the directory, checked structurally. Parse errors are
+/// reported as problems rather than returned as errors, so one bad file
+/// does not hide the rest. Deterministic: same files, same list.
+pub fn check(home: &Path) -> Result<Vec<Problem>> {
+    let dir = home.join("workflows");
+    ensure_builtins(&dir)?;
+    let mut problems = Vec::new();
+    let mut names: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.extension().is_none_or(|x| x != "toml") {
+            continue;
+        }
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path)?;
+        let w = match parse(&path, &text) {
+            Ok(w) => w,
+            Err(e) => {
+                problems.push(Problem {
+                    file,
+                    blocking: true,
+                    what: format!("{e:#}"),
+                });
+                continue;
+            }
+        };
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        if w.name != stem {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: true,
+                what: format!("name {:?} does not match the file name {:?}", w.name, stem),
+            });
+        }
+        if let Some(other) = names.insert(w.name.clone(), file.clone()) {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: true,
+                what: format!("duplicate name {:?}, also in {other}", w.name),
+            });
+        }
+        if w.meta.cost_factor <= 0.0 || w.meta.cost_factor.is_nan() {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: true,
+                what: format!("cost_factor must be positive, got {}", w.meta.cost_factor),
+            });
+        }
+        if w.description.trim().is_empty() {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: false,
+                what: "no description".into(),
+            });
+        }
+        if w.meta.use_when.trim().is_empty() || w.meta.avoid_when.trim().is_empty() {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: false,
+                what: "[meta] use_when and avoid_when are empty; a chooser has nothing to read"
+                    .into(),
+            });
+        }
+        if w.has(Step::Tests) && !w.meta.requires.iter().any(|r| r.contains("namespace")) {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: false,
+                what: "has a tests step but [meta] requires does not mention the namespace".into(),
+            });
+        }
+        for st in &w.steps {
+            if st.max_turns == Some(0) {
+                problems.push(Problem {
+                    file: file.clone(),
+                    blocking: true,
+                    what: format!("step {} has max_turns = 0", st.kind.as_str()),
+                });
+            }
+            if st.timeout_secs == Some(0) {
+                problems.push(Problem {
+                    file: file.clone(),
+                    blocking: true,
+                    what: format!("step {} has timeout_secs = 0", st.kind.as_str()),
+                });
+            }
+        }
+    }
+    Ok(problems)
+}
+
+/// A correct starting point for a new workflow file.
+pub fn template(name: &str) -> String {
+    format!(
+        "name = \"{name}\"\ndescription = \"\"\nsteps = [{{ kind = \"code\" }}]\n\n[meta]\nuse_when = \"\"\navoid_when = \"\"\nrequires = []\ncost_factor = 1.0\n"
+    )
+}
+
+/// The workflows directory is a git repository; every accepted change is a
+/// commit. Returns the new commit, or None when there was nothing to commit.
+pub async fn commit(home: &Path, message: &str) -> Result<Option<String>> {
+    let dir = home.join("workflows");
+    std::fs::create_dir_all(&dir)?;
+    let run = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let dir = dir.clone();
+        async move {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(&args)
+                .output()
+                .await
+        }
+    };
+    if !dir.join(".git").exists() {
+        let o = run(&["init", "-q"]).await?;
+        if !o.status.success() {
+            bail!(
+                "git init in {} failed: {}",
+                dir.display(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+    }
+    run(&["add", "-A"]).await?;
+    let status = run(&["status", "--porcelain"]).await?;
+    if status.stdout.is_empty() {
+        return Ok(None);
+    }
+    let o = run(&[
+        "-c",
+        "user.name=forge",
+        "-c",
+        "user.email=forge@localhost",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    ])
+    .await?;
+    if !o.status.success() {
+        bail!(
+            "git commit in {} failed: {}",
+            dir.display(),
+            String::from_utf8_lossy(&o.stderr).trim()
+        );
+    }
+    let sha = run(&["rev-parse", "--short", "HEAD"]).await?;
+    Ok(Some(
+        String::from_utf8_lossy(&sha.stdout).trim().to_string(),
+    ))
+}
+
+/// Files changed since the last commit of the workflows directory, or all
+/// files if it has never been committed.
+pub async fn uncommitted(home: &Path) -> Result<Vec<String>> {
+    let dir = home.join("workflows");
+    if !dir.join(".git").exists() {
+        return Ok(std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect());
+    }
+    let o = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .await?;
+    Ok(String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.len() > 3)
+        .map(|l| l[3..].to_string())
+        .collect())
 }
 
 #[cfg(test)]
@@ -266,6 +461,92 @@ mod tests {
         let w = get(dir.path(), "bare").unwrap().unwrap();
         assert_eq!(w.meta.cost_factor, 1.0);
         assert!(w.meta.use_when.is_empty());
+    }
+
+    #[test]
+    fn check_finds_structural_problems_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        assert!(
+            check(dir.path()).unwrap().iter().all(|p| !p.blocking),
+            "built-ins are clean"
+        );
+        let wf = dir.path().join("workflows");
+        std::fs::write(
+            wf.join("mismatch.toml"),
+            "name = \"other\"\nsteps = [{ kind = \"code\", max_turns = 0 }]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wf.join("bad.toml"),
+            "name = \"bad\"\nsteps = [{ kind = \"review\" }]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wf.join("direct2.toml"),
+            "name = \"direct\"\nsteps = [{ kind = \"code\" }]\n[meta]\ncost_factor = 0\n",
+        )
+        .unwrap();
+        let a = check(dir.path()).unwrap();
+        let b = check(dir.path()).unwrap();
+        assert_eq!(a, b, "deterministic");
+        let blocking: Vec<&str> = a
+            .iter()
+            .filter(|p| p.blocking)
+            .map(|p| p.what.as_str())
+            .collect();
+        assert!(
+            blocking
+                .iter()
+                .any(|w| w.contains("does not match the file name")),
+            "{blocking:?}"
+        );
+        assert!(
+            blocking.iter().any(|w| w.contains("max_turns = 0")),
+            "{blocking:?}"
+        );
+        assert!(
+            blocking.iter().any(|w| w.contains("unknown step kind")),
+            "{blocking:?}"
+        );
+        assert!(
+            blocking.iter().any(|w| w.contains("duplicate name")),
+            "{blocking:?}"
+        );
+        assert!(
+            blocking
+                .iter()
+                .any(|w| w.contains("cost_factor must be positive")),
+            "{blocking:?}"
+        );
+        let t = template("mine");
+        std::fs::write(wf.join("mine.toml"), &t).unwrap();
+        assert!(
+            check(dir.path())
+                .unwrap()
+                .iter()
+                .filter(|p| p.file == "mine.toml")
+                .all(|p| !p.blocking),
+            "the template is structurally valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_records_changes_in_git() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        assert!(!uncommitted(dir.path()).await.unwrap().is_empty());
+        let sha = commit(dir.path(), "built-ins").await.unwrap();
+        assert!(sha.is_some());
+        assert!(uncommitted(dir.path()).await.unwrap().is_empty());
+        assert!(commit(dir.path(), "nothing").await.unwrap().is_none());
+        std::fs::write(
+            dir.path().join("workflows/tdd.toml"),
+            "name = \"tdd\"\nsteps = [{ kind = \"tests\" }, { kind = \"code\" }]\n",
+        )
+        .unwrap();
+        assert_eq!(uncommitted(dir.path()).await.unwrap(), vec!["tdd.toml"]);
+        assert!(commit(dir.path(), "tune").await.unwrap().is_some());
     }
 
     #[test]
