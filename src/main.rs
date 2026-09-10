@@ -8,6 +8,7 @@ mod agent;
 mod checks;
 mod config;
 mod git;
+mod sandbox;
 mod store;
 
 use anyhow::{Context, Result, bail};
@@ -89,6 +90,8 @@ fn run(repo: PathBuf, task: String, model: String, max_turns: u32) -> Result<()>
         bail!("{} is not a git repository", repo.display());
     }
     let cfg = config::load(&repo)?;
+    let agent_bin = std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
+    let sandbox = sandbox::Sandbox::detect(&agent_bin)?;
     let home = forge_home()?;
     let worktrees = home.join("worktrees");
     let logs = home.join("logs");
@@ -123,7 +126,10 @@ fn run(repo: PathBuf, task: String, model: String, max_turns: u32) -> Result<()>
         cfg.base_branch,
         &base_sha[..8]
     );
-    eprintln!("agent    {model}, max {max_turns} turns");
+    eprintln!(
+        "agent    {model}, max {max_turns} turns{}",
+        if sandbox.is_some() { ", sandboxed" } else { "" }
+    );
 
     let check_names: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
     let prompt = format!(
@@ -140,7 +146,15 @@ fn run(repo: PathBuf, task: String, model: String, max_turns: u32) -> Result<()>
     );
 
     let log_path = logs.join(format!("{id}.jsonl"));
-    let outcome = agent::run(&wt, &prompt, &model, max_turns, &log_path)?;
+    let outcome = agent::run(agent::Launch {
+        worktree: &wt,
+        repo_git_dir: &repo.join(".git"),
+        prompt: &prompt,
+        model: &model,
+        max_turns,
+        log_path: &log_path,
+        sandbox: sandbox.as_ref(),
+    })?;
     eprintln!(
         "agent    exit {} · {} turns · {} tool calls · {:.1}s · {}",
         outcome
