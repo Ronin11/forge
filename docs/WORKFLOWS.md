@@ -102,16 +102,20 @@ cheapest workflow that clears a bar. It never changes what verification
 means: a workflow may add verifiers, never remove one, and only the
 kernel's verdict promotes.
 
-## The tool
+## Mechanism, not a CLI
 
-`forge workflow check` validates every file structurally and
-deterministically: name matches file name, kinds from the closed set, at
-least one step, positive cost factor, no duplicates, no zero limits; it
-warns on missing description or metadata and on uncommitted changes, and
-exits 1 on anything blocking. `forge workflow new <name>` writes a correct
-template. `forge workflow commit` checks, then records the directory in
-git (it is its own repository). A blocking problem anywhere in the
-directory also refuses task creation, since load fails.
+The binary enforces what a valid workflow is and nothing more: loading
+refuses a file that fails `check` (name matches file name, kinds from the
+closed set, at least one step, positive cost factor, no duplicates, no zero
+limits), task creation fails while any file in the directory is broken,
+and every task records the hash it ran under. `forge doctor` reports the
+directory's state, including uncommitted changes; the directory is a
+plain git repository and committing is plain git.
+
+Authoring, editing, and committing workflows are interface, and belong to
+the MCP server and skills when the first agent needs them, calling the
+same `check` rather than a second definition of validity. The Forge 1
+lesson applies: tools are built when an agent needs them, not before.
 
 Not Temporal, not Ansible. The engine is two hundred lines and the
 workflows are one to three steps on one machine with state in SQLite;

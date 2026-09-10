@@ -3,7 +3,7 @@
 
 use crate::ctx::{Forge, Paths};
 use crate::store::{MIGRATIONS, Store, TaskState};
-use crate::{agent, config, sandbox, unix_now, worker};
+use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -158,6 +158,45 @@ pub fn run() -> Result<Vec<Check>> {
         format!("version {}", MIGRATIONS.len()),
         "",
     ));
+
+    match workflows::check(&paths.home) {
+        Ok(problems) => {
+            let blocking = problems.iter().filter(|p| p.blocking).count();
+            let n = workflows::load_all(&paths.home)
+                .map(|w| w.len())
+                .unwrap_or(0);
+            let uncommitted = workflows::uncommitted(&paths.home).unwrap_or_default();
+            let detail = format!(
+                "{n} file(s), {blocking} blocking, {} warning(s), {} uncommitted",
+                problems.len() - blocking,
+                uncommitted.len()
+            );
+            out.push(if blocking > 0 {
+                let first = problems.iter().find(|p| p.blocking).unwrap();
+                check(
+                    "workflows",
+                    Status::Fail,
+                    format!("{detail}: {} {}", first.file, first.what),
+                    "fix the file; no task can be created while a workflow file is broken",
+                )
+            } else if !uncommitted.is_empty() || problems.len() > blocking {
+                check(
+                    "workflows",
+                    Status::Warn,
+                    detail,
+                    "commit the workflows directory (it is a git repo) and fill in [meta]",
+                )
+            } else {
+                check("workflows", Status::Ok, detail, "")
+            });
+        }
+        Err(e) => out.push(check(
+            "workflows",
+            Status::Fail,
+            format!("{e:#}"),
+            "the workflows directory cannot be read",
+        )),
+    }
 
     let queued = store.queued_count()?;
     let running = store.running_ids()?;

@@ -565,44 +565,32 @@ fn trace_requests_and_stats_expose_the_whole_run() {
 }
 
 #[test]
-fn workflow_check_new_and_commit_are_deterministic_gates() {
+fn a_broken_workflow_file_fails_doctor_and_blocks_task_creation() {
     let e = Env::new();
-    let o = e.forge("ok.sh", &["workflow", "check"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
-    assert!(String::from_utf8_lossy(&o.stdout).contains("uncommitted"));
-    let o = e.forge("ok.sh", &["workflow", "commit", "-m", "built-ins"]);
-    assert!(String::from_utf8_lossy(&o.stdout).starts_with("committed "));
-    let o = e.forge("ok.sh", &["workflow", "new", "review-first"]);
-    assert!(o.status.success());
-    assert!(e.home.join("workflows/review-first.toml").exists());
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
     std::fs::write(
         e.home.join("workflows/broken.toml"),
         "name = \"broken\"\nsteps = [{ kind = \"deploy\" }]\n",
     )
     .unwrap();
-    let o = e.forge("ok.sh", &["workflow", "check"]);
+    let o = e.forge("ok.sh", &["doctor"]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stdout).contains("FAIL broken.toml"));
-    let o = e.forge("ok.sh", &["workflow", "commit"]);
-    assert!(!o.status.success(), "a blocking problem stops the commit");
-    let o = e.forge(
-        "ok.sh",
-        &[
-            "add",
-            e.repo.to_str().unwrap(),
-            "x",
-            "--workflow",
-            "review-first",
-        ],
-    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("FAIL workflows"), "{out}");
+    assert!(out.contains("broken.toml"), "{out}");
+    let o = e.forge("ok.sh", &["add", e.repo.to_str().unwrap(), "x"]);
     assert!(
         !o.status.success(),
         "a broken directory blocks task creation: {}",
         String::from_utf8_lossy(&o.stderr)
     );
     std::fs::remove_file(e.home.join("workflows/broken.toml")).unwrap();
-    let o = e.forge("ok.sh", &["workflow", "commit", "-m", "add review-first"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("WARN workflows") && out.contains("uncommitted"),
+        "{out}"
+    );
 }
 
 #[test]

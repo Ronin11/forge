@@ -4,6 +4,9 @@
 //! pushes after the last; those are not steps because they are not
 //! optional. A workflow's identity is its name plus a content hash, which
 //! every task records, so two versions of "tdd" are never averaged together.
+//! `check` is the one definition of a valid file; the engine refuses what
+//! it rejects, doctor reports it, and any future tool calls it rather than
+//! reimplementing it. Editing and committing the files is plain git.
 //! See docs/WORKFLOWS.md.
 
 use anyhow::{Context, Result, bail};
@@ -332,72 +335,9 @@ pub fn check(home: &Path) -> Result<Vec<Problem>> {
     Ok(problems)
 }
 
-/// A correct starting point for a new workflow file.
-pub fn template(name: &str) -> String {
-    format!(
-        "name = \"{name}\"\ndescription = \"\"\nsteps = [{{ kind = \"code\" }}]\n\n[meta]\nuse_when = \"\"\navoid_when = \"\"\nrequires = []\ncost_factor = 1.0\n"
-    )
-}
-
-/// The workflows directory is a git repository; every accepted change is a
-/// commit. Returns the new commit, or None when there was nothing to commit.
-pub async fn commit(home: &Path, message: &str) -> Result<Option<String>> {
-    let dir = home.join("workflows");
-    std::fs::create_dir_all(&dir)?;
-    let run = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let dir = dir.clone();
-        async move {
-            tokio::process::Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(&args)
-                .output()
-                .await
-        }
-    };
-    if !dir.join(".git").exists() {
-        let o = run(&["init", "-q"]).await?;
-        if !o.status.success() {
-            bail!(
-                "git init in {} failed: {}",
-                dir.display(),
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-        }
-    }
-    run(&["add", "-A"]).await?;
-    let status = run(&["status", "--porcelain"]).await?;
-    if status.stdout.is_empty() {
-        return Ok(None);
-    }
-    let o = run(&[
-        "-c",
-        "user.name=forge",
-        "-c",
-        "user.email=forge@localhost",
-        "commit",
-        "-q",
-        "-m",
-        message,
-    ])
-    .await?;
-    if !o.status.success() {
-        bail!(
-            "git commit in {} failed: {}",
-            dir.display(),
-            String::from_utf8_lossy(&o.stderr).trim()
-        );
-    }
-    let sha = run(&["rev-parse", "--short", "HEAD"]).await?;
-    Ok(Some(
-        String::from_utf8_lossy(&sha.stdout).trim().to_string(),
-    ))
-}
-
 /// Files changed since the last commit of the workflows directory, or all
 /// files if it has never been committed.
-pub async fn uncommitted(home: &Path) -> Result<Vec<String>> {
+pub fn uncommitted(home: &Path) -> Result<Vec<String>> {
     let dir = home.join("workflows");
     if !dir.join(".git").exists() {
         return Ok(std::fs::read_dir(&dir)?
@@ -406,12 +346,11 @@ pub async fn uncommitted(home: &Path) -> Result<Vec<String>> {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect());
     }
-    let o = tokio::process::Command::new("git")
+    let o = std::process::Command::new("git")
         .arg("-C")
         .arg(&dir)
         .args(["status", "--porcelain"])
-        .output()
-        .await?;
+        .output()?;
     Ok(String::from_utf8_lossy(&o.stdout)
         .lines()
         .filter(|l| l.len() > 3)
@@ -519,34 +458,6 @@ mod tests {
                 .any(|w| w.contains("cost_factor must be positive")),
             "{blocking:?}"
         );
-        let t = template("mine");
-        std::fs::write(wf.join("mine.toml"), &t).unwrap();
-        assert!(
-            check(dir.path())
-                .unwrap()
-                .iter()
-                .filter(|p| p.file == "mine.toml")
-                .all(|p| !p.blocking),
-            "the template is structurally valid"
-        );
-    }
-
-    #[tokio::test]
-    async fn commit_records_changes_in_git() {
-        let dir = tempfile::tempdir().unwrap();
-        load_all(dir.path()).unwrap();
-        assert!(!uncommitted(dir.path()).await.unwrap().is_empty());
-        let sha = commit(dir.path(), "built-ins").await.unwrap();
-        assert!(sha.is_some());
-        assert!(uncommitted(dir.path()).await.unwrap().is_empty());
-        assert!(commit(dir.path(), "nothing").await.unwrap().is_none());
-        std::fs::write(
-            dir.path().join("workflows/tdd.toml"),
-            "name = \"tdd\"\nsteps = [{ kind = \"tests\" }, { kind = \"code\" }]\n",
-        )
-        .unwrap();
-        assert_eq!(uncommitted(dir.path()).await.unwrap(), vec!["tdd.toml"]);
-        assert!(commit(dir.path(), "tune").await.unwrap().is_some());
     }
 
     #[test]
