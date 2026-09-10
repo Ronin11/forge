@@ -20,6 +20,10 @@ pub struct Sandbox {
     agent_dirs: Vec<PathBuf>,
     /// Paths under $HOME the claude CLI must be able to write.
     write_paths: Vec<PathBuf>,
+    /// Operator-configured toolchain paths, read-only.
+    extra_ro: Vec<PathBuf>,
+    /// Operator-configured package caches, read-write.
+    extra_rw: Vec<PathBuf>,
 }
 
 /// Resolve a binary the way the shell would, then follow symlinks.
@@ -43,7 +47,7 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
 
 impl Sandbox {
     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
-    pub fn detect(agent_bin: &str) -> Result<Option<Sandbox>> {
+    pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
         if std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
@@ -67,6 +71,8 @@ impl Sandbox {
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
             write_paths,
+            extra_ro: paths.ro.clone(),
+            extra_rw: paths.rw.clone(),
         }))
     }
 
@@ -124,12 +130,12 @@ impl Sandbox {
         // Order matters: everything under $HOME is bound after its tmpfs, and
         // the writable worktree after the read-only agent directory in case
         // one contains the other.
-        for d in &self.agent_dirs {
+        for d in self.agent_dirs.iter().chain(&self.extra_ro) {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
         cmd.arg("--bind-try").arg(repo_git_dir).arg(repo_git_dir);
-        for p in &self.write_paths {
+        for p in self.write_paths.iter().chain(&self.extra_rw) {
             cmd.arg("--bind-try").arg(p).arg(p);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");

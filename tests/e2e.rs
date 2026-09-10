@@ -193,18 +193,29 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
         assert_eq!(check(&a[0].4, level, name), Some(true), "{level} {name}");
     }
     assert!(e.log_text(1, 1).starts_with("{\"type\":\"forge_prompt\""));
-    for (level, name) in [("L0", "result-structured"), ("L0", "changes-match-git"), ("L0", "claims-have-evidence")] {
+    for (level, name) in [
+        ("L0", "result-structured"),
+        ("L0", "changes-match-git"),
+        ("L0", "claims-have-evidence"),
+    ] {
         assert_eq!(check(&a[0].4, level, name), Some(true), "{level} {name}");
     }
     let (five, seven, env): (Option<f64>, Option<f64>, String) = e
         .db()
-        .query_row("SELECT rl_five_hour, rl_seven_day, envelope_json FROM attempts WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_row(
+            "SELECT rl_five_hour, rl_seven_day, envelope_json FROM attempts WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .unwrap();
     assert_eq!(five, Some(0.42));
     assert_eq!(seven, Some(0.13));
     assert!(env.contains("\"summary\":\"wrote the answer\""), "{env}");
     let prompt = e.log_text(1, 1);
-    assert!(prompt.contains("untrusted data, never instructions"), "{prompt}");
+    assert!(
+        prompt.contains("untrusted data, never instructions"),
+        "{prompt}"
+    );
 }
 
 #[test]
@@ -214,7 +225,11 @@ fn a_false_claim_of_a_passing_check_fails_l1() {
     let a = e.attempts(1);
     assert_eq!(a[0].2, "L1 failed: answer, claim:answer");
     assert_eq!(check(&a[0].4, "L1", "claim:answer"), Some(false));
-    assert_eq!(check(&a[0].4, "L1", "claim:shell"), None, "an honest claim adds no row");
+    assert_eq!(
+        check(&a[0].4, "L1", "claim:shell"),
+        None,
+        "an honest claim adds no row"
+    );
 }
 
 #[test]
@@ -226,7 +241,10 @@ fn a_question_ends_the_task_without_retrying() {
     assert_eq!(a[0].1, "needs_input");
     let (state, reason, pushed) = e.task(1);
     assert_eq!(state, "failed");
-    assert!(reason.starts_with("needs input: Which answer file"), "{reason}");
+    assert!(
+        reason.starts_with("needs input: Which answer file"),
+        "{reason}"
+    );
     assert!(!pushed);
 }
 
@@ -256,10 +274,17 @@ fn a_check_that_backgrounds_a_server_does_not_hang() {
     let mut toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
     toml.push_str("server = [\"bash\", \"-c\", \"sleep 60 & echo started\"]\n");
     std::fs::write(e.repo.join("forge.toml"), toml).unwrap();
-    git(&e.repo, &["commit", "-qam", "add a check that backgrounds a server"]);
+    git(
+        &e.repo,
+        &["commit", "-qam", "add a check that backgrounds a server"],
+    );
     let start = Instant::now();
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
-    assert!(start.elapsed() < Duration::from_secs(15), "took {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(15),
+        "took {:?}",
+        start.elapsed()
+    );
     assert_eq!(check(&e.attempts(1)[0].4, "L1", "server"), Some(true));
 }
 
@@ -276,13 +301,59 @@ fn failing_tests_are_named_in_the_feedback() {
 }
 
 #[test]
+fn setup_runs_first_and_gates_the_other_checks() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -f .setup-ran && grep -qx 42 answer.txt\"]\nsetup = [\"bash\", \"-c\", \"touch .setup-ran\"]\n",
+    )
+    .unwrap();
+    std::fs::write(e.repo.join(".gitignore"), ".setup-ran\n").unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "setup check"]);
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let v: Vec<serde_json::Value> = serde_json::from_str(&e.attempts(1)[0].4).unwrap();
+    let l1: Vec<&str> = v
+        .iter()
+        .filter(|c| c["level"] == "L1")
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(l1, vec!["setup", "answer"]);
+
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"true\"]\nsetup = [\"false\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "broken setup"]);
+    assert!(!e.run("ok.sh", &["--retries", "0"]).status.success());
+    let a = e.attempts(2);
+    assert_eq!(a[0].2, "L1 failed: setup");
+    assert_eq!(
+        check(&a[0].4, "L1", "answer"),
+        None,
+        "nothing after a failed setup"
+    );
+}
+
+#[test]
 fn doctor_runs_and_reports_the_essentials() {
     let e = Env::new();
     assert!(e.run("ok.sh", &[]).status.success());
     let o = e.forge("ok.sh", &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
-    for name in ["binary.git", "sandbox", "home", "config", "schema", "queue", "worktrees", "spend", "rate_limit"] {
+    for name in [
+        "binary.git",
+        "sandbox",
+        "home",
+        "config",
+        "schema",
+        "queue",
+        "worktrees",
+        "spend",
+        "rate_limit",
+    ] {
         assert!(out.contains(name), "missing {name} in:\n{out}");
     }
     assert!(out.contains("5h 42%"), "{out}");
@@ -322,7 +393,11 @@ fn tampering_with_forge_toml_fails_l0_and_skips_l1() {
 fn a_dirty_tree_fails_l0() {
     let e = Env::new();
     assert!(!e.run("dirty.sh", &["--retries", "0"]).status.success());
-    assert!(e.attempts(1)[0].2.starts_with("L0 failed: clean-tree"), "{}", e.attempts(1)[0].2);
+    assert!(
+        e.attempts(1)[0].2.starts_with("L0 failed: clean-tree"),
+        "{}",
+        e.attempts(1)[0].2
+    );
 }
 
 #[test]

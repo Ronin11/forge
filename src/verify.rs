@@ -177,7 +177,12 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         // L1
         if l0_ok {
             let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
-            for (name, argv) in &s.cfg.checks {
+            // `setup` runs first and gates the rest: without dependencies
+            // installed the other checks would fail for the wrong reason.
+            let mut names: Vec<&String> = s.cfg.checks.keys().collect();
+            names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
+            for name in names {
+                let argv = &s.cfg.checks[name];
                 let r = run_one(
                     "L1",
                     name,
@@ -198,7 +203,11 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
                         tail: &last_lines(&r.tail, 20),
                     },
                 );
+                let gate_failed = name == "setup" && !r.ok;
                 v.checks.push(r);
+                if gate_failed {
+                    break;
+                }
             }
             if let Some(e) = &env {
                 for claimed in e.checks_run.iter().filter(|c| c.passed) {

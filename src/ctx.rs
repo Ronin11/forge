@@ -52,16 +52,16 @@ impl Forge {
     pub fn open(need_agent: bool, prefix: bool) -> Result<Forge> {
         let paths = Paths::resolve()?;
         let store = Store::open(&paths.home.join("forge.db"))?;
-        let budget = config::load_budget(&paths.home)?;
+        let home = config::load_home(&paths.home)?;
         let sandbox = if need_agent {
-            Sandbox::detect(&agent::agent_bin())?
+            Sandbox::detect(&agent::agent_bin(), &home.sandbox)?
         } else {
             None
         };
         Ok(Forge {
             paths,
             store,
-            budget,
+            budget: home.budget,
             sandbox,
             report: Reporter::new(prefix),
         })
@@ -69,7 +69,7 @@ impl Forge {
 
     /// For commands that already hold the paths and store (doctor).
     pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
-        let budget = config::load_budget(&paths.home)?;
+        let budget = config::load_home(&paths.home)?.budget;
         Ok(Forge {
             paths,
             store,

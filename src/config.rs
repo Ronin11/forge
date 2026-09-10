@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Default)]
 struct Raw {
@@ -85,6 +85,34 @@ pub async fn load_at(repo: &Path, rev: &str) -> Result<Config> {
 struct HomeRaw {
     #[serde(default)]
     budget: BudgetRaw,
+    #[serde(default)]
+    sandbox: SandboxRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct SandboxRaw {
+    ro_paths: Option<Vec<String>>,
+    rw_paths: Option<Vec<String>>,
+}
+
+/// What the sandbox exposes beyond the attempt's own holes: toolchains the
+/// checks need, read-only, and package caches, read-write and shared across
+/// attempts. Paths that do not exist are skipped.
+pub struct SandboxPaths {
+    pub ro: Vec<PathBuf>,
+    pub rw: Vec<PathBuf>,
+}
+
+pub struct HomeConfig {
+    pub budget: Budget,
+    pub sandbox: SandboxPaths,
+}
+
+fn expand(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(p),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -105,9 +133,18 @@ const DEFAULT_HOME_CONFIG: &str = "\
 [budget]
 per_task_usd = 2.0    # a task stops retrying once its attempts have cost this much
 per_day_usd = 20.0    # no new task is claimed once the last 24 hours cost this much
+
+[sandbox]
+# Read-only inside the sandbox: toolchains the checks need (node, cargo, ...).
+# $HOME is otherwise empty in there, so anything installed under it goes here.
+ro_paths = [\"~/.local/share/mise\"]
+# Read-write inside the sandbox: package caches, shared across attempts. npm and
+# cargo verify content against the lockfile, so a poisoned cache cannot change
+# what installs.
+rw_paths = [\"~/.npm\", \"~/.cargo/registry\", \"~/.cargo/git\"]
 ";
 
-pub fn load_budget(home: &Path) -> Result<Budget> {
+pub fn load_home(home: &Path) -> Result<HomeConfig> {
     let path = home.join("config.toml");
     if !path.exists() {
         std::fs::write(&path, DEFAULT_HOME_CONFIG)
@@ -117,8 +154,51 @@ pub fn load_budget(home: &Path) -> Result<Budget> {
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let raw: HomeRaw =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    Ok(Budget {
-        per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
-        per_day_usd: raw.budget.per_day_usd.unwrap_or(20.0),
+    let ro = raw
+        .sandbox
+        .ro_paths
+        .unwrap_or_else(|| vec!["~/.local/share/mise".into()]);
+    let rw = raw.sandbox.rw_paths.unwrap_or_else(|| {
+        vec![
+            "~/.npm".into(),
+            "~/.cargo/registry".into(),
+            "~/.cargo/git".into(),
+        ]
+    });
+    Ok(HomeConfig {
+        budget: Budget {
+            per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
+            per_day_usd: raw.budget.per_day_usd.unwrap_or(20.0),
+        },
+        sandbox: SandboxPaths {
+            ro: ro.iter().map(|p| expand(p)).collect(),
+            rw: rw.iter().map(|p| expand(p)).collect(),
+        },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_config_defaults_and_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.budget.per_task_usd, 2.0);
+        assert!(c.sandbox.rw.iter().any(|p| p.ends_with(".npm")));
+        assert!(
+            dir.path().join("config.toml").exists(),
+            "defaults are written for the operator to edit"
+        );
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[sandbox]\nro_paths = [\"/opt/tools\"]\nrw_paths = []\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.sandbox.ro, vec![PathBuf::from("/opt/tools")]);
+        assert!(c.sandbox.rw.is_empty());
+        assert_eq!(c.budget.per_day_usd, 20.0);
+    }
 }

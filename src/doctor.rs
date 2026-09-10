@@ -113,16 +113,25 @@ pub fn run() -> Result<Vec<Check>> {
         )),
     }
 
-    match config::load_budget(&paths.home) {
-        Ok(b) => out.push(check(
-            "config",
-            Status::Ok,
-            format!(
-                "per_task_usd {:.2}, per_day_usd {:.2}",
-                b.per_task_usd, b.per_day_usd
-            ),
-            "",
-        )),
+    match config::load_home(&paths.home) {
+        Ok(c) => {
+            let b = &c.budget;
+            let present = |v: &[std::path::PathBuf]| v.iter().filter(|p| p.exists()).count();
+            out.push(check(
+                "config",
+                Status::Ok,
+                format!(
+                    "per_task_usd {:.2}, per_day_usd {:.2}; sandbox ro {}/{} present, rw {}/{} present",
+                    b.per_task_usd,
+                    b.per_day_usd,
+                    present(&c.sandbox.ro),
+                    c.sandbox.ro.len(),
+                    present(&c.sandbox.rw),
+                    c.sandbox.rw.len()
+                ),
+                "",
+            ))
+        }
         Err(e) => out.push(check(
             "config",
             Status::Fail,
