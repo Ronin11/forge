@@ -47,12 +47,17 @@ A step references an action (a directive or an operation, one file each
 under `workflows/actions/`, see docs/ACTIONS.md) or another workflow,
 spliced inline, plus optional `model`, `max_turns`, and `timeout_secs`
 overriding the action's own defaults and the task's. A `[meta]`
-table declares what the author knows, for a human or an agent choosing a
-workflow: `use_when`, `avoid_when`, `requires`, and `cost_factor` relative
-to `direct`. Declared only. What is measured, success rate and cost per
-verified success per hash, lives in the stats table and is merged in by
-`forge workflows` and `forge workflows --json`; it is never written into
-the file, where it would drift. No conditionals,
+table declares what the author knows for a human or an agent choosing a
+workflow: `use_when`, `avoid_when`, `requires`. Never a cost: cost and
+success are measured from runs, and a workflow with fewer than five runs
+is `unknown`. `forge workflows` shows, per current version and per
+previous version over the last fifty tasks, the verified success rate
+with its 95% interval, cost per task and per verified success, time, and
+attempts, plus the cost ratio to `direct` once both are known. A version
+whose success interval falls entirely below the previous version's is
+flagged as a regression, in `forge workflows` and in `forge doctor`. That
+lookback is the comparator applied to workflows: a change to a file is
+judged by the numbers that follow it, and reverting is git. No conditionals,
 no variables. A workflow's identity is its name plus a content hash of the
 file; every task records the hash it ran under, so two versions of "tdd"
 are never averaged together. Git versions the file; the hash pins it. Not

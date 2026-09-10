@@ -723,6 +723,44 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The most recent terminal tasks of a workflow, newest first, for a
+    /// profile. `hash` narrows to one version.
+    pub fn runs(
+        &self,
+        workflow: &str,
+        hash: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::profile::Run>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
+                    COALESCE(t.finished_at - t.started_at, 0),
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
+             FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
+               AND t.state IN ('succeeded','failed','blocked','unverified')
+             ORDER BY t.id DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![workflow, hash, limit as i64], |r| {
+            Ok(crate::profile::Run {
+                succeeded: r.get::<_, String>(0)? == "succeeded",
+                cost: r.get(1)?,
+                secs: r.get::<_, i64>(2)? as f64,
+                attempts: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Workflow versions seen, newest first, by the id of the last task that ran them.
+    pub fn workflow_versions(&self, workflow: &str) -> Result<Vec<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT workflow_hash FROM tasks WHERE workflow=?1 AND workflow_hash != '' GROUP BY workflow_hash ORDER BY MAX(id) DESC",
+        )?;
+        let rows = stmt.query_map(params![workflow], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Outcomes per workflow version: the table that compares workflows.
     pub fn workflow_stats(&self) -> Result<Vec<WorkflowStat>> {
         let c = self.lock();

@@ -198,6 +198,58 @@ pub fn run() -> Result<Vec<Check>> {
         )),
     }
 
+    // The lookback: workflows whose current version regressed against the
+    // previous, and known workflows that are mostly failing.
+    if let Ok(all) = workflows::load_all(&paths.home) {
+        let mut bad: Vec<String> = Vec::new();
+        let mut known = 0;
+        for w in &all {
+            let cur = crate::profile::profile(
+                &store
+                    .runs(&w.name, Some(&w.hash), crate::profile::LOOKBACK)
+                    .unwrap_or_default(),
+            );
+            if cur.known {
+                known += 1;
+            }
+            if let Some(prev_hash) = store
+                .workflow_versions(&w.name)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|h| h != &w.hash)
+            {
+                let prev = crate::profile::profile(
+                    &store
+                        .runs(&w.name, Some(&prev_hash), crate::profile::LOOKBACK)
+                        .unwrap_or_default(),
+                );
+                if crate::profile::regressed(&cur, &prev) {
+                    bad.push(format!(
+                        "{} regressed vs {} ({:.0}% vs {:.0}%)",
+                        w.name,
+                        &prev_hash[..8],
+                        cur.rate * 100.0,
+                        prev.rate * 100.0
+                    ));
+                }
+            }
+            if cur.known && cur.rate_hi < 0.5 {
+                bad.push(format!(
+                    "{} verifies {}/{} (95% upper {:.0}%)",
+                    w.name,
+                    cur.succeeded,
+                    cur.n,
+                    cur.rate_hi * 100.0
+                ));
+            }
+        }
+        out.push(if bad.is_empty() {
+            check("learning", Status::Ok, format!("{known} of {} workflow(s) measured; no regressions", all.len()), "")
+        } else {
+            check("learning", Status::Warn, bad.join("; "), "revert the workflow or action file to the version with the good numbers, or retire the workflow")
+        });
+    }
+
     let queued = store.queued_count()?;
     let running = store.running_ids()?;
     let orphans: Vec<i64> = store.orphans(worker::pid_alive)?;

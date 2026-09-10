@@ -106,7 +106,7 @@ struct WorkflowRaw {
 /// What the author declares about a workflow, for a human or an agent
 /// choosing one. Declared, never measured: measured numbers live in the
 /// stats table and are merged in at read time.
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Meta {
     #[serde(default)]
@@ -115,24 +115,10 @@ pub struct Meta {
     pub avoid_when: String,
     #[serde(default)]
     pub requires: Vec<String>,
-    /// Expected cost relative to `direct` (1.0). A rough prior, not a measurement.
-    #[serde(default = "one")]
-    pub cost_factor: f64,
-}
-
-fn one() -> f64 {
-    1.0
-}
-
-impl Default for Meta {
-    fn default() -> Meta {
-        Meta {
-            use_when: String::new(),
-            avoid_when: String::new(),
-            requires: Vec::new(),
-            cost_factor: 1.0,
-        }
-    }
+    /// Ignored. Costs are measured from runs, never declared; the field is
+    /// accepted so older files still load, and `check` warns about it.
+    #[serde(default, skip_serializing)]
+    pub cost_factor: Option<f64>,
 }
 
 /// A step as written: a reference plus per-step overrides.
@@ -283,7 +269,7 @@ steps = [\n\
 use_when = \"the task is small and precisely described, and the repo's own checks cover it\"\n\
 avoid_when = \"the task's correctness is not captured by existing tests and no --check can express it\"\n\
 requires = []\n\
-cost_factor = 1.0\n",
+",
     ),
     (
         "tdd.toml",
@@ -299,7 +285,7 @@ steps = [\n\
 use_when = \"the task adds behavior that a test can pin down and the repo's checks would not otherwise catch a wrong implementation\"\n\
 avoid_when = \"the task is a refactor, a rename, docs, or config; or the repo has no test check\"\n\
 requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
-cost_factor = 2.5\n",
+",
     ),
     (
         "docs.toml",
@@ -314,7 +300,7 @@ steps = [\n\
 use_when = \"the task is documentation, a README, a changelog, or a design note\"\n\
 avoid_when = \"any code has to change; the write scope will fail it\"\n\
 requires = []\n\
-cost_factor = 0.6\n",
+",
     ),
     (
         "cheap.toml",
@@ -329,7 +315,7 @@ steps = [\n\
 use_when = \"the task names the file and the change, and the repo's checks will catch a mistake\"\n\
 avoid_when = \"the task needs design judgment or touches more than a couple of files\"\n\
 requires = []\n\
-cost_factor = 0.3\n",
+",
     ),
     (
         "polish.toml",
@@ -345,7 +331,7 @@ steps = [\n\
 use_when = \"the task is medium-sized and correctness matters more than cost\"\n\
 avoid_when = \"the task is trivial; the second pass would only burn turns\"\n\
 requires = []\n\
-cost_factor = 1.8\n",
+",
     ),
     (
         "reviewed.toml",
@@ -361,7 +347,7 @@ steps = [\n\
 use_when = \"the task's correctness is not fully captured by tests and a second pair of eyes that runs the code is worth its cost\"\n\
 avoid_when = \"the checks are strong and the task is small; the reviewer adds cost, not signal\"\n\
 requires = []\n\
-cost_factor = 1.7\n",
+",
     ),
     (
         "tdd-reviewed.toml",
@@ -376,7 +362,7 @@ steps = [\n\
 use_when = \"the task is important enough for both a hidden specification and a reviewer\"\n\
 avoid_when = \"cost matters; this is the most expensive built-in\"\n\
 requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
-cost_factor = 3.2\n",
+",
     ),
 ];
 
@@ -774,11 +760,11 @@ pub fn check(home: &Path) -> Result<Vec<Problem>> {
                 what: format!("name {:?} does not match the file name {:?}", w.name, stem),
             });
         }
-        if w.meta.cost_factor <= 0.0 || w.meta.cost_factor.is_nan() {
+        if w.meta.cost_factor.is_some() {
             problems.push(Problem {
                 file: file.clone(),
-                blocking: true,
-                what: format!("cost_factor must be positive, got {}", w.meta.cost_factor),
+                blocking: false,
+                what: "[meta] cost_factor is ignored: costs are measured from runs, never declared; remove it".into(),
             });
         }
         if w.description.trim().is_empty() {

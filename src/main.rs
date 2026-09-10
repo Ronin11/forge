@@ -14,6 +14,7 @@ mod doctor;
 mod engine;
 mod envelope;
 mod git;
+mod profile;
 mod report;
 mod sandbox;
 mod store;

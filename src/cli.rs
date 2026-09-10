@@ -2,6 +2,7 @@
 
 use crate::audit;
 use crate::ctx::Forge;
+use crate::profile::{self, LOOKBACK};
 use crate::store::{Task, TaskState};
 use crate::{config, doctor, engine, git, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
@@ -275,51 +276,88 @@ fn run_doctor() -> Result<()> {
     Ok(())
 }
 
+/// Measured profile of a workflow: current version, previous version if
+/// any, and all versions together, over the lookback window.
+struct Measured {
+    current: profile::Profile,
+    previous: Option<(String, profile::Profile)>,
+    all: profile::Profile,
+    regressed: bool,
+}
+
+fn measure(f: &Forge, w: &workflows::Workflow) -> Result<Measured> {
+    let current = profile::profile(&f.store.runs(&w.name, Some(&w.hash), LOOKBACK)?);
+    let all = profile::profile(&f.store.runs(&w.name, None, LOOKBACK)?);
+    let previous = f
+        .store
+        .workflow_versions(&w.name)?
+        .into_iter()
+        .find(|h| h != &w.hash)
+        .map(|h| {
+            let p = profile::profile(
+                &f.store
+                    .runs(&w.name, Some(&h), LOOKBACK)
+                    .unwrap_or_default(),
+            );
+            (h, p)
+        });
+    let regressed = previous
+        .as_ref()
+        .is_some_and(|(_, p)| profile::regressed(&current, p));
+    Ok(Measured {
+        current,
+        previous,
+        all,
+        regressed,
+    })
+}
+
 fn list_workflows(json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let all = workflows::load_all(&f.paths.home)?;
     let actions = workflows::load_actions(&f.paths.home)?;
-    let stats = f.store.workflow_stats()?;
+    let direct = all
+        .iter()
+        .find(|w| w.name == "direct")
+        .map(|w| measure(&f, w))
+        .transpose()?;
     if json {
         let docs: Vec<serde_json::Value> = all
             .iter()
             .map(|w| {
-                let measured: Vec<serde_json::Value> = stats
-                    .iter()
-                    .filter(|st| st.workflow == w.name)
-                    .map(|st| {
-                        serde_json::json!({
-                            "hash": st.hash, "current": st.hash == w.hash, "tasks": st.tasks, "succeeded": st.succeeded,
-                            "failed": st.failed, "blocked": st.blocked, "unverified": st.unverified, "attempts": st.attempts,
-                            "cost_usd": st.cost,
-                            "success_rate": if st.tasks > 0 { Some(st.succeeded as f64 / st.tasks as f64) } else { None },
-                            "cost_per_success_usd": if st.succeeded > 0 { Some(st.cost / st.succeeded as f64) } else { None },
-                        })
-                    })
-                    .collect();
+                let m = measure(&f, w).ok();
                 let resolved = workflows::resolve(&f.paths.home, &w.name).ok();
                 serde_json::json!({
                     "name": w.name, "hash": w.hash, "description": w.description, "path": w.path,
                     "steps": w.steps,
-                    "resolved": resolved.as_ref().map(|r| r.steps.iter().map(|s| serde_json::json!({"action": s.action.name, "kind": s.action.kind, "hash": s.action.hash, "via": s.via, "model": s.model, "max_turns": s.max_turns, "timeout_secs": s.timeout_secs})).collect::<Vec<_>>()),
+                    "resolved": resolved.as_ref().map(|r| r.steps.iter().map(|s| serde_json::json!({"action": s.action.name, "kind": s.action.kind, "contract": s.action.contract, "hash": s.action.hash, "via": s.via, "model": s.model, "max_turns": s.max_turns, "timeout_secs": s.timeout_secs})).collect::<Vec<_>>()),
                     "meta": w.meta,
-                    "measured": measured,
+                    "measured": m.as_ref().map(|m| serde_json::json!({
+                        "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
+                        "all_versions": m.all, "regressed": m.regressed,
+                        "cost_vs_direct": match (&direct, m.current.known) {
+                            (Some(d), true) if d.current.known && d.current.cost_per_task > 0.0 => Some(m.current.cost_per_task / d.current.cost_per_task),
+                            _ => None,
+                        },
+                    })),
                 })
             })
             .collect();
         let acts: Vec<serde_json::Value> = actions
             .values()
-            .map(|a| serde_json::json!({"name": a.name, "kind": a.kind, "hash": a.hash, "description": a.description, "consumes": a.consumes, "produces": a.produces, "run": a.run, "check": a.check, "max_turns": a.max_turns, "timeout_secs": a.timeout_secs, "model": a.model}))
+            .map(|a| serde_json::json!({"name": a.name, "kind": a.kind, "contract": a.contract, "hash": a.hash, "description": a.description, "consumes": a.consumes, "produces": a.produces, "run": a.run, "check": a.check, "paths": a.paths, "brief": a.brief, "max_turns": a.max_turns, "timeout_secs": a.timeout_secs, "model": a.model}))
             .collect();
         out!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({"workflows": docs, "actions": acts}))?
+            serde_json::to_string_pretty(
+                &serde_json::json!({"workflows": docs, "actions": acts, "min_runs_for_known": profile::MIN_N, "lookback": LOOKBACK})
+            )?
         );
         return Ok(());
     }
     for w in &all {
         out!(
-            "{:<8} {}  {:<24} {}",
+            "{:<12} {}  {:<24} {}",
             w.name,
             &w.hash[..8],
             w.steps_text(),
@@ -327,56 +365,60 @@ fn list_workflows(json: bool) -> Result<()> {
         );
         match workflows::resolve(&f.paths.home, &w.name) {
             Ok(r) => out!(
-                "         resolves   {}",
+                "             resolves   {}",
                 r.steps
                     .iter()
                     .map(|s| format!("{}@{}", s.action.name, &s.action.hash[..8]))
                     .collect::<Vec<_>>()
                     .join(" → ")
             ),
-            Err(e) => out!("         BROKEN     {e:#}"),
+            Err(e) => out!("             BROKEN     {e:#}"),
         }
-        out!("         use when   {}", w.meta.use_when);
-        out!("         avoid when {}", w.meta.avoid_when);
+        out!("             use when   {}", w.meta.use_when);
+        out!("             avoid when {}", w.meta.avoid_when);
         if !w.meta.requires.is_empty() {
-            out!("         requires   {}", w.meta.requires.join("; "));
+            out!("             requires   {}", w.meta.requires.join("; "));
         }
-        out!(
-            "         cost       {:.1}x direct (declared)",
-            w.meta.cost_factor
-        );
-        for st in stats.iter().filter(|st| st.workflow == w.name) {
+        let m = measure(&f, w)?;
+        out!("             measured   {}", m.current.line());
+        if let (Some(d), true) = (&direct, m.current.known)
+            && d.current.known
+            && d.current.cost_per_task > 0.0
+            && w.name != "direct"
+        {
             out!(
-                "         measured   {}{}: {} task(s), {} ok, {} failed, {} blocked, ${:.2} total{}",
-                &st.hash[..st.hash.len().min(8)],
-                if st.hash == w.hash {
-                    ""
-                } else {
-                    " (older version)"
-                },
-                st.tasks,
-                st.succeeded,
-                st.failed,
-                st.blocked,
-                st.cost,
-                if st.succeeded > 0 {
-                    format!(", ${:.2} per success", st.cost / st.succeeded as f64)
-                } else {
-                    String::new()
-                }
+                "             cost       {:.1}x direct (measured)",
+                m.current.cost_per_task / d.current.cost_per_task
             );
         }
-        out!("         {}", w.path.display());
+        if let Some((h, p)) = &m.previous {
+            out!(
+                "             previous   {}: {}{}",
+                &h[..h.len().min(8)],
+                p.line(),
+                if m.regressed { "  REGRESSION" } else { "" }
+            );
+        }
+        if m.all.n > m.current.n {
+            out!("             all vers.  {}", m.all.line());
+        }
+        out!("             {}", w.path.display());
     }
     out!();
     for a in actions.values() {
         let what = match (&a.run, &a.check) {
             (Some(r), _) => format!("run {}", r.join(" ")),
             (None, Some(c)) => format!("repo check `{c}`"),
-            _ => String::new(),
+            _ => {
+                if a.contract != a.name {
+                    format!("contract {}", a.contract)
+                } else {
+                    String::new()
+                }
+            }
         };
         out!(
-            "{:<8} {}  {:<10} {}{}",
+            "{:<12} {}  {:<10} {}{}",
             a.name,
             &a.hash[..8],
             format!("{:?}", a.kind).to_lowercase(),
@@ -388,7 +430,7 @@ fn list_workflows(json: bool) -> Result<()> {
             }
         );
         if let Some(c) = workflows::commit_for(&f.paths.home, &a.hash) {
-            out!("         since      {c}");
+            out!("             since      {c}");
         }
     }
     Ok(())

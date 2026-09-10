@@ -108,17 +108,18 @@ forms, one now and one later.
 
 ## Built-in workflows
 
-| name | steps | cost factor |
-|---|---|---|
-| `direct` | setup, code | 1.0 |
-| `tdd` | tests, setup, code | 2.5 |
-| `docs` | setup, docs | 0.6 |
-| `cheap` | setup, fix (haiku, 15 turns) | 0.3 |
-| `polish` | setup, code, polish | 1.8 |
-| `reviewed` | setup, code, review | 1.7 |
-| `tdd-reviewed` | (tdd), review | 3.2 |
+| name | steps |
+|---|---|
+| `direct` | setup, code |
+| `tdd` | tests, setup, code |
+| `docs` | setup, docs |
+| `cheap` | setup, fix (haiku, 15 turns) |
+| `polish` | setup, code, polish |
+| `reviewed` | setup, code, review |
+| `tdd-reviewed` | (tdd), review |
 
-Each carries `[meta]` saying when to use it and when not.
+Each carries `[meta]` saying when to use it and when not. What each costs
+and achieves is measured, never declared; see docs/WORKFLOWS.md.
 
 ## In the file
 
@@ -136,7 +137,6 @@ steps = [
 use_when = "..."
 avoid_when = "..."
 requires = ["[verify] namespace in forge.toml", "a check named test"]
-cost_factor = 2.5
 ```
 
 Verify and push are not in that list, on purpose.

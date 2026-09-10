@@ -441,7 +441,10 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     let o = e.forge("ok.sh", &["workflows"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("tests → setup → code"), "{out}");
-    assert!(out.contains("cost       2.5x direct (declared)"), "{out}");
+    assert!(
+        out.contains("measured   unknown (0 of 5 runs needed)"),
+        "{out}"
+    );
     let o = e.forge("ok.sh", &["workflows", "--json"]);
     let docs: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let tdd = docs["workflows"]
@@ -452,11 +455,8 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
         .unwrap()
         .clone();
     assert_eq!(tdd["name"], "tdd");
-    assert_eq!(tdd["meta"]["cost_factor"], 2.5);
-    assert!(
-        tdd["measured"].as_array().unwrap().is_empty(),
-        "nothing measured yet"
-    );
+    assert_eq!(tdd["measured"]["current"]["known"], false);
+    assert_eq!(tdd["measured"]["cost_vs_direct"], serde_json::Value::Null);
 }
 
 #[test]
@@ -568,10 +568,7 @@ fn trace_requests_and_stats_expose_the_whole_run() {
 
     let o = e.forge("ok.sh", &["workflows"]);
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(
-        out.contains("measured   "),
-        "measured outcomes appear next to declared metadata:\n{out}"
-    );
+    assert!(out.contains("measured   unknown ("), "{out}");
 }
 
 #[test]
@@ -1101,6 +1098,51 @@ fn polish_runs_a_second_code_pass_with_its_brief() {
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
     assert_eq!(doc["attempts"][1]["step"], "polish");
     assert_eq!(doc["resolved"]["steps"][2]["action"]["contract"], "code");
+}
+
+#[test]
+fn a_workflow_becomes_measured_after_enough_runs_and_regressions_are_seen() {
+    let e = Env::new();
+    for _ in 0..5 {
+        assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    }
+    let o = e.forge("ok.sh", &["workflows"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("5 run(s): verified 5/5 (100%"), "{out}");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["workflows", "--json"]).stdout).unwrap();
+    let direct = doc["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "direct")
+        .unwrap();
+    assert_eq!(direct["measured"]["current"]["known"], true);
+    assert_eq!(direct["measured"]["current"]["n"], 5);
+    assert!(
+        (direct["measured"]["current"]["cost_per_task"]
+            .as_f64()
+            .unwrap()
+            - 0.01)
+            .abs()
+            < 1e-9
+    );
+    // A new version of direct that fails every time is a regression.
+    let path = e.home.join("workflows/direct.toml");
+    std::fs::write(&path, std::fs::read_to_string(&path).unwrap() + "# v2\n").unwrap();
+    for _ in 0..5 {
+        assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+    }
+    let o = e.forge("ok.sh", &["workflows"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("verified 0/5"), "{out}");
+    assert!(out.contains("REGRESSION"), "{out}");
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("WARN learning") && out.contains("direct regressed"),
+        "{out}"
+    );
 }
 
 #[test]
