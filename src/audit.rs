@@ -123,9 +123,22 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                     a.step
                 ),
             ));
-        } else if inputs.max_turns > 0 && a.num_turns >= inputs.max_turns {
+        } else if {
+            // Attempts from before inputs were recorded fall back to the task's limit.
+            let limit = if inputs.max_turns > 0 {
+                inputs.max_turns
+            } else {
+                t.max_turns
+            };
+            limit > 0 && a.num_turns >= limit
+        } {
+            let limit = if inputs.max_turns > 0 {
+                inputs.max_turns
+            } else {
+                t.max_turns
+            };
             out.push(d(
-                &format!("step {} attempt {} hit its turn limit ({} of {})", a.step, a.attempt_no, a.num_turns, inputs.max_turns),
+                &format!("step {} attempt {} hit its turn limit ({} of {})", a.step, a.attempt_no, a.num_turns, limit),
                 &format!("Raise max_turns for the {} step in the workflow file, or make the task smaller.", a.step),
             ));
         } else if !a.reason.is_empty() {

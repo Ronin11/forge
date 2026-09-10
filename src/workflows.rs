@@ -56,7 +56,7 @@ struct WorkflowRaw {
 /// What the author declares about a workflow, for a human or an agent
 /// choosing one. Declared, never measured: measured numbers live in the
 /// stats table and are merged in at read time.
-#[derive(Deserialize, serde::Serialize, Default, Clone, Debug)]
+#[derive(Deserialize, serde::Serialize, Clone, Debug)]
 pub struct Meta {
     /// When this workflow is the right choice.
     #[serde(default)]
@@ -74,6 +74,17 @@ pub struct Meta {
 
 fn one() -> f64 {
     1.0
+}
+
+impl Default for Meta {
+    fn default() -> Meta {
+        Meta {
+            use_when: String::new(),
+            avoid_when: String::new(),
+            requires: Vec::new(),
+            cost_factor: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -241,6 +252,20 @@ mod tests {
         .unwrap();
         assert_ne!(get(dir.path(), "tdd").unwrap().unwrap().hash, tdd.hash);
         assert!(get(dir.path(), "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_file_without_meta_costs_one_x() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join("workflows/bare.toml"),
+            "name = \"bare\"\nsteps = [{ kind = \"code\" }]\n",
+        )
+        .unwrap();
+        let w = get(dir.path(), "bare").unwrap().unwrap();
+        assert_eq!(w.meta.cost_factor, 1.0);
+        assert!(w.meta.use_when.is_empty());
     }
 
     #[test]
