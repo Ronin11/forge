@@ -60,3 +60,46 @@ pub fn load(repo: &Path) -> Result<Config> {
         push_remote,
     })
 }
+
+#[derive(Deserialize, Default)]
+struct HomeRaw {
+    #[serde(default)]
+    budget: BudgetRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct BudgetRaw {
+    per_task_usd: Option<f64>,
+    per_day_usd: Option<f64>,
+}
+
+/// Operator-level caps, from `<FORGE2_HOME>/config.toml`. Both use the
+/// cost the claude CLI reports per attempt; a running attempt is never
+/// killed by the budget, its --max-turns is the cliff.
+pub struct Budget {
+    pub per_task_usd: f64,
+    pub per_day_usd: f64,
+}
+
+const DEFAULT_HOME_CONFIG: &str = "\
+# Forge 2 operator config. Budgets use the cost the claude CLI reports per attempt.
+[budget]
+per_task_usd = 2.0    # a task stops retrying once its attempts have cost this much
+per_day_usd = 20.0    # no new task is claimed once the last 24 hours cost this much
+";
+
+pub fn load_budget(home: &Path) -> Result<Budget> {
+    let path = home.join("config.toml");
+    if !path.exists() {
+        std::fs::write(&path, DEFAULT_HOME_CONFIG)
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let raw: HomeRaw =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(Budget {
+        per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
+        per_day_usd: raw.budget.per_day_usd.unwrap_or(20.0),
+    })
+}

@@ -38,6 +38,9 @@ struct TaskArgs {
     /// Extra attempts after a failure, each fed the previous failure
     #[arg(long, default_value_t = 1)]
     retries: u32,
+    /// Cost cap for this task in USD (default: per_task_usd in config.toml)
+    #[arg(long)]
+    budget: Option<f64>,
 }
 
 #[derive(Subcommand)]
@@ -144,6 +147,7 @@ fn enqueue(store: &Store, args: &TaskArgs) -> Result<Task> {
         max_attempts: args.retries as i64 + 1,
         state: TaskState::Queued,
         created_at: unix_now(),
+        budget_usd: args.budget,
         ..Default::default()
     };
     t.id = store.insert_task(&t)?;
@@ -153,6 +157,9 @@ fn enqueue(store: &Store, args: &TaskArgs) -> Result<Task> {
 fn run(args: TaskArgs) -> Result<()> {
     let p = paths()?;
     let store = Store::open(&p.home.join("forge.db"))?;
+    if let Some(msg) = day_budget_reached(&store, &p)? {
+        bail!("{msg}");
+    }
     let t = enqueue(&store, &args)?;
     let claimed = store.claim_next(std::process::id() as i64)?;
     if claimed.as_ref().map(|c| c.id) != Some(t.id) {
@@ -175,6 +182,19 @@ fn add(args: TaskArgs) -> Result<()> {
     Ok(())
 }
 
+/// The rolling 24-hour cap. `Some(message)` when nothing more may start.
+fn day_budget_reached(store: &Store, p: &Paths) -> Result<Option<String>> {
+    let budget = config::load_budget(&p.home)?;
+    let spent = store.spent_since(unix_now() - 86_400)?;
+    Ok((spent >= budget.per_day_usd).then(|| {
+        format!(
+            "daily budget reached: ${spent:.2} of ${:.2} in the last 24h (per_day_usd in {})",
+            budget.per_day_usd,
+            p.home.join("config.toml").display()
+        )
+    }))
+}
+
 fn pid_alive(pid: i64) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -190,6 +210,10 @@ fn work(max_tasks: Option<u32>) -> Result<()> {
     let pid = std::process::id() as i64;
     let (mut done, mut ok) = (0u32, 0u32);
     while max_tasks.is_none_or(|m| done < m) {
+        if let Some(msg) = day_budget_reached(&store, &p)? {
+            eprintln!("{msg}; {} task(s) left queued", store.queued_count()?);
+            break;
+        }
         let Some(t) = store.claim_next(pid)? else {
             break;
         };
@@ -272,11 +296,23 @@ fn run_task(store: &Store, p: &Paths, id: i64) -> Result<TaskState> {
         if sandbox.is_some() { ", sandboxed" } else { "" }
     );
 
+    let task_cap = t
+        .budget_usd
+        .unwrap_or(config::load_budget(&p.home)?.per_task_usd);
     let prior = store.attempts(id)?.len() as i64;
     let mut feedback: Option<String> = None;
     let mut last = AttemptState::Running;
     let mut compare: Option<String> = None;
+    let mut budget_stop: Option<String> = None;
     for n in (prior + 1)..=t.max_attempts {
+        let spent = store.task_cost(id)?;
+        if spent >= task_cap {
+            budget_stop = Some(format!(
+                "task budget reached: ${spent:.4} of ${task_cap:.2} after {} attempt(s)",
+                n - 1
+            ));
+            break;
+        }
         eprintln!("--- attempt {n} of {}", t.max_attempts);
         let (a, results) =
             run_attempt(store, p, &t, &cfg, sandbox.as_ref(), n, feedback.as_deref())?;
@@ -334,12 +370,20 @@ fn run_task(store: &Store, p: &Paths, id: i64) -> Result<TaskState> {
         AttemptState::Unverified => TaskState::Unverified,
         _ => TaskState::Failed,
     };
-    t.reason = match last {
-        AttemptState::Succeeded => String::new(),
-        AttemptState::Unverified => "no checks declared; branch not pushed".into(),
-        AttemptState::ChecksFailed => format!("checks failed after {} attempt(s)", attempts.len()),
-        AttemptState::AgentFailed => format!("agent failed after {} attempt(s)", attempts.len()),
-        AttemptState::Running => "no attempts ran".into(),
+    t.reason = if let Some(b) = budget_stop {
+        b
+    } else {
+        match last {
+            AttemptState::Succeeded => String::new(),
+            AttemptState::Unverified => "no checks declared; branch not pushed".into(),
+            AttemptState::ChecksFailed => {
+                format!("checks failed after {} attempt(s)", attempts.len())
+            }
+            AttemptState::AgentFailed => {
+                format!("agent failed after {} attempt(s)", attempts.len())
+            }
+            AttemptState::Running => "no attempts ran".into(),
+        }
     };
     t.finished_at = Some(unix_now());
     t.worker_pid = None;

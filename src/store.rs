@@ -87,6 +87,8 @@ pub struct Task {
     pub finished_at: Option<i64>,
     pub pushed: bool,
     pub worker_pid: Option<i64>,
+    /// Per-task cap override; `None` means the operator config's default.
+    pub budget_usd: Option<f64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -132,7 +134,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   started_at INTEGER,
   finished_at INTEGER,
   pushed INTEGER NOT NULL DEFAULT 0,
-  worker_pid INTEGER
+  worker_pid INTEGER,
+  budget_usd REAL
 );
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY,
@@ -158,7 +161,7 @@ CREATE INDEX IF NOT EXISTS attempts_task ON attempts(task_id, attempt_no);
 
 const TASK_COLS: &str =
     "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
-    state, reason, created_at, started_at, finished_at, pushed, worker_pid";
+    state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd";
 
 fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -179,6 +182,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         finished_at: r.get(14)?,
         pushed: r.get::<_, i64>(15)? != 0,
         worker_pid: r.get(16)?,
+        budget_usd: r.get(17)?,
     })
 }
 
@@ -218,9 +222,19 @@ impl Store {
 
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, state, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![t.repo, t.task, t.base_branch, t.model, t.max_turns, t.max_attempts, t.state.as_str(), t.created_at],
+            "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, state, created_at, budget_usd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                t.repo,
+                t.task,
+                t.base_branch,
+                t.model,
+                t.max_turns,
+                t.max_attempts,
+                t.state.as_str(),
+                t.created_at,
+                t.budget_usd
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -361,6 +375,15 @@ impl Store {
         )?)
     }
 
+    /// Cost of every attempt started at or after `since`.
+    pub fn spent_since(&self, since: i64) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1",
+            params![since],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn print_log(&self, limit: u32) -> Result<()> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
@@ -447,7 +470,12 @@ impl Store {
             "model      {} (max {} turns, max {} attempts)",
             t.model, t.max_turns, t.max_attempts
         );
-        println!("cost       ${cost:.4} over {} attempt(s)", attempts.len());
+        println!(
+            "cost       ${cost:.4} over {} attempt(s){}",
+            attempts.len(),
+            t.budget_usd
+                .map_or(String::new(), |b| format!(" (task cap ${b:.2})"))
+        );
         println!("text       {}", t.task);
         for a in &attempts {
             println!();
