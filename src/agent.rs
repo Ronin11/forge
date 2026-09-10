@@ -124,6 +124,11 @@ pub fn run(l: Launch) -> Result<Outcome> {
 
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+        serde_json::to_string(l.prompt)?
+    )?;
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
     let stdout = child.stdout.take().context("agent stdout")?;

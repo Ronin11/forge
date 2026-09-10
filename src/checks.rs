@@ -1,6 +1,8 @@
 //! Re-run the repository's declared checks in the worktree. A claim from the
-//! agent is not a result; this is.
+//! agent is not a result; this is. Checks execute code the agent just wrote,
+//! so they run inside the same sandbox the agent did.
 
+use crate::sandbox::Sandbox;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,14 +18,22 @@ pub struct CheckResult {
     pub tail: String,
 }
 
-pub fn run_all(cwd: &Path, checks: &BTreeMap<String, Vec<String>>) -> Vec<CheckResult> {
+pub fn run_all(
+    cwd: &Path,
+    repo_git_dir: &Path,
+    checks: &BTreeMap<String, Vec<String>>,
+    sandbox: Option<&Sandbox>,
+) -> Vec<CheckResult> {
     let mut results = Vec::new();
     for (name, argv) in checks {
         let start = Instant::now();
-        let output = Command::new(&argv[0])
-            .args(&argv[1..])
-            .current_dir(cwd)
-            .output();
+        let output = match sandbox {
+            Some(sb) => sb.command(cwd, repo_git_dir, argv).output(),
+            None => Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(cwd)
+                .output(),
+        };
         let ms = start.elapsed().as_millis();
         let r = match output {
             Ok(o) => {

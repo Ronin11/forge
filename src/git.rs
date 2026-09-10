@@ -87,14 +87,25 @@ mod tests {
     #[test]
     fn github_remotes_get_compare_urls() {
         let want = "https://github.com/nate/repo/compare/main...forge/7-x?expand=1";
-        for url in ["git@github.com:nate/repo.git", "https://github.com/nate/repo", "ssh://git@github.com/nate/repo.git"] {
-            assert_eq!(compare_url(url, "main", "forge/7-x").as_deref(), Some(want), "{url}");
+        for url in [
+            "git@github.com:nate/repo.git",
+            "https://github.com/nate/repo",
+            "ssh://git@github.com/nate/repo.git",
+        ] {
+            assert_eq!(
+                compare_url(url, "main", "forge/7-x").as_deref(),
+                Some(want),
+                "{url}"
+            );
         }
     }
 
     #[test]
     fn other_remotes_get_none() {
         assert_eq!(compare_url("/srv/git/repo.git", "main", "b"), None);
-        assert_eq!(compare_url("git@gitlab.com:nate/repo.git", "main", "b"), None);
+        assert_eq!(
+            compare_url("git@gitlab.com:nate/repo.git", "main", "b"),
+            None
+        );
     }
 }
