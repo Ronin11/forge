@@ -48,6 +48,9 @@ pub struct TaskArgs {
     /// done (repeatable). Run after the repo's own checks.
     #[arg(long = "check")]
     checks: Vec<String>,
+    /// Let this task change the repo's [verify] protected paths
+    #[arg(long)]
+    allow_protected: bool,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +145,7 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         state: TaskState::Queued,
         created_at: unix_now(),
         budget_usd: args.budget,
+        allow_protected: args.allow_protected,
         ..Default::default()
     };
     t.id = f.store.insert_task(&t)?;
@@ -293,6 +297,9 @@ fn show(id: i64) -> Result<()> {
     );
     for c in &t.checks {
         out!("check      $ {c}");
+    }
+    if t.allow_protected {
+        out!("protected  changes allowed");
     }
     out!("text       {}", t.task);
     for a in &attempts {

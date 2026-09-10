@@ -118,6 +118,8 @@ pub struct Task {
     /// Per-task cap override; `None` means the operator config's default.
     pub budget_usd: Option<f64>,
     pub worktree_removed_at: Option<i64>,
+    /// The operator said this task may change protected paths.
+    pub allow_protected: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -226,11 +228,14 @@ ALTER TABLE attempts ADD COLUMN rl_seven_day REAL;
 ALTER TABLE attempts ADD COLUMN rl_five_hour_resets INTEGER;
 ALTER TABLE attempts ADD COLUMN rl_seven_day_resets INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN allow_protected INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at";
+    worktree_removed_at, allow_protected";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -262,6 +267,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         worker_pid: r.get(18)?,
         budget_usd: r.get(19)?,
         worktree_removed_at: r.get(20)?,
+        allow_protected: r.get::<_, i64>(21)? != 0,
     })
 }
 
@@ -325,8 +331,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                state, created_at, budget_usd, allow_protected)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 t.repo,
                 t.task,
@@ -338,7 +344,8 @@ impl Store {
                 serde_json::to_string(&t.checks)?,
                 t.state.as_str(),
                 t.created_at,
-                t.budget_usd
+                t.budget_usd,
+                t.allow_protected as i64
             ],
         )?;
         Ok(c.last_insert_rowid())

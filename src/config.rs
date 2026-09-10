@@ -14,6 +14,17 @@ struct Raw {
     checks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     defaults: Defaults,
+    #[serde(default)]
+    verify: VerifyRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct VerifyRaw {
+    /// Paths an attempt may not change unless the task allows it: the tests
+    /// that guard the product, fixtures, CI config. A file, or a directory
+    /// with a trailing slash.
+    #[serde(default)]
+    protected: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -31,6 +42,18 @@ pub struct Config {
     /// such remote or `push = false`.
     pub push_remote: Option<String>,
     pub check_timeout_secs: u64,
+    pub protected: Vec<String>,
+}
+
+/// Whether `path` falls under one of the protected entries.
+pub fn is_protected(protected: &[String], path: &str) -> bool {
+    protected.iter().any(|p| {
+        if let Some(dir) = p.strip_suffix('/') {
+            path.starts_with(dir) && path[dir.len()..].starts_with('/')
+        } else {
+            p == path
+        }
+    })
 }
 
 async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
@@ -57,6 +80,7 @@ async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
         base_branch,
         push_remote,
         check_timeout_secs: raw.defaults.check_timeout_secs.unwrap_or(600),
+        protected: raw.verify.protected,
     })
 }
 
@@ -180,6 +204,19 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_matches_files_and_directories() {
+        let p = vec![
+            "tests/progression.test.ts".to_string(),
+            "fixtures/".to_string(),
+        ];
+        assert!(is_protected(&p, "tests/progression.test.ts"));
+        assert!(!is_protected(&p, "tests/progression.test.ts.bak"));
+        assert!(is_protected(&p, "fixtures/a.json"));
+        assert!(!is_protected(&p, "fixtures2/a.json"));
+        assert!(!is_protected(&p, "src/x.ts"));
+    }
 
     #[test]
     fn home_config_defaults_and_overrides() {

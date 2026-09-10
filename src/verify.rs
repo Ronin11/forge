@@ -35,6 +35,7 @@ pub struct Subject<'a> {
     pub base_sha: &'a str,
     pub cfg: &'a Config,
     pub task_checks: &'a [String],
+    pub allow_protected: bool,
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
 }
@@ -121,6 +122,22 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
             commits > 0,
             "no commits on the branch".into(),
         ));
+        if !s.cfg.protected.is_empty() && !s.allow_protected {
+            let hit: Vec<&str> = changed
+                .iter()
+                .chain(dirty.iter())
+                .map(String::as_str)
+                .filter(|p| crate::config::is_protected(&s.cfg.protected, p))
+                .collect();
+            v.checks.push(l0(
+                "protected-paths",
+                hit.is_empty(),
+                format!(
+                    "protected paths changed: {}. They guard the product; only a task created with --allow-protected may change them.",
+                    hit.join(", ")
+                ),
+            ));
+        }
         if let Some(e) = &env {
             let reported: BTreeSet<&str> = e.changes.iter().map(|c| c.path.as_str()).collect();
             let actual: BTreeSet<&str> = changed

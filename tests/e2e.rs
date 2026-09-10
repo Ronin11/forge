@@ -337,6 +337,33 @@ fn setup_runs_first_and_gates_the_other_checks() {
 }
 
 #[test]
+fn protected_paths_fail_l0_unless_the_task_allows_them() {
+    let e = Env::new();
+    let mut toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
+    toml.push_str("[verify]\nprotected = [\"hello.sh\", \"fixtures/\"]\n");
+    std::fs::write(e.repo.join("forge.toml"), toml).unwrap();
+    git(&e.repo, &["commit", "-qam", "protect hello.sh"]);
+    assert!(!e.run("protect.sh", &["--retries", "0"]).status.success());
+    let a = e.attempts(1);
+    assert_eq!(a[0].2, "L0 failed: protected-paths");
+    assert!(
+        e.log_text(1, 1)
+            .contains("protected and must not be modified"),
+        "the agent is told"
+    );
+    assert!(
+        e.run("protect.sh", &["--retries", "0", "--allow-protected"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        check(&e.attempts(2)[0].4, "L0", "protected-paths"),
+        None,
+        "no row when allowed"
+    );
+}
+
+#[test]
 fn doctor_runs_and_reports_the_essentials() {
     let e = Env::new();
     assert!(e.run("ok.sh", &[]).status.success());

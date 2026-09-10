@@ -224,6 +224,12 @@ fn prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) -> Str
             l1.join(", ")
         },
     );
+    if !cfg.protected.is_empty() && !t.allow_protected {
+        p.push_str(&format!(
+            "\nThese paths are protected and must not be modified by this task: {}. If the task cannot be done without changing them, stop and say so in needs_input.",
+            cfg.protected.join(", ")
+        ));
+    }
     if !t.checks.is_empty() {
         p.push_str("\nThe task is only done when these commands also exit 0 in the worktree:\n");
         for c in &t.checks {
@@ -297,6 +303,7 @@ async fn run_attempt(
             base_sha: &t.base_sha,
             cfg,
             task_checks: &t.checks,
+            allow_protected: t.allow_protected,
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
         },
