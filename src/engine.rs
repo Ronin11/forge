@@ -77,9 +77,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         .with_context(|| format!("no task {id}"))
         .env()?;
     let repo = PathBuf::from(&t.repo);
-    let workflow = workflows::get(&t.workflow)
+    let workflow = workflows::get(&f.paths.home, &t.workflow)
+        .env()?
         .with_context(|| format!("unknown workflow {}", t.workflow))
         .task()?;
+    if t.workflow_hash.is_empty() {
+        t.workflow_hash = workflow.hash.clone();
+    } else if t.workflow_hash != workflow.hash {
+        f.report.emit(id, Event::Note { text: &format!("workflow {} changed since the task was created ({} → {}); running the current one", t.workflow, t.workflow_hash, workflow.hash) });
+        t.workflow_hash = workflow.hash.clone();
+    }
 
     t.state = TaskState::Running;
     t.started_at = Some(unix_now());
@@ -132,14 +139,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         id,
         Event::Note {
             text: &format!(
-                "workflow {} ({})",
+                "workflow {} {} ({})",
                 workflow.name,
-                workflow
-                    .steps
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" → ")
+                workflow.hash,
+                workflow.steps_text()
             ),
         },
     );
@@ -157,7 +160,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut budget_stop: Option<String> = None;
     let mut all_steps_ok = true;
 
-    'steps: for step in workflow.steps {
+    'steps: for def in &workflow.steps {
+        let step = &def.kind;
         if done.contains(step.as_str()) {
             f.report.emit(
                 id,
@@ -166,6 +170,17 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 },
             );
             continue;
+        }
+        // Per-step overrides from the workflow file.
+        let mut ts = t.clone();
+        if let Some(m) = &def.model {
+            ts.model = m.clone();
+        }
+        if let Some(n) = def.max_turns {
+            ts.max_turns = n as i64;
+        }
+        if let Some(n) = def.timeout_secs {
+            ts.timeout_secs = n as i64;
         }
         let mut feedback: Option<String> = None;
         let mut step_ok = false;
@@ -194,10 +209,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             );
             let (a, verdict, outcome) = match step {
                 Step::Code => {
-                    run_code_attempt(&f, &t, &cfg, attempt_no, feedback.as_deref()).await?
+                    run_code_attempt(&f, &ts, &cfg, attempt_no, feedback.as_deref()).await?
                 }
                 Step::Tests => {
-                    run_tests_attempt(&f, &t, &cfg, attempt_no, feedback.as_deref()).await?
+                    run_tests_attempt(&f, &ts, &cfg, attempt_no, feedback.as_deref()).await?
                 }
             };
             last = a.state;
@@ -237,7 +252,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
                 AttemptState::Unverified | AttemptState::NeedsInput => break,
                 AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                    feedback = Some(verify::feedback(&verdict, &outcome, t.max_turns));
+                    feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
                 }
                 AttemptState::Running => unreachable!("attempt returned in running state"),
             }
@@ -406,17 +421,20 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
     p
 }
 
-fn new_attempt(
+async fn new_attempt(
     f: &Forge,
     t: &Task,
     step: Step,
+    dir: &Path,
     attempt_no: i64,
 ) -> Result<(Attempt, PathBuf), Fault> {
     let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
+    let start_sha = git::head(dir).await.task()?;
     let mut a = Attempt {
         task_id: t.id,
         attempt_no,
         step: step.as_str().to_string(),
+        start_sha,
         state: AttemptState::Running,
         started_at: unix_now(),
         log_path: log_path.display().to_string(),
@@ -510,7 +528,7 @@ async fn run_code_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
-    let (mut a, log_path) = new_attempt(f, t, Step::Code, attempt_no)?;
+    let (mut a, log_path) = new_attempt(f, t, Step::Code, wt, attempt_no).await?;
     let outcome = launch(
         f,
         t,
@@ -534,6 +552,7 @@ async fn run_code_attempt(
             repo,
             worktree: wt,
             base_sha: &t.base_sha,
+            start_sha: &a.start_sha,
             cfg,
             task_checks: &t.checks,
             allow_protected: t.allow_protected,
@@ -563,7 +582,7 @@ async fn run_tests_attempt(
             .await
             .task()?;
     }
-    let (mut a, log_path) = new_attempt(f, t, Step::Tests, attempt_no)?;
+    let (mut a, log_path) = new_attempt(f, t, Step::Tests, &dir, attempt_no).await?;
     let outcome = launch(
         f,
         t,
@@ -580,6 +599,7 @@ async fn run_tests_attempt(
             worktree: &dir,
             scratch: &scratch,
             base_sha: &t.base_sha,
+            start_sha: &a.start_sha,
             cfg,
             sandbox: f.sandbox.as_ref(),
             report: &f.report,

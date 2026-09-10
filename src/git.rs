@@ -72,6 +72,10 @@ pub async fn clone_task(repo: &Path, base: &str, dir: &Path, branch: &str) -> Re
     Ok(base_sha)
 }
 
+pub async fn head(dir: &Path) -> Result<String> {
+    git(dir, &["rev-parse", "HEAD"]).await
+}
+
 /// The content of `path` at `rev`, or `None` if it does not exist there.
 pub async fn show_file(dir: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     let spec = format!("{rev}:{path}");

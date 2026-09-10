@@ -443,6 +443,18 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
 }
 
 #[test]
+fn a_retry_that_changes_nothing_reports_nothing_and_passes() {
+    let e = Env::new();
+    assert!(e.run("commitdie.sh", &["--retries", "1"]).status.success());
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[0].1, "agent_failed");
+    assert_eq!(a[1].1, "succeeded");
+    assert_eq!(check(&a[1].4, "L0", "changes-match-git"), Some(true), "changes are measured since the attempt started");
+    assert_eq!(check(&a[1].4, "L0", "has-commits"), Some(true), "commits are measured since base");
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

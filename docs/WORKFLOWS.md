@@ -30,7 +30,28 @@ not nicer workflows; it is no bypass.
 
 ## The workflows
 
-Data, not code. The set of step kinds is closed and small.
+Data, not code: one TOML file per workflow in `<FORGE2_HOME>/workflows/`,
+written with the built-ins on first use and edited by the operator.
+
+```toml
+name = "tdd"
+description = "one agent writes hidden tests that fail on base; another makes them pass"
+steps = [
+  { kind = "tests", max_turns = 40 },
+  { kind = "code" },
+]
+```
+
+A step is a `kind` from the kernel's closed set plus optional `model`,
+`max_turns`, and `timeout_secs` overriding the task's own. No conditionals,
+no variables. A workflow's identity is its name plus a content hash of the
+file; every task records the hash it ran under, so two versions of "tdd"
+are never averaged together. Git versions the file; the hash pins it. Not
+markdown, not a diagram: a diagram can be generated from this for display
+but is never parsed to execute. SQLite later means registering name and
+hash the first time a task uses one.
+
+The set of step kinds is closed and small.
 
 | name | steps | what the coder sees |
 |---|---|---|

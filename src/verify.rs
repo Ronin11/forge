@@ -37,6 +37,7 @@ pub struct Subject<'a> {
     pub repo: &'a Path,
     pub worktree: &'a Path,
     pub base_sha: &'a str,
+    pub start_sha: &'a str,
     pub cfg: &'a Config,
     pub task_checks: &'a [String],
     pub allow_protected: bool,
@@ -76,6 +77,7 @@ fn in_namespace(namespace: &[String], path: &str) -> bool {
 async fn common_l0(
     worktree: &Path,
     base_sha: &str,
+    start_sha: &str,
     agent: &Outcome,
     report: &Reporter,
     task_id: i64,
@@ -89,6 +91,9 @@ async fn common_l0(
 )> {
     let commits = crate::git::count_commits(worktree, base_sha).await?;
     let changed = crate::git::changed_paths(worktree, base_sha).await?;
+    // What this attempt changed: since it started, not since base, so a
+    // retry that adds nothing reports nothing and is right.
+    let changed_this_attempt = crate::git::changed_paths(worktree, start_sha).await?;
     let dirty = crate::git::dirty_paths(worktree).await?;
     report.emit(
         task_id,
@@ -144,7 +149,7 @@ async fn common_l0(
     ));
     if let Some(e) = &env {
         let reported: BTreeSet<&str> = e.changes.iter().map(|c| c.path.as_str()).collect();
-        let actual: BTreeSet<&str> = changed
+        let actual: BTreeSet<&str> = changed_this_attempt
             .iter()
             .chain(dirty.iter())
             .map(String::as_str)
@@ -258,8 +263,15 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         reason: String::new(),
     };
     let mut question: Option<(String, String)> = None;
-    let (rows, env, q, commits, changed, dirty) =
-        common_l0(s.worktree, s.base_sha, agent, s.report, s.task_id).await?;
+    let (rows, env, q, commits, changed, dirty) = common_l0(
+        s.worktree,
+        s.base_sha,
+        s.start_sha,
+        agent,
+        s.report,
+        s.task_id,
+    )
+    .await?;
     v.commits = commits;
     v.files_changed = changed.len() as i64;
     v.dirty = !dirty.is_empty();
@@ -413,6 +425,7 @@ pub struct TestsSubject<'a> {
     /// Scratch directory for the red-on-base run; created and removed here.
     pub scratch: &'a Path,
     pub base_sha: &'a str,
+    pub start_sha: &'a str,
     pub cfg: &'a Config,
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
@@ -434,8 +447,15 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         reason: String::new(),
     };
     let mut question: Option<(String, String)> = None;
-    let (rows, env, q, commits, changed, dirty) =
-        common_l0(s.worktree, s.base_sha, agent, s.report, s.task_id).await?;
+    let (rows, env, q, commits, changed, dirty) = common_l0(
+        s.worktree,
+        s.base_sha,
+        s.start_sha,
+        agent,
+        s.report,
+        s.task_id,
+    )
+    .await?;
     v.commits = commits;
     v.files_changed = changed.len() as i64;
     v.dirty = !dirty.is_empty();

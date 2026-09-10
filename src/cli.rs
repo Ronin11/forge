@@ -125,17 +125,31 @@ pub async fn main() -> Result<()> {
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
         Cmd::Workflows => {
-            for w in workflows::WORKFLOWS {
+            let f = Forge::open(false, false)?;
+            for w in workflows::load_all(&f.paths.home)? {
                 out!(
-                    "{:<8} {:<16} {}",
+                    "{:<8} {}  {:<16} {}",
                     w.name,
-                    w.steps
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" → "),
-                    w.blurb
+                    w.hash,
+                    w.steps_text(),
+                    w.description
                 );
+                for st in &w.steps {
+                    let mut p = Vec::new();
+                    if let Some(m) = &st.model {
+                        p.push(format!("model={m}"));
+                    }
+                    if let Some(n) = st.max_turns {
+                        p.push(format!("max_turns={n}"));
+                    }
+                    if let Some(n) = st.timeout_secs {
+                        p.push(format!("timeout_secs={n}"));
+                    }
+                    if !p.is_empty() {
+                        out!("         {:<8} {}", st.kind.as_str(), p.join(" "));
+                    }
+                }
+                out!("         {}", w.path.display());
             }
             Ok(())
         }
@@ -150,13 +164,13 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         bail!("{} is not a git repository", repo.display());
     }
     let cfg = config::load_working(&repo).await?;
-    let wf = workflows::get(&args.workflow).with_context(|| {
+    let wf = workflows::get(&f.paths.home, &args.workflow)?.with_context(|| {
         format!(
             "unknown workflow {:?}; see `forge workflows`",
             args.workflow
         )
     })?;
-    if wf.steps.contains(&workflows::Step::Tests) {
+    if wf.has(workflows::Step::Tests) {
         if cfg.namespace.is_empty() {
             bail!(
                 "the {} workflow needs [verify] namespace in forge.toml: where the tests step may write",
@@ -201,6 +215,7 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         budget_usd: args.budget,
         allow_protected: args.allow_protected,
         workflow: args.workflow.clone(),
+        workflow_hash: wf.hash.clone(),
         show_checks: args.show_checks,
         ..Default::default()
     };
@@ -359,7 +374,7 @@ fn show(id: i64) -> Result<()> {
     if t.allow_protected {
         out!("protected  changes allowed");
     }
-    out!("workflow   {}", t.workflow);
+    out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {
         out!(
             "interface  {}",

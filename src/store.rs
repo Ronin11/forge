@@ -125,6 +125,8 @@ pub struct Task {
     /// The operator said this task may change protected paths.
     pub allow_protected: bool,
     pub workflow: String,
+    /// Content hash of the workflow file the task ran under.
+    pub workflow_hash: String,
     /// The tests step's summary: what the coder is told about the tests.
     pub interface: String,
     /// Show the L2 acceptance commands to the coder (default hidden).
@@ -137,6 +139,8 @@ pub struct Attempt {
     pub task_id: i64,
     pub attempt_no: i64,
     pub step: String,
+    /// HEAD when the attempt started: "what you changed" means since here.
+    pub start_sha: String,
     pub state: AttemptState,
     pub reason: String,
     pub started_at: i64,
@@ -248,11 +252,15 @@ ALTER TABLE tasks ADD COLUMN interface TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN show_checks INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE attempts ADD COLUMN step TEXT NOT NULL DEFAULT 'code';
 ",
+    "
+ALTER TABLE attempts ADD COLUMN start_sha TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN workflow_hash TEXT NOT NULL DEFAULT '';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -288,12 +296,13 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         workflow: r.get(22)?,
         interface: r.get(23)?,
         show_checks: r.get::<_, i64>(24)? != 0,
+        workflow_hash: r.get(25)?,
     })
 }
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -322,6 +331,7 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         rl_five_hour_resets: r.get(22)?,
         rl_seven_day_resets: r.get(23)?,
         step: r.get(24)?,
+        start_sha: r.get(25)?,
     })
 }
 
@@ -377,7 +387,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -389,7 +399,8 @@ impl Store {
                 t.finished_at,
                 t.pushed as i64,
                 t.worker_pid,
-                t.interface
+                t.interface,
+                t.workflow_hash
             ],
         )?;
         Ok(())
@@ -474,8 +485,9 @@ impl Store {
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step],
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha],
         )?;
         Ok(c.last_insert_rowid())
     }
