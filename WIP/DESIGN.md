@@ -1,0 +1,470 @@
+# Forge 2 — design spec
+
+Status: draft, 2026-09-08. Written from the 2026-09-08 discussion after nine
+days of running Forge 1. Forge 1 stays running until layer 1 here has run a
+real repository unattended for a week.
+
+## 0. Why a rebuild, and what done means
+
+Forge 1 proved the work engine (nightly benches run unattended, a conflicted
+batch repaired itself) and disproved the shape around it: the eval grades
+itself with a model judge, the learning stack assumes a data volume that does
+not exist, the persona org chart is prose pretending to be mechanism, and the
+trust boundary was retrofitted (four verified criticals in the NIGHTSHIFT
+audit). The rebuild resets the core, ports what proved out, and admits
+everything else only by measurement.
+
+Done, for the rebuild as a whole: a self-improving loop of five parts (eval,
+versioned policy, proposer, comparator, ledger) running unattended against a
+deterministic bench, on a codebase small enough that one person can hold it in
+their head. Everything not in those five parts or the work engine is on trial.
+
+## 1. Rules
+
+These hold from the first commit. They are not features; they are what every
+feature is checked against.
+
+1. **The comparator gates the system's own growth.** No mechanism, role,
+   persona, or tool lands without a bench number showing it beats the
+   baseline at fixed budget. The system eats its own admission rule.
+2. **Prose is policy, code is mechanism.** Anything that must hold is
+   enforced by a program, a git mechanism, a schema, or a hook. A directive
+   suggests; it never guarantees. If a rule exists only in a prompt, it does
+   not exist.
+3. **Every state machine is a table.** Enumerated states, enumerated
+   transitions, one test that walks every row and asserts the rest are
+   unreachable. No state is added without its row.
+4. **Every failure ends in one of two states.** Auto-recovered, or a precise
+   question with resume-on-answer. A terminal state a human must diagnose is
+   a defect, even when the underlying cause was legitimate.
+5. **Trust boundary on day one.** Every route authenticates. The sandbox sees
+   no daemon socket. Agent-authored code never executes on the host. Network
+   egress from the sandbox is off unless the task declares it.
+6. **Build for the data you have.** Nothing that needs a posterior over
+   hundreds of runs until hundreds of runs exist. Wilson intervals and a
+   published bar are enough until they demonstrably are not.
+7. **Every action writes a fact with a cost before anything gets a UI.** The
+   facts table is the product; pages are views of it.
+8. **Forge computes every number; an LLM never counts.** Ported unchanged.
+9. **Deterministic work products are software.** Ported unchanged (Forge 1
+   article 11), and extended to the platform itself: recurrence detection,
+   indexing, scoring, and routing are scripts, never turns.
+10. **One binary, two processes, one deploy step.** `forge` is the CLI, the
+    daemon, and the worker by subcommand. A deploy is one restart.
+
+## 2. Vocabulary
+
+Chosen once. Forge 1 paid for `work`/`target`/`task` meaning three things.
+
+| Word | Meaning |
+|---|---|
+| **task** | A unit of requested change against one repository. Has a lifecycle. |
+| **attempt** | One execution of a task by one agent in one worktree. A task may have several. |
+| **check** | A command the repository declares in `forge.toml`; run by Forge, never trusted from the agent. |
+| **gate** | The integrator's merge step: rebase, re-run checks on the merge result, push. The only path to an integration branch. |
+| **bench** | A spec plus a hidden harness. Produces a score vector for one root task. |
+| **policy** | The versioned repo of personas, directives, fragments, and scripts an agent is run with. Pinned by commit on every attempt. |
+| **proposal** | One diff to the policy plus a prediction. The only way policy changes. |
+| **experiment** | Control commit vs variant commit on one subject, decided by the comparator. |
+| **fact** | One row per terminal attempt, computed by the daemon from spans, git, and parsers. |
+| **question** | A blocking ask to a human with resume-on-answer semantics. |
+
+## 3. Architecture
+
+```
+forge cli ──unix socket──▶ forge daemon ◀──unix socket── forge worker
+                            │  sqlite (facts, tasks, bench, policy pins)
+                            │  bare integrator clones + hooks (the gate)
+                            │  optional tcp listener, token-gated, for the tailnet
+                            ▼
+                     policy repo (git)      bench harnesses (git)
+```
+
+- **Daemon** owns state, the gate, scheduling, the bench runner, and the
+  loop. It never runs agent code.
+- **Worker** claims attempts, creates worktrees, runs the agent inside the
+  sandbox, runs L0/L1 verification, reports. It holds a worker token scoped
+  to attempt routes.
+- **Sandbox** (bubblewrap or equivalent): the worktree, the policy checkout at
+  the pinned commit, a forwarding socket exposing only the attempt-scoped tool
+  routes, no daemon socket, no network unless declared. Scripts the agent
+  writes run here and nowhere else.
+- **Environment pass-through**, ported verbatim from Forge 1 DESIGN §1.1:
+  exactly `PATH HOME USER LANG LC_* TERM XDG_* SSH_AUTH_SOCK CLAUDE_CONFIG_DIR
+  ANTHROPIC_* FORGE_HOME FORGE_HTTP FORGE_LOG_*` plus what the spawner sets.
+  Nothing else leaks. The worker token is never passed to an executor.
+- **Auth**: operator token for the CLI and UI, worker token for the worker,
+  per-attempt token for the sandbox forwarder, per-plugin token. A bogus
+  token is a 401, never a fall-through to operator. Every route lists its
+  required principal in the route table; the test walks the table.
+- **Transport**: HTTP+JSON. Unix socket by default. TCP listener only with
+  auth on every route and a Host/Origin check; off by default.
+- **Storage**: one SQLite file, WAL, migrations forward-only with a
+  pre-migration copy. Facts are append-only.
+
+## 4. Layer 1 — the work engine
+
+The loop: task → attempt → worktree → agent with checks → verify → gate → fact.
+
+### 4.1 Task lifecycle (the table)
+
+| State | Enters from | Leaves to | Trigger |
+|---|---|---|---|
+| `queued` | created | `claimed`, `blocked`, `cancelled` | worker claim / dependency / operator |
+| `blocked` | `queued` | `queued`, `cancelled` | dependency terminal / operator |
+| `claimed` | `queued` | `running`, `queued` | worker start / lease expiry |
+| `running` | `claimed` | `verifying`, `waiting_human`, `failed`, `cancelled` | agent exit / question / error / operator |
+| `waiting_human` | `running` | `running`, `cancelled` | answer / operator |
+| `verifying` | `running` | `merging`, `unverified`, `failed` | L0–L3 result |
+| `merging` | `verifying` | `merged`, `conflict`, `failed` | gate result |
+| `conflict` | `merging` | `merging`, `waiting_human` | one auto-rebase, then a question |
+| `merged` | `merging` | — | terminal |
+| `unverified` | `verifying` | `queued` | terminal; operator requeue |
+| `failed` | any active | `queued` | terminal; auto-retry per failure class, else question |
+| `cancelled` | any | — | terminal |
+
+Rules: `blocked` on a failed dependency cascades to `cancelled` within one
+sweep (Forge 1's wedge). `conflict` gets exactly one automatic rebase; the
+second lands as a question naming the two branches and the file. Every
+`failed` carries a failure class; each class maps to auto-retry, escalate one
+model rung, or a question template. A class without a mapping fails the
+state-table test.
+
+### 4.2 Attempt lifecycle and verification
+
+Attempt phases: `fetch → worktree → manifest → agent → inspect → verify →
+cleanup`. Each phase is a span; spans are the facts' timing columns.
+
+Verification levels ported from Forge 1 VERIFICATION.md unchanged:
+
+| Level | Question | Run by |
+|---|---|---|
+| L0 | Is the structured result consistent with git? | worker |
+| L1 | Do the declared checks pass when Forge runs them, and match the claim? | worker |
+| L2 | Does it work when an independent session exercises it? | a verify attempt |
+| L3 | Does a human sign off? | human queue |
+
+`unverified` is a distinct terminal state and never counts as success.
+
+### 4.3 Checks contract
+
+`forge.toml` at the repository root:
+
+```toml
+[checks]
+setup = ["npm", "ci"]            # makes a fresh clone check-ready
+build = ["npm", "run", "build"]
+test  = ["npm", "test"]
+[regen]                          # generated files and the command that owns them
+"data/STATS.txt" = ["python", "scripts/stats.py"]
+```
+
+Read once from the **trusted base** at attempt start and again by the gate
+from the base, never from the branch under test. An empty `[checks]` is a
+`failed:no_checks` at task creation, not a silent pass.
+
+### 4.4 The gate
+
+The integrator holds a bare clone per repository. Integration is a push into
+it through a `pre-receive` hook that: reads `forge.toml` from the base
+commit, rebases the branch, runs `setup`, `build`, `test` on the merge
+result in a sandbox, verifies the pushed commits carry a `Forge-Attempt`
+trailer, and only then forwards to the real remote. No `--force`, no ref
+deletion, ever; the hook rejects both. Every push is journaled with before
+and after SHAs.
+
+### 4.5 Git as mechanism
+
+| Need | Mechanism |
+|---|---|
+| Isolation | one worktree per attempt, shared object store, `worktree prune` on a schedule |
+| Path leases | sparse checkout limited to declared paths; writes outside fail at commit via hook |
+| Generated files never conflict | `.gitattributes` `merge=regen` driver that runs the `[regen]` command |
+| Same conflict twice | shared `rerere` cache under `FORGE_HOME`, replayed before the second rebase |
+| Attempt heads never lost | `refs/forge/attempts/<id>` kept for 90 days |
+| Metadata on merged commits | `git notes` in `refs/notes/forge` carrying attempt id, cost, scores |
+| Machine-readable commit facts | trailers `Forge-Attempt`, `Forge-Task`, `Fulfills` |
+| Constitution provenance | commits touching `CONSTITUTION.md` must be signed by the operator key; hook enforces |
+| Compare two attempts at one task | `git range-diff` exposed as a script tool |
+| Which commit broke it | `git bisect run <check>` exposed as a script tool |
+
+### 4.6 Facts
+
+One row per terminal attempt, written by the daemon. Ported columns, trimmed
+to what layer 1 can compute:
+
+`attempt_id task_id repository policy_commit model runner mode autonomy`
+`queue_wait_us worktree_us agent_us verify_us total_us started_at finished_at`
+`turns input_tokens output_tokens cache_read_tokens cache_creation_tokens cost_usd`
+`tool_calls_by_name tool_errors questions_asked wait_human_us`
+`state failure_class verification_level verification_passed`
+`commits files_changed insertions deletions declared_paths touched_paths`
+`merge_outcome rebase_attempts base head`
+
+Layer 2 adds `bench_run_id`. Layer 3 adds `experiment_id arm`. Nothing else
+is added without a consumer that reads it.
+
+### 4.7 Failure classes and questions
+
+A `questions` table: `{id, task_id, template, args, asked_at, answered_at,
+answer, resume_state}`. A question is created only from a template, each
+template names the state the task resumes into. Failure classes known on day
+one: `rate_limited` (auto-requeue at provider reset), `checks_failed`
+(retry once with the failure in the prompt, then question), `no_checks`
+(question), `budget_exhausted` (question with the cost), `conflict`
+(one auto-rebase, then question), `tool_error` (retry one rung up, then
+question), `result_unparseable` (retry once, then question), `sandbox_denied`
+(question naming the path or host). Unknown class → the state-table test
+fails the build.
+
+### 4.8 Agent tools, layer 1
+
+`forge_check` (run declared checks), `forge_progress` (note), `forge_ask`
+(question, blocks), `forge_library` (search the policy repo). Nothing else
+until a layer needs it. All reached through the sandbox forwarder with the
+attempt token.
+
+### 4.9 Exit criterion
+
+One real repository (equitizr or the site), unattended for seven days:
+tasks merged through the gate with L1 passing, every failure ended in
+auto-recovery or a question, zero forensic sessions. The facts table answers
+"what did this week cost" without a query being written by hand.
+
+## 5. Layer 2 — the eval
+
+No learning machinery exists until this produces numbers.
+
+### 5.1 Bench spec
+
+```
+bench/<name>/
+  spec.md          # frontmatter + the prompt the agent sees + the CONTRACT
+  eval/run         # executable; hidden from the agent
+  eval/params/     # pool of parameter files; one drawn per run
+  eval/fixtures/   # data the harness ships to the agent (optional)
+```
+
+Frontmatter: `size model autonomy max_turns timeout budget_usd`. The spec's
+CONTRACT section is the interface the harness will use: output file paths and
+schemas, routes, test hooks. The agent sees spec.md and fixtures. It never
+sees `eval/`.
+
+### 5.2 Harness contract
+
+`eval/run <repo_path> <params.json>` executes in the sandbox with no
+network, and writes `scores.json`:
+
+```json
+{"dimensions": {"correctness": {"score": 0.83, "evidence": "estimate 7.6 vs true 8.1"},
+                "reproducibility": {"score": 1.0, "evidence": "rebuild hash equal"},
+                "constraints": {"score": 1.0, "evidence": "no egress, checks non-empty"},
+                "coverage": {"score": 0.71, "evidence": "recall 71/100 records"}},
+ "weights": {"correctness": 0.4, "reproducibility": 0.2, "constraints": 0.2, "coverage": 0.2}}
+```
+
+Deterministic: the same repo and params produce the same file. Weights are
+published in the spec and fixed for the life of the spec version. The overall
+score is the weighted sum, computed by the daemon, never by the harness.
+
+### 5.3 Rotation and honesty
+
+Each run draws one params file (seed, effect size, fixture subset) from the
+pool and records it. The pool is what stops the policy from overfitting across
+nightly runs. Spec and harness hashes are recorded; a change to either starts
+a new spec version and comparisons never cross versions.
+
+### 5.4 The judge, demoted
+
+A model judge may score the fuzzy dimensions (readability, polish) into
+separate `judge_*` columns. It never enters the overall score. Its
+calibration is a query: correlation with program dimensions and with human
+trials over time. A judge that tracks nothing is removed.
+
+### 5.5 Storage
+
+`bench_runs`: `{id, spec, spec_version, params_ref, task_id, policy_commit,
+scores_json, overall, cost_usd, wall_us, started_at}`.
+
+### 5.6 First specs
+
+Port the three Forge 1 specs. Convert `analyze-dataset` first: the harness
+owns the generator and the truth; the agent's contract is one command that
+writes `out/results.json` with estimate, interval, decoy verdict, exclusion
+counts. Then `scrape-analyze`: fixtures and a gold file, field-level precision
+and recall, provenance checked by parsing the cited element. Then
+`rebuild-equitizr` once its contract (data schema, routes, test hooks) is
+written into the spec.
+
+### 5.7 Exit criterion
+
+One spec, ten runs at one policy commit. The noise floor is measured: the
+standard deviation of `overall` across identical policy. The comparator's
+bar in layer 3 is set from this number, not chosen.
+
+## 6. Layer 3 — the loop
+
+Five parts. Nothing else.
+
+### 6.1 Policy repo
+
+```
+policy/
+  CONSTITUTION.md   # signed commits only
+  personas/  directives/  fragments/  scripts/
+  forge.toml        # the policy's own checks: header validation, script examples
+```
+
+Every attempt pins `policy_commit`. Attempts run against `main` unless an
+experiment assigns a variant commit.
+
+### 6.2 Proposer
+
+One directive, run on a schedule. Input: a retro pack computed by a script
+from the last N bench runs and facts (worst dimension, cost trend, failure
+classes, tool errors). Output: exactly one diff to the policy and one
+prediction `{metric, direction, magnitude, horizon_runs}`. The proposer
+never applies. It opens an experiment.
+
+### 6.3 Comparator
+
+`experiments`: `{id, subject, control_commit, variant_commit, metric,
+n_per_arm, bar, state, decided_at, decision}`. One open experiment per
+subject. Assignment alternates arms per bench root. Decision when both arms
+reach `n_per_arm`: variant wins if its lower interval bound clears control's
+upper bound by the published bar (set from the layer 2 noise floor);
+otherwise revert. A commit to `main` touching the subject aborts the
+experiment (drift). Keep merges the variant commit to `main`; revert closes
+the proposal with the numbers attached.
+
+### 6.4 Ledger
+
+`predictions`: `{id, proposal_id, metric, predicted, observed, resolved_at,
+held}`. Resolved at decision. Per-proposer Brier score is a query on this
+table. A proposer whose predictions are worse than chance over 20 resolutions
+is paused with a question to the operator.
+
+### 6.5 Constitution
+
+Ported from Forge 1 with articles 1 through 11 intact. Enforced by the policy
+repo's pre-receive hook: any commit touching `CONSTITUTION.md` must carry a
+valid signature from the operator's key. The proposer cannot open an
+experiment whose diff touches it; the hook is the backstop.
+
+### 6.6 Exit criterion
+
+One full cycle unattended: propose → experiment → decision → ledger, with at
+least one revert having happened. The retro pack, the decision, and the
+ledger entry are all program output; no turn wrote a number.
+
+## 7. Layer 4 — tooling
+
+### 7.1 Script contract
+
+`policy/scripts/<name>.<ext>` with a header:
+
+```
+description: one line, how search finds it
+input:       JSON schema
+examples:    [{input: ..., output: ...}]   # at least one; run at load
+docs:        a paragraph; rendered wherever the script is listed
+tool:        true | false
+```
+
+Admission is by execution: the policy repo's own check runs every example.
+A script whose examples fail does not load. Scripts execute in the sandbox
+with JSON in and JSON out. A WASM tier (wazero) is the eventual home for
+universal scripts; it is not a prerequisite for anything in this document.
+
+### 7.2 The ladder
+
+The engineering fragment states it, and the tools enforce the order:
+
+1. `forge_library` search first. A miss is recorded as a fact `{query,
+   hits}` and the response points at step 2.
+2. A pure function of its input goes through `forge_scratch`: saved, run in
+   the sandbox, counted, searchable. Promotion at a run threshold queues a
+   curation task whose gate is the script contract above.
+3. Repo-local scripts only when the code needs the repo. Committed and wired
+   into `[checks]` or `[regen]`.
+4. A universal script failing in a new environment is logged as a fact
+   `{script, repo, error}` before the agent falls back to step 3.
+
+### 7.3 Recurrence and the toolsmith
+
+A schedule job indexes every registered repository's `scripts/`, `checks/`,
+and `tools/` by normalized name, language, and header comment. Search merges
+the index as kind `repo-script`. A shape present in three repositories, or a
+search miss cluster at a threshold, is the only input to a toolsmith
+directive, which lifts, extends, or fixes one script per run as a proposal
+with a prediction. The toolsmith does not exist until the index has produced
+that signal.
+
+### 7.4 Exit criterion
+
+A library script written by one attempt is found by search and called by a
+later attempt in a different repository, and the facts show it.
+
+## 8. Layer 5 — on trial
+
+Each candidate enters as an experiment arm against the layer 3 baseline and
+stays only if the number says so. Expected to lose more often than win.
+
+| Candidate | Admission test |
+|---|---|
+| Supervise continuations | bench overall at fixed budget vs a single pass |
+| Nested plans | same, on the L-size specs |
+| Director / PM personas | ledger: do their proposals hold more often than the base proposer's |
+| User-trial persona | correlation of its scores with program dimensions and with real user feedback |
+| Request channel (`forge_request`, `friction` field) | count of requests that became a merged script that was later called |
+| Capacity pacing | bench runs per subscription window vs unpaced |
+| Model ladder / escalation | cost per merged task vs single model |
+| Sessionized chat | operator uses it in week two |
+| Workflow graph | any workflow beating the same steps as a directive |
+
+## 9. Ported, changed, left behind
+
+**Ported verbatim**: the constitution; the environment pass-through list;
+verification levels L0–L3; the facts column set (trimmed); the three bench
+specs as content; the policy repo content as the initial policy; STYLE.md's
+gate (vet, staticcheck, errcheck, boundary check).
+
+**Ported with changes**: the gate becomes a pre-receive hook reading the
+base's config; scratch executes only in the sandbox; the retro pack is a
+script; experiments decide by interval and published bar, no posterior
+sampling; subscription capacity awareness returns in layer 5 as a trial.
+
+**Left behind**: the persona org chart as structure (personas are policy
+files that re-earn their place); three process types deployed in lockstep;
+the workflow graph editor; uncertainty sampling and capacity economics until
+the data exists; the operator UI beyond a facts viewer and the question
+queue; plugin system beyond the stdio MCP bridge.
+
+## 10. Sequencing and gates
+
+| Layer | Exit criterion | Budget |
+|---|---|---|
+| 1 work engine | one real repo, seven unattended days, zero forensic failures | 2 weeks |
+| 2 eval | one converted spec, ten runs, noise floor measured | 1 week |
+| 3 loop | one full cycle with a revert, all numbers program-written | 1 week |
+| 4 tooling | a script crosses repositories through search | 1 week |
+| 5 trials | one candidate admitted or rejected by its test | ongoing |
+
+If layer 1 has not run a real repository unattended within two weeks, the
+rebuild is drifting: stop, write down why, and either cut scope or return to
+Forge 1. The old system stays deployed until layer 3's exit criterion is met.
+
+## 11. Open questions
+
+- Sandbox implementation: bubblewrap, a container runtime, or the Claude Code
+  sandbox. Decides how the forwarding socket is done.
+- Whether the worker is a separate process at all, or a goroutine pool in the
+  daemon with the sandbox as the only boundary. Rule 10 prefers fewer
+  processes; the argument for separation is a worker crash not taking the
+  control plane.
+- The equitizr bench contract: how much interface to fix in the spec before
+  the harness can walk the product without over-specifying the product.
+- Judge calibration threshold: at what correlation is the judge column
+  removed.
+- Whether bench roots should be the only enrollment path for experiments, or
+  real repository tasks count once the noise floor is known.
