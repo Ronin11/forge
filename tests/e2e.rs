@@ -439,7 +439,17 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     );
     assert!(String::from_utf8_lossy(&o.stderr).contains("unknown workflow"));
     let o = e.forge("ok.sh", &["workflows"]);
-    assert!(String::from_utf8_lossy(&o.stdout).contains("tests → code"));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("tests → code"), "{out}");
+    assert!(out.contains("cost       2.5x direct (declared)"), "{out}");
+    let o = e.forge("ok.sh", &["workflows", "--json"]);
+    let docs: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(docs[1]["name"], "tdd");
+    assert_eq!(docs[1]["meta"]["cost_factor"], 2.5);
+    assert!(
+        docs[1]["measured"].as_array().unwrap().is_empty(),
+        "nothing measured yet"
+    );
 }
 
 #[test]
@@ -450,8 +460,108 @@ fn a_retry_that_changes_nothing_reports_nothing_and_passes() {
     assert_eq!(a.len(), 2);
     assert_eq!(a[0].1, "agent_failed");
     assert_eq!(a[1].1, "succeeded");
-    assert_eq!(check(&a[1].4, "L0", "changes-match-git"), Some(true), "changes are measured since the attempt started");
-    assert_eq!(check(&a[1].4, "L0", "has-commits"), Some(true), "commits are measured since base");
+    assert_eq!(
+        check(&a[1].4, "L0", "changes-match-git"),
+        Some(true),
+        "changes are measured since the attempt started"
+    );
+    assert_eq!(
+        check(&a[1].4, "L0", "has-commits"),
+        Some(true),
+        "commits are measured since base"
+    );
+}
+
+#[test]
+fn trace_requests_and_stats_expose_the_whole_run() {
+    let e = Env::new();
+    tdd_repo(&e);
+    assert!(!run_tdd(&e, "ok.sh", "greentests.sh", "x").status.success());
+    assert!(
+        !e.run("workflowreq.sh", &["--retries", "0"])
+            .status
+            .success()
+    );
+    assert!(
+        run_tdd(&e, "ok.sh", "testwriter.sh", "make answer.txt contain 42")
+            .status
+            .success()
+    );
+
+    let o = e.forge("ok.sh", &["trace", "1"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("workflow   tdd"), "{out}");
+    assert!(
+        out.contains("| name = \"tdd\""),
+        "the exact workflow text is recorded:\n{out}"
+    );
+    assert!(out.contains("=== attempt 1 [tests] checks_failed"), "{out}");
+    assert!(
+        out.contains("inputs     model=sonnet max_turns=40"),
+        "per-step params are recorded:\n{out}"
+    );
+    assert!(out.contains("verdict    ✗ L1 red-on-base"), "{out}");
+    assert!(
+        out.contains("what       the tests step wrote tests that already pass"),
+        "{out}"
+    );
+    assert!(
+        out.contains("action     Either the task is already done"),
+        "{out}"
+    );
+
+    let o = e.forge("ok.sh", &["trace", "3", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["task"]["state"], "succeeded");
+    assert_eq!(doc["attempts"][0]["inputs"]["step"], "tests");
+    assert!(
+        doc["attempts"][0]["outputs"]["verify_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("verify/3@")
+    );
+    assert_eq!(doc["attempts"][1]["inputs"]["step"], "code");
+    assert_eq!(doc["attempts"][1]["inputs"]["overlay_refs"][0], "verify/3");
+    assert!(
+        doc["attempts"][1]["inputs"]["interface"]
+            .as_str()
+            .unwrap()
+            .contains("answer.txt")
+    );
+    assert_eq!(
+        doc["attempts"][1]["outputs"]["changed_files"][0],
+        "answer.txt"
+    );
+    assert_eq!(
+        doc["attempts"][1]["outputs"]["end_sha"]
+            .as_str()
+            .unwrap()
+            .len(),
+        40
+    );
+    assert_eq!(doc["diagnosis"].as_array().unwrap().len(), 0);
+
+    let o = e.forge("ok.sh", &["requests"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("workflow"), "{out}");
+    assert!(out.contains("This needs a browser e2e step"), "{out}");
+
+    let o = e.forge("ok.sh", &["stats"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("direct"), "{out}");
+    assert!(out.contains("tdd"), "{out}");
+    assert!(out.contains("tests"), "{out}");
+
+    let o = e.forge("ok.sh", &["show", "2"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("action     A workflow request"), "{out}");
+
+    let o = e.forge("ok.sh", &["workflows"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("measured   "),
+        "measured outcomes appear next to declared metadata:\n{out}"
+    );
 }
 
 #[test]

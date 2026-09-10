@@ -49,6 +49,31 @@ struct WorkflowRaw {
     #[serde(default)]
     description: String,
     steps: Vec<StepRaw>,
+    #[serde(default)]
+    meta: Meta,
+}
+
+/// What the author declares about a workflow, for a human or an agent
+/// choosing one. Declared, never measured: measured numbers live in the
+/// stats table and are merged in at read time.
+#[derive(Deserialize, serde::Serialize, Default, Clone, Debug)]
+pub struct Meta {
+    /// When this workflow is the right choice.
+    #[serde(default)]
+    pub use_when: String,
+    /// When it is the wrong choice.
+    #[serde(default)]
+    pub avoid_when: String,
+    /// What the repository or task must provide (e.g. "namespace", "test check").
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Expected cost relative to `direct` (1.0). A rough prior, not a measurement.
+    #[serde(default = "one")]
+    pub cost_factor: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +93,9 @@ pub struct Workflow {
     /// FNV-1a of the file's bytes, 16 hex chars: the version tasks record.
     pub hash: String,
     pub path: PathBuf,
+    /// The file's exact text: recorded on each task so runs stay self-describing.
+    pub text: String,
+    pub meta: Meta,
 }
 
 impl Workflow {
@@ -86,11 +114,30 @@ impl Workflow {
 const BUILTIN: &[(&str, &str)] = &[
     (
         "direct.toml",
-        "name = \"direct\"\ndescription = \"one agent writes the change; the kernel verifies\"\nsteps = [{ kind = \"code\" }]\n",
+        "name = \"direct\"\n\
+description = \"one agent writes the change; the kernel verifies\"\n\
+steps = [{ kind = \"code\" }]\n\
+\n\
+[meta]\n\
+use_when = \"the task is small and precisely described, and the repo's own checks cover it\"\n\
+avoid_when = \"the task's correctness is not captured by existing tests and no --check can express it\"\n\
+requires = []\n\
+cost_factor = 1.0\n",
     ),
     (
         "tdd.toml",
-        "name = \"tdd\"\ndescription = \"one agent writes hidden tests that fail on base; another makes them pass seeing only the interface\"\nsteps = [\n  { kind = \"tests\", max_turns = 40 },\n  { kind = \"code\" },\n]\n",
+        "name = \"tdd\"\n\
+description = \"one agent writes hidden tests that fail on base; another makes them pass seeing only the interface\"\n\
+steps = [\n\
+  { kind = \"tests\", max_turns = 40 },\n\
+  { kind = \"code\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task adds behavior that a test can pin down and the repo's checks would not otherwise catch a wrong implementation\"\n\
+avoid_when = \"the task is a refactor, a rename, docs, or config; or the repo has no test check\"\n\
+requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
+cost_factor = 2.5\n",
     ),
 ];
 
@@ -131,6 +178,8 @@ fn parse(path: &Path, text: &str) -> Result<Workflow> {
         steps,
         hash: fnv1a(text.as_bytes()),
         path: path.to_path_buf(),
+        text: text.to_string(),
+        meta: raw.meta,
     })
 }
 
@@ -176,6 +225,12 @@ mod tests {
         assert_eq!(names, vec!["direct", "tdd"]);
         let tdd = get(dir.path(), "tdd").unwrap().unwrap();
         assert_eq!(tdd.steps_text(), "tests → code");
+        assert_eq!(tdd.meta.cost_factor, 2.5);
+        assert!(tdd.meta.requires.iter().any(|r| r.contains("namespace")));
+        assert_eq!(
+            get(dir.path(), "direct").unwrap().unwrap().meta.cost_factor,
+            1.0
+        );
         assert_eq!(tdd.steps[0].max_turns, Some(40));
         assert_eq!(tdd.hash.len(), 16);
         // Editing the file changes the version.

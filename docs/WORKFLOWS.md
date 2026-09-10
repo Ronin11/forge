@@ -43,7 +43,13 @@ steps = [
 ```
 
 A step is a `kind` from the kernel's closed set plus optional `model`,
-`max_turns`, and `timeout_secs` overriding the task's own. No conditionals,
+`max_turns`, and `timeout_secs` overriding the task's own. A `[meta]`
+table declares what the author knows, for a human or an agent choosing a
+workflow: `use_when`, `avoid_when`, `requires`, and `cost_factor` relative
+to `direct`. Declared only. What is measured, success rate and cost per
+verified success per hash, lives in the stats table and is merged in by
+`forge workflows` and `forge workflows --json`; it is never written into
+the file, where it would drift. No conditionals,
 no variables. A workflow's identity is its name plus a content hash of the
 file; every task records the hash it ran under, so two versions of "tdd"
 are never averaged together. Git versions the file; the hash pins it. Not
@@ -95,6 +101,18 @@ optimization is a table a human reads; later, a policy that picks the
 cheapest workflow that clears a bar. It never changes what verification
 means: a workflow may add verifiers, never remove one, and only the
 kernel's verdict promotes.
+
+## Visibility
+
+Every attempt records `inputs` (workflow and its exact text, step, model,
+turns, timeout, base and start commits, feedback given, interface given,
+overlay refs, whether checks were shown) and `outputs` (end commit, files
+changed, dirty files, verify ref, interface produced) next to its verdict
+rows and envelope. `forge trace <id>` prints the whole run; `--json` is
+the same for tooling. Every terminal failure gets a diagnosis from a table
+in `audit.rs`: what happened and what the operator can do. `forge
+requests` lists blocked tasks, the demand signal. `forge stats` groups
+outcomes by workflow hash and by step.
 
 ## Not built
 

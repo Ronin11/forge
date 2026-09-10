@@ -6,6 +6,7 @@
 //! an `Env` fault means the worker itself cannot do its job and must stop
 //! without blaming the task.
 
+use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, Task, TaskState};
@@ -427,14 +428,24 @@ async fn new_attempt(
     step: Step,
     dir: &Path,
     attempt_no: i64,
+    mut inputs: Inputs,
 ) -> Result<(Attempt, PathBuf), Fault> {
     let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
     let start_sha = git::head(dir).await.task()?;
+    inputs.workflow = t.workflow.clone();
+    inputs.workflow_hash = t.workflow_hash.clone();
+    inputs.step = step.as_str().to_string();
+    inputs.model = t.model.clone();
+    inputs.max_turns = t.max_turns;
+    inputs.timeout_secs = t.timeout_secs;
+    inputs.base_sha = t.base_sha.clone();
+    inputs.start_sha = start_sha.clone();
     let mut a = Attempt {
         task_id: t.id,
         attempt_no,
         step: step.as_str().to_string(),
         start_sha,
+        inputs_json: serde_json::to_string(&inputs).env()?,
         state: AttemptState::Running,
         started_at: unix_now(),
         log_path: log_path.display().to_string(),
@@ -480,12 +491,35 @@ async fn launch(
     Ok(outcome)
 }
 
-fn record(
+async fn record(
     f: &Forge,
     a: &mut Attempt,
+    dir: &Path,
     verdict: &Verdict,
     outcome: &agent::Outcome,
+    verify_ref: Option<String>,
 ) -> Result<(), Fault> {
+    let end_sha = git::head(dir).await.task()?;
+    let outputs = Outputs {
+        end_sha: end_sha.clone(),
+        changed_files: git::changed_paths(dir, &a.start_sha).await.task()?,
+        dirty_files: git::dirty_paths(dir).await.task()?,
+        verify_ref: verify_ref.map(|r| format!("{r}@{end_sha}")),
+        interface: if a.step == "tests" {
+            verdict.envelope.as_ref().map(|e| e.summary.clone())
+        } else {
+            None
+        },
+        summary: verdict
+            .envelope
+            .as_ref()
+            .map(|e| e.summary.clone())
+            .unwrap_or_default(),
+        claims: verdict.envelope.as_ref().map_or(0, |e| e.claims.len()),
+        checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
+    };
+    a.end_sha = end_sha;
+    a.outputs_json = serde_json::to_string(&outputs).env()?;
     a.state = verdict.state;
     a.reason = verdict.reason.clone();
     a.finished_at = Some(unix_now());
@@ -528,16 +562,7 @@ async fn run_code_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
-    let (mut a, log_path) = new_attempt(f, t, Step::Code, wt, attempt_no).await?;
-    let outcome = launch(
-        f,
-        t,
-        Step::Code,
-        wt,
-        &code_prompt(t, cfg, attempt_no, feedback),
-        &log_path,
-    )
-    .await?;
+    let prompt_text = code_prompt(t, cfg, attempt_no, feedback);
     let mut overlay_refs = Vec::new();
     if git::ref_exists(repo, "refs/heads/forge-verify").await {
         overlay_refs.push("forge-verify".to_string());
@@ -546,6 +571,19 @@ async fn run_code_attempt(
     if git::ref_exists(repo, &format!("refs/heads/{own}")).await {
         overlay_refs.push(own);
     }
+    let inputs = Inputs {
+        feedback: feedback.map(str::to_string),
+        interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
+        overlay_refs: overlay_refs.clone(),
+        checks_shown: t.show_checks,
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        prompt_chars: prompt_text.chars().count(),
+        ..Default::default()
+    };
+    let (mut a, log_path) = new_attempt(f, t, Step::Code, wt, attempt_no, inputs).await?;
+    let outcome = launch(f, t, Step::Code, wt, &prompt_text, &log_path).await?;
     let verdict = verify::verify(
         Subject {
             task_id: t.id,
@@ -564,7 +602,7 @@ async fn run_code_attempt(
     )
     .await
     .task()?;
-    record(f, &mut a, &verdict, &outcome)?;
+    record(f, &mut a, wt, &verdict, &outcome, None).await?;
     Ok((a, verdict, outcome))
 }
 
@@ -582,16 +620,17 @@ async fn run_tests_attempt(
             .await
             .task()?;
     }
-    let (mut a, log_path) = new_attempt(f, t, Step::Tests, &dir, attempt_no).await?;
-    let outcome = launch(
-        f,
-        t,
-        Step::Tests,
-        &dir,
-        &tests_prompt(t, cfg, attempt_no, feedback),
-        &log_path,
-    )
-    .await?;
+    let prompt_text = tests_prompt(t, cfg, attempt_no, feedback);
+    let inputs = Inputs {
+        feedback: feedback.map(str::to_string),
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        prompt_chars: prompt_text.chars().count(),
+        ..Default::default()
+    };
+    let (mut a, log_path) = new_attempt(f, t, Step::Tests, &dir, attempt_no, inputs).await?;
+    let outcome = launch(f, t, Step::Tests, &dir, &prompt_text, &log_path).await?;
     let scratch = scratch_dir(&t.worktree);
     let verdict = verify::verify_tests(
         TestsSubject {
@@ -608,6 +647,14 @@ async fn run_tests_attempt(
     )
     .await
     .task()?;
-    record(f, &mut a, &verdict, &outcome)?;
+    record(
+        f,
+        &mut a,
+        &dir,
+        &verdict,
+        &outcome,
+        Some(format!("verify/{}", t.id)),
+    )
+    .await?;
     Ok((a, verdict, outcome))
 }

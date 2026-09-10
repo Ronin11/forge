@@ -127,6 +127,9 @@ pub struct Task {
     pub workflow: String,
     /// Content hash of the workflow file the task ran under.
     pub workflow_hash: String,
+    /// The workflow file's exact text at task creation, so the run is
+    /// self-describing even after the file changes.
+    pub workflow_text: String,
     /// The tests step's summary: what the coder is told about the tests.
     pub interface: String,
     /// Show the L2 acceptance commands to the coder (default hidden).
@@ -141,6 +144,11 @@ pub struct Attempt {
     pub step: String,
     /// HEAD when the attempt started: "what you changed" means since here.
     pub start_sha: String,
+    pub end_sha: String,
+    /// audit::Inputs as JSON: everything the step was given.
+    pub inputs_json: String,
+    /// audit::Outputs as JSON: everything the step produced beyond the verdict.
+    pub outputs_json: String,
     pub state: AttemptState,
     pub reason: String,
     pub started_at: i64,
@@ -169,6 +177,31 @@ pub struct RateLimitSample {
     pub seen_at: i64,
     pub five_hour: Option<f64>,
     pub seven_day: Option<f64>,
+}
+
+pub struct WorkflowStat {
+    pub workflow: String,
+    pub hash: String,
+    pub tasks: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub blocked: i64,
+    pub unverified: i64,
+    pub cost: f64,
+    pub attempts: i64,
+}
+
+pub struct StepStat {
+    pub workflow: String,
+    pub step: String,
+    pub attempts: i64,
+    pub succeeded: i64,
+    pub agent_failed: i64,
+    pub checks_failed: i64,
+    pub needs_input: i64,
+    pub mean_turns: f64,
+    pub cost: f64,
+    pub mean_ms: f64,
 }
 
 pub struct TaskSummary {
@@ -256,11 +289,17 @@ ALTER TABLE attempts ADD COLUMN step TEXT NOT NULL DEFAULT 'code';
 ALTER TABLE attempts ADD COLUMN start_sha TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN workflow_hash TEXT NOT NULL DEFAULT '';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN workflow_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE attempts ADD COLUMN end_sha TEXT NOT NULL DEFAULT '';
+ALTER TABLE attempts ADD COLUMN inputs_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE attempts ADD COLUMN outputs_json TEXT NOT NULL DEFAULT '{}';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -297,12 +336,13 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         interface: r.get(23)?,
         show_checks: r.get::<_, i64>(24)? != 0,
         workflow_hash: r.get(25)?,
+        workflow_text: r.get(26)?,
     })
 }
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -332,6 +372,9 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         rl_seven_day_resets: r.get(23)?,
         step: r.get(24)?,
         start_sha: r.get(25)?,
+        end_sha: r.get(26)?,
+        inputs_json: r.get(27)?,
+        outputs_json: r.get(28)?,
     })
 }
 
@@ -362,8 +405,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 t.repo,
                 t.task,
@@ -378,7 +421,9 @@ impl Store {
                 t.budget_usd,
                 t.allow_protected as i64,
                 t.workflow,
-                t.show_checks as i64
+                t.show_checks as i64,
+                t.workflow_hash,
+                t.workflow_text
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -485,9 +530,9 @@ impl Store {
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha],
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -497,7 +542,7 @@ impl Store {
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
-             rl_seven_day_resets=?20 WHERE id=?1",
+             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -518,7 +563,9 @@ impl Store {
                 a.rl_five_hour,
                 a.rl_seven_day,
                 a.rl_five_hour_resets,
-                a.rl_seven_day_resets
+                a.rl_seven_day_resets,
+                a.end_sha,
+                a.outputs_json
             ],
         )?;
         Ok(())
@@ -587,6 +634,70 @@ impl Store {
             params![id, crate::unix_now()],
         )?;
         Ok(())
+    }
+
+    /// Blocked tasks: the demand signal for workflows and the questions
+    /// waiting on the operator.
+    pub fn blocked(&self) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE state='blocked' ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Outcomes per workflow version: the table that compares workflows.
+    pub fn workflow_stats(&self) -> Result<Vec<WorkflowStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.workflow, t.workflow_hash, COUNT(*),
+                    SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
+                    COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0)
+             FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified')
+             GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(WorkflowStat {
+                workflow: r.get(0)?,
+                hash: r.get(1)?,
+                tasks: r.get(2)?,
+                succeeded: r.get(3)?,
+                failed: r.get(4)?,
+                blocked: r.get(5)?,
+                unverified: r.get(6)?,
+                cost: r.get(7)?,
+                attempts: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Outcomes per workflow step.
+    pub fn step_stats(&self) -> Result<Vec<StepStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.workflow, a.step, COUNT(*), SUM(a.state='succeeded'), SUM(a.state='agent_failed'),
+                    SUM(a.state='checks_failed'), SUM(a.state='needs_input'), AVG(a.num_turns), COALESCE(SUM(a.cost_usd),0), AVG(a.agent_ms)
+             FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
+             GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(StepStat {
+                workflow: r.get(0)?,
+                step: r.get(1)?,
+                attempts: r.get(2)?,
+                succeeded: r.get(3)?,
+                agent_failed: r.get(4)?,
+                checks_failed: r.get(5)?,
+                needs_input: r.get(6)?,
+                mean_turns: r.get(7)?,
+                cost: r.get(8)?,
+                mean_ms: r.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_tasks(&self, limit: u32) -> Result<Vec<TaskSummary>> {

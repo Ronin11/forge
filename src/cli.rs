@@ -1,5 +1,6 @@
 //! Commands and their terminal output. The engine never prints; this does.
 
+use crate::audit;
 use crate::ctx::Forge;
 use crate::store::{Task, TaskState};
 use crate::{config, doctor, engine, git, unix_now, worker, workflows};
@@ -89,8 +90,23 @@ enum Cmd {
     Show { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
     Doctor,
-    /// List the workflows a task can run
-    Workflows,
+    /// List the workflows a task can run, with declared metadata and measured outcomes
+    Workflows {
+        /// Machine-readable, for an agent choosing a workflow
+        #[arg(long)]
+        json: bool,
+    },
+    /// Everything about one task: every step's inputs, outputs, verdict rows, and a diagnosis
+    Trace {
+        id: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Blocked tasks: questions for the operator and workflow requests
+    Requests,
+    /// Outcomes per workflow version and per step
+    Stats,
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -124,35 +140,10 @@ pub async fn main() -> Result<()> {
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
-        Cmd::Workflows => {
-            let f = Forge::open(false, false)?;
-            for w in workflows::load_all(&f.paths.home)? {
-                out!(
-                    "{:<8} {}  {:<16} {}",
-                    w.name,
-                    w.hash,
-                    w.steps_text(),
-                    w.description
-                );
-                for st in &w.steps {
-                    let mut p = Vec::new();
-                    if let Some(m) = &st.model {
-                        p.push(format!("model={m}"));
-                    }
-                    if let Some(n) = st.max_turns {
-                        p.push(format!("max_turns={n}"));
-                    }
-                    if let Some(n) = st.timeout_secs {
-                        p.push(format!("timeout_secs={n}"));
-                    }
-                    if !p.is_empty() {
-                        out!("         {:<8} {}", st.kind.as_str(), p.join(" "));
-                    }
-                }
-                out!("         {}", w.path.display());
-            }
-            Ok(())
-        }
+        Cmd::Trace { id, json } => trace(id, json),
+        Cmd::Requests => requests(),
+        Cmd::Stats => stats(),
+        Cmd::Workflows { json } => list_workflows(json),
     }
 }
 
@@ -216,6 +207,7 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         allow_protected: args.allow_protected,
         workflow: args.workflow.clone(),
         workflow_hash: wf.hash.clone(),
+        workflow_text: wf.text.clone(),
         show_checks: args.show_checks,
         ..Default::default()
     };
@@ -268,6 +260,351 @@ fn run_doctor() -> Result<()> {
     }
     if failed {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn list_workflows(json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let all = workflows::load_all(&f.paths.home)?;
+    let stats = f.store.workflow_stats()?;
+    if json {
+        let docs: Vec<serde_json::Value> = all
+            .iter()
+            .map(|w| {
+                let measured: Vec<serde_json::Value> = stats
+                    .iter()
+                    .filter(|st| st.workflow == w.name)
+                    .map(|st| {
+                        serde_json::json!({
+                            "hash": st.hash, "current": st.hash == w.hash, "tasks": st.tasks, "succeeded": st.succeeded,
+                            "failed": st.failed, "blocked": st.blocked, "unverified": st.unverified, "attempts": st.attempts,
+                            "cost_usd": st.cost,
+                            "success_rate": if st.tasks > 0 { Some(st.succeeded as f64 / st.tasks as f64) } else { None },
+                            "cost_per_success_usd": if st.succeeded > 0 { Some(st.cost / st.succeeded as f64) } else { None },
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": w.name, "hash": w.hash, "description": w.description, "path": w.path,
+                    "steps": w.steps.iter().map(|st| serde_json::json!({"kind": st.kind.as_str(), "model": st.model, "max_turns": st.max_turns, "timeout_secs": st.timeout_secs})).collect::<Vec<_>>(),
+                    "meta": w.meta,
+                    "measured": measured,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&docs)?);
+        return Ok(());
+    }
+    for w in &all {
+        out!(
+            "{:<8} {}  {:<16} {}",
+            w.name,
+            w.hash,
+            w.steps_text(),
+            w.description
+        );
+        for st in &w.steps {
+            let mut p = Vec::new();
+            if let Some(m) = &st.model {
+                p.push(format!("model={m}"));
+            }
+            if let Some(n) = st.max_turns {
+                p.push(format!("max_turns={n}"));
+            }
+            if let Some(n) = st.timeout_secs {
+                p.push(format!("timeout_secs={n}"));
+            }
+            if !p.is_empty() {
+                out!("         {:<8} {}", st.kind.as_str(), p.join(" "));
+            }
+        }
+        out!("         use when   {}", w.meta.use_when);
+        out!("         avoid when {}", w.meta.avoid_when);
+        if !w.meta.requires.is_empty() {
+            out!("         requires   {}", w.meta.requires.join("; "));
+        }
+        out!(
+            "         cost       {:.1}x direct (declared)",
+            w.meta.cost_factor
+        );
+        for st in stats.iter().filter(|st| st.workflow == w.name) {
+            out!(
+                "         measured   {}{}: {} task(s), {} ok, {} failed, {} blocked, ${:.2} total{}",
+                st.hash,
+                if st.hash == w.hash {
+                    ""
+                } else {
+                    " (older version)"
+                },
+                st.tasks,
+                st.succeeded,
+                st.failed,
+                st.blocked,
+                st.cost,
+                if st.succeeded > 0 {
+                    format!(", ${:.2} per success", st.cost / st.succeeded as f64)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        out!("         {}", w.path.display());
+    }
+    Ok(())
+}
+
+fn trace(id: i64, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let Some(t) = f.store.task(id)? else {
+        bail!("no task {id}")
+    };
+    let attempts = f.store.attempts(id)?;
+    let diagnosis = audit::diagnose(&t, &attempts);
+    if json {
+        let atts: Vec<serde_json::Value> = attempts
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "attempt_no": a.attempt_no, "step": a.step, "state": a.state.as_str(), "reason": a.reason,
+                    "started_at": a.started_at, "finished_at": a.finished_at, "agent_exit": a.agent_exit,
+                    "timed_out": a.timed_out, "num_turns": a.num_turns, "tool_calls": a.tool_calls,
+                    "cost_usd": a.cost_usd, "agent_ms": a.agent_ms, "commits": a.commits,
+                    "files_changed": a.files_changed, "dirty": a.dirty, "start_sha": a.start_sha, "end_sha": a.end_sha,
+                    "log_path": a.log_path,
+                    "inputs": serde_json::from_str::<serde_json::Value>(&a.inputs_json).unwrap_or_default(),
+                    "outputs": serde_json::from_str::<serde_json::Value>(&a.outputs_json).unwrap_or_default(),
+                    "verdict": serde_json::from_str::<serde_json::Value>(&a.verdict_json).unwrap_or_default(),
+                    "envelope": serde_json::from_str::<serde_json::Value>(&a.envelope_json).unwrap_or_default(),
+                    "rate_limits": {"five_hour": a.rl_five_hour, "seven_day": a.rl_seven_day},
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "task": {
+                "id": t.id, "repo": t.repo, "text": t.task, "state": t.state.as_str(), "reason": t.reason,
+                "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
+                "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
+                "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected,
+                "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
+                "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
+            },
+            "attempts": atts,
+            "diagnosis": diagnosis.iter().map(|d| serde_json::json!({"what": d.what, "action": d.action})).collect::<Vec<_>>(),
+        });
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    out!("task {}  {}  {}", t.id, t.state.as_str(), t.reason);
+    out!("repo       {}", t.repo);
+    out!(
+        "branch     {} from {} @ {}",
+        t.branch,
+        t.base_branch,
+        t.base_sha
+    );
+    out!("workflow   {} {}", t.workflow, t.workflow_hash);
+    for l in t.workflow_text.lines() {
+        out!("  | {l}");
+    }
+    out!("text       {}", t.task);
+    for a in &attempts {
+        out!();
+        out!(
+            "=== attempt {} [{}] {}{}",
+            a.attempt_no,
+            a.step,
+            a.state.as_str(),
+            if a.reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", a.reason)
+            }
+        );
+        let inputs: audit::Inputs = serde_json::from_str(&a.inputs_json).unwrap_or_default();
+        out!(
+            "inputs     model={} max_turns={} timeout={}s base={} start={}",
+            inputs.model,
+            inputs.max_turns,
+            inputs.timeout_secs,
+            &inputs.base_sha[..inputs.base_sha.len().min(8)],
+            &inputs.start_sha[..inputs.start_sha.len().min(8)]
+        );
+        out!(
+            "           checks_shown={} task_checks={:?} protected={:?} namespace={:?} overlay={:?} prompt_chars={}",
+            inputs.checks_shown,
+            inputs.task_checks,
+            inputs.protected,
+            inputs.namespace,
+            inputs.overlay_refs,
+            inputs.prompt_chars
+        );
+        if let Some(i) = &inputs.interface {
+            out!("interface  {}", i.lines().collect::<Vec<_>>().join(" / "));
+        }
+        if let Some(fb) = &inputs.feedback {
+            out!("feedback   |");
+            for l in fb.lines() {
+                out!("           | {l}");
+            }
+        }
+        out!(
+            "agent      exit {} turns {} tools {} {:.1}s {}{}",
+            a.agent_exit.map_or("-".into(), |v| v.to_string()),
+            a.num_turns,
+            a.tool_calls,
+            a.agent_ms as f64 / 1000.0,
+            a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
+            if a.timed_out { " TIMED OUT" } else { "" }
+        );
+        if let Ok(rows) = serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json) {
+            for c in rows {
+                out!(
+                    "verdict    {} {} {} ({:.1}s){}",
+                    if c.ok { "✓" } else { "✗" },
+                    c.level,
+                    c.name,
+                    c.ms as f64 / 1000.0,
+                    if c.failing_tests.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" failing: {}", c.failing_tests.join(", "))
+                    }
+                );
+                if !c.ok {
+                    for l in crate::checks::last_lines(&c.tail, 40).lines() {
+                        out!("           | {l}");
+                    }
+                }
+            }
+        }
+        let outputs: audit::Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
+        out!(
+            "outputs    end={} changed={:?} dirty={:?} claims={} checks_run={}",
+            &outputs.end_sha[..outputs.end_sha.len().min(8)],
+            outputs.changed_files,
+            outputs.dirty_files,
+            outputs.claims,
+            outputs.checks_run
+        );
+        if let Some(r) = &outputs.verify_ref {
+            out!("           verify_ref={r}");
+        }
+        if !outputs.summary.is_empty() {
+            out!(
+                "summary    {}",
+                outputs.summary.lines().collect::<Vec<_>>().join(" / ")
+            );
+        }
+        out!("log        {}", a.log_path);
+    }
+    for dgn in &diagnosis {
+        out!();
+        out!("what       {}", dgn.what);
+        out!("action     {}", dgn.action);
+    }
+    Ok(())
+}
+
+fn requests() -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let blocked = f.store.blocked()?;
+    if blocked.is_empty() {
+        out!("no blocked tasks");
+        return Ok(());
+    }
+    out!(
+        "{:<5} {:<9} {:<8} {:<18} REQUEST",
+        "ID",
+        "KIND",
+        "WF",
+        "REPO"
+    );
+    for t in blocked {
+        let (kind, text) = match t.reason.split_once(": ") {
+            Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
+            Some(("needs input", rest)) => ("question", rest.to_string()),
+            _ => ("other", t.reason.clone()),
+        };
+        let repo_name = Path::new(&t.repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out!(
+            "{:<5} {:<9} {:<8} {:<18} {}",
+            t.id,
+            kind,
+            t.workflow,
+            repo_name,
+            text
+        );
+    }
+    Ok(())
+}
+
+fn stats() -> Result<()> {
+    let f = Forge::open(false, false)?;
+    out!(
+        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
+        "WF",
+        "HASH",
+        "TASKS",
+        "OK",
+        "FAIL",
+        "BLK",
+        "UNV",
+        "ATT",
+        "COST",
+        "$/OK"
+    );
+    for w in f.store.workflow_stats()? {
+        out!(
+            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
+            w.workflow,
+            w.hash,
+            w.tasks,
+            w.succeeded,
+            w.failed,
+            w.blocked,
+            w.unverified,
+            w.attempts,
+            format!("${:.2}", w.cost),
+            if w.succeeded > 0 {
+                format!("${:.2}", w.cost / w.succeeded as f64)
+            } else {
+                "-".into()
+            }
+        );
+    }
+    out!();
+    out!(
+        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>7} {:>9}",
+        "WF",
+        "STEP",
+        "ATT",
+        "OK",
+        "AGENTF",
+        "CHECKF",
+        "ASK",
+        "TURNS",
+        "SECS",
+        "COST"
+    );
+    for st in f.store.step_stats()? {
+        out!(
+            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>7.0} {:>9}",
+            st.workflow,
+            st.step,
+            st.attempts,
+            st.succeeded,
+            st.agent_failed,
+            st.checks_failed,
+            st.needs_input,
+            st.mean_turns,
+            st.mean_ms / 1000.0,
+            format!("${:.2}", st.cost)
+        );
     }
     Ok(())
 }
@@ -460,6 +797,11 @@ fn show(id: i64) -> Result<()> {
                 .join(" / ");
             out!("  result  {}", first.chars().take(200).collect::<String>());
         }
+    }
+    for dgn in audit::diagnose(&t, &attempts) {
+        out!();
+        out!("what       {}", dgn.what);
+        out!("action     {}", dgn.action);
     }
     Ok(())
 }
