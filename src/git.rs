@@ -35,6 +35,19 @@ pub fn worktree_add(repo: &Path, wt: &Path, branch: &str, base: &str) -> Result<
     Ok(())
 }
 
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+}
+
 pub fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
     git(dir, &["rev-parse", rev])
 }

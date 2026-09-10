@@ -3,6 +3,7 @@
 //! `forge run <repo> "<task>"` creates a worktree, runs the agent in it under
 //! bubblewrap, re-runs the repository's declared checks, retries with the
 //! check output as feedback, pushes on success, and records every attempt.
+//! `forge add` queues the same thing and `forge work` drains the queue.
 
 mod agent;
 mod checks;
@@ -24,21 +25,32 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(clap::Args)]
+struct TaskArgs {
+    /// Path to a git repository containing a forge.toml
+    repo: PathBuf,
+    /// What to do, in plain language
+    task: String,
+    #[arg(long, default_value = "sonnet")]
+    model: String,
+    #[arg(long, default_value_t = 30)]
+    max_turns: u32,
+    /// Extra attempts after a failure, each fed the previous failure
+    #[arg(long, default_value_t = 1)]
+    retries: u32,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Run one task now: worktree → agent → declared checks → retry → push
-    Run {
-        /// Path to a git repository containing a forge.toml
-        repo: PathBuf,
-        /// What to do, in plain language
-        task: String,
-        #[arg(long, default_value = "sonnet")]
-        model: String,
-        #[arg(long, default_value_t = 30)]
-        max_turns: u32,
-        /// Extra attempts after a failure, each fed the previous failure
-        #[arg(long, default_value_t = 1)]
-        retries: u32,
+    Run(TaskArgs),
+    /// Queue a task for `forge work`
+    Add(TaskArgs),
+    /// Run queued tasks one at a time until the queue is empty
+    Work {
+        /// Stop after this many tasks
+        #[arg(long)]
+        max_tasks: Option<u32>,
     },
     /// List tasks, newest first
     Log {
@@ -51,13 +63,9 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Run {
-            repo,
-            task,
-            model,
-            max_turns,
-            retries,
-        } => run(repo, task, model, max_turns, retries),
+        Cmd::Run(args) => run(args),
+        Cmd::Add(args) => add(args),
+        Cmd::Work { max_tasks } => work(max_tasks),
         Cmd::Log { limit } => Store::open(&paths()?.home.join("forge.db"))?.print_log(limit),
         Cmd::Show { id } => Store::open(&paths()?.home.join("forge.db"))?.print_show(id),
     }
@@ -89,7 +97,7 @@ fn paths() -> Result<Paths> {
     Ok(p)
 }
 
-fn unix_now() -> i64 {
+pub fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -120,31 +128,103 @@ fn slug(task: &str) -> String {
         .to_string()
 }
 
-fn run(repo: PathBuf, task: String, model: String, max_turns: u32, retries: u32) -> Result<()> {
-    let repo = repo.canonicalize().context("repo path")?;
+/// Validate the request and insert a queued task. Shared by `run` and `add`.
+fn enqueue(store: &Store, args: &TaskArgs) -> Result<Task> {
+    let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
     }
     let cfg = config::load(&repo)?;
-    let p = paths()?;
-    let store = Store::open(&p.home.join("forge.db"))?;
-    let t = Task {
+    let mut t = Task {
         repo: repo.display().to_string(),
-        task,
+        task: args.task.clone(),
         base_branch: cfg.base_branch.clone(),
-        model,
-        max_turns: max_turns as i64,
-        max_attempts: retries as i64 + 1,
+        model: args.model.clone(),
+        max_turns: args.max_turns as i64,
+        max_attempts: args.retries as i64 + 1,
         state: TaskState::Queued,
         created_at: unix_now(),
         ..Default::default()
     };
-    let id = store.insert_task(&t)?;
-    let state = run_task(&store, &p, id)?;
-    if state != TaskState::Succeeded {
+    t.id = store.insert_task(&t)?;
+    Ok(t)
+}
+
+fn run(args: TaskArgs) -> Result<()> {
+    let p = paths()?;
+    let store = Store::open(&p.home.join("forge.db"))?;
+    let t = enqueue(&store, &args)?;
+    let claimed = store.claim_next(std::process::id() as i64)?;
+    if claimed.as_ref().map(|c| c.id) != Some(t.id) {
+        bail!(
+            "task {} was queued but another worker claimed the queue head first; run `forge work`",
+            t.id
+        );
+    }
+    if drive(&store, &p, t.id) != TaskState::Succeeded {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn add(args: TaskArgs) -> Result<()> {
+    let p = paths()?;
+    let store = Store::open(&p.home.join("forge.db"))?;
+    let t = enqueue(&store, &args)?;
+    println!("queued task {} ({} queued)", t.id, store.queued_count()?);
+    Ok(())
+}
+
+fn pid_alive(pid: i64) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Drain the queue one task at a time. A task that errors is recorded as
+/// failed and the loop moves on; nothing here needs a human to diagnose.
+fn work(max_tasks: Option<u32>) -> Result<()> {
+    let p = paths()?;
+    let store = Store::open(&p.home.join("forge.db"))?;
+    for id in store.requeue_orphans(pid_alive)? {
+        eprintln!("requeued task {id}: its previous worker exited");
+    }
+    let pid = std::process::id() as i64;
+    let (mut done, mut ok) = (0u32, 0u32);
+    while max_tasks.is_none_or(|m| done < m) {
+        let Some(t) = store.claim_next(pid)? else {
+            break;
+        };
+        eprintln!(
+            "======== task {} ({} queued after this)",
+            t.id,
+            store.queued_count()?
+        );
+        if drive(&store, &p, t.id) == TaskState::Succeeded {
+            ok += 1;
+        }
+        done += 1;
+        eprintln!();
+    }
+    eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
+    Ok(())
+}
+
+/// Run a task to a terminal state, turning an internal error into a failed
+/// task with the error as its reason.
+fn drive(store: &Store, p: &Paths, id: i64) -> TaskState {
+    match run_task(store, p, id) {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("ERROR    task {id}: {e:#}");
+            if let Ok(Some(mut t)) = store.task(id) {
+                t.state = TaskState::Failed;
+                t.reason = format!("error: {e:#}");
+                t.finished_at = Some(unix_now());
+                t.worker_pid = None;
+                let _ = store.update_task(&t);
+            }
+            TaskState::Failed
+        }
+    }
 }
 
 /// Drive one task to a terminal state: attempts until one succeeds or the
@@ -158,8 +238,16 @@ fn run_task(store: &Store, p: &Paths, id: i64) -> Result<TaskState> {
 
     t.state = TaskState::Running;
     t.started_at = Some(unix_now());
+    t.worker_pid = Some(std::process::id() as i64);
     if t.worktree.is_empty() {
-        t.branch = format!("forge/{}-{}", t.id, slug(&t.task));
+        let base_name = format!("forge/{}-{}", t.id, slug(&t.task));
+        t.branch = base_name.clone();
+        for k in 2.. {
+            if !git::branch_exists(&repo, &t.branch) {
+                break;
+            }
+            t.branch = format!("{base_name}-{k}");
+        }
         let wt = p.worktrees.join(t.id.to_string());
         git::worktree_add(&repo, &wt, &t.branch, &t.base_branch)?;
         t.base_sha = git::rev_parse(&wt, "HEAD")?;
@@ -254,6 +342,7 @@ fn run_task(store: &Store, p: &Paths, id: i64) -> Result<TaskState> {
         AttemptState::Running => "no attempts ran".into(),
     };
     t.finished_at = Some(unix_now());
+    t.worker_pid = None;
     store.update_task(&t)?;
 
     eprintln!();

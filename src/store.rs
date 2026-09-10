@@ -86,6 +86,7 @@ pub struct Task {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub pushed: bool,
+    pub worker_pid: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -130,7 +131,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at INTEGER NOT NULL,
   started_at INTEGER,
   finished_at INTEGER,
-  pushed INTEGER NOT NULL DEFAULT 0
+  pushed INTEGER NOT NULL DEFAULT 0,
+  worker_pid INTEGER
 );
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY,
@@ -156,7 +158,7 @@ CREATE INDEX IF NOT EXISTS attempts_task ON attempts(task_id, attempt_no);
 
 const TASK_COLS: &str =
     "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
-    state, reason, created_at, started_at, finished_at, pushed";
+    state, reason, created_at, started_at, finished_at, pushed, worker_pid";
 
 fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -176,6 +178,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         started_at: r.get(13)?,
         finished_at: r.get(14)?,
         pushed: r.get::<_, i64>(15)? != 0,
+        worker_pid: r.get(16)?,
     })
 }
 
@@ -224,7 +227,8 @@ impl Store {
 
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.conn.execute(
-            "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8, pushed=?9
+            "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8, pushed=?9,
+             worker_pid=?10
              WHERE id=?1",
             params![
                 t.id,
@@ -235,7 +239,8 @@ impl Store {
                 t.reason,
                 t.started_at,
                 t.finished_at,
-                t.pushed as i64
+                t.pushed as i64,
+                t.worker_pid
             ],
         )?;
         Ok(())
@@ -250,6 +255,61 @@ impl Store {
                 task_from_row,
             )
             .optional()?)
+    }
+
+    /// Atomically take the oldest queued task for this worker.
+    pub fn claim_next(&self, pid: i64) -> Result<Option<Task>> {
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "UPDATE tasks SET state='running', worker_pid=?1, started_at=?2
+                 WHERE id = (SELECT id FROM tasks WHERE state='queued' ORDER BY id LIMIT 1)
+                 RETURNING id",
+                params![pid, crate::unix_now()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => self.task(id),
+            None => Ok(None),
+        }
+    }
+
+    pub fn queued_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tasks WHERE state='queued'", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// Tasks left in `running` by a worker that no longer exists go back to
+    /// the queue; their half-finished attempt is closed as agent_failed so
+    /// the next worker resumes at the following attempt number.
+    pub fn requeue_orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, worker_pid FROM tasks WHERE state='running'")?;
+        let running: Vec<(i64, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut requeued = Vec::new();
+        for (id, pid) in running {
+            if pid.is_some_and(&alive) {
+                continue;
+            }
+            self.conn.execute(
+                "UPDATE attempts SET state='agent_failed', finished_at=?2, result_text='worker exited before the attempt finished'
+                 WHERE task_id=?1 AND state='running'",
+                params![id, crate::unix_now()],
+            )?;
+            self.conn.execute(
+                "UPDATE tasks SET state='queued', worker_pid=NULL, reason='requeued: previous worker exited' WHERE id=?1",
+                params![id],
+            )?;
+            requeued.push(id);
+        }
+        Ok(requeued)
     }
 
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
