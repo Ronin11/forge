@@ -64,6 +64,23 @@ pub fn files_changed(wt: &Path, base_sha: &str) -> Result<i64> {
     Ok(out.lines().filter(|l| !l.is_empty()).count() as i64)
 }
 
+/// Whether the worktree's HEAD is reachable from any remote-tracking ref,
+/// i.e. every commit it added has been published somewhere.
+pub fn remote_contains_head(wt: &Path) -> Result<bool> {
+    Ok(!git(wt, &["branch", "-r", "--contains", "HEAD"])?.is_empty())
+}
+
+pub fn worktree_remove(repo: &Path, wt: &Path) -> Result<()> {
+    let wt_s = wt.to_str().context("worktree path is not UTF-8")?;
+    git(repo, &["worktree", "remove", wt_s])?;
+    Ok(())
+}
+
+pub fn worktree_prune(repo: &Path) -> Result<()> {
+    git(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
 pub fn is_dirty(wt: &Path) -> Result<bool> {
     Ok(!git(wt, &["status", "--porcelain"])?.is_empty())
 }

@@ -62,6 +62,12 @@ enum Cmd {
     },
     /// Show one task and its attempts
     Show { id: i64 },
+    /// Remove worktrees that are clean and whose commits are all on a remote
+    Gc {
+        /// Report what would happen without removing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -71,6 +77,7 @@ fn main() -> Result<()> {
         Cmd::Work { max_tasks } => work(max_tasks),
         Cmd::Log { limit } => Store::open(&paths()?.home.join("forge.db"))?.print_log(limit),
         Cmd::Show { id } => Store::open(&paths()?.home.join("forge.db"))?.print_show(id),
+        Cmd::Gc { dry_run } => gc(dry_run),
     }
 }
 
@@ -249,6 +256,75 @@ fn drive(store: &Store, p: &Paths, id: i64) -> TaskState {
             TaskState::Failed
         }
     }
+}
+
+/// Nothing with unpublished work is deleted. A worktree goes only when it
+/// is clean and every commit it added is reachable from a remote ref (or
+/// it added none). Everything else is kept with the reason and the command
+/// a human would run. Branches are never deleted.
+fn gc(dry_run: bool) -> Result<()> {
+    let p = paths()?;
+    let store = Store::open(&p.home.join("forge.db"))?;
+    let (mut removed, mut kept) = (0, 0);
+    for t in store.tasks_with_worktrees()? {
+        let wt = Path::new(&t.worktree);
+        let repo = Path::new(&t.repo);
+        let verdict: Result<Result<(), String>> = (|| {
+            if !wt.exists() {
+                git::worktree_prune(repo)?;
+                return Ok(Ok(()));
+            }
+            if t.state == TaskState::Running {
+                return Ok(Err("still running".into()));
+            }
+            if git::is_dirty(wt)? {
+                return Ok(Err("uncommitted changes".into()));
+            }
+            let commits = git::count_commits(wt, &t.base_sha)?;
+            if commits > 0 && !git::remote_contains_head(wt)? {
+                return Ok(Err(format!("{commits} commit(s) not on any remote")));
+            }
+            if !dry_run {
+                git::worktree_remove(repo, wt)?;
+            }
+            Ok(Ok(()))
+        })();
+        match verdict {
+            Ok(Ok(())) => {
+                removed += 1;
+                if !dry_run {
+                    store.mark_worktree_removed(t.id)?;
+                }
+                println!(
+                    "task {:<4} {} {}",
+                    t.id,
+                    if dry_run {
+                        "would remove"
+                    } else {
+                        "removed     "
+                    },
+                    t.worktree
+                );
+            }
+            Ok(Err(reason)) => {
+                kept += 1;
+                println!("task {:<4} kept ({reason})", t.id);
+                println!(
+                    "           git -C {} worktree remove --force {}",
+                    t.repo, t.worktree
+                );
+            }
+            Err(e) => {
+                kept += 1;
+                println!("task {:<4} kept (error: {e:#})", t.id);
+            }
+        }
+    }
+    println!(
+        "{} {removed}, kept {kept}",
+        if dry_run { "would remove" } else { "removed" }
+    );
+    Ok(())
 }
 
 /// Drive one task to a terminal state: attempts until one succeeds or the

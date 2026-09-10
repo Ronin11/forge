@@ -89,6 +89,7 @@ pub struct Task {
     pub worker_pid: Option<i64>,
     /// Per-task cap override; `None` means the operator config's default.
     pub budget_usd: Option<f64>,
+    pub worktree_removed_at: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -135,7 +136,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   finished_at INTEGER,
   pushed INTEGER NOT NULL DEFAULT 0,
   worker_pid INTEGER,
-  budget_usd REAL
+  budget_usd REAL,
+  worktree_removed_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY,
@@ -161,7 +163,7 @@ CREATE INDEX IF NOT EXISTS attempts_task ON attempts(task_id, attempt_no);
 
 const TASK_COLS: &str =
     "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
-    state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd";
+    state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd, worktree_removed_at";
 
 fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -183,6 +185,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         pushed: r.get::<_, i64>(15)? != 0,
         worker_pid: r.get(16)?,
         budget_usd: r.get(17)?,
+        worktree_removed_at: r.get(18)?,
     })
 }
 
@@ -375,6 +378,23 @@ impl Store {
         )?)
     }
 
+    /// Tasks whose worktree is still on disk as far as Forge knows.
+    pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE worktree != '' AND worktree_removed_at IS NULL ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
+            params![id, crate::unix_now()],
+        )?;
+        Ok(())
+    }
+
     /// Cost of every attempt started at or after `since`.
     pub fn spent_since(&self, since: i64) -> Result<f64> {
         Ok(self.conn.query_row(
@@ -459,11 +479,16 @@ impl Store {
             if t.pushed { " (pushed)" } else { "" }
         );
         println!(
-            "worktree   {}",
+            "worktree   {}{}",
             if t.worktree.is_empty() {
                 "-"
             } else {
                 &t.worktree
+            },
+            if t.worktree_removed_at.is_some() {
+                " (removed)"
+            } else {
+                ""
             }
         );
         println!(
