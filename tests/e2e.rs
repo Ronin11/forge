@@ -447,7 +447,10 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     assert_eq!(docs["workflows"][1]["name"], "tdd");
     assert_eq!(docs["workflows"][1]["meta"]["cost_factor"], 2.5);
     assert!(
-        docs["workflows"][1]["measured"].as_array().unwrap().is_empty(),
+        docs["workflows"][1]["measured"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
         "nothing measured yet"
     );
 }

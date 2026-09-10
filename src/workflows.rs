@@ -32,6 +32,7 @@ pub enum Kind {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ActionRaw {
     name: String,
     kind: Kind,
@@ -68,6 +69,7 @@ pub struct ActionDef {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 struct StepRaw {
     action: Option<String>,
     workflow: Option<String>,
@@ -79,6 +81,7 @@ struct StepRaw {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkflowRaw {
     name: String,
     #[serde(default)]
@@ -92,6 +95,7 @@ struct WorkflowRaw {
 /// choosing one. Declared, never measured: measured numbers live in the
 /// stats table and are merged in at read time.
 #[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Meta {
     #[serde(default)]
     pub use_when: String,
@@ -878,6 +882,74 @@ mod tests {
                 .iter()
                 .any(|p| p.blocking && p.what.contains("no kernel contract"))
         );
+    }
+
+    #[test]
+    fn typos_are_blocking_and_overrides_have_a_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "actions/typo.toml",
+            "name = \"typo\"\nkind = \"operation\"\ndescription = \"d\"\nrun = [\"true\"]\ntimeout_sec = 5\n",
+        );
+        let problems = check(dir.path()).unwrap();
+        assert!(
+            problems.iter().any(|p| p.blocking
+                && p.file == "actions/typo.toml"
+                && p.what.contains("unknown field")),
+            "{problems:?}"
+        );
+        write(
+            dir.path(),
+            "wtypo.toml",
+            "name = \"wtypo\"\nsteps = [{ action = \"code\", max_turn = 3 }]\n[meta]\nuse_wen = \"x\"\n",
+        );
+        let problems = check(dir.path()).unwrap();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.blocking && p.file == "wtypo.toml"),
+            "{problems:?}"
+        );
+        std::fs::remove_file(dir.path().join("workflows/actions/typo.toml")).unwrap();
+        std::fs::remove_file(dir.path().join("workflows/wtypo.toml")).unwrap();
+        // step override > action default > task default (None here)
+        write(
+            dir.path(),
+            "over.toml",
+            "name = \"over\"\nsteps = [{ action = \"tests\", max_turns = 9, model = \"haiku\" }, { action = \"code\" }]\n",
+        );
+        let r = resolve(dir.path(), "over").unwrap();
+        assert_eq!(r.steps[0].max_turns, Some(9));
+        assert_eq!(r.steps[0].model.as_deref(), Some("haiku"));
+        assert_eq!(r.steps[1].max_turns, None, "the task's own limit applies");
+        // diamond: two paths to the same child splice twice, pin once
+        write(
+            dir.path(),
+            "left.toml",
+            "name = \"left\"\nsteps = [{ workflow = \"direct\" }]\n",
+        );
+        write(
+            dir.path(),
+            "right.toml",
+            "name = \"right\"\nsteps = [{ workflow = \"direct\" }]\n",
+        );
+        write(
+            dir.path(),
+            "diamond.toml",
+            "name = \"diamond\"\nsteps = [{ workflow = \"left\" }, { workflow = \"right\" }]\n",
+        );
+        let r = resolve(dir.path(), "diamond").unwrap();
+        assert_eq!(
+            r.steps
+                .iter()
+                .map(|s| s.action.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["setup", "code", "setup", "code"]
+        );
+        assert_eq!(r.pins.iter().filter(|p| p.name == "direct").count(), 1);
+        assert_eq!(r.pins.iter().filter(|p| p.name == "code").count(), 1);
     }
 
     #[test]
