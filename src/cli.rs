@@ -5,8 +5,18 @@ use crate::store::{Task, TaskState};
 use crate::{config, git, unix_now, worker};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Print to stdout without panicking when the reader has gone away, so
+/// `forge log | head` is quiet.
+macro_rules! out {
+    ($($t:tt)*) => {{
+        let mut o = std::io::stdout().lock();
+        let _ = writeln!(o, $($t)*);
+    }};
+}
 
 #[derive(Parser)]
 #[command(name = "forge", about = "Forge 2")]
@@ -46,9 +56,18 @@ enum Cmd {
     Run(TaskArgs),
     /// Queue a task for `forge work`
     Add(TaskArgs),
-    /// Run queued tasks until the queue is empty
+    /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
-        /// Stop after this many tasks
+        /// Tasks to run at the same time
+        #[arg(long, default_value_t = 1)]
+        jobs: usize,
+        /// Seconds between queue polls when idle
+        #[arg(long, default_value_t = 30)]
+        poll: u64,
+        /// Exit when the queue is empty instead of polling
+        #[arg(long)]
+        once: bool,
+        /// Stop after claiming this many tasks
         #[arg(long)]
         max_tasks: Option<u32>,
     },
@@ -71,8 +90,22 @@ pub async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(args) => run(args).await,
         Cmd::Add(args) => add(args).await,
-        Cmd::Work { max_tasks } => {
-            worker::work(Arc::new(Forge::open(true, false)?), max_tasks).await
+        Cmd::Work {
+            jobs,
+            poll,
+            once,
+            max_tasks,
+        } => {
+            let f = Arc::new(Forge::open(true, jobs > 1)?);
+            worker::work(
+                f,
+                worker::WorkOpts {
+                    jobs,
+                    poll: (!once).then_some(poll),
+                    max_tasks,
+                },
+            )
+            .await
         }
         Cmd::Log { limit } => log(limit),
         Cmd::Show { id } => show(id),
@@ -134,15 +167,20 @@ async fn run(args: TaskArgs) -> Result<()> {
 async fn add(args: TaskArgs) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
-    println!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
     Ok(())
 }
 
 fn log(limit: u32) -> Result<()> {
     let f = Forge::open(false, false)?;
-    println!(
+    out!(
         "{:<5} {:<11} {:<3} {:<8} {:<19} {:<18} TASK",
-        "ID", "STATE", "ATT", "COST", "CREATED", "REPO"
+        "ID",
+        "STATE",
+        "ATT",
+        "COST",
+        "CREATED",
+        "REPO"
     );
     for s in f.store.list_tasks(limit)? {
         let repo_name = Path::new(&s.repo)
@@ -155,7 +193,7 @@ fn log(limit: u32) -> Result<()> {
             .take(50)
             .collect::<String>()
             .replace('\n', " ");
-        println!(
+        out!(
             "{:<5} {:<11} {:<3} {:<8} {:<19} {:<18} {}",
             s.id,
             s.state,
@@ -176,8 +214,8 @@ fn show(id: i64) -> Result<()> {
     };
     let attempts = f.store.attempts(id)?;
     let cost: f64 = attempts.iter().filter_map(|a| a.cost_usd).sum();
-    println!("task       {}", t.id);
-    println!(
+    out!("task       {}", t.id);
+    out!(
         "state      {}{}",
         t.state.as_str(),
         if t.reason.is_empty() {
@@ -186,8 +224,8 @@ fn show(id: i64) -> Result<()> {
             format!(" ({})", t.reason)
         }
     );
-    println!("repo       {}", t.repo);
-    println!(
+    out!("repo       {}", t.repo);
+    out!(
         "base       {} @ {}",
         t.base_branch,
         if t.base_sha.is_empty() {
@@ -196,12 +234,12 @@ fn show(id: i64) -> Result<()> {
             &t.base_sha[..8]
         }
     );
-    println!(
+    out!(
         "branch     {}{}",
         if t.branch.is_empty() { "-" } else { &t.branch },
         if t.pushed { " (pushed)" } else { "" }
     );
-    println!(
+    out!(
         "worktree   {}{}",
         if t.worktree.is_empty() {
             "-"
@@ -214,23 +252,26 @@ fn show(id: i64) -> Result<()> {
             ""
         }
     );
-    println!(
+    out!(
         "model      {} (max {} turns, max {} attempts, {}s timeout)",
-        t.model, t.max_turns, t.max_attempts, t.timeout_secs
+        t.model,
+        t.max_turns,
+        t.max_attempts,
+        t.timeout_secs
     );
-    println!(
+    out!(
         "cost       ${cost:.4} over {} attempt(s){}",
         attempts.len(),
         t.budget_usd
             .map_or(String::new(), |b| format!(" (task cap ${b:.2})"))
     );
     for c in &t.checks {
-        println!("check      $ {c}");
+        out!("check      $ {c}");
     }
-    println!("text       {}", t.task);
+    out!("text       {}", t.task);
     for a in &attempts {
-        println!();
-        println!(
+        out!();
+        out!(
             "attempt {}  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
             a.attempt_no,
             a.state.as_str(),
@@ -255,11 +296,11 @@ fn show(id: i64) -> Result<()> {
             a.files_changed,
             if a.dirty { "  DIRTY" } else { "" }
         );
-        println!("  log     {}", a.log_path);
+        out!("  log     {}", a.log_path);
         if let Ok(checks) = serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
         {
             for c in checks {
-                println!(
+                out!(
                     "  {} {} {} ({:.1}s)",
                     if c.ok { "✓" } else { "✗" },
                     c.level,
@@ -275,7 +316,7 @@ fn show(id: i64) -> Result<()> {
                 .take(3)
                 .collect::<Vec<_>>()
                 .join(" / ");
-            println!("  result  {}", first.chars().take(200).collect::<String>());
+            out!("  result  {}", first.chars().take(200).collect::<String>());
         }
     }
     Ok(())
@@ -318,7 +359,7 @@ async fn gc(dry_run: bool) -> Result<()> {
                 if !dry_run {
                     f.store.mark_worktree_removed(t.id)?;
                 }
-                println!(
+                out!(
                     "task {:<4} {} {}",
                     t.id,
                     if dry_run {
@@ -331,19 +372,20 @@ async fn gc(dry_run: bool) -> Result<()> {
             }
             Ok(Err(reason)) => {
                 kept += 1;
-                println!("task {:<4} kept ({reason})", t.id);
-                println!(
+                out!("task {:<4} kept ({reason})", t.id);
+                out!(
                     "           git -C {} worktree remove --force {}",
-                    t.repo, t.worktree
+                    t.repo,
+                    t.worktree
                 );
             }
             Err(e) => {
                 kept += 1;
-                println!("task {:<4} kept (error: {e:#})", t.id);
+                out!("task {:<4} kept (error: {e:#})", t.id);
             }
         }
     }
-    println!(
+    out!(
         "{} {removed}, kept {kept}",
         if dry_run { "would remove" } else { "removed" }
     );
