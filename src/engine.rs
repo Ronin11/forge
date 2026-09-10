@@ -327,18 +327,37 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         },
                     );
                     let started = unix_now();
-                    let (a, verdict, outcome) = match step.action.name.as_str() {
+                    let (a, verdict, outcome) = match step.action.contract.as_str() {
                         "code" => {
-                            run_code_attempt(&f, &ts, &cfg, seq, attempt_no, feedback.as_deref())
-                                .await?
+                            run_code_attempt(
+                                &f,
+                                &ts,
+                                &cfg,
+                                step,
+                                seq,
+                                attempt_no,
+                                feedback.as_deref(),
+                            )
+                            .await?
                         }
                         "tests" => {
-                            run_tests_attempt(&f, &ts, &cfg, seq, attempt_no, feedback.as_deref())
-                                .await?
+                            run_tests_attempt(
+                                &f,
+                                &ts,
+                                &cfg,
+                                step,
+                                seq,
+                                attempt_no,
+                                feedback.as_deref(),
+                            )
+                            .await?
+                        }
+                        "review" => {
+                            run_review_attempt(&f, &ts, &cfg, step, seq, attempt_no).await?
                         }
                         other => {
                             return Err(Fault::Task(anyhow::anyhow!(
-                                "directive {other:?} has no kernel contract"
+                                "directive contract {other:?} is not enforced by this kernel"
                             )));
                         }
                     };
@@ -360,7 +379,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     last_reason = a.reason.clone();
                     match a.state {
                         AttemptState::Succeeded => {
-                            if step.action.name == "tests" {
+                            if step.action.contract == "tests" {
                                 let tests_dir = tests_clone_dir(&t.worktree);
                                 git::push_to_repo(&tests_dir, &repo, &format!("verify/{}", t.id))
                                     .await
@@ -406,8 +425,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     }
 
     let mut compare: Option<String> = None;
+    let review_demoted =
+        last == AttemptState::NeedsInput && last_reason.starts_with("review demoted");
     if all_ok && budget_stop.is_none() {
         last = AttemptState::Succeeded;
+    }
+    if (all_ok && budget_stop.is_none()) || review_demoted {
         seq += 1;
         if let Some(url) = &remote_url {
             let started = unix_now();
@@ -603,9 +626,31 @@ fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
     p
 }
 
-fn code_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) -> String {
+fn code_prompt(
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    n: i64,
+    feedback: Option<&str>,
+) -> String {
     let l1: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
     let mut p = preamble(t, cfg, &t.branch);
+    if !step.action.paths.is_empty() {
+        p.push_str(&format!(
+            "
+
+This directive may only change these paths: {}. Anything else fails verification.",
+            step.action.paths.join(", ")
+        ));
+    }
+    if !step.action.brief.is_empty() {
+        p.push_str(&format!(
+            "
+
+{}",
+            step.action.brief
+        ));
+    }
     p.push_str(&format!(
         "\n\nAfter you finish, the operator re-runs the repository's declared checks: {}.",
         if l1.is_empty() {
@@ -807,13 +852,14 @@ async fn run_code_attempt(
     f: &Forge,
     t: &Task,
     cfg: &config::Config,
+    step: &ResolvedStep,
     seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
-    let prompt_text = code_prompt(t, cfg, attempt_no, feedback);
+    let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback);
     let mut overlay_refs = Vec::new();
     if git::ref_exists(repo, "refs/heads/forge-verify").await {
         overlay_refs.push("forge-verify".to_string());
@@ -833,8 +879,9 @@ async fn run_code_attempt(
         prompt_chars: prompt_text.chars().count(),
         ..Default::default()
     };
-    let (mut a, log_path) = new_attempt(f, t, "code", seq, wt, attempt_no, inputs).await?;
-    let outcome = launch(f, t, "code", wt, &prompt_text, &log_path).await?;
+    let (mut a, log_path) =
+        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs).await?;
+    let outcome = launch(f, t, &step.action.name, wt, &prompt_text, &log_path).await?;
     let verdict = verify::verify(
         Subject {
             task_id: t.id,
@@ -844,6 +891,7 @@ async fn run_code_attempt(
             start_sha: &a.start_sha,
             cfg,
             task_checks: &t.checks,
+            paths: &step.action.paths,
             allow_protected: t.allow_protected,
             overlay_refs: &overlay_refs,
             sandbox: f.sandbox.as_ref(),
@@ -861,6 +909,7 @@ async fn run_tests_attempt(
     f: &Forge,
     t: &Task,
     cfg: &config::Config,
+    step: &ResolvedStep,
     seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
@@ -881,8 +930,9 @@ async fn run_tests_attempt(
         prompt_chars: prompt_text.chars().count(),
         ..Default::default()
     };
-    let (mut a, log_path) = new_attempt(f, t, "tests", seq, &dir, attempt_no, inputs).await?;
-    let outcome = launch(f, t, "tests", &dir, &prompt_text, &log_path).await?;
+    let (mut a, log_path) =
+        new_attempt(f, t, &step.action.name, seq, &dir, attempt_no, inputs).await?;
+    let outcome = launch(f, t, &step.action.name, &dir, &prompt_text, &log_path).await?;
     let scratch = scratch_dir(&t.worktree);
     let verdict = verify::verify_tests(
         TestsSubject {
@@ -908,5 +958,63 @@ async fn run_tests_attempt(
         Some(format!("verify/{}", t.id)),
     )
     .await?;
+    Ok((a, verdict, outcome))
+}
+
+fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String {
+    let l1: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
+    let mut p = preamble(t, cfg, &t.branch);
+    p.push_str(&format!(
+        "\n\nYou are an independent reviewer. You did not write this change and you have not seen how it was made. \
+         The branch already passes the repository's checks ({}). Your job is to find out whether it actually does what the \
+         task asked, by running it: build it, run the checks yourself, exercise the requested behavior, and look for tests \
+         that were weakened, special-cased, or deleted. Do not change anything and do not commit; the tree must be exactly as \
+         you found it.\n\n\
+         Decide. If you demonstrated a defect by running something, stop with `needs_input` of kind `review`: the question is \
+         the defect and the exact command that shows it. If you found nothing, say so in `summary`, listing what you ran. \
+         Every claim needs evidence that names a command and its output. A demotion without something you executed does \
+         not count.",
+        if l1.is_empty() { "none".to_string() } else { l1.join(", ") }
+    ));
+    if !step.action.brief.is_empty() {
+        p.push_str(&format!("\n\n{}", step.action.brief));
+    }
+    p.push_str(&format!("\n\nThe task that was given:\n{}", t.task));
+    p
+}
+
+async fn run_review_attempt(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    seq: i64,
+    attempt_no: i64,
+) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
+    let wt = Path::new(&t.worktree);
+    let prompt_text = review_prompt(t, cfg, step);
+    let inputs = Inputs {
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        prompt_chars: prompt_text.chars().count(),
+        ..Default::default()
+    };
+    let (mut a, log_path) =
+        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs).await?;
+    let outcome = launch(f, t, &step.action.name, wt, &prompt_text, &log_path).await?;
+    let verdict = verify::verify_review(
+        verify::ReviewSubject {
+            task_id: t.id,
+            worktree: wt,
+            base_sha: &t.base_sha,
+            start_sha: &a.start_sha,
+            report: &f.report,
+        },
+        &outcome,
+    )
+    .await
+    .task()?;
+    record(f, &mut a, wt, &verdict, &outcome, None).await?;
     Ok((a, verdict, outcome))
 }

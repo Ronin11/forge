@@ -444,13 +444,17 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     assert!(out.contains("cost       2.5x direct (declared)"), "{out}");
     let o = e.forge("ok.sh", &["workflows", "--json"]);
     let docs: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(docs["workflows"][1]["name"], "tdd");
-    assert_eq!(docs["workflows"][1]["meta"]["cost_factor"], 2.5);
+    let tdd = docs["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "tdd")
+        .unwrap()
+        .clone();
+    assert_eq!(tdd["name"], "tdd");
+    assert_eq!(tdd["meta"]["cost_factor"], 2.5);
     assert!(
-        docs["workflows"][1]["measured"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
+        tdd["measured"].as_array().unwrap().is_empty(),
         "nothing measured yet"
     );
 }
@@ -914,6 +918,189 @@ fn a_directory_broken_after_queueing_stops_the_worker_and_keeps_the_task() {
     assert!(!o.status.success(), "the worker stops");
     assert!(String::from_utf8_lossy(&o.stderr).contains("workflow directory is broken"));
     assert_eq!(e.task(id).0, "queued", "the task is not blamed");
+}
+
+fn run_wf(e: &Env, coder: &str, extra_env: &[(&str, &str)], workflow: &str, task: &str) -> Output {
+    let mut c = e.cmd(coder);
+    for (k, v) in extra_env {
+        c.env(
+            k,
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(v),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            task,
+            "--workflow",
+            workflow,
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!(
+        "--- {workflow} {coder} ---\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
+
+#[test]
+fn the_review_contract_demotes_only_with_executed_evidence_and_never_writes() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    // 1: a demotion backed by a tool call blocks the task, and the branch is still pushed.
+    assert!(
+        !run_wf(
+            &e,
+            "ok.sh",
+            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+            "reviewed",
+            "write 42"
+        )
+        .status
+        .success()
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.starts_with("review demoted: answer.txt is 42"),
+        "{reason}"
+    );
+    assert!(
+        pushed,
+        "the branch passed the checks; the human needs to see it"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[1].0, 2);
+    assert_eq!(check(&a[1].4, "L0", "no-writes"), Some(true));
+    assert_eq!(check(&a[1].4, "note", "executed-something"), Some(true));
+    let o = e.forge("ok.sh", &["show", "1"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Reviewer precision"));
+    // 2: a demotion with no tool call is an opinion: ignored, task succeeds.
+    assert!(
+        run_wf(
+            &e,
+            "ok.sh",
+            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-lazy.sh")],
+            "reviewed",
+            "write 42"
+        )
+        .status
+        .success()
+    );
+    assert_eq!(e.task(2).0, "succeeded");
+    assert_eq!(
+        check(&e.attempts(2)[1].4, "note", "executed-something"),
+        Some(false)
+    );
+    // 3: a confirming reviewer.
+    assert!(
+        run_wf(
+            &e,
+            "ok.sh",
+            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-ok.sh")],
+            "reviewed",
+            "write 42"
+        )
+        .status
+        .success()
+    );
+    assert_eq!(e.task(3).0, "succeeded");
+    // 4: a reviewer that edits the branch fails L0 and the task.
+    assert!(
+        !run_wf(
+            &e,
+            "ok.sh",
+            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-meddles.sh")],
+            "reviewed",
+            "write 42"
+        )
+        .status
+        .success()
+    );
+    assert_eq!(e.attempts(4)[1].2, "L0 failed: no-writes");
+}
+
+#[test]
+fn the_docs_directive_is_scoped_and_cheap_uses_its_model() {
+    let e = Env::new();
+    // docs: writes only NOTES.md. The test repo's L1 checks require answer.txt, so give the task a --check-free repo:
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "docs-friendly checks"]);
+    assert!(
+        run_wf(&e, "docs-ok.sh", &[], "docs", "add notes")
+            .status
+            .success()
+    );
+    assert_eq!(
+        check(&e.attempts(1)[0].4, "L0", "paths-in-scope"),
+        Some(true)
+    );
+    assert!(
+        e.log_text(1, 1)
+            .contains("may only change these paths: docs/, *.md")
+    );
+    assert!(
+        !run_wf(&e, "docs-violation.sh", &[], "docs", "add notes")
+            .status
+            .success()
+    );
+    let a = e.attempts(2);
+    assert_eq!(a[0].2, "L0 failed: paths-in-scope");
+    assert_eq!(a[0].0, 1);
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    assert_eq!(doc["attempts"][0]["step"], "docs");
+    assert_eq!(doc["attempts"][0]["inputs"]["step"], "docs");
+    // cheap: the fix directive's model and turns reach the launch.
+    assert!(
+        run_wf(&e, "docs-ok.sh", &[], "cheap", "add notes")
+            .status
+            .success()
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
+    assert_eq!(doc["attempts"][0]["inputs"]["model"], "haiku");
+    assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 15);
+    assert_eq!(doc["attempts"][0]["step"], "fix");
+}
+
+#[test]
+fn polish_runs_a_second_code_pass_with_its_brief() {
+    let e = Env::new();
+    assert!(
+        run_wf(
+            &e,
+            "ok.sh",
+            &[("FORGE2_CLAUDE_BIN_POLISH", "noop.sh")],
+            "polish",
+            "write 42"
+        )
+        .status
+        .success()
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[1].1, "succeeded");
+    let p2 = e.log_text(1, 2);
+    assert!(
+        p2.contains("Do not add features or scope"),
+        "the brief reaches the second pass:\n{p2}"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert_eq!(doc["attempts"][1]["step"], "polish");
+    assert_eq!(doc["resolved"]["steps"][2]["action"]["contract"], "code");
 }
 
 #[test]

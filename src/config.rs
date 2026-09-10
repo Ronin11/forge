@@ -50,6 +50,20 @@ pub struct Config {
     pub namespace: Vec<String>,
 }
 
+/// Whether `path` is inside a write scope: a file, a directory with a
+/// trailing slash, or a `*.ext` suffix pattern.
+pub fn in_scope(scope: &[String], path: &str) -> bool {
+    scope.iter().any(|p| {
+        if let Some(suffix) = p.strip_prefix('*') {
+            path.ends_with(suffix)
+        } else if let Some(dir) = p.strip_suffix('/') {
+            path.starts_with(dir) && path[dir.len()..].starts_with('/')
+        } else {
+            p == path
+        }
+    })
+}
+
 /// Whether `path` falls under one of the protected entries.
 pub fn is_protected(protected: &[String], path: &str) -> bool {
     protected.iter().any(|p| {
@@ -217,6 +231,21 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_matches_dirs_files_and_suffixes() {
+        let sc = vec![
+            "docs/".to_string(),
+            "*.md".to_string(),
+            "CHANGELOG".to_string(),
+        ];
+        assert!(in_scope(&sc, "docs/a/b.txt"));
+        assert!(in_scope(&sc, "README.md"));
+        assert!(in_scope(&sc, "src/deep/notes.md"));
+        assert!(in_scope(&sc, "CHANGELOG"));
+        assert!(!in_scope(&sc, "src/main.rs"));
+        assert!(!in_scope(&sc, "docsx/a"));
+    }
 
     #[test]
     fn protected_matches_files_and_directories() {

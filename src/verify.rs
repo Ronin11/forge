@@ -40,6 +40,8 @@ pub struct Subject<'a> {
     pub start_sha: &'a str,
     pub cfg: &'a Config,
     pub task_checks: &'a [String],
+    /// The directive's write scope; empty means anywhere not otherwise forbidden.
+    pub paths: &'a [String],
     pub allow_protected: bool,
     /// Refs whose namespace files are overlaid before L1: `forge-verify`
     /// for standing suites, `verify/<id>` for the task's own tests.
@@ -120,10 +122,10 @@ async fn common_l0(
     ));
     let question = env.as_ref().and_then(|e| e.needs_input.as_ref()).map(|q| {
         (
-            if q.kind == "workflow" {
-                "workflow".to_string()
-            } else {
-                "question".to_string()
+            match q.kind.as_str() {
+                "workflow" => "workflow".to_string(),
+                "review" => "review".to_string(),
+                _ => "question".to_string(),
             },
             q.question.clone(),
         )
@@ -291,6 +293,23 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
                 format!(
                     "protected paths changed: {}. They guard the product; only a task created with --allow-protected may change them.",
                     hit.join(", ")
+                ),
+            ));
+        }
+        if !s.paths.is_empty() {
+            let outside: Vec<&str> = changed
+                .iter()
+                .chain(dirty.iter())
+                .map(String::as_str)
+                .filter(|p| !crate::config::in_scope(s.paths, p))
+                .collect();
+            v.checks.push(l0(
+                "paths-in-scope",
+                outside.is_empty(),
+                format!(
+                    "this directive may only change {}; it changed: {}",
+                    s.paths.join(", "),
+                    outside.join(", ")
                 ),
             ));
         }
@@ -549,6 +568,105 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
     Ok(v)
 }
 
+pub struct ReviewSubject<'a> {
+    pub task_id: i64,
+    pub worktree: &'a Path,
+    pub base_sha: &'a str,
+    pub start_sha: &'a str,
+    pub report: &'a Reporter,
+}
+
+/// The review contract's verdict. The reviewer may not change the branch
+/// (no writes since it started, clean tree). It may demote the task to
+/// human review only with something it executed: a demotion from a
+/// session that ran no tool at all is recorded as a note and does not
+/// stand.
+pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdict> {
+    let agent_reason = agent_failure(agent);
+    let mut v = Verdict {
+        commits: 0,
+        files_changed: 0,
+        dirty: false,
+        envelope: None,
+        checks: Vec::new(),
+        state: AttemptState::Running,
+        reason: String::new(),
+    };
+    let mut question: Option<(String, String)> = None;
+    let (rows, env, q, commits, changed, dirty) = common_l0(
+        s.worktree,
+        s.base_sha,
+        s.start_sha,
+        agent,
+        s.report,
+        s.task_id,
+    )
+    .await?;
+    v.commits = commits;
+    v.files_changed = changed.len() as i64;
+    v.dirty = !dirty.is_empty();
+    if agent_reason.is_none() {
+        v.checks = rows
+            .into_iter()
+            .filter(|r| r.name != "has-commits" && r.name != "changes-match-git")
+            .collect();
+        let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
+        v.checks.push(l0(
+            "no-writes",
+            added.is_empty() && dirty.is_empty(),
+            format!(
+                "the reviewer changed the branch: {}",
+                added
+                    .iter()
+                    .chain(dirty.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
+        v.checks.push(CheckResult {
+            level: "note".into(),
+            name: "executed-something".into(),
+            ok: agent.tool_calls > 0,
+            tail: if agent.tool_calls > 0 { String::new() } else { "the reviewer ran no tool; a review that reads without running is an opinion, so any demotion is ignored".into() },
+            ..Default::default()
+        });
+        emit_rows(s.report, s.task_id, &v.checks);
+        match q {
+            Some((kind, text)) if kind == "review" => {
+                if agent.tool_calls > 0 {
+                    question = Some(("review".into(), text));
+                } else {
+                    s.report.emit(
+                        s.task_id,
+                        Event::Note {
+                            text: &format!(
+                                "review   demotion ignored (no executed evidence): {text}"
+                            ),
+                        },
+                    );
+                }
+            }
+            other => question = other,
+        }
+        v.envelope = env;
+    }
+    let (mut state, mut reason) = decide(
+        agent_reason.as_deref(),
+        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        &v.checks,
+    );
+    // A review runs no checks of its own: the branch was verified before it
+    // started. Nothing to object to means the review passed.
+    if state == AttemptState::Unverified {
+        state = AttemptState::Succeeded;
+        reason = String::new();
+    }
+    v.state = state;
+    v.reason = reason;
+    Ok(v)
+}
+
 /// Why the agent run itself counts as failed, if it does.
 pub fn agent_failure(a: &Outcome) -> Option<String> {
     if a.timed_out {
@@ -578,10 +696,10 @@ pub fn decide(
         return (AttemptState::AgentFailed, why.to_string());
     }
     if let Some((kind, q)) = question {
-        let label = if kind == "workflow" {
-            "needs workflow"
-        } else {
-            "needs input"
+        let label = match kind {
+            "workflow" => "needs workflow",
+            "review" => "review demoted",
+            _ => "needs input",
         };
         return (AttemptState::NeedsInput, format!("{label}: {q}"));
     }
@@ -697,6 +815,13 @@ mod tests {
                 vec![],
                 AttemptState::NeedsInput,
                 "needs workflow: need e2e",
+            ),
+            (
+                None,
+                Some(("review", "off by one")),
+                vec![c("L1", "t", true)],
+                AttemptState::NeedsInput,
+                "review demoted: off by one",
             ),
             (None, None, vec![], AttemptState::Unverified, "no L1 or L2"),
             (

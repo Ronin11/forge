@@ -57,8 +57,10 @@ impl Sandbox {
         let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
         let mut agent_dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut bins = vec![agent_bin.to_string()];
-        if let Ok(b) = std::env::var("FORGE2_CLAUDE_BIN_TESTS") {
-            bins.push(b);
+        for (k, v) in std::env::vars() {
+            if k.starts_with("FORGE2_CLAUDE_BIN_") {
+                bins.push(v);
+            }
         }
         for b in &bins {
             let (named, canonical) = resolve_binary(b)?;

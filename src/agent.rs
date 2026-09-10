@@ -47,15 +47,15 @@ pub fn agent_bin() -> String {
     std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
 }
 
-/// The tests step may run a different agent binary (FORGE2_CLAUDE_BIN_TESTS),
-/// which is how the test suite plays both halves of a TDD pair.
+/// A step may run a different agent binary through FORGE2_CLAUDE_BIN_<STEP>
+/// (upper-cased action name), which is how the test suite plays every
+/// role in a workflow with a different script.
 pub fn agent_bin_for(step: &str) -> String {
-    if step == "tests"
-        && let Ok(b) = std::env::var("FORGE2_CLAUDE_BIN_TESTS")
-    {
-        return b;
-    }
-    agent_bin()
+    let key = format!(
+        "FORGE2_CLAUDE_BIN_{}",
+        step.to_ascii_uppercase().replace('-', "_")
+    );
+    std::env::var(key).unwrap_or_else(|_| agent_bin())
 }
 
 /// The environment the agent and the checks see, sandboxed or not. This is

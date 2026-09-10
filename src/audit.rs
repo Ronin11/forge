@@ -81,6 +81,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             return out;
         }
         TaskState::Blocked => {
+            if t.reason.starts_with("review demoted") {
+                out.push(d(&t.reason, "The reviewer demonstrated a defect. The branch passed the checks and is pushed; look at the command it names, then either fix by re-adding the task or, if the reviewer is wrong, note it and merge. Reviewer precision is measured from what you decide here."));
+                return out;
+            }
             if t.reason.starts_with("needs workflow") {
                 out.push(d(&t.reason, "A workflow request. Add or adjust a workflow file in <FORGE2_HOME>/workflows/ and re-add the task with --workflow."));
             } else {
@@ -266,6 +270,8 @@ mod tests {
         assert!(diagnose(&task(TaskState::Succeeded, ""), &[]).is_empty());
         let b = diagnose(&task(TaskState::Blocked, "needs workflow: e2e"), &[]);
         assert!(b[0].action.contains("workflows/"));
+        let r = diagnose(&task(TaskState::Blocked, "review demoted: off by one"), &[]);
+        assert!(r[0].action.contains("reviewer"), "{r:?}");
         let q = diagnose(&task(TaskState::Blocked, "needs input: which?"), &[]);
         assert!(q[0].action.contains("answer"));
         let u = diagnose(&task(TaskState::Unverified, "no L1 or L2"), &[]);

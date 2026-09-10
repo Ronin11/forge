@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 /// Names the engine inserts itself; a user operation may not shadow them.
 pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "clone"];
 
-/// Directives the kernel has a contract for. A directive file with another
-/// name is a parameter sheet over nothing and is rejected until custom
-/// directives exist (docs/ACTIONS.md).
-pub const KNOWN_DIRECTIVES: &[&str] = &["code", "tests"];
+/// Contracts the kernel enforces for directives. A directive file names
+/// one (default: its own name); any other value is rejected. Many
+/// directives over few contracts (docs/ACTIONS.md).
+pub const KNOWN_CONTRACTS: &[&str] = &["code", "tests", "review"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -49,6 +49,15 @@ struct ActionRaw {
     run: Option<Vec<String>>,
     /// Operation: run the repository's declared check of this name instead.
     check: Option<String>,
+    /// Directive: which kernel contract runs it (default: the name).
+    contract: Option<String>,
+    /// Directive (code contract): paths the agent may change; a file, or a
+    /// directory with a trailing slash, or a suffix like `*.md`.
+    #[serde(default)]
+    paths: Vec<String>,
+    /// Directive: a short instruction appended to the task text.
+    #[serde(default)]
+    brief: String,
 }
 
 /// One action file, one version.
@@ -64,6 +73,9 @@ pub struct ActionDef {
     pub timeout_secs: Option<u32>,
     pub run: Option<Vec<String>>,
     pub check: Option<String>,
+    pub contract: String,
+    pub paths: Vec<String>,
+    pub brief: String,
     pub hash: String,
     pub text: String,
 }
@@ -204,6 +216,48 @@ produces = [\"verify_ref\", \"interface\"]\n\
 max_turns = 40\n",
     ),
     (
+        "review.toml",
+        "name = \"review\"\n\
+kind = \"directive\"\n\
+description = \"an independent session reads and runs the branch; it may not commit; it can only demote the task to human review, and only with something it executed\"\n\
+consumes = [\"branch\", \"verdict\"]\n\
+produces = [\"review\"]\n\
+max_turns = 25\n",
+    ),
+    (
+        "docs.toml",
+        "name = \"docs\"\n\
+kind = \"directive\"\n\
+contract = \"code\"\n\
+description = \"the code contract confined to documentation: only docs/ and Markdown files may change\"\n\
+consumes = [\"branch\"]\n\
+produces = [\"branch\"]\n\
+paths = [\"docs/\", \"*.md\"]\n\
+max_turns = 20\n",
+    ),
+    (
+        "fix.toml",
+        "name = \"fix\"\n\
+kind = \"directive\"\n\
+contract = \"code\"\n\
+description = \"the code contract on a small, fast model with few turns, for tasks that are precisely specified and small\"\n\
+consumes = [\"branch\"]\n\
+produces = [\"branch\"]\n\
+model = \"haiku\"\n\
+max_turns = 15\n",
+    ),
+    (
+        "polish.toml",
+        "name = \"polish\"\n\
+kind = \"directive\"\n\
+contract = \"code\"\n\
+description = \"a second pass over the branch told only to find and fix defects, never to add scope\"\n\
+consumes = [\"branch\", \"verdict\"]\n\
+produces = [\"branch\"]\n\
+brief = \"The change for this task is already on the branch. Do not add features or scope. Read the diff against the base, run the checks, look for defects, missing edge cases, and untested paths, and fix what you find with tests. If you find nothing to fix, commit nothing and say so.\"\n\
+max_turns = 20\n",
+    ),
+    (
         "setup.toml",
         "name = \"setup\"\n\
 kind = \"operation\"\n\
@@ -247,6 +301,83 @@ avoid_when = \"the task is a refactor, a rename, docs, or config; or the repo ha
 requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
 cost_factor = 2.5\n",
     ),
+    (
+        "docs.toml",
+        "name = \"docs\"\n\
+description = \"documentation only: the agent may change docs/ and Markdown files, nothing else\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"docs\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task is documentation, a README, a changelog, or a design note\"\n\
+avoid_when = \"any code has to change; the write scope will fail it\"\n\
+requires = []\n\
+cost_factor = 0.6\n",
+    ),
+    (
+        "cheap.toml",
+        "name = \"cheap\"\n\
+description = \"a small fast model with few turns, for precisely specified small changes\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"fix\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task names the file and the change, and the repo's checks will catch a mistake\"\n\
+avoid_when = \"the task needs design judgment or touches more than a couple of files\"\n\
+requires = []\n\
+cost_factor = 0.3\n",
+    ),
+    (
+        "polish.toml",
+        "name = \"polish\"\n\
+description = \"the change, then a second pass that only finds and fixes defects\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"code\" },\n\
+  { action = \"polish\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task is medium-sized and correctness matters more than cost\"\n\
+avoid_when = \"the task is trivial; the second pass would only burn turns\"\n\
+requires = []\n\
+cost_factor = 1.8\n",
+    ),
+    (
+        "reviewed.toml",
+        "name = \"reviewed\"\n\
+description = \"the change, then an independent reviewer that can only demote to human review with executed evidence\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"code\" },\n\
+  { action = \"review\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task's correctness is not fully captured by tests and a second pair of eyes that runs the code is worth its cost\"\n\
+avoid_when = \"the checks are strong and the task is small; the reviewer adds cost, not signal\"\n\
+requires = []\n\
+cost_factor = 1.7\n",
+    ),
+    (
+        "tdd-reviewed.toml",
+        "name = \"tdd-reviewed\"\n\
+description = \"hidden tests first, the change, then an independent reviewer\"\n\
+steps = [\n\
+  { workflow = \"tdd\" },\n\
+  { action = \"review\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task is important enough for both a hidden specification and a reviewer\"\n\
+avoid_when = \"cost matters; this is the most expensive built-in\"\n\
+requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
+cost_factor = 3.2\n",
+    ),
 ];
 
 fn dir_of(home: &Path) -> PathBuf {
@@ -273,22 +404,18 @@ fn ensure(home: &Path) -> Result<PathBuf> {
             );
         }
     }
-    let has = |d: &Path| {
-        std::fs::read_dir(d)
-            .map(|r| {
-                r.filter_map(|e| e.ok())
-                    .any(|e| e.path().extension().is_some_and(|x| x == "toml"))
-            })
-            .unwrap_or(false)
-    };
-    if !has(&dir) {
-        for (file, text) in BUILTIN_WORKFLOWS {
-            std::fs::write(dir.join(file), text)?;
+    // Built-ins are written when missing and never overwritten: an existing
+    // install gains new built-ins on upgrade and keeps its own edits.
+    for (file, text) in BUILTIN_WORKFLOWS {
+        let p = dir.join(file);
+        if !p.exists() {
+            std::fs::write(&p, text)?;
         }
     }
-    if !has(&actions) {
-        for (file, text) in BUILTIN_ACTIONS {
-            std::fs::write(actions.join(file), text)?;
+    for (file, text) in BUILTIN_ACTIONS {
+        let p = actions.join(file);
+        if !p.exists() {
+            std::fs::write(&p, text)?;
         }
     }
     Ok(dir)
@@ -334,8 +461,32 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
                     path.display()
                 );
             }
+            let contract = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
+            if !KNOWN_CONTRACTS.contains(&contract.as_str()) {
+                bail!(
+                    "{}: directive contract {:?} is not one the kernel enforces (known: {})",
+                    path.display(),
+                    contract,
+                    KNOWN_CONTRACTS.join(", ")
+                );
+            }
+            if !raw.paths.is_empty() && contract != "code" {
+                bail!(
+                    "{}: `paths` applies to the code contract only",
+                    path.display()
+                );
+            }
         }
     }
+    if raw.kind == Kind::Operation
+        && (raw.contract.is_some() || !raw.paths.is_empty() || !raw.brief.is_empty())
+    {
+        bail!(
+            "{}: contract, paths, and brief apply to directives only",
+            path.display()
+        );
+    }
+    let contract = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
     Ok(ActionDef {
         name: raw.name,
         kind: raw.kind,
@@ -347,6 +498,9 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         timeout_secs: raw.timeout_secs,
         run: raw.run,
         check: raw.check,
+        contract,
+        paths: raw.paths,
+        brief: raw.brief,
         hash: blob_hash(dir, path)?,
         text: text.to_string(),
     })
@@ -463,13 +617,7 @@ fn splice(
                     wf.name, name
                 )
             })?;
-            if a.kind == Kind::Directive && !KNOWN_DIRECTIVES.contains(&a.name.as_str()) {
-                bail!(
-                    "directive {:?} has no kernel contract (known: {})",
-                    a.name,
-                    KNOWN_DIRECTIVES.join(", ")
-                );
-            }
+
             let pin = Pin {
                 kind: "action".into(),
                 name: a.name.clone(),
@@ -513,6 +661,9 @@ fn check_flow(steps: &[ResolvedStep]) -> Result<()> {
         }
         if s.action.kind == Kind::Directive {
             have.insert("verdict");
+            if s.action.contract == "review" {
+                have.insert("review");
+            }
         }
     }
     if !steps.iter().any(|s| s.action.kind == Kind::Directive) {
@@ -583,13 +734,7 @@ pub fn check(home: &Path) -> Result<Vec<Problem>> {
                 what: format!("operation {:?} shadows a kernel operation", a.name),
             });
         }
-        if a.kind == Kind::Directive && !KNOWN_DIRECTIVES.contains(&a.name.as_str()) {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: true,
-                what: format!("directive {:?} has no kernel contract (known: {}); custom directives are not supported yet", a.name, KNOWN_DIRECTIVES.join(", ")),
-            });
-        }
+
         if a.max_turns == Some(0) || a.timeout_secs == Some(0) {
             problems.push(Problem {
                 file: file.clone(),
@@ -723,8 +868,19 @@ mod tests {
         let all = load_all(dir.path()).unwrap();
         assert_eq!(
             all.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
-            vec!["direct", "tdd"]
+            vec![
+                "cheap",
+                "direct",
+                "docs",
+                "polish",
+                "reviewed",
+                "tdd",
+                "tdd-reviewed"
+            ]
         );
+        for w in &all {
+            resolve(dir.path(), &w.name).unwrap_or_else(|e| panic!("{}: {e:#}", w.name));
+        }
         let r = resolve(dir.path(), "tdd").unwrap();
         assert_eq!(
             r.steps
@@ -740,6 +896,14 @@ mod tests {
         );
         assert_eq!(r.steps[1].action.kind, Kind::Operation);
         assert_eq!(r.pins.len(), 4, "the workflow and three actions");
+        let rr = resolve(dir.path(), "tdd-reviewed").unwrap();
+        assert_eq!(
+            rr.steps
+                .iter()
+                .map(|s| s.action.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tests", "setup", "code", "review"]
+        );
         assert!(r.pins.iter().all(|p| p.hash.len() == 40), "git blob hashes");
         assert!(check(dir.path()).unwrap().iter().all(|p| !p.blocking));
         // Editing a file changes only its own version.
@@ -861,26 +1025,42 @@ mod tests {
     }
 
     #[test]
-    fn unknown_directives_are_rejected_until_contracts_exist() {
+    fn directives_name_a_kernel_contract() {
         let dir = tempfile::tempdir().unwrap();
         load_all(dir.path()).unwrap();
         write(
             dir.path(),
-            "actions/review.toml",
-            "name = \"review\"\nkind = \"directive\"\ndescription = \"d\"\nconsumes = [\"branch\"]\n",
+            "actions/audit.toml",
+            "name = \"audit\"\nkind = \"directive\"\ndescription = \"d\"\nconsumes = [\"branch\"]\n",
         );
+        let problems = check(dir.path()).unwrap();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.blocking && p.what.contains("not one the kernel enforces")),
+            "{problems:?}"
+        );
+        std::fs::remove_file(dir.path().join("workflows/actions/audit.toml")).unwrap();
         write(
             dir.path(),
-            "rev.toml",
-            "name = \"rev\"\nsteps = [{ action = \"code\" }, { action = \"review\" }]\n",
+            "actions/tidy.toml",
+            "name = \"tidy\"\nkind = \"directive\"\ncontract = \"code\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nproduces = [\"branch\"]\npaths = [\"src/\"]\nbrief = \"only tidy\"\n",
         );
-        let err = resolve(dir.path(), "rev").unwrap_err().to_string();
-        assert!(err.contains("no kernel contract"), "{err}");
+        let a = load_actions(dir.path()).unwrap();
+        assert_eq!(a["tidy"].contract, "code");
+        assert_eq!(a["docs"].paths, vec!["docs/", "*.md"]);
+        assert_eq!(a["polish"].contract, "code");
+        assert!(!a["polish"].brief.is_empty());
+        write(
+            dir.path(),
+            "actions/badpaths.toml",
+            "name = \"badpaths\"\nkind = \"directive\"\ncontract = \"review\"\npaths = [\"x\"]\n",
+        );
         assert!(
             check(dir.path())
                 .unwrap()
                 .iter()
-                .any(|p| p.blocking && p.what.contains("no kernel contract"))
+                .any(|p| p.what.contains("code contract only"))
         );
     }
 

@@ -44,9 +44,26 @@ A directive is a prompt template, a capability set, and a contract.
   `code` adds namespace-untouched.
 - The prompt is the smallest part.
 
-Directives are code-defined for now: `code` and `tests`. Their files carry
-parameters and a description, not prose, and a directive file with any
-other name is rejected by the validator until custom directives exist. A user-authored
+A directive file names its `contract`, the kernel-enforced behavior that
+runs it (default: its own name). Three contracts exist: `code`, `tests`,
+and `review`. Many directives over few contracts: `docs` and `fix` are
+both the `code` contract with different parameters. A file naming any
+other contract is rejected.
+
+Parameters a directive file may carry: `model`, `max_turns`,
+`timeout_secs`; for the `code` contract, `paths`, a write scope that
+becomes the L0 row `paths-in-scope`; and `brief`, a short instruction
+appended to the task. `brief` is the one prose surface, allowed because
+it is versioned, hashed, recorded on every task, and still verified by
+the kernel.
+
+The `review` contract is the executing, demote-only verifier from the
+research: a fresh session in the coder's clone that may not write
+(`no-writes`), must run something (`executed-something`), and may end the
+task as `blocked` for human review with the defect and the command that
+shows it. A demotion from a session that ran no tool is recorded as a
+note and does not stand. The branch is still pushed so the human can
+look. What the human decides is how reviewer precision gets measured. A user-authored
 directive arrives when a workflow request shows the need, with one rule:
 it names the operations that verify its output. The Forge 1 directives
 library was prose agents could also bypass; a directive here is bound to
@@ -88,6 +105,20 @@ forms, one now and one later.
   and a parent step that waits for them and integrates their branches.
   This is how a company works. It needs the merge queue and a budget rule
   that caps the tree, and the inline form is a strict subset of it.
+
+## Built-in workflows
+
+| name | steps | cost factor |
+|---|---|---|
+| `direct` | setup, code | 1.0 |
+| `tdd` | tests, setup, code | 2.5 |
+| `docs` | setup, docs | 0.6 |
+| `cheap` | setup, fix (haiku, 15 turns) | 0.3 |
+| `polish` | setup, code, polish | 1.8 |
+| `reviewed` | setup, code, review | 1.7 |
+| `tdd-reviewed` | (tdd), review | 3.2 |
+
+Each carries `[meta]` saying when to use it and when not.
 
 ## In the file
 
