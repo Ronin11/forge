@@ -1,20 +1,25 @@
-//! Spawn the agent CLI in the worktree and read its stream-json output.
-//! The raw stream is the attempt's log. Numbers Forge records come from the
-//! CLI's accounting or Forge's own clock, never from the model's prose.
+//! Spawn the agent CLI in the worktree and read its stream-json output
+//! under a wall-clock timeout. The raw stream is the attempt's log, prompt
+//! first. Numbers Forge records come from the CLI's accounting or Forge's
+//! own clock, never from the model's prose.
 
+use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 #[derive(Default, Debug)]
 pub struct Outcome {
     pub exit_code: Option<i32>,
+    pub timed_out: bool,
     pub got_result: bool,
     pub is_error: bool,
     pub num_turns: i64,
@@ -24,58 +29,62 @@ pub struct Outcome {
     pub result_text: String,
 }
 
-/// The environment an unsandboxed agent sees. Nothing else from the parent leaks.
-fn passthrough_env() -> Vec<(String, String)> {
+pub fn agent_bin() -> String {
+    std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
+}
+
+/// The environment the agent and the checks see, sandboxed or not. This is
+/// the one list; the sandbox overrides HOME on top of it.
+pub fn agent_env() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(k, _)| {
             matches!(
                 k.as_str(),
-                "PATH" | "HOME" | "USER" | "LANG" | "TERM" | "SSH_AUTH_SOCK" | "CLAUDE_CONFIG_DIR"
-            ) || ["LC_", "XDG_", "ANTHROPIC_"]
-                .iter()
-                .any(|p| k.starts_with(p))
+                "PATH" | "HOME" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR"
+            ) || ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p))
         })
         .collect()
 }
 
+/// A command for `argv` in the worktree, through the sandbox when there is
+/// one, with the agent environment plus `extra_env`.
+pub fn command_in(
+    sandbox: Option<&Sandbox>,
+    worktree: &Path,
+    repo_git_dir: &Path,
+    argv: &[String],
+    extra_env: &[(String, String)],
+) -> std::process::Command {
+    let mut env = agent_env();
+    env.extend(extra_env.iter().cloned());
+    match sandbox {
+        Some(sb) => sb.command(worktree, repo_git_dir, argv, &env),
+        None => {
+            let mut c = std::process::Command::new(&argv[0]);
+            c.args(&argv[1..])
+                .current_dir(worktree)
+                .env_clear()
+                .envs(env);
+            c
+        }
+    }
+}
+
 pub struct Launch<'a> {
+    pub task_id: i64,
     pub worktree: &'a Path,
     pub repo_git_dir: &'a Path,
     pub prompt: &'a str,
     pub model: &'a str,
     pub max_turns: u32,
+    pub timeout: Duration,
     pub log_path: &'a Path,
     pub sandbox: Option<&'a Sandbox>,
+    pub report: &'a Reporter,
 }
 
-/// Git identity for commits made inside the sandbox, where the host's
-/// ~/.gitconfig is invisible. Read from the repository (which includes the
-/// global config) and passed as GIT_CONFIG_* environment.
-fn git_identity(repo_git_dir: &Path) -> Vec<(String, String)> {
-    let get = |key: &str| {
-        Command::new("git")
-            .arg("--git-dir")
-            .arg(repo_git_dir)
-            .args(["config", "--get", key])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-    };
-    let name = get("user.name").unwrap_or_else(|| "Forge".to_string());
-    let email = get("user.email").unwrap_or_else(|| "forge@localhost".to_string());
-    vec![
-        ("GIT_CONFIG_COUNT".into(), "2".into()),
-        ("GIT_CONFIG_KEY_0".into(), "user.name".into()),
-        ("GIT_CONFIG_VALUE_0".into(), name),
-        ("GIT_CONFIG_KEY_1".into(), "user.email".into()),
-        ("GIT_CONFIG_VALUE_1".into(), email),
-    ]
-}
-
-pub fn run(l: Launch) -> Result<Outcome> {
-    let bin = std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
+pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    let bin = agent_bin();
     let argv: Vec<String> = [
         bin.as_str(),
         "--print",
@@ -91,34 +100,32 @@ pub fn run(l: Launch) -> Result<Outcome> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    let identity = crate::git::identity(l.repo_git_dir).await;
     let start = Instant::now();
-    let mut cmd = match l.sandbox {
-        Some(sb) => sb.command(l.worktree, l.repo_git_dir, &argv),
-        None => {
-            let mut c = Command::new(&argv[0]);
-            c.args(&argv[1..])
-                .current_dir(l.worktree)
-                .env_clear()
-                .envs(passthrough_env());
-            c
-        }
-    };
-    cmd.envs(git_identity(l.repo_git_dir));
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawning {bin}"))?;
+    let deadline = tokio::time::Instant::now() + l.timeout;
+    let mut child = Command::from(command_in(
+        l.sandbox,
+        l.worktree,
+        l.repo_git_dir,
+        &argv,
+        &identity,
+    ))
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .with_context(|| format!("spawning {bin}"))?;
 
     {
         let mut stdin = child.stdin.take().context("agent stdin")?;
-        stdin.write_all(l.prompt.as_bytes())?;
+        stdin.write_all(l.prompt.as_bytes()).await?;
+        stdin.shutdown().await?;
     }
     let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_thread = std::thread::spawn(move || {
+    let stderr_task = tokio::spawn(async move {
         let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).ok();
+        BufReader::new(stderr).read_to_string(&mut s).await.ok();
         s
     });
 
@@ -132,43 +139,70 @@ pub fn run(l: Launch) -> Result<Outcome> {
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
     let stdout = child.stdout.take().context("agent stdout")?;
-    for line in BufReader::new(stdout).lines() {
-        let line = line?;
-        writeln!(log, "{line}")?;
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        match v["type"].as_str() {
-            Some("assistant") => {
-                // The CLI repeats a message once per content block; count each
-                // tool_use id once.
-                if let Some(blocks) = v["message"]["content"].as_array() {
-                    for b in blocks {
-                        if b["type"] == "tool_use" {
-                            let id = b["id"].as_str().unwrap_or("").to_string();
-                            if seen_tools.insert(id) {
-                                out.tool_calls += 1;
-                                eprintln!("  ▸ {}", b["name"].as_str().unwrap_or("?"));
+    let mut lines = BufReader::new(stdout).lines();
+
+    let read = async {
+        while let Some(line) = lines.next_line().await? {
+            writeln!(log, "{line}")?;
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match v["type"].as_str() {
+                Some("assistant") => {
+                    // The CLI repeats a message once per content block; count
+                    // each tool_use id once.
+                    if let Some(blocks) = v["message"]["content"].as_array() {
+                        for b in blocks {
+                            if b["type"] == "tool_use" {
+                                let id = b["id"].as_str().unwrap_or("").to_string();
+                                if seen_tools.insert(id) {
+                                    out.tool_calls += 1;
+                                    l.report.emit(
+                                        l.task_id,
+                                        Event::ToolCall {
+                                            name: b["name"].as_str().unwrap_or("?"),
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
                 }
+                Some("result") => {
+                    out.got_result = true;
+                    out.is_error = v["is_error"].as_bool().unwrap_or(false);
+                    out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
+                    out.cost_usd = v["total_cost_usd"].as_f64();
+                    out.result_text = v["result"].as_str().unwrap_or("").to_string();
+                }
+                _ => {}
             }
-            Some("result") => {
-                out.got_result = true;
-                out.is_error = v["is_error"].as_bool().unwrap_or(false);
-                out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
-                out.cost_usd = v["total_cost_usd"].as_f64();
-                out.result_text = v["result"].as_str().unwrap_or("").to_string();
-            }
-            _ => {}
         }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    match tokio::time::timeout_at(deadline, read).await {
+        Ok(r) => {
+            r?;
+            match tokio::time::timeout_at(deadline, child.wait()).await {
+                Ok(status) => out.exit_code = status?.code(),
+                Err(_) => out.timed_out = true,
+            }
+        }
+        Err(_) => out.timed_out = true,
     }
-    let status = child.wait().context("waiting for agent")?;
-    out.exit_code = status.code();
+    if out.timed_out {
+        child.kill().await.ok();
+        child.wait().await.ok();
+        writeln!(
+            log,
+            "{{\"type\":\"forge_timeout\",\"after_secs\":{}}}",
+            l.timeout.as_secs()
+        )?;
+    }
     out.wall_ms = start.elapsed().as_millis();
 
-    let stderr_text = stderr_thread.join().unwrap_or_default();
+    let stderr_text = stderr_task.await.unwrap_or_default();
     if !stderr_text.trim().is_empty() {
         writeln!(
             log,

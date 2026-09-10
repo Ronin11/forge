@@ -1,8 +1,9 @@
-//! The agent runs under bubblewrap. Read-only system, private /tmp, /run
-//! and /proc, a tmpfs $HOME with only the holes the attempt needs: the
-//! worktree, the repository's .git (a worktree cannot commit without it),
-//! the agent binary, and the claude CLI's own state. Nothing else on the
-//! host is visible. Network stays shared: the agent has to reach the API.
+//! The agent and the checks run under bubblewrap. Read-only system, private
+//! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
+//! needs: the worktree, the repository's .git (a worktree cannot commit
+//! without it), the agent binary, and the claude CLI's own state. Nothing
+//! else on the host is visible. Network stays shared: the agent has to
+//! reach the API.
 //!
 //! Sandboxing is on by default and refuses to run without bwrap unless
 //! `FORGE2_SANDBOX=0` is set explicitly.
@@ -44,7 +45,6 @@ impl Sandbox {
     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
     pub fn detect(agent_bin: &str) -> Result<Option<Sandbox>> {
         if std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0") {
-            eprintln!("sandbox  OFF (FORGE2_SANDBOX=0): the agent runs directly on the host");
             return Ok(None);
         }
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
@@ -70,8 +70,15 @@ impl Sandbox {
         }))
     }
 
-    /// Build the bwrap command that runs `argv` inside the worktree.
-    pub fn command(&self, worktree: &Path, repo_git_dir: &Path, argv: &[String]) -> Command {
+    /// Build the bwrap command that runs `argv` inside the worktree with
+    /// exactly `env` (HOME is forced to the tmpfs home).
+    pub fn command(
+        &self,
+        worktree: &Path,
+        repo_git_dir: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Command {
         let mut cmd = Command::new(&self.bwrap);
         cmd.args([
             "--die-with-parent",
@@ -128,13 +135,7 @@ impl Sandbox {
         cmd.arg("--chdir").arg(worktree).arg("--");
         cmd.args(argv);
         cmd.env_clear();
-        for (k, v) in std::env::vars() {
-            let keep = matches!(k.as_str(), "PATH" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR")
-                || ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p));
-            if keep {
-                cmd.env(k, v);
-            }
-        }
+        cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.env("HOME", &self.home);
         cmd
     }
