@@ -112,6 +112,12 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             continue;
         }
         let inputs: Inputs = serde_json::from_str(&a.inputs_json).unwrap_or_default();
+        // Attempts from before inputs were recorded fall back to the task's limit.
+        let limit = if inputs.max_turns > 0 {
+            inputs.max_turns
+        } else {
+            t.max_turns
+        };
         if a.timed_out {
             out.push(d(
                 &format!(
@@ -123,20 +129,7 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                     a.step
                 ),
             ));
-        } else if {
-            // Attempts from before inputs were recorded fall back to the task's limit.
-            let limit = if inputs.max_turns > 0 {
-                inputs.max_turns
-            } else {
-                t.max_turns
-            };
-            limit > 0 && a.num_turns >= limit
-        } {
-            let limit = if inputs.max_turns > 0 {
-                inputs.max_turns
-            } else {
-                t.max_turns
-            };
+        } else if limit > 0 && a.num_turns >= limit {
             out.push(d(
                 &format!("step {} attempt {} hit its turn limit ({} of {})", a.step, a.attempt_no, a.num_turns, limit),
                 &format!("Raise max_turns for the {} step in the workflow file, or make the task smaller.", a.step),
