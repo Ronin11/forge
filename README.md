@@ -1,86 +1,111 @@
 # forge (2)
 
-The Forge rebuild, in Rust. One binary, no daemon.
+The Forge rebuild, in Rust. One binary, no daemon: the worker is the
+long-running process.
 
 ```sh
-forge run  <repo> "<task>"   # do one task now
-forge add  <repo> "<task>"   # queue it
-forge work                   # drain the queue, one task at a time
-forge log                    # tasks, newest first
-forge show <id>              # one task and its attempts
-forge gc                     # remove worktrees that are safe to remove
+forge run  <repo> "<task>" [--check CMD]...   # do one task now
+forge add  <repo> "<task>" [--check CMD]...   # queue it
+forge work [--jobs N] [--poll SECS] [--once]  # run the queue and stay up
+forge log                                     # tasks, newest first
+forge show <id>                               # one task, its attempts, every check
+forge gc [--dry-run]                          # remove worktrees that are safe to remove
 ```
 
-## What a task is
+## What happens to a task
 
-A task is a repo path and a sentence. Forge:
-
-1. Reads `forge.toml` in the repo: a `[checks]` table of argv arrays and an
-   optional `[defaults]` with `base_branch`, `remote` (default `origin`),
-   and `push` (default `true`).
-2. Adds a worktree on branch `forge/<id>-<slug>` from the base branch. The
-   registered checkout is never touched beyond `worktree add`.
-3. Runs `claude --print --output-format stream-json` in the worktree under
-   bubblewrap: read-only system, private `/tmp`, `/run`, `/proc`, a tmpfs
+1. **Create.** `forge.toml` in the repo declares `[checks]` (argv arrays) and
+   optional `[defaults]`: `base_branch`, `remote` (default `origin`), `push`
+   (default `true`), `check_timeout_secs` (default 600). A task may add its
+   own acceptance commands with `--check`. A task nothing would verify, no
+   repo checks and no `--check`, is refused at creation.
+2. **Worktree.** `forge/<id>-<slug>` from the base branch. The registered
+   checkout is never touched beyond `worktree add`. The checks are then read
+   from the base commit, never from the branch under test.
+3. **Agent.** `claude --print --output-format stream-json` in the worktree
+   under bubblewrap: read-only system, private `/tmp` `/run` `/proc`, a tmpfs
    `$HOME` holding only the worktree, the repo's `.git`, the agent binary,
-   and the claude CLI's own state. Network is shared. Nothing else on the
-   host is visible. Git identity is passed in as `GIT_CONFIG_*`.
-4. Counts commits and changed files with git, then re-runs every declared
-   check in the same sandbox. The agent's word is never the verdict.
-5. If a check fails, starts another attempt on the same branch with the
-   failing checks' output in the prompt (`--retries`, default 1). If the
-   agent crashes or hits `--max-turns`, the next attempt is told to
-   continue economically.
-6. On success, pushes the branch to the remote by explicit refspec, never
-   forced, never the base branch. GitHub remotes get a compare URL.
-7. Records every attempt in SQLite. Every number comes from git, the CLI's
-   own accounting, or Forge's clock. The agent's final text is stored as
-   text. Each attempt's raw stream is its log, prompt first.
+   and the claude CLI's state. Network shared. Killed at `--timeout-secs`
+   (default 1800); `--max-turns` (default 30) is the other cliff. The raw
+   stream is the attempt's log, prompt first.
+4. **Verify.** Three levels, each run by Forge after the agent exits, each
+   a row in the attempt's verdict. A level runs only if the one before it
+   passed.
+   - **L0** consistency: clean tree, at least one commit, `forge.toml`
+     untouched.
+   - **L1** the repo's declared checks, in the sandbox, each under
+     `check_timeout_secs`.
+   - **L2** the task's `--check` commands, same treatment.
+5. **Retry.** On failure the next attempt is told exactly which rows failed
+   and their output (`--retries`, default 1), on the same branch. A task
+   stops early when its cost reaches its cap.
+6. **Push.** On a verified success the branch is pushed by explicit refspec,
+   never forced, never the base branch. GitHub remotes get a compare URL.
+7. **Record.** Every attempt is a row: agent exit, timeout, turns, tool
+   calls, cost from the CLI's accounting, wall time from Forge's clock,
+   commits and files from git, and the verdict. The agent's text is stored
+   as text.
 
-Task states: `queued`, `running`, `succeeded`, `failed` (with a reason),
-`unverified` (the repo declared no checks; nothing is pushed). Attempt
-states: `succeeded`, `checks_failed`, `agent_failed`, `unverified`.
+Task states: `queued`, `running`, `succeeded`, `failed` (with the reason),
+`unverified` (nothing verified the work; not pushed). Attempt states:
+`succeeded`, `checks_failed`, `agent_failed`, `unverified`.
 
-## Running unattended
+## The worker
 
-`forge work` claims the oldest queued task, runs it, and repeats until the
-queue is empty, then exits. Run it from a timer. A task that errors
-internally is recorded as failed with the error as its reason and the loop
-moves on. Tasks left `running` by a worker that died are requeued on the
-next start and resume at the following attempt number.
+`forge work` claims the oldest queued task, runs it, and repeats. `--jobs N`
+runs N at once with output prefixed by task id. When the queue is empty it
+polls every `--poll` seconds (default 30); `--once` drains and exits, for a
+timer. Every error is classified: a task fault fails that task with the
+reason and the loop continues; an environment fault (no disk, no bwrap, a
+broken store) puts the task back in the queue and stops the worker, so a
+broken machine never marks a queue of tasks failed. Tasks left `running`
+by a worker that died are requeued at the next start and resume at the
+following attempt number.
+
+Signals: the first SIGINT or SIGTERM stops claiming and lets running
+attempts finish. A second aborts them, the sandbox tree dies with the
+child, and their tasks go back in the queue.
 
 Budgets live in `<FORGE2_HOME>/config.toml`, written with defaults on first
-use:
+use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
+claiming once the rolling 24-hour spend reaches it. `--budget` overrides
+the task cap for one task.
 
-```toml
-[budget]
-per_task_usd = 2.0    # a task stops retrying once its attempts have cost this much
-per_day_usd = 20.0    # no new task is claimed once the last 24 hours cost this much
+## Layout
+
 ```
-
-`--budget` overrides the task cap for one task. A running attempt is never
-killed by the budget; `--max-turns` is its cliff.
-
-`forge gc` removes a worktree only when it is clean and every commit it
-added is on a remote (or it added none). Everything else is kept with the
-reason and the command a human would run. Branches are never deleted.
+src/main.rs     entry, unix_now
+src/cli.rs      commands and all terminal output
+src/ctx.rs      Forge: paths, store, budget, sandbox, reporter, built once
+src/engine.rs   run_task / run_attempt, Fault::{Task, Env}
+src/verify.rs   L0/L1/L2 and the pure verdict table
+src/worker.rs   drive, the queue loop, signals
+src/agent.rs    spawn the CLI, parse stream-json, timeout
+src/checks.rs   run one command as a check under a timeout
+src/sandbox.rs  bubblewrap
+src/git.rs      the few git operations Forge performs
+src/store.rs    SQLite, forward-only migrations by user_version
+src/config.rs   forge.toml and config.toml
+src/report.rs   typed events; the stderr printer is one consumer
+tests/e2e.rs    the real binary against fake agents in tests/fakes/
+```
 
 ## Environment
 
 - `FORGE2_HOME` (default `$XDG_DATA_HOME/forge2` or `~/.local/share/forge2`)
-  holds `forge.db`, `config.toml`, `worktrees/`, and `logs/`. Separate from
+  holds `forge.db`, `config.toml`, `worktrees/`, `logs/`. Separate from
   Forge 1's `FORGE_HOME`.
-- `FORGE2_CLAUDE_BIN` overrides the agent binary. Any program that accepts
-  the same flags and emits stream-json works; the smoke tests use shell
-  scripts.
+- `FORGE2_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
+  same flags and emits stream-json works; the tests use shell scripts.
 - `FORGE2_SANDBOX=0` runs the agent and checks directly on the host.
   Without it, missing `bwrap` is an error.
 
 ## Deliberately absent
 
-No daemon, no sockets, no web UI, no merge queue, no GitHub issue source,
-no supervision, no personas, no plugins, no learning loop, no multiple
-runners. Each is added only when a real run demonstrates the need.
+No web UI, no merge queue, no GitHub issue source, no L2 by an independent
+agent session, no human sign-off queue, no claim-versus-fact comparison of
+what the agent says it ran, no personas, no plugins, no learning loop. Each
+is added only when a real run demonstrates the need.
 
 ```sh
 cargo build --release
