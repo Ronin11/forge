@@ -54,3 +54,47 @@ pub fn files_changed(wt: &Path, base_sha: &str) -> Result<i64> {
 pub fn is_dirty(wt: &Path) -> Result<bool> {
     Ok(!git(wt, &["status", "--porcelain"])?.is_empty())
 }
+
+pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
+    git(repo, &["remote", "get-url", remote]).ok()
+}
+
+/// Push exactly one branch to one remote by explicit refspec. Never forced,
+/// never the base branch, never a deletion. Runs on the host with the
+/// operator's credentials, never inside the sandbox.
+pub fn push(wt: &Path, remote: &str, branch: &str) -> Result<()> {
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    git(wt, &["push", remote, &refspec])?;
+    Ok(())
+}
+
+/// A compare URL for GitHub-shaped remotes; `None` for anything else.
+pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String> {
+    let rest = remote_url
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote_url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote_url.strip_prefix("https://github.com/"))?;
+    let path = rest.trim_end_matches('/').trim_end_matches(".git");
+    Some(format!(
+        "https://github.com/{path}/compare/{base}...{branch}?expand=1"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compare_url;
+
+    #[test]
+    fn github_remotes_get_compare_urls() {
+        let want = "https://github.com/nate/repo/compare/main...forge/7-x?expand=1";
+        for url in ["git@github.com:nate/repo.git", "https://github.com/nate/repo", "ssh://git@github.com/nate/repo.git"] {
+            assert_eq!(compare_url(url, "main", "forge/7-x").as_deref(), Some(want), "{url}");
+        }
+    }
+
+    #[test]
+    fn other_remotes_get_none() {
+        assert_eq!(compare_url("/srv/git/repo.git", "main", "b"), None);
+        assert_eq!(compare_url("git@gitlab.com:nate/repo.git", "main", "b"), None);
+    }
+}

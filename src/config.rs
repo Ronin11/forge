@@ -17,11 +17,16 @@ struct Raw {
 #[derive(Deserialize, Default)]
 struct Defaults {
     base_branch: Option<String>,
+    remote: Option<String>,
+    push: Option<bool>,
 }
 
 pub struct Config {
     pub checks: BTreeMap<String, Vec<String>>,
     pub base_branch: String,
+    /// Remote to push succeeded branches to; `None` when the repo has no
+    /// such remote or `push = false`.
+    pub push_remote: Option<String>,
 }
 
 pub fn load(repo: &Path) -> Result<Config> {
@@ -42,8 +47,16 @@ pub fn load(repo: &Path) -> Result<Config> {
         Some(b) => b,
         None => crate::git::current_branch(repo)?,
     };
+    let remote = raw.defaults.remote.unwrap_or_else(|| "origin".to_string());
+    let push_remote =
+        if raw.defaults.push.unwrap_or(true) && crate::git::remote_url(repo, &remote).is_some() {
+            Some(remote)
+        } else {
+            None
+        };
     Ok(Config {
         checks: raw.checks,
         base_branch,
+        push_remote,
     })
 }

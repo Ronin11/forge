@@ -58,6 +58,7 @@ pub struct Attempt {
     pub dirty: bool,
     pub checks_json: String,
     pub result_text: String,
+    pub pushed: bool,
 }
 
 pub struct Store {
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS attempts (
   files_changed INTEGER NOT NULL DEFAULT 0,
   dirty INTEGER NOT NULL DEFAULT 0,
   checks_json TEXT NOT NULL DEFAULT '[]',
-  result_text TEXT NOT NULL DEFAULT ''
+  result_text TEXT NOT NULL DEFAULT '',
+  pushed INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -109,7 +111,8 @@ impl Store {
     pub fn finish(&self, a: &Attempt) -> Result<()> {
         self.conn.execute(
             "UPDATE attempts SET state=?2, finished_at=?3, agent_exit=?4, num_turns=?5, tool_calls=?6,
-             cost_usd=?7, agent_ms=?8, commits=?9, files_changed=?10, dirty=?11, checks_json=?12, result_text=?13
+             cost_usd=?7, agent_ms=?8, commits=?9, files_changed=?10, dirty=?11, checks_json=?12, result_text=?13,
+             pushed=?14
              WHERE id=?1",
             params![
                 a.id,
@@ -124,7 +127,8 @@ impl Store {
                 a.files_changed,
                 a.dirty as i64,
                 a.checks_json,
-                a.result_text
+                a.result_text,
+                a.pushed as i64
             ],
         )?;
         Ok(())
@@ -178,7 +182,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT id, repo, task, branch, worktree, base_sha, model, state, started_at, finished_at, agent_exit,
-                        num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, checks_json, result_text
+                        num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, checks_json, result_text, pushed
                  FROM attempts WHERE id=?1",
                 params![id],
                 |r| {
@@ -203,6 +207,7 @@ impl Store {
                         dirty: r.get::<_, i64>(17)? != 0,
                         checks_json: r.get(18)?,
                         result_text: r.get(19)?,
+                        pushed: r.get::<_, i64>(20)? != 0,
                     })
                 },
             )
@@ -211,7 +216,11 @@ impl Store {
         println!("id            {}", a.id);
         println!("state         {}", a.state.as_str());
         println!("repo          {}", a.repo);
-        println!("branch        {}", a.branch);
+        println!(
+            "branch        {}{}",
+            a.branch,
+            if a.pushed { " (pushed)" } else { "" }
+        );
         println!("worktree      {}", a.worktree);
         println!("base          {}", a.base_sha);
         println!("model         {}", a.model);

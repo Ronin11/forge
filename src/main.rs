@@ -203,11 +203,31 @@ fn run(repo: PathBuf, task: String, model: String, max_turns: u32) -> Result<()>
     attempt.dirty = dirty;
     attempt.checks_json = serde_json::to_string(&results)?;
     attempt.result_text = outcome.result_text;
+
+    let mut compare: Option<String> = None;
+    if attempt.state == store::State::Succeeded {
+        if let Some(remote) = &cfg.push_remote {
+            match git::push(&wt, remote, &branch) {
+                Ok(()) => {
+                    attempt.pushed = true;
+                    compare = git::remote_url(&repo, remote)
+                        .and_then(|u| git::compare_url(&u, &cfg.base_branch, &branch));
+                    eprintln!("pushed   {remote}/{branch}");
+                }
+                Err(e) => eprintln!("push     FAILED: {e:#}"),
+            }
+        } else {
+            eprintln!("push     skipped (no remote configured)");
+        }
+    }
     store.finish(&attempt)?;
 
     eprintln!();
     eprintln!("{}  {id}", attempt.state.as_str().to_uppercase());
     eprintln!("  branch   {branch}");
+    if let Some(u) = compare {
+        eprintln!("  compare  {u}");
+    }
     eprintln!("  log      {}", log_path.display());
     eprintln!(
         "  remove   git -C {} worktree remove {}",
