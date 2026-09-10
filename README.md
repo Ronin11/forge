@@ -92,6 +92,18 @@ use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
 claiming once the rolling 24-hour spend reaches it. `--budget` overrides
 the task cap for one task.
 
+The same file's `[sandbox]` section lists what the sandbox exposes beyond
+the attempt's own holes. `ro_paths` (default `~/.local/share/mise`) are
+toolchains bound read-only, since `$HOME` is otherwise empty in there and
+a node or cargo installed under it would be invisible. `rw_paths` (default
+`~/.npm`, `~/.cargo/registry`, `~/.cargo/git`) are package caches bound
+read-write and shared across attempts; lockfile integrity is what makes
+that safe. Paths that do not exist are skipped.
+
+A check named `setup` runs before the others and gates them: if it fails,
+nothing else runs. Its outputs (`node_modules`, `target`) must be
+gitignored, or the next attempt fails L0 for a dirty tree.
+
 ## Layout
 
 ```
