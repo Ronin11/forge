@@ -43,7 +43,14 @@ pub async fn ref_exists(repo: &Path, full_ref: &str) -> bool {
 /// task branch, with no remote at all: the agent inside cannot fetch
 /// anything, in particular not the verification refs. Forge pushes by URL.
 /// Returns the base commit.
-pub async fn clone_task(repo: &Path, base: &str, dir: &Path, branch: &str) -> Result<String> {
+pub async fn clone_task(
+    repo: &Path,
+    base: &str,
+    dir: &Path,
+    branch: &str,
+    at_ref: Option<&str>,
+    at_sha: Option<&str>,
+) -> Result<String> {
     let dir_s = dir.to_str().context("clone path is not UTF-8")?;
     let repo_s = repo.to_str().context("repo path is not UTF-8")?;
     let out = Command::new("git")
@@ -66,10 +73,249 @@ pub async fn clone_task(repo: &Path, base: &str, dir: &Path, branch: &str) -> Re
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
+    // The base as the remote has it, not as the registered checkout has it;
+    // a recorded sha wins over the ref, so every clone of one task agrees.
+    match (at_ref, at_sha) {
+        (Some(r), sha) => {
+            let fetched = git(dir, &["fetch", "--quiet", repo_s, r]).await.is_ok();
+            match (fetched, sha) {
+                (true, Some(sha)) | (false, Some(sha)) => {
+                    git(dir, &["reset", "--hard", "--quiet", sha]).await?;
+                }
+                (true, None) => {
+                    git(dir, &["reset", "--hard", "--quiet", "FETCH_HEAD"]).await?;
+                }
+                (false, None) => bail!("fetch of {r} from {} failed", repo.display()),
+            }
+        }
+        (None, Some(sha)) => {
+            git(dir, &["reset", "--hard", "--quiet", sha]).await?;
+        }
+        (None, None) => {}
+    }
     let base_sha = git(dir, &["rev-parse", "HEAD"]).await?;
     git(dir, &["checkout", "--quiet", "-b", branch]).await?;
     git(dir, &["remote", "remove", "origin"]).await?;
     Ok(base_sha)
+}
+
+/// Bring one branch of a remote up to date in the registered checkout's
+/// remote-tracking refs, without touching any local branch. The sha.
+pub async fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<String> {
+    git(repo, &["fetch", "--quiet", remote, branch]).await?;
+    git(
+        repo,
+        &["rev-parse", &format!("refs/remotes/{remote}/{branch}")],
+    )
+    .await
+}
+
+pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
+    git(repo, &["rev-parse", "--verify", "--quiet", rev]).await
+}
+
+/// Put a commit of `repo` into the task's clone as a local branch, so an
+/// agent with no remote can merge it. Forced: the branch is the kernel's.
+pub async fn place_branch(repo: &Path, dir: &Path, sha: &str, branch: &str) -> Result<()> {
+    let dir_s = dir.to_str().context("clone path is not UTF-8")?;
+    let refspec = format!("+{sha}:refs/heads/{branch}");
+    git(repo, &["push", "--quiet", dir_s, &refspec]).await?;
+    Ok(())
+}
+
+pub enum Merge {
+    /// Already contained the commit; nothing to do.
+    UpToDate,
+    /// Merged cleanly; the new HEAD.
+    Merged(String),
+    /// Conflicts, aborted; the tree is as it was.
+    Conflict(Vec<String>),
+}
+
+/// Merge `rev` into the current branch as Forge. A conflict is aborted and
+/// reported, never left in the tree.
+pub async fn merge(dir: &Path, rev: &str, message: &str) -> Result<Merge> {
+    if git(dir, &["merge-base", "--is-ancestor", rev, "HEAD"])
+        .await
+        .is_ok()
+    {
+        return Ok(Merge::UpToDate);
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Forge", "-c", "user.email=forge@localhost"])
+        .args(["merge", "--quiet", "--no-edit", "-m", message, rev])
+        .output()
+        .await?;
+    if out.status.success() {
+        return Ok(Merge::Merged(git(dir, &["rev-parse", "HEAD"]).await?));
+    }
+    let conflicted: Vec<String> = git(dir, &["diff", "--name-only", "--diff-filter=U"])
+        .await
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let _ = git(dir, &["merge", "--abort"]).await;
+    if conflicted.is_empty() {
+        bail!(
+            "git merge of {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(Merge::Conflict(conflicted))
+}
+
+pub async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
+    git(dir, &["merge-base", "--is-ancestor", ancestor, descendant])
+        .await
+        .is_ok()
+}
+
+/// Fast-forward `branch` on the remote to the clone's HEAD. Never forced:
+/// a branch that moved underneath rejects the push and the caller retries.
+pub async fn push_head_to(wt: &Path, url: &str, branch: &str) -> Result<()> {
+    let refspec = format!("HEAD:refs/heads/{branch}");
+    git(wt, &["push", "--quiet", url, &refspec]).await?;
+    Ok(())
+}
+
+/// Files whose net change on the branch differs between two bases: what a
+/// merge or a conflict resolution actually did, as opposed to what it
+/// brought in from the other side. A file's net change is its diff from
+/// the base to the tip; the same diff against the new base means the
+/// merge only carried the file through.
+pub async fn net_changes(
+    wt: &Path,
+    old_base: &str,
+    old_tip: &str,
+    new_base: &str,
+    new_tip: &str,
+) -> Result<Vec<String>> {
+    let before = changed_paths_between(wt, old_base, old_tip).await?;
+    let after = changed_paths_between(wt, new_base, new_tip).await?;
+    let mut files: Vec<String> = before.iter().chain(after.iter()).cloned().collect();
+    files.sort();
+    files.dedup();
+    let mut out = Vec::new();
+    for f in files {
+        let a = file_patch(wt, old_base, old_tip, &f).await?;
+        let b = file_patch(wt, new_base, new_tip, &f).await?;
+        if a != b {
+            out.push(f);
+        }
+    }
+    Ok(out)
+}
+
+async fn changed_paths_between(wt: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+    let out = git(wt, &["diff", "--name-only", from, to]).await?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// One file's patch between two commits, without the volatile index line.
+async fn file_patch(wt: &Path, from: &str, to: &str, path: &str) -> Result<String> {
+    let out = git(wt, &["diff", from, to, "--", path]).await?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.starts_with("index "))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Copy `files` as they are at `from_ref` onto the tip of `branch` as one
+/// commit, creating the branch from an empty tree when it does not exist.
+/// Plumbing only: no checkout, no working tree. The new commit, or `None`
+/// when the branch already had exactly those contents.
+pub async fn graft(
+    repo: &Path,
+    from_ref: &str,
+    files: &[String],
+    branch: &str,
+    message: &str,
+) -> Result<Option<String>> {
+    let full = format!("refs/heads/{branch}");
+    let parent = git(repo, &["rev-parse", "--verify", "--quiet", &full])
+        .await
+        .ok();
+    let index = repo
+        .join(".git")
+        .join(format!("forge-graft-{}.index", std::process::id()));
+    let index_s = index
+        .to_str()
+        .context("index path is not UTF-8")?
+        .to_string();
+    let _ = std::fs::remove_file(&index);
+    let env = [("GIT_INDEX_FILE", index_s.as_str())];
+    let run = |args: Vec<String>| async move {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=Forge", "-c", "user.email=forge@localhost"])
+            .args(&args)
+            .envs(env)
+            .output()
+            .await?;
+        if !out.status.success() {
+            bail!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok::<String, anyhow::Error>(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let result: Result<Option<String>> = async {
+        match &parent {
+            Some(p) => {
+                run(vec!["read-tree".into(), p.clone()]).await?;
+            }
+            None => {
+                run(vec!["read-tree".into(), "--empty".into()]).await?;
+            }
+        }
+        for f in files {
+            let entry = git(repo, &["ls-tree", from_ref, "--", f]).await?;
+            // "<mode> blob <sha>\t<path>"
+            let Some((meta, _)) = entry.split_once('\t') else {
+                continue;
+            };
+            let parts: Vec<&str> = meta.split_whitespace().collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            run(vec![
+                "update-index".into(),
+                "--add".into(),
+                "--cacheinfo".into(),
+                format!("{},{},{}", parts[0], parts[2], f),
+            ])
+            .await?;
+        }
+        let tree = run(vec!["write-tree".into()]).await?;
+        if let Some(p) = &parent
+            && git(repo, &["rev-parse", &format!("{p}^{{tree}}")]).await? == tree
+        {
+            return Ok(None);
+        }
+        let mut args = vec!["commit-tree".into(), tree, "-m".into(), message.to_string()];
+        if let Some(p) = &parent {
+            args.push("-p".into());
+            args.push(p.clone());
+        }
+        let commit = run(args).await?;
+        git(repo, &["update-ref", &full, &commit]).await?;
+        Ok(Some(commit))
+    }
+    .await;
+    let _ = std::fs::remove_file(&index);
+    result
 }
 
 /// Stage everything and commit as Forge, for what an operation changed.

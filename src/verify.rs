@@ -46,6 +46,10 @@ pub struct Subject<'a> {
     /// Refs whose namespace files are overlaid before L1: `forge-verify`
     /// for standing suites, `verify/<id>` for the task's own tests.
     pub overlay_refs: &'a [String],
+    /// The base branch's current tip, once landing found the branch behind
+    /// it. When HEAD contains it, the branch is measured against it: the
+    /// merge carried the base's changes, the agent did not make them.
+    pub pending_main: Option<&'a str>,
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
 }
@@ -80,6 +84,7 @@ async fn common_l0(
     worktree: &Path,
     base_sha: &str,
     start_sha: &str,
+    pending_main: Option<&str>,
     agent: &Outcome,
     report: &Reporter,
     task_id: i64,
@@ -91,11 +96,24 @@ async fn common_l0(
     Vec<String>,
     Vec<String>,
 )> {
-    let commits = crate::git::count_commits(worktree, base_sha).await?;
-    let changed = crate::git::changed_paths(worktree, base_sha).await?;
+    // A branch that merged the moved base is measured from there.
+    let merged_main = match pending_main {
+        Some(m) if crate::git::is_ancestor(worktree, m, "HEAD").await => Some(m),
+        _ => None,
+    };
+    let base_now = merged_main.unwrap_or(base_sha);
+    let commits = crate::git::count_commits(worktree, base_now).await?;
+    let changed = crate::git::changed_paths(worktree, base_now).await?;
     // What this attempt changed: since it started, not since base, so a
-    // retry that adds nothing reports nothing and is right.
-    let changed_this_attempt = crate::git::changed_paths(worktree, start_sha).await?;
+    // retry that adds nothing reports nothing and is right. An attempt that
+    // merged the base in is credited with what it resolved, not with what
+    // the merge carried.
+    let changed_this_attempt = match merged_main {
+        Some(m) if !crate::git::is_ancestor(worktree, m, start_sha).await => {
+            crate::git::net_changes(worktree, base_sha, start_sha, m, "HEAD").await?
+        }
+        _ => crate::git::changed_paths(worktree, start_sha).await?,
+    };
     let dirty = crate::git::dirty_paths(worktree).await?;
     report.emit(
         task_id,
@@ -269,6 +287,7 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         s.worktree,
         s.base_sha,
         s.start_sha,
+        s.pending_main,
         agent,
         s.report,
         s.task_id,
@@ -493,6 +512,36 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
     Ok(v)
 }
 
+/// Landing: the branch with the base merged in, run through every check
+/// with every hidden suite overlaid. No agent, so no result contract; the
+/// tree must be clean and the checks green.
+pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
+    let mut v = Verdict {
+        commits: crate::git::count_commits(s.worktree, s.base_sha).await?,
+        files_changed: 0,
+        dirty: false,
+        envelope: None,
+        checks: Vec::new(),
+        state: AttemptState::Running,
+        reason: String::new(),
+    };
+    let dirty = crate::git::dirty_paths(s.worktree).await?;
+    v.dirty = !dirty.is_empty();
+    v.checks.push(l0(
+        "clean-tree",
+        dirty.is_empty(),
+        format!("uncommitted after the merge: {}", dirty.join(", ")),
+    ));
+    emit_rows(s.report, s.task_id, &v.checks);
+    if v.checks.iter().all(|c| c.ok) {
+        l1_l2(s, None, &mut v.checks).await?;
+    }
+    let (state, reason) = decide(None, None, &v.checks);
+    v.state = state;
+    v.reason = reason;
+    Ok(v)
+}
+
 pub struct TestsSubject<'a> {
     pub task_id: i64,
     /// The tests step's own clone.
@@ -526,6 +575,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         s.worktree,
         s.base_sha,
         s.start_sha,
+        None,
         agent,
         s.report,
         s.task_id,
@@ -661,6 +711,7 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
         s.worktree,
         s.base_sha,
         s.start_sha,
+        None,
         agent,
         s.report,
         s.task_id,

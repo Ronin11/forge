@@ -59,6 +59,9 @@ pub struct TaskArgs {
     /// Show the --check commands to the coder (hidden by default)
     #[arg(long)]
     show_checks: bool,
+    /// Leave the verified branch pushed for a human instead of landing it on the base branch
+    #[arg(long)]
+    no_land: bool,
 }
 
 #[derive(Subcommand)]
@@ -221,6 +224,7 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         workflow_hash: wf.hash.clone(),
         workflow_text: wf.text.clone(),
         show_checks: args.show_checks,
+        land: !args.no_land,
         ..Default::default()
     };
     t.id = f.store.insert_task(&t)?;
@@ -484,7 +488,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land,
                 "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -838,6 +842,9 @@ fn show(id: i64) -> Result<()> {
     }
     if t.allow_protected {
         out!("protected  changes allowed");
+    }
+    if !t.land {
+        out!("land       manual: the verified branch is left for a human");
     }
     out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {

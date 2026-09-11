@@ -110,6 +110,12 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             "Raise --budget for the task or per_task_usd in config.toml, or split the task.",
         ));
     }
+    if t.reason.starts_with("landing failed") {
+        out.push(d(
+            &t.reason,
+            "The branch verified on its own but could not land: the base kept moving, or with the base merged in a conflict or a failing check outlived the coder's attempts. Read the integrate rows in the trace; re-add the task once the base is quiet, or merge by hand.",
+        ));
+    }
     if t.reason.starts_with("check ") && t.reason.contains("inside the verification namespace") {
         out.push(d(
             &t.reason,

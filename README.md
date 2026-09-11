@@ -63,15 +63,20 @@ forge doctor                                  # can this machine run attempts; i
 5. **Retry.** On failure the next attempt is told exactly which rows failed
    and their output (`--retries`, default 1), on the same branch. A task
    stops early when its cost reaches its cap.
-6. **Push.** On a verified success the branch is pushed by explicit refspec,
-   never forced, never the base branch. GitHub remotes get a compare URL.
+6. **Land.** On a verified success the kernel brings the base branch in
+   as it is now on the remote, re-verifies the merged tree with every
+   hidden suite, pushes the branch by explicit refspec, and fast-forwards
+   the base; one landing at a time per repository. A conflict or a check
+   that fails only with the base merged goes back to the coder as a
+   retry. `--no-land` leaves the verified branch pushed for a human.
+   See docs/ACTIONS.md, "Landing".
 7. **Record.** Every attempt is a row: agent exit, timeout, turns, tool
    calls, cost from the CLI's accounting, wall time from Forge's clock,
    commits and files from git, and the verdict. The agent's text is stored
    as text.
 
 Task states: `queued`, `running`, `succeeded`, `failed` (with the reason),
-`unverified` (nothing verified the work; not pushed), `blocked` (the agent
+`unverified` (nothing verified the work, or only the reviewer failed; pushed in the latter case), `blocked` (the agent
 asked a question or for another workflow). Attempt states:
 `succeeded`, `checks_failed`, `agent_failed`, `unverified`.
 

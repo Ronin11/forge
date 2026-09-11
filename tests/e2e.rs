@@ -97,7 +97,12 @@ impl Env {
     }
 
     fn run(&self, fake: &str, extra: &[&str]) -> Output {
-        let mut args = vec!["run", self.repo.to_str().unwrap(), "write 42 to answer.txt"];
+        let mut args = vec![
+            "run",
+            self.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+        ];
         args.extend_from_slice(extra);
         self.forge(fake, &args)
     }
@@ -327,6 +332,7 @@ fn run_tdd(e: &Env, coder: &str, writer: &str, task: &str) -> Output {
     let o = c
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             task,
             "--workflow",
@@ -619,6 +625,7 @@ fn operations_run_in_order_and_appear_as_rows() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42 to answer.txt",
             "--workflow",
@@ -681,6 +688,7 @@ fn operations_run_in_order_and_appear_as_rows() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42",
             "--workflow",
@@ -714,6 +722,7 @@ fn operations_run_in_order_and_appear_as_rows() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42",
             "--workflow",
@@ -745,6 +754,7 @@ fn inline_composition_runs_the_child_and_records_every_pin() {
     let o = c
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "make answer.txt contain 42",
             "--workflow",
@@ -795,6 +805,7 @@ fn a_resumed_task_keeps_the_versions_it_resolved() {
         .cmd("hang.sh")
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "x",
             "--retries",
@@ -930,6 +941,7 @@ fn run_wf(e: &Env, coder: &str, extra_env: &[(&str, &str)], workflow: &str, task
     let o = c
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             task,
             "--workflow",
@@ -1163,6 +1175,7 @@ fn a_verifying_operation_sends_its_failure_back_to_the_coder() {
         "feedbackcoder.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42",
             "--workflow",
@@ -1224,6 +1237,7 @@ fn a_verifying_operation_sends_its_failure_back_to_the_coder() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42 again",
             "--workflow",
@@ -1276,6 +1290,7 @@ fn an_overlaying_operation_sees_the_hidden_suite() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42",
             "--workflow",
@@ -1322,6 +1337,7 @@ fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
     let o = c
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42",
             "--workflow",
@@ -1352,6 +1368,7 @@ fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
     let o = c
         .args([
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42 again",
             "--workflow",
@@ -1399,6 +1416,360 @@ fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
     let o = e.forge("ok.sh", &["show", "1"]);
     assert!(
         String::from_utf8_lossy(&o.stdout).contains("only the reviewer failed to reach a verdict")
+    );
+}
+
+fn origin_sha(e: &Env, branch: &str) -> String {
+    let o = Command::new("git")
+        .args([
+            "--git-dir",
+            e.origin.to_str().unwrap(),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+fn origin_file(e: &Env, branch: &str, path: &str) -> Option<String> {
+    let o = Command::new("git")
+        .args([
+            "--git-dir",
+            e.origin.to_str().unwrap(),
+            "show",
+            &format!("{branch}:{path}"),
+        ])
+        .output()
+        .unwrap();
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["trace", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_verified_task_lands_on_the_base_and_the_next_task_starts_from_it() {
+    let e = Env::new();
+    assert_eq!(origin_sha(&e, "main"), "", "the remote has no main yet");
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    let main = origin_sha(&e, "main");
+    assert_eq!(
+        main,
+        origin_sha(&e, "forge/1-write-42"),
+        "main fast-forwarded to the branch"
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    assert_eq!(
+        op_names(&e, 1),
+        vec![
+            ("clone".into(), true),
+            ("setup".into(), true),
+            ("verify".into(), true),
+            ("integrate".into(), true),
+            ("push".into(), true),
+            ("land".into(), true)
+        ]
+    );
+    // The registered checkout's own main is untouched: it is the operator's.
+    assert_ne!(git(&e.repo, &["rev-parse", "main"]), main);
+    // The next task starts from the remote's main, which has the answer.
+    let o = e.forge(
+        "addfile.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "add extra",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let base: String = e
+        .db()
+        .query_row("SELECT base_sha FROM tasks WHERE id=2", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(base, main, "task 2 started from what task 1 landed");
+    assert_eq!(
+        origin_file(&e, "main", "extra.txt").as_deref(),
+        Some("extra\n")
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    let o = e.forge("ok.sh", &["show", "1"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("landed main @"));
+}
+
+#[test]
+fn no_land_leaves_the_verified_branch_for_a_human() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded");
+    assert!(!reason.starts_with("landed"), "{reason}");
+    assert!(pushed);
+    assert_eq!(origin_sha(&e, "main"), "", "main was not created");
+    assert!(
+        op_names(&e, 1)
+            .iter()
+            .all(|(n, _)| n != "integrate" && n != "land")
+    );
+    let o = e.forge("ok.sh", &["show", "1"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("land       manual"));
+}
+
+#[test]
+fn a_conflicting_landing_goes_back_to_the_coder_who_merges_the_base() {
+    let e = Env::new();
+    // Any non-empty answer will do: the two tasks disagree on it.
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -s answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "any answer"]);
+    let a = e.add(&["--retries", "1"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 43 to answer.txt",
+            "--retries",
+            "1",
+        ],
+    );
+    assert!(o.status.success());
+    let o = e.forge("echoanswer.sh", &["work", "--once", "--jobs", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    for id in [a, 2] {
+        let (state, reason, _) = e.task(id);
+        assert_eq!(state, "succeeded", "task {id}: {reason}");
+        assert!(reason.starts_with("landed main @ "), "{reason}");
+    }
+    // One of them found main moved, conflicted, and its coder merged.
+    let conflicted: Vec<i64> = [a, 2]
+        .into_iter()
+        .filter(|&id| {
+            op_names(&e, id)
+                .iter()
+                .any(|(n, ok)| n == "integrate" && !ok)
+        })
+        .collect();
+    assert_eq!(conflicted.len(), 1, "{err}");
+    let id = conflicted[0];
+    assert_eq!(e.attempts(id).len(), 2, "the coder ran once more to merge");
+    assert!(
+        e.log_text(id, 2).contains("git merge forge/main"),
+        "the coder was told how"
+    );
+    let ops = op_names(&e, id);
+    let names: Vec<&str> = ops.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "clone",
+            "setup",
+            "verify",
+            "integrate",
+            "verify",
+            "integrate",
+            "push",
+            "land"
+        ],
+        "{ops:?}"
+    );
+    // main holds both landings, the second as a merge.
+    let merges = Command::new("git")
+        .args([
+            "--git-dir",
+            e.origin.to_str().unwrap(),
+            "rev-list",
+            "--merges",
+            "--count",
+            "main",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&merges.stdout).trim(), "1");
+    let answer = origin_file(&e, "main", "answer.txt").unwrap();
+    assert!(answer == "42\n" || answer == "43\n", "{answer}");
+}
+
+#[test]
+fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
+    let e = Env::new();
+    tdd_repo(&e);
+    // The coder is slow enough for main to move underneath it.
+    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh");
+    let mut c = e.cmd("slowfeedback.sh");
+    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let child = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "tdd",
+            "--retries",
+            "1",
+        ])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Once the task has cloned its base, main gains a check the branch does not satisfy.
+    let t0 = Instant::now();
+    loop {
+        let base: Option<String> = e
+            .home
+            .join("forge.db")
+            .exists()
+            .then(|| {
+                e.db()
+                    .query_row(
+                        "SELECT base_sha FROM tasks WHERE id=1 AND base_sha != ''",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .ok()
+            })
+            .flatten();
+        if base.is_some() {
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the task never cloned"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let other = e.repo.parent().unwrap().join("other");
+    let o = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            e.repo.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    let toml = std::fs::read_to_string(other.join("forge.toml")).unwrap();
+    std::fs::write(
+        other.join("forge.toml"),
+        toml.replace(
+            "[checks]\n",
+            "[checks]\nextra = [\"bash\", \"-c\", \"test -f extra.txt\"]\n",
+        ),
+    )
+    .unwrap();
+    git(&other, &["config", "user.name", "Other"]);
+    git(&other, &["config", "user.email", "other@example.com"]);
+    git(&other, &["commit", "-qam", "main now wants extra.txt"]);
+    git(
+        &other,
+        &["push", "-q", e.origin.to_str().unwrap(), "main:main"],
+    );
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(err.contains("integrate merged main @"), "{err}");
+    assert!(
+        err.contains("L1 failed: extra"),
+        "the merged tree was verified against main's checks: {err}"
+    );
+    assert!(
+        err.contains("land     back to code for another attempt"),
+        "{err}"
+    );
+    assert!(
+        e.log_text(1, 3).contains("verification fails"),
+        "the coder saw why"
+    );
+    let names: Vec<String> = op_names(&e, 1).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        names,
+        vec![
+            "clone",
+            "verify",
+            "setup",
+            "verify",
+            "integrate",
+            "verify",
+            "integrate",
+            "push",
+            "land"
+        ],
+        "{names:?}"
+    );
+    assert_eq!(
+        origin_file(&e, "main", "extra.txt").as_deref(),
+        Some("extra\n")
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    // The task's hidden test joined the standing suite, locally and on the remote.
+    assert!(
+        git(
+            &e.repo,
+            &[
+                "ls-tree",
+                "--name-only",
+                "forge-verify",
+                "tests/acceptance/"
+            ]
+        )
+        .contains("tests/acceptance/answer.sh")
+    );
+    assert!(origin_file(&e, "forge-verify", "tests/acceptance/answer.sh").is_some());
+    assert!(
+        err.contains("1 hidden test file(s) folded into forge-verify"),
+        "{err}"
     );
 }
 
@@ -1849,6 +2220,7 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42 to answer.txt",
             "--workflow",
@@ -1877,6 +2249,7 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
         "ok.sh",
         &[
             "run",
+            "--no-land",
             e.repo.to_str().unwrap(),
             "write 42 to answer.txt",
             "--workflow",
@@ -1917,6 +2290,7 @@ fn a_mutating_operation_is_committed_and_verified_by_the_kernel() {
             "ok.sh",
             &[
                 "run",
+                "--no-land",
                 e.repo.to_str().unwrap(),
                 task,
                 "--workflow",

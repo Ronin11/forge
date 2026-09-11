@@ -137,6 +137,9 @@ pub struct Task {
     pub interface: String,
     /// Show the L2 acceptance commands to the coder (default hidden).
     pub show_checks: bool,
+    /// Land on the base branch once verified (the default); false leaves
+    /// the verified branch pushed for a human to merge.
+    pub land: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -339,11 +342,14 @@ CREATE INDEX ops_task ON ops(task_id, id);
     "
 ALTER TABLE ops ADD COLUMN output TEXT NOT NULL DEFAULT '';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN land INTEGER NOT NULL DEFAULT 1;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -382,6 +388,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         workflow_hash: r.get(25)?,
         workflow_text: r.get(26)?,
         actions_json: r.get(27)?,
+        land: r.get::<_, i64>(28)? != 0,
     })
 }
 
@@ -451,8 +458,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 t.repo,
                 t.task,
@@ -469,7 +476,8 @@ impl Store {
                 t.workflow,
                 t.show_checks as i64,
                 t.workflow_hash,
-                t.workflow_text
+                t.workflow_text,
+                t.land as i64
             ],
         )?;
         Ok(c.last_insert_rowid())

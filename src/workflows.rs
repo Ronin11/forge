@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Names the engine inserts itself; a user operation may not shadow them.
-pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "clone"];
+pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "land", "clone"];
 
 /// What an operation may produce. `branch`: it changes the tree, the
 /// kernel commits the result and verifies it. `interface`: its stdout is

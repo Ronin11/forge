@@ -181,7 +181,36 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         let dir = f.paths.worktrees.join(t.id.to_string());
         let started = unix_now();
         let start = Instant::now();
-        let r = git::clone_task(&repo, &t.base_branch, &dir, &t.branch).await;
+        // The base is the remote's, so a task started after a landing sees it.
+        let base_ref = match (&base_cfg.push_remote, &remote_url) {
+            (Some(name), Some(url)) if git::remote_branch_exists(url, &t.base_branch).await => {
+                match git::fetch_branch(&repo, name, &t.base_branch).await {
+                    Ok(_) => Some(format!("refs/remotes/{name}/{}", t.base_branch)),
+                    Err(e) => {
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!(
+                                    "fetch    {name}/{} failed ({e:#}); using the local base",
+                                    t.base_branch
+                                ),
+                            },
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let r = git::clone_task(
+            &repo,
+            &t.base_branch,
+            &dir,
+            &t.branch,
+            base_ref.as_deref(),
+            None,
+        )
+        .await;
         op(
             &f,
             id,
@@ -204,7 +233,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     f.store.update_task(&t).env()?;
     let wt = PathBuf::from(&t.worktree);
     // Checks and rules come from the trusted base, never from the branch under test.
-    let cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
+    let mut cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
 
     f.report.emit(
         id,
@@ -263,266 +292,338 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut owed: HashMap<i64, String> = HashMap::new();
     let mut review_unfinished = false;
     let mut idx = 0usize;
-    'steps: while idx < resolved.steps.len() {
-        let step = &resolved.steps[idx];
-        seq = idx as i64 + 1;
-        match step.action.kind {
-            Kind::Operation => {
-                // A mutating operation counts as done only once the kernel
-                // verified what it committed; a worker that died in between
-                // runs it again, which is harmless: it is deterministic and
-                // a second commit finds nothing to commit. A verifying
-                // operation always runs again after the directive it judges.
-                let verified_here = prior_ops
-                    .iter()
-                    .any(|o| o.kernel && o.name == "verify" && o.seq == seq && o.ok);
-                if done_ops.contains(&seq)
-                    && (!step.action.mutates() || verified_here)
-                    && !step.action.verifies
-                {
-                    idx += 1;
-                    continue;
-                }
-                let (ok, detail) = run_operation(&f, &mut t, &cfg, step, seq).await?;
-                if ok {
-                    idx += 1;
-                    continue;
-                }
-                if step.action.verifies
-                    && let Some(d_idx) = (0..idx)
-                        .rev()
-                        .find(|&i| resolved.steps[i].action.kind == Kind::Directive)
-                {
-                    let d_seq = d_idx as i64 + 1;
-                    if *used.get(&d_seq).unwrap_or(&0) < t.max_attempts {
-                        let d_name = resolved.steps[d_idx].action.name.clone();
-                        f.report.emit(
-                            id,
-                            Event::Note {
-                                text: &format!(
-                                    "verify   {} failed; back to {} for another attempt",
-                                    step.action.name, d_name
-                                ),
-                            },
-                        );
-                        owed.insert(d_seq, format!("The `{}` verification failed after your change:\n{}\nFix it, leave the tree clean, and commit.", step.action.name, detail));
-                        idx = d_idx;
+    // The base branch's tip once the task landed on it.
+    let mut landed: Option<String> = None;
+    'run: loop {
+        'steps: while idx < resolved.steps.len() {
+            let step = &resolved.steps[idx];
+            seq = idx as i64 + 1;
+            match step.action.kind {
+                Kind::Operation => {
+                    // A mutating operation counts as done only once the kernel
+                    // verified what it committed; a worker that died in between
+                    // runs it again, which is harmless: it is deterministic and
+                    // a second commit finds nothing to commit. A verifying
+                    // operation always runs again after the directive it judges.
+                    let verified_here = prior_ops
+                        .iter()
+                        .any(|o| o.kernel && o.name == "verify" && o.seq == seq && o.ok);
+                    if done_ops.contains(&seq)
+                        && (!step.action.mutates() || verified_here)
+                        && !step.action.verifies
+                    {
+                        idx += 1;
                         continue;
+                    }
+                    let (ok, detail) = run_operation(&f, &mut t, &cfg, step, seq).await?;
+                    if ok {
+                        idx += 1;
+                        continue;
+                    }
+                    if step.action.verifies
+                        && let Some(d_idx) = (0..idx)
+                            .rev()
+                            .find(|&i| resolved.steps[i].action.kind == Kind::Directive)
+                    {
+                        let d_seq = d_idx as i64 + 1;
+                        if *used.get(&d_seq).unwrap_or(&0) < t.max_attempts {
+                            let d_name = resolved.steps[d_idx].action.name.clone();
+                            f.report.emit(
+                                id,
+                                Event::Note {
+                                    text: &format!(
+                                        "verify   {} failed; back to {} for another attempt",
+                                        step.action.name, d_name
+                                    ),
+                                },
+                            );
+                            owed.insert(d_seq, format!("The `{}` verification failed after your change:\n{}\nFix it, leave the tree clean, and commit.", step.action.name, detail));
+                            idx = d_idx;
+                            continue;
+                        }
+                        last = AttemptState::ChecksFailed;
+                        last_reason = format!(
+                            "operation {} (verifies) failed after {} attempt(s): {}",
+                            step.action.name,
+                            used.get(&d_seq).unwrap_or(&0),
+                            detail.lines().next().unwrap_or("")
+                        );
+                        all_ok = false;
+                        break;
                     }
                     last = AttemptState::ChecksFailed;
                     last_reason = format!(
-                        "operation {} (verifies) failed after {} attempt(s): {}",
+                        "operation {} failed: {}",
                         step.action.name,
-                        used.get(&d_seq).unwrap_or(&0),
                         detail.lines().next().unwrap_or("")
                     );
                     all_ok = false;
                     break;
                 }
-                last = AttemptState::ChecksFailed;
-                last_reason = format!(
-                    "operation {} failed: {}",
-                    step.action.name,
-                    detail.lines().next().unwrap_or("")
-                );
-                all_ok = false;
-                break;
-            }
-            Kind::Directive => {
-                if done_directives.contains(&seq) && !owed.contains_key(&seq) {
-                    f.report.emit(
-                        id,
-                        Event::Note {
-                            text: &format!(
-                                "step     {} already verified; resuming",
-                                step.action.name
-                            ),
-                        },
-                    );
-                    idx += 1;
-                    continue;
-                }
-                // Per-step parameters: the workflow's override, else the action's default, else the task's.
-                let mut ts = t.clone();
-                if let Some(m) = &step.model {
-                    ts.model = m.clone();
-                }
-                if let Some(n) = step.max_turns {
-                    ts.max_turns = n as i64;
-                }
-                if let Some(n) = step.timeout_secs {
-                    ts.timeout_secs = n as i64;
-                }
-                let mut feedback: Option<String> = owed.remove(&seq);
-                let mut step_ok = false;
-                while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
-                    let spent = f.store.task_cost(id).env()?;
-                    if spent >= task_cap {
-                        budget_stop = Some(format!(
-                            "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
-                        ));
-                        all_ok = false;
-                        break 'steps;
-                    }
-                    *used.entry(seq).or_insert(0) += 1;
-                    let n = used[&seq];
-                    attempt_no += 1;
-                    f.report.emit(
-                        id,
-                        Event::AttemptStarted {
-                            n,
-                            of: t.max_attempts,
-                        },
-                    );
-                    f.report.emit(
-                        id,
-                        Event::Note {
-                            text: &format!(
-                                "step     {} ({})",
-                                step.action.name,
-                                step.via.join(" → ")
-                            ),
-                        },
-                    );
-                    let started = unix_now();
-                    let (a, verdict, outcome) = match step.action.contract.as_str() {
-                        "code" => {
-                            run_code_attempt(
-                                &f,
-                                &ts,
-                                &cfg,
-                                step,
-                                seq,
-                                attempt_no,
-                                feedback.as_deref(),
-                            )
-                            .await?
-                        }
-                        "tests" => {
-                            run_tests_attempt(
-                                &f,
-                                &ts,
-                                &cfg,
-                                step,
-                                seq,
-                                attempt_no,
-                                feedback.as_deref(),
-                            )
-                            .await?
-                        }
-                        "review" => {
-                            run_review_attempt(&f, &ts, &cfg, step, seq, attempt_no).await?
-                        }
-                        other => {
-                            return Err(Fault::Task(anyhow::anyhow!(
-                                "directive contract {other:?} is not enforced by this kernel"
-                            )));
-                        }
-                    };
-                    // The kernel's verify, as a row of its own.
-                    op(
-                        &f,
-                        id,
-                        seq,
-                        "verify",
-                        true,
-                        started,
-                        Instant::now(),
-                        a.state == AttemptState::Succeeded,
-                        None,
-                        &a.reason,
-                        Some(a.id),
-                        "",
-                    )?;
-                    last = a.state;
-                    last_reason = a.reason.clone();
-                    // A check that failed only inside the verification namespace
-                    // is the test author's failure, not the coder's: the coder
-                    // cannot see those files. Back to the tests step, within its
-                    // attempts; this attempt does not count against the coder.
-                    if a.state == AttemptState::ChecksFailed
-                        && step.action.contract != "tests"
-                        && let Some((check, tail)) =
-                            verify::tests_fault(&verdict.checks, &cfg.namespace)
-                        && let Some(t_idx) = (0..idx)
-                            .rev()
-                            .find(|&i| resolved.steps[i].action.contract == "tests")
-                    {
-                        let t_seq = t_idx as i64 + 1;
-                        let t_used = *used.get(&t_seq).unwrap_or(&0);
-                        if t_used < t.max_attempts {
-                            *used.entry(seq).or_insert(1) -= 1;
-                            f.report.emit(id, Event::Note { text: &format!("verify   {check} failed inside {}; back to {} for another attempt", cfg.namespace.join(" "), resolved.steps[t_idx].action.name) });
-                            owed.insert(t_seq, format!("The repository's `{check}` check failed on the implementer's tree, and every error is inside your tests:\n{tail}\nThe implementer cannot see or edit those files. Fix your tests so the repository's checks pass with them in place, commit, and describe the interface again."));
-                            done_directives.retain(|&d| d < t_seq);
-                            // The coder starts over against the corrected tests.
-                            git::reset_hard(Path::new(&t.worktree), &t.base_sha)
-                                .await
-                                .task()?;
-                            idx = t_idx;
-                            continue 'steps;
-                        }
-                        last_reason = format!(
-                            "check {check} failed inside the verification namespace after {t_used} tests attempt(s): {}",
-                            tail.lines().next().unwrap_or("")
+                Kind::Directive => {
+                    if done_directives.contains(&seq) && !owed.contains_key(&seq) {
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!(
+                                    "step     {} already verified; resuming",
+                                    step.action.name
+                                ),
+                            },
                         );
-                        all_ok = false;
-                        break 'steps;
+                        idx += 1;
+                        continue;
                     }
-                    match a.state {
-                        AttemptState::Succeeded => {
-                            if step.action.contract == "tests" {
-                                let tests_dir = tests_clone_dir(&t.worktree);
-                                git::push_to_repo(&tests_dir, &repo, &format!("verify/{}", t.id))
+                    // Per-step parameters: the workflow's override, else the action's default, else the task's.
+                    let mut ts = t.clone();
+                    if let Some(m) = &step.model {
+                        ts.model = m.clone();
+                    }
+                    if let Some(n) = step.max_turns {
+                        ts.max_turns = n as i64;
+                    }
+                    if let Some(n) = step.timeout_secs {
+                        ts.timeout_secs = n as i64;
+                    }
+                    let mut feedback: Option<String> = owed.remove(&seq);
+                    let mut step_ok = false;
+                    while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
+                        let spent = f.store.task_cost(id).env()?;
+                        if spent >= task_cap {
+                            budget_stop = Some(format!(
+                                "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
+                            ));
+                            all_ok = false;
+                            break 'steps;
+                        }
+                        *used.entry(seq).or_insert(0) += 1;
+                        let n = used[&seq];
+                        attempt_no += 1;
+                        f.report.emit(
+                            id,
+                            Event::AttemptStarted {
+                                n,
+                                of: t.max_attempts,
+                            },
+                        );
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!(
+                                    "step     {} ({})",
+                                    step.action.name,
+                                    step.via.join(" → ")
+                                ),
+                            },
+                        );
+                        let started = unix_now();
+                        let (a, verdict, outcome) = match step.action.contract.as_str() {
+                            "code" => {
+                                run_code_attempt(
+                                    &f,
+                                    &ts,
+                                    &cfg,
+                                    step,
+                                    seq,
+                                    attempt_no,
+                                    feedback.as_deref(),
+                                )
+                                .await?
+                            }
+                            "tests" => {
+                                run_tests_attempt(
+                                    &f,
+                                    &ts,
+                                    &cfg,
+                                    step,
+                                    seq,
+                                    attempt_no,
+                                    feedback.as_deref(),
+                                )
+                                .await?
+                            }
+                            "review" => {
+                                run_review_attempt(&f, &ts, &cfg, step, seq, attempt_no).await?
+                            }
+                            other => {
+                                return Err(Fault::Task(anyhow::anyhow!(
+                                    "directive contract {other:?} is not enforced by this kernel"
+                                )));
+                            }
+                        };
+                        // The kernel's verify, as a row of its own.
+                        op(
+                            &f,
+                            id,
+                            seq,
+                            "verify",
+                            true,
+                            started,
+                            Instant::now(),
+                            a.state == AttemptState::Succeeded,
+                            None,
+                            &a.reason,
+                            Some(a.id),
+                            "",
+                        )?;
+                        last = a.state;
+                        last_reason = a.reason.clone();
+                        // A check that failed only inside the verification namespace
+                        // is the test author's failure, not the coder's: the coder
+                        // cannot see those files. Back to the tests step, within its
+                        // attempts; this attempt does not count against the coder.
+                        if a.state == AttemptState::ChecksFailed
+                            && step.action.contract != "tests"
+                            && let Some((check, tail)) =
+                                verify::tests_fault(&verdict.checks, &cfg.namespace)
+                            && let Some(t_idx) = (0..idx)
+                                .rev()
+                                .find(|&i| resolved.steps[i].action.contract == "tests")
+                        {
+                            let t_seq = t_idx as i64 + 1;
+                            let t_used = *used.get(&t_seq).unwrap_or(&0);
+                            if t_used < t.max_attempts {
+                                *used.entry(seq).or_insert(1) -= 1;
+                                f.report.emit(id, Event::Note { text: &format!("verify   {check} failed inside {}; back to {} for another attempt", cfg.namespace.join(" "), resolved.steps[t_idx].action.name) });
+                                owed.insert(t_seq, format!("The repository's `{check}` check failed on the implementer's tree, and every error is inside your tests:\n{tail}\nThe implementer cannot see or edit those files. Fix your tests so the repository's checks pass with them in place, commit, and describe the interface again."));
+                                done_directives.retain(|&d| d < t_seq);
+                                // The coder starts over against the corrected tests.
+                                git::reset_hard(Path::new(&t.worktree), &t.base_sha)
                                     .await
                                     .task()?;
-                                if let Some(url) = &remote_url
-                                    && let Err(e) =
-                                        git::push(&tests_dir, url, &format!("verify/{}", t.id))
-                                            .await
-                                {
-                                    f.report.emit(
-                                        id,
-                                        Event::Note {
-                                            text: &format!(
-                                                "tests    push of verify/{} failed: {e:#}",
-                                                t.id
-                                            ),
-                                        },
-                                    );
-                                }
-                                t.interface = verdict
-                                    .envelope
-                                    .as_ref()
-                                    .map(|e| e.summary.clone())
-                                    .unwrap_or_default();
-                                f.store.update_task(&t).env()?;
+                                idx = t_idx;
+                                continue 'steps;
                             }
-                            step_ok = true;
-                            break;
+                            last_reason = format!(
+                                "check {check} failed inside the verification namespace after {t_used} tests attempt(s): {}",
+                                tail.lines().next().unwrap_or("")
+                            );
+                            all_ok = false;
+                            break 'steps;
                         }
-                        AttemptState::Unverified | AttemptState::NeedsInput => break,
-                        AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                            feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
+                        match a.state {
+                            AttemptState::Succeeded => {
+                                if step.action.contract == "tests" {
+                                    let tests_dir = tests_clone_dir(&t.worktree);
+                                    git::push_to_repo(
+                                        &tests_dir,
+                                        &repo,
+                                        &format!("verify/{}", t.id),
+                                    )
+                                    .await
+                                    .task()?;
+                                    if let Some(url) = &remote_url
+                                        && let Err(e) =
+                                            git::push(&tests_dir, url, &format!("verify/{}", t.id))
+                                                .await
+                                    {
+                                        f.report.emit(
+                                            id,
+                                            Event::Note {
+                                                text: &format!(
+                                                    "tests    push of verify/{} failed: {e:#}",
+                                                    t.id
+                                                ),
+                                            },
+                                        );
+                                    }
+                                    t.interface = verdict
+                                        .envelope
+                                        .as_ref()
+                                        .map(|e| e.summary.clone())
+                                        .unwrap_or_default();
+                                    f.store.update_task(&t).env()?;
+                                }
+                                step_ok = true;
+                                break;
+                            }
+                            AttemptState::Unverified | AttemptState::NeedsInput => break,
+                            AttemptState::ChecksFailed | AttemptState::AgentFailed => {
+                                feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
+                            }
+                            AttemptState::Running => {
+                                unreachable!("attempt returned in running state")
+                            }
                         }
-                        AttemptState::Running => unreachable!("attempt returned in running state"),
                     }
+                    if !step_ok {
+                        // A reviewer that never reached a verdict is not evidence
+                        // of a defect: the branch verified at the code step, so it
+                        // goes to a human as unverified instead of failing.
+                        if step.action.contract == "review" && last == AttemptState::AgentFailed {
+                            review_unfinished = true;
+                            last = AttemptState::Unverified;
+                            last_reason = format!(
+                                "review could not finish ({last_reason}); the branch verified at the code step and goes to human review"
+                            );
+                        }
+                        all_ok = false;
+                        break;
+                    }
+                    idx += 1;
                 }
-                if !step_ok {
-                    // A reviewer that never reached a verdict is not evidence
-                    // of a defect: the branch verified at the code step, so it
-                    // goes to a human as unverified instead of failing.
-                    if step.action.contract == "review" && last == AttemptState::AgentFailed {
-                        review_unfinished = true;
-                        last = AttemptState::Unverified;
-                        last_reason = format!(
-                            "review could not finish ({last_reason}); the branch verified at the code step and goes to human review"
-                        );
-                    }
+            }
+        }
+        // Landing: a kernel operation, after the last step and before anything
+        // is pushed. The branch verified against the base it started from; it
+        // lands only if it also verifies with the base as it is now.
+        if !(all_ok && budget_stop.is_none() && t.land) {
+            break 'run;
+        }
+        let (Some(url), Some(remote)) = (&remote_url, &base_cfg.push_remote) else {
+            f.report.emit(
+                id,
+                Event::Note {
+                    text: "land     skipped: the repository has no push remote",
+                },
+            );
+            break 'run;
+        };
+        match integrate(&f, &mut t, url, remote, &mut seq).await? {
+            Integrate::Landed(sha) => {
+                last_reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
+                landed = Some(sha);
+                break 'run;
+            }
+            Integrate::Rewind { feedback, first } => {
+                let Some(c_idx) = (0..resolved.steps.len())
+                    .rev()
+                    .find(|&i| resolved.steps[i].action.contract == "code")
+                else {
+                    last = AttemptState::ChecksFailed;
+                    last_reason = format!("landing failed: {first}");
                     all_ok = false;
-                    break;
+                    break 'run;
+                };
+                let c_seq = c_idx as i64 + 1;
+                let c_used = *used.get(&c_seq).unwrap_or(&0);
+                if c_used < t.max_attempts {
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!(
+                                "land     back to {} for another attempt",
+                                resolved.steps[c_idx].action.name
+                            ),
+                        },
+                    );
+                    // The base moved: its checks and rules are the ones that apply now.
+                    cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
+                    owed.insert(c_seq, feedback);
+                    done_directives.retain(|&d| d < c_seq);
+                    idx = c_idx;
+                    continue 'run;
                 }
-                idx += 1;
+                last = AttemptState::ChecksFailed;
+                last_reason = format!("landing failed after {c_used} attempt(s): {first}");
+                all_ok = false;
+                break 'run;
+            }
+            Integrate::Failed(reason) => {
+                last = AttemptState::ChecksFailed;
+                last_reason = format!("landing failed: {reason}");
+                all_ok = false;
+                break 'run;
             }
         }
     }
@@ -533,7 +634,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     if all_ok && budget_stop.is_none() {
         last = AttemptState::Succeeded;
     }
-    if (all_ok && budget_stop.is_none()) || review_demoted || review_unfinished {
+    if landed.is_none()
+        && ((all_ok && budget_stop.is_none()) || review_demoted || review_unfinished)
+    {
         seq += 1;
         if let Some(url) = &remote_url {
             let started = unix_now();
@@ -620,6 +723,335 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 /// The refs whose namespace files are overlaid before L1: the standing
 /// suite when the repository has one, the task's own tests when it has
 /// some.
+enum Integrate {
+    /// On the base branch; its new tip.
+    Landed(String),
+    /// The coder has to act: a conflict with the moved base, or checks that
+    /// fail with the base merged in. The feedback and its first line.
+    Rewind { feedback: String, first: String },
+    /// Nothing the coder can do about it.
+    Failed(String),
+}
+
+/// One landing at a time per repository, across every worker process:
+/// an advisory lock on a file under FORGE2_HOME, held until dropped.
+async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
+    let dir = f.paths.home.join("locks");
+    std::fs::create_dir_all(&dir).env()?;
+    let name: String = repo
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{name}.lock")))
+        .env()?;
+    tokio::task::spawn_blocking(move || file.lock().map(|_| file))
+        .await
+        .map_err(|e| Fault::Env(anyhow::anyhow!(e)))?
+        .env()
+}
+
+/// Land the verified branch on the base branch: bring the base in, verify
+/// everything with every hidden suite overlaid, push the branch, fast-forward
+/// the base, and fold the task's hidden tests into `forge-verify`. Three
+/// rows in the trace: `integrate`, `push`, `land`.
+async fn integrate(
+    f: &Forge,
+    t: &mut Task,
+    url: &str,
+    remote: &str,
+    seq: &mut i64,
+) -> Result<Integrate, Fault> {
+    let repo = Path::new(&t.repo);
+    let wt = Path::new(&t.worktree);
+    let _lock = repo_lock(f, repo).await?;
+    let placed = format!("forge/{}", t.base_branch);
+    for round in 0..3 {
+        *seq += 1;
+        let started = unix_now();
+        let start = Instant::now();
+        // The base as the remote has it; a remote that has no base branch
+        // yet gets it from this landing, starting from the local one.
+        let main_sha = if git::remote_branch_exists(url, &t.base_branch).await {
+            match git::fetch_branch(repo, remote, &t.base_branch).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let d = format!("fetch of {remote}/{} failed: {e:#}", t.base_branch);
+                    op(
+                        f,
+                        t.id,
+                        *seq,
+                        "integrate",
+                        true,
+                        started,
+                        start,
+                        false,
+                        None,
+                        &d,
+                        None,
+                        "",
+                    )?;
+                    return Ok(Integrate::Failed(d));
+                }
+            }
+        } else {
+            git::rev_parse(repo, &format!("refs/heads/{}", t.base_branch))
+                .await
+                .task()?
+        };
+        let mut detail = String::new();
+        if main_sha != t.base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
+            git::place_branch(repo, wt, &main_sha, &placed)
+                .await
+                .task()?;
+            let message = format!("Merge {} into {}", t.base_branch, t.branch);
+            match git::merge(wt, &main_sha, &message).await.task()? {
+                git::Merge::UpToDate => {}
+                git::Merge::Merged(m) => {
+                    detail = format!(
+                        "merged {} @ {} as {}; ",
+                        t.base_branch,
+                        &main_sha[..8],
+                        &m[..8]
+                    );
+                }
+                git::Merge::Conflict(files) => {
+                    let d = format!(
+                        "{} moved to {}; conflicts in {}",
+                        t.base_branch,
+                        &main_sha[..8],
+                        files.join(", ")
+                    );
+                    op(
+                        f,
+                        t.id,
+                        *seq,
+                        "integrate",
+                        true,
+                        started,
+                        start,
+                        false,
+                        None,
+                        &d,
+                        None,
+                        "",
+                    )?;
+                    f.report.emit(
+                        t.id,
+                        Event::Note {
+                            text: &format!("integrate {d}"),
+                        },
+                    );
+                    let feedback = format!(
+                        "The base branch `{base}` has moved since your branch started, and merging it into your branch conflicts in:\n{files}\nThe current `{base}` is in your clone as the local branch `{placed}`. Run `git merge {placed}`, resolve those conflicts, run the checks, and commit the merge. Report the files you resolved as your changes.",
+                        base = t.base_branch,
+                        files = files.join("\n"),
+                    );
+                    return Ok(Integrate::Rewind { feedback, first: d });
+                }
+            }
+        }
+        // The branch contains the base as it is now: measure from there.
+        if t.base_sha != main_sha && git::is_ancestor(wt, &main_sha, "HEAD").await {
+            t.base_sha = main_sha.clone();
+            f.store.update_task(t).env()?;
+        }
+        let cfg_now = config::load_at(repo, wt, &t.base_sha).await.task()?;
+        let overlay = overlay_refs(repo, t.id).await;
+        let v = verify::verify_integration(&Subject {
+            task_id: t.id,
+            repo,
+            worktree: wt,
+            base_sha: &t.base_sha,
+            start_sha: &t.base_sha,
+            cfg: &cfg_now,
+            task_checks: &t.checks,
+            paths: &[],
+            allow_protected: t.allow_protected,
+            overlay_refs: &overlay,
+            pending_main: None,
+            sandbox: f.sandbox.as_ref(),
+            report: &f.report,
+        })
+        .await
+        .task()?;
+        if v.state != AttemptState::Succeeded {
+            let d = format!("{detail}{}", v.reason);
+            op(
+                f,
+                t.id,
+                *seq,
+                "integrate",
+                true,
+                started,
+                start,
+                false,
+                None,
+                &d,
+                None,
+                "",
+            )?;
+            f.report.emit(
+                t.id,
+                Event::Note {
+                    text: &format!("integrate {d}"),
+                },
+            );
+            let tails: Vec<String> = v
+                .checks
+                .iter()
+                .filter(|c| !c.ok)
+                .map(|c| {
+                    format!(
+                        "- {} {}:\n{}",
+                        c.level,
+                        c.name,
+                        checks::last_lines(&c.tail, 20)
+                    )
+                })
+                .collect();
+            let feedback = format!(
+                "With the current `{base}` merged into your branch (it is in your clone as `{placed}`, already merged), verification fails:\n{}\nFix it, run the checks, and commit.",
+                tails.join("\n"),
+                base = t.base_branch,
+            );
+            return Ok(Integrate::Rewind {
+                feedback,
+                first: v.reason.clone(),
+            });
+        }
+        op(
+            f,
+            t.id,
+            *seq,
+            "integrate",
+            true,
+            started,
+            start,
+            true,
+            None,
+            &format!(
+                "{detail}verified against {} @ {}",
+                t.base_branch,
+                &t.base_sha[..8]
+            ),
+            None,
+            "",
+        )?;
+
+        *seq += 1;
+        let started = unix_now();
+        let start = Instant::now();
+        if let Err(e) = git::push(wt, url, &t.branch).await {
+            let d = format!("push of {} failed: {e:#}", t.branch);
+            op(
+                f, t.id, *seq, "push", true, started, start, false, None, &d, None, "",
+            )?;
+            return Ok(Integrate::Failed(d));
+        }
+        t.pushed = true;
+        f.report.emit(
+            t.id,
+            Event::Pushed {
+                remote: url,
+                branch: &t.branch,
+            },
+        );
+        op(
+            f, t.id, *seq, "push", true, started, start, true, None, &t.branch, None, "",
+        )?;
+
+        *seq += 1;
+        let started = unix_now();
+        let start = Instant::now();
+        if let Err(e) = git::push_head_to(wt, url, &t.base_branch).await {
+            let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
+            op(
+                f, t.id, *seq, "land", true, started, start, false, None, &d, None, "",
+            )?;
+            if round < 2 {
+                f.report.emit(
+                    t.id,
+                    Event::Note {
+                        text: &format!(
+                            "land     {} moved underneath; integrating again",
+                            t.base_branch
+                        ),
+                    },
+                );
+                continue;
+            }
+            return Ok(Integrate::Failed(d));
+        }
+        let sha = git::head(wt).await.task()?;
+        let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
+        // The task's hidden tests join the standing suite.
+        let own = format!("verify/{}", t.id);
+        let mut folded = String::new();
+        if git::ref_exists(repo, &format!("refs/heads/{own}")).await
+            && !cfg_now.namespace.is_empty()
+        {
+            let files = git::ls_tree(repo, &own, &cfg_now.namespace).await.task()?;
+            let title = t
+                .task
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(72)
+                .collect::<String>();
+            if !files.is_empty()
+                && git::graft(
+                    repo,
+                    &own,
+                    &files,
+                    "forge-verify",
+                    &format!("Task {}: {title}", t.id),
+                )
+                .await
+                .task()?
+                .is_some()
+            {
+                folded = match git::push(repo, url, "forge-verify").await {
+                    Ok(()) => format!(
+                        "; {} hidden test file(s) folded into forge-verify",
+                        files.len()
+                    ),
+                    Err(e) => format!(
+                        "; {} hidden test file(s) folded into forge-verify locally (push failed: {e:#})",
+                        files.len()
+                    ),
+                };
+            }
+        }
+        op(
+            f,
+            t.id,
+            *seq,
+            "land",
+            true,
+            started,
+            start,
+            true,
+            None,
+            &format!("{} @ {}{folded}", t.base_branch, &sha[..8]),
+            None,
+            "",
+        )?;
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!("landed   {} @ {}{folded}", t.base_branch, &sha[..8]),
+            },
+        );
+        return Ok(Integrate::Landed(sha));
+    }
+    unreachable!("the landing loop returns")
+}
+
 async fn overlay_refs(repo: &Path, task_id: i64) -> Vec<String> {
     let mut refs = Vec::new();
     if git::ref_exists(repo, "refs/heads/forge-verify").await {
@@ -852,6 +1284,9 @@ async fn run_operation(
             },
         );
         let overlay_refs = overlay_refs(&repo, t.id).await;
+        let pending_main = git::rev_parse(&wt, &format!("refs/heads/forge/{}", t.base_branch))
+            .await
+            .ok();
         let v = verify::verify_operation(Subject {
             task_id: t.id,
             repo: &repo,
@@ -863,6 +1298,7 @@ async fn run_operation(
             paths: &[],
             allow_protected: t.allow_protected,
             overlay_refs: &overlay_refs,
+            pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
         })
@@ -1166,6 +1602,9 @@ async fn run_code_attempt(
     let (mut a, log_path) =
         new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs).await?;
     let outcome = launch(f, t, &step.action.name, wt, &prompt_text, &log_path).await?;
+    let pending_main = git::rev_parse(wt, &format!("refs/heads/forge/{}", t.base_branch))
+        .await
+        .ok();
     let verdict = verify::verify(
         Subject {
             task_id: t.id,
@@ -1178,6 +1617,7 @@ async fn run_code_attempt(
             paths: &step.action.paths,
             allow_protected: t.allow_protected,
             overlay_refs: &overlay_refs,
+            pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
         },
@@ -1201,9 +1641,20 @@ async fn run_tests_attempt(
     let repo = Path::new(&t.repo);
     let dir = tests_clone_dir(&t.worktree);
     if !dir.exists() {
-        git::clone_task(repo, &t.base_branch, &dir, &format!("verify/{}", t.id))
-            .await
-            .task()?;
+        let base_ref = cfg
+            .push_remote
+            .as_ref()
+            .map(|n| format!("refs/remotes/{n}/{}", t.base_branch));
+        git::clone_task(
+            repo,
+            &t.base_branch,
+            &dir,
+            &format!("verify/{}", t.id),
+            base_ref.as_deref(),
+            Some(&t.base_sha),
+        )
+        .await
+        .task()?;
     }
     let prompt_text = tests_prompt(t, cfg, attempt_no, feedback);
     let inputs = Inputs {

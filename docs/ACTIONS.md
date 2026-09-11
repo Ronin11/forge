@@ -83,6 +83,34 @@ the output goes back to that directive as a retry, within its attempts,
 instead of failing the task one shot. A verifying operation must follow a
 directive.
 
+## Landing
+
+A task's base is the base branch as the push remote has it, fetched at
+clone time, so a task started after a landing sees it. Once the last
+step passes, the kernel lands the branch, one task at a time per
+repository:
+
+1. `integrate`: fetch the base again; if it moved, merge it into the
+   branch. A clean merge is committed as Forge. Then run every repository
+   check and every hidden suite (`forge-verify` and `verify/<id>`) on
+   the merged tree, with the checks read from the base as it is now.
+2. `push`: the branch, as before.
+3. `land`: fast-forward the base branch on the remote to the branch, and
+   fold the task's `verify/<id>` namespace files into `forge-verify` as
+   one commit, so the hidden tests accumulate.
+
+A conflict, or a check that fails only with the base merged in, goes back
+to the last `code` directive as a retry within its attempts: the current
+base is placed in the clone as the local branch `forge/<base>`, the
+feedback names the conflicting files or the failing checks, and the
+coder merges and fixes. Verification then measures the branch from the
+base it merged, and credits a merge commit with what it resolved, not
+with what it carried. A landing that cannot finish, such as a base that
+keeps moving under it, fails the task with the reason. `--no-land`
+leaves the verified branch pushed for a human, which is also what happens
+to a task the reviewer demoted or could not finish. A repository with no
+push remote is never landed.
+
 The kernel applies the same idea to the hidden tests: when a repository
 check fails on the implementer's tree and every location it reports lies
 inside the verification namespace, the failure is the test author's, not
@@ -91,9 +119,9 @@ the implementer's, who cannot see those files. The task rewinds to the
 attempts, and the implementer's attempt is not counted.
 
 Two classes. Kernel operations are inserted by the engine and cannot be
-listed, omitted, or reordered: `verify` after every directive, `push`
-after the last action, `integrate` when it exists. They appear in the
-trace as rows. User operations are listed in a workflow: `setup` before
+listed, omitted, or reordered: `clone` first, `verify` after every
+directive, then `integrate`, `push`, and `land` after the last action.
+They appear in the trace as rows. User operations are listed in a workflow: `setup` before
 the coder starts, a benchmark after it, a generator for derived files. A
 user operation may not shadow a kernel name.
 
