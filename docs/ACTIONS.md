@@ -130,7 +130,9 @@ declared in its file and each enforced by the kernel.
 
 - **It is told the task's facts.** Every operation runs with
   `FORGE_TASK_ID`, `FORGE_WORKFLOW`, `FORGE_STEP`, `FORGE_BASE_BRANCH`,
-  `FORGE_BASE_SHA`, `FORGE_BRANCH`, and `FORGE_NAMESPACE` (the verification
+  `FORGE_BASE_SHA`, `FORGE_BRANCH`, `FORGE_PREV_SHA` (HEAD before the
+  preceding directive ran, so an operation can judge that step alone),
+  and `FORGE_NAMESPACE` (the verification
   directories, space-separated) in its environment, and nothing else of
   Forge's. Each is already recorded on the task; the operation learns
   nothing the trace does not show. This is what lets an operation judge
@@ -208,6 +210,8 @@ forms, one now and one later.
 | `reviewed` | setup, code, review |
 | `tdd-reviewed` | (tdd), review |
 | `playable` | setup, code, playwright (hidden suite, verifies) |
+| `documented` | (direct), document, comments-only (verifies) |
+| `mapped` | (direct), graph, graph-check (verifies) |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.

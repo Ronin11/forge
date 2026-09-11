@@ -1774,6 +1774,108 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
 }
 
 #[test]
+fn the_document_directive_is_held_to_comments_and_docs() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE2_CLAUDE_BIN_DOCUMENT", "documenter.sh")],
+        "documented",
+        "write 42",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, _, pushed) = e.task(1);
+    assert_eq!(state, "succeeded");
+    assert!(pushed);
+    let ops = op_names(&e, 1);
+    assert_eq!(
+        ops.last().map(|(n, ok)| (n.as_str(), *ok)),
+        Some(("push", true))
+    );
+    assert!(
+        ops.iter().any(|(n, ok)| n == "comments-only" && *ok),
+        "{ops:?}"
+    );
+    let hello = origin_file(&e, "forge/1-write-42", "hello.sh").unwrap();
+    assert!(hello.contains("# prints a greeting"), "{hello}");
+
+    // A pass that changes behavior is caught, sent back, and fails when the attempts run out.
+    let mut c = e.cmd("ok.sh");
+    c.env(
+        "FORGE2_CLAUDE_BIN_DOCUMENT",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/documenter-bad.sh"),
+    );
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 again",
+            "--workflow",
+            "documented",
+            "--retries",
+            "0",
+            "--no-land",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(reason.starts_with("operation comments-only (verifies) failed after 1 attempt(s): the documentation pass changed more than comments and docs"), "{reason}");
+}
+
+#[test]
+fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE2_CLAUDE_BIN_GRAPH", "grapher.sh")],
+        "mapped",
+        "write 42",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+    let ops = op_names(&e, 1);
+    assert!(
+        ops.iter().any(|(n, ok)| n == "graph-check" && *ok),
+        "{ops:?}"
+    );
+    let map = origin_file(&e, "forge/1-write-42", "docs/SYSTEM.md").unwrap();
+    assert!(map.contains("```mermaid"));
+
+    let mut c = e.cmd("ok.sh");
+    c.env(
+        "FORGE2_CLAUDE_BIN_GRAPH",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/grapher-bad.sh"),
+    );
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 again",
+            "--workflow",
+            "mapped",
+            "--retries",
+            "0",
+            "--no-land",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(reason.starts_with("operation graph-check (verifies) failed after 1 attempt(s): docs/SYSTEM.md names paths that do not exist"), "{reason}");
+    let o = e.forge("ok.sh", &["trace", "2"]);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("src/sim/index.ts"),
+        "the missing path is named in the trace"
+    );
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

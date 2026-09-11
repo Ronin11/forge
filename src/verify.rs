@@ -95,6 +95,7 @@ async fn common_l0(
     i64,
     Vec<String>,
     Vec<String>,
+    Vec<String>,
 )> {
     // A branch that merged the moved base is measured from there.
     let merged_main = match pending_main {
@@ -206,7 +207,15 @@ async fn common_l0(
             format!("claims without evidence: {}", bare.join("; ")),
         ));
     }
-    Ok((rows, env, question, commits, changed, dirty))
+    Ok((
+        rows,
+        env,
+        question,
+        commits,
+        changed,
+        changed_this_attempt,
+        dirty,
+    ))
 }
 
 fn emit_rows(report: &Reporter, task_id: i64, rows: &[CheckResult]) {
@@ -283,7 +292,7 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         reason: String::new(),
     };
     let mut question: Option<(String, String)> = None;
-    let (rows, env, q, commits, changed, dirty) = common_l0(
+    let (rows, env, q, commits, changed, changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
         s.start_sha,
@@ -299,7 +308,8 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
     if agent_reason.is_none() {
         v.checks = rows;
         question = q;
-        v.checks.extend(scope_rows(&s, &changed, &dirty));
+        v.checks
+            .extend(scope_rows(&s, &changed, &changed_now, &dirty));
         emit_rows(s.report, s.task_id, &v.checks);
         let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
 
@@ -426,7 +436,15 @@ async fn l1_l2(
 
 /// The L0 rows about where a change landed: protected paths, the
 /// directive's write scope, the verification namespace.
-fn scope_rows(s: &Subject<'_>, changed: &[String], dirty: &[String]) -> Vec<CheckResult> {
+/// `changed` is the branch's whole change, for the rules that guard the
+/// product; `changed_now` is this step's, for the directive's own write
+/// scope: a scoped step after an unscoped one is judged on what it did.
+fn scope_rows(
+    s: &Subject<'_>,
+    changed: &[String],
+    changed_now: &[String],
+    dirty: &[String],
+) -> Vec<CheckResult> {
     let mut rows = Vec::new();
     if !s.cfg.protected.is_empty() && !s.allow_protected {
         let hit: Vec<&str> = changed
@@ -445,7 +463,7 @@ fn scope_rows(s: &Subject<'_>, changed: &[String], dirty: &[String]) -> Vec<Chec
         ));
     }
     if !s.paths.is_empty() {
-        let outside: Vec<&str> = changed
+        let outside: Vec<&str> = changed_now
             .iter()
             .chain(dirty.iter())
             .map(String::as_str)
@@ -501,7 +519,7 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
         dirty.is_empty(),
         format!("left uncommitted by the operation: {}", dirty.join(", ")),
     ));
-    v.checks.extend(scope_rows(&s, &changed, &dirty));
+    v.checks.extend(scope_rows(&s, &changed, &changed, &dirty));
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(&s, None, &mut v.checks).await?;
@@ -571,7 +589,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         reason: String::new(),
     };
     let mut question: Option<(String, String)> = None;
-    let (rows, env, q, commits, changed, dirty) = common_l0(
+    let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
         s.start_sha,
@@ -707,7 +725,7 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
         reason: String::new(),
     };
     let mut question: Option<(String, String)> = None;
-    let (rows, env, q, commits, changed, dirty) = common_l0(
+    let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
         s.start_sha,

@@ -1066,7 +1066,12 @@ async fn overlay_refs(repo: &Path, task_id: i64) -> Vec<String> {
 
 /// What an operation is told about its task, as environment. Facts only,
 /// each one already recorded on the task.
-fn operation_env(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> Vec<(String, String)> {
+fn operation_env(
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    prev_sha: &str,
+) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = [
         ("FORGE_TASK_ID", t.id.to_string()),
         ("FORGE_WORKFLOW", t.workflow.clone()),
@@ -1075,6 +1080,7 @@ fn operation_env(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> Vec<(St
         ("FORGE_BASE_SHA", t.base_sha.clone()),
         ("FORGE_BRANCH", t.branch.clone()),
         ("FORGE_NAMESPACE", cfg.namespace.join(" ")),
+        ("FORGE_PREV_SHA", prev_sha.to_string()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -1145,7 +1151,19 @@ async fn run_operation(
             )));
         }
     };
-    let env = operation_env(t, cfg, step);
+    // HEAD before the preceding directive ran, so an operation can judge
+    // that step alone: the first attempt of the last step that succeeded.
+    let prev_sha = {
+        let atts = f.store.attempts(t.id).env()?;
+        atts.iter()
+            .rev()
+            .find(|a| a.state == AttemptState::Succeeded)
+            .map(|last| last.step_seq)
+            .and_then(|sq| atts.iter().find(|a| a.step_seq == sq))
+            .map(|a| a.start_sha.clone())
+            .unwrap_or_else(|| t.base_sha.clone())
+    };
+    let env = operation_env(t, cfg, step, &prev_sha);
     let scratch = step
         .action
         .reads_verify_ref()

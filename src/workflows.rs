@@ -278,6 +278,29 @@ brief = \"The change for this task is already on the branch. Do not add features
 max_turns = 20\n",
     ),
     (
+        "document.toml",
+        "name = \"document\"\n\
+kind = \"directive\"\n\
+contract = \"code\"\n\
+description = \"a documentation pass over the branch: docs and code comments brought in line with the diff, nothing else\"\n\
+consumes = [\"branch\"]\n\
+produces = [\"branch\"]\n\
+brief = \"The change for this task is already on the branch. Your only job is documentation. Read the diff of this branch against the base branch named above (`git diff <base>...HEAD`) and bring the documentation in line with it: README and docs/ where behavior, commands, configuration, or interfaces changed; doc comments on the functions, types, and modules the diff added or changed, in the style the file already uses. Do not change behavior, tests, or any code outside comments; an operation after you checks exactly that. If nothing needs documenting, commit nothing and say so.\"\n\
+max_turns = 20\n",
+    ),
+    (
+        "graph.toml",
+        "name = \"graph\"\n\
+kind = \"directive\"\n\
+contract = \"code\"\n\
+description = \"maintains docs/SYSTEM.md, the system map: components, what each owns, and the data flows between them, as a Mermaid graph plus prose\"\n\
+consumes = [\"branch\"]\n\
+produces = [\"branch\"]\n\
+paths = [\"docs/SYSTEM.md\"]\n\
+brief = \"Maintain docs/SYSTEM.md, the map of this system: its components (modules, services, stores, entry points, external systems), what each one owns, and the data that flows between them. The file is one Mermaid `graph` block naming the components and their flows, followed by one short paragraph per component. Read the diff of this branch against the base branch named above and the tree it touched; add, remove, or reword only what the change affected, and create the file from the whole tree if it does not exist. Name real paths in the tree, never invented ones; an operation after you checks every path. Nothing but docs/SYSTEM.md may change.\"\n\
+max_turns = 20\n",
+    ),
+    (
         "playwright.toml",
         "name = \"playwright\"\n\
 kind = \"operation\"\n\
@@ -302,6 +325,52 @@ timeout_secs = 600\n",
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
+    (
+        "comments-only.toml",
+        r#"name = "comments-only"
+kind = "operation"
+description = "fails when the preceding step changed anything but comments and documentation: the guard behind the document directive. Comment syntax is recognised by line prefix (//, #, *, /*, */, <!--, -->, --, and triple quotes); docs/ and Markdown are free."
+consumes = ["branch"]
+verifies = true
+run = ["bash", "-c", '''
+set -e
+from="${FORGE_PREV_SHA:-$FORGE_BASE_SHA}"
+sq=$(printf "\x27")
+bad=$(git diff --unified=0 "$from" HEAD -- . ':(exclude)docs/**' ':(exclude,glob)**/*.md' ':(exclude,glob)*.md' \
+  | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' | sed -E 's/^[+-]//' \
+  | grep -vE "^[[:space:]]*(//|#|\*|/\*|\*/|<!--|-->|--|\"\"\"|$sq$sq$sq)" | grep -vE '^[[:space:]]*$' || true)
+if [ -n "$bad" ]; then
+  echo "the documentation pass changed more than comments and docs since $from:"
+  echo "$bad" | head -20
+  exit 1
+fi
+echo "only comments and docs changed since $from"
+''', "comments-only"]
+"#,
+    ),
+    (
+        "graph-check.toml",
+        r#"name = "graph-check"
+kind = "operation"
+description = "fails unless docs/SYSTEM.md exists, holds a Mermaid block, and names only paths that exist in the tree: the guard behind the graph directive"
+consumes = ["branch"]
+verifies = true
+run = ["bash", "-c", '''
+set -e
+f=docs/SYSTEM.md
+test -f "$f" || { echo "$f is missing"; exit 1; }
+grep -qE '^```mermaid' "$f" || { echo "$f has no mermaid block"; exit 1; }
+missing=$(grep -oE '\b[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+' "$f" | grep -vE '^(https?:|[0-9])' | sed -E 's/[.,;:)]+$//' | sort -u \
+  | while read -r p; do git ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || test -d "$p" || echo "$p"; done)
+if [ -n "$missing" ]; then
+  echo "$f names paths that do not exist in the tree:"
+  echo "$missing"
+  exit 1
+fi
+echo "$f has a mermaid block and names only real paths"
+''', "graph-check"]
+"#,
+    ),
     (
         "diff-size.toml",
         r#"name = "diff-size"
@@ -468,6 +537,38 @@ steps = [\n\
 use_when = \"the task touches anything a user sees or clicks; unit tests cannot tell whether a page works\"\n\
 avoid_when = \"the repo has no e2e/ suite on forge-verify, or the change is pure simulation\"\n\
 requires = [\"[verify] namespace including e2e/ in forge.toml\", \"a forge-verify branch with e2e/playwright.config.ts\", \"@playwright/test installed by setup\"]\n",
+    ),
+    (
+        "documented.toml",
+        "name = \"documented\"\n\
+description = \"the change, then a documentation pass held to comments and docs\"\n\
+steps = [\n\
+  { workflow = \"direct\" },\n\
+  { action = \"document\" },\n\
+  { action = \"comments-only\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the change alters behavior, commands, configuration, or interfaces that the docs or doc comments describe\"\n\
+avoid_when = \"the change is internal and the docs do not mention what it touches; the pass would commit nothing\"\n\
+requires = []\n\
+",
+    ),
+    (
+        "mapped.toml",
+        "name = \"mapped\"\n\
+description = \"the change, then the system map in docs/SYSTEM.md brought in line with it\"\n\
+steps = [\n\
+  { workflow = \"direct\" },\n\
+  { action = \"graph\" },\n\
+  { action = \"graph-check\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the change adds, removes, or rewires a component or a data flow\"\n\
+avoid_when = \"the change stays inside one component; the map would not move\"\n\
+requires = []\n\
+",
     ),
     (
         "tdd-reviewed.toml",
@@ -1014,6 +1115,8 @@ mod tests {
                 "cheap",
                 "direct",
                 "docs",
+                "documented",
+                "mapped",
                 "playable",
                 "polish",
                 "reviewed",
