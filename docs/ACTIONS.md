@@ -83,6 +83,13 @@ the output goes back to that directive as a retry, within its attempts,
 instead of failing the task one shot. A verifying operation must follow a
 directive.
 
+The kernel applies the same idea to the hidden tests: when a repository
+check fails on the implementer's tree and every location it reports lies
+inside the verification namespace, the failure is the test author's, not
+the implementer's, who cannot see those files. The task rewinds to the
+`tests` directive with the check's output, within that directive's
+attempts, and the implementer's attempt is not counted.
+
 Two classes. Kernel operations are inserted by the engine and cannot be
 listed, omitted, or reordered: `verify` after every directive, `push`
 after the last action, `integrate` when it exists. They appear in the

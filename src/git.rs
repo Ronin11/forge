@@ -105,6 +105,13 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
     Ok(Some(git(dir, &["rev-parse", "HEAD"]).await?))
 }
 
+/// Discard every commit and change on the branch back to `sha`.
+pub async fn reset_hard(dir: &Path, sha: &str) -> Result<()> {
+    git(dir, &["reset", "--hard", "--quiet", sha]).await?;
+    git(dir, &["clean", "-fdq"]).await?;
+    Ok(())
+}
+
 pub async fn head(dir: &Path) -> Result<String> {
     git(dir, &["rev-parse", "HEAD"]).await
 }

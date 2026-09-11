@@ -106,6 +106,12 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             "Raise --budget for the task or per_task_usd in config.toml, or split the task.",
         ));
     }
+    if t.reason.starts_with("check ") && t.reason.contains("inside the verification namespace") {
+        out.push(d(
+            &t.reason,
+            "The hidden tests broke a repository check on the implementer's tree, and the test author could not fix them within its attempts. Read the check's output in the trace: the tests must compile and lint on their own, since the implementer never sees them.",
+        ));
+    }
     if let Some(rest) = t.reason.strip_prefix("operation ") {
         let name = rest.split_whitespace().next().unwrap_or("?");
         let timed_out = t.reason.contains("timed out after");

@@ -240,7 +240,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let task_cap = t.budget_usd.unwrap_or(f.budget.per_task_usd);
     let prior = f.store.attempts(id).env()?;
     let prior_ops = f.store.ops(id).env()?;
-    let done_directives: HashSet<i64> = prior
+    let mut done_directives: HashSet<i64> = prior
         .iter()
         .filter(|a| a.state == AttemptState::Succeeded)
         .map(|a| a.step_seq)
@@ -435,6 +435,39 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     )?;
                     last = a.state;
                     last_reason = a.reason.clone();
+                    // A check that failed only inside the verification namespace
+                    // is the test author's failure, not the coder's: the coder
+                    // cannot see those files. Back to the tests step, within its
+                    // attempts; this attempt does not count against the coder.
+                    if a.state == AttemptState::ChecksFailed
+                        && step.action.contract != "tests"
+                        && let Some((check, tail)) =
+                            verify::tests_fault(&verdict.checks, &cfg.namespace)
+                        && let Some(t_idx) = (0..idx)
+                            .rev()
+                            .find(|&i| resolved.steps[i].action.contract == "tests")
+                    {
+                        let t_seq = t_idx as i64 + 1;
+                        let t_used = *used.get(&t_seq).unwrap_or(&0);
+                        if t_used < t.max_attempts {
+                            *used.entry(seq).or_insert(1) -= 1;
+                            f.report.emit(id, Event::Note { text: &format!("verify   {check} failed inside {}; back to {} for another attempt", cfg.namespace.join(" "), resolved.steps[t_idx].action.name) });
+                            owed.insert(t_seq, format!("The repository's `{check}` check failed on the implementer's tree, and every error is inside your tests:\n{tail}\nThe implementer cannot see or edit those files. Fix your tests so the repository's checks pass with them in place, commit, and describe the interface again."));
+                            done_directives.retain(|&d| d < t_seq);
+                            // The coder starts over against the corrected tests.
+                            git::reset_hard(Path::new(&t.worktree), &t.base_sha)
+                                .await
+                                .task()?;
+                            idx = t_idx;
+                            continue 'steps;
+                        }
+                        last_reason = format!(
+                            "check {check} failed inside the verification namespace after {t_used} tests attempt(s): {}",
+                            tail.lines().next().unwrap_or("")
+                        );
+                        all_ok = false;
+                        break 'steps;
+                    }
                     match a.state {
                         AttemptState::Succeeded => {
                             if step.action.contract == "tests" {

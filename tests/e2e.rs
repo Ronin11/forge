@@ -1303,6 +1303,78 @@ fn an_overlaying_operation_sees_the_hidden_suite() {
 }
 
 #[test]
+fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
+    let e = Env::new();
+    tdd_repo(&e);
+    let toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        toml.replace(
+            "[checks]\n",
+            "[checks]\nlint = [\"bash\", \"-c\", \"! grep -rn TODO tests/acceptance\"]\n",
+        ),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "lint rejects TODO"]);
+    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter-todo.sh");
+    let mut c = e.cmd("ok.sh");
+    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "tdd",
+            "--retries",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("lint failed inside tests/acceptance/; back to tests for another attempt"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    let states: Vec<&str> = a.iter().map(|x| x.1.as_str()).collect();
+    assert_eq!(
+        states,
+        vec!["succeeded", "checks_failed", "succeeded", "succeeded"],
+        "tests, coder (lint on the hidden file), tests again, coder again"
+    );
+    assert!(e.task(1).2, "pushed");
+
+    // With no attempt left for the test author, the task fails and says whose fault it was.
+    let mut c = e.cmd("ok.sh");
+    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 again",
+            "--workflow",
+            "tdd",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(
+        reason.starts_with(
+            "check lint failed inside the verification namespace after 1 tests attempt(s):"
+        ),
+        "{reason}"
+    );
+    let o = e.forge("ok.sh", &["show", "2"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("test author could not fix them"));
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
