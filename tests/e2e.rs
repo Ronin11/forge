@@ -1869,9 +1869,14 @@ fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     assert_eq!(state, "failed");
     assert!(reason.starts_with("operation graph-check (verifies) failed after 1 attempt(s): docs/SYSTEM.md names paths that do not exist"), "{reason}");
     let o = e.forge("ok.sh", &["trace", "2"]);
+    let trace = String::from_utf8_lossy(&o.stdout);
     assert!(
-        String::from_utf8_lossy(&o.stdout).contains("src/sim/index.ts"),
+        trace.contains("docs/missing.md"),
         "the missing path is named in the trace"
+    );
+    assert!(
+        !trace.contains("export/import"),
+        "prose with a slash is not a path"
     );
 }
 

@@ -360,7 +360,10 @@ set -e
 f=docs/SYSTEM.md
 test -f "$f" || { echo "$f is missing"; exit 1; }
 grep -qE '^```mermaid' "$f" || { echo "$f has no mermaid block"; exit 1; }
-missing=$(grep -oE '\b[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+' "$f" | grep -vE '^(https?:|[0-9])' | sed -E 's/[.,;:)]+$//' | sort -u \
+# A path is a slash-separated token whose first segment is a top-level entry of the tree,
+# so prose like "export/import" is left alone.
+tops=$(git ls-tree --name-only HEAD | tr '\n' '|' | sed 's/|$//')
+missing=$(grep -oE '\b[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+' "$f" | grep -E "^($tops)/" | sed -E 's/[.,;:)]+$//' | sort -u \
   | while read -r p; do git ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || test -d "$p" || echo "$p"; done)
 if [ -n "$missing" ]; then
   echo "$f names paths that do not exist in the tree:"
