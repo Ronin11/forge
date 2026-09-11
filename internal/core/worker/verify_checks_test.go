@@ -37,6 +37,31 @@ func TestRunChecksKillsWhatTheCheckLeftRunning(t *testing.T) {
 	}
 }
 
+// TestRunChecksRunsSetupFirst is the fresh-clone case: "build" sorts before
+// "setup", so in plain name order the build runs against a tree nothing has
+// installed into yet. The rest keep name order.
+func TestRunChecksRunsSetupFirst(t *testing.T) {
+	dir := t.TempDir()
+	needsInstall := []string{"sh", "-c", "test -f installed"}
+	ft := &ForgeToml{Checks: map[string][]string{
+		"typecheck": needsInstall,
+		"setup":     {"sh", "-c", "touch installed"},
+		"build":     needsInstall,
+		"test":      needsInstall,
+	}}
+	results := RunChecks(context.Background(), dir, ft, os.Environ())
+	var order []string
+	for _, r := range results {
+		order = append(order, r.Check)
+		if !r.Passed {
+			t.Errorf("check %s failed: %q", r.Check, r.OutputTail)
+		}
+	}
+	if got := strings.Join(order, ","); got != "setup,build,test,typecheck" {
+		t.Errorf("order = %s, want setup,build,test,typecheck", got)
+	}
+}
+
 // TestRunChecksKeepsTheOutputTailBounded: a check that prints more than the
 // tail Forge keeps is truncated to its end, where the failures are.
 func TestRunChecksKeepsTheOutputTailBounded(t *testing.T) {

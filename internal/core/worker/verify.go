@@ -147,7 +147,11 @@ const checkTailBytes = 64 << 10
 
 // RunChecks runs every declared check in the worktree, in name order, each in
 // its own process group with a timeout, and returns all results — Forge's own
-// measurement, never the agent's claim.
+// measurement, never the agent's claim. A check named "setup" runs first: a
+// `setup = [...]` written under [checks] instead of above it is still an
+// install step, and in plain name order "build" ran before it — green in the
+// agent's worktree, "tsc: command not found" in the merge gate's fresh clone
+// (the 2026-09-10 rebuild-equitizr bench lost its whole stack to this).
 func RunChecks(ctx context.Context, worktree string, ft *ForgeToml, env []string) []CheckResult {
 	if ft == nil || len(ft.Checks) == 0 {
 		return nil
@@ -156,7 +160,12 @@ func RunChecks(ctx context.Context, worktree string, ft *ForgeToml, env []string
 	for n := range ft.Checks {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		if si, sj := names[i] == "setup", names[j] == "setup"; si != sj {
+			return si
+		}
+		return names[i] < names[j]
+	})
 	var out []CheckResult
 	for _, name := range names {
 		out = append(out, runCheck(ctx, worktree, name, ft.Checks[name], ft.CheckTimeouts[name], env))

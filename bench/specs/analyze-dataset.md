@@ -18,7 +18,7 @@ whole thing rebuilds from an empty directory to the same numbers.
 HARD SEQUENCING RULE (three benches have now shipped with an empty
 [checks] table): the FIRST task of the plan must wire forge.toml's [checks]
 with at least a build/typecheck command that runs green on the scaffold,
-AND a `setup` command (e.g. `setup = ["npm", "ci"]`) that makes a fresh
+AND a top-level `setup` command (`setup = ["npm", "ci"]` ABOVE the [checks] header) that makes a fresh
 clone check-ready — the merge gate runs checks in a clone that has never
 installed anything, so without setup every merge dies on missing
 dependencies. Every later task keeps both green and extends the checks. A final product whose
