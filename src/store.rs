@@ -223,6 +223,8 @@ pub struct Op {
     pub exit: Option<i32>,
     pub detail: String,
     pub attempt_id: Option<i64>,
+    /// What the operation produced, when it produces a value: its stdout.
+    pub output: String,
 }
 
 pub struct TaskSummary {
@@ -333,6 +335,9 @@ CREATE TABLE ops (
   attempt_id INTEGER
 );
 CREATE INDEX ops_task ON ops(task_id, id);
+",
+    "
+ALTER TABLE ops ADD COLUMN output TEXT NOT NULL DEFAULT '';
 ",
 ];
 
@@ -637,9 +642,9 @@ impl Store {
     pub fn insert_op(&self, o: &Op) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id],
+            "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id, o.output],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -647,7 +652,7 @@ impl Store {
     pub fn ops(&self, task_id: i64) -> Result<Vec<Op>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id FROM ops WHERE task_id=?1 ORDER BY id",
+            "SELECT id, task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output FROM ops WHERE task_id=?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![task_id], |r| {
             Ok(Op {
@@ -662,6 +667,7 @@ impl Store {
                 exit: r.get(8)?,
                 detail: r.get(9)?,
                 attempt_id: r.get(10)?,
+                output: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

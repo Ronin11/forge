@@ -72,6 +72,39 @@ pub async fn clone_task(repo: &Path, base: &str, dir: &Path, branch: &str) -> Re
     Ok(base_sha)
 }
 
+/// Stage everything and commit as Forge, for what an operation changed.
+/// Returns the new commit, or `None` when there was nothing to commit.
+/// Ignored files stay ignored, as they do for the agent.
+pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
+    git(dir, &["add", "-A"]).await?;
+    let staged = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["diff", "--cached", "--quiet"])
+        .status()
+        .await
+        .context("git diff --cached")?;
+    if staged.success() {
+        return Ok(None);
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .envs(identity(&dir.join(".git")).await)
+        .args(["commit", "--quiet", "--no-verify", "-m", message])
+        .output()
+        .await
+        .context("git commit")?;
+    if !out.status.success() {
+        bail!(
+            "git commit failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(Some(git(dir, &["rev-parse", "HEAD"]).await?))
+}
+
 pub async fn head(dir: &Path) -> Result<String> {
     git(dir, &["rev-parse", "HEAD"]).await
 }

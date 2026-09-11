@@ -109,10 +109,18 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
     if let Some(rest) = t.reason.strip_prefix("operation ") {
         let name = rest.split_whitespace().next().unwrap_or("?");
         let timed_out = t.reason.contains("timed out after");
+        let after_change = ["L0 failed", "L1 failed", "L2 failed"]
+            .iter()
+            .any(|m| t.reason.contains(m));
+        let verifies = rest.contains("(verifies)");
         out.push(d(
             &t.reason,
-            &if timed_out {
+            &if verifies {
+                format!("The `{name}` verification kept failing after every attempt the coder had. Read its output in the trace; if the suite is right, the task needs more attempts or a smaller scope; if the suite is wrong, fix it on the forge-verify branch.")
+            } else if timed_out {
                 format!("Operation `{name}` hit its timeout. Raise timeout_secs in workflows/actions/{name}.toml or make the command faster; operations are deterministic, so a retry would time out again.")
+            } else if after_change {
+                format!("Operation `{name}` changed the tree and the result failed verification; its commit is on the branch for inspection. Fix what the operation does in workflows/actions/{name}.toml, or the check it broke, and re-add the task.")
             } else {
                 format!("Operation `{name}` is deterministic, so a retry would fail the same way. Fix the command in workflows/actions/{name}.toml, or, for a `check` operation, the repository's own check on its base branch; then re-add the task.")
             },

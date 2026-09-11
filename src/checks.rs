@@ -35,6 +35,10 @@ pub struct CheckResult {
     pub tail: String,
     #[serde(default)]
     pub failing_tests: Vec<String>,
+    /// Stdout alone, same bound as the tail: what an operation that
+    /// produces a value hands on. Not serialized with the verdict.
+    #[serde(skip)]
+    pub stdout: String,
 }
 
 /// Keeps the last `TAIL_BYTES` written to it.
@@ -54,7 +58,11 @@ impl Tail {
     }
 }
 
-async fn drain(mut r: impl AsyncReadExt + Unpin, tail: Arc<Mutex<Tail>>) {
+async fn drain(
+    mut r: impl AsyncReadExt + Unpin,
+    tail: Arc<Mutex<Tail>>,
+    own: Option<Arc<Mutex<Tail>>>,
+) {
     let mut buf = [0u8; 8192];
     while let Ok(n) = r.read(&mut buf).await {
         if n == 0 {
@@ -63,6 +71,9 @@ async fn drain(mut r: impl AsyncReadExt + Unpin, tail: Arc<Mutex<Tail>>) {
         tail.lock()
             .unwrap_or_else(|p| p.into_inner())
             .write(&buf[..n]);
+        if let Some(o) = &own {
+            o.lock().unwrap_or_else(|p| p.into_inner()).write(&buf[..n]);
+        }
     }
 }
 
@@ -89,6 +100,8 @@ pub fn failing_tests(out: &str) -> Vec<String> {
     names
 }
 
+/// `env` is added to the agent environment; checks get none, operations
+/// get the task's facts (`FORGE_BASE_SHA` and friends).
 pub async fn run_one(
     level: &str,
     name: &str,
@@ -96,6 +109,7 @@ pub async fn run_one(
     cwd: &Path,
     sandbox: Option<&Sandbox>,
     timeout: Duration,
+    env: &[(String, String)],
 ) -> CheckResult {
     let start = Instant::now();
     let mut r = CheckResult {
@@ -103,7 +117,7 @@ pub async fn run_one(
         name: name.to_string(),
         ..Default::default()
     };
-    let mut std_cmd = crate::agent::command_in(sandbox, cwd, argv, &[]);
+    let mut std_cmd = crate::agent::command_in(sandbox, cwd, argv, env);
     // Unsandboxed checks get their own process group so a backgrounded
     // child can be killed with them; bwrap's --new-session does the same.
     std_cmd.process_group(0);
@@ -123,12 +137,13 @@ pub async fn run_one(
     };
     let pid = child.id();
     let tail = Arc::new(Mutex::new(Tail::default()));
+    let stdout = Arc::new(Mutex::new(Tail::default()));
     let mut readers = tokio::task::JoinSet::new();
     if let Some(out) = child.stdout.take() {
-        readers.spawn(drain(out, tail.clone()));
+        readers.spawn(drain(out, tail.clone(), Some(stdout.clone())));
     }
     if let Some(err) = child.stderr.take() {
-        readers.spawn(drain(err, tail.clone()));
+        readers.spawn(drain(err, tail.clone(), None));
     }
 
     match tokio::time::timeout(timeout, child.wait()).await {
@@ -159,6 +174,7 @@ pub async fn run_one(
         readers.abort_all();
     }
     let text = tail.lock().unwrap_or_else(|p| p.into_inner()).string();
+    r.stdout = stdout.lock().unwrap_or_else(|p| p.into_inner()).string();
     r.failing_tests = failing_tests(&text);
     if r.timed_out {
         r.tail = format!("{text}\n[forge] timed out after {}s", timeout.as_secs());
@@ -221,7 +237,16 @@ random FAIL text
             "sleep 30 & echo started; exit 3".into(),
         ];
         let start = Instant::now();
-        let r = run_one("L1", "bg", &argv, dir.path(), None, Duration::from_secs(20)).await;
+        let r = run_one(
+            "L1",
+            "bg",
+            &argv,
+            dir.path(),
+            None,
+            Duration::from_secs(20),
+            &[],
+        )
+        .await;
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "took {:?}",
@@ -230,5 +255,34 @@ random FAIL text
         assert_eq!(r.exit, Some(3));
         assert!(!r.timed_out);
         assert!(r.tail.contains("started"), "{}", r.tail);
+        assert_eq!(r.stdout.trim(), "started");
+    }
+
+    #[tokio::test]
+    async fn stdout_is_kept_apart_from_the_merged_tail_and_env_reaches_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = vec![
+            "bash".into(),
+            "-c".into(),
+            "echo out-$FORGE_X; echo err >&2".into(),
+        ];
+        let env = vec![("FORGE_X".to_string(), "1".to_string())];
+        let r = run_one(
+            "OP",
+            "e",
+            &argv,
+            dir.path(),
+            None,
+            Duration::from_secs(5),
+            &env,
+        )
+        .await;
+        assert!(r.ok);
+        assert_eq!(r.stdout, "out-1\n");
+        assert!(
+            r.tail.contains("out-1") && r.tail.contains("err"),
+            "{}",
+            r.tail
+        );
     }
 }

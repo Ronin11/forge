@@ -16,7 +16,7 @@ use crate::verify::{self, Subject, TestsSubject, Verdict};
 use crate::workflows::{self, Kind, ResolvedStep};
 use crate::{agent, checks, config, git, unix_now};
 use anyhow::Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +86,7 @@ fn op(
     exit: Option<i32>,
     detail: &str,
     attempt_id: Option<i64>,
+    output: &str,
 ) -> Result<(), Fault> {
     f.store
         .insert_op(&Op {
@@ -99,6 +100,7 @@ fn op(
             exit,
             detail: detail.into(),
             attempt_id,
+            output: output.into(),
             ..Default::default()
         })
         .env()?;
@@ -194,6 +196,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 .map(|s| s[..8].to_string())
                 .unwrap_or_else(|e| format!("{e:#}")),
             None,
+            "",
         )?;
         t.base_sha = r.task()?;
         t.worktree = dir.display().to_string();
@@ -253,28 +256,79 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut budget_stop: Option<String> = None;
     let mut all_ok = true;
 
-    'steps: for (idx, step) in resolved.steps.iter().enumerate() {
+    // Attempts used per directive by this worker (a resumed task's earlier
+    // attempts were ended by a worker that died, not by the agent), and
+    // feedback owed to a directive by a verifying operation that failed.
+    let mut used: HashMap<i64, i64> = HashMap::new();
+    let mut owed: HashMap<i64, String> = HashMap::new();
+    let mut idx = 0usize;
+    'steps: while idx < resolved.steps.len() {
+        let step = &resolved.steps[idx];
         seq = idx as i64 + 1;
         match step.action.kind {
             Kind::Operation => {
-                if done_ops.contains(&seq) {
+                // A mutating operation counts as done only once the kernel
+                // verified what it committed; a worker that died in between
+                // runs it again, which is harmless: it is deterministic and
+                // a second commit finds nothing to commit. A verifying
+                // operation always runs again after the directive it judges.
+                let verified_here = prior_ops
+                    .iter()
+                    .any(|o| o.kernel && o.name == "verify" && o.seq == seq && o.ok);
+                if done_ops.contains(&seq)
+                    && (!step.action.mutates() || verified_here)
+                    && !step.action.verifies
+                {
+                    idx += 1;
                     continue;
                 }
-                let (ok, exit, detail) = run_operation(&f, &t, &cfg, step, seq).await?;
-                if !ok {
+                let (ok, detail) = run_operation(&f, &mut t, &cfg, step, seq).await?;
+                if ok {
+                    idx += 1;
+                    continue;
+                }
+                if step.action.verifies
+                    && let Some(d_idx) = (0..idx)
+                        .rev()
+                        .find(|&i| resolved.steps[i].action.kind == Kind::Directive)
+                {
+                    let d_seq = d_idx as i64 + 1;
+                    if *used.get(&d_seq).unwrap_or(&0) < t.max_attempts {
+                        let d_name = resolved.steps[d_idx].action.name.clone();
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!(
+                                    "verify   {} failed; back to {} for another attempt",
+                                    step.action.name, d_name
+                                ),
+                            },
+                        );
+                        owed.insert(d_seq, format!("The `{}` verification failed after your change:\n{}\nFix it, leave the tree clean, and commit.", step.action.name, detail));
+                        idx = d_idx;
+                        continue;
+                    }
                     last = AttemptState::ChecksFailed;
                     last_reason = format!(
-                        "operation {} failed: {}",
+                        "operation {} (verifies) failed after {} attempt(s): {}",
                         step.action.name,
+                        used.get(&d_seq).unwrap_or(&0),
                         detail.lines().next().unwrap_or("")
                     );
                     all_ok = false;
                     break;
                 }
-                let _ = exit;
+                last = AttemptState::ChecksFailed;
+                last_reason = format!(
+                    "operation {} failed: {}",
+                    step.action.name,
+                    detail.lines().next().unwrap_or("")
+                );
+                all_ok = false;
+                break;
             }
             Kind::Directive => {
-                if done_directives.contains(&seq) {
+                if done_directives.contains(&seq) && !owed.contains_key(&seq) {
                     f.report.emit(
                         id,
                         Event::Note {
@@ -284,6 +338,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             ),
                         },
                     );
+                    idx += 1;
                     continue;
                 }
                 // Per-step parameters: the workflow's override, else the action's default, else the task's.
@@ -297,9 +352,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 if let Some(n) = step.timeout_secs {
                     ts.timeout_secs = n as i64;
                 }
-                let mut feedback: Option<String> = None;
+                let mut feedback: Option<String> = owed.remove(&seq);
                 let mut step_ok = false;
-                for n in 1..=t.max_attempts {
+                while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
                     let spent = f.store.task_cost(id).env()?;
                     if spent >= task_cap {
                         budget_stop = Some(format!(
@@ -308,6 +363,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         all_ok = false;
                         break 'steps;
                     }
+                    *used.entry(seq).or_insert(0) += 1;
+                    let n = used[&seq];
                     attempt_no += 1;
                     f.report.emit(
                         id,
@@ -374,6 +431,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         None,
                         &a.reason,
                         Some(a.id),
+                        "",
                     )?;
                     last = a.state;
                     last_reason = a.reason.clone();
@@ -420,6 +478,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     all_ok = false;
                     break;
                 }
+                idx += 1;
             }
         }
     }
@@ -447,7 +506,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         },
                     );
                     op(
-                        &f, id, seq, "push", true, started, start, true, None, &t.branch, None,
+                        &f, id, seq, "push", true, started, start, true, None, &t.branch, None, "",
                     )?;
                 }
                 Err(e) => {
@@ -470,6 +529,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         None,
                         &format!("{e:#}"),
                         None,
+                        "",
                     )?;
                 }
             }
@@ -513,17 +573,65 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     Ok(t.state)
 }
 
-/// A user operation: one command in the sandbox against the clone, or the
-/// repository's declared check of that name. Exit code decides. A `check`
-/// the repository does not declare is skipped and recorded as such.
+/// The refs whose namespace files are overlaid before L1: the standing
+/// suite when the repository has one, the task's own tests when it has
+/// some.
+async fn overlay_refs(repo: &Path, task_id: i64) -> Vec<String> {
+    let mut refs = Vec::new();
+    if git::ref_exists(repo, "refs/heads/forge-verify").await {
+        refs.push("forge-verify".to_string());
+    }
+    let own = format!("verify/{task_id}");
+    if git::ref_exists(repo, &format!("refs/heads/{own}")).await {
+        refs.push(own);
+    }
+    refs
+}
+
+/// What an operation is told about its task, as environment. Facts only,
+/// each one already recorded on the task.
+fn operation_env(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = [
+        ("FORGE_TASK_ID", t.id.to_string()),
+        ("FORGE_WORKFLOW", t.workflow.clone()),
+        ("FORGE_STEP", step.action.name.clone()),
+        ("FORGE_BASE_BRANCH", t.base_branch.clone()),
+        ("FORGE_BASE_SHA", t.base_sha.clone()),
+        ("FORGE_BRANCH", t.branch.clone()),
+        ("FORGE_NAMESPACE", cfg.namespace.join(" ")),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    if step.action.reads_verify_ref() {
+        env.push(("FORGE_VERIFY_REF".into(), format!("verify/{}", t.id)));
+    }
+    env
+}
+
+fn op_scratch_dir(worktree: &str) -> PathBuf {
+    PathBuf::from(format!("{worktree}-op"))
+}
+
+/// A user operation: one command in the sandbox, or the repository's
+/// declared check of that name. Exit code decides. A `check` the
+/// repository does not declare is skipped and recorded as such.
+///
+/// Where it runs: the clone, unless it consumes `verify_ref`, in which
+/// case a scratch copy of base with the task's hidden tests overlaid, so
+/// the coder's tree never holds them. What it may produce: `interface`,
+/// its stdout, handed to the next code directive; `branch`, in which case
+/// the kernel commits what it changed and verifies the result exactly as
+/// after a directive, minus the envelope rows, because there is no claim.
 async fn run_operation(
     f: &Forge,
-    t: &Task,
+    t: &mut Task,
     cfg: &config::Config,
     step: &ResolvedStep,
     seq: i64,
-) -> Result<(bool, Option<i32>, String), Fault> {
-    let wt = Path::new(&t.worktree);
+) -> Result<(bool, String), Fault> {
+    let wt = PathBuf::from(&t.worktree);
+    let repo = PathBuf::from(&t.repo);
     let started = unix_now();
     let start = Instant::now();
     let timeout = Duration::from_secs(
@@ -549,8 +657,9 @@ async fn run_operation(
                     None,
                     &detail,
                     None,
+                    "",
                 )?;
-                return Ok((true, None, detail));
+                return Ok((true, detail));
             }
         },
         (None, None) => {
@@ -560,15 +669,59 @@ async fn run_operation(
             )));
         }
     };
+    let env = operation_env(t, cfg, step);
+    let scratch = step
+        .action
+        .reads_verify_ref()
+        .then(|| op_scratch_dir(&t.worktree));
+    let cwd: PathBuf = match &scratch {
+        Some(dir) => {
+            let _ = std::fs::remove_dir_all(dir);
+            git::archive_all(&repo, &t.base_sha, dir).await.task()?;
+            let vref = format!("verify/{}", t.id);
+            let files = git::ls_tree(&repo, &vref, &cfg.namespace).await.task()?;
+            git::archive_into(&repo, &vref, &files, dir).await.task()?;
+            dir.clone()
+        }
+        None => wt.clone(),
+    };
+    let start_sha = git::head(&wt).await.task()?;
+    // A hidden suite: overlay the verification namespace for the run, then
+    // take it away again so the next directive starts blind.
+    let placed = if step.action.overlay && scratch.is_none() {
+        let refs = overlay_refs(&repo, t.id).await;
+        let placed = crate::verify::overlay(&repo, &refs, &cfg.namespace, &wt)
+            .await
+            .task()?;
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!(
+                    "overlay  {} file(s) from {} for {}",
+                    placed.len(),
+                    refs.join(", "),
+                    step.action.name
+                ),
+            },
+        );
+        placed
+    } else {
+        Vec::new()
+    };
     let r = checks::run_one(
         "OP",
         &step.action.name,
         &argv,
-        wt,
+        &cwd,
         f.sandbox.as_ref(),
         timeout,
+        &env,
     )
     .await;
+    if let Some(dir) = &scratch {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    crate::verify::remove_overlay(&placed, &cfg.namespace, &wt);
     let detail = if r.ok {
         format!("exit 0 in {:.1}s", r.ms as f64 / 1000.0)
     } else if r.timed_out {
@@ -587,6 +740,11 @@ async fn run_operation(
         };
         format!("{head}\n{tail}")
     };
+    let output = if r.ok && step.action.yields_interface() {
+        r.stdout.trim().to_string()
+    } else {
+        String::new()
+    };
     op(
         f,
         t.id,
@@ -599,8 +757,95 @@ async fn run_operation(
         r.exit,
         &detail,
         None,
+        &output,
     )?;
-    Ok((r.ok, r.exit, detail))
+    if !r.ok {
+        return Ok((false, detail));
+    }
+    if step.action.yields_interface() {
+        t.interface = output;
+        f.store.update_task(t).env()?;
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!(
+                    "interface {} line(s) from {}",
+                    t.interface.lines().count(),
+                    step.action.name
+                ),
+            },
+        );
+    }
+    if step.action.mutates() {
+        let started = unix_now();
+        let start = Instant::now();
+        let committed = git::commit_all(&wt, &format!("forge: {}", step.action.name))
+            .await
+            .task()?;
+        let Some(sha) = committed else {
+            op(
+                f,
+                t.id,
+                seq,
+                "verify",
+                true,
+                started,
+                start,
+                true,
+                None,
+                "no changes; the verified tree stands",
+                None,
+                "",
+            )?;
+            return Ok((true, detail));
+        };
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!("commit   {} by {}", &sha[..8], step.action.name),
+            },
+        );
+        let overlay_refs = overlay_refs(&repo, t.id).await;
+        let v = verify::verify_operation(Subject {
+            task_id: t.id,
+            repo: &repo,
+            worktree: &wt,
+            base_sha: &t.base_sha,
+            start_sha: &start_sha,
+            cfg,
+            task_checks: &t.checks,
+            paths: &[],
+            allow_protected: t.allow_protected,
+            overlay_refs: &overlay_refs,
+            sandbox: f.sandbox.as_ref(),
+            report: &f.report,
+        })
+        .await
+        .task()?;
+        let ok = v.state == AttemptState::Succeeded;
+        op(
+            f,
+            t.id,
+            seq,
+            "verify",
+            true,
+            started,
+            start,
+            ok,
+            None,
+            &if ok {
+                format!("{} file(s) committed as {}", v.files_changed, &sha[..8])
+            } else {
+                v.reason.clone()
+            },
+            None,
+            "",
+        )?;
+        if !ok {
+            return Ok((false, v.reason));
+        }
+    }
+    Ok((true, detail))
 }
 
 fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
@@ -860,14 +1105,7 @@ async fn run_code_attempt(
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
     let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback);
-    let mut overlay_refs = Vec::new();
-    if git::ref_exists(repo, "refs/heads/forge-verify").await {
-        overlay_refs.push("forge-verify".to_string());
-    }
-    let own = format!("verify/{}", t.id);
-    if git::ref_exists(repo, &format!("refs/heads/{own}")).await {
-        overlay_refs.push(own);
-    }
+    let overlay_refs = overlay_refs(repo, t.id).await;
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
         interface: (!t.interface.is_empty()).then(|| t.interface.clone()),

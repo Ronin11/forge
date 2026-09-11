@@ -74,6 +74,15 @@ a kernel-enforced contract, which is the difference.
 An operation is a command with a timeout, run in the sandbox against the
 tree; exit code decides, output tail kept, zero dollars.
 
+An operation may set `overlay = true` to run with the verification
+namespace overlaid from the trusted refs, which is how a hidden suite on
+`forge-verify` (a Playwright suite, say) runs against the branch without
+the coder ever seeing it; the overlay is removed afterwards. It may set
+`verifies = true` to make its failure the preceding directive's failure:
+the output goes back to that directive as a retry, within its attempts,
+instead of failing the task one shot. A verifying operation must follow a
+directive.
+
 Two classes. Kernel operations are inserted by the engine and cannot be
 listed, omitted, or reordered: `verify` after every directive, `push`
 after the last action, `integrate` when it exists. They appear in the
@@ -81,10 +90,56 @@ trace as rows. User operations are listed in a workflow: `setup` before
 the coder starts, a benchmark after it, a generator for derived files. A
 user operation may not shadow a kernel name.
 
+Decided 2026-09-10: three things an operation may do beyond gating, each
+declared in its file and each enforced by the kernel.
+
+- **It is told the task's facts.** Every operation runs with
+  `FORGE_TASK_ID`, `FORGE_WORKFLOW`, `FORGE_STEP`, `FORGE_BASE_BRANCH`,
+  `FORGE_BASE_SHA`, `FORGE_BRANCH`, and `FORGE_NAMESPACE` (the verification
+  directories, space-separated) in its environment, and nothing else of
+  Forge's. Each is already recorded on the task; the operation learns
+  nothing the trace does not show. This is what lets an operation judge
+  the change rather than the tree: `git diff $FORGE_BASE_SHA`.
+- **It may change the tree.** An operation with `produces = ["branch"]`
+  is mutating. After it exits 0 the kernel commits whatever it changed
+  (author Forge, message `forge: <name>`) and verifies the result: L0 on
+  the tree alone (clean, protected paths untouched, nothing under the
+  namespace; there is no envelope, so no claim rows), then L1 and L2
+  exactly as after a directive. The verdict is a `verify` row at the
+  operation's seq. A failure fails the task; there is no agent to retry
+  and the commit stays on the branch for inspection. If the operation
+  changed nothing, nothing is committed and the verify row says so. The
+  invariant this keeps is the one that matters: the tree pushed is the
+  tree verified. What it buys: a formatter or a generator that runs at
+  zero dollars instead of costing a retry at LLM price.
+- **It may produce the interface.** An operation with
+  `produces = ["interface"]` hands its stdout to the next code directive as
+  the interface, replacing whatever a `tests` directive said. A summary
+  from an agent is a claim; a list extracted from the tests is a fact. An
+  operation that `consumes = ["verify_ref"]` runs not in the clone but in a
+  scratch copy of the base commit with the task's verify ref overlaid,
+  and the scratch is removed afterwards: the coder's tree never holds the
+  hidden tests, and the scratch has no git history. The output is
+  recorded on the operation's row and shown by `forge trace`.
+
+An operation may produce only `branch` and `interface`; `verify_ref` and
+`verdict` are a directive's and the kernel's. A mutating operation
+produces a `verdict` for the data-flow check, since the kernel verifies
+after it.
+
+Built-in operations, written on first use next to the directives and
+never overwritten: `setup` (the repository's setup check), `diff-size`
+(fails past a cap on lines and files changed against base; the caps are
+the last two elements of `run`), `fmt` (runs the formatter the tree's
+layout suggests and commits the result), and `interface` (the files under
+the namespace, what they import, and the names they call, never the
+assertions). Each is a starting point the operator edits, and every edit
+is a new hash with its own numbers.
+
 ## Data flow
 
 Each action declares what it consumes and produces from a small
-vocabulary: `branch`, `verify_ref`, `interface`, `verdict`. The validator
+vocabulary: `branch`, `verify_ref`, `interface`, `verdict`, `review`. The validator
 checks the chain in order, so `code` after `tests` provably receives an
 interface, and an operation placed before the branch exists is rejected at
 load, not at three in the morning. The inputs and outputs recorded per
@@ -117,6 +172,7 @@ forms, one now and one later.
 | `polish` | setup, code, polish |
 | `reviewed` | setup, code, review |
 | `tdd-reviewed` | (tdd), review |
+| `playable` | setup, code, playwright (hidden suite, verifies) |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.

@@ -407,7 +407,17 @@ fn list_workflows(json: bool) -> Result<()> {
     out!();
     for a in actions.values() {
         let what = match (&a.run, &a.check) {
-            (Some(r), _) => format!("run {}", r.join(" ")),
+            (Some(r), _) => format!(
+                "run {}",
+                r.iter()
+                    .map(|a| match a.trim().split_once('\n') {
+                        // A multi-line script: its first line stands for it.
+                        Some((first, _)) => format!("{first} …"),
+                        None => a.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             (None, Some(c)) => format!("repo check `{c}`"),
             _ => {
                 if a.contract != a.name {
@@ -417,8 +427,12 @@ fn list_workflows(json: bool) -> Result<()> {
                 }
             }
         };
+        let flow = match (a.consumes.is_empty(), a.produces.is_empty()) {
+            (true, true) => String::new(),
+            _ => format!("  {} → {}", a.consumes.join(","), a.produces.join(",")),
+        };
         out!(
-            "{:<12} {}  {:<10} {}{}",
+            "{:<12} {}  {:<10} {}{}{}",
             a.name,
             &a.hash[..8],
             format!("{:?}", a.kind).to_lowercase(),
@@ -427,7 +441,8 @@ fn list_workflows(json: bool) -> Result<()> {
                 String::new()
             } else {
                 format!("  [{what}]")
-            }
+            },
+            flow
         );
         if let Some(c) = workflows::commit_for(&f.paths.home, &a.hash) {
             out!("             since      {c}");
@@ -474,7 +489,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
             "attempts": atts,
-            "ops": ops.iter().map(|o| serde_json::json!({"id": o.id, "seq": o.seq, "name": o.name, "kernel": o.kernel, "started_at": o.started_at, "ms": o.ms, "ok": o.ok, "exit": o.exit, "detail": o.detail, "attempt_id": o.attempt_id})).collect::<Vec<_>>(),
+            "ops": ops.iter().map(|o| serde_json::json!({"id": o.id, "seq": o.seq, "name": o.name, "kernel": o.kernel, "started_at": o.started_at, "ms": o.ms, "ok": o.ok, "exit": o.exit, "detail": o.detail, "attempt_id": o.attempt_id, "output": o.output})).collect::<Vec<_>>(),
             "resolved": serde_json::from_str::<serde_json::Value>(&t.actions_json).unwrap_or_default(),
             "diagnosis": diagnosis.iter().map(|d| serde_json::json!({"what": d.what, "action": d.action})).collect::<Vec<_>>(),
         });
@@ -517,6 +532,9 @@ fn trace(id: i64, json: bool) -> Result<()> {
             o.ms as f64 / 1000.0,
             o.detail.lines().next().unwrap_or("")
         );
+        for l in o.output.lines().take(12) {
+            out!("           > {l}");
+        }
     }
     for a in &attempts {
         out!();

@@ -208,7 +208,7 @@ fn emit_rows(report: &Reporter, task_id: i64, rows: &[CheckResult]) {
 
 /// Overlay the namespace files from each trusted ref into the tree.
 /// Returns the files placed, for removal afterwards.
-async fn overlay(
+pub async fn overlay(
     repo: &Path,
     refs: &[String],
     namespace: &[String],
@@ -226,7 +226,7 @@ async fn overlay(
     Ok(placed)
 }
 
-fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
+pub fn remove_overlay(placed: &[PathBuf], namespace: &[String], dest: &Path) {
     for f in placed {
         let _ = std::fs::remove_file(f);
     }
@@ -280,150 +280,12 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
     if agent_reason.is_none() {
         v.checks = rows;
         question = q;
-        if !s.cfg.protected.is_empty() && !s.allow_protected {
-            let hit: Vec<&str> = changed
-                .iter()
-                .chain(dirty.iter())
-                .map(String::as_str)
-                .filter(|p| is_protected(&s.cfg.protected, p))
-                .collect();
-            v.checks.push(l0(
-                "protected-paths",
-                hit.is_empty(),
-                format!(
-                    "protected paths changed: {}. They guard the product; only a task created with --allow-protected may change them.",
-                    hit.join(", ")
-                ),
-            ));
-        }
-        if !s.paths.is_empty() {
-            let outside: Vec<&str> = changed
-                .iter()
-                .chain(dirty.iter())
-                .map(String::as_str)
-                .filter(|p| !crate::config::in_scope(s.paths, p))
-                .collect();
-            v.checks.push(l0(
-                "paths-in-scope",
-                outside.is_empty(),
-                format!(
-                    "this directive may only change {}; it changed: {}",
-                    s.paths.join(", "),
-                    outside.join(", ")
-                ),
-            ));
-        }
-        if !s.cfg.namespace.is_empty() {
-            let hit: Vec<&str> = changed
-                .iter()
-                .chain(dirty.iter())
-                .map(String::as_str)
-                .filter(|p| in_namespace(&s.cfg.namespace, p))
-                .collect();
-            v.checks.push(l0(
-                "namespace-untouched",
-                hit.is_empty(),
-                format!("files created under the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
-            ));
-        }
+        v.checks.extend(scope_rows(&s, &changed, &dirty));
         emit_rows(s.report, s.task_id, &v.checks);
         let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
 
         if l0_ok {
-            let placed = overlay(s.repo, s.overlay_refs, &s.cfg.namespace, s.worktree).await?;
-            if !placed.is_empty() {
-                s.report.emit(
-                    s.task_id,
-                    Event::Note {
-                        text: &format!(
-                            "overlay  {} verification file(s) from {}",
-                            placed.len(),
-                            s.overlay_refs.join(", ")
-                        ),
-                    },
-                );
-            }
-            let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
-            let mut names: Vec<&String> = s.cfg.checks.keys().collect();
-            names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
-            for name in names {
-                let argv = &s.cfg.checks[name];
-                let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout).await;
-                s.report.emit(
-                    s.task_id,
-                    Event::Check {
-                        level: &r.level,
-                        name: &r.name,
-                        ok: r.ok,
-                        ms: r.ms,
-                        tail: &last_lines(&r.tail, 20),
-                    },
-                );
-                let gate_failed = name == "setup" && !r.ok;
-                v.checks.push(r);
-                if gate_failed {
-                    break;
-                }
-            }
-            if let Some(e) = &env {
-                for claimed in e.checks_run.iter().filter(|c| c.passed) {
-                    let Some(ours) = v
-                        .checks
-                        .iter()
-                        .find(|c| c.level == "L1" && c.name == claimed.check)
-                    else {
-                        continue;
-                    };
-                    if !ours.ok {
-                        let r = CheckResult {
-                            level: "L1".into(),
-                            name: format!("claim:{}", claimed.check),
-                            ok: false,
-                            tail: format!(
-                                "you reported `{}` passed; when Forge ran it, it failed ({})",
-                                claimed.check,
-                                ours.exit
-                                    .map_or("no exit code".into(), |e| format!("exit {e}"))
-                            ),
-                            ..Default::default()
-                        };
-                        s.report.emit(
-                            s.task_id,
-                            Event::Check {
-                                level: &r.level,
-                                name: &r.name,
-                                ok: false,
-                                ms: 0,
-                                tail: &r.tail,
-                            },
-                        );
-                        v.checks.push(r);
-                    }
-                }
-            }
-            let l1_ok = v.checks.iter().filter(|c| c.level == "L1").all(|c| c.ok);
-            if l1_ok {
-                for (i, cmd) in s.task_checks.iter().enumerate() {
-                    let name = format!("task-check-{}", i + 1);
-                    let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
-                    let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout).await;
-                    if !r.ok {
-                        r.tail = format!("$ {cmd}\n{}", r.tail);
-                    }
-                    s.report.emit(
-                        s.task_id,
-                        Event::Check {
-                            level: &r.level,
-                            name: &r.name,
-                            ok: r.ok,
-                            ms: r.ms,
-                            tail: &last_lines(&r.tail, 20),
-                        },
-                    );
-                    v.checks.push(r);
-                }
-            }
-            remove_overlay(&placed, &s.cfg.namespace, s.worktree);
+            l1_l2(&s, env.as_ref(), &mut v.checks).await?;
         }
         v.envelope = env;
     }
@@ -432,6 +294,200 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
         &v.checks,
     );
+    v.state = state;
+    v.reason = reason;
+    Ok(v)
+}
+
+/// L1 then L2 on the tree as it stands: the namespace overlaid from the
+/// trusted refs, the repository's checks, the claim rule against the
+/// envelope when there is one, the task's own commands, then the overlay
+/// removed so the next attempt starts blind. Shared by the verify after a
+/// directive and the verify after an operation that changed the tree.
+async fn l1_l2(
+    s: &Subject<'_>,
+    envelope: Option<&Envelope>,
+    checks: &mut Vec<CheckResult>,
+) -> Result<()> {
+    let placed = overlay(s.repo, s.overlay_refs, &s.cfg.namespace, s.worktree).await?;
+    if !placed.is_empty() {
+        s.report.emit(
+            s.task_id,
+            Event::Note {
+                text: &format!(
+                    "overlay  {} verification file(s) from {}",
+                    placed.len(),
+                    s.overlay_refs.join(", ")
+                ),
+            },
+        );
+    }
+    let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let mut names: Vec<&String> = s.cfg.checks.keys().collect();
+    names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
+    for name in names {
+        let argv = &s.cfg.checks[name];
+        let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout, &[]).await;
+        s.report.emit(
+            s.task_id,
+            Event::Check {
+                level: &r.level,
+                name: &r.name,
+                ok: r.ok,
+                ms: r.ms,
+                tail: &last_lines(&r.tail, 20),
+            },
+        );
+        let gate_failed = name == "setup" && !r.ok;
+        checks.push(r);
+        if gate_failed {
+            break;
+        }
+    }
+    if let Some(e) = envelope {
+        for claimed in e.checks_run.iter().filter(|c| c.passed) {
+            let Some(ours) = checks
+                .iter()
+                .find(|c| c.level == "L1" && c.name == claimed.check)
+            else {
+                continue;
+            };
+            if !ours.ok {
+                let r = CheckResult {
+                    level: "L1".into(),
+                    name: format!("claim:{}", claimed.check),
+                    ok: false,
+                    tail: format!(
+                        "you reported `{}` passed; when Forge ran it, it failed ({})",
+                        claimed.check,
+                        ours.exit
+                            .map_or("no exit code".into(), |e| format!("exit {e}"))
+                    ),
+                    ..Default::default()
+                };
+                s.report.emit(
+                    s.task_id,
+                    Event::Check {
+                        level: &r.level,
+                        name: &r.name,
+                        ok: false,
+                        ms: 0,
+                        tail: &r.tail,
+                    },
+                );
+                checks.push(r);
+            }
+        }
+    }
+    let l1_ok = checks.iter().filter(|c| c.level == "L1").all(|c| c.ok);
+    if l1_ok {
+        for (i, cmd) in s.task_checks.iter().enumerate() {
+            let name = format!("task-check-{}", i + 1);
+            let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
+            let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout, &[]).await;
+            if !r.ok {
+                r.tail = format!("$ {cmd}\n{}", r.tail);
+            }
+            s.report.emit(
+                s.task_id,
+                Event::Check {
+                    level: &r.level,
+                    name: &r.name,
+                    ok: r.ok,
+                    ms: r.ms,
+                    tail: &last_lines(&r.tail, 20),
+                },
+            );
+            checks.push(r);
+        }
+    }
+    remove_overlay(&placed, &s.cfg.namespace, s.worktree);
+    Ok(())
+}
+
+/// The L0 rows about where a change landed: protected paths, the
+/// directive's write scope, the verification namespace.
+fn scope_rows(s: &Subject<'_>, changed: &[String], dirty: &[String]) -> Vec<CheckResult> {
+    let mut rows = Vec::new();
+    if !s.cfg.protected.is_empty() && !s.allow_protected {
+        let hit: Vec<&str> = changed
+            .iter()
+            .chain(dirty.iter())
+            .map(String::as_str)
+            .filter(|p| is_protected(&s.cfg.protected, p))
+            .collect();
+        rows.push(l0(
+            "protected-paths",
+            hit.is_empty(),
+            format!(
+                "protected paths changed: {}. They guard the product; only a task created with --allow-protected may change them.",
+                hit.join(", ")
+            ),
+        ));
+    }
+    if !s.paths.is_empty() {
+        let outside: Vec<&str> = changed
+            .iter()
+            .chain(dirty.iter())
+            .map(String::as_str)
+            .filter(|p| !crate::config::in_scope(s.paths, p))
+            .collect();
+        rows.push(l0(
+            "paths-in-scope",
+            outside.is_empty(),
+            format!(
+                "this directive may only change {}; it changed: {}",
+                s.paths.join(", "),
+                outside.join(", ")
+            ),
+        ));
+    }
+    if !s.cfg.namespace.is_empty() {
+        let hit: Vec<&str> = changed
+            .iter()
+            .chain(dirty.iter())
+            .map(String::as_str)
+            .filter(|p| in_namespace(&s.cfg.namespace, p))
+            .collect();
+        rows.push(l0(
+            "namespace-untouched",
+            hit.is_empty(),
+            format!("files created under the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
+        ));
+    }
+    rows
+}
+
+/// The verdict on what an operation changed. There is no agent and no
+/// envelope, so L0 is the tree alone: clean, protected paths untouched,
+/// nothing under the verification namespace. Then L1 and L2 exactly as
+/// after a directive. The operation's commit is already on the branch;
+/// `start_sha` is the commit before it.
+pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
+    let mut v = Verdict {
+        commits: crate::git::count_commits(s.worktree, s.start_sha).await?,
+        files_changed: 0,
+        dirty: false,
+        envelope: None,
+        checks: Vec::new(),
+        state: AttemptState::Running,
+        reason: String::new(),
+    };
+    let changed = crate::git::changed_paths(s.worktree, s.start_sha).await?;
+    let dirty = crate::git::dirty_paths(s.worktree).await?;
+    v.files_changed = changed.len() as i64;
+    v.dirty = !dirty.is_empty();
+    v.checks.push(l0(
+        "clean-tree",
+        dirty.is_empty(),
+        format!("left uncommitted by the operation: {}", dirty.join(", ")),
+    ));
+    v.checks.extend(scope_rows(&s, &changed, &dirty));
+    emit_rows(s.report, s.task_id, &v.checks);
+    if v.checks.iter().all(|c| c.ok) {
+        l1_l2(&s, None, &mut v.checks).await?;
+    }
+    let (state, reason) = decide(None, None, &v.checks);
     v.state = state;
     v.reason = reason;
     Ok(v)
@@ -514,7 +570,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
             let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
             let mut setup_ok = true;
             if let Some(argv) = s.cfg.checks.get("setup") {
-                let r = run_one("L1", "setup", argv, s.scratch, s.sandbox, timeout).await;
+                let r = run_one("L1", "setup", argv, s.scratch, s.sandbox, timeout, &[]).await;
                 s.report.emit(
                     s.task_id,
                     Event::Check {
@@ -530,8 +586,16 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
             }
             if setup_ok {
                 let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
-                let mut r =
-                    run_one("L1", "red-on-base", &argv, s.scratch, s.sandbox, timeout).await;
+                let mut r = run_one(
+                    "L1",
+                    "red-on-base",
+                    &argv,
+                    s.scratch,
+                    s.sandbox,
+                    timeout,
+                    &[],
+                )
+                .await;
                 // The row passes when the tests FAIL on base.
                 let failed_on_base = !r.ok && !r.timed_out;
                 r.ok = failed_on_base;

@@ -19,6 +19,12 @@ use std::path::{Path, PathBuf};
 /// Names the engine inserts itself; a user operation may not shadow them.
 pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "clone"];
 
+/// What an operation may produce. `branch`: it changes the tree, the
+/// kernel commits the result and verifies it. `interface`: its stdout is
+/// the interface the next code directive is shown. Everything else is a
+/// directive's or the kernel's to produce.
+pub const OPERATION_PRODUCES: &[&str] = &["branch", "interface"];
+
 /// Contracts the kernel enforces for directives. A directive file names
 /// one (default: its own name); any other value is rejected. Many
 /// directives over few contracts (docs/ACTIONS.md).
@@ -58,6 +64,14 @@ struct ActionRaw {
     /// Directive: a short instruction appended to the task text.
     #[serde(default)]
     brief: String,
+    /// Operation: run with the verification namespace overlaid from the
+    /// trusted refs (a hidden suite the coder never sees).
+    #[serde(default)]
+    overlay: bool,
+    /// Operation: its failure is the preceding directive's failure, fed
+    /// back as a retry, rather than a one-shot task failure.
+    #[serde(default)]
+    verifies: bool,
 }
 
 /// One action file, one version.
@@ -76,8 +90,28 @@ pub struct ActionDef {
     pub contract: String,
     pub paths: Vec<String>,
     pub brief: String,
+    pub overlay: bool,
+    pub verifies: bool,
     pub hash: String,
     pub text: String,
+}
+
+impl ActionDef {
+    /// An operation that changes the tree: the kernel commits what it
+    /// changed and verifies the result, as it does after a directive.
+    pub fn mutates(&self) -> bool {
+        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "branch")
+    }
+    /// An operation whose stdout becomes the interface the coder is shown.
+    pub fn yields_interface(&self) -> bool {
+        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "interface")
+    }
+    /// An operation that reads the task's hidden tests: it runs in a
+    /// scratch copy of base with the verify ref overlaid, never in the
+    /// coder's clone.
+    pub fn reads_verify_ref(&self) -> bool {
+        self.kind == Kind::Operation && self.consumes.iter().any(|c| c == "verify_ref")
+    }
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -244,6 +278,18 @@ brief = \"The change for this task is already on the branch. Do not add features
 max_turns = 20\n",
     ),
     (
+        "playwright.toml",
+        "name = \"playwright\"\n\
+kind = \"operation\"\n\
+description = \"run the hidden Playwright suite from forge-verify against the branch: the page must be playable; failure goes back to the coder\"\n\
+consumes = [\"branch\"]\n\
+produces = []\n\
+run = [\"npx\", \"playwright\", \"test\", \"--config\", \"e2e/playwright.config.ts\"]\n\
+overlay = true\n\
+verifies = true\n\
+timeout_secs = 900\n",
+    ),
+    (
         "setup.toml",
         "name = \"setup\"\n\
 kind = \"operation\"\n\
@@ -252,6 +298,65 @@ consumes = [\"branch\"]\n\
 produces = []\n\
 check = \"setup\"\n\
 timeout_secs = 600\n",
+    ),
+];
+
+const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
+    (
+        "diff-size.toml",
+        r#"name = "diff-size"
+kind = "operation"
+description = "fails when the change against base is larger than a cap on lines and files: the guard against scope creep and rewrites. The caps are the two numbers at the end of `run`."
+consumes = ["branch"]
+run = ["bash", "-c", '''
+set -e
+max_lines=$1
+max_files=$2
+lines=$(git diff --numstat "$FORGE_BASE_SHA" -- | awk '{ if ($1 != "-") a += $1 + $2 } END { print a + 0 }')
+files=$(git diff --name-only "$FORGE_BASE_SHA" -- | wc -l)
+echo "$files file(s), $lines line(s) changed against base (cap $max_files files, $max_lines lines)"
+test "$lines" -le "$max_lines" && test "$files" -le "$max_files"
+''', "diff-size", "800", "25"]
+"#,
+    ),
+    (
+        "fmt.toml",
+        r#"name = "fmt"
+kind = "operation"
+description = "runs the tree's formatter and commits what it changed, so a formatting difference never costs a retry; the kernel verifies the result. Edit `run` for a repository whose formatter is not recognised."
+consumes = ["branch"]
+produces = ["branch"]
+run = ["bash", "-c", '''
+set -e
+if [ -f Cargo.toml ]; then cargo fmt --all
+elif [ -f go.mod ]; then gofmt -w .
+elif [ -f pyproject.toml ] && command -v ruff >/dev/null; then ruff format .
+elif [ -f package.json ] && [ -x node_modules/.bin/prettier ]; then node_modules/.bin/prettier --write . --log-level warn
+else echo "no formatter recognised; nothing done"
+fi
+''']
+"#,
+    ),
+    (
+        "interface.toml",
+        r#"name = "interface"
+kind = "operation"
+description = "the interface the hidden tests expect, extracted from the tests themselves rather than described by the agent that wrote them: the files, what they import, and the names they call, never their assertions. Runs in a scratch copy of base with the verify ref overlaid; the coder's clone never sees the tests. Replaces the tests directive's summary as the interface the coder is shown."
+consumes = ["verify_ref"]
+produces = ["interface"]
+run = ["bash", "-c", '''
+set -e
+echo "Hidden tests, under $FORGE_NAMESPACE, judge this work. What they reference:"
+for d in $FORGE_NAMESPACE; do find "$d" -type f 2>/dev/null; done | sort | while read -r f; do
+  echo
+  echo "== $f"
+  grep -hE '^[[:space:]]*(use |import |from .+ import |require\(|#include|const .* = require)' "$f" | sed 's/^[[:space:]]*//' | sort -u || true
+  grep -ohE '\b[A-Za-z_][A-Za-z0-9_]*\(' "$f" | sed 's/($//' \
+    | grep -vxE 'if|for|while|switch|return|assert|print|println|printf|fn|function|def|expect|it|describe|test|catch|new' \
+    | sort | uniq -c | sort -rn | awk '{ print "  calls " $2 " (" $1 "x)" }' || true
+done
+''']
+"#,
     ),
 ];
 
@@ -350,6 +455,21 @@ requires = []\n\
 ",
     ),
     (
+        "playable.toml",
+        "name = \"playable\"\n\
+description = \"the change, then the hidden Playwright suite drives the built page; a failure goes back to the coder\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"code\" },\n\
+  { action = \"playwright\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task touches anything a user sees or clicks; unit tests cannot tell whether a page works\"\n\
+avoid_when = \"the repo has no e2e/ suite on forge-verify, or the change is pure simulation\"\n\
+requires = [\"[verify] namespace including e2e/ in forge.toml\", \"a forge-verify branch with e2e/playwright.config.ts\", \"@playwright/test installed by setup\"]\n",
+    ),
+    (
         "tdd-reviewed.toml",
         "name = \"tdd-reviewed\"\n\
 description = \"hidden tests first, the change, then an independent reviewer\"\n\
@@ -398,7 +518,7 @@ fn ensure(home: &Path) -> Result<PathBuf> {
             std::fs::write(&p, text)?;
         }
     }
-    for (file, text) in BUILTIN_ACTIONS {
+    for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
         let p = actions.join(file);
         if !p.exists() {
             std::fs::write(&p, text)?;
@@ -472,6 +592,28 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
             path.display()
         );
     }
+    if raw.kind == Kind::Directive && (raw.overlay || raw.verifies) {
+        bail!(
+            "{}: overlay and verifies apply to operations only",
+            path.display()
+        );
+    }
+    if raw.kind == Kind::Operation
+        && let Some(p) = raw
+            .produces
+            .iter()
+            .find(|p| !OPERATION_PRODUCES.contains(&p.as_str()))
+    {
+        bail!(
+            "{}: an operation cannot produce {:?}; it may produce {}",
+            path.display(),
+            p,
+            OPERATION_PRODUCES.join(", ")
+        );
+    }
+    if raw.kind == Kind::Operation && raw.model.is_some() {
+        bail!("{}: `model` applies to directives only", path.display());
+    }
     let contract = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
     Ok(ActionDef {
         name: raw.name,
@@ -487,6 +629,8 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         contract,
         paths: raw.paths,
         brief: raw.brief,
+        overlay: raw.overlay,
+        verifies: raw.verifies,
         hash: blob_hash(dir, path)?,
         text: text.to_string(),
     })
@@ -645,7 +789,7 @@ fn check_flow(steps: &[ResolvedStep]) -> Result<()> {
         for p in &s.action.produces {
             have.insert(p.as_str());
         }
-        if s.action.kind == Kind::Directive {
+        if s.action.kind == Kind::Directive || s.action.mutates() {
             have.insert("verdict");
             if s.action.contract == "review" {
                 have.insert("review");
@@ -654,6 +798,18 @@ fn check_flow(steps: &[ResolvedStep]) -> Result<()> {
     }
     if !steps.iter().any(|s| s.action.kind == Kind::Directive) {
         bail!("a workflow needs at least one directive; operations alone produce nothing to push");
+    }
+    for (i, s) in steps.iter().enumerate() {
+        if s.action.kind == Kind::Operation
+            && s.action.verifies
+            && !steps[..i].iter().any(|p| p.action.kind == Kind::Directive)
+        {
+            bail!(
+                "step {} ({}) verifies the preceding directive, but no directive precedes it",
+                i + 1,
+                s.action.name
+            );
+        }
     }
     Ok(())
 }
@@ -858,6 +1014,7 @@ mod tests {
                 "cheap",
                 "direct",
                 "docs",
+                "playable",
                 "polish",
                 "reviewed",
                 "tdd",
@@ -951,6 +1108,65 @@ mod tests {
                 .any(|p| p.blocking && p.what.contains("references itself")),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn operations_produce_only_branch_or_interface_and_a_mutating_one_yields_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        for (name, body, want) in [
+            (
+                "verdicting",
+                "produces = [\"verdict\"]\nrun = [\"true\"]\n",
+                "cannot produce \"verdict\"",
+            ),
+            (
+                "modelled",
+                "model = \"haiku\"\nrun = [\"true\"]\n",
+                "`model` applies to directives only",
+            ),
+        ] {
+            write(
+                dir.path(),
+                &format!("actions/{name}.toml"),
+                &format!(
+                    "name = \"{name}\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\n{body}"
+                ),
+            );
+            let err = load_actions(dir.path()).unwrap_err().to_string();
+            assert!(err.contains(want), "{name}: {err}");
+            std::fs::remove_file(
+                dir.path()
+                    .join("workflows/actions")
+                    .join(format!("{name}.toml")),
+            )
+            .unwrap();
+        }
+        // The built-in fmt mutates, so polish (which consumes a verdict)
+        // may follow it directly; the built-in interface reads the verify
+        // ref and so needs the tests directive first.
+        let fmt = load_actions(dir.path()).unwrap().remove("fmt").unwrap();
+        assert!(fmt.mutates() && !fmt.yields_interface() && !fmt.reads_verify_ref());
+        write(
+            dir.path(),
+            "fmt-polish.toml",
+            "name = \"fmt-polish\"\nsteps = [{ action = \"fmt\" }, { action = \"polish\" }]\n",
+        );
+        assert!(resolve(dir.path(), "fmt-polish").is_ok());
+        write(
+            dir.path(),
+            "iface-early.toml",
+            "name = \"iface-early\"\nsteps = [{ action = \"interface\" }, { action = \"code\" }]\n",
+        );
+        let err = resolve(dir.path(), "iface-early").unwrap_err().to_string();
+        assert!(err.contains("consumes \"verify_ref\""), "{err}");
+        write(
+            dir.path(),
+            "iface.toml",
+            "name = \"iface\"\nsteps = [{ action = \"tests\" }, { action = \"interface\" }, { action = \"code\" }]\n",
+        );
+        let r = resolve(dir.path(), "iface").unwrap();
+        assert!(r.steps[1].action.reads_verify_ref() && r.steps[1].action.yields_interface());
     }
 
     #[test]
@@ -1116,6 +1332,32 @@ mod tests {
         );
         assert_eq!(r.pins.iter().filter(|p| p.name == "direct").count(), 1);
         assert_eq!(r.pins.iter().filter(|p| p.name == "code").count(), 1);
+    }
+
+    #[test]
+    fn verifying_operations_need_a_preceding_directive() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        let a = load_actions(dir.path()).unwrap();
+        assert!(a["playwright"].overlay && a["playwright"].verifies);
+        write(
+            dir.path(),
+            "early.toml",
+            "name = \"early\"\nsteps = [{ action = \"playwright\" }, { action = \"code\" }]\n",
+        );
+        let err = resolve(dir.path(), "early").unwrap_err().to_string();
+        assert!(err.contains("no directive precedes it"), "{err}");
+        write(
+            dir.path(),
+            "actions/badd.toml",
+            "name = \"badd\"\nkind = \"directive\"\ncontract = \"code\"\noverlay = true\n",
+        );
+        assert!(
+            check(dir.path())
+                .unwrap()
+                .iter()
+                .any(|p| p.what.contains("operations only"))
+        );
     }
 
     #[test]

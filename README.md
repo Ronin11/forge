@@ -108,6 +108,12 @@ A check named `setup` runs before the others and gates them: if it fails,
 nothing else runs. Its outputs (`node_modules`, `target`) must be
 gitignored, or the next attempt fails L0 for a dirty tree.
 
+Workflows are lists of actions: directives (an agent step) and operations
+(a command, zero dollars). An operation gets the task's facts as
+`FORGE_*` environment variables, may commit what it changes (the kernel
+verifies the result), and may produce the interface a coder is shown.
+See docs/ACTIONS.md.
+
 ## Layout
 
 ```
