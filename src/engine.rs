@@ -740,10 +740,12 @@ async fn run_operation(
         };
         format!("{head}\n{tail}")
     };
+    // What the operation printed is the evidence that it ran: an interface
+    // operation's stdout is its product, any other keeps its tail, pass or fail.
     let output = if r.ok && step.action.yields_interface() {
         r.stdout.trim().to_string()
     } else {
-        String::new()
+        checks::last_lines(&r.tail, 40).trim().to_string()
     };
     op(
         f,

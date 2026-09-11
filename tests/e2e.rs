@@ -1205,6 +1205,19 @@ fn a_verifying_operation_sends_its_failure_back_to_the_coder() {
         "{ops:?}"
     );
     assert!(e.task(1).2, "pushed");
+    let ops = doc["ops"].as_array().unwrap();
+    assert!(
+        ops[2]["output"]
+            .as_str()
+            .unwrap()
+            .contains("extra.txt is missing"),
+        "a failing operation's output is kept: {}",
+        ops[2]
+    );
+    assert!(
+        ops[4]["output"].as_str().unwrap().is_empty() || ops[4]["ok"] == true,
+        "a passing operation keeps whatever it printed"
+    );
 
     // A coder that is right but never adds extra.txt runs out of attempts.
     let o = e.forge(
