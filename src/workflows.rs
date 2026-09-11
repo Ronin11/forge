@@ -242,7 +242,7 @@ kind = \"directive\"\n\
 description = \"an independent session reads and runs the branch; it may not commit; it can only demote the task to human review, and only with something it executed\"\n\
 consumes = [\"branch\", \"verdict\"]\n\
 produces = [\"review\"]\n\
-max_turns = 25\n",
+max_turns = 40\n",
     ),
     (
         "docs.toml",

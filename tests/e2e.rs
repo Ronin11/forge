@@ -1375,6 +1375,34 @@ fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
 }
 
 #[test]
+fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE2_CLAUDE_BIN_REVIEW", "crash.sh")],
+        "reviewed",
+        "write 42",
+    );
+    assert!(!o.status.success());
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(
+        reason.starts_with("review could not finish (agent exit 1)"),
+        "{reason}"
+    );
+    assert!(
+        pushed,
+        "the code step verified the branch; the human needs to see it"
+    );
+    let o = e.forge("ok.sh", &["show", "1"]);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("only the reviewer failed to reach a verdict")
+    );
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

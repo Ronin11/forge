@@ -93,7 +93,11 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             return out;
         }
         TaskState::Unverified => {
-            out.push(d(&t.reason, "Nothing verified the work. Declare [checks] in forge.toml or add --check commands; the branch was not pushed."));
+            if t.reason.starts_with("review could not finish") {
+                out.push(d(&t.reason, "The code step verified the branch; only the reviewer failed to reach a verdict, usually its turn limit. Review the branch yourself, or raise max_turns on the review action and run the task again."));
+            } else {
+                out.push(d(&t.reason, "Nothing verified the work. Declare [checks] in forge.toml or add --check commands; the branch was not pushed."));
+            }
             return out;
         }
         TaskState::Queued | TaskState::Running => return out,

@@ -261,6 +261,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     // feedback owed to a directive by a verifying operation that failed.
     let mut used: HashMap<i64, i64> = HashMap::new();
     let mut owed: HashMap<i64, String> = HashMap::new();
+    let mut review_unfinished = false;
     let mut idx = 0usize;
     'steps: while idx < resolved.steps.len() {
         let step = &resolved.steps[idx];
@@ -508,6 +509,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     }
                 }
                 if !step_ok {
+                    // A reviewer that never reached a verdict is not evidence
+                    // of a defect: the branch verified at the code step, so it
+                    // goes to a human as unverified instead of failing.
+                    if step.action.contract == "review" && last == AttemptState::AgentFailed {
+                        review_unfinished = true;
+                        last = AttemptState::Unverified;
+                        last_reason = format!(
+                            "review could not finish ({last_reason}); the branch verified at the code step and goes to human review"
+                        );
+                    }
                     all_ok = false;
                     break;
                 }
@@ -522,7 +533,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     if all_ok && budget_stop.is_none() {
         last = AttemptState::Succeeded;
     }
-    if (all_ok && budget_stop.is_none()) || review_demoted {
+    if (all_ok && budget_stop.is_none()) || review_demoted || review_unfinished {
         seq += 1;
         if let Some(url) = &remote_url {
             let started = unix_now();
