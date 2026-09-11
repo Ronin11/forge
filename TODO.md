@@ -35,6 +35,80 @@ question with resume-on-answer — never a state someone must diagnose.
       reflect flags settled tasks that blamed a tool whose plugin binary or
       config changed since — suggest task retry.
 
+## P1 — tooling/platform: the tool ladder and a platform ask channel (2026-09-08 discussion)
+Evidence (attempt_facts since 2026-09-04): 417 attempts, 48 wrote scripts/ or
+checks/ INSIDE the project, 0 calls to forge_scratch or forge_script_run,
+scratch cache empty, 3 library scripts (two toys). Article 11 works at the
+project level; org-level tooling that compounds across cycles is at zero.
+Root causes: (1) the engineering-standards determinism paragraph steers
+agents to repo-local scripts and never mentions the library, scratch, or
+searching first; (2) no role's output is tooling; (3) no problems channel —
+proposals carry solutions, and an agent mid-task knows the problem better.
+Doctrine (Nate): universal tools first, repo-specific second; on a failure
+in a new env, log it, then reach for the repo tool; before building a new
+universal tool, check every other repo for common ground; a tool's
+ascendancy requires docs + tests because it is live code. Daemon stays Go
+(plugin/tool boundaries are already language-neutral); WASM via wazero is
+the eventual universal-script tier, contingent, not a prerequisite.
+
+Phase 0 — on-ramp (gate: NIGHTSHIFT CRITICAL, scratch non-js runs
+unsandboxed on the daemon host; fix BEFORE driving traffic to scratch)
+- [ ] Non-js scratch executes in the attempt's worker sandbox, or scratch is
+      js-only until it does.
+- [ ] Rewrite the determinism paragraph into the ladder: forge_library
+      search first → pure-function-of-input goes through forge_scratch →
+      repo-local only when it needs the repo. Tool failure in a new env →
+      kb note tagged tool-failure scoped to the repo, then fall back.
+- [ ] forge_library miss says so and points at forge_scratch; record the
+      miss as a fact (query, hit count) — recurrence signal #1.
+- [ ] Live experiment on bench roots: control fragment vs ladder fragment;
+      outcomes = scratch/script_run call counts + scores. Zero scratch calls
+      under the ladder arm ⇒ the sandbox shape (JSON in/out, PATH-only, 30s)
+      is the barrier, not the prose.
+
+Phase 1 — trust gates
+- [ ] `examples:` header key ({input, output} list) run by the library
+      check and POST /script-test; `tool: true` refused at load without ≥1
+      passing example. `docs:` block rendered on the Directives page.
+      promote-scratch gains both requirements.
+- [ ] Per-script adoption in forge_stats: calls, error rate (Wilson), last
+      called — from tool_calls_by_name / tool_errors already in facts.
+
+Phase 2 — cross-repo index
+- [ ] Schedule-tick job walks every registered repo's scripts/, checks/,
+      tools/ and fingerprints files (normalized name, language, header
+      comment) into a repo_scripts table; bench repos included.
+- [ ] Library search merges hits as kind repo-script labeled by repo; a
+      shape in ≥2 repos is flagged shared.
+- [ ] Retro pack gains a tooling section: shared shapes, clustered search
+      misses, tool failures by repo.
+
+Phase 3 — the ask channel + toolsmith (only when phase 2 shows recurrence)
+- [ ] `forge_request`: a typed, non-blocking platform ask — what was
+      needed, WHAT THE AGENT DID INSTEAD (mandatory; the anti-stop-early
+      guard and the spec for the fix), cost in turns/time, blocked?. Filing
+      searches open requests first; a match JOINS and increments (duplicates
+      are votes). Weight = distinct attempts/repos/personas × reported cost.
+- [ ] `friction` field on run + supervise result schemas (one line, every
+      attempt); supervise aggregates across the batch and files a request on
+      the team's behalf when a line recurs. Search misses and tool failures
+      auto-join requests so machine and agent signals rank together.
+- [ ] Routing by kind: tool/script → curate-tools; directive/persona →
+      reflect-library evidence; workflow → learning-director; platform code →
+      triage Work on the forge repo behind the human approval gate.
+- [ ] Threshold → Work (scratch-promotion shape). Deliverable names the
+      request it fulfills; adoption stats close the loop — fulfilled but
+      unused for weeks reopens with a "solution missed" note.
+- [ ] `toolsmith` persona (universal first, rule of three, tests+docs ARE the
+      deliverable, never speculative) + `curate-tools` directive on the
+      reflect-library skeleton (evidence pass → ≤2 predicted proposals
+      against the directives repo: lift / extend / fix failing universal /
+      no-op). promote-scratch becomes one path of it. Weekly routine,
+      created disabled. Request queue visible on the Learning page with
+      human weight/answer/attach.
+- [ ] Measure with the bench: quality at fixed budget, tokens_to_first_edit,
+      scratch/script_run calls per root.
+
 ## P1 — near-term hardening
 - [ ] HTTPS on tailscale serve: needs cert enablement on the tailnet
       (`tailscale serve --bg --https=443 localhost:7340` once certs are on);
