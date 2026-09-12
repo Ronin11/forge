@@ -120,7 +120,7 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
     if t.reason.starts_with("landing failed") {
         out.push(d(
             &t.reason,
-            "The branch verified on its own but could not land: the base kept moving, or with the base merged in a conflict or a failing check outlived the coder's attempts. Read the integrate rows in the trace; re-add the task once the base is quiet, or merge by hand.",
+            "The branch verified on its own but could not land: the base kept moving, or with the base merged in a conflict or a failing check outlived the coder's attempts or budget. The branch is pushed; read the integrate rows in the trace, then merge by hand or re-add the task.",
         ));
     }
     if t.reason.starts_with("check ") && t.reason.contains("inside the verification namespace") {

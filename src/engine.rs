@@ -294,6 +294,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut idx = 0usize;
     // The base branch's tip once the task landed on it.
     let mut landed: Option<String> = None;
+    // Verified alone but could not land within its attempts or budget: the
+    // branch is pushed for a human rather than lost.
+    let mut stalled = false;
     'run: loop {
         'steps: while idx < resolved.steps.len() {
             let step = &resolved.steps[idx];
@@ -660,7 +663,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 };
                 let c_seq = c_idx as i64 + 1;
                 let c_used = *used.get(&c_seq).unwrap_or(&0);
-                if c_used < t.max_attempts {
+                let spent = f.store.task_cost(id).env()?;
+                if c_used < t.max_attempts && spent < task_cap {
                     f.report.emit(
                         id,
                         Event::Note {
@@ -678,7 +682,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     continue 'run;
                 }
                 last = AttemptState::ChecksFailed;
-                last_reason = format!("landing failed after {c_used} attempt(s): {first}");
+                last_reason = if spent >= task_cap {
+                    format!(
+                        "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed for a human"
+                    )
+                } else {
+                    format!(
+                        "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed for a human"
+                    )
+                };
+                stalled = true;
                 all_ok = false;
                 break 'run;
             }
@@ -698,7 +711,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         last = AttemptState::Succeeded;
     }
     if landed.is_none()
-        && ((all_ok && budget_stop.is_none()) || review_demoted || review_unfinished)
+        && ((all_ok && budget_stop.is_none()) || review_demoted || review_unfinished || stalled)
     {
         seq += 1;
         if let Some(url) = &remote_url {
@@ -751,6 +764,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let attempts = f.store.attempts(id).env()?;
     let cost = f.store.task_cost(id).env()?;
     t.state = match last {
+        // A budget stop is never a success, whatever the last attempt did.
+        _ if budget_stop.is_some() => TaskState::Failed,
         AttemptState::Succeeded => TaskState::Succeeded,
         AttemptState::Unverified => TaskState::Unverified,
         AttemptState::NeedsInput => TaskState::Blocked,

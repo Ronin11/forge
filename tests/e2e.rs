@@ -1643,6 +1643,54 @@ fn a_conflicting_landing_goes_back_to_the_coder_who_merges_the_base() {
 }
 
 #[test]
+fn a_conflict_the_budget_cannot_cover_fails_the_task_and_pushes_the_verified_branch() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -s answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "any answer"]);
+    // Each attempt costs $0.01; a $0.01 budget covers the first and not the merge.
+    for task in ["write 42 to answer.txt", "write 43 to answer.txt"] {
+        let o = e.forge(
+            "ok.sh",
+            &[
+                "add",
+                e.repo.to_str().unwrap(),
+                task,
+                "--retries",
+                "1",
+                "--budget",
+                "0.01",
+            ],
+        );
+        assert!(o.status.success());
+    }
+    let o = e.forge("echoanswer.sh", &["work", "--once", "--jobs", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let states: Vec<(String, String, bool)> = [1, 2].into_iter().map(|id| e.task(id)).collect();
+    let landed = states
+        .iter()
+        .filter(|(s, r, _)| s == "succeeded" && r.starts_with("landed"))
+        .count();
+    assert_eq!(landed, 1, "{states:?}");
+    let stalled: Vec<&(String, String, bool)> =
+        states.iter().filter(|(s, _, _)| s == "failed").collect();
+    assert_eq!(stalled.len(), 1, "{states:?}");
+    let (_, reason, pushed) = stalled[0];
+    assert!(
+        reason.starts_with("landing failed: main moved to"),
+        "{reason}"
+    );
+    assert!(reason.contains("the task budget is spent"), "{reason}");
+    assert!(pushed, "the verified branch is not lost");
+    let id = if states[0].0 == "failed" { 1 } else { 2 };
+    let o = e.forge("ok.sh", &["show", &id.to_string()]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("The branch is pushed"));
+}
+
+#[test]
 fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
     let e = Env::new();
     tdd_repo(&e);

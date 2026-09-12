@@ -7,6 +7,8 @@ if grep -q 'conflicts in' <<<"$prompt"; then
   echo "$n" > answer.txt; git add -A && git commit -qm "merge main, keep $n" >/dev/null
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.01,"result":"done","structured_output":{"schema_version":1,"needs_input":null,"checks_run":[],"claims":[],"summary":"merged main and kept my answer","changes":[{"path":"answer.txt","kind":"modified"}]}}'
 else
+  # the task that writes 42 is the slow one, so the other lands first and 42 always conflicts
+  [ "$n" = "42" ] && sleep 1
   echo "$n" > answer.txt; git add -A && git commit -qm "answer $n" >/dev/null
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"total_cost_usd":0.01,"result":"done","structured_output":{"schema_version":1,"needs_input":null,"checks_run":[],"claims":[],"summary":"answer","changes":[{"path":"answer.txt","kind":"added"}]}}'
 fi
