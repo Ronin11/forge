@@ -1459,8 +1459,10 @@ fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
          each with concrete evidence; and `needs_input` when you must stop.\n\n\
          Two honest exits, never penalized and never retried: `needs_input` with kind `question` when you cannot proceed \
          without the operator, and kind `workflow` when the workflow you are in (`{wf}`) is wrong for this task or a step \
-         you need does not exist. Either way, `tried` must say what you did before stopping and where you stopped. \
-         Commit nothing half-done in either case.",
+         you need does not exist. A third: kind `suite` when a test under the verification namespace that is not \
+         yours contradicts the task, naming the test and the assertion; you may not edit those tests, and a human \
+         decides which is right. In every case `tried` must say what you did before stopping and where you stopped. \
+         Commit nothing half-done.",
         base = t.base_branch,
         wf = t.workflow,
     );

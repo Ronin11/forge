@@ -676,6 +676,7 @@ fn requests() -> Result<()> {
     for t in blocked {
         let (kind, text) = match t.reason.split_once(": ") {
             Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
+            Some(("needs suite", rest)) => ("suite", rest.to_string()),
             Some(("needs input", rest)) => ("question", rest.to_string()),
             _ => ("other", t.reason.clone()),
         };

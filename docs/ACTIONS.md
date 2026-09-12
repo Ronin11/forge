@@ -116,6 +116,13 @@ leaves the verified branch pushed for a human, which is also what happens
 to a task the reviewer demoted or could not finish. A repository with no
 push remote is never landed.
 
+A standing hidden test can also be *right* and still stop a task: a
+feature the backlog asks for may overturn an assumption an earlier task
+pinned. The coder cannot edit those tests, so its honest exit is
+`needs_input` of kind `suite`, naming the test and the assertion; the
+task blocks and a human decides which is right, by editing the test on
+`forge-verify` or rewriting the task.
+
 The kernel applies the same idea to the hidden tests: when a repository
 check fails on the implementer's tree and every location it reports lies
 inside the verification namespace, the failure is the test author's, not

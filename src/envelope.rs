@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Ported verbatim from Forge 1 (VERIFICATION.md, worker/verify.go).
-pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{"schema_version":{"type":"integer"},"summary":{"type":"string"},"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question","tried"],"properties":{"question":{"type":"string"},"tried":{"type":"string","description":"what you did before stopping, and where you stopped"},"kind":{"type":"string","enum":["question","workflow","review"]},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]}}}]},"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}"#;
+pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{"schema_version":{"type":"integer"},"summary":{"type":"string"},"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question","tried"],"properties":{"question":{"type":"string"},"tried":{"type":"string","description":"what you did before stopping, and where you stopped"},"kind":{"type":"string","enum":["question","workflow","review","suite"]},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]}}}]},"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}"#;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Envelope {
@@ -31,7 +31,8 @@ pub struct NeedsInput {
     pub tried: String,
     /// "question" (default): the operator must answer. "workflow": the
     /// workflow given is wrong for the task or a needed step does not exist.
-    /// "review": a reviewer demotes the task to human review.
+    /// "review": a reviewer demotes the task to human review. "suite": a
+    /// hidden test the agent cannot edit contradicts the task.
     #[serde(default)]
     pub kind: String,
     #[serde(default)]

@@ -159,6 +159,7 @@ async fn common_l0(
             match q.kind.as_str() {
                 "workflow" => "workflow".to_string(),
                 "review" => "review".to_string(),
+                "suite" => "suite".to_string(),
                 _ => "question".to_string(),
             },
             q.question.clone(),
@@ -849,6 +850,7 @@ pub fn decide(
         let label = match kind {
             "workflow" => "needs workflow",
             "review" => "review demoted",
+            "suite" => "needs suite",
             _ => "needs input",
         };
         return (AttemptState::NeedsInput, format!("{label}: {q}"));

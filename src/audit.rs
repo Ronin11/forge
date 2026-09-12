@@ -92,6 +92,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 out.push(d(&t.reason, "A task this one was queued --after ended without landing. Fix or re-run that task, then re-add this one --after the new id."));
                 return out;
             }
+            if t.reason.starts_with("needs suite") {
+                out.push(d(&t.reason, "A hidden test on forge-verify contradicts this task, and the coder may not edit it. Decide which is right: if the task is, change the test on the forge-verify branch and re-add the task; if the test is, rewrite the task."));
+                return out;
+            }
             if t.reason.starts_with("needs workflow") {
                 out.push(d(&t.reason, "A workflow request. Add or adjust a workflow file in <FORGE2_HOME>/workflows/ and re-add the task with --workflow."));
             } else {
@@ -418,6 +422,10 @@ mod tests {
             (TaskState::Succeeded, "push failed: no route"),
             (TaskState::Blocked, "review demoted: off by one"),
             (TaskState::Blocked, "needs workflow: no e2e step"),
+            (
+                TaskState::Blocked,
+                "needs suite: stars-tier.test.ts asserts stars are never consumed",
+            ),
             (TaskState::Blocked, "needs input: which db?"),
             (
                 TaskState::Blocked,
