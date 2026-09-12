@@ -31,6 +31,21 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Overlay refs for a human: a pinned forge-verify commit reads as
+/// `forge-verify@<sha8>`, everything else as itself.
+pub fn overlay_label(refs: &[String]) -> String {
+    refs.iter()
+        .map(|r| {
+            if r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()) {
+                format!("forge-verify@{}", &r[..8])
+            } else {
+                r.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub struct Subject<'a> {
     pub task_id: i64,
     /// The registered checkout: where the trusted verify refs live.
@@ -346,7 +361,7 @@ async fn l1_l2(
                 text: &format!(
                     "overlay  {} verification file(s) from {}",
                     placed.len(),
-                    s.overlay_refs.join(", ")
+                    overlay_label(s.overlay_refs)
                 ),
             },
         );

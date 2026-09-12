@@ -143,6 +143,10 @@ pub struct Task {
     /// Tasks this one waits for: claimable only once every one of them has
     /// landed; blocked if any of them ends otherwise.
     pub after: Vec<i64>,
+    /// The `forge-verify` commit that matches the base at clone time: the
+    /// standing suite the task is judged by. Landing uses the current tip,
+    /// since only the merged tree has everything the base gained since.
+    pub verify_base: String,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -359,11 +363,14 @@ ALTER TABLE attempts ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
     "
 ALTER TABLE tasks ADD COLUMN after_json TEXT NOT NULL DEFAULT '[]';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN verify_base TEXT NOT NULL DEFAULT '';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -404,6 +411,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         actions_json: r.get(27)?,
         land: r.get::<_, i64>(28)? != 0,
         after: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
+        verify_base: r.get(30)?,
     })
 }
 
@@ -503,7 +511,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -518,7 +526,8 @@ impl Store {
                 t.interface,
                 t.workflow_hash,
                 t.workflow_text,
-                t.actions_json
+                t.actions_json,
+                t.verify_base
             ],
         )?;
         Ok(())

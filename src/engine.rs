@@ -228,6 +228,11 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             "",
         )?;
         t.base_sha = r.task()?;
+        // The standing hidden suite as it matches this base; a suite that
+        // grows while the task runs is for the landing, not for the coder.
+        t.verify_base = git::rev_parse(&repo, "refs/heads/forge-verify")
+            .await
+            .unwrap_or_default();
         t.worktree = dir.display().to_string();
     }
     f.store.update_task(&t).env()?;
@@ -946,7 +951,7 @@ async fn integrate(
             f.store.update_task(t).env()?;
         }
         let cfg_now = config::load_at(repo, wt, &t.base_sha).await.task()?;
-        let overlay = overlay_refs(repo, t.id).await;
+        let overlay = overlay_refs(repo, t.id, None).await;
         let v = verify::verify_integration(&Subject {
             task_id: t.id,
             repo,
@@ -1138,10 +1143,20 @@ async fn integrate(
     unreachable!("the landing loop returns")
 }
 
-async fn overlay_refs(repo: &Path, task_id: i64) -> Vec<String> {
+/// The refs whose namespace files verify a task: the standing suite and
+/// the task's own tests. `pinned` is the standing suite's commit as of the
+/// task's base (empty when there was none); `None` means the current tip,
+/// which only a tree that already contains the current base may be judged by.
+async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
     let mut refs = Vec::new();
-    if git::ref_exists(repo, "refs/heads/forge-verify").await {
-        refs.push("forge-verify".to_string());
+    match pinned {
+        Some("") => {}
+        Some(sha) => refs.push(sha.to_string()),
+        None => {
+            if git::ref_exists(repo, "refs/heads/forge-verify").await {
+                refs.push("forge-verify".to_string());
+            }
+        }
     }
     let own = format!("verify/{task_id}");
     if git::ref_exists(repo, &format!("refs/heads/{own}")).await {
@@ -1269,7 +1284,7 @@ async fn run_operation(
     // A hidden suite: overlay the verification namespace for the run, then
     // take it away again so the next directive starts blind.
     let placed = if step.action.overlay && scratch.is_none() {
-        let refs = overlay_refs(&repo, t.id).await;
+        let refs = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
         let placed = crate::verify::overlay(&repo, &refs, &cfg.namespace, &wt)
             .await
             .task()?;
@@ -1279,7 +1294,7 @@ async fn run_operation(
                 text: &format!(
                     "overlay  {} file(s) from {} for {}",
                     placed.len(),
-                    refs.join(", "),
+                    crate::verify::overlay_label(&refs),
                     step.action.name
                 ),
             },
@@ -1387,7 +1402,7 @@ async fn run_operation(
                 text: &format!("commit   {} by {}", &sha[..8], step.action.name),
             },
         );
-        let overlay_refs = overlay_refs(&repo, t.id).await;
+        let overlay_refs = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
         let pending_main = git::rev_parse(&wt, &format!("refs/heads/forge/{}", t.base_branch))
             .await
             .ok();
@@ -1704,7 +1719,7 @@ async fn run_code_attempt(
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
     let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback);
-    let overlay_refs = overlay_refs(repo, t.id).await;
+    let overlay_refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
         interface: (!t.interface.is_empty()).then(|| t.interface.clone()),

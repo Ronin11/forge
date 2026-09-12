@@ -1308,7 +1308,7 @@ fn an_overlaying_operation_sees_the_hidden_suite() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("overlay  1 file(s) from forge-verify for hidden-e2e"),
+        err.contains("overlay  1 file(s) from forge-verify@") && err.contains(" for hidden-e2e"),
         "{err}"
     );
     assert!(
@@ -1688,6 +1688,102 @@ fn a_conflict_the_budget_cannot_cover_fails_the_task_and_pushes_the_verified_bra
     let id = if states[0].0 == "failed" { 1 } else { 2 };
     let o = e.forge("ok.sh", &["show", &id.to_string()]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("The branch is pushed"));
+}
+
+#[test]
+fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_meanwhile() {
+    let e = Env::new();
+    // Acceptance scripts run when present; none is fine.
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\ntest = [\"bash\", \"-c\", \"shopt -s nullglob; for f in tests/acceptance/*.sh; do bash \\\"$f\\\" || exit 1; done\"]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "acceptance layout"]);
+    // B starts first and takes a while; it does not write the answer.
+    let child = e
+        .cmd("slowaddfile.sh")
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "add extra",
+            "--retries",
+            "0",
+        ])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let t0 = Instant::now();
+    loop {
+        let cloned = e.home.join("forge.db").exists()
+            && e.db()
+                .query_row(
+                    "SELECT 1 FROM tasks WHERE id=1 AND base_sha != ''",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .is_ok();
+        if cloned {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A, a tdd task, lands meanwhile and folds "answer.txt must be 42" into forge-verify.
+    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh");
+    let mut c = e.cmd("ok.sh");
+    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let a = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "tdd",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    assert!(origin_file(&e, "forge-verify", "tests/acceptance/answer.sh").is_some());
+    // B is judged by the suite as of its base (none), then lands against the current one.
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(
+        !err.contains("verification file(s) from forge-verify\n  ✗"),
+        "{err}"
+    );
+    assert!(
+        err.contains("overlay  1 verification file(s) from forge-verify\n")
+            || err.contains("from forge-verify"),
+        "the landing used the current suite: {err}"
+    );
+    assert_eq!(
+        origin_file(&e, "main", "extra.txt").as_deref(),
+        Some("extra\n")
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert_eq!(
+        doc["task"]["verify_base"], "",
+        "no standing suite existed when B started"
+    );
+    assert!(
+        doc["attempts"][0]["inputs"]["overlay_refs"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the coder's verify overlaid nothing"
+    );
 }
 
 #[test]

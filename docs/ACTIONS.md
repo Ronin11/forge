@@ -94,8 +94,11 @@ repository:
 
 1. `integrate`: fetch the base again; if it moved, merge it into the
    branch. A clean merge is committed as Forge. Then run every repository
-   check and every hidden suite (`forge-verify` and `verify/<id>`) on
-   the merged tree, with the checks read from the base as it is now.
+   check and every hidden suite (`forge-verify` at its current tip and
+   `verify/<id>`) on the merged tree, with the checks read from the base
+   as it is now. Before landing, a task is judged by `forge-verify` as it
+   was when the task cloned its base: a suite that grew meanwhile tests
+   features the base never had.
 2. `push`: the branch, as before.
 3. `land`: fast-forward the base branch on the remote to the branch, and
    fold the task's `verify/<id>` namespace files into `forge-verify` as
