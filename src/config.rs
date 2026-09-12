@@ -170,20 +170,40 @@ fn expand(p: &str) -> PathBuf {
 struct BudgetRaw {
     per_task_usd: Option<f64>,
     per_day_usd: Option<f64>,
+    five_hour_max: Option<f64>,
+    seven_day_max: Option<f64>,
 }
 
-/// Operator-level caps. Both use the cost the claude CLI reports per
-/// attempt; a running attempt is never killed by the budget.
+/// Operator-level caps. The dollar caps use the cost the claude CLI
+/// reports per attempt; a running attempt is never killed by them. The
+/// window caps are fractions of the subscription's rate windows as the
+/// CLI reports them: at or above a cap the worker holds until the window
+/// resets, then continues.
 pub struct Budget {
+    /// A task stops retrying once its attempts have cost this much: the
+    /// runaway guard.
     pub per_task_usd: f64,
-    pub per_day_usd: f64,
+    /// No new task is claimed once the last 24 hours cost this much;
+    /// `None` is no cap, which is right for a subscription.
+    pub per_day_usd: Option<f64>,
+    pub five_hour_max: f64,
+    pub seven_day_max: f64,
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
-# Forge 2 operator config. Budgets use the cost the claude CLI reports per attempt.
+# Forge 2 operator config.
 [budget]
-per_task_usd = 2.0    # a task stops retrying once its attempts have cost this much
-per_day_usd = 20.0    # no new task is claimed once the last 24 hours cost this much
+# The subscription's rate windows, as fractions of each window the claude CLI
+# reports after every attempt. At or above a cap the worker holds until the
+# window resets, then continues; nothing fails because of it.
+five_hour_max = 0.9
+seven_day_max = 0.95
+# A task stops retrying once its attempts have cost this much (the CLI's own
+# accounting): the runaway guard.
+per_task_usd = 2.0
+# Optional: no new task is claimed once the last 24 hours cost this much.
+# Leave it out on a subscription; the windows above are the real limit.
+# per_day_usd = 20.0
 
 [sandbox]
 # Read-only inside the sandbox: toolchains the checks need (node, cargo, ...).
@@ -219,7 +239,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     Ok(HomeConfig {
         budget: Budget {
             per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
-            per_day_usd: raw.budget.per_day_usd.unwrap_or(20.0),
+            per_day_usd: raw.budget.per_day_usd,
+            five_hour_max: raw.budget.five_hour_max.unwrap_or(0.9),
+            seven_day_max: raw.budget.seven_day_max.unwrap_or(0.95),
         },
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
@@ -278,6 +300,7 @@ mod tests {
         let c = load_home(dir.path()).unwrap();
         assert_eq!(c.sandbox.ro, vec![PathBuf::from("/opt/tools")]);
         assert!(c.sandbox.rw.is_empty());
-        assert_eq!(c.budget.per_day_usd, 20.0);
+        assert_eq!(c.budget.per_day_usd, None);
+        assert_eq!(c.budget.five_hour_max, 0.9);
     }
 }

@@ -121,9 +121,11 @@ pub fn run() -> Result<Vec<Check>> {
                 "config",
                 Status::Ok,
                 format!(
-                    "per_task_usd {:.2}, per_day_usd {:.2}; sandbox ro {}/{} present, rw {}/{} present",
+                    "windows 5h ≤ {:.0}% / 7d ≤ {:.0}%, per_task_usd {:.2}, per_day_usd {}; sandbox ro {}/{} present, rw {}/{} present",
+                    b.five_hour_max * 100.0,
+                    b.seven_day_max * 100.0,
                     b.per_task_usd,
-                    b.per_day_usd,
+                    b.per_day_usd.map_or("none".to_string(), |d| format!("{d:.2}")),
                     present(&c.sandbox.ro),
                     c.sandbox.ro.len(),
                     present(&c.sandbox.rw),
@@ -291,42 +293,60 @@ pub fn run() -> Result<Vec<Check>> {
 
     if let Ok(f) = Forge::open_with(paths, store) {
         let spent = f.store.spent_since(unix_now() - 86_400)?;
-        out.push(if spent >= f.budget.per_day_usd {
-            check(
+        out.push(match f.budget.per_day_usd {
+            Some(cap) if spent >= cap => check(
                 "spend",
                 Status::Warn,
-                format!(
-                    "${spent:.2} of ${:.2} in the last 24h",
-                    f.budget.per_day_usd
-                ),
+                format!("${spent:.2} of ${cap:.2} in the last 24h"),
                 "nothing new starts until the window rolls; raise per_day_usd to override",
-            )
-        } else {
-            check(
+            ),
+            Some(cap) => check(
+                "spend",
+                Status::Ok,
+                format!("${spent:.2} of ${cap:.2} in the last 24h"),
+                "",
+            ),
+            None => check(
                 "spend",
                 Status::Ok,
                 format!(
-                    "${spent:.2} of ${:.2} in the last 24h",
-                    f.budget.per_day_usd
+                    "${spent:.2} in the last 24h (no dollar cap; the rate windows are the limit)"
                 ),
                 "",
-            )
+            ),
         });
         out.push(match f.store.latest_rate_limit()? {
-            None => check("rate_limit", Status::Warn, "no samples yet", "samples arrive with the first real attempt"),
+            None => check(
+                "rate_limit",
+                Status::Warn,
+                "no samples yet",
+                "samples arrive with the first real attempt",
+            ),
             Some(s) => {
                 let age = unix_now() - s.seen_at;
                 let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
                 let detail = format!(
                     "5h {}, 7d {} ({}m ago)",
-                    s.five_hour.map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                    s.seven_day.map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+                    s.five_hour
+                        .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+                    s.seven_day
+                        .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
                     age / 60
                 );
-                if worst >= 0.8 {
-                    check("rate_limit", Status::Warn, detail, "the subscription window is nearly used; attempts will start failing with rate limits")
-                } else {
-                    check("rate_limit", Status::Ok, detail, "")
+                match crate::worker::window_hold(&f)? {
+                    Some((msg, _)) => check(
+                        "rate_limit",
+                        Status::Warn,
+                        format!("{detail}; {msg}"),
+                        "the worker holds until the reset, then continues",
+                    ),
+                    None if worst >= 0.8 => check(
+                        "rate_limit",
+                        Status::Warn,
+                        detail,
+                        "a window is nearly at its cap; the worker will hold when it reaches it",
+                    ),
+                    None => check("rate_limit", Status::Ok, detail, ""),
                 }
             }
         });

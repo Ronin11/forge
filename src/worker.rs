@@ -53,16 +53,60 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
     }
 }
 
-/// The rolling 24-hour cap. `Some(message)` when nothing more may start.
+/// The rolling 24-hour cap, when one is set. `Some(message)` when nothing
+/// more may start.
 pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
+    let Some(cap) = f.budget.per_day_usd else {
+        return Ok(None);
+    };
     let spent = f.store.spent_since(unix_now() - 86_400)?;
-    Ok((spent >= f.budget.per_day_usd).then(|| {
+    Ok((spent >= cap).then(|| {
         format!(
-            "daily budget reached: ${spent:.2} of ${:.2} in the last 24h (per_day_usd in {})",
-            f.budget.per_day_usd,
+            "daily budget reached: ${spent:.2} of ${cap:.2} in the last 24h (per_day_usd in {})",
             p_config(f)
         )
     }))
+}
+
+/// A subscription window at or over its cap, by the latest sample any
+/// attempt recorded: the message and the unix second the hold ends. A
+/// window whose reset time has passed no longer holds anything.
+pub fn window_hold(f: &Forge) -> Result<Option<(String, i64)>> {
+    let Some(s) = f.store.latest_rate_limit()? else {
+        return Ok(None);
+    };
+    let now = unix_now();
+    let mut hold: Option<(String, i64)> = None;
+    for (name, util, resets, cap) in [
+        (
+            "5h",
+            s.five_hour,
+            s.five_hour_resets,
+            f.budget.five_hour_max,
+        ),
+        (
+            "7d",
+            s.seven_day,
+            s.seven_day_resets,
+            f.budget.seven_day_max,
+        ),
+    ] {
+        let (Some(u), Some(r)) = (util, resets) else {
+            continue;
+        };
+        if u >= cap && r > now && hold.as_ref().is_none_or(|(_, until)| r > *until) {
+            hold = Some((
+                format!(
+                    "rate window {name} at {:.0}% (cap {:.0}%), resets in {}m",
+                    u * 100.0,
+                    cap * 100.0,
+                    (r - now + 59) / 60
+                ),
+                r,
+            ));
+        }
+    }
+    Ok(hold)
 }
 
 fn p_config(f: &Forge) -> String {
@@ -98,6 +142,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut stopping = false;
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
+    let mut hold_until: Option<i64> = None;
 
     loop {
         // Fill free slots.
@@ -111,6 +156,14 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 stopping = true;
                 break;
             }
+            if let Some((msg, until)) = window_hold(&f)? {
+                if f.store.queued_count()? > 0 && hold_until != Some(until) {
+                    eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
+                }
+                hold_until = Some(until);
+                break;
+            }
+            hold_until = None;
             let Some(t) = f.store.claim_next(pid)? else {
                 break;
             };
@@ -128,8 +181,24 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
         if running.is_empty() {
             let exhausted = opts.max_tasks.is_some_and(|m| claimed >= m);
-            match opts.poll {
-                Some(secs) if !stopping && env_error.is_none() && !exhausted => {
+            // A held window with work waiting: sleep until the reset (or the
+            // poll interval), even in --once mode, which means "drain".
+            let held = hold_until.filter(|_| {
+                !stopping
+                    && env_error.is_none()
+                    && !exhausted
+                    && f.store.queued_count().unwrap_or(0) > 0
+            });
+            match (held, opts.poll) {
+                (Some(until), poll) => {
+                    let wait = (until - unix_now()).max(1) as u64;
+                    let wait = poll.map_or(wait, |p| wait.min(p));
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
+                        _ = shutdown_signal() => { eprintln!("stopping"); break }
+                    }
+                }
+                (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(secs)) => continue,
                         _ = shutdown_signal() => { eprintln!("stopping"); break }

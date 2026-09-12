@@ -185,6 +185,9 @@ pub struct RateLimitSample {
     pub seen_at: i64,
     pub five_hour: Option<f64>,
     pub seven_day: Option<f64>,
+    /// Unix seconds at which each window resets, as the CLI reported.
+    pub five_hour_resets: Option<i64>,
+    pub seven_day_resets: Option<i64>,
 }
 
 pub struct WorkflowStat {
@@ -639,10 +642,10 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day FROM attempts
+                "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
                  WHERE rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL ORDER BY id DESC LIMIT 1",
                 [],
-                |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)? }),
+                |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)?, five_hour_resets: r.get(3)?, seven_day_resets: r.get(4)? }),
             )
             .optional()?)
     }

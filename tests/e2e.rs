@@ -2187,6 +2187,39 @@ fn daily_budget_stops_the_worker() {
 }
 
 #[test]
+fn the_worker_holds_while_a_rate_window_is_at_its_cap_and_resumes_after_the_reset() {
+    let e = Env::new();
+    e.add(&["--no-land"]);
+    e.add(&["--no-land"]);
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[budget]\nfive_hour_max = 0.9\n",
+    )
+    .unwrap();
+    let t0 = Instant::now();
+    let o = e.forge("ratelimited.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("rate window 5h at 95% (cap 90%)"), "{err}");
+    assert!(err.contains("holding, 1 task(s) queued"), "{err}");
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(
+        e.task(2).0,
+        "succeeded",
+        "the second task ran once the window reset"
+    );
+    assert!(
+        t0.elapsed() >= Duration::from_secs(2),
+        "the worker waited for the reset"
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("no dollar cap"), "{out}");
+    assert!(out.contains("windows 5h ≤ 90%"), "{out}");
+}
+
+#[test]
 fn an_orphaned_task_is_requeued_and_resumes_at_the_next_attempt() {
     let e = Env::new();
     let id = e.add(&[]);

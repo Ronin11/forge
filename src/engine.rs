@@ -388,6 +388,18 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     let mut feedback: Option<String> = owed.remove(&seq);
                     let mut step_ok = false;
                     while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
+                        // A subscription window at its cap: wait for the reset
+                        // rather than start an attempt that would be rate limited.
+                        while let Some((msg, until)) = crate::worker::window_hold(&f).env()? {
+                            f.report.emit(
+                                id,
+                                Event::Note {
+                                    text: &format!("rate     {msg}; waiting"),
+                                },
+                            );
+                            let wait = (until - unix_now()).clamp(1, 3600) as u64;
+                            tokio::time::sleep(Duration::from_secs(wait)).await;
+                        }
                         let spent = f.store.task_cost(id).env()?;
                         if spent >= task_cap {
                             budget_stop = Some(format!(
