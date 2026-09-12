@@ -180,3 +180,15 @@ and nothing else: it reads `log --json`, `requests --json`, and
 or links the kernel (`tests/boundary.rs` enforces that). Run it with
 `forge` on PATH or `FORGE_BIN` set; `FORGE2_HOME` passes through.
 `forge-tui --dump` prints one frame without a terminal.
+
+Clients never poll. Every event the engine emits is appended as one JSON
+line to `events.jsonl` under `FORGE2_HOME`; `forge snapshot` returns the
+tasks, the requests, the worker, and the log's byte offset at that
+instant, and `forge events --since <offset> --follow` is the subscription
+from there. A client applies events to its own state and re-reads a task
+only when an event says it changed.
+
+The worker runs as a user service: `deploy/forge2-worker.service`, with
+a stop timeout long enough to drain a running attempt. After a rebuild,
+`systemctl --user restart forge2-worker`; `forge doctor` warns when the
+running worker's binary has been rebuilt underneath it.
