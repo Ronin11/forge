@@ -92,6 +92,25 @@ enum Cmd {
     Log {
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
+    Retry {
+        id: i64,
+        /// Also re-queue everything that waited on it, dependencies mapped to the new ids
+        #[arg(long)]
+        chain: bool,
+        /// Extra attempts after a failure (default: as before)
+        #[arg(long)]
+        retries: Option<u32>,
+        /// Cost cap in USD (default: as before)
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Run a different workflow
+        #[arg(long)]
+        workflow: Option<String>,
     },
     /// Show one task and its attempts
     Show { id: i64 },
@@ -111,7 +130,11 @@ enum Cmd {
         json: bool,
     },
     /// Blocked tasks: questions for the operator and workflow requests
-    Requests,
+    Requests {
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Outcomes per workflow version and per step
     Stats,
     /// Remove worktrees that are clean and whose commits are all on a remote
@@ -143,12 +166,19 @@ pub async fn main() -> Result<()> {
             )
             .await
         }
-        Cmd::Log { limit } => log(limit),
+        Cmd::Log { limit, json } => log(limit, json),
+        Cmd::Retry {
+            id,
+            chain,
+            retries,
+            budget,
+            workflow,
+        } => retry(id, chain, retries, budget, workflow).await,
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
         Cmd::Trace { id, json } => trace(id, json),
-        Cmd::Requests => requests(),
+        Cmd::Requests { json } => requests(json),
         Cmd::Stats => stats(),
         Cmd::Workflows { json } => list_workflows(json),
     }
@@ -157,6 +187,10 @@ pub async fn main() -> Result<()> {
 /// Validate the request and insert a queued task. Refuses a task nothing
 /// would verify: a repo with no `[checks]` and a task with no `--check`.
 async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
+    enqueue_with(f, args, None).await
+}
+
+async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Result<Task> {
     let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
@@ -229,6 +263,7 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         show_checks: args.show_checks,
         land: !args.no_land,
         after: args.after.clone(),
+        retry_of,
         ..Default::default()
     };
     for &dep in &t.after {
@@ -267,6 +302,115 @@ async fn run(args: TaskArgs) -> Result<()> {
     if worker::drive(f, t.id).await? != TaskState::Succeeded {
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// A dependency for a re-queued task: the same one if it landed, the
+/// newest retry of it if there is one, else a refusal naming it.
+fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) -> Result<i64> {
+    if let Some(&n) = made.get(&d) {
+        return Ok(n);
+    }
+    let Some(dep) = f.store.task(d)? else {
+        bail!("dependency {d} does not exist");
+    };
+    if dep.state == TaskState::Succeeded && (!dep.land || dep.reason.starts_with("landed ")) {
+        return Ok(d);
+    }
+    if matches!(dep.state, TaskState::Queued | TaskState::Running) {
+        return Ok(d);
+    }
+    if let Some(n) = f.store.latest_retry_of(d)? {
+        return Ok(n);
+    }
+    bail!(
+        "dependency {d} ended without landing ({}); retry it first, or retry it with --chain",
+        dep.state.as_str()
+    )
+}
+
+async fn retry(
+    id: i64,
+    chain: bool,
+    retries: Option<u32>,
+    budget: Option<f64>,
+    workflow: Option<String>,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let Some(old) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    if matches!(old.state, TaskState::Queued | TaskState::Running) {
+        bail!(
+            "task {id} is {}; only a finished task is retried",
+            old.state.as_str()
+        );
+    }
+    let mut made: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut queue = vec![old];
+    let mut first = true;
+    while !queue.is_empty() {
+        let t = queue.remove(0);
+        if made.contains_key(&t.id) {
+            continue;
+        }
+        let after = t
+            .after
+            .iter()
+            .map(|&d| map_dep(&f, d, &made))
+            .collect::<Result<Vec<_>>>()?;
+        let args = TaskArgs {
+            repo: PathBuf::from(&t.repo),
+            task: t.task.clone(),
+            model: t.model.clone(),
+            max_turns: t.max_turns as u32,
+            retries: if first {
+                retries.unwrap_or((t.max_attempts - 1).max(0) as u32)
+            } else {
+                (t.max_attempts - 1).max(0) as u32
+            },
+            timeout_secs: t.timeout_secs as u32,
+            budget: if first {
+                budget.or(t.budget_usd)
+            } else {
+                t.budget_usd
+            },
+            checks: t.checks.clone(),
+            allow_protected: t.allow_protected,
+            workflow: if first {
+                workflow.clone().unwrap_or(t.workflow.clone())
+            } else {
+                t.workflow.clone()
+            },
+            show_checks: t.show_checks,
+            no_land: !t.land,
+            after,
+        };
+        let n = enqueue_with(&f, &args, Some(t.id)).await?;
+        out!(
+            "retried task {} as {}{}",
+            t.id,
+            n.id,
+            if n.after.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (after {})",
+                    n.after
+                        .iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
+        made.insert(t.id, n.id);
+        first = false;
+        if chain {
+            queue.extend(f.store.dependents(t.id)?);
+        }
+    }
+    out!("{} queued", f.store.queued_count()?);
     Ok(())
 }
 
@@ -508,7 +652,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of,
                 "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -659,9 +803,36 @@ fn trace(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn requests() -> Result<()> {
+fn requests(json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let blocked = f.store.blocked()?;
+    if json {
+        let rows: Vec<serde_json::Value> = blocked
+            .iter()
+            .map(|t| {
+                let (kind, text) = if t.reason.starts_with("waits on task") {
+                    ("dependency", t.reason.clone())
+                } else {
+                    match t.reason.split_once(": ") {
+                        Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
+                        Some(("needs suite", rest)) => ("suite", rest.to_string()),
+                        Some(("needs input", rest)) => ("question", rest.to_string()),
+                        Some(("review demoted", rest)) => ("review", rest.to_string()),
+                        _ => ("other", t.reason.clone()),
+                    }
+                };
+                let q = f
+                    .store
+                    .attempts(t.id)
+                    .ok()
+                    .and_then(|a| a.last().and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok()))
+                    .and_then(|e| e.needs_input);
+                serde_json::json!({"id": t.id, "kind": kind, "text": text, "tried": q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(), "path": q.as_ref().map(|q| q.path.clone()).unwrap_or_default(), "workflow": t.workflow, "repo": t.repo, "task": t.task})
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if blocked.is_empty() {
         out!("no blocked tasks");
         return Ok(());
@@ -773,8 +944,18 @@ fn stats() -> Result<()> {
     Ok(())
 }
 
-fn log(limit: u32) -> Result<()> {
+fn log(limit: u32, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if json {
+        let rows: Vec<serde_json::Value> = f
+            .store
+            .list_tasks(limit)?
+            .into_iter()
+            .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     out!(
         "{:<5} {:<11} {:<7} {:<3} {:<8} {:<19} {:<18} TASK",
         "ID",
@@ -887,6 +1068,9 @@ fn show(id: i64) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+    if let Some(r) = t.retry_of {
+        out!("retry of   {r}");
     }
     out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {

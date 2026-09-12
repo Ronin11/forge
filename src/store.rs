@@ -147,6 +147,8 @@ pub struct Task {
     /// standing suite the task is judged by. Landing uses the current tip,
     /// since only the merged tree has everything the base gained since.
     pub verify_base: String,
+    /// The task this one re-queues, when it was made by `forge retry`.
+    pub retry_of: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -366,11 +368,14 @@ ALTER TABLE tasks ADD COLUMN after_json TEXT NOT NULL DEFAULT '[]';
     "
 ALTER TABLE tasks ADD COLUMN verify_base TEXT NOT NULL DEFAULT '';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN retry_of INTEGER;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -412,6 +417,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         land: r.get::<_, i64>(28)? != 0,
         after: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
         verify_base: r.get(30)?,
+        retry_of: r.get(31)?,
     })
 }
 
@@ -482,8 +488,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 t.repo,
                 t.task,
@@ -502,7 +508,8 @@ impl Store {
                 t.workflow_hash,
                 t.workflow_text,
                 t.land as i64,
-                serde_json::to_string(&t.after)?
+                serde_json::to_string(&t.after)?,
+                t.retry_of
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -602,6 +609,26 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// Queued or blocked tasks that wait on `id`, directly.
+    pub fn dependents(&self, id: i64) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE state IN ('queued','blocked')
+               AND EXISTS (SELECT 1 FROM json_each(after_json) j WHERE j.value = ?1) ORDER BY id"
+        ))?;
+        let rows = stmt.query_map(params![id], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The newest task that retries `id`, if any.
+    pub fn latest_retry_of(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self.lock().query_row(
+            "SELECT MAX(id) FROM tasks WHERE retry_of=?1",
+            params![id],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
     }
 
     pub fn queued_count(&self) -> Result<i64> {

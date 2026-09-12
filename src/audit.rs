@@ -89,7 +89,7 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 return out;
             }
             if t.reason.starts_with("waits on task") {
-                out.push(d(&t.reason, "A task this one was queued --after ended without landing. Fix or re-run that task, then re-add this one --after the new id."));
+                out.push(d(&t.reason, "A task this one was queued --after ended without landing. Fix that one, then `forge retry <its id> --chain` re-queues it and everything waiting on it."));
                 return out;
             }
             if t.reason.starts_with("needs suite") {

@@ -2223,7 +2223,36 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         "tasks 1-3 ran, 4 never did: {stats}"
     );
     let o = e.forge("ok.sh", &["show", "4"]);
-    assert!(String::from_utf8_lossy(&o.stdout).contains("re-add this one --after"));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("forge retry"));
+
+    // retry: 4 alone is refused (3 never landed); 3 --chain re-queues 3 and 4 with 4 waiting on the new 3.
+    let o = e.forge("ok.sh", &["retry", "4"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("dependency 3 ended without landing"));
+    let o = e.forge("ok.sh", &["retry", "3", "--chain", "--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("retried task 3 as 5"), "{out}");
+    assert!(out.contains("retried task 4 as 6 (after 5)"), "{out}");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "6", "--json"]).stdout).unwrap();
+    assert_eq!(doc["task"]["retry_of"], 4);
+    assert_eq!(doc["task"]["after"], serde_json::json!([5]));
+    let five: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "5", "--json"]).stdout).unwrap();
+    assert_eq!(
+        five["task"]["max_attempts"], 2,
+        "the override applies to the retried task"
+    );
+    let o = e.forge("ok.sh", &["show", "6"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("retry of   4"));
+    // Machine-readable listings for a client.
+    let log: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
+    assert_eq!(log.as_array().unwrap().len(), 6);
+    let reqs: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    assert_eq!(reqs.as_array().unwrap()[0]["kind"], "dependency");
 }
 
 #[test]
