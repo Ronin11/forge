@@ -140,6 +140,9 @@ pub struct Task {
     /// Land on the base branch once verified (the default); false leaves
     /// the verified branch pushed for a human to merge.
     pub land: bool,
+    /// Tasks this one waits for: claimable only once every one of them has
+    /// landed; blocked if any of them ends otherwise.
+    pub after: Vec<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -353,11 +356,14 @@ ALTER TABLE tasks ADD COLUMN land INTEGER NOT NULL DEFAULT 1;
     "
 ALTER TABLE attempts ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN after_json TEXT NOT NULL DEFAULT '[]';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -397,6 +403,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         workflow_text: r.get(26)?,
         actions_json: r.get(27)?,
         land: r.get::<_, i64>(28)? != 0,
+        after: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
     })
 }
 
@@ -467,8 +474,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 t.repo,
                 t.task,
@@ -486,7 +493,8 @@ impl Store {
                 t.show_checks as i64,
                 t.workflow_hash,
                 t.workflow_text,
-                t.land as i64
+                t.land as i64,
+                serde_json::to_string(&t.after)?
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -528,12 +536,18 @@ impl Store {
     }
 
     /// Atomically take the oldest queued task for this worker.
+    /// The oldest queued task whose dependencies have all landed (or
+    /// succeeded without landing, when they were told not to).
     pub fn claim_next(&self, pid: i64) -> Result<Option<Task>> {
         let id: Option<i64> = self
             .lock()
             .query_row(
                 "UPDATE tasks SET state='running', worker_pid=?1, started_at=?2
-                 WHERE id = (SELECT id FROM tasks WHERE state='queued' ORDER BY id LIMIT 1)
+                 WHERE id = (
+                   SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
+                     SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
+                     WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.reason NOT LIKE 'landed %')
+                   ) ORDER BY t.id LIMIT 1)
                  RETURNING id",
                 params![pid, crate::unix_now()],
                 |r| r.get(0),
@@ -552,6 +566,33 @@ impl Store {
             params![id, pid, crate::unix_now()],
         )?;
         Ok(n == 1)
+    }
+
+    /// Block every queued task that waits on a task which ended without
+    /// landing. Returns the (dependent, dependency) pairs it blocked.
+    pub fn block_dependents(&self) -> Result<Vec<(i64, i64, String)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
+             WHERE t.state='queued' AND d.state IN ('failed', 'blocked', 'unverified')
+                OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.reason NOT LIKE 'landed %' AND d.finished_at IS NOT NULL)
+             ORDER BY t.id, d.id",
+        )?;
+        let rows: Vec<(i64, i64, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out = Vec::new();
+        for (t, d, state, reason) in rows {
+            let why = format!("waits on task {d} ({state}: {reason})");
+            let n = c.execute(
+                "UPDATE tasks SET state='blocked', reason=?2, finished_at=?3 WHERE id=?1 AND state='queued'",
+                params![t, why, crate::unix_now()],
+            )?;
+            if n > 0 {
+                out.push((t, d, why));
+            }
+        }
+        Ok(out)
     }
 
     pub fn queued_count(&self) -> Result<i64> {

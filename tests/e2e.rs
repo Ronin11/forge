@@ -1947,6 +1947,105 @@ fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
 }
 
 #[test]
+fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -s answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "any answer"]);
+    // 1 lands; 2 waits on 1 and must start from what 1 landed.
+    let a = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(a.status.success());
+    let b = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 43 to answer.txt",
+            "--retries",
+            "0",
+            "--after",
+            "1",
+        ],
+    );
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let bad = e.forge(
+        "ok.sh",
+        &["add", e.repo.to_str().unwrap(), "write 44", "--after", "99"],
+    );
+    assert!(!bad.status.success(), "an unknown dependency is refused");
+    let o = e.forge("echoanswer.sh", &["work", "--once", "--jobs", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(e.task(2).0, "succeeded");
+    let landed_by_1: String = e
+        .db()
+        .query_row("SELECT base_sha FROM tasks WHERE id=2", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        landed_by_1,
+        origin_sha(&e, "forge/1-write-42-to-answertxt"),
+        "task 2 started from task 1's landing"
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("43\n")
+    );
+    let o = e.forge("ok.sh", &["show", "2"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("after      1"));
+
+    // 3 fails its check; 4 waits on 3 and is blocked with the reason, never run.
+    let c = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write nothing useful",
+            "--retries",
+            "0",
+            "--check",
+            "false",
+        ],
+    );
+    assert!(c.status.success());
+    let d = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 45 to answer.txt",
+            "--retries",
+            "0",
+            "--after",
+            "3",
+        ],
+    );
+    assert!(d.status.success());
+    let o = e.forge("echoanswer.sh", &["work", "--once"]);
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(e.task(3).0, "failed");
+    let (state, reason, _) = e.task(4);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(reason.starts_with("waits on task 3 (failed: "), "{reason}");
+    assert!(err.contains("task 4 blocked: waits on task 3"), "{err}");
+    assert_eq!(e.attempts(4).len(), 0, "never ran");
+    let o = e.forge("ok.sh", &["show", "4"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("re-add this one --after"));
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

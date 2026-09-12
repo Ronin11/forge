@@ -72,7 +72,9 @@ forge doctor                                  # can this machine run attempts; i
    the base; one landing at a time per repository. A conflict or a check
    that fails only with the base merged goes back to the coder as a
    retry. `--no-land` leaves the verified branch pushed for a human.
-   See docs/ACTIONS.md, "Landing".
+   See docs/ACTIONS.md, "Landing". A task queued `--after` another is
+   claimed only once that one has landed, and is blocked with the reason
+   if it ends otherwise, so a chain can be queued in one go.
 7. **Record.** Every attempt is a row: agent exit, timeout, turns, tool
    calls, cost from the CLI's accounting, wall time from Forge's clock,
    commits and files from git, and the verdict. The agent's text is stored

@@ -88,6 +88,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 out.push(d(&t.reason, "The reviewer demonstrated a defect. The branch passed the checks and is pushed; look at the command it names, then either fix by re-adding the task or, if the reviewer is wrong, note it and merge. Reviewer precision is measured from what you decide here."));
                 return out;
             }
+            if t.reason.starts_with("waits on task") {
+                out.push(d(&t.reason, "A task this one was queued --after ended without landing. Fix or re-run that task, then re-add this one --after the new id."));
+                return out;
+            }
             if t.reason.starts_with("needs workflow") {
                 out.push(d(&t.reason, "A workflow request. Add or adjust a workflow file in <FORGE2_HOME>/workflows/ and re-add the task with --workflow."));
             } else {
@@ -415,6 +419,10 @@ mod tests {
             (TaskState::Blocked, "review demoted: off by one"),
             (TaskState::Blocked, "needs workflow: no e2e step"),
             (TaskState::Blocked, "needs input: which db?"),
+            (
+                TaskState::Blocked,
+                "waits on task 14 (failed: L1 failed: test)",
+            ),
             (TaskState::Unverified, "no L1 or L2"),
             (
                 TaskState::Unverified,

@@ -156,6 +156,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 stopping = true;
                 break;
             }
+            for (t, d, why) in f.store.block_dependents()? {
+                eprintln!("task {t} blocked: {why} (task {d})");
+            }
             if let Some((msg, until)) = window_hold(&f)? {
                 if f.store.queued_count()? > 0 && hold_until != Some(until) {
                     eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);

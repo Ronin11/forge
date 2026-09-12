@@ -62,6 +62,9 @@ pub struct TaskArgs {
     /// Leave the verified branch pushed for a human instead of landing it on the base branch
     #[arg(long)]
     no_land: bool,
+    /// Run only after this task has landed (repeatable); blocked if it ends otherwise
+    #[arg(long = "after")]
+    after: Vec<i64>,
 }
 
 #[derive(Subcommand)]
@@ -225,8 +228,25 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
         workflow_text: wf.text.clone(),
         show_checks: args.show_checks,
         land: !args.no_land,
+        after: args.after.clone(),
         ..Default::default()
     };
+    for &dep in &t.after {
+        let Some(d) = f.store.task(dep)? else {
+            bail!("--after {dep}: no such task");
+        };
+        if d.repo != t.repo {
+            bail!(
+                "--after {dep}: that task is in {}, not this repository",
+                d.repo
+            );
+        }
+        if !d.land && d.state != TaskState::Succeeded {
+            bail!(
+                "--after {dep}: that task will not land (--no-land), so nothing built on it could see its work"
+            );
+        }
+    }
     t.id = f.store.insert_task(&t)?;
     Ok(t)
 }
@@ -488,7 +508,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after,
                 "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -856,6 +876,16 @@ fn show(id: i64) -> Result<()> {
     }
     if !t.land {
         out!("land       manual: the verified branch is left for a human");
+    }
+    if !t.after.is_empty() {
+        out!(
+            "after      {}",
+            t.after
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {
