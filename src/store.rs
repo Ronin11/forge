@@ -819,7 +819,8 @@ impl Store {
     pub fn blocked(&self) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {TASK_COLS} FROM tasks WHERE state='blocked' ORDER BY id"
+            "SELECT {TASK_COLS} FROM tasks t WHERE t.state='blocked'
+               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id"
         ))?;
         let rows = stmt.query_map([], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

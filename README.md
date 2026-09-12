@@ -168,3 +168,15 @@ the need.
 cargo build --release
 cargo test
 ```
+
+## Clients
+
+`forge-tui` (in `tui/`) is the operator's seat: the queue, the blocked
+tasks waiting on a decision with what each agent tried, and a task's
+trace with its diagnosis; `r` retries the task under the cursor, `R`
+retries it with everything that waited on it. It is a client of the CLI
+and nothing else: it reads `log --json`, `requests --json`, and
+`trace --json`, acts through `forge retry`, and never opens the database
+or links the kernel (`tests/boundary.rs` enforces that). Run it with
+`forge` on PATH or `FORGE_BIN` set; `FORGE2_HOME` passes through.
+`forge-tui --dump` prints one frame without a terminal.

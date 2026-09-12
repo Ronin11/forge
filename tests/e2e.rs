@@ -2225,6 +2225,9 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let o = e.forge("ok.sh", &["show", "4"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("forge retry"));
 
+    let reqs: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    assert_eq!(reqs.as_array().unwrap()[0]["kind"], "dependency");
     // retry: 4 alone is refused (3 never landed); 3 --chain re-queues 3 and 4 with 4 waiting on the new 3.
     let o = e.forge("ok.sh", &["retry", "4"]);
     assert!(!o.status.success());
@@ -2250,9 +2253,10 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let log: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
     assert_eq!(log.as_array().unwrap().len(), 6);
+    // A retried task no longer waits on anyone: it leaves the human queue.
     let reqs: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
-    assert_eq!(reqs.as_array().unwrap()[0]["kind"], "dependency");
+    assert!(reqs.as_array().unwrap().is_empty(), "{reqs}");
 }
 
 #[test]

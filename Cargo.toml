@@ -1,3 +1,6 @@
+[workspace]
+members = ["tui"]
+
 [package]
 name = "forge"
 version = "0.2.0"
