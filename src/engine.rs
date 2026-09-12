@@ -1549,6 +1549,8 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
     let mut p = preamble(t, cfg, &format!("verify/{}", t.id));
     p.push_str(&format!(
         "\n\nYou are the test author in a test-first pair. Write tests only under {ns} that specify the task below. \
+         A visible test outside {ns} that the implementer may change is theirs to update, not a reason to stop: \
+         finish, and name it in your summary as something the implementation must change. \
          They must fail on the current code and pass when the task is done correctly. Do not implement the task and do \
          not change anything outside {ns}. The repository's `test` check ({cmd}) is what runs them, so write them in the \
          form that check picks up. Commit them.\n\n\
@@ -1916,6 +1918,7 @@ async fn run_review_attempt(
     .await?;
     let verdict = verify::verify_review(
         verify::ReviewSubject {
+            cfg,
             task_id: t.id,
             worktree: wt,
             base_sha: &t.base_sha,

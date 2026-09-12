@@ -95,11 +95,13 @@ fn in_namespace(namespace: &[String], path: &str) -> bool {
 
 /// What every step's L0 shares: git facts, the envelope, the rows that do
 /// not depend on the step. Returns the rows, the envelope, and a question.
+#[allow(clippy::too_many_arguments)]
 async fn common_l0(
     worktree: &Path,
     base_sha: &str,
     start_sha: &str,
     pending_main: Option<&str>,
+    cfg: &Config,
     agent: &Outcome,
     report: &Reporter,
     task_id: i64,
@@ -154,7 +156,7 @@ async fn common_l0(
             Ok(Some(_)) => String::new(),
         },
     ));
-    let question = env.as_ref().and_then(|e| e.needs_input.as_ref()).map(|q| {
+    let mut question = env.as_ref().and_then(|e| e.needs_input.as_ref()).map(|q| {
         (
             match q.kind.as_str() {
                 "workflow" => "workflow".to_string(),
@@ -165,6 +167,36 @@ async fn common_l0(
             q.question.clone(),
         )
     });
+    // A suite exit is for a test the agent may not change: one under the
+    // verification namespace or a protected path. Naming only visible
+    // tests is not a reason to stop; the step goes on with that said.
+    if let Some((kind, text)) = &question
+        && kind == "suite"
+    {
+        let named: Vec<&str> = text
+            .split(|c: char| {
+                c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | ',' | ';')
+            })
+            .map(|t| t.trim_end_matches(['.', ':']))
+            .map(|t| t.split(':').next().unwrap_or(t))
+            .filter(|t| t.contains('/'))
+            .collect();
+        let hidden = named.iter().any(|p| {
+            in_namespace(&cfg.namespace, p) || crate::config::is_protected(&cfg.protected, p)
+        });
+        if !hidden {
+            rows.push(l0(
+                "suite-names-a-hidden-test",
+                false,
+                format!(
+                    "a suite exit must name a test under {} or a protected path; it named {}. Visible tests are the implementer's to change: finish the step and say in the summary which tests must change and why.",
+                    cfg.namespace.join(", "),
+                    if named.is_empty() { "no path".to_string() } else { named.join(", ") }
+                ),
+            ));
+            question = None;
+        }
+    }
     rows.push(l0(
         "clean-tree",
         dirty.is_empty(),
@@ -313,6 +345,7 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         s.base_sha,
         s.start_sha,
         s.pending_main,
+        s.cfg,
         agent,
         s.report,
         s.task_id,
@@ -610,6 +643,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         s.base_sha,
         s.start_sha,
         None,
+        s.cfg,
         agent,
         s.report,
         s.task_id,
@@ -717,6 +751,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
 }
 
 pub struct ReviewSubject<'a> {
+    pub cfg: &'a Config,
     pub task_id: i64,
     pub worktree: &'a Path,
     pub base_sha: &'a str,
@@ -746,6 +781,7 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
         s.base_sha,
         s.start_sha,
         None,
+        s.cfg,
         agent,
         s.report,
         s.task_id,

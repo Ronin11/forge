@@ -2214,6 +2214,27 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
 }
 
 #[test]
+fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on() {
+    let e = Env::new();
+    let o = e.run("suitewrong.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert!(
+        a[0].2.starts_with("L0 failed: suite-names-a-hidden-test"),
+        "{}",
+        a[0].2
+    );
+    assert_eq!(a[1].1, "succeeded");
+    assert_eq!(e.task(1).0, "succeeded");
+    assert!(
+        e.log_text(1, 2)
+            .contains("Visible tests are the implementer's to change"),
+        "the step was told why"
+    );
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
