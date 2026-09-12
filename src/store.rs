@@ -813,6 +813,7 @@ impl Store {
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
                AND t.state IN ('succeeded','failed','blocked','unverified')
+               AND t.started_at IS NOT NULL
              ORDER BY t.id DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![workflow, hash, limit as i64], |r| {
@@ -844,7 +845,7 @@ impl Store {
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
                     COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0)
-             FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified')
+             FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
         )?;
         let rows = stmt.query_map([], |r| {

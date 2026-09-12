@@ -2209,6 +2209,19 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     assert!(reason.starts_with("waits on task 3 (failed: "), "{reason}");
     assert!(err.contains("task 4 blocked: waits on task 3"), "{err}");
     assert_eq!(e.attempts(4).len(), 0, "never ran");
+    // A task that never ran says nothing about its workflow.
+    let stats = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
+    let direct = stats
+        .lines()
+        .find(|l| {
+            l.starts_with("direct ") && l.split_whitespace().nth(1).is_some_and(|h| h.len() > 8)
+        })
+        .unwrap_or("");
+    assert_eq!(
+        direct.split_whitespace().nth(2),
+        Some("3"),
+        "tasks 1-3 ran, 4 never did: {stats}"
+    );
     let o = e.forge("ok.sh", &["show", "4"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("re-add this one --after"));
 }
