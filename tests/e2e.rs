@@ -1917,6 +1917,30 @@ fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
         )
         .unwrap();
     assert_eq!(sid, "sess-turncap-1");
+    let (s1, s2): (String, String) = e.db().query_row("SELECT (SELECT start_sha FROM attempts WHERE task_id=1 AND attempt_no=1), (SELECT start_sha FROM attempts WHERE task_id=1 AND attempt_no=2)", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(
+        s1, s2,
+        "the resumed attempt is measured from where the capped one began"
+    );
+}
+
+#[test]
+fn a_capped_attempt_that_still_returned_a_result_is_not_resumed() {
+    let e = Env::new();
+    let o = e.run("cappedresult.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("resume   continuing"), "{err}");
+    let a = e.attempts(1);
+    assert_eq!(
+        a[0].2, "L1 failed: answer",
+        "the capped attempt's own result was judged"
+    );
+    assert_eq!(a[1].1, "succeeded");
+    assert!(
+        e.log_text(1, 2).contains("L1 answer"),
+        "the second attempt got the check feedback, not the continuation prompt"
+    );
 }
 
 #[test]

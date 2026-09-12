@@ -386,7 +386,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         ts.timeout_secs = n as i64;
                     }
                     let mut feedback: Option<String> = owed.remove(&seq);
-                    let mut resume: Option<String> = None;
+                    let mut resume: Option<Resume> = None;
                     let mut step_ok = false;
                     while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
                         // A subscription window at its cap: wait for the reset
@@ -440,7 +440,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     seq,
                                     attempt_no,
                                     feedback.as_deref(),
-                                    resume.as_deref(),
+                                    resume.as_ref(),
                                 )
                                 .await?
                             }
@@ -453,7 +453,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     seq,
                                     attempt_no,
                                     feedback.as_deref(),
-                                    resume.as_deref(),
+                                    resume.as_ref(),
                                 )
                                 .await?
                             }
@@ -465,7 +465,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     step,
                                     seq,
                                     attempt_no,
-                                    resume.as_deref(),
+                                    resume.as_ref(),
                                 )
                                 .await?
                             }
@@ -571,12 +571,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             }
                             AttemptState::Unverified | AttemptState::NeedsInput => break,
                             AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                                // Out of turns with work in hand: continue the same
-                                // session rather than start over blind.
+                                // Out of turns before producing a result, with work in
+                                // hand: continue the same session rather than start over
+                                // blind. A capped attempt that did return a result gets
+                                // the ordinary feedback for what its result failed.
                                 let capped =
                                     outcome.max_turns_hit || outcome.num_turns >= ts.max_turns;
+                                let unfinished = verdict.envelope.is_none();
                                 let progress = verdict.commits > 0 || verdict.dirty;
                                 if capped
+                                    && unfinished
                                     && progress
                                     && let Some(sid) = &outcome.session_id
                                 {
@@ -589,7 +593,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                             ),
                                         },
                                     );
-                                    resume = Some(sid.clone());
+                                    resume = Some(Resume {
+                                        session: sid.clone(),
+                                        start_sha: a.start_sha.clone(),
+                                    });
                                     feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result.".into());
                                 } else {
                                     resume = None;
@@ -779,6 +786,14 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 /// The refs whose namespace files are overlaid before L1: the standing
 /// suite when the repository has one, the task's own tests when it has
 /// some.
+/// A capped attempt to continue: the CLI session, and where that attempt
+/// started, since the agent reports for the whole session.
+#[derive(Clone)]
+struct Resume {
+    session: String,
+    start_sha: String,
+}
+
 enum Integrate {
     /// On the base branch; its new tip.
     Landed(String),
@@ -1520,6 +1535,7 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
     p
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn new_attempt(
     f: &Forge,
     t: &Task,
@@ -1528,9 +1544,15 @@ async fn new_attempt(
     dir: &Path,
     attempt_no: i64,
     mut inputs: Inputs,
+    resume: Option<&Resume>,
 ) -> Result<(Attempt, PathBuf), Fault> {
     let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
-    let start_sha = git::head(dir).await.task()?;
+    // A resumed attempt is measured from where the capped one began: the
+    // agent's report covers the whole session.
+    let start_sha = match resume {
+        Some(r) => r.start_sha.clone(),
+        None => git::head(dir).await.task()?,
+    };
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();
@@ -1662,7 +1684,7 @@ async fn run_code_attempt(
     seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
-    resume: Option<&str>,
+    resume: Option<&Resume>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
@@ -1677,12 +1699,21 @@ async fn run_code_attempt(
         protected: cfg.protected.clone(),
         namespace: cfg.namespace.clone(),
         prompt_chars: prompt_text.chars().count(),
-        resumed: resume.map(str::to_string),
+        resumed: resume.map(|r| r.session.clone()),
         ..Default::default()
     };
     let (mut a, log_path) =
-        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs).await?;
-    let outcome = launch(f, t, &step.action.name, wt, &prompt_text, &log_path, resume).await?;
+        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs, resume).await?;
+    let outcome = launch(
+        f,
+        t,
+        &step.action.name,
+        wt,
+        &prompt_text,
+        &log_path,
+        resume.map(|r| r.session.as_str()),
+    )
+    .await?;
     let pending_main = git::rev_parse(wt, &format!("refs/heads/forge/{}", t.base_branch))
         .await
         .ok();
@@ -1719,7 +1750,7 @@ async fn run_tests_attempt(
     seq: i64,
     attempt_no: i64,
     feedback: Option<&str>,
-    resume: Option<&str>,
+    resume: Option<&Resume>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let repo = Path::new(&t.repo);
     let dir = tests_clone_dir(&t.worktree);
@@ -1746,11 +1777,20 @@ async fn run_tests_attempt(
         protected: cfg.protected.clone(),
         namespace: cfg.namespace.clone(),
         prompt_chars: prompt_text.chars().count(),
-        resumed: resume.map(str::to_string),
+        resumed: resume.map(|r| r.session.clone()),
         ..Default::default()
     };
-    let (mut a, log_path) =
-        new_attempt(f, t, &step.action.name, seq, &dir, attempt_no, inputs).await?;
+    let (mut a, log_path) = new_attempt(
+        f,
+        t,
+        &step.action.name,
+        seq,
+        &dir,
+        attempt_no,
+        inputs,
+        resume,
+    )
+    .await?;
     let outcome = launch(
         f,
         t,
@@ -1758,7 +1798,7 @@ async fn run_tests_attempt(
         &dir,
         &prompt_text,
         &log_path,
-        resume,
+        resume.map(|r| r.session.as_str()),
     )
     .await?;
     let scratch = scratch_dir(&t.worktree);
@@ -1818,7 +1858,7 @@ async fn run_review_attempt(
     step: &ResolvedStep,
     seq: i64,
     attempt_no: i64,
-    resume: Option<&str>,
+    resume: Option<&Resume>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let prompt_text = review_prompt(t, cfg, step);
@@ -1827,12 +1867,21 @@ async fn run_review_attempt(
         protected: cfg.protected.clone(),
         namespace: cfg.namespace.clone(),
         prompt_chars: prompt_text.chars().count(),
-        resumed: resume.map(str::to_string),
+        resumed: resume.map(|r| r.session.clone()),
         ..Default::default()
     };
     let (mut a, log_path) =
-        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs).await?;
-    let outcome = launch(f, t, &step.action.name, wt, &prompt_text, &log_path, resume).await?;
+        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs, resume).await?;
+    let outcome = launch(
+        f,
+        t,
+        &step.action.name,
+        wt,
+        &prompt_text,
+        &log_path,
+        resume.map(|r| r.session.as_str()),
+    )
+    .await?;
     let verdict = verify::verify_review(
         verify::ReviewSubject {
             task_id: t.id,
