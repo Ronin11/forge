@@ -1551,6 +1551,8 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
         "\n\nYou are the test author in a test-first pair. Write tests only under {ns} that specify the task below. \
          A visible test outside {ns} that the implementer may change is theirs to update, not a reason to stop: \
          finish, and name it in your summary as something the implementation must change. \
+         Assert what the task specifies, never the exhaustive shape of a table later tasks extend (the full set of \
+         resources, generators, tiers, fields): a later task must be able to add an entry without breaking your test. \
          They must fail on the current code and pass when the task is done correctly. Do not implement the task and do \
          not change anything outside {ns}. The repository's `test` check ({cmd}) is what runs them, so write them in the \
          form that check picks up. Commit them.\n\n\
