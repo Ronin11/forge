@@ -61,8 +61,11 @@ forge doctor                                  # can this machine run attempts; i
    and the output drained with a short grace, so a check that backgrounds
    a server cannot hold the attempt open.
 5. **Retry.** On failure the next attempt is told exactly which rows failed
-   and their output (`--retries`, default 1), on the same branch. A task
-   stops early when its cost reaches its cap.
+   and their output (`--retries`, default 1), on the same branch. An
+   attempt that hit its turn cap with work in hand is resumed in the same
+   CLI session instead of starting over. A run the provider refused for a
+   rate window is not an attempt: Forge waits for the reset and goes again.
+   A task stops early when its cost reaches its cap.
 6. **Land.** On a verified success the kernel brings the base branch in
    as it is now on the remote, re-verifies the merged tree with every
    hidden suite, pushes the branch by explicit refspec, and fast-forwards

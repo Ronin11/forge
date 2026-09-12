@@ -32,6 +32,12 @@ pub struct Outcome {
     pub structured: Option<String>,
     /// Last rate-limit sample seen on the stream, per window.
     pub rate_limits: RateLimits,
+    /// The CLI session, so a capped attempt can be resumed where it stopped.
+    pub session_id: Option<String>,
+    /// The CLI ended the run at its turn limit.
+    pub max_turns_hit: bool,
+    /// The provider refused the run for a rate window: not the agent's fault.
+    pub rate_limited: bool,
 }
 
 /// Subscription usage as the CLI reports it: utilization is 0..1 of the
@@ -105,11 +111,13 @@ pub struct Launch<'a> {
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
     pub step: &'a str,
+    /// A CLI session to continue instead of starting fresh.
+    pub resume: Option<&'a str>,
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     let bin = agent_bin_for(l.step);
-    let argv: Vec<String> = [
+    let mut argv: Vec<String> = [
         bin.as_str(),
         "--print",
         "--verbose",
@@ -126,6 +134,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if let Some(id) = l.resume {
+        argv.push("--resume".into());
+        argv.push(id.to_string());
+    }
     let identity = crate::git::identity(&l.worktree.join(".git")).await;
     let start = Instant::now();
     let deadline = tokio::time::Instant::now() + l.timeout;
@@ -188,9 +200,23 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                         }
                     }
                 }
+                Some("system") => {
+                    if let Some(id) = v["session_id"].as_str() {
+                        out.session_id = Some(id.to_string());
+                    }
+                }
                 Some("result") => {
                     out.got_result = true;
                     out.is_error = v["is_error"].as_bool().unwrap_or(false);
+                    if let Some(id) = v["session_id"].as_str() {
+                        out.session_id = Some(id.to_string());
+                    }
+                    out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
+                    let text = v["result"].as_str().unwrap_or("").to_ascii_lowercase();
+                    if out.is_error && (text.contains("rate limit") || text.contains("rate-limit"))
+                    {
+                        out.rate_limited = true;
+                    }
                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
                     out.cost_usd = v["total_cost_usd"].as_f64();
                     out.result_text = v["result"].as_str().unwrap_or("").to_string();
@@ -213,6 +239,18 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                     }
                     if let Some(s) = read("seven_day") {
                         out.rate_limits.seven_day = Some(s);
+                    }
+                    // A refused run: hold the shorter window until the reset
+                    // the provider named (or five minutes), whichever the
+                    // sample does not already say.
+                    if v["rate_limit_info"]["status"].as_str() == Some("rejected") {
+                        out.rate_limited = true;
+                        let resets = v["rate_limit_info"]["resetsAt"]
+                            .as_i64()
+                            .unwrap_or_else(|| crate::unix_now() + 300);
+                        let (u, r) = out.rate_limits.five_hour.unwrap_or((1.0, resets));
+                        out.rate_limits.five_hour =
+                            Some((u.max(1.0), if r > 0 { r } else { resets }));
                     }
                 }
                 _ => {}

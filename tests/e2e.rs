@@ -251,6 +251,12 @@ fn a_question_ends_the_task_without_retrying() {
         "{reason}"
     );
     assert!(!pushed);
+    let o = e.forge("ok.sh", &["requests"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("did: read the tree and the task; stopped before writing anything"),
+        "the request says what was tried: {out}"
+    );
 }
 
 #[test]
@@ -1878,6 +1884,66 @@ fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
         !trace.contains("export/import"),
         "prose with a slash is not a path"
     );
+}
+
+#[test]
+fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
+    let e = Env::new();
+    let o = e.run("turncap.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("resume   continuing session sess-tur past the turn cap"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[0].1, "agent_failed");
+    assert_eq!(a[1].1, "succeeded");
+    assert!(
+        e.log_text(1, 2)
+            .contains("ran out of turns before finishing"),
+        "the continuation prompt"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert_eq!(doc["attempts"][1]["inputs"]["resumed"], "sess-turncap-1");
+    let sid: String = e
+        .db()
+        .query_row(
+            "SELECT session_id FROM attempts WHERE task_id=1 AND attempt_no=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sid, "sess-turncap-1");
+}
+
+#[test]
+fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
+    let e = Env::new();
+    let t0 = Instant::now();
+    // --retries 0: one attempt allowed, and the refused run must not be it.
+    let o = e.run("ratelimit-hit.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("the provider refused this run; it does not count as an attempt"),
+        "{err}"
+    );
+    assert!(
+        err.contains("rate window 5h at 100%"),
+        "the hold used the refusal's window: {err}"
+    );
+    assert!(
+        t0.elapsed() >= Duration::from_secs(1),
+        "waited for the reset"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "the refused run is recorded, then the real one");
+    assert_eq!(a[0].2, "rate limited by the provider");
+    assert_eq!(a[1].1, "succeeded");
+    assert_eq!(e.task(1).0, "succeeded");
 }
 
 #[test]

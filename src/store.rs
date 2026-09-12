@@ -179,6 +179,8 @@ pub struct Attempt {
     pub rl_seven_day: Option<f64>,
     pub rl_five_hour_resets: Option<i64>,
     pub rl_seven_day_resets: Option<i64>,
+    /// The CLI session the attempt ran in; empty when the stream never said.
+    pub session_id: String,
 }
 
 pub struct RateLimitSample {
@@ -348,6 +350,9 @@ ALTER TABLE ops ADD COLUMN output TEXT NOT NULL DEFAULT '';
     "
 ALTER TABLE tasks ADD COLUMN land INTEGER NOT NULL DEFAULT 1;
 ",
+    "
+ALTER TABLE attempts ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
@@ -397,7 +402,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq, session_id";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -431,6 +436,7 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         inputs_json: r.get(27)?,
         outputs_json: r.get(28)?,
         step_seq: r.get(29)?,
+        session_id: r.get(30)?,
     })
 }
 
@@ -601,7 +607,7 @@ impl Store {
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
-             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22 WHERE id=?1",
+             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -624,7 +630,9 @@ impl Store {
                 a.rl_five_hour_resets,
                 a.rl_seven_day_resets,
                 a.end_sha,
-                a.outputs_json
+                a.outputs_json,
+                a.session_id,
+
             ],
         )?;
         Ok(())

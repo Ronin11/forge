@@ -1480,4 +1480,27 @@ mod tests {
             "code"
         );
     }
+
+    #[test]
+    fn the_docs_name_every_built_in() {
+        // Agents read docs/ACTIONS.md as instructions; a mechanism the docs
+        // do not name might as well not exist, and one they name that does
+        // not exist is worse.
+        let docs = include_str!("../docs/ACTIONS.md");
+        for (file, text) in BUILTIN_ACTIONS
+            .iter()
+            .chain(BUILTIN_OPERATIONS)
+            .chain(BUILTIN_WORKFLOWS)
+        {
+            let name = text
+                .lines()
+                .find_map(|l| l.strip_prefix("name = "))
+                .map(|n| n.trim_matches('"'))
+                .unwrap_or_else(|| panic!("{file} has no name"));
+            assert!(
+                docs.contains(&format!("`{name}`")),
+                "docs/ACTIONS.md does not mention `{name}` ({file})"
+            );
+        }
+    }
 }

@@ -34,6 +34,9 @@ pub struct Inputs {
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
     pub prompt_chars: usize,
+    /// The CLI session this attempt continued, when it resumed a capped one.
+    #[serde(default)]
+    pub resumed: Option<String>,
 }
 
 /// What a step produced, beyond the verdict rows.
@@ -364,5 +367,66 @@ mod tests {
 
         let unknown = diagnose(&task(TaskState::Failed, "something new"), &[]);
         assert!(unknown[0].action.contains("forge trace"));
+    }
+
+    #[test]
+    fn every_reason_the_engine_can_emit_has_a_diagnosis() {
+        // The anti-fragility rule: no terminal state that a human must
+        // diagnose by hand. Every reason shape the engine produces maps to
+        // a what and an action.
+        let cases = [
+            (
+                TaskState::Failed,
+                "L0 failed: clean-tree (after 1 attempt(s))",
+            ),
+            (TaskState::Failed, "L1 failed: test (after 2 attempt(s))"),
+            (
+                TaskState::Failed,
+                "L2 failed: acceptance (after 1 attempt(s))",
+            ),
+            (TaskState::Failed, "agent exit 1 (after 1 attempt(s))"),
+            (TaskState::Failed, "agent timed out (after 1 attempt(s))"),
+            (
+                TaskState::Failed,
+                "agent produced no result (after 1 attempt(s))",
+            ),
+            (TaskState::Failed, "operation setup failed: exit 1"),
+            (
+                TaskState::Failed,
+                "operation needs-extra (verifies) failed after 1 attempt(s): extra.txt is missing",
+            ),
+            (
+                TaskState::Failed,
+                "check lint failed inside the verification namespace after 1 tests attempt(s): x",
+            ),
+            (
+                TaskState::Failed,
+                "landing failed: fast-forward of main rejected",
+            ),
+            (
+                TaskState::Failed,
+                "landing failed after 2 attempt(s): main moved; conflicts in a.ts",
+            ),
+            (
+                TaskState::Failed,
+                "task budget reached: $2.0100 of $2.00 after 3 attempt(s)",
+            ),
+            (TaskState::Succeeded, "push failed: no route"),
+            (TaskState::Blocked, "review demoted: off by one"),
+            (TaskState::Blocked, "needs workflow: no e2e step"),
+            (TaskState::Blocked, "needs input: which db?"),
+            (TaskState::Unverified, "no L1 or L2"),
+            (
+                TaskState::Unverified,
+                "review could not finish (agent exit 1); the branch verified at the code step and goes to human review (after 2 attempt(s))",
+            ),
+        ];
+        for (state, reason) in cases {
+            let mut t = task(state, reason);
+            t.pushed = false;
+            let out = diagnose(&t, &[]);
+            assert!(!out.is_empty(), "no diagnosis for {state:?} {reason:?}");
+            assert!(!out[0].action.is_empty(), "no action for {reason:?}");
+        }
     }
 }

@@ -671,6 +671,17 @@ fn requests() -> Result<()> {
             repo_name,
             text
         );
+        let tried = f
+            .store
+            .attempts(t.id)?
+            .last()
+            .and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok())
+            .and_then(|e| e.needs_input)
+            .map(|q| q.tried)
+            .unwrap_or_default();
+        if !tried.is_empty() {
+            out!("{:<44} did: {}", "", tried);
+        }
     }
     Ok(())
 }

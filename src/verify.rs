@@ -802,7 +802,9 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
 
 /// Why the agent run itself counts as failed, if it does.
 pub fn agent_failure(a: &Outcome) -> Option<String> {
-    if a.timed_out {
+    if a.rate_limited {
+        Some("rate limited by the provider".into())
+    } else if a.timed_out {
         Some("agent timed out".into())
     } else if a.exit_code != Some(0) {
         Some(format!(

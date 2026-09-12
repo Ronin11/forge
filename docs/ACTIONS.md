@@ -46,9 +46,11 @@ A directive is a prompt template, a capability set, and a contract.
 
 A directive file names its `contract`, the kernel-enforced behavior that
 runs it (default: its own name). Three contracts exist: `code`, `tests`,
-and `review`. Many directives over few contracts: `docs` and `fix` are
-both the `code` contract with different parameters. A file naming any
-other contract is rejected.
+and `review`. Many directives over few contracts: `docs`, `fix`,
+`polish`, `document` (docs and comments brought in line with the diff),
+and `graph` (the system map in docs/SYSTEM.md) are all the `code`
+contract with different parameters. A file naming any other contract is
+rejected.
 
 Parameters a directive file may carry: `model`, `max_turns`,
 `timeout_secs`; for the `code` contract, `paths`, a write scope that
@@ -168,10 +170,14 @@ Built-in operations, written on first use next to the directives and
 never overwritten: `setup` (the repository's setup check), `diff-size`
 (fails past a cap on lines and files changed against base; the caps are
 the last two elements of `run`), `fmt` (runs the formatter the tree's
-layout suggests and commits the result), and `interface` (the files under
+layout suggests and commits the result), `interface` (the files under
 the namespace, what they import, and the names they call, never the
-assertions). Each is a starting point the operator edits, and every edit
-is a new hash with its own numbers.
+assertions), `playwright` (the hidden e2e suite from `forge-verify`, run
+with the namespace overlaid; verifies), `comments-only` (fails when the
+preceding step changed anything but comments and docs; verifies), and
+`graph-check` (docs/SYSTEM.md exists, holds a Mermaid block, and names
+only real paths; verifies). Each is a starting point the operator edits,
+and every edit is a new hash with its own numbers.
 
 ## Data flow
 
