@@ -2295,6 +2295,65 @@ fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on()
 }
 
 #[test]
+fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["events"]).stdout).to_string();
+    let events: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let types: Vec<&str> = events.iter().map(|v| v["type"].as_str().unwrap()).collect();
+    assert!(
+        types.first() == Some(&"op") || types.first() == Some(&"task_started"),
+        "{types:?}"
+    );
+    assert!(
+        types.contains(&"attempt_started")
+            && types.contains(&"check")
+            && types.contains(&"attempt_done")
+            && types.contains(&"task_done"),
+        "{types:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|v| v["task"] == 1 && v["ts"].as_i64().is_some() && v["text"].as_str().is_some())
+    );
+    let done = events.iter().find(|v| v["type"] == "task_done").unwrap();
+    assert_eq!(done["state"], "succeeded");
+    let snap: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["snapshot"]).stdout).unwrap();
+    let offset = snap["events_offset"].as_u64().unwrap();
+    assert_eq!(
+        offset,
+        std::fs::metadata(e.home.join("events.jsonl"))
+            .unwrap()
+            .len()
+    );
+    assert_eq!(snap["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(snap["worker"]["running"], false);
+    let after = e.forge("ok.sh", &["events", "--since", &offset.to_string()]);
+    assert!(after.stdout.is_empty(), "nothing after the snapshot");
+    // A second task's events follow the offset, and --task filters.
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let later = String::from_utf8_lossy(
+        &e.forge(
+            "ok.sh",
+            &["events", "--since", &offset.to_string(), "--task", "2"],
+        )
+        .stdout,
+    )
+    .to_string();
+    assert!(!later.is_empty());
+    assert!(
+        later
+            .lines()
+            .all(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["task"] == 2)
+    );
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

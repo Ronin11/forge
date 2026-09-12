@@ -137,6 +137,20 @@ enum Cmd {
     },
     /// Outcomes per workflow version and per step
     Stats,
+    /// The event log as JSON lines: a client's subscription
+    Events {
+        /// Byte offset to start from (a snapshot's events_offset)
+        #[arg(long)]
+        since: Option<u64>,
+        /// Keep printing as events arrive
+        #[arg(long)]
+        follow: bool,
+        /// Only this task's events
+        #[arg(long)]
+        task: Option<i64>,
+    },
+    /// Tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
+    Snapshot,
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -180,6 +194,12 @@ pub async fn main() -> Result<()> {
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
         Cmd::Stats => stats(),
+        Cmd::Events {
+            since,
+            follow,
+            task,
+        } => events(since, follow, task),
+        Cmd::Snapshot => snapshot(),
         Cmd::Workflows { json } => list_workflows(json),
     }
 }
@@ -805,34 +825,11 @@ fn trace(id: i64, json: bool) -> Result<()> {
 
 fn requests(json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let blocked = f.store.blocked()?;
     if json {
-        let rows: Vec<serde_json::Value> = blocked
-            .iter()
-            .map(|t| {
-                let (kind, text) = if t.reason.starts_with("waits on task") {
-                    ("dependency", t.reason.clone())
-                } else {
-                    match t.reason.split_once(": ") {
-                        Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
-                        Some(("needs suite", rest)) => ("suite", rest.to_string()),
-                        Some(("needs input", rest)) => ("question", rest.to_string()),
-                        Some(("review demoted", rest)) => ("review", rest.to_string()),
-                        _ => ("other", t.reason.clone()),
-                    }
-                };
-                let q = f
-                    .store
-                    .attempts(t.id)
-                    .ok()
-                    .and_then(|a| a.last().and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok()))
-                    .and_then(|e| e.needs_input);
-                serde_json::json!({"id": t.id, "kind": kind, "text": text, "tried": q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(), "path": q.as_ref().map(|q| q.path.clone()).unwrap_or_default(), "workflow": t.workflow, "repo": t.repo, "task": t.task})
-            })
-            .collect();
-        out!("{}", serde_json::to_string_pretty(&rows)?);
+        out!("{}", serde_json::to_string_pretty(&requests_json(&f)?)?);
         return Ok(());
     }
+    let blocked = f.store.blocked()?;
     if blocked.is_empty() {
         out!("no blocked tasks");
         return Ok(());
@@ -944,16 +941,123 @@ fn stats() -> Result<()> {
     Ok(())
 }
 
+fn tasks_json(f: &Forge, limit: u32) -> Result<Vec<serde_json::Value>> {
+    Ok(f.store
+        .list_tasks(limit)?
+        .into_iter()
+        .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
+        .collect())
+}
+
+fn requests_json(f: &Forge) -> Result<Vec<serde_json::Value>> {
+    Ok(f.store
+        .blocked()?
+        .iter()
+        .map(|t| {
+            let (kind, text) = if t.reason.starts_with("waits on task") {
+                ("dependency", t.reason.clone())
+            } else {
+                match t.reason.split_once(": ") {
+                    Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
+                    Some(("needs suite", rest)) => ("suite", rest.to_string()),
+                    Some(("needs input", rest)) => ("question", rest.to_string()),
+                    Some(("review demoted", rest)) => ("review", rest.to_string()),
+                    _ => ("other", t.reason.clone()),
+                }
+            };
+            let q = f
+                .store
+                .attempts(t.id)
+                .ok()
+                .and_then(|a| a.last().and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok()))
+                .and_then(|e| e.needs_input);
+            serde_json::json!({"id": t.id, "kind": kind, "text": text, "tried": q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(), "path": q.as_ref().map(|q| q.path.clone()).unwrap_or_default(), "workflow": t.workflow, "repo": t.repo, "task": t.task})
+        })
+        .collect())
+}
+
+/// The worker as the pid file says: pid, its binary, whether it is alive,
+/// and whether that binary was rebuilt underneath it.
+fn worker_json(f: &Forge) -> serde_json::Value {
+    let Ok(text) = std::fs::read_to_string(f.paths.home.join("worker.pid")) else {
+        return serde_json::json!({"running": false});
+    };
+    let mut it = text.split_whitespace();
+    let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let exe = it.next().unwrap_or("").to_string();
+    let alive = pid > 0 && worker::pid_alive(pid);
+    let stale = alive
+        && std::fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+            .unwrap_or(false);
+    serde_json::json!({"running": alive, "pid": pid, "exe": exe, "stale_binary": stale})
+}
+
+fn snapshot() -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let offset = std::fs::metadata(f.paths.home.join("events.jsonl"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let doc = serde_json::json!({
+        "tasks": tasks_json(&f, 200)?,
+        "requests": requests_json(&f)?,
+        "worker": worker_json(&f),
+        "events_offset": offset,
+    });
+    out!("{}", serde_json::to_string_pretty(&doc)?);
+    Ok(())
+}
+
+fn events(since: Option<u64>, follow: bool, task: Option<i64>) -> Result<()> {
+    use std::io::{BufRead, Seek};
+    let paths = crate::ctx::Paths::resolve()?;
+    let path = paths.home.join("events.jsonl");
+    let mut pos = since.unwrap_or(0);
+    let mut stdout = std::io::stdout().lock();
+    loop {
+        if let Ok(mut file) = std::fs::File::open(&path) {
+            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            if len < pos {
+                // Rolled: start over from the new file.
+                pos = 0;
+            }
+            file.seek(std::io::SeekFrom::Start(pos))?;
+            let mut reader = std::io::BufReader::new(file);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = reader.read_line(&mut line)?;
+                if n == 0 || !line.ends_with('\n') {
+                    break;
+                }
+                pos += n as u64;
+                if let Some(id) = task
+                    && serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .and_then(|v| v["task"].as_i64())
+                        != Some(id)
+                {
+                    continue;
+                }
+                use std::io::Write;
+                if writeln!(stdout, "{}", line.trim_end()).is_err() {
+                    return Ok(());
+                }
+            }
+            use std::io::Write;
+            let _ = stdout.flush();
+        }
+        if !follow {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 fn log(limit: u32, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     if json {
-        let rows: Vec<serde_json::Value> = f
-            .store
-            .list_tasks(limit)?
-            .into_iter()
-            .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
-            .collect();
-        out!("{}", serde_json::to_string_pretty(&rows)?);
+        out!("{}", serde_json::to_string_pretty(&tasks_json(&f, limit)?)?);
         return Ok(());
     }
     out!(

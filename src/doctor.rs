@@ -253,6 +253,21 @@ pub fn run() -> Result<Vec<Check>> {
     }
 
     let queued = store.queued_count()?;
+    // The worker, by its pid file: alive, and on the binary that is on disk.
+    if let Ok(text) = std::fs::read_to_string(paths.home.join("worker.pid")) {
+        let mut it = text.split_whitespace();
+        let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let alive = pid > 0 && worker::pid_alive(pid);
+        let stale = alive
+            && std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+                .unwrap_or(false);
+        out.push(match (alive, stale) {
+            (true, true) => check("worker", Status::Warn, format!("pid {pid} runs a binary rebuilt since it started"), "restart the worker (one SIGTERM drains it, or systemctl --user restart forge2-worker)"),
+            (true, false) => check("worker", Status::Ok, format!("pid {pid} running"), ""),
+            (false, _) => check("worker", Status::Warn, format!("pid {pid} is gone"), "start it: forge work, or systemctl --user start forge2-worker"),
+        });
+    }
     let running = store.running_ids()?;
     let orphans: Vec<i64> = store.orphans(worker::pid_alive)?;
     out.push(match (running.len(), orphans.len()) {

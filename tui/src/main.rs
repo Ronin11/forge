@@ -1,7 +1,9 @@
 //! forge-tui: the operator's seat. A client of the `forge` CLI and nothing
-//! else: it reads `log --json`, `requests --json`, and `trace --json`, and
-//! acts through `forge retry`. It never opens the database and never links
-//! the kernel, so a kernel that changes its rules changes nothing here.
+//! else: it takes a `snapshot`, subscribes to `events --follow` from the
+//! offset the snapshot names, re-reads `log`, `requests`, and `trace` as
+//! JSON only when an event says something changed, and acts through
+//! `forge retry`. It never opens the database and never links the kernel,
+//! so a kernel that changes its rules changes nothing here.
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -11,7 +13,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
 use serde_json::Value;
-use std::process::Command;
+use std::collections::{HashMap, VecDeque};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 /// The forge binary: `FORGE_BIN`, else `forge` on PATH. `FORGE2_HOME`
@@ -46,7 +50,35 @@ impl Forge {
         let text = self.run(args)?;
         serde_json::from_str(&text).with_context(|| format!("parsing forge {}", args.join(" ")))
     }
+
+    /// `forge events --since <offset> --follow`, one line per event on a
+    /// channel; the child dies with the subscription.
+    fn subscribe(&self, offset: u64) -> Result<(Child, Receiver<String>)> {
+        let mut child = Command::new(&self.bin)
+            .args(["events", "--since", &offset.to_string(), "--follow"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("running {} events --follow", self.bin))?;
+        let stdout = child.stdout.take().context("events stdout")?;
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok((child, rx))
+    }
 }
+
+/// What a client keeps of the stream: the last events per task, as text.
+const LIVE_PER_TASK: usize = 200;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -66,6 +98,12 @@ struct App {
     scroll: u16,
     status: String,
     refreshed: Instant,
+    worker: Value,
+    live: HashMap<i64, VecDeque<String>>,
+    recent: VecDeque<String>,
+    sub: Option<(Child, Receiver<String>)>,
+    dirty_lists: bool,
+    dirty_trace: bool,
 }
 
 impl App {
@@ -81,6 +119,96 @@ impl App {
             scroll: 0,
             status: String::new(),
             refreshed: Instant::now() - Duration::from_secs(60),
+            worker: Value::Null,
+            live: HashMap::new(),
+            recent: VecDeque::new(),
+            sub: None,
+            dirty_lists: false,
+            dirty_trace: false,
+        }
+    }
+
+    /// The whole state at one instant, and a subscription from that instant on.
+    fn snapshot(&mut self) {
+        match self.forge.json(&["snapshot"]) {
+            Ok(v) => {
+                self.tasks = v["tasks"].as_array().cloned().unwrap_or_default();
+                self.requests = v["requests"].as_array().cloned().unwrap_or_default();
+                self.worker = v["worker"].clone();
+                let offset = v["events_offset"].as_u64().unwrap_or(0);
+                if let Some((mut child, _)) = self.sub.take() {
+                    let _ = child.kill();
+                }
+                match self.forge.subscribe(offset) {
+                    Ok(sub) => self.sub = Some(sub),
+                    Err(e) => self.status = format!("{e:#}"),
+                }
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+        self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
+        self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
+        self.refreshed = Instant::now();
+    }
+
+    /// One event from the stream: remembered as live text, and a flag for
+    /// what it changed, so the lists and the trace are re-read only then.
+    fn apply(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        let task = v["task"].as_i64().unwrap_or(0);
+        let kind = v["type"].as_str().unwrap_or("");
+        let text = format!("{:<15} {}", kind, v["text"].as_str().unwrap_or(""));
+        let buf = self.live.entry(task).or_default();
+        buf.push_back(text.clone());
+        if buf.len() > LIVE_PER_TASK {
+            buf.pop_front();
+        }
+        self.recent.push_back(format!("[{task}] {text}"));
+        if self.recent.len() > 12 {
+            self.recent.pop_front();
+        }
+        if matches!(
+            kind,
+            "task_started"
+                | "task_done"
+                | "attempt_started"
+                | "attempt_done"
+                | "op"
+                | "pushed"
+                | "push_failed"
+        ) {
+            self.dirty_lists = true;
+            if self.trace.as_ref().and_then(|t| t["task"]["id"].as_i64()) == Some(task) {
+                self.dirty_trace = true;
+            }
+        }
+    }
+
+    /// Drain the stream, then re-read only what it said changed.
+    fn pump(&mut self) {
+        let mut lines = Vec::new();
+        if let Some((_, rx)) = &self.sub {
+            while let Ok(l) = rx.try_recv() {
+                lines.push(l);
+            }
+        }
+        for l in lines {
+            self.apply(&l);
+        }
+        if self.dirty_lists {
+            self.dirty_lists = false;
+            self.refresh();
+        }
+        if self.dirty_trace {
+            self.dirty_trace = false;
+            if let Some(id) = self.trace.as_ref().and_then(|t| t["task"]["id"].as_i64()) {
+                self.open_task(id);
+            }
+        }
+        if self.refreshed.elapsed() > Duration::from_secs(60) {
+            self.snapshot();
         }
     }
 
@@ -92,11 +220,6 @@ impl App {
         match self.forge.json(&["requests", "--json"]) {
             Ok(v) => self.requests = v.as_array().cloned().unwrap_or_default(),
             Err(e) => self.status = format!("{e:#}"),
-        }
-        if self.screen == Screen::Task
-            && let Some(id) = self.trace.as_ref().and_then(|t| t["task"]["id"].as_i64())
-        {
-            self.open_task(id);
         }
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
@@ -199,9 +322,25 @@ fn draw(frame: &mut Frame, app: &App) {
             Span::raw(format!(" {name} "))
         }
     };
+    let worker = match (
+        app.worker["running"].as_bool(),
+        app.worker["stale_binary"].as_bool(),
+    ) {
+        (Some(true), Some(true)) => Span::styled(
+            "worker: stale binary, restart it",
+            Style::default().fg(Color::Yellow),
+        ),
+        (Some(true), _) => Span::styled(
+            format!("worker {}", app.worker["pid"]),
+            Style::default().fg(Color::Green),
+        ),
+        _ => Span::styled("no worker", Style::default().fg(Color::Red)),
+    };
     let header = Line::from(vec![
         Span::styled("Forge 2", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  {queued} queued, {running} running  ")),
+        worker,
+        Span::raw("  "),
         tab("queue", Screen::Queue),
         tab(
             &format!("requests ({})", app.requests.len()),
@@ -236,6 +375,12 @@ fn short(v: &Value, key: &str, n: usize) -> String {
 }
 
 fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
+    let [area, live] = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).areas(area);
+    let recent: Vec<Line> = app.recent.iter().map(|l| Line::raw(l.clone())).collect();
+    frame.render_widget(
+        Paragraph::new(recent).block(Block::bordered().title("live")),
+        live,
+    );
     let rows = app.tasks.iter().map(|t| {
         let state = t["state"].as_str().unwrap_or("");
         Row::new(vec![
@@ -329,6 +474,31 @@ fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
+    let [area, live] =
+        Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)]).areas(area);
+    let id = app
+        .trace
+        .as_ref()
+        .and_then(|t| t["task"]["id"].as_i64())
+        .unwrap_or(-1);
+    let buf = app.live.get(&id);
+    let shown = live.height.saturating_sub(2) as usize;
+    let recent: Vec<Line> = buf
+        .map(|b| {
+            b.iter()
+                .rev()
+                .take(shown)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|l| Line::raw(l.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(recent).block(Block::bordered().title("live")),
+        live,
+    );
     let mut lines: Vec<Line> = Vec::new();
     if let Some(tr) = &app.trace {
         let t = &tr["task"];
@@ -455,7 +625,7 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
 
 fn run() -> Result<()> {
     let mut app = App::new(Forge::new());
-    app.refresh();
+    app.snapshot();
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         loop {
@@ -469,7 +639,7 @@ fn run() -> Result<()> {
                     KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('j') | KeyCode::Down => app.down(),
                     KeyCode::Char('k') | KeyCode::Up => app.up(),
-                    KeyCode::Char('g') => app.refresh(),
+                    KeyCode::Char('g') => app.snapshot(),
                     KeyCode::Char('r') => app.retry(false),
                     KeyCode::Char('R') => app.retry(true),
                     KeyCode::Tab => {
@@ -494,13 +664,14 @@ fn run() -> Result<()> {
                     _ => {}
                 }
             }
-            if app.refreshed.elapsed() > Duration::from_secs(3) {
-                app.refresh();
-            }
+            app.pump();
         }
         Ok(())
     })();
     ratatui::restore();
+    if let Some((mut child, _)) = app.sub.take() {
+        let _ = child.kill();
+    }
     result
 }
 
@@ -508,7 +679,10 @@ fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--dump") {
         // One frame, no terminal: for a script or a smoke test.
         let mut app = App::new(Forge::new());
-        app.refresh();
+        app.snapshot();
+        if let Some((mut child, _)) = app.sub.take() {
+            let _ = child.kill();
+        }
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend)?;
         terminal.draw(|f| draw(f, &app))?;
@@ -555,7 +729,7 @@ mod tests {
     }
 
     fn frame_of(app: &App) -> String {
-        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let backend = ratatui::backend::TestBackend::new(100, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         render_text(terminal.backend())
@@ -590,6 +764,28 @@ mod tests {
             "{text}"
         );
         assert_eq!(app.current_id(), Some(42));
+    }
+
+    #[test]
+    fn an_event_is_kept_as_live_text_and_flags_what_it_changed() {
+        let mut app = app_with("[]", "[]");
+        app.trace = Some(serde_json::json!({"task": {"id": 5}}));
+        app.apply(r#"{"ts":1,"task":5,"type":"tool_call","name":"Bash","text":"tool Bash"}"#);
+        assert!(
+            !app.dirty_lists && !app.dirty_trace,
+            "a tool call changes no list"
+        );
+        assert_eq!(app.live[&5].len(), 1);
+        app.apply(r#"{"ts":2,"task":5,"type":"attempt_done","state":"succeeded","reason":"","text":"attempt succeeded"}"#);
+        assert!(
+            app.dirty_lists && app.dirty_trace,
+            "an attempt ending changes the lists and the open trace"
+        );
+        app.apply("not json");
+        assert_eq!(app.recent.len(), 2);
+        app.screen = Screen::Task;
+        let text = frame_of(&app);
+        assert!(text.contains("tool_call       tool Bash"), "{text}");
     }
 
     #[test]

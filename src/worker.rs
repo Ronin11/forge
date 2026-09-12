@@ -135,6 +135,16 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         eprintln!("requeued task {id}: its previous worker exited");
     }
     let pid = std::process::id() as i64;
+    let pid_file = f.paths.home.join("worker.pid");
+    let _ = std::fs::write(
+        &pid_file,
+        format!(
+            "{pid} {}\n",
+            std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        ),
+    );
     let jobs = opts.jobs.max(1);
     let mut running: JoinSet<(i64, Result<TaskState>)> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();

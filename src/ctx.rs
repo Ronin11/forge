@@ -58,24 +58,26 @@ impl Forge {
         } else {
             None
         };
+        let report = Reporter::new(prefix, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
             paths,
             store,
             budget: home.budget,
             sandbox,
-            report: Reporter::new(prefix),
+            report,
         })
     }
 
     /// For commands that already hold the paths and store (doctor).
     pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
         let budget = config::load_home(&paths.home)?.budget;
+        let report = Reporter::new(false, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
             paths,
             store,
             budget,
             sandbox: None,
-            report: Reporter::new(false),
+            report,
         })
     }
 
