@@ -2229,9 +2229,23 @@ fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on()
     assert_eq!(e.task(1).0, "succeeded");
     assert!(
         e.log_text(1, 2)
-            .contains("Visible tests are the implementer's to change"),
+            .contains("is a visible test, the implementer's to change"),
         "the step was told why"
     );
+
+    // The same exit naming a hidden test blocks the task for a human.
+    std::fs::write(e.repo.join("forge.toml"), "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n").unwrap();
+    git(&e.repo, &["commit", "-qam", "namespace"]);
+    assert!(!e.run("suiteright.sh", &["--retries", "1"]).status.success());
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.starts_with("needs suite: tests/acceptance/old.sh asserts"),
+        "{reason}"
+    );
+    assert_eq!(e.attempts(2).len(), 1, "an honest exit is never retried");
+    let o = e.forge("ok.sh", &["requests"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("suite"));
 }
 
 #[test]

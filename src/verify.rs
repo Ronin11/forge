@@ -168,31 +168,32 @@ async fn common_l0(
         )
     });
     // A suite exit is for a test the agent may not change: one under the
-    // verification namespace or a protected path. Naming only visible
-    // tests is not a reason to stop; the step goes on with that said.
-    if let Some((kind, text)) = &question
+    // verification namespace or a protected path, named in `path`. Naming
+    // a visible test, or none, is not a reason to stop; the step goes on
+    // with that said.
+    if let Some((kind, _)) = &question
         && kind == "suite"
     {
-        let named: Vec<&str> = text
-            .split(|c: char| {
-                c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | ',' | ';')
-            })
-            .map(|t| t.trim_end_matches(['.', ':']))
-            .map(|t| t.split(':').next().unwrap_or(t))
-            .filter(|t| t.contains('/'))
-            .collect();
-        let hidden = named.iter().any(|p| {
-            in_namespace(&cfg.namespace, p) || crate::config::is_protected(&cfg.protected, p)
-        });
+        let path = env
+            .as_ref()
+            .and_then(|e| e.needs_input.as_ref())
+            .map(|q| q.path.trim().to_string())
+            .unwrap_or_default();
+        let hidden = !path.is_empty()
+            && (in_namespace(&cfg.namespace, &path)
+                || crate::config::is_protected(&cfg.protected, &path));
         if !hidden {
             rows.push(l0(
                 "suite-names-a-hidden-test",
                 false,
-                format!(
-                    "a suite exit must name a test under {} or a protected path; it named {}. Visible tests are the implementer's to change: finish the step and say in the summary which tests must change and why.",
-                    cfg.namespace.join(", "),
-                    if named.is_empty() { "no path".to_string() } else { named.join(", ") }
-                ),
+                if path.is_empty() {
+                    format!("a suite exit must set `path` to the test file it objects to, under {} or a protected path", cfg.namespace.join(", "))
+                } else {
+                    format!(
+                        "a suite exit must name a test under {} or a protected path; `{path}` is a visible test, the implementer's to change. Finish the step and say in the summary which tests must change and why.",
+                        cfg.namespace.join(", ")
+                    )
+                },
             ));
             question = None;
         }
