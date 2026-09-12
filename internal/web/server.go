@@ -729,9 +729,9 @@ func defaultResolveModel(alias string) (string, bool) {
 	case "haiku":
 		return "claude-haiku-4-5-20251001", true
 	case "sonnet":
-		return "claude-sonnet-4-5", true
+		return "claude-sonnet-5", true
 	case "opus":
-		return "claude-opus-4-1", true
+		return "claude-opus-5", true
 	case "fable":
 		return "claude-fable-5", true
 	}
