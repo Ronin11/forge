@@ -60,6 +60,10 @@ pub struct Outputs {
     /// never edited. Exploration, measured.
     #[serde(default)]
     pub first_edit_call: Option<i64>,
+    /// What the attempt ran: tools, shell command families, files read,
+    /// each with calls and time.
+    #[serde(default)]
+    pub tools: Option<crate::tools::Tools>,
 }
 
 /// A diagnosis line: what happened, and what the operator can do.

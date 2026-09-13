@@ -175,10 +175,19 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
 
     let read = async {
         while let Some(line) = lines.next_line().await? {
-            writeln!(log, "{line}")?;
-            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            // The CLI's frames carry no clock; Forge stamps each with its
+            // own, so a tool call and its result measure a duration.
+            let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
+                writeln!(log, "{line}")?;
                 continue;
             };
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "forge_ms".into(),
+                    Value::from(start.elapsed().as_millis() as u64),
+                );
+            }
+            writeln!(log, "{v}")?;
             match v["type"].as_str() {
                 Some("assistant") => {
                     // The CLI repeats a message once per content block; count

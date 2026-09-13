@@ -1880,6 +1880,7 @@ async fn record(
             .unwrap_or_default(),
         claims: verdict.envelope.as_ref().map_or(0, |e| e.claims.len()),
         first_edit_call: first_edit_call(Path::new(&a.log_path)),
+        tools: crate::tools::summarize(Path::new(&a.log_path), dir.to_str().unwrap_or("")),
         checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
     };
     a.end_sha = end_sha;
@@ -1928,7 +1929,11 @@ async fn run_code_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
-    let journal = journal_for(f, t)?;
+    let journal = if t.journal {
+        journal_for(f, t)?
+    } else {
+        String::new()
+    };
     let journal = (!journal.is_empty()).then_some(journal);
     let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref());
     let overlay_refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
@@ -2013,7 +2018,11 @@ async fn run_tests_attempt(
         .await
         .task()?;
     }
-    let journal = journal_for(f, t)?;
+    let journal = if t.journal {
+        journal_for(f, t)?
+    } else {
+        String::new()
+    };
     let journal = (!journal.is_empty()).then_some(journal);
     let prompt_text = tests_prompt(t, cfg, attempt_no, feedback, journal.as_deref());
     let inputs = Inputs {

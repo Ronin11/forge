@@ -149,6 +149,9 @@ pub struct Task {
     pub verify_base: String,
     /// The task this one re-queues, when it was made by `forge retry`.
     pub retry_of: Option<i64>,
+    /// Show the agents the journal of earlier attempts (the default);
+    /// false for the control arm of a measurement.
+    pub journal: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -389,11 +392,14 @@ ALTER TABLE tasks ADD COLUMN retry_of INTEGER;
     "
 ALTER TABLE attempts ADD COLUMN first_edit INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN journal INTEGER NOT NULL DEFAULT 1;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -436,6 +442,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         after: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
         verify_base: r.get(30)?,
         retry_of: r.get(31)?,
+        journal: r.get::<_, i64>(32)? != 0,
     })
 }
 
@@ -507,8 +514,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 t.repo,
                 t.task,
@@ -528,7 +535,8 @@ impl Store {
                 t.workflow_text,
                 t.land as i64,
                 serde_json::to_string(&t.after)?,
-                t.retry_of
+                t.retry_of,
+                t.journal as i64
             ],
         )?;
         Ok(c.last_insert_rowid())

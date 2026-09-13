@@ -2419,6 +2419,61 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
 }
 
 #[test]
+fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
+    let e = Env::new();
+    assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let tools = &doc["attempts"][0]["outputs"]["tools"];
+    assert_eq!(tools["by_tool"]["Read"]["calls"], 1);
+    assert_eq!(tools["by_tool"]["Bash"]["calls"], 1);
+    assert!(
+        tools["shell"]["npx vitest"]["ms"].as_u64().unwrap() >= 250,
+        "{tools}"
+    );
+    assert_eq!(tools["reads"]["hello.sh"], 1, "{tools}");
+    assert_eq!(doc["attempts"][0]["outputs"]["first_edit_call"], 2);
+    // Every frame carries Forge's clock.
+    let log = e.log_text(1, 1);
+    assert!(
+        log.lines().filter(|l| l.contains("\"forge_ms\"")).count() >= 7,
+        "{log}"
+    );
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    assert!(
+        show.contains("ran     ") && show.contains("shell: npx vitest 1 ("),
+        "{show}"
+    );
+    let st = String::from_utf8_lossy(&e.forge("ok.sh", &["stats", "--tools"]).stdout).to_string();
+    assert!(
+        st.contains("npx vitest") && st.contains("most read: hello.sh (1)"),
+        "{st}"
+    );
+    // The journal has a control arm.
+    assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+    assert!(e.forge("ok.sh", &["retry", "2"]).status.success());
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+            "--no-journal",
+        ],
+    );
+    assert!(o.status.success());
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert!(
+        e.log_text(3, 1).contains("So far in this piece of work"),
+        "the retry got the journal"
+    );
+    let four: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "4", "--json"]).stdout).unwrap();
+    assert_eq!(four["task"]["journal_enabled"], false);
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

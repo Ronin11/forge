@@ -65,6 +65,9 @@ pub struct TaskArgs {
     /// Run only after this task has landed (repeatable); blocked if it ends otherwise
     #[arg(long = "after")]
     after: Vec<i64>,
+    /// Do not show the agents the journal of earlier attempts (the control arm of a measurement)
+    #[arg(long)]
+    no_journal: bool,
 }
 
 #[derive(Subcommand)]
@@ -136,7 +139,11 @@ enum Cmd {
         json: bool,
     },
     /// Outcomes per workflow version and per step
-    Stats,
+    Stats {
+        /// What the agents ran: tools, shell commands, files read, with time, per step
+        #[arg(long)]
+        tools: bool,
+    },
     /// The event log as JSON lines: a client's subscription
     Events {
         /// Byte offset to start from (a snapshot's events_offset)
@@ -195,7 +202,7 @@ pub async fn main() -> Result<()> {
         Cmd::Doctor => run_doctor(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
-        Cmd::Stats => stats(),
+        Cmd::Stats { tools } => stats(tools),
         Cmd::Events {
             since,
             follow,
@@ -286,6 +293,7 @@ async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Resu
         show_checks: args.show_checks,
         land: !args.no_land,
         after: args.after.clone(),
+        journal: !args.no_journal,
         retry_of,
         ..Default::default()
     };
@@ -407,6 +415,7 @@ async fn retry(
             },
             show_checks: t.show_checks,
             no_land: !t.land,
+            no_journal: !t.journal,
             after,
         };
         let n = enqueue_with(&f, &args, Some(t.id)).await?;
@@ -675,7 +684,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal,
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
                 "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
@@ -881,8 +890,111 @@ fn requests(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn stats() -> Result<()> {
+fn tool_stats(f: &Forge) -> Result<()> {
+    use std::collections::BTreeMap;
+    let tasks = f.store.list_tasks(10_000)?;
+    // step -> aggregated tools
+    let mut per_step: BTreeMap<String, (usize, crate::tools::Tools)> = BTreeMap::new();
+    for t in tasks {
+        for a in f.store.attempts(t.id)? {
+            let Ok(o) = serde_json::from_str::<audit::Outputs>(&a.outputs_json) else {
+                continue;
+            };
+            let Some(tools) = o.tools else {
+                continue;
+            };
+            let e = per_step
+                .entry(a.step.clone())
+                .or_insert((0, crate::tools::Tools::default()));
+            e.0 += 1;
+            for (k, u) in tools.by_tool {
+                let x = e.1.by_tool.entry(k).or_default();
+                x.calls += u.calls;
+                x.ms += u.ms;
+            }
+            for (k, u) in tools.shell {
+                let x = e.1.shell.entry(k).or_default();
+                x.calls += u.calls;
+                x.ms += u.ms;
+            }
+            for (k, n) in tools.reads {
+                *e.1.reads.entry(k).or_default() += n;
+            }
+        }
+    }
+    if per_step.is_empty() {
+        out!("no attempts with tool facts yet (recorded from the next attempt on)");
+        return Ok(());
+    }
+    for (step, (n, t)) in per_step {
+        out!("{step}  ({n} attempt(s))");
+        out!(
+            "  {:<14} {:>6} {:>9} {:>9}",
+            "TOOL",
+            "CALLS",
+            "TOTAL s",
+            "s/CALL"
+        );
+        for (name, u) in &t.by_tool {
+            out!(
+                "  {:<14} {:>6} {:>9.1} {:>9.2}",
+                name,
+                u.calls,
+                u.ms as f64 / 1000.0,
+                if u.calls > 0 {
+                    u.ms as f64 / 1000.0 / u.calls as f64
+                } else {
+                    0.0
+                }
+            );
+        }
+        let mut shell: Vec<_> = t.shell.iter().collect();
+        shell.sort_by(|a, b| b.1.ms.cmp(&a.1.ms));
+        if !shell.is_empty() {
+            out!(
+                "  {:<14} {:>6} {:>9} {:>9}",
+                "SHELL",
+                "CALLS",
+                "TOTAL s",
+                "s/CALL"
+            );
+            for (name, u) in shell.iter().take(12) {
+                out!(
+                    "  {:<14} {:>6} {:>9.1} {:>9.2}",
+                    name,
+                    u.calls,
+                    u.ms as f64 / 1000.0,
+                    if u.calls > 0 {
+                        u.ms as f64 / 1000.0 / u.calls as f64
+                    } else {
+                        0.0
+                    }
+                );
+            }
+        }
+        let mut reads: Vec<_> = t.reads.iter().collect();
+        reads.sort_by(|a, b| b.1.cmp(a.1));
+        if !reads.is_empty() {
+            out!(
+                "  most read: {}",
+                reads
+                    .iter()
+                    .take(8)
+                    .map(|(p, n)| format!("{p} ({n})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        out!();
+    }
+    Ok(())
+}
+
+fn stats(tools: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if tools {
+        return tool_stats(&f);
+    }
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
         "WF",
@@ -1253,6 +1365,11 @@ fn show(id: i64) -> Result<()> {
             if a.dirty { "  DIRTY" } else { "" }
         );
         out!("  log     {}", a.log_path);
+        if let Ok(o) = serde_json::from_str::<audit::Outputs>(&a.outputs_json)
+            && let Some(t) = o.tools
+        {
+            out!("  ran     {}", t.line());
+        }
         if let Ok(checks) = serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
         {
             for c in checks {
