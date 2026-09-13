@@ -2416,6 +2416,10 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
     assert!(String::from_utf8_lossy(&o.stdout).contains("1 code"));
     let stats = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
     assert!(stats.contains("EDIT@"), "{stats}");
+    // Task 1's unpublished commit is superseded by task 2's success: gc lets it go.
+    let gc = String::from_utf8_lossy(&e.forge("ok.sh", &["gc"]).stdout).to_string();
+    assert!(gc.lines().any(|l| l.starts_with("task 1 ") && l.contains("removed")), "{gc}");
+    assert!(!e.home.join("worktrees/1").exists());
 }
 
 #[test]

@@ -1,0 +1,23 @@
+# Forge 2 verified by Forge 2. What Forge re-runs after every attempt; `setup`
+# runs first and gates the rest. Its output (target/) is gitignored, as every
+# setup output must be. There is no push remote here on purpose: every branch
+# stays local and a human merges it, so Forge changes its own code only through
+# human-reviewed branches.
+[defaults]
+base_branch = "main"
+push = false
+check_timeout_secs = 900
+
+[checks]
+setup = ["cargo", "build", "--workspace", "--tests"]
+fmt = ["cargo", "fmt", "--all", "--check"]
+clippy = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+test = ["cargo", "test", "--workspace"]
+
+[verify]
+# The client boundary is the one rule a task may not relax; forge.toml is always protected.
+protected = ["tests/boundary.rs", "forge.toml"]
+# Owned by verification: hidden from the coder, overlaid at verify time, must not
+# exist on main. Cargo discovers tests/hidden/main.rs as one integration test
+# target, so hidden tests written there run under the `test` check.
+namespace = ["tests/hidden/"]

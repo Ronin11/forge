@@ -1448,7 +1448,14 @@ async fn gc(dry_run: bool) -> Result<()> {
                 return Ok(Err("uncommitted changes".into()));
             }
             let commits = git::count_commits(wt, &t.base_sha).await?;
-            if commits > 0 {
+            // Unpublished commits are kept, unless a later try of the same
+            // piece of work succeeded: then they are superseded, not lost.
+            let superseded = f
+                .store
+                .lineage(t.id)?
+                .iter()
+                .any(|l| l.id > t.id && l.state == "succeeded");
+            if commits > 0 && !superseded {
                 let repo = Path::new(&t.repo);
                 let url = match config::load_working(repo).await?.push_remote {
                     Some(name) => git::remote_url(repo, &name).await,
