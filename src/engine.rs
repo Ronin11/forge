@@ -1894,6 +1894,10 @@ async fn record(
     a.num_turns = outcome.num_turns;
     a.tool_calls = outcome.tool_calls;
     a.cost_usd = outcome.cost_usd;
+    a.input_tokens = outcome.input_tokens;
+    a.output_tokens = outcome.output_tokens;
+    a.cache_read_input_tokens = outcome.cache_read_input_tokens;
+    a.cache_creation_input_tokens = outcome.cache_creation_input_tokens;
     a.agent_ms = outcome.wall_ms as i64;
     a.commits = verdict.commits;
     a.files_changed = verdict.files_changed;

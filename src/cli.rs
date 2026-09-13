@@ -670,6 +670,10 @@ fn trace(id: i64, json: bool) -> Result<()> {
                     "cost_usd": a.cost_usd, "agent_ms": a.agent_ms, "commits": a.commits,
                     "files_changed": a.files_changed, "dirty": a.dirty, "start_sha": a.start_sha, "end_sha": a.end_sha,
                     "log_path": a.log_path,
+                    "tokens": {
+                        "input": a.input_tokens, "output": a.output_tokens,
+                        "cache_read": a.cache_read_input_tokens, "cache_creation": a.cache_creation_input_tokens,
+                    },
                     "inputs": serde_json::from_str::<serde_json::Value>(&a.inputs_json).unwrap_or_default(),
                     "outputs": serde_json::from_str::<serde_json::Value>(&a.outputs_json).unwrap_or_default(),
                     "verdict": serde_json::from_str::<serde_json::Value>(&a.verdict_json).unwrap_or_default(),
@@ -1029,7 +1033,7 @@ fn stats(tools: bool) -> Result<()> {
     }
     out!();
     out!(
-        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>6} {:>7} {:>9}",
+        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>6} {:>7} {:>9} {:>9}",
         "WF",
         "STEP",
         "ATT",
@@ -1040,11 +1044,12 @@ fn stats(tools: bool) -> Result<()> {
         "TURNS",
         "EDIT@",
         "SECS",
-        "COST"
+        "COST",
+        "TOKENS"
     );
     for st in f.store.step_stats()? {
         out!(
-            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9}",
+            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9} {:>9}",
             st.workflow,
             st.step,
             st.attempts,
@@ -1056,7 +1061,9 @@ fn stats(tools: bool) -> Result<()> {
             st.mean_first_edit
                 .map_or("-".to_string(), |v| format!("{v:.1}")),
             st.mean_ms / 1000.0,
-            format!("${:.2}", st.cost)
+            format!("${:.2}", st.cost),
+            st.mean_input_tokens
+                .map_or("-".to_string(), |v| format!("{v:.0}"))
         );
     }
     Ok(())
