@@ -62,3 +62,26 @@ what to revisit, each with the trigger that makes it worth doing.
 - **Mobile app, voice channels, family hosting, comms pipeline, Windows
   port, context-compression proxy, a first-party execution harness.**
   Product decisions for a Forge 2 that has finished being a kernel.
+
+## From Uber's "efficient software factory" (2026-09-13)
+
+Three levers we don't pull yet, each measurable with what exists:
+
+- **Ground the coder.** Their one big number: the same task took 38 s with
+  a context graph and 20 min without, and ended wrong. Our capped attempts
+  spent their turns exploring. For one repo the graph is `docs/SYSTEM.md`
+  (the `graph` directive keeps it) plus git; feed it, and the files the
+  task likely touches, into the coder's prompt. Measure turns per attempt
+  before and after. See "Context" below.
+- **Cost anti-patterns in the audit.** Their session dashboard flags 16
+  anti-patterns with a dollar figure. We keep every attempt's full agent
+  stream, so "turns before the first edit", "the same file read N times",
+  "capped with a dirty tree", "a tests step over N lines" are computable
+  rows for `stats`, not opinions.
+- **Cheap models on well-specified subtasks, measured.** Their rule:
+  frontier model decomposes, cheap model executes the well-defined piece.
+  `cheap` (haiku, 15 turns) has never run. The second bench's small chores
+  are the test; profiles plus hidden tests are the benchmark.
+
+Not for us at this scale: the MCP gateway, tool projection, code-mode,
+and the context graph as infrastructure. The CLI already caches.
