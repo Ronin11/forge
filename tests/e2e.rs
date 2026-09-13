@@ -2249,6 +2249,26 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     );
     let o = e.forge("ok.sh", &["show", "6"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("retry of   4"));
+    // Parent, children, root, and the whole chain, from either end.
+    let three: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
+    assert_eq!(three["task"]["children"], serde_json::json!([5]));
+    assert_eq!(three["task"]["root"], 3);
+    assert_eq!(five["task"]["parent"], 3);
+    assert_eq!(five["task"]["root"], 3);
+    let chain: Vec<i64> = five["task"]["lineage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(chain, vec![3, 5]);
+    let o = e.forge("ok.sh", &["show", "5"]);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("lineage    3 failed → [5 queued]"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
     // Machine-readable listings for a client.
     let log: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();

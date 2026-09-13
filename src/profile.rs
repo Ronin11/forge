@@ -18,6 +18,9 @@ pub struct Run {
     pub cost: f64,
     pub secs: f64,
     pub attempts: i64,
+    /// The first task in this run's chain of retries: runs with the same
+    /// root are one piece of work tried more than once.
+    pub root: i64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -33,6 +36,9 @@ pub struct Profile {
     pub cost_per_success: Option<f64>,
     pub mean_secs: f64,
     pub mean_attempts: f64,
+    /// Pieces of work (chains of retries) and how many of them ended verified.
+    pub lineages: usize,
+    pub lineages_verified: usize,
 }
 
 /// Wilson score interval at 95%.
@@ -54,6 +60,13 @@ pub fn profile(runs: &[Run]) -> Profile {
     let succeeded = runs.iter().filter(|r| r.succeeded).count();
     let (lo, hi) = wilson(succeeded, n);
     let cost: f64 = runs.iter().map(|r| r.cost).sum();
+    let mut roots: std::collections::BTreeMap<i64, bool> = std::collections::BTreeMap::new();
+    for r in runs {
+        let e = roots.entry(r.root).or_insert(false);
+        *e |= r.succeeded;
+    }
+    let lineages = roots.len();
+    let lineages_verified = roots.values().filter(|v| **v).count();
     Profile {
         n,
         known: n >= MIN_N,
@@ -81,6 +94,8 @@ pub fn profile(runs: &[Run]) -> Profile {
         } else {
             0.0
         },
+        lineages,
+        lineages_verified,
     }
 }
 
@@ -96,8 +111,16 @@ impl Profile {
         if !self.known {
             return format!("unknown ({} of {} runs needed)", self.n, MIN_N);
         }
+        let work = if self.lineages < self.n {
+            format!(
+                ", {}/{} pieces of work done",
+                self.lineages_verified, self.lineages
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "{} run(s): verified {}/{} ({:.0}%, 95% {:.0}–{:.0}%), ${:.2}/task, {}, {:.1} min, {:.1} attempts",
+            "{} run(s): verified {}/{} ({:.0}%, 95% {:.0}–{:.0}%){work}, ${:.2}/task, {}, {:.1} min, {:.1} attempts",
             self.n,
             self.succeeded,
             self.n,
@@ -119,19 +142,44 @@ mod tests {
 
     fn runs(ok: usize, fail: usize, cost: f64) -> Vec<Run> {
         (0..ok)
-            .map(|_| Run {
+            .map(|i| Run {
                 succeeded: true,
                 cost,
                 secs: 60.0,
                 attempts: 1,
+                root: i as i64,
             })
-            .chain((0..fail).map(|_| Run {
+            .chain((0..fail).map(|i| Run {
                 succeeded: false,
                 cost,
                 secs: 120.0,
                 attempts: 2,
+                root: 1000 + i as i64,
             }))
             .collect()
+    }
+
+    #[test]
+    fn retries_of_one_piece_of_work_count_once_for_whether_it_got_done() {
+        // Three runs, two of them the same work retried: 1 of 3 runs verified, 1 of 2 pieces done.
+        let mut r = runs(1, 2, 1.0);
+        r[0].root = 7;
+        r[1].root = 7;
+        let p = profile(&r);
+        assert_eq!((p.n, p.succeeded), (3, 1));
+        assert_eq!((p.lineages, p.lineages_verified), (2, 1));
+        let mut five = runs(2, 3, 1.0);
+        for x in &mut five {
+            x.root = 1;
+        }
+        let p = profile(&five);
+        assert!(p.line().contains("1/1 pieces of work done"), "{}", p.line());
+        let flat = profile(&runs(3, 2, 1.0));
+        assert!(
+            !flat.line().contains("pieces of work"),
+            "no retries, nothing to add: {}",
+            flat.line()
+        );
     }
 
     #[test]

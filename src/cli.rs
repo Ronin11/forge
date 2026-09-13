@@ -673,6 +673,8 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
                 "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of,
+                "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
+                "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
                 "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -1175,6 +1177,21 @@ fn show(id: i64) -> Result<()> {
     }
     if let Some(r) = t.retry_of {
         out!("retry of   {r}");
+    }
+    let lineage = f.store.lineage(t.id)?;
+    if lineage.len() > 1 {
+        out!(
+            "lineage    {}",
+            lineage
+                .iter()
+                .map(|l| if l.id == t.id {
+                    format!("[{} {}]", l.id, l.state)
+                } else {
+                    format!("{} {}", l.id, l.state)
+                })
+                .collect::<Vec<_>>()
+                .join(" → ")
+        );
     }
     out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {

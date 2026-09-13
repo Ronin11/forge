@@ -244,6 +244,17 @@ pub struct Op {
     pub output: String,
 }
 
+/// One task in a lineage: parent is what it retries.
+#[derive(Debug, Clone)]
+pub struct LineageRow {
+    pub id: i64,
+    pub parent: Option<i64>,
+    pub state: String,
+    pub reason: String,
+    pub workflow: String,
+    pub cost: f64,
+}
+
 pub struct TaskSummary {
     pub id: i64,
     pub state: String,
@@ -622,6 +633,51 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The first task in `id`'s chain of retries: itself when it retries nothing.
+    pub fn root_of(&self, id: i64) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "WITH RECURSIVE up(id, parent) AS (
+               SELECT id, retry_of FROM tasks WHERE id = ?1
+               UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
+             SELECT id FROM up WHERE parent IS NULL",
+            params![id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Every task in `id`'s lineage, root first: the root and everything
+    /// that retries it, directly or through other retries.
+    pub fn lineage(&self, id: i64) -> Result<Vec<LineageRow>> {
+        let root = self.root_of(id)?;
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "WITH RECURSIVE down(id) AS (
+               SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
+             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
+                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0)
+             FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
+        )?;
+        let rows = stmt.query_map(params![root], |r| {
+            Ok(LineageRow {
+                id: r.get(0)?,
+                parent: r.get(1)?,
+                state: r.get(2)?,
+                reason: r.get(3)?,
+                workflow: r.get(4)?,
+                cost: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every task that retries `id` directly.
+    pub fn dependents_retries(&self, id: i64) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT id FROM tasks WHERE retry_of=?1 ORDER BY id")?;
+        let rows = stmt.query_map(params![id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The newest task that retries `id`, if any.
     pub fn latest_retry_of(&self, id: i64) -> Result<Option<i64>> {
         Ok(self.lock().query_row(
@@ -838,7 +894,11 @@ impl Store {
         let mut stmt = c.prepare(
             "SELECT t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
                     COALESCE(t.finished_at - t.started_at, 0),
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
+                    (WITH RECURSIVE up(id, parent) AS (
+                       SELECT t.id, t.retry_of
+                       UNION ALL SELECT x.id, x.retry_of FROM up JOIN tasks x ON x.id = up.parent)
+                     SELECT id FROM up WHERE parent IS NULL)
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
                AND t.state IN ('succeeded','failed','blocked','unverified')
                AND t.started_at IS NOT NULL
@@ -850,6 +910,7 @@ impl Store {
                 cost: r.get(1)?,
                 secs: r.get::<_, i64>(2)? as f64,
                 attempts: r.get(3)?,
+                root: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

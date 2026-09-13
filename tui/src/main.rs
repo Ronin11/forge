@@ -521,6 +521,23 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
             &t["base_sha"].as_str().unwrap_or("")
                 [..8.min(t["base_sha"].as_str().unwrap_or("").len())]
         )));
+        if let Some(l) = tr["lineage"].as_array().filter(|l| l.len() > 1) {
+            let chain: Vec<String> = l
+                .iter()
+                .map(|x| {
+                    let s = format!("{} {}", x["id"], x["state"].as_str().unwrap_or(""));
+                    if x["id"] == t["id"] {
+                        format!("[{s}]")
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            lines.push(Line::from(vec![
+                Span::styled("lineage ", Style::default().fg(Color::DarkGray)),
+                Span::raw(chain.join(" → ")),
+            ]));
+        }
         for (k, v) in [("after", &t["after"]), ("retry of", &t["retry_of"])] {
             if !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()) {
                 lines.push(Line::raw(format!("{k} {v}")));
