@@ -39,6 +39,7 @@ pub fn family(command: &str) -> String {
     let Some(first) = words.next() else {
         return "?".into();
     };
+    let first = first.trim_start_matches(['(', '{']);
     let first = first.rsplit('/').next().unwrap_or(first);
     match first {
         "npm" | "npx" | "pnpm" | "yarn" | "cargo" | "git" | "make" | "just" | "python"
@@ -160,6 +161,7 @@ mod tests {
         assert_eq!(family("git status --porcelain"), "git status");
         assert_eq!(family("FOO=1 ./scripts/check.sh"), "check.sh");
         assert_eq!(family("ls -la"), "ls");
+        assert_eq!(family("(npm test 2>&1 | tail -5)"), "npm test");
         assert_eq!(family(""), "?");
     }
 
