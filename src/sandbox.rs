@@ -64,7 +64,8 @@ impl Sandbox {
         }
         for b in &bins {
             let (named, canonical) = resolve_binary(b)?;
-            for p in [named, canonical] {
+            let real = PathBuf::from(crate::agent::real_bin(b));
+            for p in [named, canonical, real] {
                 if let Some(d) = p.parent() {
                     agent_dirs.insert(d.to_path_buf());
                 }

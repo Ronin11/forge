@@ -53,6 +53,28 @@ pub fn agent_bin() -> String {
     std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
 }
 
+/// The binary behind a bare name, past any version-manager shim or wrapper:
+/// `mise which` on the host when mise manages it, else the canonical path
+/// on PATH. A path given explicitly is used as is.
+pub fn real_bin(name: &str) -> String {
+    if name.contains('/') {
+        return name.to_string();
+    }
+    if let Ok(out) = std::process::Command::new("mise")
+        .args(["which", name])
+        .output()
+        && out.status.success()
+    {
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !p.is_empty() && std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+    crate::sandbox::resolve_binary(name)
+        .map(|(_, canonical)| canonical.display().to_string())
+        .unwrap_or_else(|_| name.to_string())
+}
+
 /// A step may run a different agent binary through FORGE2_CLAUDE_BIN_<STEP>
 /// (upper-cased action name), which is how the test suite plays every
 /// role in a workflow with a different script.
@@ -116,7 +138,11 @@ pub struct Launch<'a> {
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    let bin = agent_bin_for(l.step);
+    // The binary itself, never a version-manager shim: a shim inside the
+    // sandbox reaches for state the sandbox does not have (a global tool
+    // config, a registry cache, a writable shims directory) and dies
+    // before the agent starts. Forge 1 learned this the same way.
+    let bin = real_bin(&agent_bin_for(l.step));
     let mut argv: Vec<String> = [
         bin.as_str(),
         "--print",
