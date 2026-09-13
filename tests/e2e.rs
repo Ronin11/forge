@@ -2622,12 +2622,33 @@ fn doctor_runs_and_reports_the_essentials() {
         "schema",
         "queue",
         "worktrees",
+        "logs",
         "spend",
         "rate_limit",
     ] {
         assert!(out.contains(name), "missing {name} in:\n{out}");
     }
     assert!(out.contains("5h 42%"), "{out}");
+    assert!(
+        out.contains("events.jsonl") && out.contains("attempt log"),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_warns_when_attempt_logs_pass_a_gigabyte() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &[]).status.success());
+    let big = e.home.join("logs").join("999-1.jsonl");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(1_100_000_000)
+        .unwrap();
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("WARN logs"), "{out}");
+    assert!(out.contains("archive or delete old attempt logs"), "{out}");
 }
 
 #[test]
