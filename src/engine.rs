@@ -1351,16 +1351,30 @@ async fn run_operation(
     } else {
         Vec::new()
     };
-    let r = checks::run_one(
-        "OP",
-        &step.action.name,
-        &argv,
-        &cwd,
-        f.sandbox.as_ref(),
-        timeout,
-        &env,
-    )
-    .await;
+    let r = if step.action.output_full() {
+        checks::run_one_capped(
+            "OP",
+            &step.action.name,
+            &argv,
+            &cwd,
+            f.sandbox.as_ref(),
+            timeout,
+            &env,
+            checks::FULL_OUTPUT_BYTES,
+        )
+        .await
+    } else {
+        checks::run_one(
+            "OP",
+            &step.action.name,
+            &argv,
+            &cwd,
+            f.sandbox.as_ref(),
+            timeout,
+            &env,
+        )
+        .await
+    };
     if let Some(dir) = &scratch {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1384,9 +1398,13 @@ async fn run_operation(
         format!("{head}\n{tail}")
     };
     // What the operation printed is the evidence that it ran: an interface
-    // operation's stdout is its product, any other keeps its tail, pass or fail.
+    // operation's stdout is its product; one declaring `output = "full"`
+    // keeps its whole merged stdout and stderr, capped above; any other
+    // keeps its 40-line tail, pass or fail.
     let output = if r.ok && step.action.yields_interface() {
         r.stdout.trim().to_string()
+    } else if step.action.output_full() {
+        r.tail.trim().to_string()
     } else {
         checks::last_lines(&r.tail, 40).trim().to_string()
     };

@@ -3222,3 +3222,64 @@ fn an_operation_can_extract_the_interface_from_the_hidden_tests() {
     assert!(!Path::new(wt).join("tests/acceptance").exists());
     assert!(e.task(1).2, "pushed");
 }
+
+#[test]
+fn an_operation_with_output_full_keeps_the_whole_thing_instead_of_the_tail() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let print100 = "for i in $(seq 1 100); do echo \"line $i\"; done";
+    std::fs::write(
+        e.home.join("workflows/actions/loud-tail.toml"),
+        format!(
+            "name = \"loud-tail\"\nkind = \"operation\"\ndescription = \"d\"\nrun = [\"bash\", \"-c\", {}]\n",
+            serde_json::to_string(print100).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/loud-full.toml"),
+        format!(
+            "name = \"loud-full\"\nkind = \"operation\"\ndescription = \"d\"\noutput = \"full\"\nrun = [\"bash\", \"-c\", {}]\n",
+            serde_json::to_string(print100).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/loud.toml"),
+        "name = \"loud\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"loud-tail\" }, { action = \"loud-full\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "loud",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let ops = doc["ops"].as_array().unwrap();
+    let tail_op = ops.iter().find(|o| o["name"] == "loud-tail").unwrap();
+    let full_op = ops.iter().find(|o| o["name"] == "loud-full").unwrap();
+    assert!(tail_op["ok"].as_bool().unwrap(), "{}", tail_op["detail"]);
+    assert!(full_op["ok"].as_bool().unwrap(), "{}", full_op["detail"]);
+
+    // Default `output = "tail"`: only the last 40 lines survive.
+    let tail_out = tail_op["output"].as_str().unwrap();
+    assert_eq!(tail_out.lines().count(), 40, "{tail_out}");
+    assert_eq!(tail_out.lines().next().unwrap(), "line 61");
+    assert_eq!(tail_out.lines().last().unwrap(), "line 100");
+
+    // `output = "full"`: the whole 100 lines are kept.
+    let full_out = full_op["output"].as_str().unwrap();
+    assert_eq!(full_out.lines().count(), 100, "{full_out}");
+    assert_eq!(full_out.lines().next().unwrap(), "line 1");
+    assert_eq!(full_out.lines().last().unwrap(), "line 100");
+}

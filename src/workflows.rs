@@ -37,6 +37,17 @@ pub enum Kind {
     Operation,
 }
 
+/// How much of an operation's stdout and stderr the kernel keeps on its
+/// `ops` row: `tail`, the last 40 lines, or `full`, the whole thing capped
+/// at 1 MB.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Output {
+    #[default]
+    Tail,
+    Full,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActionRaw {
@@ -72,6 +83,9 @@ struct ActionRaw {
     /// back as a retry, rather than a one-shot task failure.
     #[serde(default)]
     verifies: bool,
+    /// Operation: how much of its stdout and stderr the kernel keeps.
+    #[serde(default)]
+    output: Output,
 }
 
 /// One action file, one version.
@@ -92,6 +106,7 @@ pub struct ActionDef {
     pub brief: String,
     pub overlay: bool,
     pub verifies: bool,
+    pub output: Output,
     pub hash: String,
     pub text: String,
 }
@@ -111,6 +126,11 @@ impl ActionDef {
     /// coder's clone.
     pub fn reads_verify_ref(&self) -> bool {
         self.kind == Kind::Operation && self.consumes.iter().any(|c| c == "verify_ref")
+    }
+    /// The operation stores its whole stdout and stderr, capped at 1 MB,
+    /// rather than the 40-line tail.
+    pub fn output_full(&self) -> bool {
+        self.output == Output::Full
     }
 }
 
@@ -702,6 +722,9 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
             path.display()
         );
     }
+    if raw.kind == Kind::Directive && raw.output != Output::Tail {
+        bail!("{}: `output` applies to operations only", path.display());
+    }
     if raw.kind == Kind::Operation
         && let Some(p) = raw
             .produces
@@ -735,6 +758,7 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         brief: raw.brief,
         overlay: raw.overlay,
         verifies: raw.verifies,
+        output: raw.output,
         hash: blob_hash(dir, path)?,
         text: text.to_string(),
     })

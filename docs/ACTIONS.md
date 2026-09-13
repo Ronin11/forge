@@ -85,6 +85,13 @@ the output goes back to that directive as a retry, within its attempts,
 instead of failing the task one shot. A verifying operation must follow a
 directive.
 
+An operation may set `output = "full"` (default `"tail"`) to keep its
+whole stdout and stderr, merged and capped at 1 MB, on its `ops` row
+instead of the last 40 lines. Use it for an operation whose entire output
+is the point, such as a benchmark or a generator's log; the default tail
+is enough for a check whose failure speaks for itself. `output` applies
+to operations only.
+
 ## Landing
 
 A task's base is the base branch as the push remote has it, fetched at

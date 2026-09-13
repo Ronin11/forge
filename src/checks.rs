@@ -22,6 +22,9 @@ use tokio::process::Command;
 /// How much of a check's output Forge keeps: the tail, which is where a
 /// test runner puts its failures.
 const TAIL_BYTES: usize = 16 * 1024;
+/// How much of an operation's output the kernel keeps when it asks for the
+/// whole thing (`output = "full"` in the action file) rather than the tail.
+pub const FULL_OUTPUT_BYTES: usize = 1024 * 1024;
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -41,20 +44,34 @@ pub struct CheckResult {
     pub stdout: String,
 }
 
-/// Keeps the last `TAIL_BYTES` written to it.
-#[derive(Default)]
-struct Tail(Vec<u8>);
+/// Keeps the last `cap` bytes written to it.
+struct Tail {
+    buf: Vec<u8>,
+    cap: usize,
+}
+
+impl Default for Tail {
+    fn default() -> Self {
+        Tail::new(TAIL_BYTES)
+    }
+}
 
 impl Tail {
+    fn new(cap: usize) -> Self {
+        Tail {
+            buf: Vec::new(),
+            cap,
+        }
+    }
     fn write(&mut self, chunk: &[u8]) {
-        self.0.extend_from_slice(chunk);
-        if self.0.len() > TAIL_BYTES {
-            let cut = self.0.len() - TAIL_BYTES;
-            self.0.drain(..cut);
+        self.buf.extend_from_slice(chunk);
+        if self.buf.len() > self.cap {
+            let cut = self.buf.len() - self.cap;
+            self.buf.drain(..cut);
         }
     }
     fn string(&self) -> String {
-        String::from_utf8_lossy(&self.0).into_owned()
+        String::from_utf8_lossy(&self.buf).into_owned()
     }
 }
 
@@ -111,6 +128,23 @@ pub async fn run_one(
     timeout: Duration,
     env: &[(String, String)],
 ) -> CheckResult {
+    run_one_capped(level, name, argv, cwd, sandbox, timeout, env, TAIL_BYTES).await
+}
+
+/// As `run_one`, keeping `cap_bytes` of merged and of stdout-alone output
+/// instead of the default tail. An operation with `output = "full"` asks
+/// for `FULL_OUTPUT_BYTES` here.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_one_capped(
+    level: &str,
+    name: &str,
+    argv: &[String],
+    cwd: &Path,
+    sandbox: Option<&Sandbox>,
+    timeout: Duration,
+    env: &[(String, String)],
+    cap_bytes: usize,
+) -> CheckResult {
     let start = Instant::now();
     let mut r = CheckResult {
         level: level.to_string(),
@@ -136,8 +170,8 @@ pub async fn run_one(
         }
     };
     let pid = child.id();
-    let tail = Arc::new(Mutex::new(Tail::default()));
-    let stdout = Arc::new(Mutex::new(Tail::default()));
+    let tail = Arc::new(Mutex::new(Tail::new(cap_bytes)));
+    let stdout = Arc::new(Mutex::new(Tail::new(cap_bytes)));
     let mut readers = tokio::task::JoinSet::new();
     if let Some(out) = child.stdout.take() {
         readers.spawn(drain(out, tail.clone(), Some(stdout.clone())));
