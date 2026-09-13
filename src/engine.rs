@@ -396,6 +396,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     let mut feedback: Option<String> = owed.remove(&seq);
                     let mut resume: Option<Resume> = None;
                     let mut step_ok = false;
+                    // The last attempt ran out of turns after committing, tree
+                    // clean, no result: the checks can still judge the code.
+                    let mut capped_committed = false;
                     while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
                         // A subscription window at its cap: wait for the reset
                         // rather than start an attempt that would be rate limited.
@@ -587,6 +590,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     outcome.max_turns_hit || outcome.num_turns >= ts.max_turns;
                                 let unfinished = verdict.envelope.is_none();
                                 let progress = verdict.commits > 0 || verdict.dirty;
+                                capped_committed =
+                                    capped && unfinished && verdict.commits > 0 && !verdict.dirty;
                                 if capped
                                     && unfinished
                                     && progress
@@ -618,6 +623,49 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                     }
                     if !step_ok {
+                        // A coder that ran out of turns after committing a clean
+                        // tree left code the checks can judge. If they pass, no
+                        // agent vouched for it, so it goes to a human as unverified
+                        // rather than being thrown away.
+                        if step.action.contract == "code"
+                            && last == AttemptState::AgentFailed
+                            && capped_committed
+                        {
+                            let overlay = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
+                            let v = verify::verify_integration(&Subject {
+                                task_id: t.id,
+                                repo: &repo,
+                                worktree: &wt,
+                                base_sha: &t.base_sha,
+                                start_sha: &t.base_sha,
+                                cfg: &cfg,
+                                task_checks: &t.checks,
+                                paths: &[],
+                                allow_protected: t.allow_protected,
+                                overlay_refs: &overlay,
+                                pending_main: None,
+                                sandbox: f.sandbox.as_ref(),
+                                report: &f.report,
+                            })
+                            .await
+                            .task()?;
+                            if v.state == AttemptState::Succeeded {
+                                review_unfinished = true;
+                                last = AttemptState::Unverified;
+                                last_reason = "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human".into();
+                            } else {
+                                last_reason = format!(
+                                    "ran out of turns after committing; the checks fail: {}",
+                                    v.reason
+                                );
+                            }
+                            f.report.emit(
+                                id,
+                                Event::Note {
+                                    text: &format!("capped   {last_reason}"),
+                                },
+                            );
+                        }
                         // A reviewer that never reached a verdict is not evidence
                         // of a defect: the branch verified at the code step, so it
                         // goes to a human as unverified instead of failing.

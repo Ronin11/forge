@@ -2482,6 +2482,27 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
 }
 
 #[test]
+fn a_coder_that_commits_then_runs_out_of_turns_leaves_checked_code_for_a_human() {
+    let e = Env::new();
+    let o = e.run("cappedcommit.sh", &["--retries", "0"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("capped   ran out of turns after committing; the checks pass"),
+        "{err}"
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(
+        reason.starts_with("ran out of turns after committing; the checks pass"),
+        "{reason}"
+    );
+    assert!(pushed, "the checked branch is not thrown away");
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    assert!(show.contains("nothing vouches for what it did"), "{show}");
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
