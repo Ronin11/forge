@@ -810,6 +810,30 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
             }
         } else {
+            // No remote: the branch still leaves the worktree, into the
+            // registered repository, where `git branch` shows it and a
+            // human can merge it.
+            match git::push_to_repo(&wt, &repo, &t.branch).await {
+                Ok(()) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     {} in {} (no remote to push to)",
+                            t.branch,
+                            repo.display()
+                        ),
+                    },
+                ),
+                Err(e) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     could not put {} in the repository: {e:#}",
+                            t.branch
+                        ),
+                    },
+                ),
+            }
             f.report.emit(id, Event::PushSkipped);
         }
     }
