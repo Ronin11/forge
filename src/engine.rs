@@ -1522,7 +1522,19 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
                     .unwrap_or_default()
                     .iter()
                     .filter(|c| !c.ok)
-                    .map(|c| format!("{} {}: {}", c.level, c.name, first_line(&c.tail)))
+                    .map(|c| {
+                        let what = if c.failing_tests.is_empty() {
+                            salient_line(&c.tail)
+                        } else {
+                            c.failing_tests
+                                .iter()
+                                .take(3)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        };
+                        format!("{} {}: {}", c.level, c.name, what)
+                    })
                     .collect();
             let short = format!("  {} {:<7} {}", a.attempt_no, a.step, a.state.as_str());
             let mut long = short.clone();
@@ -1562,30 +1574,53 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
     ))
 }
 
+/// The line of a check's output that says what went wrong: the first that
+/// names a failure, else the last that says anything.
+fn salient_line(tail: &str) -> String {
+    let lines: Vec<String> = tail
+        .lines()
+        .map(strip_ansi)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|l| {
+            let low = l.to_ascii_lowercase();
+            ["fail", "error", "✗", "assert", "panic", "expected"]
+                .iter()
+                .any(|k| low.contains(k))
+        })
+        .or(lines.last())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut clean = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for d in chars.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            clean.push(c);
+        }
+    }
+    clean
+}
+
 /// The first line that says something: blank lines and terminal colour
 /// codes skipped, since check output often opens with both.
 fn first_line(s: &str) -> String {
-    let mut out = String::new();
-    for line in s.lines() {
-        let mut clean = String::new();
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                for d in chars.by_ref() {
-                    if d.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            } else {
-                clean.push(c);
-            }
-        }
-        if !clean.trim().is_empty() {
-            out = clean.trim().to_string();
-            break;
-        }
-    }
-    out
+    s.lines()
+        .map(strip_ansi)
+        .map(|l| l.trim().to_string())
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
 }
 
 fn clip(s: &str, n: usize) -> String {
