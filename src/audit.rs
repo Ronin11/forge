@@ -37,6 +37,10 @@ pub struct Inputs {
     /// The CLI session this attempt continued, when it resumed a capped one.
     #[serde(default)]
     pub resumed: Option<String>,
+    /// The journal the agent was shown: every earlier attempt in this piece
+    /// of work, what it said it did, and what the kernel found. Verbatim.
+    #[serde(default)]
+    pub journal: Option<String>,
 }
 
 /// What a step produced, beyond the verdict rows.
@@ -52,6 +56,10 @@ pub struct Outputs {
     pub summary: String,
     pub claims: usize,
     pub checks_run: usize,
+    /// Tool calls before the first edit or write; `None` when the attempt
+    /// never edited. Exploration, measured.
+    #[serde(default)]
+    pub first_edit_call: Option<i64>,
 }
 
 /// A diagnosis line: what happened, and what the operator can do.

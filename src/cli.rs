@@ -151,6 +151,8 @@ enum Cmd {
     },
     /// Tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
     Snapshot,
+    /// What every earlier attempt in a task's piece of work said it did, and what the kernel found
+    Journal { id: i64 },
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -200,6 +202,7 @@ pub async fn main() -> Result<()> {
             task,
         } => events(since, follow, task),
         Cmd::Snapshot => snapshot(),
+        Cmd::Journal { id } => journal(id),
         Cmd::Workflows { json } => list_workflows(json),
     }
 }
@@ -675,6 +678,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of,
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
+                "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
                 "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -913,7 +917,7 @@ fn stats() -> Result<()> {
     }
     out!();
     out!(
-        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>7} {:>9}",
+        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>6} {:>7} {:>9}",
         "WF",
         "STEP",
         "ATT",
@@ -922,12 +926,13 @@ fn stats() -> Result<()> {
         "CHECKF",
         "ASK",
         "TURNS",
+        "EDIT@",
         "SECS",
         "COST"
     );
     for st in f.store.step_stats()? {
         out!(
-            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>7.0} {:>9}",
+            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9}",
             st.workflow,
             st.step,
             st.attempts,
@@ -936,6 +941,8 @@ fn stats() -> Result<()> {
             st.checks_failed,
             st.needs_input,
             st.mean_turns,
+            st.mean_first_edit
+                .map_or("-".to_string(), |v| format!("{v:.1}")),
             st.mean_ms / 1000.0,
             format!("${:.2}", st.cost)
         );
@@ -993,6 +1000,22 @@ fn worker_json(f: &Forge) -> serde_json::Value {
             .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
             .unwrap_or(false);
     serde_json::json!({"running": alive, "pid": pid, "exe": exe, "stale_binary": stale})
+}
+
+fn journal(id: i64) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let Some(t) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let j = crate::engine::journal_for(&f, &t).map_err(|e| match e {
+        crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
+    })?;
+    if j.is_empty() {
+        out!("nothing ran before task {id} in its piece of work");
+    } else {
+        out!("{j}");
+    }
+    Ok(())
 }
 
 fn snapshot() -> Result<()> {

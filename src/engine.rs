@@ -1475,12 +1475,145 @@ fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
     p
 }
 
+/// Everything earlier in this piece of work, for the next agent: each
+/// attempt across the lineage, what its agent said it did, and what the
+/// kernel found. The agents' words are never trusted alone; every entry
+/// carries the verdict. Cut to a budget from the oldest end. Empty when
+/// nothing ran before.
+pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
+    const BUDGET: usize = 6000;
+    let lineage = f.store.lineage(t.id).env()?;
+    let mut entries: Vec<(String, String)> = Vec::new(); // (short line, long line)
+    for l in &lineage {
+        let attempts = f.store.attempts(l.id).env()?;
+        let head = if l.id == t.id {
+            format!("task {} ({}, this task)", l.id, l.workflow)
+        } else {
+            format!(
+                "task {} ({}), {}{}",
+                l.id,
+                l.workflow,
+                l.state,
+                if l.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", first_line(&l.reason))
+                }
+            )
+        };
+        if attempts.is_empty() {
+            continue;
+        }
+        entries.push((head.clone(), head));
+        for a in attempts.iter().filter(|a| a.state != AttemptState::Running) {
+            // The test author's words never reach the coder through the
+            // journal: what the coder learns of the hidden tests is the
+            // interface, and only that.
+            let said = if a.step == "tests" {
+                None
+            } else {
+                serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json)
+                    .ok()
+                    .map(|e| e.summary)
+                    .filter(|s| !s.trim().is_empty())
+            };
+            let found: Vec<String> =
+                serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|c| !c.ok)
+                    .map(|c| format!("{} {}: {}", c.level, c.name, first_line(&c.tail)))
+                    .collect();
+            let short = format!("  {} {:<7} {}", a.attempt_no, a.step, a.state.as_str());
+            let mut long = short.clone();
+            if let Some(said) = &said {
+                long.push_str(&format!("\n    said:  {}", clip(said, 400)));
+            }
+            if !found.is_empty() {
+                long.push_str(&format!("\n    found: {}", clip(&found.join("; "), 400)));
+            } else if a.state == AttemptState::AgentFailed {
+                long.push_str(&format!("\n    found: {}", first_line(&a.reason)));
+            } else if a.state == AttemptState::Succeeded {
+                long.push_str("\n    found: verified");
+            }
+            entries.push((short, long));
+        }
+    }
+    if !entries.iter().any(|(short, _)| short.starts_with("  ")) {
+        return Ok(String::new());
+    }
+    // Fit the budget: the newest entries keep their words, the oldest go to a line.
+    let mut cut = 0;
+    let render = |cut: usize| -> String {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, (short, long))| if i < cut { short.clone() } else { long.clone() })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut body = render(cut);
+    while body.len() > BUDGET && cut < entries.len() {
+        cut += 1;
+        body = render(cut);
+    }
+    Ok(format!(
+        "So far in this piece of work (each attempt: what its agent said it did, then what the checks found; only the checks are trusted):\n{body}"
+    ))
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("")
+}
+
+fn clip(s: &str, n: usize) -> String {
+    let one = s.replace('\n', " ");
+    if one.chars().count() <= n {
+        one
+    } else {
+        format!("{}…", one.chars().take(n).collect::<String>())
+    }
+}
+
+/// Tool calls before the first edit in an attempt's stream: exploration.
+fn first_edit_call(log_path: &Path) -> Option<i64> {
+    let text = std::fs::read_to_string(log_path).ok()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut calls = 0i64;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["type"] != "assistant" {
+            continue;
+        }
+        for b in v["message"]["content"].as_array().into_iter().flatten() {
+            if b["type"] != "tool_use" {
+                continue;
+            }
+            let id = b["id"].as_str().unwrap_or("").to_string();
+            if !seen.insert(id) {
+                continue;
+            }
+            if matches!(
+                b["name"].as_str(),
+                Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit")
+            ) {
+                return Some(calls);
+            }
+            calls += 1;
+        }
+    }
+    None
+}
+
 fn code_prompt(
     t: &Task,
     cfg: &config::Config,
     step: &ResolvedStep,
     n: i64,
     feedback: Option<&str>,
+    journal: Option<&str>,
 ) -> String {
     let l1: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
     let mut p = preamble(t, cfg, &t.branch);
@@ -1536,6 +1669,9 @@ This directive may only change these paths: {}. Anything else fails verification
         "\nAnything you report is a claim; only the checks decide.\n\nTask:\n{}",
         t.task
     ));
+    if let Some(j) = journal {
+        p.push_str(&format!("\n\n{j}"));
+    }
     if let Some(fb) = feedback {
         p.push_str(&format!(
             "\n\nThis is attempt {n} of {}. Your earlier commits are already on this branch.\n{fb}",
@@ -1545,7 +1681,13 @@ This directive may only change these paths: {}. Anything else fails verification
     p
 }
 
-fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) -> String {
+fn tests_prompt(
+    t: &Task,
+    cfg: &config::Config,
+    n: i64,
+    feedback: Option<&str>,
+    journal: Option<&str>,
+) -> String {
     let mut p = preamble(t, cfg, &format!("verify/{}", t.id));
     p.push_str(&format!(
         "\n\nYou are the test author in a test-first pair. Write tests only under {ns} that specify the task below. \
@@ -1562,6 +1704,9 @@ fn tests_prompt(t: &Task, cfg: &config::Config, n: i64, feedback: Option<&str>) 
         cmd = cfg.checks.get("test").map(|a| a.join(" ")).unwrap_or_default(),
     ));
     p.push_str(&format!("\n\nTask:\n{}", t.task));
+    if let Some(j) = journal {
+        p.push_str(&format!("\n\n{j}"));
+    }
     if let Some(fb) = feedback {
         p.push_str(&format!(
             "\n\nThis is attempt {n} of {}. Your earlier commits are already on this branch.\n{fb}",
@@ -1677,9 +1822,11 @@ async fn record(
             .map(|e| e.summary.clone())
             .unwrap_or_default(),
         claims: verdict.envelope.as_ref().map_or(0, |e| e.claims.len()),
+        first_edit_call: first_edit_call(Path::new(&a.log_path)),
         checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
     };
     a.end_sha = end_sha;
+    a.first_edit = outputs.first_edit_call;
     a.outputs_json = serde_json::to_string(&outputs).env()?;
     a.state = verdict.state;
     a.reason = verdict.reason.clone();
@@ -1724,7 +1871,9 @@ async fn run_code_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
-    let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback);
+    let journal = journal_for(f, t)?;
+    let journal = (!journal.is_empty()).then_some(journal);
+    let prompt_text = code_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref());
     let overlay_refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
@@ -1736,6 +1885,7 @@ async fn run_code_attempt(
         namespace: cfg.namespace.clone(),
         prompt_chars: prompt_text.chars().count(),
         resumed: resume.map(|r| r.session.clone()),
+        journal: journal.clone(),
         ..Default::default()
     };
     let (mut a, log_path) =
@@ -1806,7 +1956,9 @@ async fn run_tests_attempt(
         .await
         .task()?;
     }
-    let prompt_text = tests_prompt(t, cfg, attempt_no, feedback);
+    let journal = journal_for(f, t)?;
+    let journal = (!journal.is_empty()).then_some(journal);
+    let prompt_text = tests_prompt(t, cfg, attempt_no, feedback, journal.as_deref());
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
         task_checks: t.checks.clone(),
@@ -1814,6 +1966,7 @@ async fn run_tests_attempt(
         namespace: cfg.namespace.clone(),
         prompt_chars: prompt_text.chars().count(),
         resumed: resume.map(|r| r.session.clone()),
+        journal: journal.clone(),
         ..Default::default()
     };
     let (mut a, log_path) = new_attempt(

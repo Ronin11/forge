@@ -545,6 +545,16 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::raw(""));
         lines.push(Line::raw(t["text"].as_str().unwrap_or("").to_string()));
+        if let Some(j) = tr["task"]["journal"].as_str() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "journal",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for l in j.lines().skip(1) {
+                lines.push(Line::raw(l.to_string()));
+            }
+        }
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "attempts",

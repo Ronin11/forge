@@ -2374,6 +2374,51 @@ fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
 }
 
 #[test]
+fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_found() {
+    let e = Env::new();
+    // Attempt 1 is wrong; attempt 2 is told what 1 said and what failed.
+    assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+    let o = e.forge("ok.sh", &["journal", "1"]);
+    let j = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(j.contains("So far in this piece of work"), "{j}");
+    assert!(j.contains("1 code    checks_failed"), "{j}");
+    assert!(j.contains("found: L1 answer:"), "{j}");
+    // A retry inherits the whole lineage's journal, and its own attempt records it verbatim.
+    assert!(e.forge("ok.sh", &["retry", "1"]).status.success());
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert_eq!(e.task(2).0, "succeeded");
+    let prompt = e.log_text(2, 1);
+    assert!(
+        prompt.contains("So far in this piece of work"),
+        "the retry's coder saw the journal"
+    );
+    assert!(prompt.contains("task 1 (direct), failed"), "{prompt}");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    assert!(
+        doc["attempts"][0]["inputs"]["journal"]
+            .as_str()
+            .unwrap()
+            .contains("found: L1 answer")
+    );
+    assert_eq!(
+        doc["attempts"][0]["outputs"]["first_edit_call"], 0,
+        "ok.sh edits on its first tool call"
+    );
+    assert!(
+        doc["task"]["journal"]
+            .as_str()
+            .unwrap()
+            .contains("task 2 (direct, this task)")
+    );
+    // Nothing ran before the first attempt of a fresh task.
+    let o = e.forge("ok.sh", &["journal", "1"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("1 code"));
+    let stats = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
+    assert!(stats.contains("EDIT@"), "{stats}");
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
