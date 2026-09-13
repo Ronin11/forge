@@ -605,7 +605,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         session: sid.clone(),
                                         start_sha: a.start_sha.clone(),
                                     });
-                                    feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result.".into());
+                                    feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".into());
                                 } else {
                                     resume = None;
                                     feedback =
