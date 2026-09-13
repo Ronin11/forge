@@ -33,6 +33,17 @@ pub fn family(command: &str) -> String {
         .strip_prefix("cd ")
         .and_then(|rest| rest.split_once("&&").map(|(_, r)| r.trim()))
         .unwrap_or(cmd);
+
+    // Handle bash -c and sh -c wrappers
+    if let Some(rest) = cmd.strip_prefix("bash -c ") {
+        let inner = rest.trim_matches(|c| c == '\'' || c == '"');
+        return family(inner);
+    }
+    if let Some(rest) = cmd.strip_prefix("sh -c ") {
+        let inner = rest.trim_matches(|c| c == '\'' || c == '"');
+        return family(inner);
+    }
+
     let mut words = cmd
         .split_whitespace()
         .filter(|w| !w.contains('=') || w.starts_with('-'));
@@ -163,6 +174,12 @@ mod tests {
         assert_eq!(family("ls -la"), "ls");
         assert_eq!(family("(npm test 2>&1 | tail -5)"), "npm test");
         assert_eq!(family(""), "?");
+    }
+
+    #[test]
+    fn bash_c_and_sh_c_wrappers_extract_inner_command() {
+        assert_eq!(family("bash -c 'npm test'"), "npm test");
+        assert_eq!(family("sh -c \"cargo test\""), "cargo test");
     }
 
     #[test]
