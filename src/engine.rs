@@ -1562,8 +1562,30 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
     ))
 }
 
-fn first_line(s: &str) -> &str {
-    s.lines().next().unwrap_or("")
+/// The first line that says something: blank lines and terminal colour
+/// codes skipped, since check output often opens with both.
+fn first_line(s: &str) -> String {
+    let mut out = String::new();
+    for line in s.lines() {
+        let mut clean = String::new();
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for d in chars.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                clean.push(c);
+            }
+        }
+        if !clean.trim().is_empty() {
+            out = clean.trim().to_string();
+            break;
+        }
+    }
+    out
 }
 
 fn clip(s: &str, n: usize) -> String {
