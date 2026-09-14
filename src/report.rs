@@ -6,6 +6,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+const EVENT_LOG_SIZE_LIMIT: u64 = 50 * 1024 * 1024;
+
 pub enum Event<'a> {
     TaskStarted {
         worktree: &'a str,
@@ -97,18 +99,28 @@ impl Reporter {
     }
 
     fn append_log(&self, task_id: i64, ev: &Event) {
+        self.append_log_with_limit(task_id, ev, EVENT_LOG_SIZE_LIMIT);
+    }
+
+    fn append_log_with_limit(&self, task_id: i64, ev: &Event, size_limit: u64) {
         let Some(path) = &self.log else {
             return;
         };
         let mut v = to_json(ev);
         v["ts"] = serde_json::json!(crate::unix_now());
         v["task"] = serde_json::json!(task_id);
-        // Bounded: past 50 MB the log rolls to .1; a client resnapshots.
+        // Bounded: past size_limit the log rolls to .1 and .1 rolls to .2; a client resnapshots.
         if std::fs::metadata(path)
-            .map(|m| m.len() > 50 * 1024 * 1024)
+            .map(|m| m.len() > size_limit)
             .unwrap_or(false)
         {
-            let _ = std::fs::rename(path, path.with_extension("jsonl.1"));
+            let path_1 = path.with_extension("jsonl.1");
+            let path_2 = path.with_extension("jsonl.2");
+
+            if path_1.exists() {
+                let _ = std::fs::rename(&path_1, &path_2);
+            }
+            let _ = std::fs::rename(path, &path_1);
         }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -426,5 +438,57 @@ fn render(ev: Event) -> Vec<String> {
                 format!(": {}", detail.lines().next().unwrap_or(""))
             }
         )],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_event_log_rotation_keeps_two_generations() {
+        let temp_dir = std::env::temp_dir().join("forge_test_events_rotation");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let log_path = temp_dir.join("events.jsonl");
+        let reporter = Reporter::new(false, Some(log_path.clone()));
+
+        const TEST_SIZE_LIMIT: u64 = 100;
+        let event = Event::Note {
+            text: "test event content",
+        };
+
+        for i in 0..15 {
+            reporter.append_log_with_limit(i, &event, TEST_SIZE_LIMIT);
+        }
+
+        assert!(
+            log_path.exists(),
+            "events.jsonl should exist after rotation"
+        );
+        assert!(
+            log_path.with_extension("jsonl.1").exists(),
+            "events.jsonl.1 should exist after rotation"
+        );
+        assert!(
+            log_path.with_extension("jsonl.2").exists(),
+            "events.jsonl.2 should exist after rotation"
+        );
+
+        let size_0 = fs::metadata(&log_path).unwrap().len();
+        let size_1 = fs::metadata(log_path.with_extension("jsonl.1"))
+            .unwrap()
+            .len();
+        let size_2 = fs::metadata(log_path.with_extension("jsonl.2"))
+            .unwrap()
+            .len();
+
+        assert!(size_0 > 0, "events.jsonl should have content");
+        assert!(size_1 > 0, "events.jsonl.1 should have content");
+        assert!(size_2 > 0, "events.jsonl.2 should have content");
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

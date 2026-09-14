@@ -396,6 +396,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     let mut feedback: Option<String> = owed.remove(&seq);
                     let mut resume: Option<Resume> = None;
                     let mut step_ok = false;
+                    // The last attempt ran out of turns after committing, tree
+                    // clean, no result: the checks can still judge the code.
+                    let mut capped_committed = false;
                     while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
                         // A subscription window at its cap: wait for the reset
                         // rather than start an attempt that would be rate limited.
@@ -587,6 +590,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     outcome.max_turns_hit || outcome.num_turns >= ts.max_turns;
                                 let unfinished = verdict.envelope.is_none();
                                 let progress = verdict.commits > 0 || verdict.dirty;
+                                capped_committed =
+                                    capped && unfinished && verdict.commits > 0 && !verdict.dirty;
                                 if capped
                                     && unfinished
                                     && progress
@@ -605,7 +610,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         session: sid.clone(),
                                         start_sha: a.start_sha.clone(),
                                     });
-                                    feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result.".into());
+                                    feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".into());
                                 } else {
                                     resume = None;
                                     feedback =
@@ -618,6 +623,49 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                     }
                     if !step_ok {
+                        // A coder that ran out of turns after committing a clean
+                        // tree left code the checks can judge. If they pass, no
+                        // agent vouched for it, so it goes to a human as unverified
+                        // rather than being thrown away.
+                        if step.action.contract == "code"
+                            && last == AttemptState::AgentFailed
+                            && capped_committed
+                        {
+                            let overlay = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
+                            let v = verify::verify_integration(&Subject {
+                                task_id: t.id,
+                                repo: &repo,
+                                worktree: &wt,
+                                base_sha: &t.base_sha,
+                                start_sha: &t.base_sha,
+                                cfg: &cfg,
+                                task_checks: &t.checks,
+                                paths: &[],
+                                allow_protected: t.allow_protected,
+                                overlay_refs: &overlay,
+                                pending_main: None,
+                                sandbox: f.sandbox.as_ref(),
+                                report: &f.report,
+                            })
+                            .await
+                            .task()?;
+                            if v.state == AttemptState::Succeeded {
+                                review_unfinished = true;
+                                last = AttemptState::Unverified;
+                                last_reason = "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human".into();
+                            } else {
+                                last_reason = format!(
+                                    "ran out of turns after committing; the checks fail: {}",
+                                    v.reason
+                                );
+                            }
+                            f.report.emit(
+                                id,
+                                Event::Note {
+                                    text: &format!("capped   {last_reason}"),
+                                },
+                            );
+                        }
                         // A reviewer that never reached a verdict is not evidence
                         // of a defect: the branch verified at the code step, so it
                         // goes to a human as unverified instead of failing.
@@ -762,6 +810,30 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
             }
         } else {
+            // No remote: the branch still leaves the worktree, into the
+            // registered repository, where `git branch` shows it and a
+            // human can merge it.
+            match git::push_to_repo(&wt, &repo, &t.branch).await {
+                Ok(()) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     {} in {} (no remote to push to)",
+                            t.branch,
+                            repo.display()
+                        ),
+                    },
+                ),
+                Err(e) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     could not put {} in the repository: {e:#}",
+                            t.branch
+                        ),
+                    },
+                ),
+            }
             f.report.emit(id, Event::PushSkipped);
         }
     }
@@ -1147,7 +1219,7 @@ async fn integrate(
 /// the task's own tests. `pinned` is the standing suite's commit as of the
 /// task's base (empty when there was none); `None` means the current tip,
 /// which only a tree that already contains the current base may be judged by.
-async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
+pub async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
     let mut refs = Vec::new();
     match pinned {
         Some("") => {}
