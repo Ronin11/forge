@@ -446,28 +446,31 @@ fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
         .map(|p| p.canonicalize().context("repo path"))
         .transpose()?
         .map(|p| p.display().to_string());
-    let rows = f.store.decisions(repo.as_deref())?;
+    let rows: Vec<crate::view::DecisionRow> = f
+        .store
+        .decisions(repo.as_deref())?
+        .iter()
+        .map(|d| {
+            let outcome = d
+                .retry_id
+                .and_then(|r| f.store.task(r).ok().flatten())
+                .map(|t| t.state);
+            crate::view::DecisionRow::new(d, outcome)
+        })
+        .collect();
     if json {
-        let docs: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|d| {
-                serde_json::json!({"id": d.id, "task_id": d.task_id, "repo": d.repo, "question": d.question, "answer": d.answer, "created_at": d.created_at,
-                    "answered_by": d.answered_by, "citations": d.citations, "retry_id": d.retry_id,
-                    "outcome": d.retry_id.and_then(|r| f.store.task(r).ok().flatten()).map(|t| t.state.as_str().to_string())})
-            })
-            .collect();
-        out!("{}", serde_json::to_string_pretty(&docs)?);
+        out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
     if rows.is_empty() {
         out!("no decisions");
         return Ok(());
     }
-    for d in rows {
+    for d in &rows {
         let outcome = d
-            .retry_id
-            .and_then(|r| f.store.task(r).ok().flatten())
-            .map(|t| format!(" → task {} {}", t.id, t.state.as_str()))
+            .outcome
+            .as_ref()
+            .map(|s| format!(" → task {} {}", d.retry_id.unwrap_or_default(), s))
             .unwrap_or_default();
         out!("{:<5} task {:<5} Q: {}", d.id, d.task_id, d.question);
         out!(
@@ -914,15 +917,12 @@ fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
         .map(|p| p.canonicalize().context("repo path"))
         .transpose()?
         .map(|p| p.display().to_string());
+    let rows = requests_json(&f, repo.as_deref())?;
     if json {
-        out!(
-            "{}",
-            serde_json::to_string_pretty(&requests_json(&f, repo.as_deref())?)?
-        );
+        out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
-    let blocked = f.store.blocked(repo.as_deref())?;
-    if blocked.is_empty() {
+    if rows.is_empty() {
         out!("no blocked tasks");
         return Ok(());
     }
@@ -933,35 +933,21 @@ fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
         "WF",
         "REPO"
     );
-    for t in blocked {
-        let (kind, text) = match t.reason.split_once(": ") {
-            Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
-            Some(("needs suite", rest)) => ("suite", rest.to_string()),
-            Some(("needs input", rest)) => ("question", rest.to_string()),
-            _ => ("other", t.reason.clone()),
-        };
-        let repo_name = Path::new(&t.repo)
+    for r in &rows {
+        let repo_name = Path::new(&r.repo)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         out!(
             "{:<5} {:<9} {:<8} {:<18} {}",
-            t.id,
-            kind,
-            t.workflow,
+            r.id,
+            r.kind,
+            r.workflow,
             repo_name,
-            text
+            r.text
         );
-        let tried = f
-            .store
-            .attempts(t.id)?
-            .last()
-            .and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok())
-            .and_then(|e| e.needs_input)
-            .map(|q| q.tried)
-            .unwrap_or_default();
-        if !tried.is_empty() {
-            out!("{:<44} did: {}", "", tried);
+        if !r.tried.is_empty() {
+            out!("{:<44} did: {}", "", r.tried);
         }
     }
     Ok(())
@@ -1252,37 +1238,34 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<serde_json::Value>> {
+fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<crate::view::TaskRow>> {
     Ok(f.store
         .list_tasks_where(q)?
-        .into_iter()
-        .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
+        .iter()
+        .map(crate::view::TaskRow::from)
         .collect())
 }
 
-fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<serde_json::Value>> {
+fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<crate::view::RequestRow>> {
     Ok(f.store
         .blocked(repo)?
         .iter()
         .map(|t| {
-            let (kind, text) = if t.reason.starts_with("waits on task") {
-                ("dependency", t.reason.clone())
-            } else {
-                match t.reason.split_once(": ") {
-                    Some(("needs workflow", rest)) => ("workflow", rest.to_string()),
-                    Some(("needs suite", rest)) => ("suite", rest.to_string()),
-                    Some(("needs input", rest)) => ("question", rest.to_string()),
-                    Some(("review demoted", rest)) => ("review", rest.to_string()),
-                    _ => ("other", t.reason.clone()),
-                }
-            };
             let q = f
                 .store
                 .attempts(t.id)
                 .ok()
-                .and_then(|a| a.last().and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok()))
+                .and_then(|a| {
+                    a.last().and_then(|a| {
+                        serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok()
+                    })
+                })
                 .and_then(|e| e.needs_input);
-            serde_json::json!({"id": t.id, "kind": kind, "text": text, "tried": q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(), "path": q.as_ref().map(|q| q.path.clone()).unwrap_or_default(), "workflow": t.workflow, "repo": t.repo, "task": t.task})
+            crate::view::RequestRow {
+                tried: q.as_ref().map(|q| q.tried.clone()).unwrap_or_default(),
+                path: q.as_ref().map(|q| q.path.clone()).unwrap_or_default(),
+                ..crate::view::RequestRow::from(t)
+            }
         })
         .collect())
 }
@@ -1673,8 +1656,9 @@ fn log(
         grep,
         workflow,
     };
+    let rows = tasks_json(&f, &q)?;
     if json {
-        out!("{}", serde_json::to_string_pretty(&tasks_json(&f, &q)?)?);
+        out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
     out!(
@@ -1687,11 +1671,11 @@ fn log(
         "CREATED",
         "REPO"
     );
-    for s in f.store.list_tasks_where(&q)? {
+    for s in &rows {
         let repo_name = Path::new(&s.repo)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or(s.repo);
+            .unwrap_or_else(|| s.repo.clone());
         let task_short: String = s
             .task
             .chars()
@@ -1704,7 +1688,7 @@ fn log(
             s.state,
             s.workflow,
             s.attempts,
-            format!("${:.4}", s.cost),
+            format!("${:.4}", s.cost_usd),
             s.created,
             repo_name,
             task_short

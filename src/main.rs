@@ -28,6 +28,7 @@ mod store;
 mod supervisor;
 mod tools;
 mod verify;
+mod view;
 mod worker;
 mod workflows;
 
