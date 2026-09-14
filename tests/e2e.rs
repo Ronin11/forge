@@ -598,6 +598,59 @@ fn a_retry_that_changes_nothing_reports_nothing_and_passes() {
 }
 
 #[test]
+fn stats_json_is_the_text_form_as_one_object() {
+    let e = Env::new();
+    assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());
+
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
+    assert!(text.contains("direct"), "{text}");
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["stats", "--json"]).stdout).unwrap();
+    let wf = doc["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["WF"] == "direct")
+        .expect("direct workflow entry");
+    assert_eq!(wf["TASKS"], 1);
+    assert_eq!(wf["OK"], 1);
+    assert_eq!(wf["FAIL"], 0);
+    assert_eq!(wf["ATT"], 1);
+    assert!(wf["COST"].as_f64().unwrap() > 0.0, "{wf}");
+    assert_eq!(wf["$/OK"], wf["COST"]);
+    // No tools key without --tools.
+    assert!(doc.get("tools").is_none(), "{doc}");
+
+    let step = doc["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["WF"] == "direct" && s["STEP"] == "code")
+        .expect("direct/code step entry");
+    assert_eq!(step["OK"], 1);
+    assert_eq!(step["ATT"], 1);
+
+    let both: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["stats", "--json", "--tools"]).stdout).unwrap();
+    assert!(
+        both["workflows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["WF"] == "direct"),
+        "{both}"
+    );
+    assert!(
+        both["tools"]["code"]["by_tool"]["Bash"]["calls"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{both}"
+    );
+}
+
+#[test]
 fn trace_requests_and_stats_expose_the_whole_run() {
     let e = Env::new();
     tdd_repo(&e);

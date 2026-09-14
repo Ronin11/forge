@@ -187,6 +187,9 @@ enum Cmd {
         /// With --tools, only this step's section
         #[arg(long)]
         step: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
     },
     /// The event log as JSON lines: a client's subscription
     Events {
@@ -282,7 +285,7 @@ pub async fn main() -> Result<()> {
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
-        Cmd::Stats { tools, step } => stats(tools, step),
+        Cmd::Stats { tools, step, json } => stats(tools, step, json),
         Cmd::Events {
             since,
             follow,
@@ -1105,7 +1108,10 @@ fn requests(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
+fn collect_tool_stats(
+    f: &Forge,
+    step: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, (usize, crate::tools::Tools)>> {
     use std::collections::BTreeMap;
     let tasks = f.store.list_tasks(10_000, None, None)?;
     // step -> aggregated tools
@@ -1140,6 +1146,11 @@ fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
     if let Some(step) = step {
         per_step.retain(|s, _| s == step);
     }
+    Ok(per_step)
+}
+
+fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
+    let per_step = collect_tool_stats(f, step)?;
     if per_step.is_empty() {
         out!("no attempts with tool facts yet (recorded from the next attempt on)");
         return Ok(());
@@ -1208,8 +1219,103 @@ fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn stats(tools: bool, step: Option<String>) -> Result<()> {
+fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
+    let per_step = collect_tool_stats(f, step)?;
+    let mut steps = serde_json::Map::new();
+    for (step, (n, t)) in per_step {
+        let by_tool: serde_json::Map<String, serde_json::Value> = t
+            .by_tool
+            .iter()
+            .map(|(name, u)| {
+                let s = u.ms as f64 / 1000.0;
+                (
+                    name.clone(),
+                    serde_json::json!({
+                        "calls": u.calls,
+                        "total_s": s,
+                        "s_per_call": if u.calls > 0 { s / u.calls as f64 } else { 0.0 },
+                    }),
+                )
+            })
+            .collect();
+        let shell: serde_json::Map<String, serde_json::Value> = t
+            .shell
+            .iter()
+            .map(|(name, u)| {
+                let s = u.ms as f64 / 1000.0;
+                (
+                    name.clone(),
+                    serde_json::json!({
+                        "calls": u.calls,
+                        "total_s": s,
+                        "s_per_call": if u.calls > 0 { s / u.calls as f64 } else { 0.0 },
+                    }),
+                )
+            })
+            .collect();
+        steps.insert(
+            step,
+            serde_json::json!({
+                "attempts": n,
+                "by_tool": by_tool,
+                "shell": shell,
+                "reads": t.reads,
+            }),
+        );
+    }
+    Ok(serde_json::Value::Object(steps))
+}
+
+fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if json {
+        let workflows: Vec<serde_json::Value> = f
+            .store
+            .workflow_stats()?
+            .into_iter()
+            .map(|w| {
+                serde_json::json!({
+                    "WF": w.workflow,
+                    "HASH": w.hash,
+                    "TASKS": w.tasks,
+                    "OK": w.succeeded,
+                    "FAIL": w.failed,
+                    "BLK": w.blocked,
+                    "UNV": w.unverified,
+                    "ATT": w.attempts,
+                    "COST": w.cost,
+                    "$/OK": if w.succeeded > 0 { Some(w.cost / w.succeeded as f64) } else { None },
+                })
+            })
+            .collect();
+        let steps: Vec<serde_json::Value> = f
+            .store
+            .step_stats()?
+            .into_iter()
+            .map(|st| {
+                serde_json::json!({
+                    "WF": st.workflow,
+                    "STEP": st.step,
+                    "ATT": st.attempts,
+                    "OK": st.succeeded,
+                    "AGENTF": st.agent_failed,
+                    "CHECKF": st.checks_failed,
+                    "ASK": st.needs_input,
+                    "TURNS": st.mean_turns,
+                    "EDIT@": st.mean_first_edit,
+                    "SECS": st.mean_ms / 1000.0,
+                    "COST": st.cost,
+                    "TOKENS": st.mean_input_tokens,
+                })
+            })
+            .collect();
+        let mut doc = serde_json::json!({"workflows": workflows, "steps": steps});
+        if tools {
+            doc["tools"] = tools_json(&f, step.as_deref())?;
+        }
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
     if tools {
         return tool_stats(&f, step.as_deref());
     }
