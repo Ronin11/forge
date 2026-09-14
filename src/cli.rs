@@ -328,7 +328,7 @@ async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Resu
     if cfg.checks.is_empty() && args.checks.is_empty() {
         bail!(
             "{} declares no [checks] and the task declares no --check; nothing would verify the work",
-            repo.join("forge.toml").display()
+            cfg.config_path
         );
     }
     let mut t = Task {

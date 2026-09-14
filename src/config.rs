@@ -48,7 +48,16 @@ pub struct Config {
     pub check_timeout_secs: u64,
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
+    /// Where the repository's config actually lives: `forge.toml` or
+    /// `.forge/forge.toml`. Whatever this is, it is the path every rule
+    /// that used to say `forge.toml` by name now means.
+    pub config_path: String,
 }
+
+/// The repository's config location: `.forge/forge.toml` if it exists,
+/// else `forge.toml` at the root. Both existing is an error naming both.
+const ALT_CONFIG_PATH: &str = ".forge/forge.toml";
+const ROOT_CONFIG_PATH: &str = "forge.toml";
 
 /// Whether `path` is inside a write scope: a file, a directory with a
 /// trailing slash, or a `*.ext` suffix pattern.
@@ -75,7 +84,7 @@ pub fn is_protected(protected: &[String], path: &str) -> bool {
     })
 }
 
-async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
+async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result<Config> {
     let raw: Raw = toml::from_str(text).with_context(|| format!("parsing {what}"))?;
     for (name, argv) in &raw.checks {
         if argv.is_empty() {
@@ -99,37 +108,77 @@ async fn parse(repo: &Path, text: &str, what: &str) -> Result<Config> {
         base_branch,
         push_remote,
         check_timeout_secs: raw.defaults.check_timeout_secs.unwrap_or(600),
-        protected: raw.verify.protected,
+        // `forge.toml` by name is the long-standing convention for
+        // protecting the repository's own config; when the config actually
+        // lives elsewhere, that convention must protect the real path.
+        protected: raw
+            .verify
+            .protected
+            .into_iter()
+            .map(|p| {
+                if p == ROOT_CONFIG_PATH {
+                    config_path.to_string()
+                } else {
+                    p
+                }
+            })
+            .collect(),
         namespace: raw
             .verify
             .namespace
             .into_iter()
             .map(|d| if d.ends_with('/') { d } else { format!("{d}/") })
             .collect(),
+        config_path: config_path.to_string(),
     })
 }
 
-/// The repository's forge.toml as it is in the working tree. Used when a
-/// task is created, before any base commit is pinned.
+/// The repository's config as it is in the working tree: `.forge/forge.toml`
+/// if it exists, else `forge.toml` at the root. Both existing is an error.
+/// Used when a task is created, before any base commit is pinned.
 pub async fn load_working(repo: &Path) -> Result<Config> {
-    let path = repo.join("forge.toml");
-    let text = std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "{}: a repository must declare its checks in forge.toml",
-            path.display()
-        )
-    })?;
-    parse(repo, &text, &path.display().to_string()).await
+    let alt = repo.join(ALT_CONFIG_PATH);
+    let root = repo.join(ROOT_CONFIG_PATH);
+    let (path, config_path, text) = match (alt.exists(), root.exists()) {
+        (true, true) => bail!(
+            "both {} and {} exist; a repository must declare its checks in only one",
+            alt.display(),
+            root.display()
+        ),
+        (true, false) => {
+            let text = std::fs::read_to_string(&alt)
+                .with_context(|| format!("reading {}", alt.display()))?;
+            (alt, ALT_CONFIG_PATH, text)
+        }
+        (false, _) => {
+            let text = std::fs::read_to_string(&root).with_context(|| {
+                format!(
+                    "{}: a repository must declare its checks in forge.toml",
+                    root.display()
+                )
+            })?;
+            (root, ROOT_CONFIG_PATH, text)
+        }
+    };
+    parse(repo, &text, &path.display().to_string(), config_path).await
 }
 
-/// The repository's forge.toml at `rev`: the trusted base for an attempt.
+/// The repository's config at `rev`: the trusted base for an attempt.
+/// `.forge/forge.toml` if it exists there, else `forge.toml` at the root.
 /// `repo` answers questions about remotes; `show_dir` is where `rev` is read
 /// from (the task's clone, which has the same objects).
 pub async fn load_at(repo: &Path, show_dir: &Path, rev: &str) -> Result<Config> {
-    let text = crate::git::show_file(show_dir, rev, "forge.toml")
-        .await?
-        .with_context(|| format!("forge.toml does not exist at {rev}"))?;
-    parse(repo, &text, &format!("forge.toml at {rev}")).await
+    let alt = crate::git::show_file(show_dir, rev, ALT_CONFIG_PATH).await?;
+    let root = crate::git::show_file(show_dir, rev, ROOT_CONFIG_PATH).await?;
+    let (config_path, text) = match (alt, root) {
+        (Some(_), Some(_)) => bail!(
+            "both {ALT_CONFIG_PATH} and {ROOT_CONFIG_PATH} exist at {rev}; a repository must declare its checks in only one"
+        ),
+        (Some(t), None) => (ALT_CONFIG_PATH, t),
+        (None, Some(t)) => (ROOT_CONFIG_PATH, t),
+        (None, None) => bail!("forge.toml does not exist at {rev}"),
+    };
+    parse(repo, &text, &format!("{config_path} at {rev}"), config_path).await
 }
 
 #[derive(Deserialize, Default)]
@@ -280,6 +329,21 @@ mod tests {
         assert!(is_protected(&p, "fixtures/a.json"));
         assert!(!is_protected(&p, "fixtures2/a.json"));
         assert!(!is_protected(&p, "src/x.ts"));
+    }
+
+    #[tokio::test]
+    async fn both_config_locations_present_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir(repo.join(".forge")).unwrap();
+        std::fs::write(repo.join(".forge/forge.toml"), "[checks]\n").unwrap();
+        std::fs::write(repo.join("forge.toml"), "[checks]\n").unwrap();
+        let err = match load_working(repo).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains(".forge/forge.toml"), "{err}");
+        assert!(err.contains("forge.toml"), "{err}");
     }
 
     #[test]

@@ -257,6 +257,21 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
 }
 
 #[test]
+fn config_may_live_under_dot_forge() {
+    let e = Env::new();
+    std::fs::create_dir(e.repo.join(".forge")).unwrap();
+    std::fs::rename(e.repo.join("forge.toml"), e.repo.join(".forge/forge.toml")).unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "move config under .forge/"]);
+    assert!(e.run("ok.sh", &[]).status.success());
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(pushed);
+    let a = e.attempts(1);
+    assert_eq!(check(&a[0].4, "L0", "forge.toml-untouched"), Some(true));
+}
+
+#[test]
 fn a_false_claim_of_a_passing_check_fails_l1() {
     let e = Env::new();
     assert!(!e.run("falseclaim.sh", &["--retries", "0"]).status.success());

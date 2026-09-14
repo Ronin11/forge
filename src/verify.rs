@@ -206,11 +206,11 @@ async fn common_l0(
     let touched = changed
         .iter()
         .chain(dirty.iter())
-        .any(|p| p == "forge.toml");
+        .any(|p| p == cfg.config_path.as_str());
     rows.push(l0(
         "forge.toml-untouched",
         !touched,
-        "the attempt modified forge.toml".into(),
+        format!("the attempt modified {}", cfg.config_path),
     ));
     rows.push(l0(
         "has-commits",
