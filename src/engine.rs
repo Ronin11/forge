@@ -1219,7 +1219,7 @@ async fn integrate(
 /// the task's own tests. `pinned` is the standing suite's commit as of the
 /// task's base (empty when there was none); `None` means the current tip,
 /// which only a tree that already contains the current base may be judged by.
-async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
+pub async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
     let mut refs = Vec::new();
     match pinned {
         Some("") => {}
