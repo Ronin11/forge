@@ -2,180 +2,12 @@
 //! shell-script agents in tests/fakes that speak stream-json. Sandboxed when
 //! bwrap is present.
 
-use rusqlite::Connection;
+mod support;
+use support::*;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
-
-struct Env {
-    _dir: tempfile::TempDir,
-    home: PathBuf,
-    repo: PathBuf,
-    origin: PathBuf,
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let o = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .expect("git");
-    assert!(
-        o.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&o.stderr)
-    );
-    String::from_utf8_lossy(&o.stdout).trim().to_string()
-}
-
-impl Env {
-    fn new() -> Env {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let repo = dir.path().join("repo");
-        let origin = dir.path().join("origin.git");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["config", "user.name", "Test"]);
-        git(&repo, &["config", "user.email", "test@example.com"]);
-        std::fs::write(
-            repo.join("forge.toml"),
-            "[checks]\nanswer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
-        )
-        .unwrap();
-        std::fs::write(repo.join("hello.sh"), "#!/bin/bash\necho hello\n").unwrap();
-        git(&repo, &["add", "-A"]);
-        git(&repo, &["commit", "-qm", "init"]);
-        Command::new("git")
-            .args(["init", "-q", "--bare"])
-            .arg(&origin)
-            .status()
-            .unwrap();
-        git(
-            &repo,
-            &["remote", "add", "origin", origin.to_str().unwrap()],
-        );
-        Env {
-            _dir: dir,
-            home,
-            repo,
-            origin,
-        }
-    }
-
-    fn cmd(&self, fake: &str) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_forge"));
-        c.env("FORGE2_HOME", &self.home);
-        c.env(
-            "FORGE2_CLAUDE_BIN",
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fakes")
-                .join(fake),
-        );
-        if Command::new("bwrap")
-            .arg("--version")
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
-        {
-            c.env("FORGE2_SANDBOX", "0");
-        }
-        // The supervisor only runs where a test hands it a fake.
-        c.env("FORGE2_SUPERVISOR", "0");
-        c
-    }
-
-    fn forge(&self, fake: &str, args: &[&str]) -> Output {
-        let o = self.cmd(fake).args(args).output().expect("forge");
-        eprintln!(
-            "--- forge {} ---\n{}{}",
-            args.join(" "),
-            String::from_utf8_lossy(&o.stdout),
-            String::from_utf8_lossy(&o.stderr)
-        );
-        o
-    }
-
-    fn run(&self, fake: &str, extra: &[&str]) -> Output {
-        let mut args = vec![
-            "run",
-            self.repo.to_str().unwrap(),
-            "write 42 to answer.txt",
-            "--no-land",
-        ];
-        args.extend_from_slice(extra);
-        self.forge(fake, &args)
-    }
-
-    fn add(&self, extra: &[&str]) -> i64 {
-        let mut args = vec!["add", self.repo.to_str().unwrap(), "write 42 to answer.txt"];
-        args.extend_from_slice(extra);
-        let o = self.forge("ok.sh", &args);
-        assert!(o.status.success());
-        String::from_utf8_lossy(&o.stdout)
-            .split_whitespace()
-            .nth(2)
-            .unwrap()
-            .parse()
-            .unwrap()
-    }
-
-    fn db(&self) -> Connection {
-        Connection::open(self.home.join("forge.db")).unwrap()
-    }
-
-    fn task(&self, id: i64) -> (String, String, bool) {
-        self.db()
-            .query_row(
-                "SELECT state, reason, pushed FROM tasks WHERE id=?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
-            )
-            .unwrap()
-    }
-
-    /// (attempt_no, state, reason, timed_out, verdict_json)
-    fn attempts(&self, id: i64) -> Vec<(i64, String, String, bool, String)> {
-        let c = self.db();
-        let mut s = c
-            .prepare("SELECT attempt_no, state, reason, timed_out, verdict_json FROM attempts WHERE task_id=?1 ORDER BY attempt_no")
-            .unwrap();
-        s.query_map([id], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get::<_, i64>(3)? != 0,
-                r.get(4)?,
-            ))
-        })
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect()
-    }
-
-    fn origin_branches(&self) -> String {
-        git(&self.origin, &["branch"])
-    }
-
-    fn log_text(&self, task: i64, attempt: i64) -> String {
-        std::fs::read_to_string(
-            self.home
-                .join("logs")
-                .join(format!("{task}-{attempt}.jsonl")),
-        )
-        .unwrap()
-    }
-}
-
-fn check(verdict: &str, level: &str, name: &str) -> Option<bool> {
-    let v: Vec<serde_json::Value> = serde_json::from_str(verdict).unwrap();
-    v.iter()
-        .find(|c| c["level"] == level && c["name"] == name)
-        .map(|c| c["ok"].as_bool().unwrap())
-}
 
 #[test]
 fn success_is_verified_at_l0_and_l1_and_pushed() {
@@ -241,8 +73,7 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
     assert_eq!(cache_read, Some(67));
     assert_eq!(cache_creation, Some(8));
 
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let tokens = &doc["attempts"][0]["tokens"];
     assert_eq!(tokens["input"], 123);
     assert_eq!(tokens["output"], 45);
@@ -436,13 +267,7 @@ fn tdd_repo(e: &Env) {
 }
 
 fn run_tdd(e: &Env, coder: &str, writer: &str, task: &str) -> Output {
-    let mut c = e.cmd(coder);
-    c.env(
-        "FORGE2_CLAUDE_BIN_TESTS",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fakes")
-            .join(writer),
-    );
+    let mut c = e.with_role(coder, "TESTS", writer);
     let o = c
         .args([
             "run",
@@ -727,8 +552,7 @@ fn trace_requests_and_stats_expose_the_whole_run() {
         "{out}"
     );
 
-    let o = e.forge("ok.sh", &["trace", "3", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("3");
     assert_eq!(doc["task"]["state"], "succeeded");
     assert_eq!(doc["attempts"][0]["inputs"]["step"], "tests");
     assert!(
@@ -836,8 +660,7 @@ fn operations_run_in_order_and_appear_as_rows() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let ops: Vec<(String, bool, bool, i64)> = doc["ops"]
         .as_array()
         .unwrap()
@@ -983,11 +806,7 @@ fn inline_composition_runs_the_child_and_records_every_pin() {
         "name = \"outer\"\ndescription = \"d\"\nsteps = [{ workflow = \"tdd\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
     )
     .unwrap();
-    let mut c = e.cmd("ok.sh");
-    c.env(
-        "FORGE2_CLAUDE_BIN_TESTS",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh"),
-    );
+    let mut c = e.with_role("ok.sh", "TESTS", "testwriter.sh");
     let o = c
         .args([
             "run",
@@ -1002,8 +821,7 @@ fn inline_composition_runs_the_child_and_records_every_pin() {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let names: Vec<&str> = doc["resolved"]["steps"]
         .as_array()
         .unwrap()
@@ -1082,8 +900,7 @@ fn a_resumed_task_keeps_the_versions_it_resolved() {
         })
         .unwrap();
     assert_eq!(pins_before, pins_after, "a running task never re-resolves");
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(doc["task"]["state"], "succeeded");
     let inputs_turns = doc["attempts"].as_array().unwrap().last().unwrap()["inputs"]["max_turns"]
         .as_i64()
@@ -1094,8 +911,7 @@ fn a_resumed_task_keeps_the_versions_it_resolved() {
     );
     // A new task picks up the edit.
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
-    let o = e.forge("ok.sh", &["trace", "2", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 7);
     let pins_new: String = e
         .db()
@@ -1305,8 +1121,7 @@ fn the_docs_directive_is_scoped_and_cheap_uses_its_model() {
     let a = e.attempts(2);
     assert_eq!(a[0].2, "L0 failed: paths-in-scope");
     assert_eq!(a[0].0, 1);
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert_eq!(doc["attempts"][0]["step"], "docs");
     assert_eq!(doc["attempts"][0]["inputs"]["step"], "docs");
     // cheap: the fix directive's model and turns reach the launch.
@@ -1315,8 +1130,7 @@ fn the_docs_directive_is_scoped_and_cheap_uses_its_model() {
             .status
             .success()
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("3");
     assert_eq!(doc["attempts"][0]["inputs"]["model"], "haiku");
     assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 15);
     assert_eq!(doc["attempts"][0]["step"], "fix");
@@ -1344,8 +1158,7 @@ fn polish_runs_a_second_code_pass_with_its_brief() {
         p2.contains("Do not add features or scope"),
         "the brief reaches the second pass:\n{p2}"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(doc["attempts"][1]["step"], "polish");
     assert_eq!(doc["resolved"]["steps"][2]["action"]["contract"], "code");
 }
@@ -1430,8 +1243,7 @@ fn a_verifying_operation_sends_its_failure_back_to_the_coder() {
         e.log_text(1, 2).contains("extra.txt is missing"),
         "the operation's output reached the coder"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let ops: Vec<(String, bool)> = doc["ops"]
         .as_array()
         .unwrap()
@@ -1549,8 +1361,7 @@ fn an_overlaying_operation_sees_the_hidden_suite() {
             .exists(),
         "removed after the operation"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(doc["ops"][2]["name"], "hidden-e2e");
     assert_eq!(doc["ops"][2]["ok"], true);
 }
@@ -1569,9 +1380,7 @@ fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
     )
     .unwrap();
     git(&e.repo, &["commit", "-qam", "lint rejects TODO"]);
-    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter-todo.sh");
-    let mut c = e.cmd("ok.sh");
-    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let mut c = e.with_role("ok.sh", "TESTS", "testwriter-todo.sh");
     let o = c
         .args([
             "run",
@@ -1601,8 +1410,7 @@ fn a_check_failing_inside_the_hidden_tests_goes_back_to_the_test_author() {
     assert!(e.task(1).2, "pushed");
 
     // With no attempt left for the test author, the task fails and says whose fault it was.
-    let mut c = e.cmd("ok.sh");
-    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let mut c = e.with_role("ok.sh", "TESTS", "testwriter-todo.sh");
     let o = c
         .args([
             "run",
@@ -1688,11 +1496,7 @@ fn origin_file(e: &Env, branch: &str, path: &str) -> Option<String> {
 }
 
 fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
-    let doc: serde_json::Value = serde_json::from_slice(
-        &e.forge("ok.sh", &["trace", &id.to_string(), "--json"])
-            .stdout,
-    )
-    .unwrap();
+    let doc: serde_json::Value = e.trace_json(id);
     doc["ops"]
         .as_array()
         .unwrap()
@@ -1947,26 +1751,21 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let t0 = Instant::now();
-    loop {
-        let cloned = e.home.join("forge.db").exists()
-            && e.db()
-                .query_row(
-                    "SELECT 1 FROM tasks WHERE id=1 AND base_sha != ''",
-                    [],
-                    |r| r.get::<_, i64>(0),
-                )
-                .is_ok();
-        if cloned {
-            break;
-        }
-        assert!(t0.elapsed() < Duration::from_secs(10));
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(wait_until(
+        || {
+            e.home.join("forge.db").exists()
+                && e.db()
+                    .query_row(
+                        "SELECT 1 FROM tasks WHERE id=1 AND base_sha != ''",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .is_ok()
+        },
+        Duration::from_secs(10)
+    ));
     // A, a tdd task, lands meanwhile and folds "answer.txt must be 42" into forge-verify.
-    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh");
-    let mut c = e.cmd("ok.sh");
-    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let mut c = e.with_role("ok.sh", "TESTS", "testwriter.sh");
     let a = c
         .args([
             "run",
@@ -2005,8 +1804,7 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
         origin_file(&e, "main", "answer.txt").as_deref(),
         Some("42\n")
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(
         doc["task"]["verify_base"], "",
         "no standing suite existed when B started"
@@ -2025,9 +1823,7 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
     let e = Env::new();
     tdd_repo(&e);
     // The coder is slow enough for main to move underneath it.
-    let writer = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/testwriter.sh");
-    let mut c = e.cmd("slowfeedback.sh");
-    c.env("FORGE2_CLAUDE_BIN_TESTS", &writer);
+    let mut c = e.with_role("slowfeedback.sh", "TESTS", "testwriter.sh");
     let child = c
         .args([
             "run",
@@ -2042,31 +1838,28 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
         .spawn()
         .unwrap();
     // Once the task has cloned its base, main gains a check the branch does not satisfy.
-    let t0 = Instant::now();
-    loop {
-        let base: Option<String> = e
-            .home
-            .join("forge.db")
-            .exists()
-            .then(|| {
-                e.db()
-                    .query_row(
-                        "SELECT base_sha FROM tasks WHERE id=1 AND base_sha != ''",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .ok()
-            })
-            .flatten();
-        if base.is_some() {
-            break;
-        }
-        assert!(
-            t0.elapsed() < Duration::from_secs(10),
-            "the task never cloned"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        wait_until(
+            || {
+                e.home
+                    .join("forge.db")
+                    .exists()
+                    .then(|| {
+                        e.db()
+                            .query_row(
+                                "SELECT base_sha FROM tasks WHERE id=1 AND base_sha != ''",
+                                [],
+                                |r| r.get::<_, String>(0),
+                            )
+                            .ok()
+                    })
+                    .flatten()
+                    .is_some()
+            },
+            Duration::from_secs(10)
+        ),
+        "the task never cloned"
+    );
     let other = e.repo.parent().unwrap().join("other");
     let o = Command::new("git")
         .args([
@@ -2186,11 +1979,7 @@ fn the_document_directive_is_held_to_comments_and_docs() {
     assert!(hello.contains("# prints a greeting"), "{hello}");
 
     // A pass that changes behavior is caught, sent back, and fails when the attempts run out.
-    let mut c = e.cmd("ok.sh");
-    c.env(
-        "FORGE2_CLAUDE_BIN_DOCUMENT",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/documenter-bad.sh"),
-    );
+    let mut c = e.with_role("ok.sh", "DOCUMENT", "documenter-bad.sh");
     let o = c
         .args([
             "run",
@@ -2213,14 +2002,8 @@ fn the_document_directive_is_held_to_comments_and_docs() {
 /// A blocked task supervised by the given fake: the coder asks its
 /// question, the supervisor rules.
 fn supervised(e: &Env, supervisor: &str, task: &str) -> Output {
-    let mut c = e.cmd("needsinput.sh");
+    let mut c = e.with_role("needsinput.sh", "SUPERVISOR", supervisor);
     c.env("FORGE2_SUPERVISOR", "1");
-    c.env(
-        "FORGE2_CLAUDE_BIN_SUPERVISOR",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fakes")
-            .join(supervisor),
-    );
     let o = c
         .args(["run", e.repo.to_str().unwrap(), task, "--retries", "0"])
         .output()
@@ -2256,8 +2039,7 @@ fn the_supervisor_answers_a_question_with_citations_and_the_answer_lands() {
     assert_eq!(a.len(), 2, "the ruling is an attempt on the record: {a:?}");
     assert_eq!(a[1].1, "succeeded");
     assert!(a[1].2.starts_with("supervisor: answer"), "{}", a[1].2);
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert_eq!(doc["task"]["retry_of"], 1);
     let text = doc["task"]["text"].as_str().unwrap();
     assert!(
@@ -2267,8 +2049,7 @@ fn the_supervisor_answers_a_question_with_citations_and_the_answer_lands() {
     // The retried task runs and lands; the decision shows the outcome.
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
     assert_eq!(e.task(2).0, "succeeded");
-    let ds: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    let ds: serde_json::Value = e.decisions_json();
     let d = &ds.as_array().unwrap()[0];
     assert_eq!(d["answered_by"], "supervisor");
     assert_eq!(d["citations"], "hello.sh, forge.toml");
@@ -2281,8 +2062,7 @@ fn the_supervisor_answers_a_question_with_citations_and_the_answer_lands() {
     );
     assert!(text.contains("→ task 2 succeeded"), "{text}");
     // Nothing is left for the human.
-    let reqs: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let reqs: serde_json::Value = e.requests_json();
     assert!(reqs.as_array().unwrap().is_empty(), "{reqs}");
 }
 
@@ -2302,8 +2082,7 @@ fn the_supervisor_escalates_what_the_record_does_not_settle_and_refuses_bad_cita
         "{reason}"
     );
     // The question is still the human's: it shows in requests, and no task was queued.
-    let reqs: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let reqs: serde_json::Value = e.requests_json();
     assert_eq!(reqs.as_array().unwrap().len(), 1, "{reqs}");
     assert_eq!(reqs[0]["kind"], "question");
     let ids: serde_json::Value =
@@ -2325,8 +2104,7 @@ fn the_supervisor_escalates_what_the_record_does_not_settle_and_refuses_bad_cita
     let (state, reason, _) = e.task(2);
     assert_eq!(state, "blocked");
     assert!(reason.contains("supervisor escalated"), "{reason}");
-    let ds: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    let ds: serde_json::Value = e.decisions_json();
     assert!(
         ds.as_array().unwrap().is_empty(),
         "a refused ruling is no decision: {ds}"
@@ -2357,14 +2135,12 @@ fn the_supervisor_marks_a_task_superseded_by_one_that_already_landed() {
         reason.starts_with("superseded by task 1 (supervisor)"),
         "{reason}"
     );
-    let reqs: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let reqs: serde_json::Value = e.requests_json();
     assert!(
         reqs.as_array().unwrap().is_empty(),
         "nothing is left for the human: {reqs}"
     );
-    let ds: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    let ds: serde_json::Value = e.decisions_json();
     assert_eq!(
         ds[0]["answer"]
             .as_str()
@@ -2401,8 +2177,7 @@ fn a_supervisor_that_crashes_is_an_agent_failure_and_the_question_escalates() {
         reason.contains("[supervisor escalated: its run failed: agent exit 1]"),
         "{reason}"
     );
-    let ds: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    let ds: serde_json::Value = e.decisions_json();
     assert!(ds.as_array().unwrap().is_empty(), "{ds}");
 }
 
@@ -2448,8 +2223,7 @@ fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
         err.contains("supervisor filed prerequisite task 2 and re-queued the task as 3 behind it"),
         "{err}"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert!(
         doc["task"]["text"]
             .as_str()
@@ -2458,8 +2232,7 @@ fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
     );
     assert_eq!(doc["task"]["workflow"], "direct");
     assert!(doc["task"]["retry_of"].is_null());
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("3");
     assert_eq!(doc["task"]["retry_of"], 1);
     assert_eq!(doc["task"]["after"], serde_json::json!([2]));
     assert!(
@@ -2470,8 +2243,7 @@ fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
         "{}",
         doc["task"]["text"]
     );
-    let ds: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    let ds: serde_json::Value = e.decisions_json();
     assert_eq!(
         ds[0]["answer"]
             .as_str()
@@ -2490,12 +2262,8 @@ fn the_supervisor_stops_answering_after_its_share_of_a_piece_of_work() {
     // One worker pass drains the queue: task 2 asks again (the coder fake
     // never changes) and the supervisor answers again as 3; task 3 asks
     // again and the supervisor must step aside.
-    let mut c = e.cmd("needsinput.sh");
+    let mut c = e.with_role("needsinput.sh", "SUPERVISOR", "supervisor-answer.sh");
     c.env("FORGE2_SUPERVISOR", "1");
-    c.env(
-        "FORGE2_CLAUDE_BIN_SUPERVISOR",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/supervisor-answer.sh"),
-    );
     let o = c.args(["work", "--once"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     eprintln!("--- work ---\n{err}");
@@ -2553,8 +2321,7 @@ fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_pla
     let a = e.attempts(1);
     assert_eq!(a.len(), 2, "{a:?}");
     assert_eq!(a[0].1, "succeeded", "the plan step: {a:?}");
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let names: Vec<String> = doc["attempts"][0]["verdict"]
         .as_array()
         .unwrap()
@@ -2635,11 +2402,7 @@ fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     let map = origin_file(&e, "forge/1-write-42", "docs/SYSTEM.md").unwrap();
     assert!(map.contains("```mermaid"));
 
-    let mut c = e.cmd("ok.sh");
-    c.env(
-        "FORGE2_CLAUDE_BIN_GRAPH",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/grapher-bad.sh"),
-    );
+    let mut c = e.with_role("ok.sh", "GRAPH", "grapher-bad.sh");
     let o = c
         .args([
             "run",
@@ -2688,8 +2451,7 @@ fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
             .contains("ran out of turns before finishing"),
         "the continuation prompt"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(doc["attempts"][1]["inputs"]["resumed"], "sess-turncap-1");
     let sid: String = e
         .db()
@@ -2818,8 +2580,7 @@ fn resume_on_failure_continues_the_same_session_after_failed_checks() {
     assert_eq!(a[0].1, "checks_failed");
     assert_eq!(a[0].2, "L1 failed: answer");
     assert_eq!(a[1].1, "succeeded");
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert_eq!(
         doc["attempts"][1]["inputs"]["resumed"],
         "sess-resumeonfail-1"
@@ -2993,8 +2754,7 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let o = e.forge("ok.sh", &["show", "4"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("forge retry"));
 
-    let reqs: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let reqs: serde_json::Value = e.requests_json();
     assert_eq!(reqs.as_array().unwrap()[0]["kind"], "dependency");
     // retry: 4 alone is refused (3 never landed); 3 --chain re-queues 3 and 4 with 4 waiting on the new 3.
     let o = e.forge("ok.sh", &["retry", "4"]);
@@ -3018,8 +2778,7 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("retried task 3 as 5"), "{out}");
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "4", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("4");
     assert_eq!(doc["task"]["state"], "queued", "{doc}");
     assert_eq!(doc["task"]["after"], serde_json::json!([5]));
     assert!(doc["task"]["retry_of"].is_null());
@@ -3038,15 +2797,13 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         .query_row("SELECT max_turns FROM tasks WHERE id=4", [], |r| r.get(0))
         .unwrap();
     assert_ne!(turns4, 77, "the dependent keeps its own turns");
-    let five: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "5", "--json"]).stdout).unwrap();
+    let five: serde_json::Value = e.trace_json("5");
     assert_eq!(
         five["task"]["max_attempts"], 2,
         "the override applies to the retried task"
     );
     // Parent, children, root, and the whole chain, from either end.
-    let three: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
+    let three: serde_json::Value = e.trace_json("3");
     assert_eq!(three["task"]["children"], serde_json::json!([5]));
     assert_eq!(three["task"]["root"], 3);
     assert_eq!(five["task"]["parent"], 3);
@@ -3076,8 +2833,7 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
     assert_eq!(log.as_array().unwrap().len(), 5);
     // A rerouted dependent no longer waits on a failed task: it leaves the human queue.
-    let reqs: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let reqs: serde_json::Value = e.requests_json();
     assert!(reqs.as_array().unwrap().is_empty(), "{reqs}");
 }
 
@@ -3258,8 +3014,7 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
         "the retry's coder saw the journal"
     );
     assert!(prompt.contains("task 1 (direct), failed"), "{prompt}");
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert!(
         doc["attempts"][0]["inputs"]["journal"]
             .as_str()
@@ -3295,8 +3050,7 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
 fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
     let e = Env::new();
     assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let tools = &doc["attempts"][0]["outputs"]["tools"];
     assert_eq!(tools["by_tool"]["Read"]["calls"], 1);
     assert_eq!(tools["by_tool"]["Bash"]["calls"], 1);
@@ -3341,8 +3095,7 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
         e.log_text(3, 1).contains("So far in this piece of work"),
         "the retry got the journal"
     );
-    let four: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "4", "--json"]).stdout).unwrap();
+    let four: serde_json::Value = e.trace_json("4");
     assert_eq!(four["task"]["journal_enabled"], false);
 
     // --step <name> filters the per_step map: a second, differently-named
@@ -3366,8 +3119,7 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
     assert!(code_only.contains("code  ("), "{code_only}");
     assert!(!code_only.contains("fix  ("), "{code_only}");
     // The kernel's own verify row carries the attempt's real duration.
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let verify_ms = doc["ops"]
         .as_array()
         .unwrap()
@@ -3514,8 +3266,7 @@ fn a_context_operation_shows_the_coder_where_things_are_unless_told_not_to() {
         prompt.contains("hello.sh: greet (task: write 42)"),
         "the operation saw the task: {prompt}"
     );
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     assert!(
         doc["attempts"][0]["inputs"]["context"]
             .as_str()
@@ -3540,8 +3291,7 @@ fn a_context_operation_shows_the_coder_where_things_are_unless_told_not_to() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!e.log_text(2, 1).contains("Where things are"));
-    let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert_eq!(doc["task"]["context_enabled"], false);
     assert!(doc["attempts"][0]["inputs"]["context"].is_null());
 }
@@ -3621,8 +3371,7 @@ fn setup_runs_first_and_gates_the_other_checks() {
         vec!["setup", "answer"],
         "within L1, setup still runs first"
     );
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let setup = &doc["ops"][1];
     assert_eq!(setup["name"], "setup");
     assert_eq!(setup["ok"], true);
@@ -4130,8 +3879,7 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let ops = doc["ops"].as_array().unwrap();
     let facts = ops.iter().find(|o| o["name"] == "facts").unwrap();
     assert_eq!(facts["ok"], true, "{}", facts["detail"]);
@@ -4204,8 +3952,7 @@ fn a_mutating_operation_is_committed_and_verified_by_the_kernel() {
     // Changed the tree: committed as Forge, verified, pushed.
     let o = run("write 42 to answer.txt");
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let ops: Vec<(String, bool, bool, i64)> = doc["ops"]
         .as_array()
         .unwrap()
@@ -4255,8 +4002,7 @@ fn a_mutating_operation_is_committed_and_verified_by_the_kernel() {
     // Changed nothing: nothing committed, nothing to verify, still a success.
     std::fs::write(&stamp, action("true")).unwrap();
     assert!(run("write 42 to answer.txt").status.success());
-    let o = e.forge("ok.sh", &["trace", "2", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("2");
     assert_eq!(doc["ops"][4]["name"], "verify");
     assert_eq!(
         doc["ops"][4]["detail"],
@@ -4278,8 +4024,7 @@ fn a_mutating_operation_is_committed_and_verified_by_the_kernel() {
     assert_eq!(state, "failed");
     assert_eq!(reason, "operation stamp failed: L1 failed: shell");
     assert!(!pushed);
-    let o = e.forge("ok.sh", &["trace", "3", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("3");
     assert_eq!(doc["ops"][4]["name"], "verify");
     assert_eq!(doc["ops"][4]["ok"], false);
     let wt = PathBuf::from(doc["task"]["worktree"].as_str().unwrap());
@@ -4316,8 +4061,7 @@ fn an_operation_can_extract_the_interface_from_the_hidden_tests() {
         "write 42 to answer.txt",
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let iface = doc["ops"]
         .as_array()
         .unwrap()
@@ -4401,8 +4145,7 @@ fn an_operation_with_output_full_keeps_the_whole_thing_instead_of_the_tail() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let o = e.forge("ok.sh", &["trace", "1", "--json"]);
-    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let doc: serde_json::Value = e.trace_json("1");
     let ops = doc["ops"].as_array().unwrap();
     let tail_op = ops.iter().find(|o| o["name"] == "loud-tail").unwrap();
     let full_op = ops.iter().find(|o| o["name"] == "loud-full").unwrap();
