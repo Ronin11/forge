@@ -30,7 +30,7 @@ forge doctor                                  # can this machine run attempts; i
    in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
    `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
    the agent binary, and the claude CLI's state. Network shared. Killed at
-   `--timeout-secs` (default 1800); `--max-turns` (default 30) is the other
+   `--timeout-secs` (default 1800); `--max-turns` (default 100) is the other
    cliff. The raw stream is the attempt's log, prompt first.
 
    The schema makes the agent's final result structured, never parsed out
@@ -65,7 +65,12 @@ forge doctor                                  # can this machine run attempts; i
    attempt that hit its turn cap with work in hand is resumed in the same
    CLI session instead of starting over. A run the provider refused for a
    rate window is not an attempt: Forge waits for the reset and goes again.
-   A task stops early when its cost reaches its cap.
+   A task stops early when its cost reaches its cap. `forge retry <id>` can
+   override `--max-turns` and `--timeout-secs` for the new task (default:
+   as before). `--max-turns` (default 100) is only a runaway guard against
+   a stuck attempt; the cost cap, the `--timeout-secs` wall-clock limit, and
+   the provider's rate windows are the real bounds on how much an attempt
+   can do.
 6. **Land.** On a verified success the kernel brings the base branch in
    as it is now on the remote, re-verifies the merged tree with every
    hidden suite, pushes the branch by explicit refspec, and fast-forwards
