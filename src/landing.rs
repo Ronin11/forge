@@ -165,6 +165,7 @@ pub async fn integrate(
             pending_main: None,
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: None,
         })
         .await
         .task()?;

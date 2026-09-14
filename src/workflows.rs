@@ -58,6 +58,14 @@ impl Contract {
     pub fn writes(self) -> bool {
         matches!(self, Contract::Code | Contract::Tests)
     }
+
+    /// Whether the contract's verdict runs checks of its own (L1/L2 for
+    /// code, red-on-base for tests). A contract that runs none is judged
+    /// by its L0 rows alone: nothing to object to is a pass, not
+    /// "unverified".
+    pub fn verifies_work(self) -> bool {
+        matches!(self, Contract::Code | Contract::Tests)
+    }
 }
 
 impl std::fmt::Display for Contract {

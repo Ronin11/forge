@@ -238,7 +238,7 @@ returning the new base in `Rewind` rather than mutating the task;
 `operation.rs` with an `OpRow` and a `Timer` replacing `op()`'s twelve
 arguments. `run_task` comes out at roughly 400 lines.
 
-**Stage 5. One verdict path (hand).** `Verdict::new(facts)` and
+**Stage 5. One verdict path (hand). Done 2026-09-14: one Subject for every contract, GitFacts and Common in place of the tuple, Verdict::open/settle in place of seven literals, the contract in the decision table, one verify_directive with the contract's rows under a match, emit_check shared, the supervisor's verdict built the same way, From<Fault>, a lenient Ruling.** `Verdict::new(facts)` and
 `settle(...)`; `GitFacts` and `Common` structs replacing the tuple;
 `emit_check` used everywhere; `Contract::common_rows()` replacing the
 name lists; one `verify_directive(contract, subject, agent)` with a

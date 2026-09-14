@@ -27,7 +27,7 @@ use crate::engine::{self, Fault};
 use crate::envelope::{Envelope, Kind};
 use crate::report::Event;
 use crate::store::{AttemptState, Task, TaskState};
-use crate::verify::{Rule, Verdict, l0};
+use crate::verify::{GitFacts, Rule, Verdict, emit_check, l0};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
@@ -35,6 +35,7 @@ use std::path::Path;
 pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action","reason","answer","citations","prerequisite"],"properties":{"action":{"type":"string","enum":["answer","prerequisite","superseded","accept","escalate"]},"reason":{"type":"string","description":"one or two sentences on why this action"},"answer":{"type":"string","description":"for answer: what the next attempt should do, concretely; for prerequisite: why it is needed first"},"citations":{"type":"array","items":{"type":"string"},"description":"what the answer rests on: a path in the tree, 'task N', or 'decision N'"},"prerequisite":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["task","workflow"],"properties":{"task":{"type":"string","description":"the prerequisite as a task text, precise enough to run unattended"},"workflow":{"type":"string"}}}]}}}"#;
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(default)]
 struct Ruling {
     action: String,
     reason: String,
@@ -267,9 +268,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if !wt.join(".git").exists() {
         return Ok(Ruled::Skipped("the task's clone is gone".into()));
     }
-    let prompt_text = prompt(f, &t, &q.question, &q.tried, kind).map_err(|e| match e {
-        Fault::Task(e) | Fault::Env(e) => e,
-    })?;
+    let prompt_text = prompt(f, &t, &q.question, &q.tried, kind)?;
     f.report.emit(
         id,
         Event::Note {
@@ -294,11 +293,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // supervisor is held to what it adds, not to what it found.
     let dirty_before = crate::git::dirty_paths(wt).await.unwrap_or_default();
     let (mut a, log_path) =
-        engine::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None)
-            .await
-            .map_err(|e| match e {
-                Fault::Task(e) | Fault::Env(e) => e,
-            })?;
+        engine::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None).await?;
     let outcome = agent::run(agent::Launch {
         task_id: id,
         worktree: wt,
@@ -319,20 +314,9 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // A run that did not finish (timeout, crash, refused) is an agent
     // failure on the record, not a failed ruling; the question escalates.
     if let Some(why) = crate::verify::agent_failure(&outcome) {
-        let verdict = Verdict {
-            commits: 0,
-            files_changed: 0,
-            dirty: false,
-            envelope: None,
-            checks: Vec::new(),
-            state: AttemptState::AgentFailed,
-            reason: why.clone(),
-        };
-        engine::record(f, &mut a, wt, &verdict, &outcome, None)
-            .await
-            .map_err(|e| match e {
-                Fault::Task(e) | Fault::Env(e) => e,
-            })?;
+        let mut verdict = Verdict::open(&GitFacts::default());
+        verdict.settle(Some(&why), None, false);
+        engine::record(f, &mut a, wt, &verdict, &outcome, None).await?;
         let why = format!("its run failed: {why}");
         f.report.emit(
             id,
@@ -434,46 +418,24 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             ));
         }
     }
-    let failed: Vec<String> = checks
-        .iter()
-        .filter(|c| !c.ok)
-        .map(|c| c.name.clone())
-        .collect();
-    let ok = failed.is_empty();
     for c in &checks {
-        f.report.emit(
-            id,
-            Event::Check {
-                level: &c.level,
-                name: &c.name,
-                ok: c.ok,
-                ms: 0,
-                tail: &c.tail,
-            },
-        );
+        emit_check(&f.report, id, c);
     }
-    let verdict = Verdict {
+    let facts = GitFacts {
         commits: 0,
-        files_changed: changed.len() as i64,
-        dirty: !dirty.is_empty(),
-        envelope: None,
-        checks,
-        state: if ok {
-            AttemptState::Succeeded
-        } else {
-            AttemptState::ChecksFailed
-        },
-        reason: if ok {
-            format!("supervisor: {}", r.action)
-        } else {
-            format!("L0 failed: {}", failed.join(", "))
-        },
+        changed_now: changed.clone(),
+        changed,
+        dirty,
     };
-    engine::record(f, &mut a, wt, &verdict, &outcome, None)
-        .await
-        .map_err(|e| match e {
-            Fault::Task(e) | Fault::Env(e) => e,
-        })?;
+    let mut verdict = Verdict::open(&facts);
+    verdict.checks = checks;
+    // The supervisor runs no checks of its own: its rows are the verdict.
+    verdict.settle(None, None, false);
+    let ok = verdict.state == AttemptState::Succeeded;
+    if ok {
+        verdict.reason = format!("supervisor: {}", r.action);
+    }
+    engine::record(f, &mut a, wt, &verdict, &outcome, None).await?;
 
     let cited = r.citations.join(", ");
     let escalate = |why: String| -> Result<Ruled> {
@@ -489,6 +451,12 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         Ok(Ruled::Escalated(why))
     };
     if !ok {
+        let failed: Vec<&str> = verdict
+            .checks
+            .iter()
+            .filter(|c| !c.ok)
+            .map(|c| c.name.as_str())
+            .collect();
         return escalate(format!(
             "its ruling failed {}: {}",
             failed.join(", "),

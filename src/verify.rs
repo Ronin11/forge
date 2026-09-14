@@ -26,6 +26,7 @@ use crate::envelope::{self, Envelope, Kind};
 use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
 use crate::store::AttemptState;
+use crate::workflows::Contract;
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,28 @@ pub struct Subject<'a> {
     pub pending_main: Option<&'a str>,
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
+    /// The tests contract's scratch directory for the red-on-base run;
+    /// created and removed by the verdict. Other contracts leave it None.
+    pub scratch: Option<&'a Path>,
+}
+
+/// What git says about the branch at verdict time.
+#[derive(Debug, Default, Clone)]
+pub struct GitFacts {
+    pub commits: i64,
+    /// Every path changed since the base (or the merged base).
+    pub changed: Vec<String>,
+    /// What this attempt itself changed, since it started.
+    pub changed_now: Vec<String>,
+    pub dirty: Vec<String>,
+}
+
+/// What every step's L0 shares, computed once.
+pub struct Common {
+    pub rows: Vec<CheckResult>,
+    pub envelope: Option<Envelope>,
+    pub question: Option<(Kind, String)>,
+    pub facts: GitFacts,
 }
 
 pub struct Verdict {
@@ -77,6 +100,36 @@ pub struct Verdict {
     pub checks: Vec<CheckResult>,
     pub state: AttemptState,
     pub reason: String,
+}
+
+impl Verdict {
+    /// A verdict opened on the git facts, with no rows yet and no
+    /// decision; `settle` closes it. The only way to make one.
+    pub fn open(facts: &GitFacts) -> Verdict {
+        Verdict {
+            commits: facts.commits,
+            files_changed: facts.changed.len() as i64,
+            dirty: !facts.dirty.is_empty(),
+            envelope: None,
+            checks: Vec::new(),
+            state: AttemptState::Running,
+            reason: String::new(),
+        }
+    }
+
+    /// Decide the state and the reason from what the verdict holds.
+    /// `verifies` says whether this contract runs checks of its own; one
+    /// that does not is judged by its rows alone.
+    pub fn settle(
+        &mut self,
+        agent_failure: Option<&str>,
+        question: Option<(Kind, &str)>,
+        verifies: bool,
+    ) {
+        let (state, reason) = decide(agent_failure, question, &self.checks, verifies);
+        self.state = state;
+        self.reason = reason;
+    }
 }
 
 /// Every row the kernel writes about an attempt's own conduct, by name.
@@ -191,26 +244,17 @@ fn in_namespace(namespace: &[String], path: &str) -> bool {
 }
 
 /// What every step's L0 shares: git facts, the envelope, the rows that do
-/// not depend on the step. Returns the rows, the envelope, and a question.
-#[allow(clippy::too_many_arguments)]
-async fn common_l0(
-    worktree: &Path,
-    base_sha: &str,
-    start_sha: &str,
-    pending_main: Option<&str>,
-    cfg: &Config,
-    agent: &Outcome,
-    report: &Reporter,
-    task_id: i64,
-) -> Result<(
-    Vec<CheckResult>,
-    Option<Envelope>,
-    Option<(Kind, String)>,
-    i64,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-)> {
+/// not depend on the step, and the question if the agent stopped.
+pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
+    let (worktree, base_sha, start_sha, pending_main, cfg, report, task_id) = (
+        s.worktree,
+        s.base_sha,
+        s.start_sha,
+        s.pending_main,
+        s.cfg,
+        s.report,
+        s.task_id,
+    );
     // A branch that merged the moved base is measured from there.
     let merged_main = match pending_main {
         Some(m) if crate::git::is_ancestor(worktree, m, "HEAD").await => Some(m),
@@ -346,29 +390,36 @@ async fn common_l0(
             format!("claims without evidence: {}", bare.join("; ")),
         ));
     }
-    Ok((
+    Ok(Common {
         rows,
-        env,
+        envelope: env,
         question,
-        commits,
-        changed,
-        changed_this_attempt,
-        dirty,
-    ))
+        facts: GitFacts {
+            commits,
+            changed,
+            changed_now: changed_this_attempt,
+            dirty,
+        },
+    })
+}
+
+/// One check row, as an event.
+pub fn emit_check(report: &Reporter, task_id: i64, c: &CheckResult) {
+    report.emit(
+        task_id,
+        Event::Check {
+            level: &c.level,
+            name: &c.name,
+            ok: c.ok,
+            ms: c.ms,
+            tail: &last_lines(&c.tail, 20),
+        },
+    );
 }
 
 fn emit_rows(report: &Reporter, task_id: i64, rows: &[CheckResult]) {
     for c in rows {
-        report.emit(
-            task_id,
-            Event::Check {
-                level: &c.level,
-                name: &c.name,
-                ok: c.ok,
-                ms: c.ms,
-                tail: &last_lines(&c.tail, 20),
-            },
-        );
+        emit_check(report, task_id, c);
     }
 }
 
@@ -416,56 +467,6 @@ fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
         std::fs::remove_dir(dir)?;
     }
     Ok(())
-}
-
-/// The code step's verdict.
-pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
-    let agent_reason = agent_failure(agent);
-    let mut v = Verdict {
-        commits: 0,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
-    };
-    let mut question: Option<(Kind, String)> = None;
-    let (rows, env, q, commits, changed, changed_now, dirty) = common_l0(
-        s.worktree,
-        s.base_sha,
-        s.start_sha,
-        s.pending_main,
-        s.cfg,
-        agent,
-        s.report,
-        s.task_id,
-    )
-    .await?;
-    v.commits = commits;
-    v.files_changed = changed.len() as i64;
-    v.dirty = !dirty.is_empty();
-    if agent_reason.is_none() {
-        v.checks = rows;
-        question = q;
-        v.checks
-            .extend(scope_rows(&s, &changed, &changed_now, &dirty));
-        emit_rows(s.report, s.task_id, &v.checks);
-        let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
-
-        if l0_ok {
-            l1_l2(&s, env.as_ref(), &mut v.checks).await?;
-        }
-        v.envelope = env;
-    }
-    let (state, reason) = decide(
-        agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (*k, q.as_str())),
-        &v.checks,
-    );
-    v.state = state;
-    v.reason = reason;
-    Ok(v)
 }
 
 /// L1 then L2 on the tree as it stands: the namespace overlaid from the
@@ -641,32 +642,27 @@ fn scope_rows(
 /// after a directive. The operation's commit is already on the branch;
 /// `start_sha` is the commit before it.
 pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
-    let mut v = Verdict {
-        commits: crate::git::count_commits(s.worktree, s.start_sha).await?,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
-    };
     let changed = crate::git::changed_paths(s.worktree, s.start_sha).await?;
     let dirty = crate::git::dirty_paths(s.worktree).await?;
-    v.files_changed = changed.len() as i64;
-    v.dirty = !dirty.is_empty();
+    let facts = GitFacts {
+        commits: crate::git::count_commits(s.worktree, s.start_sha).await?,
+        changed_now: changed.clone(),
+        changed,
+        dirty,
+    };
+    let (changed, dirty) = (&facts.changed, &facts.dirty);
+    let mut v = Verdict::open(&facts);
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
         format!("left uncommitted by the operation: {}", dirty.join(", ")),
     ));
-    v.checks.extend(scope_rows(&s, &changed, &changed, &dirty));
+    v.checks.extend(scope_rows(&s, changed, changed, dirty));
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(&s, None, &mut v.checks).await?;
     }
-    let (state, reason) = decide(None, None, &v.checks);
-    v.state = state;
-    v.reason = reason;
+    v.settle(None, None, true);
     Ok(v)
 }
 
@@ -674,17 +670,13 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
 /// with every hidden suite overlaid. No agent, so no result contract; the
 /// tree must be clean and the checks green.
 pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
-    let mut v = Verdict {
+    let facts = GitFacts {
         commits: crate::git::count_commits(s.worktree, s.base_sha).await?,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
+        dirty: crate::git::dirty_paths(s.worktree).await?,
+        ..Default::default()
     };
-    let dirty = crate::git::dirty_paths(s.worktree).await?;
-    v.dirty = !dirty.is_empty();
+    let dirty = &facts.dirty;
+    let mut v = Verdict::open(&facts);
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
@@ -694,230 +686,111 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(s, None, &mut v.checks).await?;
     }
-    let (state, reason) = decide(None, None, &v.checks);
-    v.state = state;
-    v.reason = reason;
+    v.settle(None, None, true);
     Ok(v)
 }
 
-pub struct TestsSubject<'a> {
-    pub task_id: i64,
-    /// The tests step's own clone.
-    pub worktree: &'a Path,
-    /// Scratch directory for the red-on-base run; created and removed here.
-    pub scratch: &'a Path,
-    pub base_sha: &'a str,
-    pub start_sha: &'a str,
-    pub cfg: &'a Config,
-    pub sandbox: Option<&'a Sandbox>,
-    pub report: &'a Reporter,
-}
-
-/// The tests step's verdict: L0, only the namespace changed, and the new
-/// tests fail against the base commit (so they specify the task rather than
-/// the status quo). Runs the repo's `setup` and `test` checks in a scratch
-/// copy of base with the tests overlaid.
-pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdict> {
+/// A directive's verdict: the shared L0, the contract's own rows, then
+/// the checks the contract runs, then the decision. One path for every
+/// contract; what differs is under the match.
+///
+/// - code: the write scope rows, then L1 and L2 with the hidden suites
+///   overlaid.
+/// - tests: only the namespace changed, the interface is described, and
+///   the new tests fail on the base (red-on-base) in a scratch copy.
+/// - review: no writes, and a demotion stands only with something run.
+/// - plan: untouched, and a plan that is substantive and names real paths.
+pub async fn verify_directive(
+    contract: Contract,
+    s: &Subject<'_>,
+    agent: &Outcome,
+) -> Result<Verdict> {
     let agent_reason = agent_failure(agent);
-    let mut v = Verdict {
-        commits: 0,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
-    };
+    let common = common_l0(s, agent).await?;
+    let mut v = Verdict::open(&common.facts);
     let mut question: Option<(Kind, String)> = None;
-    let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
-        s.worktree,
-        s.base_sha,
-        s.start_sha,
-        None,
-        s.cfg,
-        agent,
-        s.report,
-        s.task_id,
-    )
-    .await?;
-    v.commits = commits;
-    v.files_changed = changed.len() as i64;
-    v.dirty = !dirty.is_empty();
     if agent_reason.is_none() {
-        v.checks = rows;
-        question = q;
-        let outside: Vec<&str> = changed
-            .iter()
-            .chain(dirty.iter())
-            .map(String::as_str)
-            .filter(|p| !in_namespace(&s.cfg.namespace, p))
-            .collect();
-        v.checks.push(l0(
-            Rule::NamespaceOnly,
-            outside.is_empty(),
-            format!(
-                "the tests step may only change {}; it changed: {}",
-                s.cfg.namespace.join(", "),
-                outside.join(", ")
-            ),
-        ));
-        let has_summary = env.as_ref().is_some_and(|e| e.summary.trim().len() >= 40);
-        v.checks.push(l0(
-            Rule::InterfaceDescribed,
-            has_summary,
-            "the summary must describe the interface the tests expect; it is all the implementer will see".into(),
-        ));
-        emit_rows(s.report, s.task_id, &v.checks);
-        let l0_ok = v.checks.iter().all(|c| c.ok) && question.is_none();
-
-        if l0_ok {
-            // Red on base: base tree plus the new tests, `setup` then `test`.
-            let _ = std::fs::remove_dir_all(s.scratch);
-            crate::git::archive_all(s.worktree, s.base_sha, s.scratch).await?;
-            let files = crate::git::ls_tree(s.worktree, "HEAD", &s.cfg.namespace).await?;
-            crate::git::archive_into(s.worktree, "HEAD", &files, s.scratch).await?;
-            let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
-            let mut setup_ok = true;
-            if let Some(argv) = s.cfg.checks.get("setup") {
-                let r = run_one("L1", "setup", argv, s.scratch, s.sandbox, timeout, &[]).await;
-                s.report.emit(
-                    s.task_id,
-                    Event::Check {
-                        level: &r.level,
-                        name: &r.name,
-                        ok: r.ok,
-                        ms: r.ms,
-                        tail: &last_lines(&r.tail, 20),
-                    },
-                );
-                setup_ok = r.ok;
-                v.checks.push(r);
-            }
-            if setup_ok {
-                let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
-                let mut r = run_one(
-                    Rule::RedOnBase.level(),
-                    Rule::RedOnBase.name(),
-                    &argv,
-                    s.scratch,
-                    s.sandbox,
-                    timeout,
-                    &[],
-                )
-                .await;
-                // The row passes when the tests FAIL on base.
-                let failed_on_base = !r.ok && !r.timed_out;
-                r.ok = failed_on_base;
-                if !failed_on_base {
-                    r.tail = format!(
-                        "the new tests {} on the base commit, so they do not specify the task\n{}",
-                        if r.timed_out { "timed out" } else { "pass" },
-                        r.tail
-                    );
-                }
-                s.report.emit(
-                    s.task_id,
-                    Event::Check {
-                        level: &r.level,
-                        name: &r.name,
-                        ok: r.ok,
-                        ms: r.ms,
-                        tail: &last_lines(&r.tail, 20),
-                    },
-                );
-                v.checks.push(r);
-            }
-            let _ = std::fs::remove_dir_all(s.scratch);
-        }
-        v.envelope = env;
-    }
-    let (state, reason) = decide(
-        agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (*k, q.as_str())),
-        &v.checks,
-    );
-    v.state = state;
-    v.reason = reason;
-    Ok(v)
-}
-
-pub struct ReviewSubject<'a> {
-    pub cfg: &'a Config,
-    pub task_id: i64,
-    pub worktree: &'a Path,
-    pub base_sha: &'a str,
-    pub start_sha: &'a str,
-    pub report: &'a Reporter,
-}
-
-/// The review contract's verdict. The reviewer may not change the branch
-/// (no writes since it started, clean tree). It may demote the task to
-/// human review only with something it executed: a demotion from a
-/// session that ran no tool at all is recorded as a note and does not
-/// stand.
-pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdict> {
-    let agent_reason = agent_failure(agent);
-    let mut v = Verdict {
-        commits: 0,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
-    };
-    let mut question: Option<(Kind, String)> = None;
-    let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
-        s.worktree,
-        s.base_sha,
-        s.start_sha,
-        None,
-        s.cfg,
-        agent,
-        s.report,
-        s.task_id,
-    )
-    .await?;
-    v.commits = commits;
-    v.files_changed = changed.len() as i64;
-    v.dirty = !dirty.is_empty();
-    if agent_reason.is_none() {
-        v.checks = rows
+        let facts = &common.facts;
+        v.checks = common
+            .rows
             .into_iter()
-            .filter(|r| {
-                !matches!(
-                    Rule::parse(&r.name),
-                    Some(Rule::HasCommits | Rule::ChangesMatchGit)
-                )
+            .filter(|r| match Rule::parse(&r.name) {
+                Some(rule) => contract_keeps(contract, rule),
+                None => true,
             })
             .collect();
-        let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
-        v.checks.push(l0(
-            Rule::NoWrites,
-            added.is_empty() && dirty.is_empty(),
-            format!(
-                "the reviewer changed the branch: {}",
-                added
+        question = common.question;
+        match contract {
+            Contract::Code => {
+                v.checks.extend(scope_rows(
+                    s,
+                    &facts.changed,
+                    &facts.changed_now,
+                    &facts.dirty,
+                ));
+                emit_rows(s.report, s.task_id, &v.checks);
+                if v.checks.iter().all(|c| c.ok) && question.is_none() {
+                    l1_l2(s, common.envelope.as_ref(), &mut v.checks).await?;
+                }
+            }
+            Contract::Tests => {
+                let outside: Vec<&str> = facts
+                    .changed
                     .iter()
-                    .chain(dirty.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
-        v.checks.push(CheckResult {
-            level: Rule::ExecutedSomething.level().into(),
-            name: Rule::ExecutedSomething.name().into(),
-            ok: agent.tool_calls > 0,
-            tail: if agent.tool_calls > 0 { String::new() } else { "the reviewer ran no tool; a review that reads without running is an opinion, so any demotion is ignored".into() },
-            ..Default::default()
-        });
-        emit_rows(s.report, s.task_id, &v.checks);
-        match q {
-            Some((Kind::Review, text)) => {
-                if agent.tool_calls > 0 {
-                    question = Some((Kind::Review, text));
-                } else {
+                    .chain(facts.dirty.iter())
+                    .map(String::as_str)
+                    .filter(|p| !in_namespace(&s.cfg.namespace, p))
+                    .collect();
+                v.checks.push(l0(
+                    Rule::NamespaceOnly,
+                    outside.is_empty(),
+                    format!(
+                        "the tests step may only change {}; it changed: {}",
+                        s.cfg.namespace.join(", "),
+                        outside.join(", ")
+                    ),
+                ));
+                let has_summary = common
+                    .envelope
+                    .as_ref()
+                    .is_some_and(|e| e.summary.trim().len() >= 40);
+                v.checks.push(l0(
+                    Rule::InterfaceDescribed,
+                    has_summary,
+                    "the summary must describe the interface the tests expect; it is all the implementer will see".into(),
+                ));
+                emit_rows(s.report, s.task_id, &v.checks);
+                if v.checks.iter().all(|c| c.ok) && question.is_none() {
+                    red_on_base(s, &mut v.checks).await?;
+                }
+            }
+            Contract::Review => {
+                let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
+                v.checks.push(l0(
+                    Rule::NoWrites,
+                    added.is_empty() && facts.dirty.is_empty(),
+                    format!(
+                        "the reviewer changed the branch: {}",
+                        added
+                            .iter()
+                            .chain(facts.dirty.iter())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+                v.checks.push(CheckResult {
+                    level: Rule::ExecutedSomething.level().into(),
+                    name: Rule::ExecutedSomething.name().into(),
+                    ok: agent.tool_calls > 0,
+                    tail: if agent.tool_calls > 0 { String::new() } else { "the reviewer ran no tool; a review that reads without running is an opinion, so any demotion is ignored".into() },
+                    ..Default::default()
+                });
+                emit_rows(s.report, s.task_id, &v.checks);
+                // A demotion stands only with something executed.
+                if let Some((Kind::Review, text)) = &question
+                    && agent.tool_calls == 0
+                {
                     s.report.emit(
                         s.task_id,
                         Event::Note {
@@ -926,26 +799,129 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
                             ),
                         },
                     );
+                    question = None;
                 }
             }
-            other => question = other,
+            Contract::Plan => {
+                let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
+                v.checks.push(l0(
+                    Rule::Untouched,
+                    added.is_empty() && facts.dirty.is_empty(),
+                    format!(
+                        "the investigator changed the branch: {}",
+                        added
+                            .iter()
+                            .chain(facts.dirty.iter())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+                if question.is_none() {
+                    v.checks.extend(plan_rows(s, common.envelope.as_ref()));
+                }
+                emit_rows(s.report, s.task_id, &v.checks);
+            }
         }
-        v.envelope = env;
+        v.envelope = common.envelope;
     }
-    let (mut state, mut reason) = decide(
+    v.settle(
         agent_reason.as_deref(),
         question.as_ref().map(|(k, q)| (*k, q.as_str())),
-        &v.checks,
+        contract.verifies_work(),
     );
-    // A review runs no checks of its own: the branch was verified before it
-    // started. Nothing to object to means the review passed.
-    if state == AttemptState::Unverified {
-        state = AttemptState::Succeeded;
-        reason = String::new();
-    }
-    v.state = state;
-    v.reason = reason;
     Ok(v)
+}
+
+/// Which of the shared L0 rows a contract is held to. A read-only
+/// contract commits nothing and reports no changes, so those two rows
+/// do not apply; a plan is judged on its result and its restraint alone.
+fn contract_keeps(contract: Contract, rule: Rule) -> bool {
+    match contract {
+        Contract::Code | Contract::Tests => true,
+        Contract::Review => !matches!(rule, Rule::HasCommits | Rule::ChangesMatchGit),
+        Contract::Plan => matches!(rule, Rule::ResultStructured | Rule::CleanTree),
+    }
+}
+
+/// The plan's own rows: substantive, and naming only paths that exist or
+/// new files in directories that do. Plans create files; they do not
+/// invent directories.
+fn plan_rows(s: &Subject<'_>, envelope: Option<&Envelope>) -> Vec<CheckResult> {
+    let plan = envelope
+        .map(|e| e.summary.trim().to_string())
+        .unwrap_or_default();
+    let missing: Vec<String> = plan_paths(&plan, &|d| s.worktree.join(d).is_dir())
+        .into_iter()
+        .filter(|p| {
+            let path = s.worktree.join(p);
+            !path.exists() && !path.parent().is_some_and(|d| d.is_dir())
+        })
+        .collect();
+    vec![
+        l0(
+            Rule::PlanSubstantive,
+            plan.chars().count() >= 120,
+            format!(
+                "a plan of {} characters is not a plan; name the files, the changes, and the test",
+                plan.chars().count()
+            ),
+        ),
+        l0(
+            Rule::PlanNamesRealPaths,
+            missing.is_empty(),
+            format!(
+                "the plan names paths that do not exist in the tree, in directories that do not exist either: {}",
+                missing.join(", ")
+            ),
+        ),
+    ]
+}
+
+/// Red on base: the base tree plus the new tests, `setup` then `test`,
+/// in the scratch directory. The row passes when the tests FAIL on base.
+async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<()> {
+    let scratch = s
+        .scratch
+        .ok_or_else(|| anyhow::anyhow!("the tests contract needs a scratch directory"))?;
+    let _ = std::fs::remove_dir_all(scratch);
+    crate::git::archive_all(s.worktree, s.base_sha, scratch).await?;
+    let files = crate::git::ls_tree(s.worktree, "HEAD", &s.cfg.namespace).await?;
+    crate::git::archive_into(s.worktree, "HEAD", &files, scratch).await?;
+    let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let mut setup_ok = true;
+    if let Some(argv) = s.cfg.checks.get("setup") {
+        let r = run_one("L1", "setup", argv, scratch, s.sandbox, timeout, &[]).await;
+        emit_check(s.report, s.task_id, &r);
+        setup_ok = r.ok;
+        checks.push(r);
+    }
+    if setup_ok {
+        let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
+        let mut r = run_one(
+            Rule::RedOnBase.level(),
+            Rule::RedOnBase.name(),
+            &argv,
+            scratch,
+            s.sandbox,
+            timeout,
+            &[],
+        )
+        .await;
+        let failed_on_base = !r.ok && !r.timed_out;
+        r.ok = failed_on_base;
+        if !failed_on_base {
+            r.tail = format!(
+                "the new tests {} on the base commit, so they do not specify the task\n{}",
+                if r.timed_out { "timed out" } else { "pass" },
+                r.tail
+            );
+        }
+        emit_check(s.report, s.task_id, &r);
+        checks.push(r);
+    }
+    let _ = std::fs::remove_dir_all(scratch);
+    Ok(())
 }
 
 /// Path-like tokens in a plan: anything with a source extension, or a
@@ -993,106 +969,6 @@ pub fn plan_paths(text: &str, is_dir: &dyn Fn(&str) -> bool) -> Vec<String> {
     out
 }
 
-/// The plan contract's verdict. The investigator may not change the
-/// branch and must return either a substantive plan naming only paths
-/// that exist, or a question. No L1: nothing was built.
-pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdict> {
-    let agent_reason = agent_failure(agent);
-    let mut v = Verdict {
-        commits: 0,
-        files_changed: 0,
-        dirty: false,
-        envelope: None,
-        checks: Vec::new(),
-        state: AttemptState::Running,
-        reason: String::new(),
-    };
-    let (rows, env, question, commits, changed, _changed_now, dirty) = common_l0(
-        s.worktree,
-        s.base_sha,
-        s.start_sha,
-        None,
-        s.cfg,
-        agent,
-        s.report,
-        s.task_id,
-    )
-    .await?;
-    v.commits = commits;
-    v.files_changed = changed.len() as i64;
-    v.dirty = !dirty.is_empty();
-    if agent_reason.is_none() {
-        v.checks = rows
-            .into_iter()
-            .filter(|r| {
-                matches!(
-                    Rule::parse(&r.name),
-                    Some(Rule::ResultStructured | Rule::CleanTree)
-                )
-            })
-            .collect();
-        let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
-        v.checks.push(l0(
-            Rule::Untouched,
-            added.is_empty() && dirty.is_empty(),
-            format!(
-                "the investigator changed the branch: {}",
-                added
-                    .iter()
-                    .chain(dirty.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
-        if question.is_none() {
-            let plan = env
-                .as_ref()
-                .map(|e| e.summary.trim().to_string())
-                .unwrap_or_default();
-            v.checks.push(l0(
-                Rule::PlanSubstantive,
-                plan.chars().count() >= 120,
-                format!("a plan of {} characters is not a plan; name the files, the changes, and the test", plan.chars().count()),
-            ));
-            // A path the plan names must exist, or be a new file in a
-            // directory that does: plans create files, they do not
-            // invent directories.
-            let missing: Vec<String> = plan_paths(&plan, &|d| s.worktree.join(d).is_dir())
-                .into_iter()
-                .filter(|p| {
-                    let path = s.worktree.join(p);
-                    !path.exists() && !path.parent().is_some_and(|d| d.is_dir())
-                })
-                .collect();
-            v.checks.push(l0(
-                Rule::PlanNamesRealPaths,
-                missing.is_empty(),
-                format!(
-                    "the plan names paths that do not exist in the tree, in directories that do not exist either: {}",
-                    missing.join(", ")
-                ),
-            ));
-        }
-        emit_rows(s.report, s.task_id, &v.checks);
-        v.envelope = env;
-    }
-    let (mut state, mut reason) = decide(
-        agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (*k, q.as_str())),
-        &v.checks,
-    );
-    // A plan runs no checks of its own: nothing was built. Its L0 rows are
-    // the whole verdict.
-    if state == AttemptState::Unverified {
-        state = AttemptState::Succeeded;
-        reason = String::new();
-    }
-    v.state = state;
-    v.reason = reason;
-    Ok(v)
-}
-
 /// Why the agent run itself counts as failed, if it does.
 pub fn agent_failure(a: &Outcome) -> Option<String> {
     if a.rate_limited {
@@ -1116,11 +992,14 @@ pub fn agent_failure(a: &Outcome) -> Option<String> {
 }
 
 /// The verdict table. Pure: the same rows always give the same answer.
-/// `question` is (kind, text).
+/// `question` is (kind, text). `verifies` is whether the contract runs
+/// checks of its own: one that does not (review, plan) is judged by its
+/// rows alone, so nothing to object to is a pass rather than unverified.
 pub fn decide(
     agent_failure: Option<&str>,
     question: Option<(Kind, &str)>,
     checks: &[CheckResult],
+    verifies: bool,
 ) -> (AttemptState, String) {
     if let Some(why) = agent_failure {
         return (AttemptState::AgentFailed, why.to_string());
@@ -1142,7 +1021,7 @@ pub fn decide(
         }
     }
     let verified = checks.iter().any(|c| c.level == "L1" || c.level == "L2");
-    if !verified {
+    if verifies && !verified {
         return (
             AttemptState::Unverified,
             "no L1 or L2 checks; nothing verified the work".into(),
@@ -1311,7 +1190,7 @@ mod tests {
             ),
         ];
         for (agent, q, checks, want, reason) in cases {
-            let (got, why) = decide(agent, q, &checks);
+            let (got, why) = decide(agent, q, &checks, true);
             assert_eq!(got, want, "agent={agent:?} q={q:?} checks={checks:?}");
             assert!(
                 why.contains(reason),
@@ -1370,6 +1249,21 @@ mod tests {
         assert!(in_namespace(&ns, "tests/acceptance/a.sh"));
         assert!(!in_namespace(&ns, "tests/acceptance.sh"));
         assert!(!in_namespace(&ns, "src/a.ts"));
+    }
+
+    #[test]
+    fn a_contract_that_runs_no_checks_passes_on_its_rows_alone() {
+        let rows = vec![c("L0", "clean-tree", true), c("L0", "no-writes", true)];
+        assert_eq!(
+            decide(None, None, &rows, false),
+            (AttemptState::Succeeded, String::new())
+        );
+        assert_eq!(decide(None, None, &rows, true).0, AttemptState::Unverified);
+        let bad = vec![c("L0", "untouched", false)];
+        assert_eq!(
+            decide(None, None, &bad, false).0,
+            AttemptState::ChecksFailed
+        );
     }
 
     #[test]

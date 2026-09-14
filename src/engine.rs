@@ -15,7 +15,7 @@ use crate::operation::run_operation;
 use crate::prompts::{code_prompt, early_feedback, plan_prompt, review_prompt, tests_prompt};
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, FinishAttempt, Op, Task, TaskState};
-use crate::verify::{self, Subject, TestsSubject, Verdict};
+use crate::verify::{self, Subject, Verdict};
 use crate::workflows::{self, Contract, Kind, ResolvedStep};
 use crate::{agent, config, git, unix_now};
 use anyhow::Context;
@@ -27,6 +27,14 @@ use std::time::{Duration, Instant};
 pub enum Fault {
     Task(anyhow::Error),
     Env(anyhow::Error),
+}
+
+impl From<Fault> for anyhow::Error {
+    fn from(f: Fault) -> Self {
+        match f {
+            Fault::Task(e) | Fault::Env(e) => e,
+        }
+    }
 }
 
 pub trait Classify<T> {
@@ -771,6 +779,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 pending_main: None,
                                 sandbox: f.sandbox.as_ref(),
                                 report: &f.report,
+                                scratch: None,
                             })
                             .await
                             .task()?;
@@ -1295,8 +1304,9 @@ async fn run_code_attempt(
     let pending_main = git::rev_parse(wt, &format!("refs/heads/forge/{}", t.base_branch))
         .await
         .ok();
-    let verdict = verify::verify(
-        Subject {
+    let verdict = verify::verify_directive(
+        Contract::Code,
+        &Subject {
             task_id: t.id,
             repo,
             worktree: wt,
@@ -1310,6 +1320,7 @@ async fn run_code_attempt(
             pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: None,
         },
         &outcome,
     )
@@ -1389,16 +1400,23 @@ async fn run_tests_attempt(
     )
     .await?;
     let scratch = scratch_dir(&t.worktree);
-    let verdict = verify::verify_tests(
-        TestsSubject {
+    let verdict = verify::verify_directive(
+        Contract::Tests,
+        &Subject {
             task_id: t.id,
+            repo: Path::new(&t.repo),
             worktree: &dir,
-            scratch: &scratch,
             base_sha: &t.base_sha,
             start_sha: &a.start_sha,
             cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: Some(&scratch),
         },
         &outcome,
     )
@@ -1501,14 +1519,23 @@ async fn run_plan_attempt(
         step.action.contract.writes(),
     )
     .await?;
-    let verdict = verify::verify_plan(
-        verify::ReviewSubject {
-            cfg,
+    let verdict = verify::verify_directive(
+        Contract::Plan,
+        &Subject {
             task_id: t.id,
+            repo: Path::new(&t.repo),
             worktree: wt,
             base_sha: &t.base_sha,
             start_sha: &a.start_sha,
+            cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: None,
         },
         &outcome,
     )
@@ -1550,14 +1577,23 @@ async fn run_review_attempt(
         step.action.contract.writes(),
     )
     .await?;
-    let verdict = verify::verify_review(
-        verify::ReviewSubject {
-            cfg,
+    let verdict = verify::verify_directive(
+        Contract::Review,
+        &Subject {
             task_id: t.id,
+            repo: Path::new(&t.repo),
             worktree: wt,
             base_sha: &t.base_sha,
             start_sha: &a.start_sha,
+            cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: None,
         },
         &outcome,
     )

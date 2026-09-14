@@ -318,6 +318,7 @@ pub(crate) async fn run_operation(
             pending_main: pending_main.as_deref(),
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
+            scratch: None,
         })
         .await
         .task()?;
