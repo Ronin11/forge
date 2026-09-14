@@ -1068,51 +1068,9 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
 fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     if json {
-        let workflows: Vec<serde_json::Value> = f
-            .store
-            .workflow_stats()?
-            .into_iter()
-            .map(|w| {
-                serde_json::json!({
-                    "WF": w.workflow,
-                    "HASH": w.hash,
-                    "TASKS": w.tasks,
-                    "OK": w.succeeded,
-                    "FAIL": w.failed,
-                    "BLK": w.blocked,
-                    "UNV": w.unverified,
-                    "ATT": w.attempts,
-                    "COST": w.cost,
-                    "$/OK": if w.succeeded > 0 { Some(w.cost / w.succeeded as f64) } else { None },
-                    "LANDED": w.landed,
-                    "$/LANDED": if w.landed > 0 { Some(w.cost / w.landed as f64) } else { None },
-                })
-            })
-            .collect();
-        let steps: Vec<serde_json::Value> = f
-            .store
-            .step_stats()?
-            .into_iter()
-            .map(|st| {
-                serde_json::json!({
-                    "WF": st.workflow,
-                    "STEP": st.step,
-                    "ATT": st.attempts,
-                    "OK": st.succeeded,
-                    "AGENTF": st.agent_failed,
-                    "CHECKF": st.checks_failed,
-                    "ASK": st.needs_input,
-                    "TURNS": st.mean_turns,
-                    "EDIT@": st.mean_first_edit,
-                    "SECS": st.mean_ms / 1000.0,
-                    "COST": st.cost,
-                    "TOKENS": st.mean_input_tokens,
-                })
-            })
-            .collect();
-        let mut doc = serde_json::json!({"workflows": workflows, "steps": steps});
+        let mut doc = crate::view::stats_doc(&f)?;
         if tools {
-            doc["tools"] = tools_json(&f, step.as_deref())?;
+            doc.tools = Some(tools_json(&f, step.as_deref())?);
         }
         out!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
@@ -1120,6 +1078,7 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     if tools {
         return tool_stats(&f, step.as_deref());
     }
+    let doc = crate::view::stats_doc(&f)?;
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
         "WF",
@@ -1135,28 +1094,26 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
         "LANDED",
         "$/LANDED"
     );
-    for w in f.store.workflow_stats()? {
+    for w in &doc.workflows {
         out!(
             "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
             w.workflow,
             w.hash,
-            w.tasks,
+            w.pieces,
             w.succeeded,
             w.failed,
             w.blocked,
             w.unverified,
             w.attempts,
-            format!("${:.2}", w.cost),
-            if w.succeeded > 0 {
-                format!("${:.2}", w.cost / w.succeeded as f64)
-            } else {
-                "-".into()
+            format!("${:.2}", w.mean_cost_usd),
+            match w.cost_per_success_usd {
+                Some(c) => format!("${c:.2}"),
+                None => "-".into(),
             },
             w.landed,
-            if w.landed > 0 {
-                format!("${:.2}", w.cost / w.landed as f64)
-            } else {
-                "-".into()
+            match w.cost_per_landed_usd {
+                Some(c) => format!("${c:.2}"),
+                None => "-".into(),
             }
         );
     }
@@ -1176,7 +1133,7 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
         "COST",
         "TOKENS"
     );
-    for st in f.store.step_stats()? {
+    for st in &doc.steps {
         out!(
             "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9} {:>9}",
             st.workflow,
@@ -1189,8 +1146,8 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
             st.mean_turns,
             st.mean_first_edit
                 .map_or("-".to_string(), |v| format!("{v:.1}")),
-            st.mean_ms / 1000.0,
-            format!("${:.2}", st.cost),
+            st.mean_secs,
+            format!("${:.2}", st.cost_usd),
             st.mean_input_tokens
                 .map_or("-".to_string(), |v| format!("{v:.0}"))
         );

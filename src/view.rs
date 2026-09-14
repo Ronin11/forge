@@ -4,7 +4,7 @@
 //! cannot drift apart.
 
 use crate::ctx::Forge;
-use crate::store::{Decision, Task, TaskState, TaskSummary};
+use crate::store::{Decision, StepStat, Task, TaskState, TaskSummary, WorkflowStat};
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -423,4 +423,243 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         resolved,
         diagnosis,
     })
+}
+
+/// One row of `StatsDoc.workflows`: outcomes for one workflow (name +
+/// definition hash), as both `forge stats` and `forge stats --json` show
+/// it. `legacy` carries the header-named keys (`WF`, `HASH`, `TASKS`,
+/// `OK`, `FAIL`, `BLK`, `UNV`, `ATT`, `COST`, `$/OK`, `LANDED`,
+/// `$/LANDED`) the JSON form emitted before the named fields below
+/// existed; it is flattened onto this row so both sets of keys are
+/// present on `--json` output. Deprecated: kept for one release only,
+/// read the named fields instead.
+#[derive(Serialize)]
+pub struct StatsWorkflowRow {
+    /// Workflow name.
+    pub workflow: String,
+    /// Hash of the workflow definition this row's tasks ran with.
+    pub hash: String,
+    /// Number of tasks run under this workflow + hash.
+    pub pieces: i64,
+    /// Tasks that finished in state `succeeded`.
+    pub succeeded: i64,
+    /// Tasks that finished in state `failed`.
+    pub failed: i64,
+    /// Tasks that finished in state `blocked`.
+    pub blocked: i64,
+    /// Tasks that finished in state `unverified`.
+    pub unverified: i64,
+    /// Attempts run across all of this workflow's tasks.
+    pub attempts: i64,
+    /// Cost, in USD, of every attempt across this workflow's tasks.
+    pub mean_cost_usd: f64,
+    /// `mean_cost_usd` divided by `succeeded`; `None` when nothing succeeded.
+    pub cost_per_success_usd: Option<f64>,
+    /// Tasks that landed on their base branch.
+    pub landed: i64,
+    /// `mean_cost_usd` divided by `landed`; `None` when nothing landed.
+    pub cost_per_landed_usd: Option<f64>,
+    #[serde(flatten)]
+    pub legacy: serde_json::Map<String, Value>,
+}
+
+impl From<&WorkflowStat> for StatsWorkflowRow {
+    fn from(w: &WorkflowStat) -> Self {
+        let cost_per_success_usd = (w.succeeded > 0).then(|| w.cost / w.succeeded as f64);
+        let cost_per_landed_usd = (w.landed > 0).then(|| w.cost / w.landed as f64);
+        let mut legacy = serde_json::Map::new();
+        legacy.insert("WF".into(), Value::from(w.workflow.clone()));
+        legacy.insert("HASH".into(), Value::from(w.hash.clone()));
+        legacy.insert("TASKS".into(), Value::from(w.tasks));
+        legacy.insert("OK".into(), Value::from(w.succeeded));
+        legacy.insert("FAIL".into(), Value::from(w.failed));
+        legacy.insert("BLK".into(), Value::from(w.blocked));
+        legacy.insert("UNV".into(), Value::from(w.unverified));
+        legacy.insert("ATT".into(), Value::from(w.attempts));
+        legacy.insert("COST".into(), Value::from(w.cost));
+        legacy.insert("$/OK".into(), serde_json::json!(cost_per_success_usd));
+        legacy.insert("LANDED".into(), Value::from(w.landed));
+        legacy.insert("$/LANDED".into(), serde_json::json!(cost_per_landed_usd));
+        StatsWorkflowRow {
+            workflow: w.workflow.clone(),
+            hash: w.hash.clone(),
+            pieces: w.tasks,
+            succeeded: w.succeeded,
+            failed: w.failed,
+            blocked: w.blocked,
+            unverified: w.unverified,
+            attempts: w.attempts,
+            mean_cost_usd: w.cost,
+            cost_per_success_usd,
+            landed: w.landed,
+            cost_per_landed_usd,
+            legacy,
+        }
+    }
+}
+
+/// One row of `StatsDoc.steps`: outcomes for one workflow step, as both
+/// `forge stats` and `forge stats --json` show it. `legacy` carries the
+/// header-named keys (`WF`, `STEP`, `ATT`, `OK`, `AGENTF`, `CHECKF`,
+/// `ASK`, `TURNS`, `EDIT@`, `SECS`, `COST`, `TOKENS`) the JSON form
+/// emitted before the named fields below existed; it is flattened onto
+/// this row so both sets of keys are present on `--json` output.
+/// Deprecated: kept for one release only, read the named fields instead.
+#[derive(Serialize)]
+pub struct StatsStepRow {
+    /// Workflow name.
+    pub workflow: String,
+    /// Step name within the workflow.
+    pub step: String,
+    /// Attempts run at this step.
+    pub attempts: i64,
+    /// Attempts that finished in state `succeeded`.
+    pub succeeded: i64,
+    /// Attempts that finished in state `agent_failed`.
+    pub agent_failed: i64,
+    /// Attempts that finished in state `checks_failed`.
+    pub checks_failed: i64,
+    /// Attempts that finished in state `needs_input`.
+    pub needs_input: i64,
+    /// Mean number of agent turns per attempt.
+    pub mean_turns: f64,
+    /// Mean tool calls before the first edit, over attempts that edited;
+    /// `None` when none did.
+    pub mean_first_edit: Option<f64>,
+    /// Mean wall-clock seconds per attempt.
+    pub mean_secs: f64,
+    /// Cost, in USD, of every attempt at this step.
+    pub cost_usd: f64,
+    /// Mean input tokens, over attempts that reported usage; `None` when
+    /// none did.
+    pub mean_input_tokens: Option<f64>,
+    #[serde(flatten)]
+    pub legacy: serde_json::Map<String, Value>,
+}
+
+impl From<&StepStat> for StatsStepRow {
+    fn from(st: &StepStat) -> Self {
+        let mean_secs = st.mean_ms / 1000.0;
+        let mut legacy = serde_json::Map::new();
+        legacy.insert("WF".into(), Value::from(st.workflow.clone()));
+        legacy.insert("STEP".into(), Value::from(st.step.clone()));
+        legacy.insert("ATT".into(), Value::from(st.attempts));
+        legacy.insert("OK".into(), Value::from(st.succeeded));
+        legacy.insert("AGENTF".into(), Value::from(st.agent_failed));
+        legacy.insert("CHECKF".into(), Value::from(st.checks_failed));
+        legacy.insert("ASK".into(), Value::from(st.needs_input));
+        legacy.insert("TURNS".into(), Value::from(st.mean_turns));
+        legacy.insert("EDIT@".into(), serde_json::json!(st.mean_first_edit));
+        legacy.insert("SECS".into(), Value::from(mean_secs));
+        legacy.insert("COST".into(), Value::from(st.cost));
+        legacy.insert("TOKENS".into(), serde_json::json!(st.mean_input_tokens));
+        StatsStepRow {
+            workflow: st.workflow.clone(),
+            step: st.step.clone(),
+            attempts: st.attempts,
+            succeeded: st.succeeded,
+            agent_failed: st.agent_failed,
+            checks_failed: st.checks_failed,
+            needs_input: st.needs_input,
+            mean_turns: st.mean_turns,
+            mean_first_edit: st.mean_first_edit,
+            mean_secs,
+            cost_usd: st.cost,
+            mean_input_tokens: st.mean_input_tokens,
+            legacy,
+        }
+    }
+}
+
+/// Everything `forge stats` shows: outcomes per workflow, outcomes per
+/// step, and (with `--tools`) tool usage per step. `forge stats --json`
+/// serializes this directly; `forge stats` renders the same two tables as
+/// text from the same rows.
+#[derive(Serialize)]
+pub struct StatsDoc {
+    pub workflows: Vec<StatsWorkflowRow>,
+    pub steps: Vec<StatsStepRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Value>,
+}
+
+pub fn stats_doc(f: &Forge) -> Result<StatsDoc> {
+    Ok(StatsDoc {
+        workflows: f.store.workflow_stats()?.iter().map(Into::into).collect(),
+        steps: f.store.step_stats()?.iter().map(Into::into).collect(),
+        tools: None,
+    })
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+    use crate::store::{StepStat, WorkflowStat};
+
+    #[test]
+    fn workflow_row_carries_named_fields_and_the_deprecated_legacy_keys() {
+        let w = WorkflowStat {
+            workflow: "direct".into(),
+            hash: "abc123".into(),
+            tasks: 1,
+            succeeded: 1,
+            failed: 0,
+            blocked: 0,
+            unverified: 0,
+            cost: 2.0,
+            attempts: 1,
+            landed: 0,
+        };
+        let row = StatsWorkflowRow::from(&w);
+        let v = serde_json::to_value(&row).unwrap();
+        assert_eq!(v["workflow"], "direct");
+        assert_eq!(v["pieces"], 1);
+        assert_eq!(v["mean_cost_usd"], 2.0);
+        assert_eq!(v["cost_per_success_usd"], 2.0);
+        assert!(v["cost_per_landed_usd"].is_null());
+        // Deprecated header-named keys stay present, flattened alongside.
+        assert_eq!(v["WF"], "direct");
+        assert_eq!(v["TASKS"], 1);
+        assert_eq!(v["$/OK"], 2.0);
+        assert!(v["$/LANDED"].is_null());
+    }
+
+    #[test]
+    fn step_row_carries_named_fields_and_the_deprecated_legacy_keys() {
+        let st = StepStat {
+            workflow: "direct".into(),
+            step: "code".into(),
+            attempts: 1,
+            succeeded: 1,
+            agent_failed: 0,
+            checks_failed: 0,
+            needs_input: 0,
+            mean_turns: 3.0,
+            cost: 2.0,
+            mean_ms: 4000.0,
+            mean_first_edit: Some(1.5),
+            mean_input_tokens: None,
+        };
+        let row = StatsStepRow::from(&st);
+        let v = serde_json::to_value(&row).unwrap();
+        assert_eq!(v["step"], "code");
+        assert_eq!(v["mean_secs"], 4.0);
+        assert_eq!(v["mean_first_edit"], 1.5);
+        assert!(v["mean_input_tokens"].is_null());
+        assert_eq!(v["STEP"], "code");
+        assert_eq!(v["SECS"], 4.0);
+        assert_eq!(v["EDIT@"], 1.5);
+        assert!(v["TOKENS"].is_null());
+    }
+
+    #[test]
+    fn stats_doc_omits_tools_when_not_requested() {
+        let doc = StatsDoc {
+            workflows: vec![],
+            steps: vec![],
+            tools: None,
+        };
+        let v = serde_json::to_value(&doc).unwrap();
+        assert!(v.get("tools").is_none(), "{v}");
+    }
 }
