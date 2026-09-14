@@ -16,6 +16,7 @@ mod envelope;
 mod git;
 mod journal;
 mod profile;
+mod prompts;
 mod report;
 mod sandbox;
 mod store;
