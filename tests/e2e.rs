@@ -2635,6 +2635,48 @@ fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
 }
 
 #[test]
+fn events_roll_twice_and_dot_2_holds_the_oldest_generation() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+
+    let path = e.home.join("events.jsonl");
+    let path_1 = e.home.join("events.jsonl.1");
+    let path_2 = e.home.join("events.jsonl.2");
+    assert!(path.exists());
+    assert!(!path_1.exists());
+
+    let oversized = |marker: &str| {
+        format!(
+            "{{\"marker\":\"{marker}\"}}\n{}\n",
+            "x".repeat(50 * 1024 * 1024 + 1024)
+        )
+    };
+
+    // Past the roll size, events.jsonl becomes .1.
+    std::fs::write(&path, oversized("gen_a")).unwrap();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    assert!(
+        path_1.exists(),
+        "events.jsonl.1 should exist after the first roll"
+    );
+    assert!(!path_2.exists(), "no .2 yet: only one roll has happened");
+    assert!(std::fs::read_to_string(&path_1).unwrap().contains("gen_a"));
+
+    // Past the roll size again, the old .1 becomes .2 and the new events.jsonl becomes .1.
+    std::fs::write(&path, oversized("gen_b")).unwrap();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    assert!(
+        path_2.exists(),
+        "events.jsonl.2 should exist after two rolls"
+    );
+    assert!(
+        std::fs::read_to_string(&path_2).unwrap().contains("gen_a"),
+        "events.jsonl.2 should hold the oldest generation"
+    );
+    assert!(std::fs::read_to_string(&path_1).unwrap().contains("gen_b"));
+}
+
+#[test]
 fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_found() {
     let e = Env::new();
     // Attempt 1 is wrong; attempt 2 is told what 1 said and what failed.
