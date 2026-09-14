@@ -119,6 +119,8 @@ enum Cmd {
     Show { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
     Doctor,
+    /// Print the crate version and, if built from a git checkout, its commit
+    Version,
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {
         /// Machine-readable, for an agent choosing a workflow
@@ -208,6 +210,7 @@ pub async fn main() -> Result<()> {
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor => run_doctor(),
+        Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
         Cmd::Stats { tools } => stats(tools),
@@ -460,6 +463,16 @@ async fn add(args: TaskArgs) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
     out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    Ok(())
+}
+
+fn version() -> Result<()> {
+    let sha = env!("FORGE_GIT_SHA");
+    if sha.is_empty() {
+        out!("{}", env!("CARGO_PKG_VERSION"));
+    } else {
+        out!("{} ({})", env!("CARGO_PKG_VERSION"), sha);
+    }
     Ok(())
 }
 

@@ -3417,3 +3417,17 @@ fn an_operation_with_output_full_keeps_the_whole_thing_instead_of_the_tail() {
     assert_eq!(full_out.lines().next().unwrap(), "line 1");
     assert_eq!(full_out.lines().last().unwrap(), "line 100");
 }
+
+#[test]
+fn version_starts_with_the_crate_version() {
+    let o = Command::new(env!("CARGO_BIN_EXE_forge"))
+        .arg("version")
+        .output()
+        .expect("forge version");
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(
+        out.starts_with(env!("CARGO_PKG_VERSION")),
+        "expected output to start with the crate version: {out}"
+    );
+}
