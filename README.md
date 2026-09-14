@@ -200,6 +200,17 @@ or links the kernel (`tests/boundary.rs` enforces that). Run it with
 `forge` on PATH or `FORGE_BIN` set; `FORGE2_HOME` passes through.
 `forge-tui --dump` prints one frame without a terminal.
 
+`forge-web` (in `web/`) is the same seat in a browser: the queue, the open
+questions with what each agent tried, a task's trace with its attempts,
+diagnosis and journal, and the live event feed. It is the same kind of
+client: every route is a forge verb's JSON passed through (`snapshot`,
+`log`, `trace`, `journal`), and the feed is `events --follow` as
+server-sent events. Read-only for now. It binds `127.0.0.1:7788` unless
+told `--bind`, and every request needs the token it generates once into
+`FORGE2_HOME/web.token`: it prints the link at start, the first visit
+sets a cookie. There are no routes without the token, so a tailnet proxy
+in front of it exposes nothing by itself.
+
 Clients never poll. Every event the engine emits is appended as one JSON
 line to `events.jsonl` under `FORGE2_HOME`; `forge snapshot` returns the
 tasks, the requests, the worker, and the log's byte offset at that

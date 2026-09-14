@@ -6,9 +6,9 @@
 use std::path::Path;
 
 #[test]
-fn the_tui_depends_on_nothing_of_the_kernel() {
+fn the_clients_depend_on_nothing_of_the_kernel() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for member in ["tui", "repomap"] {
+    for member in ["tui", "repomap", "web"] {
         check_member(root, member);
     }
 }
@@ -19,10 +19,10 @@ fn check_member(root: &Path, member: &str) {
     for forbidden in ["forge =", "forge = {", "rusqlite", "tokio"] {
         assert!(
             !deps.contains(forbidden),
-            "tui/Cargo.toml must not depend on {forbidden}: it is a client of the CLI's JSON"
+            "{member}/Cargo.toml must not depend on {forbidden}: it is a client of the CLI's JSON"
         );
     }
-    for entry in std::fs::read_dir(root.join("tui/src")).unwrap() {
+    for entry in std::fs::read_dir(root.join(member).join("src")).unwrap() {
         let path = entry.unwrap().path();
         let src = std::fs::read_to_string(&path).unwrap();
         for forbidden in ["forge::", "rusqlite", "forge.db", "sqlite"] {
