@@ -972,38 +972,32 @@ fn collect_tool_stats(
     step: Option<&str>,
 ) -> Result<std::collections::BTreeMap<String, (usize, crate::tools::Tools)>> {
     use std::collections::BTreeMap;
-    let tasks = f.store.list_tasks(10_000, None, None)?;
     // step -> aggregated tools
     let mut per_step: BTreeMap<String, (usize, crate::tools::Tools)> = BTreeMap::new();
-    for t in tasks {
-        for a in f.store.attempts(t.id)? {
-            let Ok(o) = serde_json::from_str::<audit::Outputs>(&a.outputs_json) else {
-                continue;
-            };
-            let Some(tools) = o.tools else {
-                continue;
-            };
-            let e = per_step
-                .entry(a.step.clone())
-                .or_insert((0, crate::tools::Tools::default()));
-            e.0 += 1;
-            for (k, u) in tools.by_tool {
-                let x = e.1.by_tool.entry(k).or_default();
-                x.calls += u.calls;
-                x.ms += u.ms;
-            }
-            for (k, u) in tools.shell {
-                let x = e.1.shell.entry(k).or_default();
-                x.calls += u.calls;
-                x.ms += u.ms;
-            }
-            for (k, n) in tools.reads {
-                *e.1.reads.entry(k).or_default() += n;
-            }
+    for (_task_id, step, outputs_json) in f.store.attempt_tool_facts(step)? {
+        let Ok(o) = serde_json::from_str::<audit::Outputs>(&outputs_json) else {
+            continue;
+        };
+        let Some(tools) = o.tools else {
+            continue;
+        };
+        let e = per_step
+            .entry(step)
+            .or_insert((0, crate::tools::Tools::default()));
+        e.0 += 1;
+        for (k, u) in tools.by_tool {
+            let x = e.1.by_tool.entry(k).or_default();
+            x.calls += u.calls;
+            x.ms += u.ms;
         }
-    }
-    if let Some(step) = step {
-        per_step.retain(|s, _| s == step);
+        for (k, u) in tools.shell {
+            let x = e.1.shell.entry(k).or_default();
+            x.calls += u.calls;
+            x.ms += u.ms;
+        }
+        for (k, n) in tools.reads {
+            *e.1.reads.entry(k).or_default() += n;
+        }
     }
     Ok(per_step)
 }
