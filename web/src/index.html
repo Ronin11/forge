@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge</title>
+<style>
+  :root { --bg:#f7f7f5; --fg:#1b1b1b; --mute:#6b6b6b; --line:#dcdcd8; --panel:#ffffff; --ok:#1e7d3a; --bad:#b3261e; --warn:#9a6a00; --run:#1b5fb3; --sel:#eef3ff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#e6e6e6; --mute:#9a9a9a; --line:#2c2c2c; --panel:#1c1c1c; --ok:#5fc37a; --bad:#ff7b72; --warn:#e0b04a; --run:#7fb2ff; --sel:#20283a; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display:flex; gap:16px; align-items:baseline; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.02em }
+  header .mute { color:var(--mute) }
+  main { display:grid; grid-template-columns: minmax(420px, 1.2fr) minmax(380px, 1fr); gap:0; height:calc(100vh - 44px); }
+  section { overflow:auto; border-right:1px solid var(--line); }
+  section:last-child { border-right:0 }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--mute); margin:14px 16px 6px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:500; font-size:12px; position:sticky; top:0; background:var(--bg) }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
+  tr.task { cursor:pointer } tr.task:hover { background:var(--sel) } tr.task.sel { background:var(--sel) }
+  .state { font-weight:600 } .succeeded { color:var(--ok) } .failed { color:var(--bad) } .blocked { color:var(--warn) } .running { color:var(--run) } .queued { color:var(--mute) }
+  .task-text { max-width:52ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  pre, code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { margin:0 16px 12px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; white-space:pre-wrap; word-break:break-word; }
+  .card { margin:0 16px 10px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; }
+  .card .k { color:var(--mute); display:inline-block; min-width:9ch }
+  .feed { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding:0 16px 12px; }
+  .feed div { white-space:pre-wrap; word-break:break-word; border-bottom:1px dotted var(--line); padding:2px 0 }
+  .feed .t { color:var(--mute); margin-right:6px }
+  button { font:inherit; padding:2px 8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:4px; cursor:pointer }
+  .req { border-left:3px solid var(--warn) }
+  #detail:empty::before { content:"Select a task."; color:var(--mute); display:block; margin:16px }
+</style>
+</head>
+<body>
+<header>
+  <h1>Forge</h1>
+  <span id="worker" class="mute">worker …</span>
+  <span id="live" class="mute">connecting</span>
+  <span style="flex:1"></span>
+  <button id="refresh">refresh</button>
+</header>
+<main>
+  <section>
+    <h2>Requests</h2>
+    <div id="requests"></div>
+    <h2>Tasks</h2>
+    <table>
+      <thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>task</th></tr></thead>
+      <tbody id="tasks"></tbody>
+    </table>
+  </section>
+  <section>
+    <div id="detail"></div>
+    <h2>Events <span id="feedscope" class="mute"></span></h2>
+    <div id="feed" class="feed"></div>
+  </main>
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const usd = n => '$' + (Number(n) || 0).toFixed(2);
+  let selected = null, offset = 0, feed = [], es = null;
+
+  async function get(path) {
+    const r = await fetch(path, { credentials: 'same-origin' });
+    if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; throw new Error('401'); }
+    return r.json();
+  }
+
+  function renderTasks(tasks) {
+    $('#tasks').innerHTML = tasks.map(t => `
+      <tr class="task ${t.id === selected ? 'sel' : ''}" data-id="${t.id}">
+        <td class="num">${t.id}</td>
+        <td class="state ${esc(t.state)}">${esc(t.state)}</td>
+        <td>${esc(t.workflow)}</td>
+        <td class="num">${t.attempts}</td>
+        <td class="num">${usd(t.cost_usd)}</td>
+        <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
+      </tr>`).join('');
+  }
+
+  function renderRequests(reqs) {
+    $('#requests').innerHTML = reqs.length ? reqs.map(r => `
+      <div class="card req"><b>${r.id}</b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
+        <div>${esc(r.text)}</div>
+        ${r.tried ? `<div class="mute">tried: ${esc(r.tried)}</div>` : ''}
+        <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
+      : '<div class="card mute">No open questions.</div>';
+  }
+
+  function renderWorker(w) {
+    $('#worker').textContent = w.running ? `worker pid ${w.pid}${w.stale_binary ? ' (stale binary)' : ''}` : 'worker not running';
+    $('#worker').className = w.running ? '' : 'failed';
+  }
+
+  async function snapshot() {
+    const s = await get('/api/snapshot');
+    renderWorker(s.worker || {});
+    renderRequests(s.requests || []);
+    renderTasks(s.tasks || []);
+    if (!es) { offset = s.events_offset || 0; subscribe(); }
+  }
+
+  async function detail(id) {
+    selected = id;
+    document.querySelectorAll('tr.task').forEach(tr => tr.classList.toggle('sel', Number(tr.dataset.id) === id));
+    $('#feedscope').textContent = `· task ${id}`;
+    renderFeed();
+    const d = await get(`/api/task/${id}`);
+    const t = d.task || {};
+    const attempts = (d.attempts || []).map(a => `
+      <div class="card"><b>attempt ${a.attempt_no}</b> <span class="mute">[${esc(a.step)}]</span>
+        <span class="state ${esc(a.state)}">${esc(a.state)}</span>
+        <span class="mute">· ${a.num_turns} turns · ${a.tool_calls} tools · ${((a.agent_ms || 0) / 1000).toFixed(0)}s · ${usd(a.cost_usd)} · ${a.commits} commit(s)${a.dirty ? ' · DIRTY' : ''}</span>
+        ${a.reason ? `<div>${esc(a.reason)}</div>` : ''}
+        ${a.outputs && a.outputs.summary ? `<div class="mute">${esc(a.outputs.summary)}</div>` : ''}
+        ${(a.verdict || []).filter(c => !c.ok).map(c => `<div class="failed">✗ ${esc(c.level)} ${esc(c.name)}${c.detail ? ': ' + esc(c.detail).slice(0, 300) : ''}</div>`).join('')}
+      </div>`).join('');
+    const lineage = (t.lineage || []).map(l => `${l.id} ${l.state}${l.id === t.id ? ' ←' : ''}`).join(' → ');
+    const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
+    $('#detail').innerHTML = `
+      <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span></h2>
+      <div class="card">
+        <div><span class="k">repo</span>${esc(t.repo)}</div>
+        <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
+        <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
+        ${lineage ? `<div><span class="k">lineage</span>${esc(lineage)}</div>` : ''}
+        ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
+      </div>
+      <pre>${esc(t.text)}</pre>
+      ${diag}
+      ${attempts}
+      ${t.journal ? `<h2>Journal</h2><pre>${esc(t.journal)}</pre>` : ''}`;
+  }
+
+  function renderFeed() {
+    const rows = feed.filter(e => selected === null || e.task === selected).slice(-300);
+    $('#feed').innerHTML = rows.map(e => `<div><span class="t">${new Date((e.ts || 0) * 1000).toLocaleTimeString()}</span>${selected === null && e.task != null ? `<b>${e.task}</b> ` : ''}${esc(e.text || e.type)}</div>`).join('');
+    $('#feed').lastElementChild?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function subscribe() {
+    es = new EventSource(`/api/events?since=${offset}`);
+    es.onopen = () => { $('#live').textContent = 'live'; $('#live').className = 'succeeded'; };
+    es.onerror = () => { $('#live').textContent = 'reconnecting'; $('#live').className = 'failed'; };
+    es.onmessage = m => {
+      let e; try { e = JSON.parse(m.data); } catch { return; }
+      feed.push(e); if (feed.length > 5000) feed.splice(0, feed.length - 5000);
+      if (['task_started', 'task_done', 'attempt_done', 'pushed'].includes(e.type)) snapshot().catch(() => {});
+      if (e.type === 'task_done' && e.task === selected) detail(selected).catch(() => {});
+      renderFeed();
+    };
+  }
+
+  $('#tasks').addEventListener('click', ev => { const tr = ev.target.closest('tr.task'); if (tr) detail(Number(tr.dataset.id)).catch(console.error); });
+  $('#refresh').addEventListener('click', () => { snapshot(); if (selected !== null) detail(selected); });
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') { selected = null; $('#feedscope').textContent = ''; $('#detail').innerHTML = ''; document.querySelectorAll('tr.task.sel').forEach(x => x.classList.remove('sel')); renderFeed(); } });
+  snapshot().catch(console.error);
+  setInterval(() => snapshot().catch(() => {}), 30000);
+})();
+</script>
+</body>
+</html>
