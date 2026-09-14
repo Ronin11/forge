@@ -409,10 +409,20 @@ pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     let out = git(wt, &["status", "--porcelain"]).await?;
+    // The helper trims its output, which eats the leading space of a
+    // first entry whose index column is blank (" M path"); take the path
+    // after the status columns either way.
     Ok(out
         .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| l[3..].to_string())
+        .filter(|l| l.len() > 2)
+        .map(|l| {
+            let l = l.trim_end();
+            if l.len() > 3 && l.as_bytes()[2] == b' ' {
+                l[3..].to_string()
+            } else {
+                l.split_once(' ').map(|(_, p)| p).unwrap_or(l).to_string()
+            }
+        })
         .collect())
 }
 

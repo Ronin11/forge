@@ -653,6 +653,7 @@ async fn supervise_now(id: i64) -> Result<()> {
             prerequisite,
             retry,
         } => out!("filed prerequisite task {prerequisite}; re-queued as task {retry} behind it"),
+        crate::supervisor::Ruled::Superseded { by } => out!("superseded by task {by}"),
         crate::supervisor::Ruled::Escalated(why) => out!("escalated: {why}"),
         crate::supervisor::Ruled::Skipped(why) => out!("skipped: {why}"),
     }

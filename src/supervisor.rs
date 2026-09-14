@@ -7,6 +7,8 @@
 //!   the task is re-queued with the answer in its text, as `forge answer`
 //!   would do;
 //! - files a prerequisite task and re-queues the blocked one behind it;
+//! - marks the task superseded, citing the task that already landed the
+//!   same work, so nobody redoes it;
 //! - escalates, which leaves the question for the human.
 //!
 //! It cannot write code (`untouched`), an answer without a citation that
@@ -29,7 +31,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
-pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action","reason","answer","citations","prerequisite"],"properties":{"action":{"type":"string","enum":["answer","prerequisite","escalate"]},"reason":{"type":"string","description":"one or two sentences on why this action"},"answer":{"type":"string","description":"for answer: what the next attempt should do, concretely; for prerequisite: why it is needed first"},"citations":{"type":"array","items":{"type":"string"},"description":"what the answer rests on: a path in the tree, 'task N', or 'decision N'"},"prerequisite":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["task","workflow"],"properties":{"task":{"type":"string","description":"the prerequisite as a task text, precise enough to run unattended"},"workflow":{"type":"string"}}}]}}}"#;
+pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action","reason","answer","citations","prerequisite"],"properties":{"action":{"type":"string","enum":["answer","prerequisite","superseded","escalate"]},"reason":{"type":"string","description":"one or two sentences on why this action"},"answer":{"type":"string","description":"for answer: what the next attempt should do, concretely; for prerequisite: why it is needed first"},"citations":{"type":"array","items":{"type":"string"},"description":"what the answer rests on: a path in the tree, 'task N', or 'decision N'"},"prerequisite":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["task","workflow"],"properties":{"task":{"type":"string","description":"the prerequisite as a task text, precise enough to run unattended"},"workflow":{"type":"string"}}}]}}}"#;
 
 #[derive(Deserialize, Debug, Default)]
 struct Ruling {
@@ -51,6 +53,7 @@ struct Prerequisite {
 pub enum Ruled {
     Answered { retry: i64 },
     Prerequisite { prerequisite: i64, retry: i64 },
+    Superseded { by: i64 },
     Escalated(String),
     Skipped(String),
 }
@@ -63,6 +66,21 @@ fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
         tail: if ok { String::new() } else { detail },
         ..Default::default()
     }
+}
+
+/// The succeeded task of this repository a `superseded` ruling cites.
+fn superseding_task(f: &Forge, t: &Task, citations: &[String]) -> Option<i64> {
+    citations.iter().find_map(|c| {
+        let n = c
+            .trim()
+            .trim_matches('`')
+            .strip_prefix("task ")?
+            .trim()
+            .parse::<i64>()
+            .ok()?;
+        let other = f.store.task(n).ok().flatten()?;
+        (other.repo == t.repo && other.state == TaskState::Succeeded && n != t.id).then_some(n)
+    })
 }
 
 /// A citation resolves when it names a path in the tree, a task of this
@@ -105,7 +123,10 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: &str) -> Resul
          asked a question that would otherwise go to the human operator. Your job is to settle it from the record when \
          the record settles it, and to say so when it does not. You are in the task's clone, read-only: you may read and \
          run anything, but you must not change any file or commit; the tree must be exactly as you found it.\n\n\
-         Three actions:\n\
+         A re-queued task starts from a fresh clone of the base branch: nothing left uncommitted in this clone \
+         carries over, so an answer must tell the next attempt what to do from scratch, and the record of what \
+         landed is the tasks list below, not this tree.\n\n\
+         Four actions:\n\
          - `answer`: tell the next attempt what to do, concretely enough to act on without you. Every answer must rest \
          on citations that exist: a path in this tree (optionally path:line), `task N` for a task of this repository \
          listed below, or `decision N` for an earlier decision. An answer with no citation, or one that names something \
@@ -113,6 +134,9 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: &str) -> Resul
          - `prerequisite`: when the task depends on work that is not there yet, write that work as a task text precise \
          enough to run unattended and name its workflow (usually `direct`, or `tdd` when tests should be written first); \
          the blocked task will be re-queued behind it. Cite what shows the gap.\n\
+         - `superseded`: when the work this task asks for has already landed through another task of this repository \
+         (a later task with the same text that succeeded, listed below): cite that task as `task N` and nothing \
+         will be redone.\n\
          - `escalate`: when the question is about intent, preference, or something only the operator knows, or when the \
          record does not settle it. Say why in `reason`. This is a good outcome, not a failure.\n\n\
          Do not guess at intent. Do not plan around a contradiction. Prefer a short answer that cites over a long one \
@@ -207,7 +231,9 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         return Ok(Ruled::Skipped(format!("task is {}", t.state.as_str())));
     }
     let attempts = f.store.attempts(id)?;
-    let Some(last) = attempts.last() else {
+    // The question is on the last attempt that was not the supervisor's
+    // own: an earlier ruling that failed its rows is on the record too.
+    let Some(last) = attempts.iter().rev().find(|a| a.step != "supervisor") else {
         return Ok(Ruled::Skipped("no attempts".into()));
     };
     if last.state != AttemptState::NeedsInput {
@@ -272,6 +298,9 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         prompt_chars: prompt_text.chars().count(),
         ..Default::default()
     };
+    // The clone may already be dirty from the attempt that asked; the
+    // supervisor is held to what it adds, not to what it found.
+    let dirty_before = crate::git::dirty_paths(wt).await.unwrap_or_default();
     let (mut a, log_path) =
         engine::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None)
             .await
@@ -308,7 +337,12 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         crate::verify::agent_failure(&outcome).unwrap_or_else(|| "no structured ruling".into()),
     ));
     let changed = crate::git::changed_paths(wt, &a.start_sha).await?;
-    let dirty = crate::git::dirty_paths(wt).await.unwrap_or_default();
+    let dirty: Vec<String> = crate::git::dirty_paths(wt)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| !dirty_before.contains(p))
+        .collect();
     checks.push(l0(
         "untouched",
         changed.is_empty() && dirty.is_empty(),
@@ -353,14 +387,24 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         } else {
             r.answer.clone()
         };
-        checks.push(l0(
-            "substantive",
-            body.trim().chars().count() >= 40,
-            format!(
-                "{} characters is not an answer",
-                body.trim().chars().count()
-            ),
-        ));
+        if r.action == "superseded" {
+            // The citation must be a succeeded task of this repository.
+            let by = superseding_task(f, &t, &r.citations);
+            checks.push(l0(
+                "supersedes-with-a-landed-task",
+                by.is_some(),
+                "a superseded ruling must cite `task N` for a task of this repository that succeeded".into(),
+            ));
+        } else {
+            checks.push(l0(
+                "substantive",
+                body.trim().chars().count() >= 40,
+                format!(
+                    "{} characters is not an answer",
+                    body.trim().chars().count()
+                ),
+            ));
+        }
     }
     let failed: Vec<String> = checks
         .iter()
@@ -531,6 +575,31 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 prerequisite: pre.id,
                 retry: n.id,
             })
+        }
+        "superseded" => {
+            let by = superseding_task(f, &t, &r.citations).context("no superseding task")?;
+            f.store.insert_decision_by(
+                id,
+                &t.repo,
+                &q.question,
+                &format!("superseded by task {by}: {}", r.reason),
+                "supervisor",
+                &cited,
+            )?;
+            let mut t = t.clone();
+            t.state = TaskState::Failed;
+            t.reason = format!("superseded by task {by} (supervisor): {}", r.reason);
+            f.store.update_task(&t)?;
+            f.report.emit(
+                id,
+                Event::Note {
+                    text: &format!(
+                        "supervisor marked the task superseded by task {by}: {}",
+                        r.reason
+                    ),
+                },
+            );
+            Ok(Ruled::Superseded { by })
         }
         _ => escalate(if r.reason.trim().is_empty() {
             "no reason given".into()

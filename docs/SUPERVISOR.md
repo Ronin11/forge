@@ -10,6 +10,9 @@ an artifact the kernel checks; none can reach main.
   `forge answer` does, and the decision is recorded as the supervisor's.
 - **prerequisite**: write the missing work as a task, queue it, and
   re-queue the blocked task behind it.
+- **superseded**: the work already landed through another task of the
+  repository; cite it as `task N` and the blocked task ends, so nobody
+  redoes it.
 - **escalate**: leave the question for the human, with a reason. The
   request still shows in `forge requests` and the web page, marked
   escalated.
@@ -37,6 +40,14 @@ beside the attempts it rules on. The verdict rows:
   or `decision N` for a decision that exists. Prose does not count.
 - `substantive`: an answer, or a prerequisite's task text, of at least
   forty characters.
+- `supersedes-with-a-landed-task`: a superseded ruling cites a task of
+  this repository that succeeded.
+
+It is told that a re-queued task starts from a fresh clone of the base
+branch, so an answer says what to do from scratch and never "commit
+what is in the tree". The first live ruling, on task 127, was right on
+the substance, cited seven real places, and missed both of those; hence
+the sentence and the fourth action.
 
 A ruling that fails any row is an escalation with the failed rows as the
 reason, and no decision is recorded. After `per_lineage` supervisor

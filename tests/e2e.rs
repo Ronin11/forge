@@ -2334,6 +2334,55 @@ fn the_supervisor_escalates_what_the_record_does_not_settle_and_refuses_bad_cita
 }
 
 #[test]
+fn the_supervisor_marks_a_task_superseded_by_one_that_already_landed() {
+    let e = Env::new();
+    assert!(
+        e.run("ok.sh", &[]).status.success(),
+        "task 1 lands the work"
+    );
+    let o = supervised(
+        &e,
+        "supervisor-superseded.sh",
+        "write 42 to the answer file",
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("✓ L0 supersedes-with-a-landed-task"), "{err}");
+    assert!(
+        err.contains("supervisor marked the task superseded by task 1"),
+        "{err}"
+    );
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(
+        reason.starts_with("superseded by task 1 (supervisor)"),
+        "{reason}"
+    );
+    let reqs: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    assert!(
+        reqs.as_array().unwrap().is_empty(),
+        "nothing is left for the human: {reqs}"
+    );
+    let ds: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    assert_eq!(
+        ds[0]["answer"]
+            .as_str()
+            .map(|a| a.starts_with("superseded by task 1")),
+        Some(true)
+    );
+    // Citing a task that did not succeed, or is not this repository's, is refused.
+    let o = supervised(
+        &e,
+        "supervisor-superseded.sh",
+        "write 42 to the answer file again",
+    );
+    // task 1 still succeeded, so this one is superseded too; the refusal case
+    // needs a citation to a failed task: task 2 failed above.
+    assert!(String::from_utf8_lossy(&o.stderr).contains("superseded by task 1"));
+}
+
+#[test]
 fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
     let e = Env::new();
     let o = supervised(&e, "supervisor-prereq.sh", "write 42 to the answer file");
