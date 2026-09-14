@@ -9,6 +9,8 @@
 //! - files a prerequisite task and re-queues the blocked one behind it;
 //! - marks the task superseded, citing the task that already landed the
 //!   same work, so nobody redoes it;
+//! - accepts a review demotion that names no defect the task requires
+//!   fixing, so the verified branch lands instead of being rebuilt;
 //! - escalates, which leaves the question for the human.
 //!
 //! It cannot write code (`untouched`), an answer without a citation that
@@ -31,7 +33,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
-pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action","reason","answer","citations","prerequisite"],"properties":{"action":{"type":"string","enum":["answer","prerequisite","superseded","escalate"]},"reason":{"type":"string","description":"one or two sentences on why this action"},"answer":{"type":"string","description":"for answer: what the next attempt should do, concretely; for prerequisite: why it is needed first"},"citations":{"type":"array","items":{"type":"string"},"description":"what the answer rests on: a path in the tree, 'task N', or 'decision N'"},"prerequisite":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["task","workflow"],"properties":{"task":{"type":"string","description":"the prerequisite as a task text, precise enough to run unattended"},"workflow":{"type":"string"}}}]}}}"#;
+pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["action","reason","answer","citations","prerequisite"],"properties":{"action":{"type":"string","enum":["answer","prerequisite","superseded","accept","escalate"]},"reason":{"type":"string","description":"one or two sentences on why this action"},"answer":{"type":"string","description":"for answer: what the next attempt should do, concretely; for prerequisite: why it is needed first"},"citations":{"type":"array","items":{"type":"string"},"description":"what the answer rests on: a path in the tree, 'task N', or 'decision N'"},"prerequisite":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["task","workflow"],"properties":{"task":{"type":"string","description":"the prerequisite as a task text, precise enough to run unattended"},"workflow":{"type":"string"}}}]}}}"#;
 
 #[derive(Deserialize, Debug, Default)]
 struct Ruling {
@@ -54,6 +56,7 @@ pub enum Ruled {
     Answered { retry: i64 },
     Prerequisite { prerequisite: i64, retry: i64 },
     Superseded { by: i64 },
+    Accepted { landed: String },
     Escalated(String),
     Skipped(String),
 }
@@ -126,7 +129,7 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: &str) -> Resul
          A re-queued task starts from a fresh clone of the base branch: nothing left uncommitted in this clone \
          carries over, so an answer must tell the next attempt what to do from scratch, and the record of what \
          landed is the tasks list below, not this tree.\n\n\
-         Four actions:\n\
+         Five actions:\n\
          - `answer`: tell the next attempt what to do, concretely enough to act on without you. Every answer must rest \
          on citations that exist: a path in this tree (optionally path:line), `task N` for a task of this repository \
          listed below, or `decision N` for an earlier decision. An answer with no citation, or one that names something \
@@ -137,6 +140,10 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: &str) -> Resul
          - `superseded`: when the work this task asks for has already landed through another task of this repository \
          (a later task with the same text that succeeded, listed below): cite that task as `task N` and nothing \
          will be redone.\n\
+         - `accept` (only when the task was demoted by a reviewer): when the demotion names no defect, or an approval \
+         was written into the demotion field, or the finding is not something the task requires: cite what shows it \
+         (the reviewer's own text is in the record; paths in the tree that prove the point) and the verified branch \
+         lands as it is. A real defect the task requires fixing is an `answer` that tells the next attempt what to fix.\n\
          - `escalate`: when the question is about intent, preference, or something only the operator knows, or when the \
          record does not settle it. Say why in `reason`. This is a good outcome, not a failure.\n\n\
          Do not guess at intent. Do not plan around a contradiction. Prefer a short answer that cites over a long one \
@@ -611,6 +618,37 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 prerequisite: pre.id,
                 retry: n.id,
             })
+        }
+        "accept" => {
+            if kind != "review" {
+                return escalate(format!(
+                    "accept applies to a review demotion; this is a {kind}"
+                ));
+            }
+            let decision = f.store.insert_decision_by(
+                id,
+                &t.repo,
+                &q.question,
+                &format!("accepted the branch despite the demotion: {}", r.answer),
+                "supervisor",
+                &cited,
+            )?;
+            match crate::cli::land_task(f, id).await {
+                Ok(line) => {
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!(
+                                "supervisor accepted the branch (citing {cited}) and landed it: {}",
+                                r.answer.chars().take(200).collect::<String>()
+                            ),
+                        },
+                    );
+                    f.store.set_decision_retry(decision, id)?;
+                    Ok(Ruled::Accepted { landed: line })
+                }
+                Err(e) => escalate(format!("it accepted the branch but landing failed: {e:#}")),
+            }
         }
         "superseded" => {
             let by = superseding_task(f, &t, &r.citations).context("no superseding task")?;

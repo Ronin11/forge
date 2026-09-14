@@ -2402,7 +2402,9 @@ fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String 
          that were weakened, special-cased, or deleted. Do not change anything and do not commit; the tree must be exactly as \
          you found it.\n\n\
          Decide. If you demonstrated a defect by running something, stop with `needs_input` of kind `review`: the question is \
-         the defect and the exact command that shows it. If you found nothing, say so in `summary`, listing what you ran. \
+         the defect and the exact command that shows it. If you found nothing, say so in `summary`, listing what you ran, \
+         with `needs_input` null: `needs_input` is never how you approve, and a demotion that names no defect sends \
+         verified work back to be rebuilt for nothing. \
          Every claim needs evidence that names a command and its output. A demotion without something you executed does \
          not count.",
         if l1.is_empty() { "none".to_string() } else { l1.join(", ") }

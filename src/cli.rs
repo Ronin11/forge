@@ -667,6 +667,7 @@ async fn supervise_now(id: i64) -> Result<()> {
             retry,
         } => out!("filed prerequisite task {prerequisite}; re-queued as task {retry} behind it"),
         crate::supervisor::Ruled::Superseded { by } => out!("superseded by task {by}"),
+        crate::supervisor::Ruled::Accepted { landed } => out!("accepted the branch: {landed}"),
         crate::supervisor::Ruled::Escalated(why) => out!("escalated: {why}"),
         crate::supervisor::Ruled::Skipped(why) => out!("skipped: {why}"),
     }
@@ -1559,10 +1560,37 @@ fn journal(id: i64, json: bool) -> Result<()> {
 /// that a human has now cleared.
 async fn land(id: i64) -> Result<()> {
     let f = Forge::open(true, true)?;
+    let line = land_task(&f, id).await?;
+    out!("{line}");
+    Ok(())
+}
+
+/// Whether a blocked task is one a reviewer demoted: its branch passed
+/// the checks before the review ran, so it may still land.
+pub(crate) fn review_demoted(f: &Forge, t: &Task) -> Result<bool> {
+    if t.state != TaskState::Blocked {
+        return Ok(false);
+    }
+    Ok(f.store
+        .attempts(t.id)?
+        .iter()
+        .rev()
+        .find(|a| a.step != "supervisor")
+        .is_some_and(|a| {
+            a.state == crate::store::AttemptState::NeedsInput
+                && a.reason.starts_with("review demoted")
+        }))
+}
+
+/// Land a task's verified branch on the base: a verified task, or one a
+/// reviewer demoted whose demotion the operator or the supervisor set
+/// aside. Returns the line to print.
+pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
     let Some(mut t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
-    if t.state != TaskState::Succeeded && t.state != TaskState::Unverified {
+    let demoted = review_demoted(f, &t)?;
+    if t.state != TaskState::Succeeded && t.state != TaskState::Unverified && !demoted {
         bail!(
             "task {id} is {}; only a verified task lands",
             t.state.as_str()
@@ -1586,7 +1614,7 @@ async fn land(id: i64) -> Result<()> {
         bail!("remote {remote} has no URL in {}", repo.display());
     };
     let mut seq = f.store.ops(id)?.len() as i64;
-    match crate::engine::integrate(&f, &mut t, &url, &remote, &mut seq)
+    match crate::engine::integrate(f, &mut t, &url, &remote, &mut seq)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
@@ -1594,9 +1622,29 @@ async fn land(id: i64) -> Result<()> {
         crate::engine::Integrate::Landed(sha) => {
             t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
             t.pushed = true;
+            if demoted {
+                t.state = TaskState::Succeeded;
+                t.finished_at = Some(crate::unix_now());
+            }
             f.store.update_task(&t)?;
-            out!("landed task {id} on {} @ {}", t.base_branch, &sha[..8]);
-            Ok(())
+            f.report.emit(
+                id,
+                crate::report::Event::TaskDone {
+                    state: t.state.as_str(),
+                    attempts: f.store.attempts(id)?.len(),
+                    cost: f.store.task_cost(id)?,
+                    reason: &t.reason,
+                    branch: &t.branch,
+                    pushed: true,
+                    compare: None,
+                    remove_cmd: "",
+                },
+            );
+            Ok(format!(
+                "landed task {id} on {} @ {}",
+                t.base_branch,
+                &sha[..8]
+            ))
         }
         crate::engine::Integrate::Rewind { first, .. } => {
             bail!(
