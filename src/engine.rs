@@ -582,9 +582,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             }
                             AttemptState::Unverified | AttemptState::NeedsInput => break,
                             AttemptState::ChecksFailed | AttemptState::AgentFailed => {
-                                // Out of turns before producing a result, with work in
-                                // hand: continue the same session rather than start over
-                                // blind. A capped attempt that did return a result gets
+                                // Out of turns before producing a result: continue the
+                                // same session rather than start over blind. Even with
+                                // nothing on the tree, the session holds what the agent
+                                // located; a fresh attempt would spend its turns finding
+                                // it again (33 of the first 214 attempts did exactly
+                                // that). A capped attempt that did return a result gets
                                 // the ordinary feedback for what its result failed.
                                 let capped =
                                     outcome.max_turns_hit || outcome.num_turns >= ts.max_turns;
@@ -594,7 +597,6 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     capped && unfinished && verdict.commits > 0 && !verdict.dirty;
                                 if capped
                                     && unfinished
-                                    && progress
                                     && let Some(sid) = &outcome.session_id
                                 {
                                     f.report.emit(
@@ -610,7 +612,11 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         session: sid.clone(),
                                         start_sha: a.start_sha.clone(),
                                     });
-                                    feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".into());
+                                    feedback = Some(if progress {
+                                        "You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".to_string()
+                                    } else {
+                                        "You ran out of turns before changing anything. You have already read what you need: stop exploring, make the change now, commit as soon as it compiles, and return the structured result. Its `changes` must list every path you changed since this session began.".to_string()
+                                    });
                                 } else if t.resume_on_failure
                                     && a.state == AttemptState::ChecksFailed
                                     && let Some(sid) = &outcome.session_id

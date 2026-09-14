@@ -35,7 +35,8 @@ pub struct TaskArgs {
     task: String,
     #[arg(long, default_value = "sonnet")]
     model: String,
-    #[arg(long, default_value_t = 30)]
+    /// Turns per attempt, a runaway guard; cost, wall time and the rate windows bound the work
+    #[arg(long, default_value_t = 100)]
     max_turns: u32,
     /// Extra attempts after a failure, each fed the previous failure
     #[arg(long, default_value_t = 1)]
@@ -121,6 +122,12 @@ enum Cmd {
         /// Cost cap in USD (default: as before)
         #[arg(long)]
         budget: Option<f64>,
+        /// Turns per attempt (default: as before)
+        #[arg(long)]
+        max_turns: Option<u32>,
+        /// Wall-clock limit per attempt in seconds (default: as before)
+        #[arg(long)]
+        timeout_secs: Option<u32>,
         /// Run a different workflow
         #[arg(long)]
         workflow: Option<String>,
@@ -227,8 +234,23 @@ pub async fn main() -> Result<()> {
             chain,
             retries,
             budget,
+            max_turns,
+            timeout_secs,
             workflow,
-        } => retry(id, chain, retries, budget, workflow).await,
+        } => {
+            retry(
+                id,
+                chain,
+                RetryOverrides {
+                    retries,
+                    budget,
+                    max_turns,
+                    timeout_secs,
+                    workflow,
+                },
+            )
+            .await
+        }
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
@@ -397,13 +419,17 @@ fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) -> Res
     )
 }
 
-async fn retry(
-    id: i64,
-    chain: bool,
+/// What a retry may change about the first task it re-queues; chained
+/// dependents keep their own settings.
+struct RetryOverrides {
     retries: Option<u32>,
     budget: Option<f64>,
+    max_turns: Option<u32>,
+    timeout_secs: Option<u32>,
     workflow: Option<String>,
-) -> Result<()> {
+}
+
+async fn retry(id: i64, chain: bool, o: RetryOverrides) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(old) = f.store.task(id)? else {
         bail!("no task {id}");
@@ -431,22 +457,30 @@ async fn retry(
             repo: PathBuf::from(&t.repo),
             task: t.task.clone(),
             model: t.model.clone(),
-            max_turns: t.max_turns as u32,
+            max_turns: if first {
+                o.max_turns.unwrap_or(t.max_turns as u32)
+            } else {
+                t.max_turns as u32
+            },
             retries: if first {
-                retries.unwrap_or((t.max_attempts - 1).max(0) as u32)
+                o.retries.unwrap_or((t.max_attempts - 1).max(0) as u32)
             } else {
                 (t.max_attempts - 1).max(0) as u32
             },
-            timeout_secs: t.timeout_secs as u32,
+            timeout_secs: if first {
+                o.timeout_secs.unwrap_or(t.timeout_secs as u32)
+            } else {
+                t.timeout_secs as u32
+            },
             budget: if first {
-                budget.or(t.budget_usd)
+                o.budget.or(t.budget_usd)
             } else {
                 t.budget_usd
             },
             checks: t.checks.clone(),
             allow_protected: t.allow_protected,
             workflow: if first {
-                workflow.clone().unwrap_or(t.workflow.clone())
+                o.workflow.clone().unwrap_or(t.workflow.clone())
             } else {
                 t.workflow.clone()
             },

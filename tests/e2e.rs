@@ -2106,6 +2106,31 @@ fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
 }
 
 #[test]
+fn an_attempt_that_hits_the_turn_cap_empty_handed_is_resumed_too() {
+    // The session holds what the agent located even when the tree is
+    // untouched; a fresh attempt would spend its turns finding it again.
+    let e = Env::new();
+    let o = e.run("turncapempty.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("resume   continuing session sess-emp past the turn cap"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(
+        (a[0].1.as_str(), a[1].1.as_str()),
+        ("agent_failed", "succeeded")
+    );
+    assert!(
+        e.log_text(1, 2)
+            .contains("ran out of turns before changing anything"),
+        "the empty-handed continuation prompt"
+    );
+}
+
+#[test]
 fn a_capped_attempt_that_still_returned_a_result_is_not_resumed() {
     let e = Env::new();
     let o = e.run("cappedresult.sh", &["--retries", "1"]);
@@ -2324,7 +2349,20 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let o = e.forge("ok.sh", &["retry", "4"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("dependency 3 ended without landing"));
-    let o = e.forge("ok.sh", &["retry", "3", "--chain", "--retries", "1"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "retry",
+            "3",
+            "--chain",
+            "--retries",
+            "1",
+            "--max-turns",
+            "77",
+            "--timeout-secs",
+            "99",
+        ],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("retried task 3 as 5"), "{out}");
@@ -2333,6 +2371,21 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "6", "--json"]).stdout).unwrap();
     assert_eq!(doc["task"]["retry_of"], 4);
     assert_eq!(doc["task"]["after"], serde_json::json!([5]));
+    // The overrides reach the retried task, not the chained dependent.
+    let (turns, timeout): (i64, i64) = e
+        .db()
+        .query_row(
+            "SELECT max_turns, timeout_secs FROM tasks WHERE id=5",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((turns, timeout), (77, 99));
+    let turns6: i64 = e
+        .db()
+        .query_row("SELECT max_turns FROM tasks WHERE id=6", [], |r| r.get(0))
+        .unwrap();
+    assert_ne!(turns6, 77, "the dependent keeps its own turns");
     let five: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "5", "--json"]).stdout).unwrap();
     assert_eq!(
