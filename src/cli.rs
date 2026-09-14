@@ -991,7 +991,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context, "resume_on_failure": t.resume_on_failure,
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
-                "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
+                "journal": crate::journal::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
                 "interface": t.interface, "plan": t.plan, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
@@ -1550,13 +1550,13 @@ fn journal(id: i64, json: bool) -> Result<()> {
         bail!("no task {id}");
     };
     if json {
-        let entries = crate::engine::journal_entries_for(&f, &t).map_err(|e| match e {
+        let entries = crate::journal::entries_for(&f, &t).map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
         })?;
         out!("{}", serde_json::to_string(&entries)?);
         return Ok(());
     }
-    let j = crate::engine::journal_for(&f, &t).map_err(|e| match e {
+    let j = crate::journal::journal_for(&f, &t).map_err(|e| match e {
         crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
     })?;
     if j.is_empty() {

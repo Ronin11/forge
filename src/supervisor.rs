@@ -142,7 +142,7 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: Kind) -> Resul
         "\n\nThe task (workflow {}):\n{}\n\nIt stopped with a {kind}:\n{question}\n\nWhat it tried before stopping:\n{tried}",
         t.workflow, t.task
     ));
-    let journal = engine::journal_for(f, t)?;
+    let journal = crate::journal::journal_for(f, t)?;
     if !journal.is_empty() {
         p.push_str(&format!("\n\n{journal}"));
     }

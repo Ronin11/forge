@@ -1710,239 +1710,6 @@ fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
     p
 }
 
-/// Everything earlier in this piece of work, for the next agent: each
-/// attempt across the lineage, what its agent said it did, and what the
-/// kernel found. The agents' words are never trusted alone; every entry
-/// carries the verdict. Cut to a budget from the oldest end. Empty when
-/// nothing ran before.
-pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
-    const BUDGET: usize = 6000;
-    let lineage = f.store.lineage(t.id).env()?;
-    let mut entries: Vec<(String, String)> = Vec::new(); // (short line, long line)
-    for l in &lineage {
-        let attempts = f.store.attempts(l.id).env()?;
-        let head = if l.id == t.id {
-            format!("task {} ({}, this task)", l.id, l.workflow)
-        } else {
-            format!(
-                "task {} ({}), {}{}",
-                l.id,
-                l.workflow,
-                l.state,
-                if l.reason.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {}", first_line(&l.reason))
-                }
-            )
-        };
-        if attempts.is_empty() {
-            continue;
-        }
-        entries.push((head.clone(), head));
-        for a in attempts.iter().filter(|a| a.state != AttemptState::Running) {
-            // The test author's words never reach the coder through the
-            // journal: what the coder learns of the hidden tests is the
-            // interface, and only that.
-            let said = if a.step == "tests" {
-                None
-            } else {
-                serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json)
-                    .ok()
-                    .map(|e| e.summary)
-                    .filter(|s| !s.trim().is_empty())
-            };
-            let found: Vec<String> =
-                serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|c| !c.ok)
-                    .map(|c| {
-                        let what = if c.failing_tests.is_empty() {
-                            salient_line(&c.tail)
-                        } else {
-                            c.failing_tests
-                                .iter()
-                                .take(3)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        };
-                        format!("{} {}: {}", c.level, c.name, what)
-                    })
-                    .collect();
-            // Verdict first, then what the checks found, then what the
-            // agent claimed: a reader acts on the first two and treats the
-            // third as unverified. Measured the other way round, the journal
-            // cost an extra attempt on every paired task.
-            let verdict = match a.state {
-                AttemptState::Succeeded => "verified",
-                AttemptState::ChecksFailed => "rejected by the checks",
-                AttemptState::AgentFailed => "ended without a result",
-                AttemptState::NeedsInput => "stopped with a question",
-                AttemptState::Unverified => "unverified",
-                AttemptState::Running => "running",
-            };
-            let short = format!("  {} {:<7} {}", a.attempt_no, a.step, verdict);
-            let mut long = short.clone();
-            if !found.is_empty() {
-                long.push_str(&format!("\n    found:   {}", clip(&found.join("; "), 400)));
-            } else if a.state == AttemptState::AgentFailed {
-                long.push_str(&format!("\n    found:   {}", first_line(&a.reason)));
-            } else if a.state == AttemptState::NeedsInput {
-                long.push_str(&format!(
-                    "\n    found:   the checks passed; it stopped with: {}",
-                    clip(&first_line(&a.reason), 400)
-                ));
-            } else if a.state == AttemptState::Succeeded {
-                long.push_str("\n    found:   every check passed");
-            }
-            if let Some(said) = &said {
-                long.push_str(&format!("\n    claimed: {}", clip(said, 400)));
-            }
-            entries.push((short, long));
-        }
-    }
-    if !entries.iter().any(|(short, _)| short.starts_with("  ")) {
-        return Ok(String::new());
-    }
-    // Fit the budget: the newest entries keep their words, the oldest go to a line.
-    let mut cut = 0;
-    let render = |cut: usize| -> String {
-        entries
-            .iter()
-            .enumerate()
-            .map(|(i, (short, long))| if i < cut { short.clone() } else { long.clone() })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let mut body = render(cut);
-    while body.len() > BUDGET && cut < entries.len() {
-        cut += 1;
-        body = render(cut);
-    }
-    Ok(format!(
-        "So far in this piece of work, oldest first. Each attempt's line is the kernel's verdict; `found` is what the checks established and is fact; `claimed` is what that agent said and is unverified. Act on what was found and do not spend turns re-checking claims. Commits from earlier attempts on this task are already on your branch.\n{body}"
-    ))
-}
-
-/// One attempt in a piece of work's journal, as data rather than prose.
-#[derive(serde::Serialize)]
-pub struct JournalEntry {
-    pub task: i64,
-    pub attempt: i64,
-    pub step: String,
-    pub state: String,
-    pub said: Option<String>,
-    pub found: Vec<String>,
-}
-
-/// The same lineage `journal_for` walks, as structured entries instead of
-/// prose: one per attempt, across every task in the piece of work.
-pub fn journal_entries_for(f: &Forge, t: &Task) -> Result<Vec<JournalEntry>, Fault> {
-    let lineage = f.store.lineage(t.id).env()?;
-    let mut entries = Vec::new();
-    for l in &lineage {
-        let attempts = f.store.attempts(l.id).env()?;
-        for a in attempts.iter().filter(|a| a.state != AttemptState::Running) {
-            let said = if a.step == "tests" {
-                None
-            } else {
-                serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json)
-                    .ok()
-                    .map(|e| e.summary)
-                    .filter(|s| !s.trim().is_empty())
-            };
-            let found: Vec<String> =
-                serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|c| !c.ok)
-                    .map(|c| {
-                        let what = if c.failing_tests.is_empty() {
-                            salient_line(&c.tail)
-                        } else {
-                            c.failing_tests
-                                .iter()
-                                .take(3)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        };
-                        format!("{} {}: {}", c.level, c.name, what)
-                    })
-                    .collect();
-            entries.push(JournalEntry {
-                task: l.id,
-                attempt: a.attempt_no,
-                step: a.step.clone(),
-                state: a.state.as_str().to_string(),
-                said,
-                found,
-            });
-        }
-    }
-    Ok(entries)
-}
-
-/// The line of a check's output that says what went wrong: the first that
-/// names a failure, else the last that says anything.
-fn salient_line(tail: &str) -> String {
-    let lines: Vec<String> = tail
-        .lines()
-        .map(strip_ansi)
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    lines
-        .iter()
-        .find(|l| {
-            let low = l.to_ascii_lowercase();
-            ["fail", "error", "✗", "assert", "panic", "expected"]
-                .iter()
-                .any(|k| low.contains(k))
-        })
-        .or(lines.last())
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn strip_ansi(line: &str) -> String {
-    let mut clean = String::new();
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            for d in chars.by_ref() {
-                if d.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            clean.push(c);
-        }
-    }
-    clean
-}
-
-/// The first line that says something: blank lines and terminal colour
-/// codes skipped, since check output often opens with both.
-fn first_line(s: &str) -> String {
-    s.lines()
-        .map(strip_ansi)
-        .map(|l| l.trim().to_string())
-        .find(|l| !l.is_empty())
-        .unwrap_or_default()
-}
-
-fn clip(s: &str, n: usize) -> String {
-    let one = s.replace('\n', " ");
-    if one.chars().count() <= n {
-        one
-    } else {
-        format!("{}…", one.chars().take(n).collect::<String>())
-    }
-}
-
 /// Tool calls before the first edit in an attempt's stream: exploration.
 fn first_edit_call(log_path: &Path) -> Option<i64> {
     let text = std::fs::read_to_string(log_path).ok()?;
@@ -2305,7 +2072,7 @@ async fn run_code_attempt(
     let wt = Path::new(&t.worktree);
     let repo = Path::new(&t.repo);
     let journal = if t.journal {
-        journal_for(f, t)?
+        crate::journal::journal_for(f, t)?
     } else {
         String::new()
     };
@@ -2397,7 +2164,7 @@ async fn run_tests_attempt(
         .task()?;
     }
     let journal = if t.journal {
-        journal_for(f, t)?
+        crate::journal::journal_for(f, t)?
     } else {
         String::new()
     };
@@ -2564,7 +2331,7 @@ async fn run_plan_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let wt = Path::new(&t.worktree);
     let journal = if t.journal {
-        journal_for(f, t)?
+        crate::journal::journal_for(f, t)?
     } else {
         String::new()
     };
