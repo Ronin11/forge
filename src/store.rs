@@ -1130,6 +1130,30 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// Every decision recorded on `id` or any task it retries, oldest first.
+    pub fn decisions_in_lineage(&self, id: i64) -> Result<Vec<Decision>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "WITH RECURSIVE up(id, parent) AS (
+               SELECT id, retry_of FROM tasks WHERE id = ?1
+               UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
+             SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at
+             FROM decisions d JOIN up ON up.id = d.task_id
+             ORDER BY d.id",
+        )?;
+        let rows = stmt.query_map(params![id], |r| {
+            Ok(Decision {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                repo: r.get(2)?,
+                question: r.get(3)?,
+                answer: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Recorded answers, newest first; narrowed to one repository when given.
     pub fn decisions(&self, repo: Option<&str>) -> Result<Vec<Decision>> {
         let c = self.lock();

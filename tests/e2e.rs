@@ -350,6 +350,16 @@ fn answer_records_a_decision_and_requeues_with_the_answer_appended() {
     assert!(out.contains("Which answer file"), "{out}");
     assert!(out.contains("Use answer.txt"), "{out}");
 
+    // `forge show` on the retry prints the decision recorded on the task it
+    // retries, right after the lineage line.
+    let o = e.forge("ok.sh", &["show", "2"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    let lineage_at = out.find("lineage    ").unwrap_or_else(|| panic!("{out}"));
+    let decision_at = out
+        .find("decision   Which answer file: answer.txt or ANSWER.txt? → Use answer.txt")
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(decision_at > lineage_at, "{out}");
+
     // Only a task blocked with a needs_input question is answered.
     let bad = e.forge("ok.sh", &["answer", "2", "no"]);
     assert!(!bad.status.success());

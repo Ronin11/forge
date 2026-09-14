@@ -1760,6 +1760,9 @@ fn show(id: i64) -> Result<()> {
                 .join(" → ")
         );
     }
+    for d in f.store.decisions_in_lineage(t.id)? {
+        out!("decision   {} → {}", d.question, d.answer);
+    }
     out!("workflow   {} {}", t.workflow, t.workflow_hash);
     if !t.interface.is_empty() {
         out!(
