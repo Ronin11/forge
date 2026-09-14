@@ -3369,6 +3369,31 @@ fn gc_removes_only_what_is_published_and_clean() {
 }
 
 #[test]
+fn gc_treats_a_blocked_task_superseded_by_a_later_success_like_a_failed_one() {
+    let e = Env::new();
+    // Task 1 commits an answer, then blocks on a question instead of finishing.
+    assert!(
+        !e.run("commitneedsinput.sh", &["--retries", "2"])
+            .status
+            .success()
+    );
+    let (state, _, pushed) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(!pushed);
+    // Task 2 retries and succeeds, superseding task 1's unpublished commit.
+    assert!(e.forge("ok.sh", &["retry", "1"]).status.success());
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert_eq!(e.task(2).0, "succeeded");
+    let gc = String::from_utf8_lossy(&e.forge("ok.sh", &["gc"]).stdout).to_string();
+    assert!(
+        gc.lines()
+            .any(|l| l.starts_with("task 1 ") && l.contains("removed")),
+        "{gc}"
+    );
+    assert!(!e.home.join("worktrees/1").exists());
+}
+
+#[test]
 fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
