@@ -99,6 +99,16 @@ pub async fn clone_task(
     Ok(base_sha)
 }
 
+/// Fetch one branch from any source (a path or a URL) into `dir` as FETCH_HEAD.
+pub async fn fetch_ref(dir: &Path, src: &str, branch: &str) -> Result<()> {
+    git(
+        dir,
+        &["fetch", "--quiet", src, &format!("refs/heads/{branch}")],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Bring one branch of a remote up to date in the registered checkout's
 /// remote-tracking refs, without touching any local branch. The sha.
 pub async fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<String> {

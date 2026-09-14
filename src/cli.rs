@@ -158,6 +158,12 @@ enum Cmd {
     },
     /// Tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
     Snapshot,
+    /// Merge verified tasks' branches together in order and re-verify after each, without landing:
+    /// on success the result is a branch in the repository for a human to fast-forward
+    Integrate {
+        /// Verified tasks, in merge order
+        ids: Vec<i64>,
+    },
     /// What every earlier attempt in a task's piece of work said it did, and what the kernel found
     Journal { id: i64 },
     /// Remove worktrees that are clean and whose commits are all on a remote
@@ -209,6 +215,7 @@ pub async fn main() -> Result<()> {
             task,
         } => events(since, follow, task),
         Cmd::Snapshot => snapshot(),
+        Cmd::Integrate { ids } => integrate(ids).await,
         Cmd::Journal { id } => journal(id),
         Cmd::Workflows { json } => list_workflows(json),
     }
@@ -670,6 +677,10 @@ fn trace(id: i64, json: bool) -> Result<()> {
                     "cost_usd": a.cost_usd, "agent_ms": a.agent_ms, "commits": a.commits,
                     "files_changed": a.files_changed, "dirty": a.dirty, "start_sha": a.start_sha, "end_sha": a.end_sha,
                     "log_path": a.log_path,
+                    "tokens": {
+                        "input": a.input_tokens, "output": a.output_tokens,
+                        "cache_read": a.cache_read_input_tokens, "cache_creation": a.cache_creation_input_tokens,
+                    },
                     "inputs": serde_json::from_str::<serde_json::Value>(&a.inputs_json).unwrap_or_default(),
                     "outputs": serde_json::from_str::<serde_json::Value>(&a.outputs_json).unwrap_or_default(),
                     "verdict": serde_json::from_str::<serde_json::Value>(&a.verdict_json).unwrap_or_default(),
@@ -1029,7 +1040,7 @@ fn stats(tools: bool) -> Result<()> {
     }
     out!();
     out!(
-        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>6} {:>7} {:>9}",
+        "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6} {:>6} {:>7} {:>9} {:>9}",
         "WF",
         "STEP",
         "ATT",
@@ -1040,11 +1051,12 @@ fn stats(tools: bool) -> Result<()> {
         "TURNS",
         "EDIT@",
         "SECS",
-        "COST"
+        "COST",
+        "TOKENS"
     );
     for st in f.store.step_stats()? {
         out!(
-            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9}",
+            "{:<8} {:<8} {:>5} {:>4} {:>6} {:>6} {:>5} {:>6.1} {:>6} {:>7.0} {:>9} {:>9}",
             st.workflow,
             st.step,
             st.attempts,
@@ -1056,7 +1068,9 @@ fn stats(tools: bool) -> Result<()> {
             st.mean_first_edit
                 .map_or("-".to_string(), |v| format!("{v:.1}")),
             st.mean_ms / 1000.0,
-            format!("${:.2}", st.cost)
+            format!("${:.2}", st.cost),
+            st.mean_input_tokens
+                .map_or("-".to_string(), |v| format!("{v:.0}"))
         );
     }
     Ok(())
@@ -1127,6 +1141,158 @@ fn journal(id: i64) -> Result<()> {
     } else {
         out!("{j}");
     }
+    Ok(())
+}
+
+/// The integrator's merge-and-verify half, by hand, for a repository that
+/// keeps a human at the gate: each task's branch merged onto the base in
+/// order, every check with every hidden suite after each, the result left
+/// as a branch. A conflict or a red check stops it and says which.
+async fn integrate(ids: Vec<i64>) -> Result<()> {
+    if ids.is_empty() {
+        bail!("name the verified tasks to integrate, in merge order");
+    }
+    let f = Forge::open(true, false)?;
+    let mut tasks = Vec::new();
+    for id in &ids {
+        let Some(t) = f.store.task(*id)? else {
+            bail!("no task {id}");
+        };
+        if t.state != TaskState::Succeeded && t.state != TaskState::Unverified {
+            bail!(
+                "task {id} is {}; only a verified task's branch is integrated",
+                t.state.as_str()
+            );
+        }
+        tasks.push(t);
+    }
+    let repo = PathBuf::from(&tasks[0].repo);
+    if tasks.iter().any(|t| t.repo != tasks[0].repo) {
+        bail!("the tasks are in different repositories");
+    }
+    let cfg = config::load_working(&repo).await?;
+    let stamp = unix_now();
+    let branch = format!("forge/integration-{stamp}");
+    let dir = f.paths.worktrees.join(format!("integrate-{stamp}"));
+    let base_ref = match (
+        &cfg.push_remote,
+        git::remote_url(&repo, cfg.push_remote.as_deref().unwrap_or("origin")).await,
+    ) {
+        (Some(name), Some(url)) if git::remote_branch_exists(&url, &cfg.base_branch).await => {
+            git::fetch_branch(&repo, name, &cfg.base_branch).await.ok();
+            Some(format!("refs/remotes/{name}/{}", cfg.base_branch))
+        }
+        _ => None,
+    };
+    let base_sha = git::clone_task(
+        &repo,
+        &cfg.base_branch,
+        &dir,
+        &branch,
+        base_ref.as_deref(),
+        None,
+    )
+    .await?;
+    out!("base     {} @ {}", cfg.base_branch, &base_sha[..8]);
+    let remote_url = match &cfg.push_remote {
+        Some(name) => git::remote_url(&repo, name).await,
+        None => None,
+    };
+    let mut merged: Vec<i64> = Vec::new();
+    let mut overlay: Vec<String> = Vec::new();
+    if git::ref_exists(&repo, "refs/heads/forge-verify").await {
+        overlay.push("forge-verify".into());
+    }
+    let cfg_base = config::load_at(&repo, &dir, &base_sha).await?;
+    for t in &tasks {
+        // Where the branch lives: the repository, else the remote, else the worktree.
+        let src = if git::ref_exists(&repo, &format!("refs/heads/{}", t.branch)).await {
+            repo.display().to_string()
+        } else if let Some(url) = &remote_url
+            && git::remote_branch_exists(url, &t.branch).await
+        {
+            url.clone()
+        } else if Path::new(&t.worktree).join(".git").exists() {
+            t.worktree.clone()
+        } else {
+            bail!(
+                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
+                t.id,
+                t.branch
+            );
+        };
+        git::fetch_ref(&dir, &src, &t.branch)
+            .await
+            .with_context(|| format!("fetching {} from {src}", t.branch))?;
+        match git::merge(
+            &dir,
+            "FETCH_HEAD",
+            &format!("Integrate task {}: {}", t.id, t.branch),
+        )
+        .await?
+        {
+            git::Merge::UpToDate => out!("task {:<4} already contained", t.id),
+            git::Merge::Merged(sha) => {
+                out!("task {:<4} merged {} as {}", t.id, t.branch, &sha[..8])
+            }
+            git::Merge::Conflict(files) => {
+                out!("task {:<4} CONFLICT in {}", t.id, files.join(", "));
+                out!(
+                    "stopped after {} task(s); the scratch clone is at {}",
+                    merged.len(),
+                    dir.display()
+                );
+                bail!(
+                    "task {} conflicts with what came before it: {}",
+                    t.id,
+                    files.join(", ")
+                );
+            }
+        }
+        merged.push(t.id);
+        let own = format!("verify/{}", t.id);
+        if git::ref_exists(&repo, &format!("refs/heads/{own}")).await {
+            overlay.push(own);
+        }
+        let v = crate::verify::verify_integration(&crate::verify::Subject {
+            task_id: t.id,
+            repo: &repo,
+            worktree: &dir,
+            base_sha: &base_sha,
+            start_sha: &base_sha,
+            cfg: &cfg_base,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: true,
+            overlay_refs: &overlay,
+            pending_main: None,
+            sandbox: f.sandbox.as_ref(),
+            report: &f.report,
+        })
+        .await?;
+        if v.state != crate::store::AttemptState::Succeeded {
+            out!("task {:<4} checks FAIL after merging: {}", t.id, v.reason);
+            out!(
+                "stopped after {} task(s); the scratch clone is at {}",
+                merged.len(),
+                dir.display()
+            );
+            bail!(
+                "the tree with task {} merged does not verify: {}",
+                t.id,
+                v.reason
+            );
+        }
+        out!("task {:<4} verified with everything before it", t.id);
+    }
+    git::push_to_repo(&dir, &repo, &branch).await?;
+    let _ = std::fs::remove_dir_all(&dir);
+    out!(
+        "integrated {} task(s) as {branch} in {}\n  git -C {} merge --ff-only {branch}",
+        merged.len(),
+        repo.display(),
+        repo.display()
+    );
     Ok(())
 }
 

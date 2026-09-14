@@ -195,6 +195,11 @@ pub struct Attempt {
     pub session_id: String,
     /// Tool calls before the first edit; `None` when it never edited.
     pub first_edit: Option<i64>,
+    /// Token counts from the result frame's usage object.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
 }
 
 pub struct RateLimitSample {
@@ -231,6 +236,8 @@ pub struct StepStat {
     pub mean_ms: f64,
     /// Mean tool calls before the first edit, over attempts that edited.
     pub mean_first_edit: Option<f64>,
+    /// Mean input tokens, over attempts that reported usage.
+    pub mean_input_tokens: Option<f64>,
 }
 
 /// One operation, kernel or user, as it ran.
@@ -395,6 +402,12 @@ ALTER TABLE attempts ADD COLUMN first_edit INTEGER;
     "
 ALTER TABLE tasks ADD COLUMN journal INTEGER NOT NULL DEFAULT 1;
 ",
+    "
+ALTER TABLE attempts ADD COLUMN input_tokens INTEGER;
+ALTER TABLE attempts ADD COLUMN output_tokens INTEGER;
+ALTER TABLE attempts ADD COLUMN cache_read_input_tokens INTEGER;
+ALTER TABLE attempts ADD COLUMN cache_creation_input_tokens INTEGER;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
@@ -448,7 +461,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
 
 const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
     num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq, session_id, first_edit";
+    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq, session_id, first_edit,
+    input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens";
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
@@ -484,6 +498,10 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         step_seq: r.get(29)?,
         session_id: r.get(30)?,
         first_edit: r.get(31)?,
+        input_tokens: r.get(32)?,
+        output_tokens: r.get(33)?,
+        cache_read_input_tokens: r.get(34)?,
+        cache_creation_input_tokens: r.get(35)?,
     })
 }
 
@@ -756,7 +774,8 @@ impl Store {
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
-             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24 WHERE id=?1",
+             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
+             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -781,7 +800,11 @@ impl Store {
                 a.end_sha,
                 a.outputs_json,
                 a.session_id,
-                a.first_edit
+                a.first_edit,
+                a.input_tokens,
+                a.output_tokens,
+                a.cache_read_input_tokens,
+                a.cache_creation_input_tokens
 
             ],
         )?;
@@ -976,7 +999,7 @@ impl Store {
         let mut stmt = c.prepare(
             "SELECT t.workflow, a.step, COUNT(*), SUM(a.state='succeeded'), SUM(a.state='agent_failed'),
                     SUM(a.state='checks_failed'), SUM(a.state='needs_input'), AVG(a.num_turns), COALESCE(SUM(a.cost_usd),0), AVG(a.agent_ms),
-                    AVG(a.first_edit)
+                    AVG(a.first_edit), AVG(a.input_tokens)
              FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
              GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
         )?;
@@ -993,6 +1016,7 @@ impl Store {
                 cost: r.get(8)?,
                 mean_ms: r.get(9)?,
                 mean_first_edit: r.get(10)?,
+                mean_input_tokens: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
