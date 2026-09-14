@@ -149,6 +149,9 @@ pub struct Launch<'a> {
     /// Whether this step is expected to change files (code, tests). A
     /// read-only step (review, plan) is never faulted for not editing.
     pub writes: bool,
+    /// The JSON schema the CLI holds the structured result to; the
+    /// envelope for every directive, the supervisor's own for it.
+    pub schema: &'a str,
 }
 
 /// Live signs that an attempt is going nowhere, computed from the tool
@@ -233,7 +236,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         "--max-turns",
         &l.max_turns.to_string(),
         "--json-schema",
-        crate::envelope::SCHEMA,
+        l.schema,
     ]
     .iter()
     .map(|s| s.to_string())

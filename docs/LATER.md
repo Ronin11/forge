@@ -137,3 +137,13 @@ them into a `[watch]` section of the data-dir config, with a per-task
 override on `forge add` shaped like `--max-turns`. The read-only
 exemption for the review and plan contracts stays in code: it is a
 property of the contract, not a preference.
+
+## A second runner for the supervisor (2026-09-14)
+
+The supervisor's contract is runner-agnostic: a prompt in, a structured
+ruling out, nothing written, verified by the kernel. Today every agent
+runs through the claude CLI. Putting the supervisor on another
+provider's strongest model means a second backend behind `agent::run`
+that produces the same stream (tool calls, a result with structured
+output and cost) or a thin adapter that does. Worth doing once the
+supervisor's decisions have an outcome record to compare models on.

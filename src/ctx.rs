@@ -42,6 +42,7 @@ pub struct Forge {
     pub paths: Paths,
     pub store: Store,
     pub budget: Budget,
+    pub supervisor: config::Supervisor,
     pub sandbox: Option<Sandbox>,
     pub report: Reporter,
 }
@@ -63,6 +64,7 @@ impl Forge {
             paths,
             store,
             budget: home.budget,
+            supervisor: home.supervisor,
             sandbox,
             report,
         })
@@ -70,12 +72,13 @@ impl Forge {
 
     /// For commands that already hold the paths and store (doctor).
     pub fn open_with(paths: Paths, store: Store) -> Result<Forge> {
-        let budget = config::load_home(&paths.home)?.budget;
+        let home = config::load_home(&paths.home)?;
         let report = Reporter::new(false, Some(paths.home.join("events.jsonl")));
         Ok(Forge {
             paths,
             store,
-            budget,
+            budget: home.budget,
+            supervisor: home.supervisor,
             sandbox: None,
             report,
         })

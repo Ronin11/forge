@@ -288,6 +288,13 @@ pub struct Decision {
     pub question: String,
     pub answer: String,
     pub created_at: i64,
+    /// "operator" or "supervisor".
+    pub answered_by: String,
+    /// What the answer cited, comma-separated: paths, "task N", "decision N".
+    pub citations: String,
+    /// The task the answer re-queued, when known: its state is the
+    /// answer's outcome.
+    pub retry_id: Option<i64>,
 }
 
 /// What `forge log` filters on.
@@ -461,6 +468,11 @@ CREATE TABLE decisions (
 ",
     "
 ALTER TABLE tasks ADD COLUMN plan TEXT NOT NULL DEFAULT '';
+",
+    "
+ALTER TABLE decisions ADD COLUMN answered_by TEXT NOT NULL DEFAULT 'operator';
+ALTER TABLE decisions ADD COLUMN citations TEXT NOT NULL DEFAULT '';
+ALTER TABLE decisions ADD COLUMN retry_id INTEGER;
 ",
 ];
 
@@ -1177,12 +1189,48 @@ impl Store {
         question: &str,
         answer: &str,
     ) -> Result<i64> {
+        self.insert_decision_by(task_id, repo, question, answer, "operator", "")
+    }
+
+    pub fn insert_decision_by(
+        &self,
+        task_id: i64,
+        repo: &str,
+        question: &str,
+        answer: &str,
+        answered_by: &str,
+        citations: &str,
+    ) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO decisions (task_id, repo, question, answer, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![task_id, repo, question, answer, crate::unix_now()],
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![task_id, repo, question, answer, crate::unix_now(), answered_by, citations],
         )?;
         Ok(c.last_insert_rowid())
+    }
+
+    pub fn set_decision_retry(&self, decision_id: i64, retry_id: i64) -> Result<()> {
+        self.lock().execute(
+            "UPDATE decisions SET retry_id=?2 WHERE id=?1",
+            params![decision_id, retry_id],
+        )?;
+        Ok(())
+    }
+
+    /// How many times the supervisor has answered within this piece of work.
+    pub fn supervisor_answers_in_lineage(&self, task_id: i64) -> Result<u32> {
+        let ids: Vec<i64> = self.lineage(task_id)?.iter().map(|l| l.id).collect();
+        let c = self.lock();
+        let mut n = 0u32;
+        for id in ids {
+            let k: i64 = c.query_row(
+                "SELECT COUNT(*) FROM decisions WHERE task_id=?1 AND answered_by='supervisor'",
+                params![id],
+                |r| r.get(0),
+            )?;
+            n += k as u32;
+        }
+        Ok(n)
     }
 
     /// Every decision recorded on `id` or any task it retries, oldest first.
@@ -1192,7 +1240,7 @@ impl Store {
             "WITH RECURSIVE up(id, parent) AS (
                SELECT id, retry_of FROM tasks WHERE id = ?1
                UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
-             SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at
+             SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
              FROM decisions d JOIN up ON up.id = d.task_id
              ORDER BY d.id",
         )?;
@@ -1204,6 +1252,9 @@ impl Store {
                 question: r.get(3)?,
                 answer: r.get(4)?,
                 created_at: r.get(5)?,
+                answered_by: r.get(6)?,
+                citations: r.get(7)?,
+                retry_id: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1213,7 +1264,7 @@ impl Store {
     pub fn decisions(&self, repo: Option<&str>) -> Result<Vec<Decision>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, task_id, repo, question, answer, created_at FROM decisions
+            "SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id FROM decisions
              WHERE ?1 IS NULL OR repo = ?1 ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![repo], |r| {
@@ -1224,6 +1275,9 @@ impl Store {
                 question: r.get(3)?,
                 answer: r.get(4)?,
                 created_at: r.get(5)?,
+                answered_by: r.get(6)?,
+                citations: r.get(7)?,
+                retry_id: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

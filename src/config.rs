@@ -187,6 +187,31 @@ struct HomeRaw {
     budget: BudgetRaw,
     #[serde(default)]
     sandbox: SandboxRaw,
+    #[serde(default)]
+    supervisor: SupervisorRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct SupervisorRaw {
+    enabled: Option<bool>,
+    model: Option<String>,
+    max_turns: Option<u32>,
+    timeout_secs: Option<u64>,
+    per_lineage: Option<u32>,
+}
+
+/// The repository supervisor: the rung between a blocked task and the
+/// human. A read-only agent on a strong model that answers a question
+/// with citations, files a prerequisite task, or escalates.
+#[derive(Clone, Debug)]
+pub struct Supervisor {
+    pub enabled: bool,
+    pub model: String,
+    pub max_turns: u32,
+    pub timeout_secs: u64,
+    /// How many times the supervisor may answer within one piece of work
+    /// before the question goes to the human regardless.
+    pub per_lineage: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -206,6 +231,7 @@ pub struct SandboxPaths {
 pub struct HomeConfig {
     pub budget: Budget,
     pub sandbox: SandboxPaths,
+    pub supervisor: Supervisor,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -262,6 +288,16 @@ ro_paths = [\"~/.local/share/mise\"]
 # cargo verify content against the lockfile, so a poisoned cache cannot change
 # what installs.
 rw_paths = [\"~/.npm\", \"~/.cargo/registry\", \"~/.cargo/git\"]
+
+[supervisor]
+# When a task blocks with a question, a read-only agent on a strong model
+# reads the repository's record and answers with citations, files a
+# prerequisite task, or escalates to you. Off: every question is yours.
+enabled = true
+model = \"opus\"
+max_turns = 30
+# Answers per piece of work before the question reaches you regardless.
+per_lineage = 2
 ";
 
 pub fn load_home(home: &Path) -> Result<HomeConfig> {
@@ -295,6 +331,18 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
             rw: rw.iter().map(|p| expand(p)).collect(),
+        },
+        supervisor: Supervisor {
+            // FORGE2_SUPERVISOR=0 turns it off for one process: the e2e
+            // suite's default, and an operator's quick switch.
+            enabled: raw.supervisor.enabled.unwrap_or(true)
+                && std::env::var("FORGE2_SUPERVISOR")
+                    .map(|v| v != "0")
+                    .unwrap_or(true),
+            model: raw.supervisor.model.unwrap_or_else(|| "opus".into()),
+            max_turns: raw.supervisor.max_turns.unwrap_or(30),
+            timeout_secs: raw.supervisor.timeout_secs.unwrap_or(900),
+            per_lineage: raw.supervisor.per_lineage.unwrap_or(2),
         },
     })
 }

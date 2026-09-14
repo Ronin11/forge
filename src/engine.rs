@@ -950,9 +950,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 /// A capped attempt to continue: the CLI session, and where that attempt
 /// started, since the agent reports for the whole session.
 #[derive(Clone)]
-struct Resume {
-    session: String,
-    start_sha: String,
+pub(crate) struct Resume {
+    pub(crate) session: String,
+    pub(crate) start_sha: String,
 }
 
 pub enum Integrate {
@@ -2062,7 +2062,7 @@ fn tests_prompt(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn new_attempt(
+pub(crate) async fn new_attempt(
     f: &Forge,
     t: &Task,
     step: &str,
@@ -2127,6 +2127,7 @@ async fn launch(
         step,
         resume,
         writes,
+        schema: crate::envelope::SCHEMA,
     })
     .await
     .env()?;
@@ -2144,7 +2145,7 @@ async fn launch(
     Ok(outcome)
 }
 
-async fn record(
+pub(crate) async fn record(
     f: &Forge,
     a: &mut Attempt,
     dir: &Path,

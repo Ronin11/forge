@@ -201,6 +201,15 @@ cargo build --release
 cargo test
 ```
 
+## The supervisor
+
+When a task blocks with a question, a read-only agent on a strong model
+reads the repository's record and answers with citations, files a
+prerequisite task, or escalates to you. Every answer is a decision row
+whose outcome is the task it re-queued, so `forge decisions` shows which
+of its answers landed. See docs/SUPERVISOR.md; `[supervisor]` in the
+data-dir config sets the model and the cap on answers per piece of work.
+
 ## Clients
 
 `forge-tui` (in `tui/`) is the operator's seat: the queue, the blocked

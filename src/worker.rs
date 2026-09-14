@@ -27,6 +27,20 @@ pub fn pid_alive(pid: i64) -> bool {
 /// broken; the task has already been requeued.
 pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
     match engine::run_task(f.clone(), id).await {
+        Ok(TaskState::Blocked) => {
+            // The rung before the human: the supervisor reads the record
+            // and answers, files a prerequisite, or escalates. Its own
+            // failure is a note, never a task failure.
+            if let Err(e) = crate::supervisor::supervise(&f, id).await {
+                f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!("supervisor error: {e:#}"),
+                    },
+                );
+            }
+            Ok(TaskState::Blocked)
+        }
         Ok(state) => Ok(state),
         Err(Fault::Task(e)) => {
             f.report.emit(

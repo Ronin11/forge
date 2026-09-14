@@ -161,6 +161,8 @@ enum Cmd {
     },
     /// Show one task and its attempts
     Show { id: i64 },
+    /// Run the supervisor on a task blocked with a question, now
+    Supervise { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
     Doctor {
         /// Machine-readable: a JSON array of {name, status, detail, hint}
@@ -295,6 +297,7 @@ pub async fn main() -> Result<()> {
         Cmd::Answer { id, text } => answer(id, text).await,
         Cmd::Decisions { repo, json } => decisions(repo, json),
         Cmd::Show { id } => show(id),
+        Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
@@ -320,7 +323,11 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
     enqueue_with(f, args, None).await
 }
 
-async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Result<Task> {
+pub(crate) async fn enqueue_with(
+    f: &Forge,
+    args: &TaskArgs,
+    retry_of: Option<i64>,
+) -> Result<Task> {
     if let Some(b) = args.budget
         && b <= 0.0
     {
@@ -445,7 +452,11 @@ async fn run(args: TaskArgs) -> Result<()> {
 
 /// A dependency for a re-queued task: the same one if it landed, the
 /// newest retry of it if there is one, else a refusal naming it.
-fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) -> Result<i64> {
+pub(crate) fn map_dep(
+    f: &Forge,
+    d: i64,
+    made: &std::collections::HashMap<i64, i64>,
+) -> Result<i64> {
     if let Some(&n) = made.get(&d) {
         return Ok(n);
     }
@@ -469,16 +480,16 @@ fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) -> Res
 
 /// What a retry may change about the first task it re-queues; chained
 /// dependents keep their own settings.
-struct RetryOverrides {
-    retries: Option<u32>,
-    budget: Option<f64>,
-    max_turns: Option<u32>,
-    timeout_secs: Option<u32>,
-    workflow: Option<String>,
+pub(crate) struct RetryOverrides {
+    pub(crate) retries: Option<u32>,
+    pub(crate) budget: Option<f64>,
+    pub(crate) max_turns: Option<u32>,
+    pub(crate) timeout_secs: Option<u32>,
+    pub(crate) workflow: Option<String>,
 }
 
 impl RetryOverrides {
-    fn none() -> RetryOverrides {
+    pub(crate) fn none() -> RetryOverrides {
         RetryOverrides {
             retries: None,
             budget: None,
@@ -492,7 +503,7 @@ impl RetryOverrides {
 /// The `TaskArgs` a retry of `t` re-queues with: `first` is whether `t` is
 /// the task the operator named (only that one takes the overrides and a
 /// text override; chained dependents keep their own settings and text).
-fn retry_args(
+pub(crate) fn retry_args(
     t: &Task,
     o: &RetryOverrides,
     first: bool,
@@ -617,7 +628,7 @@ async fn answer(id: i64, text: String) -> Result<()> {
         .and_then(|e| e.needs_input)
         .map(|q| q.question)
         .with_context(|| format!("task {id}'s last attempt recorded no question"))?;
-    f.store.insert_decision(id, &old.repo, &question, &text)?;
+    let decision = f.store.insert_decision(id, &old.repo, &question, &text)?;
     let new_text = format!(
         "{}\n\nOperator's answer to a question from an earlier attempt: {text}",
         old.task
@@ -629,7 +640,22 @@ async fn answer(id: i64, text: String) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let args = retry_args(&old, &RetryOverrides::none(), true, after, Some(new_text));
     let n = enqueue_with(&f, &args, Some(id)).await?;
+    f.store.set_decision_retry(decision, n.id)?;
     out!("answered task {id} as {}", n.id);
+    Ok(())
+}
+
+async fn supervise_now(id: i64) -> Result<()> {
+    let f = Forge::open(true, false)?;
+    match crate::supervisor::supervise(&f, id).await? {
+        crate::supervisor::Ruled::Answered { retry } => out!("answered; re-queued as task {retry}"),
+        crate::supervisor::Ruled::Prerequisite {
+            prerequisite,
+            retry,
+        } => out!("filed prerequisite task {prerequisite}; re-queued as task {retry} behind it"),
+        crate::supervisor::Ruled::Escalated(why) => out!("escalated: {why}"),
+        crate::supervisor::Ruled::Skipped(why) => out!("skipped: {why}"),
+    }
     Ok(())
 }
 
@@ -644,7 +670,9 @@ fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
         let docs: Vec<serde_json::Value> = rows
             .iter()
             .map(|d| {
-                serde_json::json!({"id": d.id, "task_id": d.task_id, "repo": d.repo, "question": d.question, "answer": d.answer, "created_at": d.created_at})
+                serde_json::json!({"id": d.id, "task_id": d.task_id, "repo": d.repo, "question": d.question, "answer": d.answer, "created_at": d.created_at,
+                    "answered_by": d.answered_by, "citations": d.citations, "retry_id": d.retry_id,
+                    "outcome": d.retry_id.and_then(|r| f.store.task(r).ok().flatten()).map(|t| t.state.as_str().to_string())})
             })
             .collect();
         out!("{}", serde_json::to_string_pretty(&docs)?);
@@ -655,8 +683,24 @@ fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
         return Ok(());
     }
     for d in rows {
+        let outcome = d
+            .retry_id
+            .and_then(|r| f.store.task(r).ok().flatten())
+            .map(|t| format!(" → task {} {}", t.id, t.state.as_str()))
+            .unwrap_or_default();
         out!("{:<5} task {:<5} Q: {}", d.id, d.task_id, d.question);
-        out!("{:<17}A: {}", "", d.answer);
+        out!(
+            "{:<17}A ({}{}): {}{}",
+            "",
+            d.answered_by,
+            if d.citations.is_empty() {
+                String::new()
+            } else {
+                format!(", citing {}", d.citations)
+            },
+            d.answer,
+            outcome
+        );
     }
     Ok(())
 }

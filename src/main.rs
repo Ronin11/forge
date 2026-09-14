@@ -18,6 +18,7 @@ mod profile;
 mod report;
 mod sandbox;
 mod store;
+mod supervisor;
 mod tools;
 mod verify;
 mod worker;
