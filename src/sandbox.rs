@@ -90,7 +90,17 @@ impl Sandbox {
                 }
                 ro
             },
-            extra_rw: paths.rw.clone(),
+            extra_rw: {
+                // Shared caches (the repository map's parsed blobs) are
+                // written from inside the sandbox.
+                let mut rw = paths.rw.clone();
+                if let Ok(p) = crate::ctx::Paths::resolve() {
+                    let cache = p.home.join("cache");
+                    let _ = std::fs::create_dir_all(&cache);
+                    rw.push(cache);
+                }
+                rw
+            },
         }))
     }
 

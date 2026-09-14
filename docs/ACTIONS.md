@@ -153,7 +153,9 @@ declared in its file and each enforced by the kernel.
   preceding directive ran, so an operation can judge that step alone),
   `FORGE_TASK` (the task text), `FORGE_BIN_DIR` (where forge and its
   tools live), `FORGE_HOT_FILES` (the files successful attempts on this
-  repository read most, comma-separated), and `FORGE_NAMESPACE` (the verification
+  repository read most, comma-separated), `FORGE_CACHE_DIR` (a shared,
+  writable directory under FORGE2_HOME for content-addressed artifacts such
+  as the repository map's parsed blobs), and `FORGE_NAMESPACE` (the verification
   directories, space-separated) in its environment, and nothing else of
   Forge's. Each is already recorded on the task; the operation learns
   nothing the trace does not show. This is what lets an operation judge

@@ -24,6 +24,48 @@ pub struct Index {
     pub blobs: HashMap<String, Vec<Symbol>>,
 }
 
+/// A shared, content-addressed cache: one small file per blob, written
+/// atomically, so every clone of a repository reuses what any other
+/// parsed, and a branch costs only the blobs it changed. Landing warms it
+/// for free: the last map on a branch already parsed the tree that is
+/// about to become the base.
+pub struct BlobCache {
+    dir: PathBuf,
+}
+
+impl BlobCache {
+    pub fn new(dir: &Path) -> BlobCache {
+        BlobCache {
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    fn path(&self, blob: &str) -> PathBuf {
+        self.dir
+            .join(&blob[..2.min(blob.len())])
+            .join(format!("{blob}.json"))
+    }
+
+    pub fn get(&self, blob: &str) -> Option<Vec<Symbol>> {
+        let text = std::fs::read_to_string(self.path(blob)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub fn put(&self, blob: &str, syms: &[Symbol]) {
+        let path = self.path(blob);
+        let Some(parent) = path.parent() else { return };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let tmp = parent.join(format!(".{blob}.{}.tmp", std::process::id()));
+        if let Ok(text) = serde_json::to_string(syms)
+            && std::fs::write(&tmp, text).is_ok()
+        {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
 /// Symbols in one file, by its extension. Regex-free, line-oriented: the
 /// declarations a reader would scan for, never bodies.
 pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
@@ -209,16 +251,27 @@ fn cache_path(dir: &Path) -> PathBuf {
     git_dir.join("forge-repomap.json")
 }
 
-/// Every tracked source file's symbols, from the cache where the blob is
-/// known and parsed otherwise; the cache is rewritten with what was added.
-pub fn index(dir: &Path) -> Result<Vec<(String, Vec<Symbol>)>> {
+/// Every tracked source file's symbols: from the shared blob cache when
+/// given one, else the clone's own cache file, parsed only where the blob
+/// is new. Returns the files and how many blobs had to be parsed.
+/// A tree's files with their symbols, in tracked order.
+pub type Files = Vec<(String, Vec<Symbol>)>;
+
+pub fn index(dir: &Path, shared: Option<&BlobCache>) -> Result<(Files, usize)> {
+    // The shared cache, when given, is the only cache: one source of truth
+    // that every clone both reads and seeds.
     let cache_file = cache_path(dir);
-    let mut cache: Index = std::fs::read_to_string(&cache_file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let mut cache: Index = if shared.is_some() {
+        Index::default()
+    } else {
+        std::fs::read_to_string(&cache_file)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    };
     let mut files = Vec::new();
     let mut dirty = false;
+    let mut parsed = 0;
     for (path, blob) in tracked(dir)? {
         let ext = Path::new(&path)
             .extension()
@@ -230,22 +283,48 @@ pub fn index(dir: &Path) -> Result<Vec<(String, Vec<Symbol>)>> {
         ) {
             continue;
         }
-        let syms = match cache.blobs.get(&blob) {
-            Some(s) => s.clone(),
-            None => {
-                let text = std::fs::read_to_string(dir.join(&path)).unwrap_or_default();
-                let s = extract(&path, &text);
+        let syms = if let Some(s) = shared.and_then(|c| c.get(&blob)) {
+            s
+        } else if let Some(s) = cache.blobs.get(&blob).filter(|_| shared.is_none()) {
+            s.clone()
+        } else {
+            let text = std::fs::read_to_string(dir.join(&path)).unwrap_or_default();
+            let s = extract(&path, &text);
+            parsed += 1;
+            if let Some(c) = shared {
+                c.put(&blob, &s);
+            } else {
                 cache.blobs.insert(blob.clone(), s.clone());
                 dirty = true;
-                s
             }
+            s
         };
         files.push((path, syms));
     }
     if dirty && let Ok(text) = serde_json::to_string(&cache) {
         let _ = std::fs::write(&cache_file, text);
     }
-    Ok(files)
+    Ok((files, parsed))
+}
+
+/// Files the branch has changed since `base`: what earlier attempts on
+/// this work touched, which the next one most likely needs again.
+pub fn changed_since(dir: &Path, base: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["diff", "--name-only", base, "HEAD"])
+        .output();
+    out.ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Words of a task worth matching: lower-cased, split on non-identifier
@@ -270,7 +349,13 @@ pub fn task_words(task: &str) -> Vec<String> {
 /// A file's score against the task: path words count three, symbol names
 /// two, a hot-file prior five, and long files lose a little so a match in
 /// a small file outranks the same match in a large one.
-pub fn score(path: &str, syms: &[Symbol], words: &[String], hot: &[String]) -> f64 {
+pub fn score(
+    path: &str,
+    syms: &[Symbol],
+    words: &[String],
+    hot: &[String],
+    changed: &[String],
+) -> f64 {
     let path_l = path.to_ascii_lowercase();
     let mut s = 0.0;
     for w in words {
@@ -289,6 +374,9 @@ pub fn score(path: &str, syms: &[Symbol], words: &[String], hot: &[String]) -> f
     if hot.iter().any(|h| h == path) {
         s += 5.0;
     }
+    if changed.iter().any(|c| c == path) {
+        s += 6.0;
+    }
     s - (syms.len() as f64 * 0.01)
 }
 
@@ -299,11 +387,12 @@ pub fn render(
     files: &[(String, Vec<Symbol>)],
     words: &[String],
     hot: &[String],
+    changed: &[String],
     budget: usize,
 ) -> String {
     let mut scored: Vec<(f64, &String, &Vec<Symbol>)> = files
         .iter()
-        .map(|(p, s)| (score(p, s, words, hot), p, s))
+        .map(|(p, s)| (score(p, s, words, hot, changed), p, s))
         .collect();
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
@@ -340,12 +429,16 @@ pub fn render(
     out
 }
 
+const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA]";
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut dir = PathBuf::from(".");
     let mut task = String::new();
     let mut budget = 6000usize;
     let mut hot: Vec<String> = Vec::new();
+    let mut cache: Option<PathBuf> = None;
+    let mut since: Option<String> = None;
     let mut cmd = "";
     let mut i = 1;
     while i < args.len() {
@@ -371,25 +464,44 @@ fn main() -> Result<()> {
                     .collect();
                 i += 1;
             }
-            other => anyhow::bail!(
-                "unknown argument {other}; usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b]"
-            ),
+            "--cache" => {
+                cache = Some(PathBuf::from(&args[i + 1]));
+                i += 1;
+            }
+            "--changed-since" => {
+                since = Some(args[i + 1].clone());
+                i += 1;
+            }
+            other => anyhow::bail!("unknown argument {other}; {USAGE}"),
         }
         i += 1;
     }
-    let files = index(&dir)?;
+    let shared = cache
+        .as_deref()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(BlobCache::new);
+    let (files, parsed) = index(&dir, shared.as_ref())?;
+    let changed = since
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|b| changed_since(&dir, b))
+        .unwrap_or_default();
     match cmd {
         "index" => {
             let map: BTreeMap<&String, &Vec<Symbol>> = files.iter().map(|(p, s)| (p, s)).collect();
             println!("{}", serde_json::to_string_pretty(&map)?);
+            eprintln!("{} file(s), {parsed} parsed, the rest cached", files.len());
         }
         "rank" => {
             let words = task_words(&task);
-            print!("{}", render(&files, &words, &hot, budget));
+            print!("{}", render(&files, &words, &hot, &changed, budget));
+            eprintln!(
+                "{} file(s), {parsed} parsed, {} changed since base",
+                files.len(),
+                changed.len()
+            );
         }
-        _ => anyhow::bail!(
-            "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b]"
-        ),
+        _ => anyhow::bail!("{USAGE}"),
     }
     Ok(())
 }
@@ -464,21 +576,22 @@ mod tests {
         let words =
             task_words("Stars decay each tick into remnants; keep the tick size independent");
         assert!(words.contains(&"tick".to_string()) && !words.contains(&"the".to_string()));
-        let map = render(&files, &words, &[], 10_000);
+        let map = render(&files, &words, &[], &[], 10_000);
         assert!(map.starts_with("src/sim/tick.rs: tick, rates\n"), "{map}");
         assert!(!map.contains("main.rs"), "unscored files stay out: {map}");
         let hot = vec!["src/ui/main.rs".to_string()];
-        let map = render(&files, &words, &hot, 10_000);
+        let map = render(&files, &words, &hot, &[], 10_000);
         assert!(
             map.contains("main.rs"),
             "the prior brings a hot file in: {map}"
         );
-        let tiny = render(&files, &words, &[], 30);
+        let tiny = render(&files, &words, &[], &[], 30);
         assert_eq!(tiny.lines().count(), 1, "{tiny}");
         let nothing = render(
             &files,
             &task_words("unrelated words entirely"),
             &hot,
+            &[],
             10_000,
         );
         assert!(
@@ -510,14 +623,69 @@ mod tests {
         std::fs::write(d.join("b.py"), "def beta(): pass\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "x"]);
-        let first = index(d).unwrap();
-        assert_eq!(first.len(), 2);
+        let (first, parsed) = index(d, None).unwrap();
+        assert_eq!((first.len(), parsed), (2, 2));
         let cache = std::fs::read_to_string(d.join(".git/forge-repomap.json")).unwrap();
         assert!(cache.contains("alpha") && cache.contains("beta"));
         std::fs::write(d.join("a.rs"), "pub fn alpha() {}\npub fn gamma() {}\n").unwrap();
         git(&["add", "."]);
-        let again = index(d).unwrap();
+        let (again, parsed) = index(d, None).unwrap();
         let a = again.iter().find(|(p, _)| p == "a.rs").unwrap();
         assert_eq!(a.1.len(), 2, "the changed file was re-parsed");
+        assert_eq!(parsed, 1, "only the changed blob");
+        git(&["commit", "-qm", "y"]);
+        // A shared cache: a second clone parses nothing the first one did.
+        let shared_dir = tempfile::tempdir().unwrap();
+        let shared = BlobCache::new(shared_dir.path());
+        let (_, parsed) = index(d, Some(&shared)).unwrap();
+        assert_eq!(parsed, 2, "first use of the shared cache parses everything");
+        let clone = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args([
+                    "clone",
+                    "-q",
+                    d.to_str().unwrap(),
+                    clone.path().to_str().unwrap()
+                ])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let (files, parsed) = index(clone.path(), Some(&shared)).unwrap();
+        assert_eq!((files.len(), parsed), (2, 0), "the clone reused every blob");
+        // The branch's own changes rank first.
+        std::fs::write(
+            clone.path().join("b.py"),
+            "def beta(): pass\ndef delta(): pass\n",
+        )
+        .unwrap();
+        let git2 = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(clone.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git2(&["config", "user.email", "t@e"]);
+        git2(&["config", "user.name", "t"]);
+        git2(&["commit", "-qam", "more"]);
+        let changed = changed_since(clone.path(), "HEAD~1");
+        assert_eq!(changed, vec!["b.py"]);
+        let (files, _) = index(clone.path(), Some(&shared)).unwrap();
+        let map = render(
+            &files,
+            &task_words("nothing in particular"),
+            &[],
+            &changed,
+            10_000,
+        );
+        assert!(map.starts_with("b.py:"), "{map}");
     }
 }

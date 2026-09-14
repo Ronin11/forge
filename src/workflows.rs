@@ -408,7 +408,7 @@ description = "where things are: every source file's declared symbols, ranked ag
 consumes = ["branch"]
 produces = ["context"]
 run = ["bash", "-c", '''
-exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES"
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
 ''', "repo-map"]
 "#,
     ),
@@ -420,7 +420,7 @@ description = "where things are: every source file's declared symbols, ranked ag
 consumes = ["branch"]
 produces = ["context"]
 run = ["bash", "-c", '''
-exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES"
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
 ''', "repo-map"]
 "#,
     ),

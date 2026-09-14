@@ -1245,6 +1245,7 @@ fn operation_env(
     step: &ResolvedStep,
     prev_sha: &str,
     hot_files: &[String],
+    cache_dir: &Path,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = [
         ("FORGE_TASK_ID", t.id.to_string()),
@@ -1264,6 +1265,7 @@ fn operation_env(
                 .unwrap_or_default(),
         ),
         ("FORGE_HOT_FILES", hot_files.join(",")),
+        ("FORGE_CACHE_DIR", cache_dir.display().to_string()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -1347,7 +1349,9 @@ async fn run_operation(
             .unwrap_or_else(|| t.base_sha.clone())
     };
     let hot_files = f.store.hot_files(&t.repo, 8).env()?;
-    let env = operation_env(t, cfg, step, &prev_sha, &hot_files);
+    let cache_dir = f.paths.home.join("cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let env = operation_env(t, cfg, step, &prev_sha, &hot_files, &cache_dir);
     let scratch = step
         .action
         .reads_verify_ref()
