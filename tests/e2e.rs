@@ -2708,6 +2708,22 @@ fn a_suite_exit_that_names_only_a_visible_test_is_refused_and_the_step_goes_on()
 }
 
 #[test]
+fn requests_can_be_scoped_to_one_repo() {
+    let e = Env::new();
+    std::fs::write(e.repo.join("forge.toml"), "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n").unwrap();
+    git(&e.repo, &["commit", "-qam", "namespace"]);
+    assert!(!e.run("suiteright.sh", &["--retries", "1"]).status.success());
+    let (state, _, _) = e.task(1);
+    assert_eq!(state, "blocked");
+
+    let o = e.forge("ok.sh", &["requests", "--repo", e.repo.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("suite"));
+
+    let o = e.forge("ok.sh", &["requests", "--repo", e.origin.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("no blocked tasks"));
+}
+
+#[test]
 fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
     let e = Env::new();
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());

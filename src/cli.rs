@@ -172,6 +172,9 @@ enum Cmd {
     },
     /// Blocked tasks: questions for the operator and workflow requests
     Requests {
+        /// Only requests for this repository
+        #[arg(long)]
+        repo: Option<PathBuf>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -276,7 +279,7 @@ pub async fn main() -> Result<()> {
         Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
-        Cmd::Requests { json } => requests(json),
+        Cmd::Requests { repo, json } => requests(repo, json),
         Cmd::Stats { tools, step, json } => stats(tools, step, json),
         Cmd::Events {
             since,
@@ -1048,13 +1051,20 @@ fn trace(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn requests(json: bool) -> Result<()> {
+fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
+    let repo = repo
+        .map(|p| p.canonicalize().context("repo path"))
+        .transpose()?
+        .map(|p| p.display().to_string());
     if json {
-        out!("{}", serde_json::to_string_pretty(&requests_json(&f)?)?);
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&requests_json(&f, repo.as_deref())?)?
+        );
         return Ok(());
     }
-    let blocked = f.store.blocked()?;
+    let blocked = f.store.blocked(repo.as_deref())?;
     if blocked.is_empty() {
         out!("no blocked tasks");
         return Ok(());
@@ -1389,9 +1399,9 @@ fn tasks_json(f: &Forge, limit: u32, state: Option<TaskState>) -> Result<Vec<ser
         .collect())
 }
 
-fn requests_json(f: &Forge) -> Result<Vec<serde_json::Value>> {
+fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<serde_json::Value>> {
     Ok(f.store
-        .blocked()?
+        .blocked(repo)?
         .iter()
         .map(|t| {
             let (kind, text) = if t.reason.starts_with("waits on task") {
@@ -1668,7 +1678,7 @@ fn snapshot() -> Result<()> {
         .unwrap_or(0);
     let doc = serde_json::json!({
         "tasks": tasks_json(&f, 200, None)?,
-        "requests": requests_json(&f)?,
+        "requests": requests_json(&f, None)?,
         "worker": worker_json(&f),
         "events_offset": offset,
     });
