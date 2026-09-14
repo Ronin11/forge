@@ -217,3 +217,104 @@ pub fn wait_until(pred: impl Fn() -> bool, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+pub fn tdd_repo(e: &Env) {
+    let test_cmd = "shopt -s nullglob; n=0; for f in tests/acceptance/*.sh; do n=$((n+1)); bash \"$f\" || exit 1; done; test $n -gt 0";
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        format!(
+            "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\ntest = [\"bash\", \"-c\", {}]\n[verify]\nnamespace = [\"tests/acceptance/\"]\n",
+            serde_json::to_string(test_cmd).unwrap()
+        ),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "tdd layout"]);
+}
+
+pub fn run_tdd(e: &Env, coder: &str, writer: &str, task: &str) -> Output {
+    let mut c = e.with_role(coder, "TESTS", writer);
+    let o = c
+        .args([
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            task,
+            "--workflow",
+            "tdd",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!(
+        "--- tdd {coder}+{writer} ---\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
+
+pub fn run_wf(
+    e: &Env,
+    coder: &str,
+    extra_env: &[(&str, &str)],
+    workflow: &str,
+    task: &str,
+) -> Output {
+    let mut c = e.cmd(coder);
+    for (k, v) in extra_env {
+        c.env(
+            k,
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(v),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            task,
+            "--workflow",
+            workflow,
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!(
+        "--- {workflow} {coder} ---\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
+
+pub fn origin_file(e: &Env, branch: &str, path: &str) -> Option<String> {
+    let o = Command::new("git")
+        .args([
+            "--git-dir",
+            e.origin.to_str().unwrap(),
+            "show",
+            &format!("{branch}:{path}"),
+        ])
+        .output()
+        .unwrap();
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+pub fn op_names(e: &Env, id: i64) -> Vec<(String, bool)> {
+    let doc: serde_json::Value = e.trace_json(id);
+    doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}

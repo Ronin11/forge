@@ -1,0 +1,16 @@
+//! End-to-end: the real binary against a throwaway repo, a bare origin, and
+//! shell-script agents in tests/fakes that speak stream-json. Sandboxed when
+//! bwrap is present.
+
+mod support;
+
+mod contracts;
+mod landing;
+mod listing;
+mod ops;
+mod resume;
+mod supervisor;
+mod tdd;
+mod verdicts;
+mod worker;
+mod workflows;
