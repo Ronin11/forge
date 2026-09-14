@@ -125,7 +125,7 @@ enum Cmd {
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
         id: i64,
-        /// Also re-queue everything that waited on it, dependencies mapped to the new ids
+        /// Accepted for compatibility: dependents follow a retry on their own
         #[arg(long)]
         chain: bool,
         /// Extra attempts after a failure (default: as before)
@@ -486,7 +486,7 @@ pub(crate) fn map_dep(
         return Ok(n);
     }
     bail!(
-        "dependency {d} ended without landing ({}); retry it first, or retry it with --chain",
+        "dependency {d} ended without landing ({}); retry it first and this task will follow it",
         dep.state.as_str()
     )
 }
@@ -607,10 +607,10 @@ async fn retry(id: i64, chain: bool, o: RetryOverrides) -> Result<()> {
             }
         );
         made.insert(t.id, n.id);
+        // Dependents follow a retry on their own now (enqueue_with reroutes
+        // them); `--chain` is kept for callers that still pass it.
+        let _ = chain;
         first = false;
-        if chain {
-            queue.extend(f.store.dependents(t.id)?);
-        }
     }
     out!("{} queued", f.store.queued_count()?);
     Ok(())

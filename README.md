@@ -102,9 +102,10 @@ asked a question or for another workflow). Attempt states:
 `succeeded`, `checks_failed`, `agent_failed`, `unverified`.
 
 `forge retry <id>` re-queues a finished task as a new one: same text,
-workflow, budget, and flags, on a fresh branch; `--chain` also re-queues
-everything that had been queued `--after` it, with dependencies remapped
-onto the new ids. `forge answer <id> <text>` answers a task blocked on a
+workflow, budget, and flags, on a fresh branch; everything that had been
+queued `--after` it now waits on the new task instead, and anything that
+had been blocked by its failure is queued again (`--chain` is accepted
+and no longer needed). `forge answer <id> <text>` answers a task blocked on a
 question (state `blocked` with its last attempt `needs_input`; anything
 else is refused, naming why): it records the question and answer in a
 `decisions` table and re-queues the task through the same retry path

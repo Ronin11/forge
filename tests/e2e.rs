@@ -3000,6 +3000,7 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let o = e.forge("ok.sh", &["retry", "4"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("dependency 3 ended without landing"));
+    // retry 3: 4, which was blocked by 3's failure, is queued again behind the new task.
     let o = e.forge(
         "ok.sh",
         &[
@@ -3017,11 +3018,11 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("retried task 3 as 5"), "{out}");
-    assert!(out.contains("retried task 4 as 6 (after 5)"), "{out}");
     let doc: serde_json::Value =
-        serde_json::from_slice(&e.forge("ok.sh", &["trace", "6", "--json"]).stdout).unwrap();
-    assert_eq!(doc["task"]["retry_of"], 4);
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "4", "--json"]).stdout).unwrap();
+    assert_eq!(doc["task"]["state"], "queued", "{doc}");
     assert_eq!(doc["task"]["after"], serde_json::json!([5]));
+    assert!(doc["task"]["retry_of"].is_null());
     // The overrides reach the retried task, not the chained dependent.
     let (turns, timeout): (i64, i64) = e
         .db()
@@ -3032,19 +3033,17 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         )
         .unwrap();
     assert_eq!((turns, timeout), (77, 99));
-    let turns6: i64 = e
+    let turns4: i64 = e
         .db()
-        .query_row("SELECT max_turns FROM tasks WHERE id=6", [], |r| r.get(0))
+        .query_row("SELECT max_turns FROM tasks WHERE id=4", [], |r| r.get(0))
         .unwrap();
-    assert_ne!(turns6, 77, "the dependent keeps its own turns");
+    assert_ne!(turns4, 77, "the dependent keeps its own turns");
     let five: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "5", "--json"]).stdout).unwrap();
     assert_eq!(
         five["task"]["max_attempts"], 2,
         "the override applies to the retried task"
     );
-    let o = e.forge("ok.sh", &["show", "6"]);
-    assert!(String::from_utf8_lossy(&o.stdout).contains("retry of   4"));
     // Parent, children, root, and the whole chain, from either end.
     let three: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "3", "--json"]).stdout).unwrap();
@@ -3075,8 +3074,8 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     // Machine-readable listings for a client.
     let log: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
-    assert_eq!(log.as_array().unwrap().len(), 6);
-    // A retried task no longer waits on anyone: it leaves the human queue.
+    assert_eq!(log.as_array().unwrap().len(), 5);
+    // A rerouted dependent no longer waits on a failed task: it leaves the human queue.
     let reqs: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
     assert!(reqs.as_array().unwrap().is_empty(), "{reqs}");

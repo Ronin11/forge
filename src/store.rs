@@ -793,17 +793,6 @@ impl Store {
         Ok(moved)
     }
 
-    /// Queued or blocked tasks that wait on `id`, directly.
-    pub fn dependents(&self, id: i64) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {TASK_COLS} FROM tasks WHERE state IN ('queued','blocked')
-               AND EXISTS (SELECT 1 FROM json_each(after_json) j WHERE j.value = ?1) ORDER BY id"
-        ))?;
-        let rows = stmt.query_map(params![id], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
     /// The first task in `id`'s chain of retries: itself when it retries nothing.
     pub fn root_of(&self, id: i64) -> Result<i64> {
         Ok(self.lock().query_row(
