@@ -8,7 +8,7 @@
 //! second one aborts them (the sandbox tree dies with the child) and puts
 //! their tasks back in the queue.
 
-use crate::ctx::Forge;
+use crate::ctx::{Forge, Paths};
 use crate::engine::{self, Fault};
 use crate::report::Event;
 use crate::store::TaskState;
@@ -21,6 +21,33 @@ use tokio::task::JoinSet;
 
 pub fn pid_alive(pid: i64) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// The worker as `worker.pid` says: pid, its binary, whether it is alive,
+/// and whether that binary was rebuilt underneath it since it started.
+pub struct WorkerStatus {
+    pub pid: i64,
+    pub exe: String,
+    pub running: bool,
+    pub stale: bool,
+}
+
+pub fn worker_status(paths: &Paths) -> Option<WorkerStatus> {
+    let text = std::fs::read_to_string(paths.home.join("worker.pid")).ok()?;
+    let mut it = text.split_whitespace();
+    let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let exe = it.next().unwrap_or("").to_string();
+    let running = pid > 0 && pid_alive(pid);
+    let stale = running
+        && std::fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+            .unwrap_or(false);
+    Some(WorkerStatus {
+        pid,
+        exe,
+        running,
+        stale,
+    })
 }
 
 /// Run one claimed task to its end. `Err` means the worker environment is

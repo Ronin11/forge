@@ -2,7 +2,7 @@
 //! stuck? Each check is OK, WARN, or FAIL with a hint. Exit 1 on any FAIL.
 
 use crate::ctx::{Forge, Paths};
-use crate::store::{MIGRATIONS, Store, TaskState};
+use crate::store::{Store, TaskState};
 use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
 use serde::Serialize;
@@ -108,7 +108,8 @@ fn binary(name: &str, required: bool, why_optional: &str) -> Check {
     }
 }
 
-pub fn run() -> Result<Vec<Check>> {
+/// The agent, git, and the sandbox launcher.
+fn check_binaries() -> Vec<Check> {
     let mut out = Vec::new();
     let agent_bin = agent::agent_bin();
     out.push(binary(&agent_bin, true, ""));
@@ -140,37 +141,28 @@ pub fn run() -> Result<Vec<Check>> {
             "install bubblewrap, or set FORGE2_SANDBOX=0 to run unsandboxed",
         ),
     });
+    out
+}
 
-    let paths = match Paths::resolve() {
-        Ok(p) => p,
-        Err(e) => {
-            out.push(check(
+/// Whether FORGE2_HOME is writable, once it has already been resolved.
+fn check_home(paths: &Paths) -> Vec<Check> {
+    let probe = paths.home.join(".doctor-write-probe");
+    vec![
+        match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
+            Ok(()) => check("home", Status::Ok, paths.home.display().to_string(), ""),
+            Err(e) => check(
                 "home",
                 Status::Fail,
-                format!("{e:#}"),
-                "set FORGE2_HOME to a writable directory",
-            ));
-            return Ok(out);
-        }
-    };
-    let probe = paths.home.join(".doctor-write-probe");
-    match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
-        Ok(()) => out.push(check(
-            "home",
-            Status::Ok,
-            paths.home.display().to_string(),
-            "",
-        )),
-        Err(e) => out.push(check(
-            "home",
-            Status::Fail,
-            format!("{}: not writable: {e}", paths.home.display()),
-            "fix permissions or set FORGE2_HOME",
-        )),
-    }
+                format!("{}: not writable: {e}", paths.home.display()),
+                "fix permissions or set FORGE2_HOME",
+            ),
+        },
+    ]
+}
 
+fn check_cache(paths: &Paths) -> Vec<Check> {
     let cache_dir = paths.home.join("cache").join("repomap");
-    out.push(if !cache_dir.exists() {
+    vec![if !cache_dir.exists() {
         check(
             "cache",
             Status::Warn,
@@ -196,13 +188,15 @@ pub fn run() -> Result<Vec<Check>> {
                 "fix permissions on the repomap cache directory",
             ),
         }
-    });
+    }]
+}
 
-    match config::load_home(&paths.home) {
+fn check_config(paths: &Paths) -> Vec<Check> {
+    vec![match config::load_home(&paths.home) {
         Ok(c) => {
             let b = &c.budget;
             let present = |v: &[std::path::PathBuf]| v.iter().filter(|p| p.exists()).count();
-            out.push(check(
+            check(
                 "config",
                 Status::Ok,
                 format!(
@@ -210,43 +204,36 @@ pub fn run() -> Result<Vec<Check>> {
                     b.five_hour_max * 100.0,
                     b.seven_day_max * 100.0,
                     b.per_task_usd,
-                    b.per_day_usd.map_or("none".to_string(), |d| format!("{d:.2}")),
+                    b.per_day_usd
+                        .map_or("none".to_string(), |d| format!("{d:.2}")),
                     present(&c.sandbox.ro),
                     c.sandbox.ro.len(),
                     present(&c.sandbox.rw),
                     c.sandbox.rw.len()
                 ),
                 "",
-            ))
+            )
         }
-        Err(e) => out.push(check(
+        Err(e) => check(
             "config",
             Status::Fail,
             format!("{e:#}"),
             format!("fix {}", paths.home.join("config.toml").display()),
-        )),
-    }
+        ),
+    }]
+}
 
-    let store = match Store::open(&paths.home.join("forge.db")) {
-        Ok(s) => s,
-        Err(e) => {
-            out.push(check(
-                "store",
-                Status::Fail,
-                format!("{e:#}"),
-                "the database cannot be opened; back it up before anything else",
-            ));
-            return Ok(out);
-        }
-    };
-    out.push(check(
-        "schema",
-        Status::Ok,
-        format!("version {}", MIGRATIONS.len()),
-        "",
-    ));
+/// The database's real schema version, from `PRAGMA user_version`, not
+/// how many migrations this binary happens to ship.
+fn check_schema(store: &Store) -> Vec<Check> {
+    vec![match store.schema_version() {
+        Ok(v) => check("schema", Status::Ok, format!("version {v}"), ""),
+        Err(e) => check("schema", Status::Fail, format!("{e:#}"), ""),
+    }]
+}
 
-    match workflows::check(&paths.home) {
+fn check_workflows(paths: &Paths) -> Vec<Check> {
+    vec![match workflows::check(&paths.home) {
         Ok(problems) => {
             let blocking = problems.iter().filter(|p| p.blocking).count();
             let n = workflows::load_all(&paths.home)
@@ -258,7 +245,7 @@ pub fn run() -> Result<Vec<Check>> {
                 problems.len() - blocking,
                 uncommitted.len()
             );
-            out.push(if blocking > 0 {
+            if blocking > 0 {
                 let first = problems.iter().find(|p| p.blocking).unwrap();
                 check(
                     "workflows",
@@ -275,81 +262,115 @@ pub fn run() -> Result<Vec<Check>> {
                 )
             } else {
                 check("workflows", Status::Ok, detail, "")
-            });
+            }
         }
-        Err(e) => out.push(check(
+        Err(e) => check(
             "workflows",
             Status::Fail,
             format!("{e:#}"),
             "the workflows directory cannot be read",
-        )),
-    }
+        ),
+    }]
+}
 
-    // The lookback: workflows whose current version regressed against the
-    // previous, and known workflows that are mostly failing.
-    if let Ok(all) = workflows::load_all(&paths.home) {
-        let mut bad: Vec<String> = Vec::new();
-        let mut known = 0;
-        for w in &all {
-            let m = crate::profile::measure(&store, &w.name, &w.hash).unwrap_or_else(|_| {
-                crate::profile::Measured {
-                    current: crate::profile::profile(&[]),
-                    previous: None,
-                    all: crate::profile::profile(&[]),
-                    regressed: false,
-                }
-            });
-            let cur = &m.current;
-            if cur.known {
-                known += 1;
+/// The lookback: workflows whose current version regressed against the
+/// previous, and known workflows that are mostly failing.
+fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
+    let Ok(all) = workflows::load_all(&paths.home) else {
+        return Vec::new();
+    };
+    let mut bad: Vec<String> = Vec::new();
+    let mut known = 0;
+    for w in &all {
+        let m = crate::profile::measure(store, &w.name, &w.hash).unwrap_or_else(|_| {
+            crate::profile::Measured {
+                current: crate::profile::profile(&[]),
+                previous: None,
+                all: crate::profile::profile(&[]),
+                regressed: false,
             }
-            if let Some((prev_hash, prev)) = &m.previous
-                && m.regressed
-            {
-                bad.push(format!(
-                    "{} regressed vs {} ({:.0}% vs {:.0}%)",
-                    w.name,
-                    &prev_hash[..8],
-                    cur.rate * 100.0,
-                    prev.rate * 100.0
-                ));
-            }
-            if cur.known && cur.rate_hi < 0.5 {
-                bad.push(format!(
-                    "{} verifies {}/{} (95% upper {:.0}%)",
-                    w.name,
-                    cur.succeeded,
-                    cur.n,
-                    cur.rate_hi * 100.0
-                ));
-            }
+        });
+        let cur = &m.current;
+        if cur.known {
+            known += 1;
         }
-        out.push(if bad.is_empty() {
-            check("learning", Status::Ok, format!("{known} of {} workflow(s) measured; no regressions", all.len()), "")
-        } else {
-            check("learning", Status::Warn, bad.join("; "), "revert the workflow or action file to the version with the good numbers, or retire the workflow")
-        });
+        if let Some((prev_hash, prev)) = &m.previous
+            && m.regressed
+        {
+            bad.push(format!(
+                "{} regressed vs {} ({:.0}% vs {:.0}%)",
+                w.name,
+                &prev_hash[..8],
+                cur.rate * 100.0,
+                prev.rate * 100.0
+            ));
+        }
+        if cur.known && cur.rate_hi < 0.5 {
+            bad.push(format!(
+                "{} verifies {}/{} (95% upper {:.0}%)",
+                w.name,
+                cur.succeeded,
+                cur.n,
+                cur.rate_hi * 100.0
+            ));
+        }
     }
+    vec![if bad.is_empty() {
+        check(
+            "learning",
+            Status::Ok,
+            format!(
+                "{known} of {} workflow(s) measured; no regressions",
+                all.len()
+            ),
+            "",
+        )
+    } else {
+        check(
+            "learning",
+            Status::Warn,
+            bad.join("; "),
+            "revert the workflow or action file to the version with the good numbers, or retire the workflow",
+        )
+    }]
+}
 
-    let queued = store.queued_count()?;
-    // The worker, by its pid file: alive, and on the binary that is on disk.
-    if let Ok(text) = std::fs::read_to_string(paths.home.join("worker.pid")) {
-        let mut it = text.split_whitespace();
-        let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-        let alive = pid > 0 && worker::pid_alive(pid);
-        let stale = alive
-            && std::fs::read_link(format!("/proc/{pid}/exe"))
-                .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
-                .unwrap_or(false);
-        out.push(match (alive, stale) {
-            (true, true) => check("worker", Status::Warn, format!("pid {pid} runs a binary rebuilt since it started"), "restart the worker (one SIGTERM drains it, or systemctl --user restart forge2-worker)"),
-            (true, false) => check("worker", Status::Ok, format!("pid {pid} running"), ""),
-            (false, _) => check("worker", Status::Warn, format!("pid {pid} is gone"), "start it: forge work, or systemctl --user start forge2-worker"),
-        });
-    }
-    let running = store.running_ids()?;
-    let orphans: Vec<i64> = store.orphans(worker::pid_alive)?;
-    out.push(match (running.len(), orphans.len()) {
+/// The worker, by its pid file: alive, and on the binary that is on disk.
+fn check_worker(paths: &Paths) -> Vec<Check> {
+    let Some(w) = worker::worker_status(paths) else {
+        return Vec::new();
+    };
+    vec![match (w.running, w.stale) {
+        (true, true) => check(
+            "worker",
+            Status::Warn,
+            format!("pid {} runs a binary rebuilt since it started", w.pid),
+            "restart the worker (one SIGTERM drains it, or systemctl --user restart forge2-worker)",
+        ),
+        (true, false) => check("worker", Status::Ok, format!("pid {} running", w.pid), ""),
+        (false, _) => check(
+            "worker",
+            Status::Warn,
+            format!("pid {} is gone", w.pid),
+            "start it: forge work, or systemctl --user start forge2-worker",
+        ),
+    }]
+}
+
+fn check_queue(store: &Store) -> Vec<Check> {
+    let queued = match store.queued_count() {
+        Ok(n) => n,
+        Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
+    };
+    let running = match store.running_ids() {
+        Ok(r) => r,
+        Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
+    };
+    let orphans: Vec<i64> = match store.orphans(worker::pid_alive) {
+        Ok(o) => o,
+        Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
+    };
+    vec![match (running.len(), orphans.len()) {
         (_, o) if o > 0 => check(
             "queue",
             Status::Warn,
@@ -366,15 +387,20 @@ pub fn run() -> Result<Vec<Check>> {
             format!("{queued} queued, {r} running"),
             "",
         ),
-    });
+    }]
+}
 
-    let retained: Vec<i64> = store
-        .tasks_with_worktrees()?
+fn check_worktrees(store: &Store) -> Vec<Check> {
+    let tasks = match store.tasks_with_worktrees() {
+        Ok(t) => t,
+        Err(e) => return vec![check("worktrees", Status::Fail, format!("{e:#}"), "")],
+    };
+    let retained: Vec<i64> = tasks
         .into_iter()
         .filter(|t| t.state != TaskState::Running && t.state != TaskState::Queued)
         .map(|t| t.id)
         .collect();
-    out.push(if retained.is_empty() {
+    vec![if retained.is_empty() {
         check("worktrees", Status::Ok, "none retained", "")
     } else {
         check(
@@ -383,8 +409,10 @@ pub fn run() -> Result<Vec<Check>> {
             format!("{} retained: {:?}", retained.len(), retained),
             "forge gc removes the published ones and explains the rest",
         )
-    });
+    }]
+}
 
+fn check_logs(paths: &Paths) -> Vec<Check> {
     let events_size = std::fs::metadata(paths.home.join("events.jsonl"))
         .map(|m| m.len())
         .unwrap_or(0);
@@ -415,7 +443,7 @@ pub fn run() -> Result<Vec<Check>> {
         oldest.map_or(String::new(), |o| format!(", oldest {}", ymd(o))),
     );
     const GIB: u64 = 1024 * 1024 * 1024;
-    out.push(if total >= GIB {
+    vec![if total >= GIB {
         check(
             "logs",
             Status::Warn,
@@ -428,67 +456,137 @@ pub fn run() -> Result<Vec<Check>> {
         )
     } else {
         check("logs", Status::Ok, detail, "")
-    });
+    }]
+}
+
+fn check_spend(f: &Forge) -> Vec<Check> {
+    let spent = match f.store.spent_since(unix_now() - 86_400) {
+        Ok(s) => s,
+        Err(e) => return vec![check("spend", Status::Fail, format!("{e:#}"), "")],
+    };
+    vec![match f.budget.per_day_usd {
+        Some(cap) if spent >= cap => check(
+            "spend",
+            Status::Warn,
+            format!("${spent:.2} of ${cap:.2} in the last 24h"),
+            "nothing new starts until the window rolls; raise per_day_usd to override",
+        ),
+        Some(cap) => check(
+            "spend",
+            Status::Ok,
+            format!("${spent:.2} of ${cap:.2} in the last 24h"),
+            "",
+        ),
+        None => check(
+            "spend",
+            Status::Ok,
+            format!("${spent:.2} in the last 24h (no dollar cap; the rate windows are the limit)"),
+            "",
+        ),
+    }]
+}
+
+fn check_rate_limit(f: &Forge) -> Vec<Check> {
+    let sample = match f.store.latest_rate_limit() {
+        Ok(s) => s,
+        Err(e) => return vec![check("rate_limit", Status::Fail, format!("{e:#}"), "")],
+    };
+    vec![match sample {
+        None => check(
+            "rate_limit",
+            Status::Warn,
+            "no samples yet",
+            "samples arrive with the first real attempt",
+        ),
+        Some(s) => {
+            let age = unix_now() - s.seen_at;
+            let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
+            let detail = format!(
+                "5h {}, 7d {} ({}m ago)",
+                s.five_hour
+                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+                s.seven_day
+                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+                age / 60
+            );
+            match crate::worker::window_hold(f) {
+                Ok(Some((msg, _))) => check(
+                    "rate_limit",
+                    Status::Warn,
+                    format!("{detail}; {msg}"),
+                    "the worker holds until the reset, then continues",
+                ),
+                Ok(None) if worst >= 0.8 => check(
+                    "rate_limit",
+                    Status::Warn,
+                    detail,
+                    "a window is nearly at its cap; the worker will hold when it reaches it",
+                ),
+                Ok(None) => check("rate_limit", Status::Ok, detail, ""),
+                Err(e) => check("rate_limit", Status::Fail, format!("{e:#}"), ""),
+            }
+        }
+    }]
+}
+
+pub fn run() -> Result<Vec<Check>> {
+    let mut out = check_binaries();
+
+    let paths = match Paths::resolve() {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(check(
+                "home",
+                Status::Fail,
+                format!("{e:#}"),
+                "set FORGE2_HOME to a writable directory",
+            ));
+            return Ok(out);
+        }
+    };
+    out.extend(check_home(&paths));
+    out.extend(check_cache(&paths));
+    out.extend(check_config(&paths));
+
+    let store = match Store::open(&paths.home.join("forge.db")) {
+        Ok(s) => s,
+        Err(e) => {
+            out.push(check(
+                "store",
+                Status::Fail,
+                format!("{e:#}"),
+                "the database cannot be opened; back it up before anything else",
+            ));
+            return Ok(out);
+        }
+    };
+    out.extend(check_schema(&store));
+    out.extend(check_workflows(&paths));
+    out.extend(check_learning(&paths, &store));
+    out.extend(check_worker(&paths));
+    out.extend(check_queue(&store));
+    out.extend(check_worktrees(&store));
+    out.extend(check_logs(&paths));
 
     if let Ok(f) = Forge::open_with(paths, store) {
-        let spent = f.store.spent_since(unix_now() - 86_400)?;
-        out.push(match f.budget.per_day_usd {
-            Some(cap) if spent >= cap => check(
-                "spend",
-                Status::Warn,
-                format!("${spent:.2} of ${cap:.2} in the last 24h"),
-                "nothing new starts until the window rolls; raise per_day_usd to override",
-            ),
-            Some(cap) => check(
-                "spend",
-                Status::Ok,
-                format!("${spent:.2} of ${cap:.2} in the last 24h"),
-                "",
-            ),
-            None => check(
-                "spend",
-                Status::Ok,
-                format!(
-                    "${spent:.2} in the last 24h (no dollar cap; the rate windows are the limit)"
-                ),
-                "",
-            ),
-        });
-        out.push(match f.store.latest_rate_limit()? {
-            None => check(
-                "rate_limit",
-                Status::Warn,
-                "no samples yet",
-                "samples arrive with the first real attempt",
-            ),
-            Some(s) => {
-                let age = unix_now() - s.seen_at;
-                let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
-                let detail = format!(
-                    "5h {}, 7d {} ({}m ago)",
-                    s.five_hour
-                        .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                    s.seven_day
-                        .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                    age / 60
-                );
-                match crate::worker::window_hold(&f)? {
-                    Some((msg, _)) => check(
-                        "rate_limit",
-                        Status::Warn,
-                        format!("{detail}; {msg}"),
-                        "the worker holds until the reset, then continues",
-                    ),
-                    None if worst >= 0.8 => check(
-                        "rate_limit",
-                        Status::Warn,
-                        detail,
-                        "a window is nearly at its cap; the worker will hold when it reaches it",
-                    ),
-                    None => check("rate_limit", Status::Ok, detail, ""),
-                }
-            }
-        });
+        out.extend(check_spend(&f));
+        out.extend(check_rate_limit(&f));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_worktrees_is_ok_with_no_retained_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let checks = check_worktrees(&store);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "worktrees");
+        assert!(checks[0].status == Status::Ok);
+        assert_eq!(checks[0].detail, "none retained");
+    }
 }

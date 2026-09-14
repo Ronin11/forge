@@ -740,7 +740,6 @@ impl Store {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    #[cfg(test)]
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
             .lock()

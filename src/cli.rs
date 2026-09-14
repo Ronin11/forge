@@ -1158,18 +1158,12 @@ fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<crate::view::Reque
 /// The worker as the pid file says: pid, its binary, whether it is alive,
 /// and whether that binary was rebuilt underneath it.
 fn worker_json(f: &Forge) -> serde_json::Value {
-    let Ok(text) = std::fs::read_to_string(f.paths.home.join("worker.pid")) else {
-        return serde_json::json!({"running": false});
-    };
-    let mut it = text.split_whitespace();
-    let pid: i64 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-    let exe = it.next().unwrap_or("").to_string();
-    let alive = pid > 0 && worker::pid_alive(pid);
-    let stale = alive
-        && std::fs::read_link(format!("/proc/{pid}/exe"))
-            .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
-            .unwrap_or(false);
-    serde_json::json!({"running": alive, "pid": pid, "exe": exe, "stale_binary": stale})
+    match worker::worker_status(&f.paths) {
+        None => serde_json::json!({"running": false}),
+        Some(w) => {
+            serde_json::json!({"running": w.running, "pid": w.pid, "exe": w.exe, "stale_binary": w.stale})
+        }
+    }
 }
 
 fn journal(id: i64, json: bool) -> Result<()> {
