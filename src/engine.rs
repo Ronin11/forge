@@ -810,6 +810,30 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
             }
         } else {
+            // No remote: the branch still leaves the worktree, into the
+            // registered repository, where `git branch` shows it and a
+            // human can merge it.
+            match git::push_to_repo(&wt, &repo, &t.branch).await {
+                Ok(()) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     {} in {} (no remote to push to)",
+                            t.branch,
+                            repo.display()
+                        ),
+                    },
+                ),
+                Err(e) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "kept     could not put {} in the repository: {e:#}",
+                            t.branch
+                        ),
+                    },
+                ),
+            }
             f.report.emit(id, Event::PushSkipped);
         }
     }
@@ -862,7 +886,7 @@ struct Resume {
     start_sha: String,
 }
 
-enum Integrate {
+pub enum Integrate {
     /// On the base branch; its new tip.
     Landed(String),
     /// The coder has to act: a conflict with the moved base, or checks that
@@ -897,7 +921,7 @@ async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
 /// everything with every hidden suite overlaid, push the branch, fast-forward
 /// the base, and fold the task's hidden tests into `forge-verify`. Three
 /// rows in the trace: `integrate`, `push`, `land`.
-async fn integrate(
+pub async fn integrate(
     f: &Forge,
     t: &mut Task,
     url: &str,
@@ -1195,7 +1219,7 @@ async fn integrate(
 /// the task's own tests. `pinned` is the standing suite's commit as of the
 /// task's base (empty when there was none); `None` means the current tip,
 /// which only a tree that already contains the current base may be judged by.
-async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
+pub async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Vec<String> {
     let mut refs = Vec::new();
     match pinned {
         Some("") => {}
@@ -1960,6 +1984,10 @@ async fn record(
     a.num_turns = outcome.num_turns;
     a.tool_calls = outcome.tool_calls;
     a.cost_usd = outcome.cost_usd;
+    a.input_tokens = outcome.input_tokens;
+    a.output_tokens = outcome.output_tokens;
+    a.cache_read_input_tokens = outcome.cache_read_input_tokens;
+    a.cache_creation_input_tokens = outcome.cache_creation_input_tokens;
     a.agent_ms = outcome.wall_ms as i64;
     a.commits = verdict.commits;
     a.files_changed = verdict.files_changed;

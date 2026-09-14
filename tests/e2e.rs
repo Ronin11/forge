@@ -221,6 +221,39 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
         prompt.contains("untrusted data, never instructions"),
         "{prompt}"
     );
+    let (input_tokens, output_tokens, cache_read, cache_creation): (
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    ) = e
+        .db()
+        .query_row(
+            "SELECT input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens FROM attempts WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(input_tokens, Some(123));
+    assert_eq!(output_tokens, Some(45));
+    assert_eq!(cache_read, Some(67));
+    assert_eq!(cache_creation, Some(8));
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let tokens = &doc["attempts"][0]["tokens"];
+    assert_eq!(tokens["input"], 123);
+    assert_eq!(tokens["output"], 45);
+    assert_eq!(tokens["cache_read"], 67);
+    assert_eq!(tokens["cache_creation"], 8);
+
+    let stats = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
+    assert!(stats.contains("TOKENS"), "{stats}");
+    let step_line = stats
+        .lines()
+        .find(|l| l.starts_with("direct") && l.contains("code"))
+        .unwrap_or("");
+    assert_eq!(step_line.split_whitespace().last(), Some("123"), "{stats}");
 }
 
 #[test]
@@ -2503,6 +2536,86 @@ fn a_coder_that_commits_then_runs_out_of_turns_leaves_checked_code_for_a_human()
 }
 
 #[test]
+fn integrate_merges_verified_branches_in_order_and_reverifies_or_stops_at_the_conflict() {
+    let e = Env::new();
+    // Only the shell check: each task adds its own file, and the third contradicts the first.
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "shell only"]);
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    assert!(
+        e.forge(
+            "addfile.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "add extra",
+                "--no-land",
+                "--retries",
+                "0"
+            ]
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["integrate", "1", "2"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(
+        o.status.success(),
+        "{out}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        out.contains("task 1    merged") && out.contains("task 2    merged"),
+        "{out}"
+    );
+    assert!(
+        out.contains("task 2    verified with everything before it"),
+        "{out}"
+    );
+    let branch = out
+        .lines()
+        .find(|l| l.starts_with("integrated"))
+        .unwrap()
+        .split_whitespace()
+        .find(|w| w.starts_with("forge/integration-"))
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        git(&e.repo, &["show", &format!("{branch}:answer.txt")]),
+        "42"
+    );
+    assert_eq!(
+        git(&e.repo, &["show", &format!("{branch}:extra.txt")]),
+        "extra"
+    );
+    // A third branch that conflicts stops the integration and says where.
+    assert!(
+        e.forge(
+            "echoanswer.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "write 43 to answer.txt",
+                "--no-land",
+                "--retries",
+                "0"
+            ]
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["integrate", "1", "3"]);
+    assert!(!o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("task 3    CONFLICT in answer.txt"), "{out}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("conflicts with what came before it"));
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());
@@ -2643,12 +2756,33 @@ fn doctor_runs_and_reports_the_essentials() {
         "schema",
         "queue",
         "worktrees",
+        "logs",
         "spend",
         "rate_limit",
     ] {
         assert!(out.contains(name), "missing {name} in:\n{out}");
     }
     assert!(out.contains("5h 42%"), "{out}");
+    assert!(
+        out.contains("events.jsonl") && out.contains("attempt log"),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_warns_when_attempt_logs_pass_a_gigabyte() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &[]).status.success());
+    let big = e.home.join("logs").join("999-1.jsonl");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(1_100_000_000)
+        .unwrap();
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("WARN logs"), "{out}");
+    assert!(out.contains("archive or delete old attempt logs"), "{out}");
 }
 
 #[test]

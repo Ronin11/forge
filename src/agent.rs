@@ -25,6 +25,11 @@ pub struct Outcome {
     pub num_turns: i64,
     pub tool_calls: i64,
     pub cost_usd: Option<f64>,
+    /// Token counts from the result frame's usage object.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
     pub wall_ms: u128,
     pub result_text: String,
     /// The structured result the CLI produced against the envelope schema,
@@ -254,6 +259,11 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                     }
                     out.num_turns = v["num_turns"].as_i64().unwrap_or(0);
                     out.cost_usd = v["total_cost_usd"].as_f64();
+                    out.input_tokens = v["usage"]["input_tokens"].as_i64();
+                    out.output_tokens = v["usage"]["output_tokens"].as_i64();
+                    out.cache_read_input_tokens = v["usage"]["cache_read_input_tokens"].as_i64();
+                    out.cache_creation_input_tokens =
+                        v["usage"]["cache_creation_input_tokens"].as_i64();
                     out.result_text = v["result"].as_str().unwrap_or("").to_string();
                     out.structured = match &v["structured_output"] {
                         Value::Null => None,

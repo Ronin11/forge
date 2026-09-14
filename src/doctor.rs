@@ -29,6 +29,37 @@ fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<
     }
 }
 
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = n as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// A unix timestamp as a plain `YYYY-MM-DD`, with no timezone-database
+/// dependency: Howard Hinnant's civil_from_days over UTC days.
+fn ymd(unix_secs: i64) -> String {
+    let z = unix_secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 fn binary(name: &str, required: bool, why_optional: &str) -> Check {
     match sandbox::resolve_binary(name) {
         Ok((_, path)) => check(
@@ -304,6 +335,51 @@ pub fn run() -> Result<Vec<Check>> {
             format!("{} retained: {:?}", retained.len(), retained),
             "forge gc removes the published ones and explains the rest",
         )
+    });
+
+    let events_size = std::fs::metadata(paths.home.join("events.jsonl"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let (mut attempt_count, mut attempt_size, mut oldest) = (0u64, 0u64, None::<i64>);
+    if let Ok(entries) = std::fs::read_dir(&paths.logs) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            attempt_count += 1;
+            attempt_size += meta.len();
+            if let Ok(secs) = meta
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                .duration_since(std::time::UNIX_EPOCH)
+            {
+                let secs = secs.as_secs() as i64;
+                oldest = Some(oldest.map_or(secs, |o: i64| o.min(secs)));
+            }
+        }
+    }
+    let total = events_size + attempt_size;
+    let detail = format!(
+        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}",
+        human_bytes(events_size),
+        human_bytes(attempt_size),
+        oldest.map_or(String::new(), |o| format!(", oldest {}", ymd(o))),
+    );
+    const GIB: u64 = 1024 * 1024 * 1024;
+    out.push(if total >= GIB {
+        check(
+            "logs",
+            Status::Warn,
+            detail,
+            format!(
+                "{} of logs on disk; archive or delete old attempt logs under {} by hand",
+                human_bytes(total),
+                paths.logs.display()
+            ),
+        )
+    } else {
+        check("logs", Status::Ok, detail, "")
     });
 
     if let Ok(f) = Forge::open_with(paths, store) {
