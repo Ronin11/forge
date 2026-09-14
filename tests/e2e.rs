@@ -2209,6 +2209,32 @@ fn the_document_directive_is_held_to_comments_and_docs() {
 }
 
 #[test]
+fn log_pages_back_with_before_and_searches_text_or_id() {
+    let e = Env::new();
+    for _ in 0..3 {
+        e.add(&[]);
+    }
+    let ids = |args: &[&str]| -> Vec<i64> {
+        let mut a = vec!["log", "--json"];
+        a.extend_from_slice(args);
+        let v: serde_json::Value = serde_json::from_slice(&e.forge("ok.sh", &a).stdout).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_i64().unwrap())
+            .collect()
+    };
+    assert_eq!(ids(&[]), vec![3, 2, 1]);
+    assert_eq!(ids(&["--before", "3"]), vec![2, 1]);
+    assert_eq!(ids(&["--before", "3", "--limit", "1"]), vec![2]);
+    assert_eq!(ids(&["--grep", "answer.txt"]), vec![3, 2, 1]);
+    assert_eq!(ids(&["--grep", "2"]), vec![2], "an exact id matches");
+    assert_eq!(ids(&["--grep", "nothing like this"]), Vec::<i64>::new());
+    assert_eq!(ids(&["--workflow", "direct"]), vec![3, 2, 1]);
+    assert_eq!(ids(&["--workflow", "tdd"]), Vec::<i64>::new());
+}
+
+#[test]
 fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_plan() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());

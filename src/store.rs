@@ -290,6 +290,19 @@ pub struct Decision {
     pub created_at: i64,
 }
 
+/// What `forge log` filters on.
+#[derive(Default, Debug, Clone)]
+pub struct TaskFilter {
+    pub limit: u32,
+    pub state: Option<TaskState>,
+    pub repo: Option<String>,
+    /// Only ids strictly below this one: the next page when scrolling back.
+    pub before: Option<i64>,
+    /// A substring of the task text, or an exact id.
+    pub grep: Option<String>,
+    pub workflow: Option<String>,
+}
+
 pub struct TaskSummary {
     pub id: i64,
     pub state: String,
@@ -1108,6 +1121,17 @@ impl Store {
         state: Option<TaskState>,
         repo: Option<&str>,
     ) -> Result<Vec<TaskSummary>> {
+        self.list_tasks_where(&TaskFilter {
+            limit,
+            state,
+            repo: repo.map(str::to_string),
+            ..Default::default()
+        })
+    }
+
+    /// The listing behind `forge log`: newest first, filtered, and paged by
+    /// `before` (ids strictly below it) so a client can scroll back.
+    pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
@@ -1115,20 +1139,33 @@ impl Store {
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
                     t.workflow
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
+               AND (?4 IS NULL OR t.id < ?4)
+               AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
+               AND (?6 IS NULL OR t.workflow = ?6)
              ORDER BY t.id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit, state.map(TaskState::as_str), repo], |r| {
-            Ok(TaskSummary {
-                id: r.get(0)?,
-                state: r.get(1)?,
-                created: r.get(2)?,
-                repo: r.get(3)?,
-                task: r.get(4)?,
-                attempts: r.get(5)?,
-                cost: r.get(6)?,
-                workflow: r.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![
+                q.limit,
+                q.state.map(TaskState::as_str),
+                q.repo.as_deref(),
+                q.before,
+                q.grep.as_deref(),
+                q.workflow.as_deref()
+            ],
+            |r| {
+                Ok(TaskSummary {
+                    id: r.get(0)?,
+                    state: r.get(1)?,
+                    created: r.get(2)?,
+                    repo: r.get(3)?,
+                    task: r.get(4)?,
+                    attempts: r.get(5)?,
+                    cost: r.get(6)?,
+                    workflow: r.get(7)?,
+                })
+            },
+        )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

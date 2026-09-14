@@ -112,6 +112,15 @@ enum Cmd {
         /// Only tasks in this repository
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Only tasks with ids below this one: the next page when scrolling back
+        #[arg(long)]
+        before: Option<i64>,
+        /// Only tasks whose text contains this, or whose id is exactly this
+        #[arg(long)]
+        grep: Option<String>,
+        /// Only tasks that ran this workflow
+        #[arg(long)]
+        workflow: Option<String>,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -257,7 +266,10 @@ pub async fn main() -> Result<()> {
             json,
             state,
             repo,
-        } => log(limit, json, state, repo),
+            before,
+            grep,
+            workflow,
+        } => log(limit, json, state, repo, before, grep, workflow),
         Cmd::Retry {
             id,
             chain,
@@ -881,7 +893,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
             .iter()
             .map(|a| {
                 serde_json::json!({
-                    "attempt_no": a.attempt_no, "step": a.step, "state": a.state.as_str(), "reason": a.reason,
+                    "attempt_no": a.attempt_no, "step": a.step, "step_seq": a.step_seq, "state": a.state.as_str(), "reason": a.reason,
                     "started_at": a.started_at, "finished_at": a.finished_at, "agent_exit": a.agent_exit,
                     "timed_out": a.timed_out, "num_turns": a.num_turns, "tool_calls": a.tool_calls,
                     "cost_usd": a.cost_usd, "agent_ms": a.agent_ms, "commits": a.commits,
@@ -1409,14 +1421,9 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tasks_json(
-    f: &Forge,
-    limit: u32,
-    state: Option<TaskState>,
-    repo: Option<&str>,
-) -> Result<Vec<serde_json::Value>> {
+fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<serde_json::Value>> {
     Ok(f.store
-        .list_tasks(limit, state, repo)?
+        .list_tasks_where(q)?
         .into_iter()
         .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
         .collect())
@@ -1700,7 +1707,7 @@ fn snapshot() -> Result<()> {
         .map(|m| m.len())
         .unwrap_or(0);
     let doc = serde_json::json!({
-        "tasks": tasks_json(&f, 200, None, None)?,
+        "tasks": tasks_json(&f, &crate::store::TaskFilter { limit: 200, ..Default::default() })?,
         "requests": requests_json(&f, None)?,
         "worker": worker_json(&f),
         "events_offset": offset,
@@ -1755,7 +1762,15 @@ fn events(since: Option<u64>, follow: bool, task: Option<i64>) -> Result<()> {
     }
 }
 
-fn log(limit: u32, json: bool, state: Option<String>, repo: Option<PathBuf>) -> Result<()> {
+fn log(
+    limit: u32,
+    json: bool,
+    state: Option<String>,
+    repo: Option<PathBuf>,
+    before: Option<i64>,
+    grep: Option<String>,
+    workflow: Option<String>,
+) -> Result<()> {
     let state = state
         .map(|s| {
             TaskState::try_from(s.as_str()).map_err(|_| {
@@ -1770,11 +1785,16 @@ fn log(limit: u32, json: bool, state: Option<String>, repo: Option<PathBuf>) -> 
         .transpose()?
         .map(|p| p.display().to_string());
     let f = Forge::open(false, false)?;
+    let q = crate::store::TaskFilter {
+        limit,
+        state,
+        repo,
+        before,
+        grep,
+        workflow,
+    };
     if json {
-        out!(
-            "{}",
-            serde_json::to_string_pretty(&tasks_json(&f, limit, state, repo.as_deref())?)?
-        );
+        out!("{}", serde_json::to_string_pretty(&tasks_json(&f, &q)?)?);
         return Ok(());
     }
     out!(
@@ -1787,7 +1807,7 @@ fn log(limit: u32, json: bool, state: Option<String>, repo: Option<PathBuf>) -> 
         "CREATED",
         "REPO"
     );
-    for s in f.store.list_tasks(limit, state, repo.as_deref())? {
+    for s in f.store.list_tasks_where(&q)? {
         let repo_name = Path::new(&s.repo)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
