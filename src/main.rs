@@ -20,6 +20,7 @@ mod landing;
 mod operation;
 mod profile;
 mod prompts;
+mod queue;
 mod report;
 mod sandbox;
 mod store;

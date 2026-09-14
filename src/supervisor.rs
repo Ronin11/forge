@@ -503,32 +503,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     }
     match r.action.as_str() {
         "answer" => {
-            let decision = f.store.insert_decision_by(
-                id,
-                &t.repo,
-                &q.question,
-                &r.answer,
-                "supervisor",
-                &cited,
-            )?;
-            let text = format!(
-                "{}\n\nSupervisor's answer to a question from an earlier attempt (citing {cited}): {}",
-                t.task, r.answer
-            );
-            let after = t
-                .after
-                .iter()
-                .map(|&d| crate::cli::map_dep(f, d, &std::collections::HashMap::new()))
-                .collect::<Result<Vec<_>>>()?;
-            let args = crate::cli::retry_args(
-                &t,
-                &crate::cli::RetryOverrides::none(),
-                true,
-                after,
-                Some(text),
-            );
-            let n = crate::cli::enqueue_with(f, &args, Some(id)).await?;
-            f.store.set_decision_retry(decision, n.id)?;
+            let (_, n) = crate::queue::answer(f, id, &r.answer, "supervisor", &cited).await?;
             f.report.emit(
                 id,
                 Event::Note {
@@ -550,17 +525,17 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             } else {
                 p.workflow.clone()
             };
-            let pre_args = crate::cli::retry_args(
+            let pre_args = crate::queue::retry_request(
                 &t,
-                &crate::cli::RetryOverrides {
+                &crate::queue::RetryOverrides {
                     workflow: Some(workflow),
-                    ..crate::cli::RetryOverrides::none()
+                    ..crate::queue::RetryOverrides::none()
                 },
                 true,
                 Vec::new(),
                 Some(p.task.clone()),
             );
-            let pre = crate::cli::enqueue_with(f, &pre_args, None).await?;
+            let pre = crate::queue::enqueue(f, &pre_args, None).await?;
             let decision = f.store.insert_decision_by(
                 id,
                 &t.repo,
@@ -576,17 +551,17 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             let mut after = t
                 .after
                 .iter()
-                .map(|&d| crate::cli::map_dep(f, d, &std::collections::HashMap::new()))
+                .map(|&d| crate::queue::map_dep(f, d, &std::collections::HashMap::new()))
                 .collect::<Result<Vec<_>>>()?;
             after.push(pre.id);
-            let args = crate::cli::retry_args(
+            let args = crate::queue::retry_request(
                 &t,
-                &crate::cli::RetryOverrides::none(),
+                &crate::queue::RetryOverrides::none(),
                 true,
                 after,
                 Some(text),
             );
-            let n = crate::cli::enqueue_with(f, &args, Some(id)).await?;
+            let n = crate::queue::enqueue(f, &args, Some(id)).await?;
             f.store.set_decision_retry(decision, n.id)?;
             f.report.emit(
                 id,

@@ -20,6 +20,11 @@ pub enum Event<'a> {
         timeout_secs: i64,
         sandboxed: bool,
     },
+    /// A task entered the queue: a client re-reads its listing.
+    TaskQueued {
+        workflow: &'a str,
+        retry_of: Option<i64>,
+    },
     AttemptStarted {
         n: i64,
         of: i64,
@@ -160,6 +165,10 @@ pub fn to_json(ev: &Event) -> serde_json::Value {
             "branch {branch} from {base_branch} @ {}",
             &base_sha[..base_sha.len().min(8)]
         ),
+        Event::TaskQueued { workflow, retry_of } => match retry_of {
+            Some(old) => format!("queued {workflow}, a retry of task {old}"),
+            None => format!("queued {workflow}"),
+        },
         Event::AttemptStarted { n, of } => format!("attempt {n} of {of}"),
         Event::ToolCall { name } => format!("tool {name}"),
         Event::AgentDone {
@@ -231,6 +240,9 @@ pub fn to_json(ev: &Event) -> serde_json::Value {
             sandboxed,
         } => {
             json!({"type": "task_started", "worktree": worktree, "branch": branch, "base_branch": base_branch, "base_sha": base_sha, "model": model, "max_turns": max_turns, "max_attempts": max_attempts, "timeout_secs": timeout_secs, "sandboxed": sandboxed})
+        }
+        Event::TaskQueued { workflow, retry_of } => {
+            json!({"type": "task_queued", "workflow": workflow, "retry_of": retry_of})
         }
         Event::AttemptStarted { n, of } => json!({"type": "attempt_started", "n": n, "of": of}),
         Event::ToolCall { name } => json!({"type": "tool_call", "name": name}),
@@ -326,6 +338,7 @@ fn render(ev: Event) -> Vec<String> {
                 }
             ),
         ],
+        Event::TaskQueued { .. } => vec![],
         Event::AttemptStarted { n, of } => vec![format!("--- attempt {n} of {of}")],
         Event::ToolCall { name } => vec![format!("  ▸ {name}")],
         Event::AgentDone {

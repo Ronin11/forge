@@ -288,10 +288,9 @@ fn events_are_a_json_log_and_a_snapshot_names_where_to_subscribe_from() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     let types: Vec<&str> = events.iter().map(|v| v["type"].as_str().unwrap()).collect();
-    assert!(
-        types.first() == Some(&"op") || types.first() == Some(&"task_started"),
-        "{types:?}"
-    );
+    assert_eq!(types.first(), Some(&"task_queued"), "{types:?}");
+    assert_eq!(events[0]["workflow"], "direct");
+    assert!(events[0]["retry_of"].is_null());
     assert!(
         types.contains(&"attempt_started")
             && types.contains(&"check")

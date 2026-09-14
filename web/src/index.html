@@ -210,7 +210,7 @@
         await page(true);
       },
       onEvent(e) {
-        if (['task_started', 'task_done', 'attempt_done', 'pushed'].includes(e.type)) {
+        if (['task_queued', 'task_started', 'task_done', 'attempt_done', 'pushed'].includes(e.type)) {
           refreshHead().catch(() => {});
           snapshotHead().then(s => renderRequests(s.requests || [])).catch(() => {});
         }
