@@ -85,6 +85,14 @@ forge doctor                                  # can this machine run attempts; i
    commits and files from git, and the verdict. The agent's text is stored
    as text.
 
+Forge also ends an attempt itself when two signs of going nowhere trip
+at once, as the tool calls stream: thirty calls without an edit, fifteen
+edits without a commit, or one command run five times. The session is
+kept and resumed with a prompt that names the signs and says what to do
+about each, so the work the agent located is not lost and the cap never
+has to arrive. Read-only steps (review, investigate) are never faulted
+for not editing.
+
 Task states: `queued`, `running`, `succeeded`, `failed` (with the reason),
 `unverified` (nothing verified the work, or only the reviewer failed; pushed in the latter case), `blocked` (the agent
 asked a question or for another workflow). Attempt states:

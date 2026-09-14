@@ -624,11 +624,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 // the ordinary feedback for what its result failed.
                                 let capped =
                                     outcome.max_turns_hit || outcome.num_turns >= ts.max_turns;
+                                let stopped = outcome.ended_early.is_some();
                                 let unfinished = verdict.envelope.is_none();
                                 let progress = verdict.commits > 0 || verdict.dirty;
                                 capped_committed =
                                     capped && unfinished && verdict.commits > 0 && !verdict.dirty;
-                                if capped
+                                if (capped || stopped)
                                     && unfinished
                                     && let Some(sid) = &outcome.session_id
                                 {
@@ -636,8 +637,13 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         id,
                                         Event::Note {
                                             text: &format!(
-                                                "resume   continuing session {} past the turn cap",
-                                                &sid[..sid.len().min(8)]
+                                                "resume   continuing session {} {}",
+                                                &sid[..sid.len().min(8)],
+                                                if stopped {
+                                                    "after stopping it early"
+                                                } else {
+                                                    "past the turn cap"
+                                                }
                                             ),
                                         },
                                     );
@@ -645,7 +651,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         session: sid.clone(),
                                         start_sha: a.start_sha.clone(),
                                     });
-                                    feedback = Some(if progress {
+                                    feedback = Some(if let Some(why) = &outcome.ended_early {
+                                        early_feedback(why, &outcome.early_signals)
+                                    } else if progress {
                                         "You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".to_string()
                                     } else {
                                         "You ran out of turns before changing anything. You have already read what you need: stop exploring, make the change now, commit as soon as it compiles, and return the structured result. Its `changes` must list every path you changed since this session began.".to_string()
@@ -2095,6 +2103,7 @@ async fn new_attempt(
     Ok((a, log_path))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn launch(
     f: &Forge,
     t: &Task,
@@ -2103,6 +2112,7 @@ async fn launch(
     prompt: &str,
     log_path: &Path,
     resume: Option<&str>,
+    writes: bool,
 ) -> Result<agent::Outcome, Fault> {
     let outcome = agent::run(agent::Launch {
         task_id: t.id,
@@ -2116,6 +2126,7 @@ async fn launch(
         report: &f.report,
         step,
         resume,
+        writes,
     })
     .await
     .env()?;
@@ -2246,6 +2257,7 @@ async fn run_code_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
+        true,
     )
     .await?;
     let pending_main = git::rev_parse(wt, &format!("refs/heads/forge/{}", t.base_branch))
@@ -2341,6 +2353,7 @@ async fn run_tests_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
+        true,
     )
     .await?;
     let scratch = scratch_dir(&t.worktree);
@@ -2396,6 +2409,24 @@ fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String 
     p
 }
 
+/// What a stopped-early attempt is told when its session resumes: the
+/// signs by name, and what to do about each.
+fn early_feedback(why: &str, signals: &[&str]) -> String {
+    let mut fb = format!(
+        "Forge stopped this attempt early: {why}. Continue in this session and change course:"
+    );
+    for s in signals {
+        fb.push_str(match *s {
+            "no-edit" => " you have read enough, so make the change now and commit as soon as it compiles;",
+            "uncommitted" => " commit what you have right now, then keep committing as you go;",
+            "repeat" => " that command's result will not change, so act on what it already showed, or stop with a question;",
+            _ => "",
+        });
+    }
+    fb.push_str(" then return the structured result, whose `changes` must list every path changed since this session began.");
+    fb
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_plan_attempt(
     f: &Forge,
@@ -2436,6 +2467,7 @@ async fn run_plan_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
+        false,
     )
     .await?;
     let verdict = verify::verify_plan(
@@ -2529,6 +2561,7 @@ async fn run_review_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
+        false,
     )
     .await?;
     let verdict = verify::verify_review(

@@ -997,6 +997,8 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
 pub fn agent_failure(a: &Outcome) -> Option<String> {
     if a.rate_limited {
         Some("rate limited by the provider".into())
+    } else if let Some(why) = &a.ended_early {
+        Some(format!("stopped early: {why}"))
     } else if a.timed_out {
         Some("agent timed out".into())
     } else if a.exit_code != Some(0) {

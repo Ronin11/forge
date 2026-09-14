@@ -39,6 +39,12 @@ pub struct Outcome {
     pub rate_limits: RateLimits,
     /// The CLI session, so a capped attempt can be resumed where it stopped.
     pub session_id: Option<String>,
+    /// Forge ended the run itself because two signs of an attempt going
+    /// nowhere tripped (see `Watch`): the signs, for the record and the
+    /// continuation prompt.
+    pub ended_early: Option<String>,
+    /// Which signs tripped: "no-edit", "uncommitted", "repeat".
+    pub early_signals: Vec<&'static str>,
     /// The CLI ended the run at its turn limit.
     pub max_turns_hit: bool,
     /// The provider refused the run for a rate window: not the agent's fault.
@@ -140,6 +146,73 @@ pub struct Launch<'a> {
     pub step: &'a str,
     /// A CLI session to continue instead of starting fresh.
     pub resume: Option<&'a str>,
+    /// Whether this step is expected to change files (code, tests). A
+    /// read-only step (review, plan) is never faulted for not editing.
+    pub writes: bool,
+}
+
+/// Live signs that an attempt is going nowhere, computed from the tool
+/// calls as they stream. Any two together end the run: the session is
+/// kept and resumed with a prompt that names them, which is cheaper than
+/// letting the cap arrive. Thresholds come from the first 214 attempts,
+/// where capped coders had made no edit by call 30 and the ones that
+/// did edit were committing every few edits.
+#[derive(Default)]
+struct Watch {
+    calls: u32,
+    edits: u32,
+    edits_since_commit: u32,
+    commands: std::collections::HashMap<String, u32>,
+}
+
+impl Watch {
+    const NO_EDIT_CALLS: u32 = 30;
+    const EDITS_WITHOUT_COMMIT: u32 = 15;
+    const REPEATS: u32 = 5;
+
+    fn saw(&mut self, name: &str, input: &Value) {
+        self.calls += 1;
+        match name {
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
+                self.edits += 1;
+                self.edits_since_commit += 1;
+            }
+            "Bash" => {
+                let cmd = input["command"].as_str().unwrap_or("").trim().to_string();
+                if cmd.contains("git commit") {
+                    self.edits_since_commit = 0;
+                }
+                if !cmd.is_empty() {
+                    *self.commands.entry(cmd).or_insert(0) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The signs that have tripped: (kind, what happened).
+    fn tripped(&self, writes: bool) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if writes && self.calls >= Self::NO_EDIT_CALLS && self.edits == 0 {
+            out.push(("no-edit", format!("{} tool calls with no edit", self.calls)));
+        }
+        if writes && self.edits_since_commit >= Self::EDITS_WITHOUT_COMMIT {
+            out.push((
+                "uncommitted",
+                format!("{} edits since the last commit", self.edits_since_commit),
+            ));
+        }
+        if let Some((cmd, n)) = self
+            .commands
+            .iter()
+            .filter(|(_, n)| **n >= Self::REPEATS)
+            .max_by_key(|(_, n)| **n)
+        {
+            let short: String = cmd.chars().take(60).collect();
+            out.push(("repeat", format!("`{short}` run {n} times")));
+        }
+        out
+    }
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
@@ -201,6 +274,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     )?;
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
+    let mut watch = Watch::default();
     let stdout = child.stdout.take().context("agent stdout")?;
     let mut lines = BufReader::new(stdout).lines();
 
@@ -229,15 +303,35 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                                 let id = b["id"].as_str().unwrap_or("").to_string();
                                 if seen_tools.insert(id) {
                                     out.tool_calls += 1;
-                                    l.report.emit(
-                                        l.task_id,
-                                        Event::ToolCall {
-                                            name: b["name"].as_str().unwrap_or("?"),
-                                        },
-                                    );
+                                    let name = b["name"].as_str().unwrap_or("?");
+                                    l.report.emit(l.task_id, Event::ToolCall { name });
+                                    watch.saw(name, &b["input"]);
                                 }
                             }
                         }
+                    }
+                    let tripped = watch.tripped(l.writes);
+                    if tripped.len() >= 2 {
+                        let text = tripped
+                            .iter()
+                            .map(|(_, w)| w.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        writeln!(
+                            log,
+                            "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
+                            start.elapsed().as_millis(),
+                            serde_json::to_string(&text)?
+                        )?;
+                        l.report.emit(
+                            l.task_id,
+                            Event::Note {
+                                text: &format!("early    stopped: {text}"),
+                            },
+                        );
+                        out.early_signals = tripped.iter().map(|(k, _)| *k).collect();
+                        out.ended_early = Some(text);
+                        break;
                     }
                 }
                 Some("system") => {
@@ -307,9 +401,14 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     match tokio::time::timeout_at(deadline, read).await {
         Ok(r) => {
             r?;
-            match tokio::time::timeout_at(deadline, child.wait()).await {
-                Ok(status) => out.exit_code = status?.code(),
-                Err(_) => out.timed_out = true,
+            if out.ended_early.is_some() {
+                child.kill().await.ok();
+                child.wait().await.ok();
+            } else {
+                match tokio::time::timeout_at(deadline, child.wait()).await {
+                    Ok(status) => out.exit_code = status?.code(),
+                    Err(_) => out.timed_out = true,
+                }
             }
         }
         Err(_) => out.timed_out = true,

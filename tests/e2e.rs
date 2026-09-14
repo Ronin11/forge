@@ -2407,6 +2407,55 @@ fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
 }
 
 #[test]
+fn an_attempt_that_only_explores_is_stopped_early_and_its_session_resumed() {
+    // Two signs together (thirty calls with no edit; one command run five
+    // times) end the run long before the cap, and the session continues
+    // with a prompt that names them.
+    let e = Env::new();
+    let started = std::time::Instant::now();
+    let o = e.run("explorer.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the fake's half-minute sleep was cut short"
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(
+            "early    stopped: 30 tool calls with no edit; `grep -rn answer .` run 5 times"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("resume   continuing session sess-exp after stopping it early"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[0].1, "agent_failed");
+    assert!(
+        a[0].2
+            .starts_with("stopped early: 30 tool calls with no edit"),
+        "{}",
+        a[0].2
+    );
+    assert_eq!(a[1].1, "succeeded");
+    let prompt = e.log_text(1, 2);
+    assert!(
+        prompt.contains("Forge stopped this attempt early"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("you have read enough") && prompt.contains("will not change"),
+        "{prompt}"
+    );
+    assert!(
+        e.log_text(1, 1).contains("forge_early_end"),
+        "the stop is on the record"
+    );
+}
+
+#[test]
 fn an_attempt_that_hits_the_turn_cap_empty_handed_is_resumed_too() {
     // The session holds what the agent located even when the tree is
     // untouched; a fresh attempt would spend its turns finding it again.
