@@ -47,6 +47,28 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// The repomap blob cache: one small `.json` file per blob, nested under
+/// two-character prefix directories (see `repomap::BlobCache`).
+fn count_files(dir: &std::path::Path) -> (u64, u64) {
+    let mut count = 0u64;
+    let mut size = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (count, size);
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (c, s) = count_files(&entry.path());
+            count += c;
+            size += s;
+        } else if meta.is_file() {
+            count += 1;
+            size += meta.len();
+        }
+    }
+    (count, size)
+}
+
 /// A unix timestamp as a plain `YYYY-MM-DD`, with no timezone-database
 /// dependency: Howard Hinnant's civil_from_days over UTC days.
 fn ymd(unix_secs: i64) -> String {
@@ -146,6 +168,35 @@ pub fn run() -> Result<Vec<Check>> {
             "fix permissions or set FORGE2_HOME",
         )),
     }
+
+    let cache_dir = paths.home.join("cache").join("repomap");
+    out.push(if !cache_dir.exists() {
+        check(
+            "cache",
+            Status::Warn,
+            format!("{} does not exist", cache_dir.display()),
+            "it is created on the first repomap run; nothing to do yet",
+        )
+    } else {
+        let probe = cache_dir.join(".doctor-write-probe");
+        match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
+            Ok(()) => {
+                let (count, size) = count_files(&cache_dir);
+                check(
+                    "cache",
+                    Status::Ok,
+                    format!("{count} blob file(s) totaling {}", human_bytes(size)),
+                    "",
+                )
+            }
+            Err(e) => check(
+                "cache",
+                Status::Warn,
+                format!("{}: not writable: {e}", cache_dir.display()),
+                "fix permissions on the repomap cache directory",
+            ),
+        }
+    });
 
     match config::load_home(&paths.home) {
         Ok(c) => {
