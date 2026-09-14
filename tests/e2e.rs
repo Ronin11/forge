@@ -308,11 +308,9 @@ fn answer_records_a_decision_and_requeues_with_the_answer_appended() {
 
     let (task_text, retry_of): (String, Option<i64>) = e
         .db()
-        .query_row(
-            "SELECT task, retry_of FROM tasks WHERE id=2",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .query_row("SELECT task, retry_of FROM tasks WHERE id=2", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .unwrap();
     assert_eq!(retry_of, Some(1));
     assert_eq!(
