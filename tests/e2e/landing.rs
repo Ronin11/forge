@@ -87,6 +87,14 @@ fn a_verified_task_lands_on_the_base_and_the_next_task_starts_from_it() {
     );
     let o = e.forge("ok.sh", &["show", "1"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("landed main @"));
+    // The landing is a column the scheduler reads, not a wording of the reason.
+    let landed: String = e
+        .db()
+        .query_row("SELECT landed_sha FROM tasks WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(landed.len(), 40, "{landed}");
+    let (_, reason, _) = e.task(1);
+    assert!(reason.contains(&landed[..8]), "{reason} vs {landed}");
 }
 
 #[test]

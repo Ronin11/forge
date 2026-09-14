@@ -809,6 +809,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         match integrate(&f, &mut t, url, remote, &mut seq).await? {
             Integrate::Landed(sha) => {
                 last_reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
+                t.landed_sha = sha.clone();
                 landed = Some(sha);
                 break 'run;
             }

@@ -162,6 +162,10 @@ pub struct Task {
     /// What the last `plan` directive returned: the plan every later
     /// directive on this task is shown.
     pub plan: String,
+    /// The base commit the task's branch became, once landed; empty until
+    /// then. The scheduler's notion of "landed" is this column, not the
+    /// wording of `reason`.
+    pub landed_sha: String,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -474,11 +478,15 @@ ALTER TABLE decisions ADD COLUMN answered_by TEXT NOT NULL DEFAULT 'operator';
 ALTER TABLE decisions ADD COLUMN citations TEXT NOT NULL DEFAULT '';
 ALTER TABLE decisions ADD COLUMN retry_id INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN landed_sha TEXT NOT NULL DEFAULT '';
+UPDATE tasks SET landed_sha = substr(reason, instr(reason, '@ ') + 2, 8) WHERE reason LIKE 'landed %' AND instr(reason, '@ ') > 0;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure, plan";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure, plan, landed_sha";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -526,6 +534,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         context_enabled: r.get::<_, i64>(34)? != 0,
         resume_on_failure: r.get::<_, i64>(35)? != 0,
         plan: r.get(36)?,
+        landed_sha: r.get(37)?,
     })
 }
 
@@ -642,7 +651,7 @@ impl Store {
              started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
-             context_enabled=?33, resume_on_failure=?34, plan=?35 WHERE id=?1",
+             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -678,7 +687,8 @@ impl Store {
                 t.context,
                 t.context_enabled as i64,
                 t.resume_on_failure as i64,
-                t.plan
+                t.plan,
+                t.landed_sha
             ],
         )?;
         Ok(())
@@ -706,7 +716,7 @@ impl Store {
                  WHERE id = (
                    SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
                      SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                     WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.reason NOT LIKE 'landed %')
+                     WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
                    ) ORDER BY t.id LIMIT 1)
                  RETURNING id",
                 params![pid, crate::unix_now()],
@@ -735,7 +745,7 @@ impl Store {
         let mut stmt = c.prepare(
             "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
              WHERE t.state='queued' AND d.state IN ('failed', 'unverified')
-                OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.reason NOT LIKE 'landed %' AND d.finished_at IS NOT NULL)
+                OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.landed_sha = '' AND d.finished_at IS NOT NULL)
              ORDER BY t.id, d.id",
         )?;
         let rows: Vec<(i64, i64, String, String)> = stmt
@@ -1129,7 +1139,7 @@ impl Store {
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
                     COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
-                    SUM(t.reason LIKE 'landed %')
+                    SUM(t.landed_sha != '')
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
         )?;
@@ -1526,6 +1536,7 @@ mod column_tests {
         t.context_enabled = false;
         t.resume_on_failure = true;
         t.plan = "plan".into();
+        t.landed_sha = "abc123".into();
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));

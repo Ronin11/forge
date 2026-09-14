@@ -476,7 +476,7 @@ pub(crate) fn map_dep(
     let Some(dep) = f.store.task(d)? else {
         bail!("dependency {d} does not exist");
     };
-    if dep.state == TaskState::Succeeded && (!dep.land || dep.reason.starts_with("landed ")) {
+    if dep.state == TaskState::Succeeded && (!dep.land || !dep.landed_sha.is_empty()) {
         return Ok(d);
     }
     if matches!(dep.state, TaskState::Queued | TaskState::Running) {
@@ -1608,7 +1608,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
             t.state.as_str()
         );
     }
-    if t.reason.starts_with("landed ") {
+    if !t.landed_sha.is_empty() {
         bail!("task {id} already landed: {}", t.reason);
     }
     let repo = PathBuf::from(&t.repo);
@@ -1633,6 +1633,7 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
         })? {
         crate::engine::Integrate::Landed(sha) => {
             t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
+            t.landed_sha = sha.clone();
             t.pushed = true;
             if demoted {
                 t.state = TaskState::Succeeded;
