@@ -3260,6 +3260,7 @@ fn doctor_runs_and_reports_the_essentials() {
         "spend",
         "rate_limit",
         "worker",
+        "cache",
     ] {
         assert!(out.contains(name), "missing {name} in:\n{out}");
     }
@@ -3268,6 +3269,11 @@ fn doctor_runs_and_reports_the_essentials() {
         out.contains("events.jsonl") && out.contains("attempt log"),
         "{out}"
     );
+    assert!(out.contains("OK   cache"), "{out}");
+    assert!(out.contains("blob file"), "{out}");
+    // exercised: `forge run` above ran the repo-map step, so the shared
+    // cache under FORGE2_HOME/cache/repomap holds at least one blob.
+    assert!(!out.contains("WARN cache"), "{out}");
 
     let o = e.forge("ok.sh", &["doctor", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
@@ -3279,12 +3285,31 @@ fn doctor_runs_and_reports_the_essentials() {
             .any(|c| c["name"] == "worker" && c["status"] == "ok"),
         "missing worker row in {checks:?}"
     );
+    assert!(
+        checks.iter().any(|c| c["name"] == "cache"
+            && c["status"] == "ok"
+            && c["detail"].as_str().unwrap().contains("blob file")),
+        "missing cache row in {checks:?}"
+    );
     for field in ["name", "status", "detail", "hint"] {
         assert!(
             checks.iter().all(|c| c.get(field).is_some()),
             "every check should have {field} in {checks:?}"
         );
     }
+}
+
+#[test]
+fn doctor_warns_when_the_repomap_cache_is_missing() {
+    let e = Env::new();
+    // Bootstraps FORGE2_HOME without ever running a task, so
+    // cache/repomap is never created.
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("WARN cache"), "{out}");
+    assert!(out.contains("does not exist"), "{out}");
 }
 
 #[test]
