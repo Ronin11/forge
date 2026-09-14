@@ -14,7 +14,7 @@ use crate::landing::{Integrate, integrate, overlay_refs};
 use crate::operation::run_operation;
 use crate::prompts::early_feedback;
 use crate::report::Event;
-use crate::store::{AttemptState, Op, TaskState};
+use crate::store::{AttemptState, Op, Task, TaskState};
 use crate::verify::{self, Subject};
 use crate::workflows::{self, Contract, Kind};
 use crate::{config, git, unix_now};
@@ -184,7 +184,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         None => None,
     };
 
-    let mut seq: i64 = 0;
+    let seq: i64 = 0;
     if t.worktree.is_empty() {
         let base_name = format!("forge/{}-{}", t.id, slug(&t.task));
         t.branch = base_name.clone();
@@ -331,41 +331,29 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let task_cap = t.budget_usd.unwrap_or(f.budget.per_task_usd);
     let prior = f.store.attempts(id).env()?;
     let prior_ops = f.store.ops(id).env()?;
-    let mut done_directives: HashSet<i64> = prior
-        .iter()
-        .filter(|a| a.state == AttemptState::Succeeded)
-        .map(|a| a.step_seq)
-        .collect();
     let done_ops: HashSet<i64> = prior_ops
         .iter()
         .filter(|o| !o.kernel && o.ok)
         .map(|o| o.seq)
         .collect();
     let mut attempt_no = prior.len() as i64;
-    let mut last = AttemptState::Running;
-    let mut last_reason = String::new();
-    let mut budget_stop: Option<String> = None;
-    let mut all_ok = true;
-
-    // Attempts used per directive by this worker (a resumed task's earlier
-    // attempts were ended by a worker that died, not by the agent), and
-    // feedback owed to a directive by a verifying operation that failed.
-    let mut used: HashMap<i64, i64> = HashMap::new();
-    let mut owed: HashMap<i64, String> = HashMap::new();
-    let mut review_unfinished = false;
-    let mut idx = 0usize;
-    // The base branch's tip once the task landed on it.
-    let mut landed: Option<String> = None;
-    // The final push failed: verified work that could not be published is
-    // not a success, whatever the last attempt did.
-    let mut push_failed = false;
-    // Verified alone but could not land within its attempts or budget: the
-    // branch is pushed for a human rather than lost.
-    let mut stalled = false;
+    let mut run = Run {
+        idx: 0,
+        seq: 0,
+        used: HashMap::new(),
+        owed: HashMap::new(),
+        done: prior
+            .iter()
+            .filter(|a| a.state == AttemptState::Succeeded)
+            .map(|a| a.step_seq)
+            .collect(),
+    };
+    let mut end: Option<End> = None;
     'run: loop {
-        'steps: while idx < resolved.steps.len() {
-            let step = &resolved.steps[idx];
-            seq = idx as i64 + 1;
+        'steps: while run.idx < resolved.steps.len() {
+            let step = &resolved.steps[run.idx];
+            let seq = run.step_seq();
+            run.seq = seq;
             match step.action.kind {
                 Kind::Operation => {
                     // A mutating operation counts as done only once the kernel
@@ -380,21 +368,21 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         && (!step.action.mutates() || verified_here)
                         && !step.action.verifies
                     {
-                        idx += 1;
+                        run.idx += 1;
                         continue;
                     }
                     let (ok, detail) = run_operation(&f, &mut t, &cfg, step, seq).await?;
                     if ok {
-                        idx += 1;
+                        run.idx += 1;
                         continue;
                     }
                     if step.action.verifies
-                        && let Some(d_idx) = (0..idx)
+                        && let Some(d_idx) = (0..run.idx)
                             .rev()
                             .find(|&i| resolved.steps[i].action.kind == Kind::Directive)
                     {
                         let d_seq = d_idx as i64 + 1;
-                        if *used.get(&d_seq).unwrap_or(&0) < t.max_attempts {
+                        if run.used_at(d_seq) < t.max_attempts {
                             let d_name = resolved.steps[d_idx].action.name.clone();
                             f.report.emit(
                                 id,
@@ -405,31 +393,34 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     ),
                                 },
                             );
-                            owed.insert(d_seq, format!("The `{}` verification failed after your change:\n{}\nFix it, leave the tree clean, and commit.", step.action.name, detail));
-                            idx = d_idx;
+                            run.rewind(d_idx, format!("The `{}` verification failed after your change:\n{}\nFix it, leave the tree clean, and commit.", step.action.name, detail));
                             continue;
                         }
-                        last = AttemptState::ChecksFailed;
-                        last_reason = format!(
-                            "operation {} (verifies) failed after {} attempt(s): {}",
-                            step.action.name,
-                            used.get(&d_seq).unwrap_or(&0),
-                            detail.lines().next().unwrap_or("")
-                        );
-                        all_ok = false;
-                        break;
+                        end = Some(End::Failed {
+                            reason: format!(
+                                "operation {} (verifies) failed after {} attempt(s): {}",
+                                step.action.name,
+                                run.used_at(d_seq),
+                                detail.lines().next().unwrap_or("")
+                            ),
+                            counted: false,
+                            pushes: false,
+                        });
+                        break 'steps;
                     }
-                    last = AttemptState::ChecksFailed;
-                    last_reason = format!(
-                        "operation {} failed: {}",
-                        step.action.name,
-                        detail.lines().next().unwrap_or("")
-                    );
-                    all_ok = false;
-                    break;
+                    end = Some(End::Failed {
+                        reason: format!(
+                            "operation {} failed: {}",
+                            step.action.name,
+                            detail.lines().next().unwrap_or("")
+                        ),
+                        counted: false,
+                        pushes: false,
+                    });
+                    break 'steps;
                 }
                 Kind::Directive => {
-                    if done_directives.contains(&seq) && !owed.contains_key(&seq) {
+                    if run.done.contains(&seq) && !run.owed.contains_key(&seq) {
                         f.report.emit(
                             id,
                             Event::Note {
@@ -439,7 +430,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 ),
                             },
                         );
-                        idx += 1;
+                        run.idx += 1;
                         continue;
                     }
                     // Per-step parameters: the workflow's override, else the action's default, else the task's.
@@ -453,13 +444,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     if let Some(n) = step.timeout_secs {
                         ts.timeout_secs = n as i64;
                     }
-                    let mut feedback: Option<String> = owed.remove(&seq);
+                    let mut feedback: Option<String> = run.owed.remove(&seq);
                     let mut resume: Option<Resume> = None;
                     let mut step_ok = false;
+                    // How the directive's last attempt ended, for the step's End.
+                    let mut last = AttemptState::Running;
+                    let mut last_reason = String::new();
                     // The last attempt ran out of turns after committing, tree
                     // clean, no result: the checks can still judge the code.
                     let mut capped_committed = false;
-                    while *used.get(&seq).unwrap_or(&0) < t.max_attempts {
+                    while run.used_at(seq) < t.max_attempts {
                         // A subscription window at its cap: wait for the reset
                         // rather than start an attempt that would be rate limited.
                         while let Some((msg, until)) = crate::worker::window_hold(&f).env()? {
@@ -474,14 +468,13 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                         let spent = f.store.task_cost(id).env()?;
                         if spent >= task_cap {
-                            budget_stop = Some(format!(
+                            end = Some(End::Budget(format!(
                                 "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
-                            ));
-                            all_ok = false;
+                            )));
                             break 'steps;
                         }
-                        *used.entry(seq).or_insert(0) += 1;
-                        let n = used[&seq];
+                        *run.used.entry(seq).or_insert(0) += 1;
+                        let n = run.used[&seq];
                         attempt_no += 1;
                         f.report.emit(
                             id,
@@ -535,7 +528,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         // window; the same feedback and session go again.
                         if outcome.rate_limited {
                             f.report.emit(id, Event::Note { text: "rate     the provider refused this run; it does not count as an attempt" });
-                            *used.entry(seq).or_insert(1) -= 1;
+                            run.refund(seq);
                             continue;
                         }
                         // A check that failed only inside the verification namespace
@@ -546,29 +539,30 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             && step.action.contract != Contract::Tests
                             && let Some((check, tail)) =
                                 verify::tests_fault(&verdict.checks, &cfg.namespace)
-                            && let Some(t_idx) = (0..idx)
+                            && let Some(t_idx) = (0..run.idx)
                                 .rev()
                                 .find(|&i| resolved.steps[i].action.contract == Contract::Tests)
                         {
                             let t_seq = t_idx as i64 + 1;
-                            let t_used = *used.get(&t_seq).unwrap_or(&0);
+                            let t_used = run.used_at(t_seq);
                             if t_used < t.max_attempts {
-                                *used.entry(seq).or_insert(1) -= 1;
+                                run.refund(seq);
                                 f.report.emit(id, Event::Note { text: &format!("verify   {check} failed inside {}; back to {} for another attempt", cfg.namespace.join(" "), resolved.steps[t_idx].action.name) });
-                                owed.insert(t_seq, format!("The repository's `{check}` check failed on the implementer's tree, and every error is inside your tests:\n{tail}\nThe implementer cannot see or edit those files. Fix your tests so the repository's checks pass with them in place, commit, and describe the interface again."));
-                                done_directives.retain(|&d| d < t_seq);
+                                run.rewind(t_idx, format!("The repository's `{check}` check failed on the implementer's tree, and every error is inside your tests:\n{tail}\nThe implementer cannot see or edit those files. Fix your tests so the repository's checks pass with them in place, commit, and describe the interface again."));
                                 // The coder starts over against the corrected tests.
                                 git::reset_hard(Path::new(&t.worktree), &t.base_sha)
                                     .await
                                     .task()?;
-                                idx = t_idx;
                                 continue 'steps;
                             }
-                            last_reason = format!(
-                                "check {check} failed inside the verification namespace after {t_used} tests attempt(s): {}",
-                                tail.lines().next().unwrap_or("")
-                            );
-                            all_ok = false;
+                            end = Some(End::Failed {
+                                reason: format!(
+                                    "check {check} failed inside the verification namespace after {t_used} tests attempt(s): {}",
+                                    tail.lines().next().unwrap_or("")
+                                ),
+                                counted: true,
+                                pushes: false,
+                            });
                             break 'steps;
                         }
                         match a.state {
@@ -705,74 +699,98 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             }
                         }
                     }
-                    if !step_ok {
-                        // A coder that ran out of turns after committing a clean
-                        // tree left code the checks can judge. If they pass, no
-                        // agent vouched for it, so it goes to a human as unverified
-                        // rather than being thrown away.
-                        if step.action.contract == Contract::Code
-                            && last == AttemptState::AgentFailed
-                            && capped_committed
-                        {
-                            let overlay = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
-                            let v = verify::verify_integration(&Subject {
-                                task_id: t.id,
-                                repo: &repo,
-                                worktree: &wt,
-                                base_sha: &t.base_sha,
-                                start_sha: &t.base_sha,
-                                cfg: &cfg,
-                                task_checks: &t.checks,
-                                paths: &[],
-                                allow_protected: t.allow_protected,
-                                overlay_refs: &overlay,
-                                pending_main: None,
-                                sandbox: f.sandbox.as_ref(),
-                                report: &f.report,
-                                scratch: None,
-                            })
-                            .await
-                            .task()?;
-                            if v.state == AttemptState::Succeeded {
-                                review_unfinished = true;
-                                last = AttemptState::Unverified;
-                                last_reason = "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human".into();
-                            } else {
-                                last_reason = format!(
-                                    "ran out of turns after committing; the checks fail: {}",
-                                    v.reason
-                                );
-                            }
-                            f.report.emit(
-                                id,
-                                Event::Note {
-                                    text: &format!("capped   {last_reason}"),
-                                },
-                            );
-                        }
-                        // A reviewer that never reached a verdict is not evidence
-                        // of a defect: the branch verified at the code step, so it
-                        // goes to a human as unverified instead of failing.
-                        if step.action.contract == Contract::Review
-                            && last == AttemptState::AgentFailed
-                        {
-                            review_unfinished = true;
-                            last = AttemptState::Unverified;
-                            last_reason = format!(
-                                "review could not finish ({last_reason}); the branch verified at the code step and goes to human review"
-                            );
-                        }
-                        all_ok = false;
-                        break;
+                    if step_ok {
+                        run.idx += 1;
+                        continue;
                     }
-                    idx += 1;
+                    // The directive is out of attempts, or stopped: what that
+                    // means for the task.
+                    // A coder that ran out of turns after committing a clean
+                    // tree left code the checks can judge. If they pass, no
+                    // agent vouched for it, so it goes to a human as unverified
+                    // rather than being thrown away.
+                    if step.action.contract == Contract::Code
+                        && last == AttemptState::AgentFailed
+                        && capped_committed
+                    {
+                        let overlay = overlay_refs(&repo, t.id, Some(&t.verify_base)).await;
+                        let v = verify::verify_integration(&Subject {
+                            task_id: t.id,
+                            repo: &repo,
+                            worktree: &wt,
+                            base_sha: &t.base_sha,
+                            start_sha: &t.base_sha,
+                            cfg: &cfg,
+                            task_checks: &t.checks,
+                            paths: &[],
+                            allow_protected: t.allow_protected,
+                            overlay_refs: &overlay,
+                            pending_main: None,
+                            sandbox: f.sandbox.as_ref(),
+                            report: &f.report,
+                            scratch: None,
+                        })
+                        .await
+                        .task()?;
+                        let reason = if v.state == AttemptState::Succeeded {
+                            "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human".to_string()
+                        } else {
+                            format!(
+                                "ran out of turns after committing; the checks fail: {}",
+                                v.reason
+                            )
+                        };
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!("capped   {reason}"),
+                            },
+                        );
+                        end = Some(if v.state == AttemptState::Succeeded {
+                            End::Unverified(reason)
+                        } else {
+                            End::Failed {
+                                reason,
+                                counted: true,
+                                pushes: false,
+                            }
+                        });
+                        break 'steps;
+                    }
+                    // A reviewer that never reached a verdict is not evidence
+                    // of a defect: the branch verified at the code step, so it
+                    // goes to a human as unverified instead of failing.
+                    if step.action.contract == Contract::Review && last == AttemptState::AgentFailed
+                    {
+                        end = Some(End::Unverified(format!(
+                            "review could not finish ({last_reason}); the branch verified at the code step and goes to human review"
+                        )));
+                        break 'steps;
+                    }
+                    end = Some(match last {
+                        AttemptState::NeedsInput => End::Blocked {
+                            reason: last_reason.clone(),
+                            demoted: last_reason.starts_with("review demoted"),
+                        },
+                        AttemptState::Unverified => End::Unverified(last_reason.clone()),
+                        _ => End::Failed {
+                            reason: last_reason.clone(),
+                            counted: true,
+                            pushes: false,
+                        },
+                    });
+                    break 'steps;
                 }
             }
+        }
+        if end.is_some() {
+            break 'run;
         }
         // Landing: a kernel operation, after the last step and before anything
         // is pushed. The branch verified against the base it started from; it
         // lands only if it also verifies with the base as it is now.
-        if !(all_ok && budget_stop.is_none() && t.land) {
+        if !t.land {
+            end = Some(End::Verified);
             break 'run;
         }
         let (Some(url), Some(remote)) = (&remote_url, &base_cfg.push_remote) else {
@@ -782,13 +800,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     text: "land     skipped: the repository has no push remote",
                 },
             );
+            end = Some(End::Verified);
             break 'run;
         };
-        match integrate(&f, &mut t, url, remote, &mut seq).await? {
+        let mut seq = run.seq;
+        let outcome = integrate(&f, &mut t, url, remote, &mut seq).await?;
+        run.seq = seq;
+        match outcome {
             Integrate::Landed(sha) => {
-                last_reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
                 t.landed_sha = sha.clone();
-                landed = Some(sha);
+                end = Some(End::Landed(sha));
                 break 'run;
             }
             Integrate::Rewind { feedback, first } => {
@@ -796,13 +817,15 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     .rev()
                     .find(|&i| resolved.steps[i].action.contract == Contract::Code)
                 else {
-                    last = AttemptState::ChecksFailed;
-                    last_reason = format!("landing failed: {first}");
-                    all_ok = false;
+                    end = Some(End::Failed {
+                        reason: format!("landing failed: {first}"),
+                        counted: true,
+                        pushes: false,
+                    });
                     break 'run;
                 };
                 let c_seq = c_idx as i64 + 1;
-                let c_used = *used.get(&c_seq).unwrap_or(&0);
+                let c_used = run.used_at(c_seq);
                 let spent = f.store.task_cost(id).env()?;
                 if c_used < t.max_attempts && spent < task_cap {
                     f.report.emit(
@@ -816,44 +839,40 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     );
                     // The base moved: its checks and rules are the ones that apply now.
                     cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
-                    owed.insert(c_seq, feedback);
-                    done_directives.retain(|&d| d < c_seq);
-                    idx = c_idx;
+                    run.rewind(c_idx, feedback);
                     continue 'run;
                 }
-                last = AttemptState::ChecksFailed;
-                last_reason = if spent >= task_cap {
-                    format!(
-                        "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed for a human"
-                    )
-                } else {
-                    format!(
-                        "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed for a human"
-                    )
-                };
-                stalled = true;
-                all_ok = false;
+                end = Some(End::Failed {
+                    reason: if spent >= task_cap {
+                        format!(
+                            "landing failed: {first}; the task budget is spent (${spent:.2} of ${task_cap:.2}), so the verified branch is pushed for a human"
+                        )
+                    } else {
+                        format!(
+                            "landing failed after {c_used} attempt(s): {first}; the verified branch is pushed for a human"
+                        )
+                    },
+                    counted: true,
+                    pushes: true,
+                });
                 break 'run;
             }
             Integrate::Failed(reason) => {
-                last = AttemptState::ChecksFailed;
-                last_reason = format!("landing failed: {reason}");
-                all_ok = false;
+                end = Some(End::Failed {
+                    reason: format!("landing failed: {reason}"),
+                    counted: true,
+                    pushes: false,
+                });
                 break 'run;
             }
         }
     }
+    let mut end = end.unwrap_or(End::Verified);
 
     let mut compare: Option<String> = None;
-    let review_demoted =
-        last == AttemptState::NeedsInput && last_reason.starts_with("review demoted");
-    if all_ok && budget_stop.is_none() {
-        last = AttemptState::Succeeded;
-    }
-    if landed.is_none()
-        && ((all_ok && budget_stop.is_none()) || review_demoted || review_unfinished || stalled)
-    {
-        seq += 1;
+    if end.pushes() {
+        run.seq += 1;
+        let seq = run.seq;
         if let Some(url) = &remote_url {
             let timer = Timer::now();
             match git::push(&wt, url, &t.branch).await {
@@ -884,8 +903,13 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     )?;
                 }
                 Err(e) => {
-                    last_reason = format!("push failed: {e:#}");
-                    push_failed = true;
+                    // Verified work that could not be published is not a
+                    // success, whatever the last attempt did.
+                    end = End::Failed {
+                        reason: format!("push failed: {e:#}"),
+                        counted: false,
+                        pushes: false,
+                    };
                     f.report.emit(
                         id,
                         Event::PushFailed {
@@ -940,23 +964,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
 
     let attempts = f.store.attempts(id).env()?;
     let cost = f.store.task_cost(id).env()?;
-    t.state = match last {
-        // A budget stop is never a success, whatever the last attempt did.
-        _ if budget_stop.is_some() => TaskState::Failed,
-        _ if push_failed => TaskState::Failed,
-        AttemptState::Succeeded => TaskState::Succeeded,
-        AttemptState::Unverified => TaskState::Unverified,
-        AttemptState::NeedsInput => TaskState::Blocked,
-        _ => TaskState::Failed,
-    };
-    t.reason = match (budget_stop, last) {
-        (Some(b), _) => b,
-        (None, _) if push_failed => last_reason,
-        (None, AttemptState::Succeeded | AttemptState::NeedsInput) => last_reason,
-        (None, AttemptState::Running) => "no attempts ran".into(),
-        (None, _) if last_reason.starts_with("operation ") => last_reason,
-        (None, _) => format!("{last_reason} (after {} attempt(s))", attempts.len()),
-    };
+    t.state = end.task_state();
+    t.reason = end.reason(&t, attempts.len());
     t.finished_at = Some(unix_now());
     t.worker_pid = None;
     f.store.update_task(&t).env()?;
@@ -975,6 +984,117 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         },
     );
     Ok(t.state)
+}
+
+/// The run's cursor over the resolved steps: where it is, what each
+/// directive has spent, what a verifying step or a landing owes a
+/// directive as feedback, and which directives are already verified.
+/// One `rewind` does every piece of bookkeeping a step back needs; the
+/// side effects the caller owns (resetting the tree, reloading the
+/// config, refunding an attempt) stay at the call site, named.
+struct Run {
+    idx: usize,
+    /// The op sequence number of the current step; landing and push
+    /// continue from it.
+    seq: i64,
+    /// Attempts used per directive by this worker (a resumed task's
+    /// earlier attempts were ended by a worker that died, not by the agent).
+    used: HashMap<i64, i64>,
+    /// Feedback owed to a directive by a verifying operation or a landing
+    /// that failed after it.
+    owed: HashMap<i64, String>,
+    /// Directives already verified, by sequence number.
+    done: HashSet<i64>,
+}
+
+impl Run {
+    fn step_seq(&self) -> i64 {
+        self.idx as i64 + 1
+    }
+
+    fn used_at(&self, seq: i64) -> i64 {
+        *self.used.get(&seq).unwrap_or(&0)
+    }
+
+    /// An attempt that does not count against the directive (refused by
+    /// the provider, or a failure that was the test author's).
+    fn refund(&mut self, seq: i64) {
+        *self.used.entry(seq).or_insert(1) -= 1;
+    }
+
+    /// Go back to the directive at `to`, owing it `feedback`; everything
+    /// verified from there on is unverified again.
+    fn rewind(&mut self, to: usize, feedback: String) {
+        let to_seq = to as i64 + 1;
+        self.owed.insert(to_seq, feedback);
+        self.done.retain(|&d| d < to_seq);
+        self.idx = to;
+    }
+}
+
+/// How a run ended. Set exactly once at the point that decides it; the
+/// push decision and the task's state and reason derive from it, so
+/// they cannot disagree.
+enum End {
+    /// Every step verified; the branch is pushed for a human (no landing
+    /// asked for, or no remote to land on).
+    Verified,
+    /// Landed on the base at this commit.
+    Landed(String),
+    /// Verified work that no agent vouched for, or a review that never
+    /// finished: pushed, and a human decides.
+    Unverified(String),
+    /// The agent stopped with a question, or a reviewer demoted the
+    /// task; a demoted branch is pushed so the human can look.
+    Blocked { reason: String, demoted: bool },
+    /// The task failed. `counted` appends the attempt count to the
+    /// reason; `pushes` keeps a verified branch that could not land.
+    Failed {
+        reason: String,
+        counted: bool,
+        pushes: bool,
+    },
+    /// The task's cost cap was reached before it finished.
+    Budget(String),
+}
+
+impl End {
+    fn pushes(&self) -> bool {
+        match self {
+            End::Verified | End::Unverified(_) => true,
+            End::Landed(_) | End::Budget(_) => false,
+            End::Blocked { demoted, .. } => *demoted,
+            End::Failed { pushes, .. } => *pushes,
+        }
+    }
+
+    fn task_state(&self) -> TaskState {
+        match self {
+            End::Verified | End::Landed(_) => TaskState::Succeeded,
+            End::Unverified(_) => TaskState::Unverified,
+            End::Blocked { .. } => TaskState::Blocked,
+            End::Failed { .. } | End::Budget(_) => TaskState::Failed,
+        }
+    }
+
+    fn reason(&self, t: &Task, attempts: usize) -> String {
+        match self {
+            End::Verified => String::new(),
+            End::Landed(sha) => {
+                format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
+            }
+            End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),
+            End::Failed {
+                reason, counted, ..
+            } => {
+                if *counted {
+                    format!("{reason} (after {attempts} attempt(s))")
+                } else {
+                    reason.clone()
+                }
+            }
+        }
+    }
 }
 
 /// Where a retry may start from: the parent's branch, when the parent's

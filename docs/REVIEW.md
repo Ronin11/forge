@@ -248,7 +248,7 @@ it; the supervisor's verdict moved into verify.rs; `From<Fault> for
 anyhow::Error`; `#[serde(default)]` on `Ruling`.
 
 **Stage 6. The attempt runner and the explicit run (hand, last in the
-kernel).** `attempt.rs` with one `run_attempt` driven by an
+kernel). Done 2026-09-14: attempt.rs with one run_attempt over a per-contract Spec; the run is a Run cursor with one rewind and an End value set once at the point that decides it, from which the push decision and the task state derive. engine.rs is at 1090 lines from 2583; every fake's terminal path passed unchanged.** `attempt.rs` with one `run_attempt` driven by an
 `AttemptSpec { dir, writes, verify, verify_ref, extra_inputs }`, with the
 review-feedback gap decided explicitly; then `struct Run` with one
 `rewind(to, kind)` that does every bookkeeping step and returns the side
