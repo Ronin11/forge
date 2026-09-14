@@ -105,6 +105,9 @@ enum Cmd {
         /// Machine-readable
         #[arg(long)]
         json: bool,
+        /// Only tasks in this state (queued, running, succeeded, failed, blocked, unverified)
+        #[arg(long)]
+        state: Option<String>,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -206,7 +209,7 @@ pub async fn main() -> Result<()> {
             )
             .await
         }
-        Cmd::Log { limit, json } => log(limit, json),
+        Cmd::Log { limit, json, state } => log(limit, json, state),
         Cmd::Retry {
             id,
             chain,
@@ -930,7 +933,7 @@ fn requests(json: bool) -> Result<()> {
 
 fn tool_stats(f: &Forge) -> Result<()> {
     use std::collections::BTreeMap;
-    let tasks = f.store.list_tasks(10_000)?;
+    let tasks = f.store.list_tasks(10_000, None)?;
     // step -> aggregated tools
     let mut per_step: BTreeMap<String, (usize, crate::tools::Tools)> = BTreeMap::new();
     for t in tasks {
@@ -1103,9 +1106,9 @@ fn stats(tools: bool) -> Result<()> {
     Ok(())
 }
 
-fn tasks_json(f: &Forge, limit: u32) -> Result<Vec<serde_json::Value>> {
+fn tasks_json(f: &Forge, limit: u32, state: Option<TaskState>) -> Result<Vec<serde_json::Value>> {
     Ok(f.store
-        .list_tasks(limit)?
+        .list_tasks(limit, state)?
         .into_iter()
         .map(|s| serde_json::json!({"id": s.id, "state": s.state, "workflow": s.workflow, "attempts": s.attempts, "cost_usd": s.cost, "created": s.created, "repo": s.repo, "task": s.task}))
         .collect())
@@ -1382,7 +1385,7 @@ fn snapshot() -> Result<()> {
         .map(|m| m.len())
         .unwrap_or(0);
     let doc = serde_json::json!({
-        "tasks": tasks_json(&f, 200)?,
+        "tasks": tasks_json(&f, 200, None)?,
         "requests": requests_json(&f)?,
         "worker": worker_json(&f),
         "events_offset": offset,
@@ -1437,10 +1440,22 @@ fn events(since: Option<u64>, follow: bool, task: Option<i64>) -> Result<()> {
     }
 }
 
-fn log(limit: u32, json: bool) -> Result<()> {
+fn log(limit: u32, json: bool, state: Option<String>) -> Result<()> {
+    let state = state
+        .map(|s| {
+            TaskState::try_from(s.as_str()).map_err(|_| {
+                anyhow::anyhow!(
+                    "unknown state {s:?}; valid states are queued, running, succeeded, failed, blocked, unverified"
+                )
+            })
+        })
+        .transpose()?;
     let f = Forge::open(false, false)?;
     if json {
-        out!("{}", serde_json::to_string_pretty(&tasks_json(&f, limit)?)?);
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&tasks_json(&f, limit, state)?)?
+        );
         return Ok(());
     }
     out!(
@@ -1453,7 +1468,7 @@ fn log(limit: u32, json: bool) -> Result<()> {
         "CREATED",
         "REPO"
     );
-    for s in f.store.list_tasks(limit)? {
+    for s in f.store.list_tasks(limit, state)? {
         let repo_name = Path::new(&s.repo)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
