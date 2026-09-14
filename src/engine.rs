@@ -234,6 +234,44 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             .await
             .unwrap_or_default();
         t.worktree = dir.display().to_string();
+        // A retry of a task whose branch passed the checks starts from
+        // that branch, not from scratch: the review's finding or the
+        // operator's answer is the only thing left to act on. Three fresh
+        // rebuilds of one verified split cost ten dollars before this.
+        if let Some(old) = t.retry_of
+            && let Some(from) = verified_branch_of(&f, old).await
+        {
+            match git::fetch_ref(&dir, &from.source, &from.branch).await {
+                Ok(()) if git::is_ancestor(&dir, &t.base_sha, "FETCH_HEAD").await => {
+                    let tip = git::rev_parse(&dir, "FETCH_HEAD").await.unwrap_or_default();
+                    git::reset_hard(&dir, "FETCH_HEAD").await.task()?;
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!(
+                                "start    from task {old}'s verified branch {} @ {}",
+                                from.branch,
+                                &tip[..tip.len().min(8)]
+                            ),
+                        },
+                    );
+                }
+                Ok(()) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!(
+                            "start    task {old}'s branch does not contain the current base; starting fresh"
+                        ),
+                    },
+                ),
+                Err(e) => f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!("start    task {old}'s branch could not be fetched ({e:#}); starting fresh"),
+                    },
+                ),
+            }
+        }
     }
     f.store.update_task(&t).env()?;
     let wt = PathBuf::from(&t.worktree);
@@ -1753,6 +1791,11 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
                 long.push_str(&format!("\n    found:   {}", clip(&found.join("; "), 400)));
             } else if a.state == AttemptState::AgentFailed {
                 long.push_str(&format!("\n    found:   {}", first_line(&a.reason)));
+            } else if a.state == AttemptState::NeedsInput {
+                long.push_str(&format!(
+                    "\n    found:   the checks passed; it stopped with: {}",
+                    clip(&first_line(&a.reason), 400)
+                ));
             } else if a.state == AttemptState::Succeeded {
                 long.push_str("\n    found:   every check passed");
             }
@@ -2417,6 +2460,48 @@ fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String 
         p.push_str(&format!("\n\nThis step:\n{sp}"));
     }
     p
+}
+
+/// Where a retry may start from: the parent's branch, when the parent's
+/// last real attempt passed the checks (verified, or verified and then
+/// demoted by a reviewer) and its clone or its pushed branch still exists.
+struct VerifiedBranch {
+    source: String,
+    branch: String,
+}
+
+async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
+    let parent = f.store.task(old).ok().flatten()?;
+    if parent.branch.is_empty() {
+        return None;
+    }
+    let attempts = f.store.attempts(old).ok()?;
+    let last = attempts.iter().rev().find(|a| a.step != "supervisor")?;
+    let verified = match last.state {
+        AttemptState::Succeeded => true,
+        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
+        _ => false,
+    };
+    if !verified || last.commits == 0 && attempts.iter().all(|a| a.commits == 0) {
+        return None;
+    }
+    if Path::new(&parent.worktree).join(".git").exists() {
+        return Some(VerifiedBranch {
+            source: parent.worktree.clone(),
+            branch: parent.branch.clone(),
+        });
+    }
+    if parent.pushed {
+        let repo = Path::new(&parent.repo);
+        let cfg = config::load_working(repo).await.ok()?;
+        let remote = cfg.push_remote?;
+        let url = git::remote_url(repo, &remote).await?;
+        return Some(VerifiedBranch {
+            source: url,
+            branch: parent.branch.clone(),
+        });
+    }
+    None
 }
 
 /// What a stopped-early attempt is told when its session resumes: the
