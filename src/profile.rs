@@ -4,6 +4,8 @@
 //! that makes choosing a workflow a comparison rather than a guess, and
 //! the lookback that catches a version that made things worse.
 
+use crate::store::Store;
+use anyhow::Result;
 use serde::Serialize;
 
 /// Runs needed before a profile is reported as known.
@@ -103,6 +105,39 @@ pub fn profile(runs: &[Run]) -> Profile {
 /// allow: the current success interval sits entirely below the previous.
 pub fn regressed(current: &Profile, previous: &Profile) -> bool {
     current.known && previous.known && current.rate_hi < previous.rate_lo
+}
+
+/// Measured profile of a workflow: current version, previous version if
+/// any, and all versions together, over the lookback window.
+pub struct Measured {
+    pub current: Profile,
+    pub previous: Option<(String, Profile)>,
+    pub all: Profile,
+    pub regressed: bool,
+}
+
+/// Profile `workflow` at `hash` (its current version), against its
+/// previous version and against all versions combined.
+pub fn measure(store: &Store, workflow: &str, hash: &str) -> Result<Measured> {
+    let current = profile(&store.runs(workflow, Some(hash), LOOKBACK)?);
+    let all = profile(&store.runs(workflow, None, LOOKBACK)?);
+    let previous = store
+        .workflow_versions(workflow)?
+        .into_iter()
+        .find(|h| h != hash)
+        .map(|h| {
+            let p = profile(&store.runs(workflow, Some(&h), LOOKBACK).unwrap_or_default());
+            (h, p)
+        });
+    let is_regressed = previous
+        .as_ref()
+        .is_some_and(|(_, p)| regressed(&current, p));
+    Ok(Measured {
+        current,
+        previous,
+        all,
+        regressed: is_regressed,
+    })
 }
 
 impl Profile {

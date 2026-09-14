@@ -533,40 +533,8 @@ fn run_doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Measured profile of a workflow: current version, previous version if
-/// any, and all versions together, over the lookback window.
-struct Measured {
-    current: profile::Profile,
-    previous: Option<(String, profile::Profile)>,
-    all: profile::Profile,
-    regressed: bool,
-}
-
-fn measure(f: &Forge, w: &workflows::Workflow) -> Result<Measured> {
-    let current = profile::profile(&f.store.runs(&w.name, Some(&w.hash), LOOKBACK)?);
-    let all = profile::profile(&f.store.runs(&w.name, None, LOOKBACK)?);
-    let previous = f
-        .store
-        .workflow_versions(&w.name)?
-        .into_iter()
-        .find(|h| h != &w.hash)
-        .map(|h| {
-            let p = profile::profile(
-                &f.store
-                    .runs(&w.name, Some(&h), LOOKBACK)
-                    .unwrap_or_default(),
-            );
-            (h, p)
-        });
-    let regressed = previous
-        .as_ref()
-        .is_some_and(|(_, p)| profile::regressed(&current, p));
-    Ok(Measured {
-        current,
-        previous,
-        all,
-        regressed,
-    })
+fn measure(f: &Forge, w: &workflows::Workflow) -> Result<profile::Measured> {
+    profile::measure(&f.store, &w.name, &w.hash)
 }
 
 fn list_workflows(json: bool) -> Result<()> {

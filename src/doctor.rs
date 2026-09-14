@@ -291,34 +291,28 @@ pub fn run() -> Result<Vec<Check>> {
         let mut bad: Vec<String> = Vec::new();
         let mut known = 0;
         for w in &all {
-            let cur = crate::profile::profile(
-                &store
-                    .runs(&w.name, Some(&w.hash), crate::profile::LOOKBACK)
-                    .unwrap_or_default(),
-            );
+            let m = crate::profile::measure(&store, &w.name, &w.hash).unwrap_or_else(|_| {
+                crate::profile::Measured {
+                    current: crate::profile::profile(&[]),
+                    previous: None,
+                    all: crate::profile::profile(&[]),
+                    regressed: false,
+                }
+            });
+            let cur = &m.current;
             if cur.known {
                 known += 1;
             }
-            if let Some(prev_hash) = store
-                .workflow_versions(&w.name)
-                .unwrap_or_default()
-                .into_iter()
-                .find(|h| h != &w.hash)
+            if let Some((prev_hash, prev)) = &m.previous
+                && m.regressed
             {
-                let prev = crate::profile::profile(
-                    &store
-                        .runs(&w.name, Some(&prev_hash), crate::profile::LOOKBACK)
-                        .unwrap_or_default(),
-                );
-                if crate::profile::regressed(&cur, &prev) {
-                    bad.push(format!(
-                        "{} regressed vs {} ({:.0}% vs {:.0}%)",
-                        w.name,
-                        &prev_hash[..8],
-                        cur.rate * 100.0,
-                        prev.rate * 100.0
-                    ));
-                }
+                bad.push(format!(
+                    "{} regressed vs {} ({:.0}% vs {:.0}%)",
+                    w.name,
+                    &prev_hash[..8],
+                    cur.rate * 100.0,
+                    prev.rate * 100.0
+                ));
             }
             if cur.known && cur.rate_hi < 0.5 {
                 bad.push(format!(
