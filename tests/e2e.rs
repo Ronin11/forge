@@ -2215,6 +2215,66 @@ fn a_failed_push_ends_the_task_failed_not_succeeded() {
 }
 
 #[test]
+fn the_supervisor_accepts_a_demotion_that_names_no_defect_and_the_branch_lands() {
+    let e = Env::new();
+    let mut c = e.cmd("ok.sh");
+    c.env("FORGE2_SUPERVISOR", "1");
+    for (role, fake) in [
+        ("REVIEW", "reviewer-approves-wrongly.sh"),
+        ("SUPERVISOR", "supervisor-accept.sh"),
+    ] {
+        c.env(
+            format!("FORGE2_CLAUDE_BIN_{role}"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(fake),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("review demoted: No defect found"), "{err}");
+    assert!(
+        err.contains(
+            "supervisor accepted the branch (citing answer.txt, forge.toml) and landed it"
+        ),
+        "{err}"
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    let ds: serde_json::Value = e.decisions_json();
+    assert_eq!(ds[0]["answered_by"], "supervisor");
+    assert!(
+        ds[0]["answer"]
+            .as_str()
+            .unwrap()
+            .starts_with("accepted the branch despite the demotion")
+    );
+    assert_eq!(ds[0]["outcome"], "succeeded");
+    // Nothing waits for the human, and nothing was rebuilt.
+    assert!(e.requests_json().as_array().unwrap().is_empty());
+    let log: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
+    assert_eq!(log.as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
     let e = Env::new();
     let o = supervised(&e, "supervisor-prereq.sh", "write 42 to the answer file");
