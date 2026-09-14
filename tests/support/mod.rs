@@ -110,8 +110,12 @@ impl Env {
     }
 
     pub fn trace_json(&self, id: impl std::fmt::Display) -> serde_json::Value {
-        serde_json::from_slice(&self.forge("ok.sh", &["trace", &id.to_string(), "--json"]).stdout)
-            .unwrap()
+        serde_json::from_slice(
+            &self
+                .forge("ok.sh", &["trace", &id.to_string(), "--json"])
+                .stdout,
+        )
+        .unwrap()
     }
 
     pub fn requests_json(&self) -> serde_json::Value {
