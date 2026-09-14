@@ -5,14 +5,17 @@ use crate::ctx::{Forge, Paths};
 use crate::store::{MIGRATIONS, Store, TaskState};
 use crate::{agent, config, sandbox, unix_now, worker, workflows};
 use anyhow::Result;
+use serde::Serialize;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Status {
     Ok,
     Warn,
     Fail,
 }
 
+#[derive(Serialize)]
 pub struct Check {
     pub name: String,
     pub status: Status,

@@ -2904,6 +2904,11 @@ fn protected_paths_fail_l0_unless_the_task_allows_them() {
 fn doctor_runs_and_reports_the_essentials() {
     let e = Env::new();
     assert!(e.run("ok.sh", &[]).status.success());
+    std::fs::write(
+        e.home.join("worker.pid"),
+        format!("{} /bin/true\n", std::process::id()),
+    )
+    .unwrap();
     let o = e.forge("ok.sh", &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
@@ -2918,6 +2923,7 @@ fn doctor_runs_and_reports_the_essentials() {
         "logs",
         "spend",
         "rate_limit",
+        "worker",
     ] {
         assert!(out.contains(name), "missing {name} in:\n{out}");
     }
@@ -2926,6 +2932,23 @@ fn doctor_runs_and_reports_the_essentials() {
         out.contains("events.jsonl") && out.contains("attempt log"),
         "{out}"
     );
+
+    let o = e.forge("ok.sh", &["doctor", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let checks: Vec<serde_json::Value> =
+        serde_json::from_slice(&o.stdout).expect("doctor --json prints a parseable JSON array");
+    assert!(
+        checks
+            .iter()
+            .any(|c| c["name"] == "worker" && c["status"] == "ok"),
+        "missing worker row in {checks:?}"
+    );
+    for field in ["name", "status", "detail", "hint"] {
+        assert!(
+            checks.iter().all(|c| c.get(field).is_some()),
+            "every check should have {field} in {checks:?}"
+        );
+    }
 }
 
 #[test]

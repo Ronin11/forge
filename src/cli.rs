@@ -128,7 +128,11 @@ enum Cmd {
     /// Show one task and its attempts
     Show { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
-    Doctor,
+    Doctor {
+        /// Machine-readable: a JSON array of {name, status, detail, hint}
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the crate version and, if built from a git checkout, its commit
     Version,
     /// List the workflows a task can run, with declared metadata and measured outcomes
@@ -227,7 +231,7 @@ pub async fn main() -> Result<()> {
         } => retry(id, chain, retries, budget, workflow).await,
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
-        Cmd::Doctor => run_doctor(),
+        Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
@@ -498,17 +502,21 @@ fn version() -> Result<()> {
     Ok(())
 }
 
-fn run_doctor() -> Result<()> {
+fn run_doctor(json: bool) -> Result<()> {
     let checks = doctor::run()?;
-    let mut failed = false;
+    let failed = checks.iter().any(|c| c.status == doctor::Status::Fail);
+    if json {
+        out!("{}", serde_json::to_string(&checks)?);
+        if failed {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     for c in &checks {
         let tag = match c.status {
             doctor::Status::Ok => "OK  ",
             doctor::Status::Warn => "WARN",
-            doctor::Status::Fail => {
-                failed = true;
-                "FAIL"
-            }
+            doctor::Status::Fail => "FAIL",
         };
         out!("{tag} {:<12} {}", c.name, c.detail);
         if !c.hint.is_empty() && c.status != doctor::Status::Ok {
