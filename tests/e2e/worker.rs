@@ -196,7 +196,11 @@ fn jobs_run_in_parallel() {
     }
     let start = Instant::now();
     assert!(
-        e.forge("slow.sh", &["work", "--once", "--jobs", "3"])
+        e.cmd("ok.sh")
+            .env("FAKE_SLEEP", "1")
+            .args(["work", "--once", "--jobs", "3"])
+            .output()
+            .unwrap()
             .status
             .success()
     );
@@ -255,12 +259,13 @@ fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
     let e = Env::new();
     let id = e.add(&[]);
     let child = e
-        .cmd("slow.sh")
+        .cmd("ok.sh")
+        .env("FAKE_SLEEP", "1")
         .args(["work", "--once"])
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // slow.sh takes 2s to answer; signal it well before that so the drain
+    // ok.sh with FAKE_SLEEP set takes 2s to answer; signal it well before that so the drain
     // has real work to wait out, not a race with an attempt already done.
     std::thread::sleep(Duration::from_millis(500));
     let pid = child.id().to_string();

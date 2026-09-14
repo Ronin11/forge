@@ -104,7 +104,7 @@ pub fn agent_env() -> Vec<(String, String)> {
         .filter(|(k, _)| {
             matches!(
                 k.as_str(),
-                "PATH" | "HOME" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR"
+                "PATH" | "HOME" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR" | "FAKE_SLEEP"
             ) || ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p))
         })
         .collect()

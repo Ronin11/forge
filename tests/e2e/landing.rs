@@ -286,7 +286,8 @@ fn a_task_is_judged_by_the_hidden_suite_that_matches_its_base_not_one_that_grew_
     git(&e.repo, &["commit", "-qam", "acceptance layout"]);
     // B starts first and takes a while; it does not write the answer.
     let child = e
-        .cmd("slowaddfile.sh")
+        .cmd("addfile.sh")
+        .env("FAKE_SLEEP", "1")
         .args([
             "run",
             e.repo.to_str().unwrap(),
@@ -369,7 +370,8 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
     let e = Env::new();
     tdd_repo(&e);
     // The coder is slow enough for main to move underneath it.
-    let mut c = e.with_role("slowfeedback.sh", "TESTS", "testwriter.sh");
+    let mut c = e.with_role("feedbackcoder.sh", "TESTS", "testwriter.sh");
+    c.env("FAKE_SLEEP", "1");
     let child = c
         .args([
             "run",
