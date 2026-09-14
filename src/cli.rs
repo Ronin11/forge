@@ -132,6 +132,21 @@ enum Cmd {
         #[arg(long)]
         workflow: Option<String>,
     },
+    /// Answer a task blocked on a question and re-queue it as a retry
+    Answer {
+        id: i64,
+        /// The answer, appended to the task's text for the re-queued attempt
+        text: String,
+    },
+    /// List recorded operator answers, newest first
+    Decisions {
+        /// Only decisions for this repository
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one task and its attempts
     Show { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
@@ -251,6 +266,8 @@ pub async fn main() -> Result<()> {
             )
             .await
         }
+        Cmd::Answer { id, text } => answer(id, text).await,
+        Cmd::Decisions { repo, json } => decisions(repo, json),
         Cmd::Show { id } => show(id),
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
@@ -429,6 +446,68 @@ struct RetryOverrides {
     workflow: Option<String>,
 }
 
+impl RetryOverrides {
+    fn none() -> RetryOverrides {
+        RetryOverrides {
+            retries: None,
+            budget: None,
+            max_turns: None,
+            timeout_secs: None,
+            workflow: None,
+        }
+    }
+}
+
+/// The `TaskArgs` a retry of `t` re-queues with: `first` is whether `t` is
+/// the task the operator named (only that one takes the overrides and a
+/// text override; chained dependents keep their own settings and text).
+fn retry_args(
+    t: &Task,
+    o: &RetryOverrides,
+    first: bool,
+    after: Vec<i64>,
+    task: Option<String>,
+) -> TaskArgs {
+    TaskArgs {
+        repo: PathBuf::from(&t.repo),
+        task: task.unwrap_or_else(|| t.task.clone()),
+        model: t.model.clone(),
+        max_turns: if first {
+            o.max_turns.unwrap_or(t.max_turns as u32)
+        } else {
+            t.max_turns as u32
+        },
+        retries: if first {
+            o.retries.unwrap_or((t.max_attempts - 1).max(0) as u32)
+        } else {
+            (t.max_attempts - 1).max(0) as u32
+        },
+        timeout_secs: if first {
+            o.timeout_secs.unwrap_or(t.timeout_secs as u32)
+        } else {
+            t.timeout_secs as u32
+        },
+        budget: if first {
+            o.budget.or(t.budget_usd)
+        } else {
+            t.budget_usd
+        },
+        checks: t.checks.clone(),
+        allow_protected: t.allow_protected,
+        workflow: if first {
+            o.workflow.clone().unwrap_or(t.workflow.clone())
+        } else {
+            t.workflow.clone()
+        },
+        show_checks: t.show_checks,
+        no_land: !t.land,
+        no_journal: !t.journal,
+        no_context: !t.context_enabled,
+        resume_on_failure: t.resume_on_failure,
+        after,
+    }
+}
+
 async fn retry(id: i64, chain: bool, o: RetryOverrides) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(old) = f.store.task(id)? else {
@@ -453,44 +532,7 @@ async fn retry(id: i64, chain: bool, o: RetryOverrides) -> Result<()> {
             .iter()
             .map(|&d| map_dep(&f, d, &made))
             .collect::<Result<Vec<_>>>()?;
-        let args = TaskArgs {
-            repo: PathBuf::from(&t.repo),
-            task: t.task.clone(),
-            model: t.model.clone(),
-            max_turns: if first {
-                o.max_turns.unwrap_or(t.max_turns as u32)
-            } else {
-                t.max_turns as u32
-            },
-            retries: if first {
-                o.retries.unwrap_or((t.max_attempts - 1).max(0) as u32)
-            } else {
-                (t.max_attempts - 1).max(0) as u32
-            },
-            timeout_secs: if first {
-                o.timeout_secs.unwrap_or(t.timeout_secs as u32)
-            } else {
-                t.timeout_secs as u32
-            },
-            budget: if first {
-                o.budget.or(t.budget_usd)
-            } else {
-                t.budget_usd
-            },
-            checks: t.checks.clone(),
-            allow_protected: t.allow_protected,
-            workflow: if first {
-                o.workflow.clone().unwrap_or(t.workflow.clone())
-            } else {
-                t.workflow.clone()
-            },
-            show_checks: t.show_checks,
-            no_land: !t.land,
-            no_journal: !t.journal,
-            no_context: !t.context_enabled,
-            resume_on_failure: t.resume_on_failure,
-            after,
-        };
+        let args = retry_args(&t, &o, first, after, None);
         let n = enqueue_with(&f, &args, Some(t.id)).await?;
         out!(
             "retried task {} as {}{}",
@@ -516,6 +558,75 @@ async fn retry(id: i64, chain: bool, o: RetryOverrides) -> Result<()> {
         }
     }
     out!("{} queued", f.store.queued_count()?);
+    Ok(())
+}
+
+/// Answer a task blocked on a question: record the answer, then re-queue
+/// it as a retry whose text carries the answer. Refuses anything that
+/// is not blocked with a `needs_input` last attempt.
+async fn answer(id: i64, text: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let Some(old) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let last = f.store.attempts(id)?.into_iter().last();
+    if old.state != TaskState::Blocked
+        || !matches!(
+            last.as_ref().map(|a| a.state),
+            Some(crate::store::AttemptState::NeedsInput)
+        )
+    {
+        bail!(
+            "task {id} is not blocked on a question (state {}); only that is answered",
+            old.state.as_str()
+        );
+    }
+    let question = last
+        .and_then(|a| serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json).ok())
+        .and_then(|e| e.needs_input)
+        .map(|q| q.question)
+        .with_context(|| format!("task {id}'s last attempt recorded no question"))?;
+    f.store.insert_decision(id, &old.repo, &question, &text)?;
+    let new_text = format!(
+        "{}\n\nOperator's answer to a question from an earlier attempt: {text}",
+        old.task
+    );
+    let after = old
+        .after
+        .iter()
+        .map(|&d| map_dep(&f, d, &std::collections::HashMap::new()))
+        .collect::<Result<Vec<_>>>()?;
+    let args = retry_args(&old, &RetryOverrides::none(), true, after, Some(new_text));
+    let n = enqueue_with(&f, &args, Some(id)).await?;
+    out!("answered task {id} as {}", n.id);
+    Ok(())
+}
+
+fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let repo = repo
+        .map(|p| p.canonicalize().context("repo path"))
+        .transpose()?
+        .map(|p| p.display().to_string());
+    let rows = f.store.decisions(repo.as_deref())?;
+    if json {
+        let docs: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|d| {
+                serde_json::json!({"id": d.id, "task_id": d.task_id, "repo": d.repo, "question": d.question, "answer": d.answer, "created_at": d.created_at})
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&docs)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no decisions");
+        return Ok(());
+    }
+    for d in rows {
+        out!("{:<5} task {:<5} Q: {}", d.id, d.task_id, d.question);
+        out!("{:<17}A: {}", "", d.answer);
+    }
     Ok(())
 }
 

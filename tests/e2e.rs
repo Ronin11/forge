@@ -308,6 +308,54 @@ fn a_question_ends_the_task_without_retrying() {
 }
 
 #[test]
+fn answer_records_a_decision_and_requeues_with_the_answer_appended() {
+    let e = Env::new();
+    assert!(!e.run("needsinput.sh", &["--retries", "2"]).status.success());
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.starts_with("needs input: Which answer file"),
+        "{reason}"
+    );
+
+    let o = e.forge("ok.sh", &["answer", "1", "Use answer.txt"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (task_text, retry_of): (String, Option<i64>) = e
+        .db()
+        .query_row("SELECT task, retry_of FROM tasks WHERE id=2", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(retry_of, Some(1));
+    assert_eq!(
+        task_text,
+        "write 42 to answer.txt\n\nOperator's answer to a question from an earlier attempt: Use answer.txt"
+    );
+
+    let (dtask, dq, da): (i64, String, String) = e
+        .db()
+        .query_row(
+            "SELECT task_id, question, answer FROM decisions WHERE task_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(dtask, 1);
+    assert_eq!(dq, "Which answer file: answer.txt or ANSWER.txt?");
+    assert_eq!(da, "Use answer.txt");
+
+    let o = e.forge("ok.sh", &["decisions"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("Which answer file"), "{out}");
+    assert!(out.contains("Use answer.txt"), "{out}");
+
+    // Only a task blocked with a needs_input question is answered.
+    let bad = e.forge("ok.sh", &["answer", "2", "no"]);
+    assert!(!bad.status.success());
+}
+
+#[test]
 fn a_workflow_request_blocks_the_task_with_the_request_as_reason() {
     let e = Env::new();
     assert!(
