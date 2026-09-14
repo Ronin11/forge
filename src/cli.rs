@@ -908,7 +908,7 @@ fn list_workflows(json: bool) -> Result<()> {
             ),
             (None, Some(c)) => format!("repo check `{c}`"),
             _ => {
-                if a.contract != a.name {
+                if a.contract.as_str() != a.name {
                     format!("contract {}", a.contract)
                 } else {
                     String::new()
@@ -917,7 +917,19 @@ fn list_workflows(json: bool) -> Result<()> {
         };
         let flow = match (a.consumes.is_empty(), a.produces.is_empty()) {
             (true, true) => String::new(),
-            _ => format!("  {} → {}", a.consumes.join(","), a.produces.join(",")),
+            _ => format!(
+                "  {} → {}",
+                a.consumes
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                a.produces
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         };
         out!(
             "{:<12} {}  {:<10} {}{}{}",

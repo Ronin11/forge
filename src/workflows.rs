@@ -19,16 +19,108 @@ use std::path::{Path, PathBuf};
 /// Names the engine inserts itself; a user operation may not shadow them.
 pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "land", "clone"];
 
+/// Contracts the kernel enforces for directives. A directive file names
+/// one (default: its own name); any other value is rejected. Many
+/// directives over few contracts (docs/ACTIONS.md). Serialized by its
+/// lowercase name, which is what the files and the stored JSON carry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Contract {
+    Code,
+    Tests,
+    Review,
+    Plan,
+}
+
+impl Contract {
+    pub const ALL: [Contract; 4] = [
+        Contract::Code,
+        Contract::Tests,
+        Contract::Review,
+        Contract::Plan,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Contract::Code => "code",
+            Contract::Tests => "tests",
+            Contract::Review => "review",
+            Contract::Plan => "plan",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Contract> {
+        Contract::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+
+    /// Whether the directive is expected to change files; a read-only
+    /// contract is never faulted for not editing.
+    pub fn writes(self) -> bool {
+        matches!(self, Contract::Code | Contract::Tests)
+    }
+}
+
+impl std::fmt::Display for Contract {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What steps produce and consume: the data-flow vocabulary. `branch` is
+/// the clone and every step that changes it; `verdict` is the kernel's
+/// verify after a directive; the rest are one step's output shown to a
+/// later one. Serialized by its file name.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Product {
+    Branch,
+    VerifyRef,
+    Interface,
+    Verdict,
+    Review,
+    Plan,
+    Context,
+}
+
+impl Product {
+    pub const ALL: [Product; 7] = [
+        Product::Branch,
+        Product::VerifyRef,
+        Product::Interface,
+        Product::Verdict,
+        Product::Review,
+        Product::Plan,
+        Product::Context,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Product::Branch => "branch",
+            Product::VerifyRef => "verify_ref",
+            Product::Interface => "interface",
+            Product::Verdict => "verdict",
+            Product::Review => "review",
+            Product::Plan => "plan",
+            Product::Context => "context",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Product> {
+        Product::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+}
+
+impl std::fmt::Display for Product {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What an operation may produce. `branch`: it changes the tree, the
 /// kernel commits the result and verifies it. `interface`: its stdout is
 /// the interface the next code directive is shown. Everything else is a
 /// directive's or the kernel's to produce.
-pub const OPERATION_PRODUCES: &[&str] = &["branch", "interface", "context"];
-
-/// Contracts the kernel enforces for directives. A directive file names
-/// one (default: its own name); any other value is rejected. Many
-/// directives over few contracts (docs/ACTIONS.md).
-pub const KNOWN_CONTRACTS: &[&str] = &["code", "tests", "review", "plan"];
+pub const OPERATION_PRODUCES: &[Product] = &[Product::Branch, Product::Interface, Product::Context];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -97,14 +189,14 @@ pub struct ActionDef {
     pub name: String,
     pub kind: Kind,
     pub description: String,
-    pub consumes: Vec<String>,
-    pub produces: Vec<String>,
+    pub consumes: Vec<Product>,
+    pub produces: Vec<Product>,
     pub model: Option<String>,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
     pub run: Option<Vec<String>>,
     pub check: Option<String>,
-    pub contract: String,
+    pub contract: Contract,
     pub paths: Vec<String>,
     pub brief: String,
     pub prompt: Option<String>,
@@ -119,23 +211,23 @@ impl ActionDef {
     /// An operation that changes the tree: the kernel commits what it
     /// changed and verifies the result, as it does after a directive.
     pub fn mutates(&self) -> bool {
-        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "branch")
+        self.kind == Kind::Operation && self.produces.contains(&Product::Branch)
     }
     /// An operation whose stdout becomes the interface the coder is shown.
     /// `context`: its stdout is shown to the next directive as a map of
     /// where things are, cut to a budget and recorded in the attempt.
     pub fn yields_context(&self) -> bool {
-        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "context")
+        self.kind == Kind::Operation && self.produces.contains(&Product::Context)
     }
 
     pub fn yields_interface(&self) -> bool {
-        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "interface")
+        self.kind == Kind::Operation && self.produces.contains(&Product::Interface)
     }
     /// An operation that reads the task's hidden tests: it runs in a
     /// scratch copy of base with the verify ref overlaid, never in the
     /// coder's clone.
     pub fn reads_verify_ref(&self) -> bool {
-        self.kind == Kind::Operation && self.consumes.iter().any(|c| c == "verify_ref")
+        self.kind == Kind::Operation && self.consumes.contains(&Product::VerifyRef)
     }
     /// The operation stores its whole stdout and stderr, capped at 1 MB,
     /// rather than the 40-line tail.
@@ -747,16 +839,16 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
                     path.display()
                 );
             }
-            let contract = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
-            if !KNOWN_CONTRACTS.contains(&contract.as_str()) {
+            let name = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
+            let Some(contract) = Contract::parse(&name) else {
                 bail!(
                     "{}: directive contract {:?} is not one the kernel enforces (known: {})",
                     path.display(),
-                    contract,
-                    KNOWN_CONTRACTS.join(", ")
+                    name,
+                    Contract::ALL.map(Contract::as_str).join(", ")
                 );
-            }
-            if !raw.paths.is_empty() && contract != "code" {
+            };
+            if !raw.paths.is_empty() && contract != Contract::Code {
                 bail!(
                     "{}: `paths` applies to the code contract only",
                     path.display()
@@ -788,25 +880,51 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         && let Some(p) = raw
             .produces
             .iter()
-            .find(|p| !OPERATION_PRODUCES.contains(&p.as_str()))
+            .find(|p| !Product::parse(p).is_some_and(|p| OPERATION_PRODUCES.contains(&p)))
     {
         bail!(
             "{}: an operation cannot produce {:?}; it may produce {}",
             path.display(),
             p,
-            OPERATION_PRODUCES.join(", ")
+            OPERATION_PRODUCES
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if raw.kind == Kind::Operation && raw.model.is_some() {
         bail!("{}: `model` applies to directives only", path.display());
     }
-    let contract = raw.contract.clone().unwrap_or_else(|| raw.name.clone());
+    // Directives were validated above; an operation's contract is its name
+    // and never consulted. Products come from a closed vocabulary.
+    let contract = raw
+        .contract
+        .as_deref()
+        .and_then(Contract::parse)
+        .or_else(|| Contract::parse(&raw.name))
+        .unwrap_or(Contract::Code);
+    let products = |list: &[String], field: &str| -> Result<Vec<Product>> {
+        list.iter()
+            .map(|p| {
+                Product::parse(p).with_context(|| {
+                    format!(
+                        "{}: `{field}` names {p:?}, which is not a product; the products are {}",
+                        path.display(),
+                        Product::ALL.map(Product::as_str).join(", ")
+                    )
+                })
+            })
+            .collect()
+    };
+    let consumes = products(&raw.consumes, "consumes")?;
+    let produces = products(&raw.produces, "produces")?;
     Ok(ActionDef {
         name: raw.name,
         kind: raw.kind,
         description: raw.description,
-        consumes: raw.consumes,
-        produces: raw.produces,
+        consumes,
+        produces,
         model: raw.model,
         max_turns: raw.max_turns,
         timeout_secs: raw.timeout_secs,
@@ -961,26 +1079,29 @@ fn splice(
 /// Kernel verify after each directive produces `verdict`; the clone
 /// produces `branch`.
 fn check_flow(steps: &[ResolvedStep]) -> Result<()> {
-    let mut have: BTreeSet<&str> = ["branch"].into_iter().collect();
+    let mut have: BTreeSet<Product> = [Product::Branch].into_iter().collect();
     for (i, s) in steps.iter().enumerate() {
         for c in &s.action.consumes {
-            if !have.contains(c.as_str()) {
+            if !have.contains(c) {
                 bail!(
                     "step {} ({}) consumes {:?}, which nothing before it produces (have: {})",
                     i + 1,
                     s.action.name,
-                    c,
-                    have.iter().copied().collect::<Vec<_>>().join(", ")
+                    c.as_str(),
+                    have.iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
         }
         for p in &s.action.produces {
-            have.insert(p.as_str());
+            have.insert(*p);
         }
         if s.action.kind == Kind::Directive || s.action.mutates() {
-            have.insert("verdict");
-            if s.action.contract == "review" {
-                have.insert("review");
+            have.insert(Product::Verdict);
+            if s.action.contract == Contract::Review {
+                have.insert(Product::Review);
             }
         }
     }
@@ -1188,6 +1309,29 @@ mod tests {
 
     fn write(home: &Path, rel: &str, text: &str) {
         std::fs::write(home.join("workflows").join(rel), text).unwrap();
+    }
+
+    #[test]
+    fn contracts_and_products_serialize_by_their_file_names() {
+        // The stored resolved JSON and the action files carry these names;
+        // the enums must round-trip them byte for byte.
+        for c in Contract::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(json, format!("\"{}\"", c.as_str()));
+            assert_eq!(serde_json::from_str::<Contract>(&json).unwrap(), c);
+            assert_eq!(Contract::parse(c.as_str()), Some(c));
+        }
+        for p in Product::ALL {
+            let json = serde_json::to_string(&p).unwrap();
+            assert_eq!(json, format!("\"{}\"", p.as_str()));
+            assert_eq!(serde_json::from_str::<Product>(&json).unwrap(), p);
+            assert_eq!(Product::parse(p.as_str()), Some(p));
+        }
+        assert_eq!(Product::VerifyRef.as_str(), "verify_ref");
+        assert!(Contract::parse("verify").is_none());
+        assert!(Product::parse("tests").is_none());
+        assert!(Contract::Code.writes() && Contract::Tests.writes());
+        assert!(!Contract::Review.writes() && !Contract::Plan.writes());
     }
 
     #[test]
@@ -1473,9 +1617,9 @@ mod tests {
             "name = \"tidy\"\nkind = \"directive\"\ncontract = \"code\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nproduces = [\"branch\"]\npaths = [\"src/\"]\nbrief = \"only tidy\"\n",
         );
         let a = load_actions(dir.path()).unwrap();
-        assert_eq!(a["tidy"].contract, "code");
+        assert_eq!(a["tidy"].contract, Contract::Code);
         assert_eq!(a["docs"].paths, vec!["docs/", "*.md"]);
-        assert_eq!(a["polish"].contract, "code");
+        assert_eq!(a["polish"].contract, Contract::Code);
         assert!(!a["polish"].brief.is_empty());
         write(
             dir.path(),

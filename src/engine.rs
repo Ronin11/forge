@@ -13,7 +13,7 @@ use crate::ctx::Forge;
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, Op, Task, TaskState};
 use crate::verify::{self, Subject, TestsSubject, Verdict};
-use crate::workflows::{self, Kind, ResolvedStep};
+use crate::workflows::{self, Contract, Kind, ResolvedStep};
 use crate::{agent, checks, config, git, unix_now};
 use anyhow::Context;
 use std::collections::{HashMap, HashSet};
@@ -483,8 +483,8 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         );
                         let started = unix_now();
                         let start = Instant::now();
-                        let (a, verdict, outcome) = match step.action.contract.as_str() {
-                            "code" => {
+                        let (a, verdict, outcome) = match step.action.contract {
+                            Contract::Code => {
                                 run_code_attempt(
                                     &f,
                                     &ts,
@@ -497,7 +497,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 )
                                 .await?
                             }
-                            "tests" => {
+                            Contract::Tests => {
                                 run_tests_attempt(
                                     &f,
                                     &ts,
@@ -510,7 +510,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 )
                                 .await?
                             }
-                            "review" => {
+                            Contract::Review => {
                                 run_review_attempt(
                                     &f,
                                     &ts,
@@ -522,7 +522,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 )
                                 .await?
                             }
-                            "plan" => {
+                            Contract::Plan => {
                                 run_plan_attempt(
                                     &f,
                                     &ts,
@@ -534,11 +534,6 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                     resume.as_ref(),
                                 )
                                 .await?
-                            }
-                            other => {
-                                return Err(Fault::Task(anyhow::anyhow!(
-                                    "directive contract {other:?} is not enforced by this kernel"
-                                )));
                             }
                         };
                         // The kernel's verify, as a row of its own.
@@ -571,12 +566,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         // cannot see those files. Back to the tests step, within its
                         // attempts; this attempt does not count against the coder.
                         if a.state == AttemptState::ChecksFailed
-                            && step.action.contract != "tests"
+                            && step.action.contract != Contract::Tests
                             && let Some((check, tail)) =
                                 verify::tests_fault(&verdict.checks, &cfg.namespace)
                             && let Some(t_idx) = (0..idx)
                                 .rev()
-                                .find(|&i| resolved.steps[i].action.contract == "tests")
+                                .find(|&i| resolved.steps[i].action.contract == Contract::Tests)
                         {
                             let t_seq = t_idx as i64 + 1;
                             let t_used = *used.get(&t_seq).unwrap_or(&0);
@@ -601,7 +596,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                         match a.state {
                             AttemptState::Succeeded => {
-                                if step.action.contract == "tests" {
+                                if step.action.contract == Contract::Tests {
                                     let tests_dir = tests_clone_dir(&t.worktree);
                                     git::push_to_repo(
                                         &tests_dir,
@@ -632,7 +627,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         .unwrap_or_default();
                                     f.store.update_task(&t).env()?;
                                 }
-                                if step.action.contract == "plan" {
+                                if step.action.contract == Contract::Plan {
                                     // The plan is the product: shown to every later
                                     // directive, verified only to name real paths.
                                     t.plan = verdict
@@ -738,7 +733,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         // tree left code the checks can judge. If they pass, no
                         // agent vouched for it, so it goes to a human as unverified
                         // rather than being thrown away.
-                        if step.action.contract == "code"
+                        if step.action.contract == Contract::Code
                             && last == AttemptState::AgentFailed
                             && capped_committed
                         {
@@ -780,7 +775,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         // A reviewer that never reached a verdict is not evidence
                         // of a defect: the branch verified at the code step, so it
                         // goes to a human as unverified instead of failing.
-                        if step.action.contract == "review" && last == AttemptState::AgentFailed {
+                        if step.action.contract == Contract::Review
+                            && last == AttemptState::AgentFailed
+                        {
                             review_unfinished = true;
                             last = AttemptState::Unverified;
                             last_reason = format!(
@@ -818,7 +815,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             Integrate::Rewind { feedback, first } => {
                 let Some(c_idx) = (0..resolved.steps.len())
                     .rev()
-                    .find(|&i| resolved.steps[i].action.contract == "code")
+                    .find(|&i| resolved.steps[i].action.contract == Contract::Code)
                 else {
                     last = AttemptState::ChecksFailed;
                     last_reason = format!("landing failed: {first}");
@@ -2308,7 +2305,7 @@ async fn run_code_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
-        true,
+        step.action.contract.writes(),
     )
     .await?;
     let pending_main = git::rev_parse(wt, &format!("refs/heads/forge/{}", t.base_branch))
@@ -2404,7 +2401,7 @@ async fn run_tests_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
-        true,
+        step.action.contract.writes(),
     )
     .await?;
     let scratch = scratch_dir(&t.worktree);
@@ -2562,7 +2559,7 @@ async fn run_plan_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
-        false,
+        step.action.contract.writes(),
     )
     .await?;
     let verdict = verify::verify_plan(
@@ -2656,7 +2653,7 @@ async fn run_review_attempt(
         &prompt_text,
         &log_path,
         resume.map(|r| r.session.as_str()),
-        false,
+        step.action.contract.writes(),
     )
     .await?;
     let verdict = verify::verify_review(
