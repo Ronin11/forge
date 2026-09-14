@@ -201,6 +201,12 @@ cargo build --release
 cargo test
 ```
 
+## Where this is going
+
+docs/REVIEW.md is the architectural review of the first week and the
+staged refactor plan that follows from it; docs/LATER.md holds ideas
+not yet earned.
+
 ## The supervisor
 
 When a task blocks with a question, a read-only agent on a strong model
