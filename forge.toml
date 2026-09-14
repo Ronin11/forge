@@ -8,7 +8,7 @@ base_branch = "main"
 check_timeout_secs = 900
 
 [checks]
-setup = ["cargo", "build", "--workspace", "--tests"]
+setup = ["cargo", "build", "--workspace", "--all-targets"]
 fmt = ["cargo", "fmt", "--all", "--check"]
 clippy = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 test = ["cargo", "test", "--workspace"]
