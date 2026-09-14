@@ -258,7 +258,7 @@ The fakes `needsinput`, `cappedcommit`, `cappedresult`, `crash`, `hang`,
 `flaky`, `reviewer-demote`, `reviewer-lazy`, `planner-lost` each pin one
 terminal path; run before and after.
 
-**Stage 7. Views and events (Forge, after 3).** `view.rs` with
+**Stage 7. Views and events (Forge, after 3). Done 2026-09-14: six tasks, six first-pass landings.** `view.rs` with
 serializable `TaskRow`, `RequestRow`, `DecisionRow`, `TraceDoc`,
 `StatsDoc` built once from store types; text renderers take the struct;
 one set of names (`text`, `created_at` as unix, `cost_usd`, `kind` parsed
