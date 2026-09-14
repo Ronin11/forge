@@ -22,13 +22,12 @@
 
 use crate::agent;
 use crate::audit::Inputs;
-use crate::checks::CheckResult;
 use crate::ctx::Forge;
 use crate::engine::{self, Fault};
 use crate::envelope::{Envelope, Kind};
 use crate::report::Event;
 use crate::store::{AttemptState, Task, TaskState};
-use crate::verify::Verdict;
+use crate::verify::{Rule, Verdict, l0};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
@@ -59,16 +58,6 @@ pub enum Ruled {
     Accepted { landed: String },
     Escalated(String),
     Skipped(String),
-}
-
-fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
-    CheckResult {
-        level: "L0".into(),
-        name: name.into(),
-        ok,
-        tail: if ok { String::new() } else { detail },
-        ..Default::default()
-    }
 }
 
 /// The succeeded task of this repository a `superseded` ruling cites.
@@ -364,7 +353,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
     checks.push(l0(
-        "result-structured",
+        Rule::ResultStructured,
         ruling.is_some(),
         outcome
             .structured
@@ -383,7 +372,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         .filter(|p| !dirty_before.contains(p))
         .collect();
     checks.push(l0(
-        "untouched",
+        Rule::Untouched,
         changed.is_empty() && dirty.is_empty(),
         format!(
             "the supervisor changed the clone: {}",
@@ -403,7 +392,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             .filter(|c| !resolves(f, &t, wt, c))
             .collect();
         checks.push(l0(
-            "cites-real-things",
+            Rule::CitesRealThings,
             !r.citations.is_empty() && unresolved.is_empty(),
             if r.citations.is_empty() {
                 "no citation".to_string()
@@ -430,13 +419,13 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             // The citation must be a succeeded task of this repository.
             let by = superseding_task(f, &t, &r.citations);
             checks.push(l0(
-                "supersedes-with-a-landed-task",
+                Rule::SupersedesWithALandedTask,
                 by.is_some(),
                 "a superseded ruling must cite `task N` for a task of this repository that succeeded".into(),
             ));
         } else {
             checks.push(l0(
-                "substantive",
+                Rule::Substantive,
                 body.trim().chars().count() >= 40,
                 format!(
                     "{} characters is not an answer",

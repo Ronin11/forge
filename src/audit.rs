@@ -8,6 +8,7 @@
 
 use crate::checks::CheckResult;
 use crate::store::{Attempt, AttemptState, Task, TaskState};
+use crate::verify::Rule;
 use serde::{Deserialize, Serialize};
 
 /// What a step was given. Everything the agent saw or that shaped the run,
@@ -264,50 +265,20 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
     {
         let failed: Vec<CheckResult> = rows(a).into_iter().filter(|c| !c.ok).collect();
         for c in &failed {
-            let line = match (c.level.as_str(), c.name.as_str()) {
-                ("L1", "red-on-base") => Some(d(
-                    "the tests step wrote tests that already pass on the base commit",
-                    "Either the task is already done on main, or the tests are vacuous. Check the task text; if it is real, give the tests step a clearer description of the new behavior.",
-                )),
-                ("L0", "clean-tree")
-                | ("L0", "changes-match-git")
-                | ("L0", "claims-have-evidence")
-                | ("L0", "result-structured") => Some(d(
-                    &format!(
-                        "{} {}: the agent broke the result contract ({})",
-                        c.level,
-                        c.name,
-                        crate::checks::last_lines(&c.tail, 2).replace('\n', " ")
-                    ),
-                    "Usually a one-off; a retry fixes it. If it repeats with the same model, that model is weak at the contract and the workflow should give it fewer, smaller steps.",
-                )),
-                ("L0", "protected-paths") => Some(d(
-                    &format!(
-                        "the agent changed a protected path ({})",
-                        crate::checks::last_lines(&c.tail, 1)
-                    ),
-                    "If the task legitimately needs it, re-add with --allow-protected; otherwise the task text is steering the agent at the tests.",
-                )),
-                ("L0", "namespace-untouched") => Some(d(
-                    "the coder created files inside the verification namespace",
-                    "That is the shadow-test pattern. Re-add the task; if it repeats, the model is gaming and the task should not run unattended with it.",
-                )),
-                ("L0", "has-commits") => Some(d(
-                    "the agent committed nothing",
-                    "Read the log's last result; the agent likely explained why in its summary. Re-add with a clearer task.",
-                )),
-                ("L1", n) if n.starts_with("claim:") => Some(d(
+            let line = match (Rule::parse(&c.name), c.level.as_str(), c.name.as_str()) {
+                (Some(rule), _, _) => Some(rule_diagnosis(rule, c)),
+                (None, "L1", n) if n.starts_with("claim:") => Some(d(
                     &format!(
                         "false claim: the agent reported `{}` passed and Forge could not reproduce it",
                         &n[6..]
                     ),
                     "Treat this model as untrustworthy on this repo until it stops; do not lower the check.",
                 )),
-                ("L1", "setup") => Some(d(
+                (None, "L1", "setup") => Some(d(
                     "the repo's setup check failed (dependencies)",
                     "Not the agent's work. Run the setup command in a clean clone of main; fix forge.toml or the lockfile.",
                 )),
-                ("L1", n) => Some(d(
+                (None, "L1", n) => Some(d(
                     &format!(
                         "the repo's `{n}` check fails on the branch{}",
                         if c.failing_tests.is_empty() {
@@ -318,7 +289,7 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                     ),
                     "Read the failing test names in the trace. More retries help if the agent was close; otherwise split the task or write it against a --check.",
                 )),
-                ("L2", _) => Some(d(
+                (None, "L2", _) => Some(d(
                     &format!(
                         "an acceptance command failed: {}",
                         crate::checks::last_lines(&c.tail, 1)
@@ -339,9 +310,119 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
     out
 }
 
+/// One line per rule the kernel can fail an attempt on: what happened
+/// and what to do. Exhaustive, so a new rule cannot ship without one.
+pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
+    let d = |what: &str, action: &str| Diagnosis {
+        what: what.to_string(),
+        action: action.to_string(),
+    };
+    let tail1 = crate::checks::last_lines(&c.tail, 1);
+    let tail2 = crate::checks::last_lines(&c.tail, 2).replace('\n', " ");
+    match rule {
+        Rule::RedOnBase => d(
+            "the tests step wrote tests that already pass on the base commit",
+            "Either the task is already done on main, or the tests are vacuous. Check the task text; if it is real, give the tests step a clearer description of the new behavior.",
+        ),
+        Rule::CleanTree
+        | Rule::ChangesMatchGit
+        | Rule::ClaimsHaveEvidence
+        | Rule::ResultStructured => d(
+            &format!(
+                "{} {}: the agent broke the result contract ({tail2})",
+                c.level, c.name
+            ),
+            "Usually a one-off; a retry fixes it. If it repeats with the same model, that model is weak at the contract and the workflow should give it fewer, smaller steps.",
+        ),
+        Rule::ProtectedPaths => d(
+            &format!("the agent changed a protected path ({tail1})"),
+            "If the task legitimately needs it, re-add with --allow-protected; otherwise the task text is steering the agent at the tests.",
+        ),
+        Rule::ConfigUntouched => d(
+            &format!("the agent changed the repository's Forge config ({tail1})"),
+            "The config is the operator's. If the task needs it, change it by hand first; the task text should not ask for it.",
+        ),
+        Rule::NamespaceUntouched => d(
+            "the coder created files inside the verification namespace",
+            "That is the shadow-test pattern. Re-add the task; if it repeats, the model is gaming and the task should not run unattended with it.",
+        ),
+        Rule::HasCommits => d(
+            "the agent committed nothing",
+            "Read the log's last result; the agent likely explained why in its summary. Re-add with a clearer task.",
+        ),
+        Rule::SuiteNamesAHiddenTest => d(
+            "the agent asked for a suite change without naming a hidden test",
+            "It named a visible test, or none; the step went on. If it repeats, the task text is pointing it at tests it may change itself.",
+        ),
+        Rule::PathsInScope => d(
+            &format!("the directive changed paths outside its declared scope ({tail1})"),
+            "Widen `paths` on the action if the scope is wrong for this repository, or split the task so each piece fits a directive.",
+        ),
+        Rule::NamespaceOnly => d(
+            &format!("the tests step wrote outside the verification namespace ({tail1})"),
+            "The tests directive may only write hidden tests. If it needed a fixture elsewhere, that belongs to the code step.",
+        ),
+        Rule::InterfaceDescribed => d(
+            "the tests step returned no interface for the coder",
+            "Its summary must name the files, imports and calls the tests expect. A retry usually fixes it; if not, the model is weak at the tests contract.",
+        ),
+        Rule::NoWrites => d(
+            &format!("the reviewer changed the branch ({tail1})"),
+            "A review may only read and run. The change was not kept; nothing to do unless it repeats with the same model.",
+        ),
+        Rule::ExecutedSomething => d(
+            "the reviewer ran nothing, so its demotion did not stand",
+            "A review that reads without running is an opinion. Nothing to do; the branch continued as verified.",
+        ),
+        Rule::Untouched => d(
+            &format!("a read-only step changed the clone ({tail1})"),
+            "The investigator and the supervisor may not write. The change was not kept; if it repeats, the step's prompt is being ignored.",
+        ),
+        Rule::PlanSubstantive => d(
+            "the investigator returned a plan too short to follow",
+            "A plan names the files, the changes and the test. A retry usually fixes it.",
+        ),
+        Rule::PlanNamesRealPaths => d(
+            &format!("the plan named paths that do not exist ({tail1})"),
+            "The investigator guessed at the tree. A retry with the repository map usually fixes it.",
+        ),
+        Rule::CitesRealThings => d(
+            &format!("the supervisor's ruling cited nothing that exists ({tail1})"),
+            "The question went to the operator instead. Nothing to do; the ruling was refused, not recorded.",
+        ),
+        Rule::Substantive => d(
+            "the supervisor's ruling had no substance",
+            "The question went to the operator instead. Nothing to do; the ruling was refused, not recorded.",
+        ),
+        Rule::SupersedesWithALandedTask => d(
+            "the supervisor said the work had landed but cited no succeeded task",
+            "The question went to the operator instead. Check the tasks list yourself; if the work did land, mark this task superseded by hand.",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_rule_has_a_diagnosis() {
+        for r in Rule::ALL {
+            let c = CheckResult {
+                level: r.level().into(),
+                name: r.name().into(),
+                ok: false,
+                tail: "x".into(),
+                ..Default::default()
+            };
+            let line = rule_diagnosis(r, &c);
+            assert!(
+                !line.what.is_empty() && !line.action.is_empty(),
+                "{}",
+                r.name()
+            );
+        }
+    }
 
     fn task(state: TaskState, reason: &str) -> Task {
         Task {

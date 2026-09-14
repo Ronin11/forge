@@ -79,10 +79,107 @@ pub struct Verdict {
     pub reason: String,
 }
 
-fn l0(name: &str, ok: bool, detail: String) -> CheckResult {
+/// Every row the kernel writes about an attempt's own conduct, by name.
+/// The names are what the trace, the events, the audit and the tests
+/// carry; adding a rule here makes the audit's table refuse to compile
+/// until it has a line for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rule {
+    ResultStructured,
+    SuiteNamesAHiddenTest,
+    CleanTree,
+    ConfigUntouched,
+    HasCommits,
+    ChangesMatchGit,
+    ClaimsHaveEvidence,
+    ProtectedPaths,
+    PathsInScope,
+    NamespaceUntouched,
+    NamespaceOnly,
+    InterfaceDescribed,
+    RedOnBase,
+    NoWrites,
+    ExecutedSomething,
+    Untouched,
+    PlanSubstantive,
+    PlanNamesRealPaths,
+    CitesRealThings,
+    Substantive,
+    SupersedesWithALandedTask,
+}
+
+impl Rule {
+    pub const ALL: [Rule; 21] = [
+        Rule::ResultStructured,
+        Rule::SuiteNamesAHiddenTest,
+        Rule::CleanTree,
+        Rule::ConfigUntouched,
+        Rule::HasCommits,
+        Rule::ChangesMatchGit,
+        Rule::ClaimsHaveEvidence,
+        Rule::ProtectedPaths,
+        Rule::PathsInScope,
+        Rule::NamespaceUntouched,
+        Rule::NamespaceOnly,
+        Rule::InterfaceDescribed,
+        Rule::RedOnBase,
+        Rule::NoWrites,
+        Rule::ExecutedSomething,
+        Rule::Untouched,
+        Rule::PlanSubstantive,
+        Rule::PlanNamesRealPaths,
+        Rule::CitesRealThings,
+        Rule::Substantive,
+        Rule::SupersedesWithALandedTask,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Rule::ResultStructured => "result-structured",
+            Rule::SuiteNamesAHiddenTest => "suite-names-a-hidden-test",
+            Rule::CleanTree => "clean-tree",
+            Rule::ConfigUntouched => "forge.toml-untouched",
+            Rule::HasCommits => "has-commits",
+            Rule::ChangesMatchGit => "changes-match-git",
+            Rule::ClaimsHaveEvidence => "claims-have-evidence",
+            Rule::ProtectedPaths => "protected-paths",
+            Rule::PathsInScope => "paths-in-scope",
+            Rule::NamespaceUntouched => "namespace-untouched",
+            Rule::NamespaceOnly => "namespace-only",
+            Rule::InterfaceDescribed => "interface-described",
+            Rule::RedOnBase => "red-on-base",
+            Rule::NoWrites => "no-writes",
+            Rule::ExecutedSomething => "executed-something",
+            Rule::Untouched => "untouched",
+            Rule::PlanSubstantive => "plan-substantive",
+            Rule::PlanNamesRealPaths => "plan-names-real-paths",
+            Rule::CitesRealThings => "cites-real-things",
+            Rule::Substantive => "substantive",
+            Rule::SupersedesWithALandedTask => "supersedes-with-a-landed-task",
+        }
+    }
+
+    /// Which level the row is reported at: `red-on-base` runs the suite,
+    /// so it is L1; `executed-something` is a note that never decides.
+    pub fn level(self) -> &'static str {
+        match self {
+            Rule::RedOnBase => "L1",
+            Rule::ExecutedSomething => "note",
+            _ => "L0",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Rule> {
+        Rule::ALL.into_iter().find(|r| r.name() == name)
+    }
+}
+
+/// A rule's row: level and name from the registry, the detail kept only
+/// when it failed.
+pub(crate) fn l0(rule: Rule, ok: bool, detail: String) -> CheckResult {
     CheckResult {
-        level: "L0".into(),
-        name: name.into(),
+        level: rule.level().into(),
+        name: rule.name().into(),
         ok,
         tail: if ok { String::new() } else { detail },
         ..Default::default()
@@ -148,7 +245,7 @@ async fn common_l0(
         _ => None,
     };
     rows.push(l0(
-        "result-structured",
+        Rule::ResultStructured,
         env.is_some(),
         match &parsed {
             Ok(None) => "the agent produced no structured result".into(),
@@ -177,7 +274,7 @@ async fn common_l0(
                 || crate::config::is_protected(&cfg.protected, &path));
         if !hidden {
             rows.push(l0(
-                "suite-names-a-hidden-test",
+                Rule::SuiteNamesAHiddenTest,
                 false,
                 if path.is_empty() {
                     format!("a suite exit must set `path` to the test file it objects to, under {} or a protected path", cfg.namespace.join(", "))
@@ -192,7 +289,7 @@ async fn common_l0(
         }
     }
     rows.push(l0(
-        "clean-tree",
+        Rule::CleanTree,
         dirty.is_empty(),
         format!("uncommitted: {}", dirty.join(", ")),
     ));
@@ -201,12 +298,12 @@ async fn common_l0(
         .chain(dirty.iter())
         .any(|p| p == cfg.config_path.as_str());
     rows.push(l0(
-        "forge.toml-untouched",
+        Rule::ConfigUntouched,
         !touched,
         format!("the attempt modified {}", cfg.config_path),
     ));
     rows.push(l0(
-        "has-commits",
+        Rule::HasCommits,
         commits > 0,
         "no commits on the branch".into(),
     ));
@@ -233,7 +330,7 @@ async fn common_l0(
             ));
         }
         rows.push(l0(
-            "changes-match-git",
+            Rule::ChangesMatchGit,
             unreported.is_empty() && phantom.is_empty(),
             detail.trim().to_string(),
         ));
@@ -244,7 +341,7 @@ async fn common_l0(
             .map(|c| c.claim.as_str())
             .collect();
         rows.push(l0(
-            "claims-have-evidence",
+            Rule::ClaimsHaveEvidence,
             bare.is_empty(),
             format!("claims without evidence: {}", bare.join("; ")),
         ));
@@ -497,7 +594,7 @@ fn scope_rows(
             .filter(|p| is_protected(&s.cfg.protected, p))
             .collect();
         rows.push(l0(
-            "protected-paths",
+            Rule::ProtectedPaths,
             hit.is_empty(),
             format!(
                 "protected paths changed: {}. They guard the product; only a task created with --allow-protected may change them.",
@@ -513,7 +610,7 @@ fn scope_rows(
             .filter(|p| !crate::config::in_scope(s.paths, p))
             .collect();
         rows.push(l0(
-            "paths-in-scope",
+            Rule::PathsInScope,
             outside.is_empty(),
             format!(
                 "this directive may only change {}; it changed: {}",
@@ -530,7 +627,7 @@ fn scope_rows(
             .filter(|p| in_namespace(&s.cfg.namespace, p))
             .collect();
         rows.push(l0(
-            "namespace-untouched",
+            Rule::NamespaceUntouched,
             hit.is_empty(),
             format!("files created under the verification namespace: {}. That namespace is reserved for the tests that judge this work.", hit.join(", ")),
         ));
@@ -558,7 +655,7 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
     v.files_changed = changed.len() as i64;
     v.dirty = !dirty.is_empty();
     v.checks.push(l0(
-        "clean-tree",
+        Rule::CleanTree,
         dirty.is_empty(),
         format!("left uncommitted by the operation: {}", dirty.join(", ")),
     ));
@@ -589,7 +686,7 @@ pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
     let dirty = crate::git::dirty_paths(s.worktree).await?;
     v.dirty = !dirty.is_empty();
     v.checks.push(l0(
-        "clean-tree",
+        Rule::CleanTree,
         dirty.is_empty(),
         format!("uncommitted after the merge: {}", dirty.join(", ")),
     ));
@@ -656,7 +753,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
             .filter(|p| !in_namespace(&s.cfg.namespace, p))
             .collect();
         v.checks.push(l0(
-            "namespace-only",
+            Rule::NamespaceOnly,
             outside.is_empty(),
             format!(
                 "the tests step may only change {}; it changed: {}",
@@ -666,7 +763,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         ));
         let has_summary = env.as_ref().is_some_and(|e| e.summary.trim().len() >= 40);
         v.checks.push(l0(
-            "interface-described",
+            Rule::InterfaceDescribed,
             has_summary,
             "the summary must describe the interface the tests expect; it is all the implementer will see".into(),
         ));
@@ -699,8 +796,8 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
             if setup_ok {
                 let argv = s.cfg.checks.get("test").cloned().unwrap_or_default();
                 let mut r = run_one(
-                    "L1",
-                    "red-on-base",
+                    Rule::RedOnBase.level(),
+                    Rule::RedOnBase.name(),
                     &argv,
                     s.scratch,
                     s.sandbox,
@@ -787,11 +884,16 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
     if agent_reason.is_none() {
         v.checks = rows
             .into_iter()
-            .filter(|r| r.name != "has-commits" && r.name != "changes-match-git")
+            .filter(|r| {
+                !matches!(
+                    Rule::parse(&r.name),
+                    Some(Rule::HasCommits | Rule::ChangesMatchGit)
+                )
+            })
             .collect();
         let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
         v.checks.push(l0(
-            "no-writes",
+            Rule::NoWrites,
             added.is_empty() && dirty.is_empty(),
             format!(
                 "the reviewer changed the branch: {}",
@@ -804,8 +906,8 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
             ),
         ));
         v.checks.push(CheckResult {
-            level: "note".into(),
-            name: "executed-something".into(),
+            level: Rule::ExecutedSomething.level().into(),
+            name: Rule::ExecutedSomething.name().into(),
             ok: agent.tool_calls > 0,
             tail: if agent.tool_calls > 0 { String::new() } else { "the reviewer ran no tool; a review that reads without running is an opinion, so any demotion is ignored".into() },
             ..Default::default()
@@ -922,11 +1024,16 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
     if agent_reason.is_none() {
         v.checks = rows
             .into_iter()
-            .filter(|r| matches!(r.name.as_str(), "result-structured" | "clean-tree"))
+            .filter(|r| {
+                matches!(
+                    Rule::parse(&r.name),
+                    Some(Rule::ResultStructured | Rule::CleanTree)
+                )
+            })
             .collect();
         let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
         v.checks.push(l0(
-            "untouched",
+            Rule::Untouched,
             added.is_empty() && dirty.is_empty(),
             format!(
                 "the investigator changed the branch: {}",
@@ -944,7 +1051,7 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
                 .map(|e| e.summary.trim().to_string())
                 .unwrap_or_default();
             v.checks.push(l0(
-                "plan-substantive",
+                Rule::PlanSubstantive,
                 plan.chars().count() >= 120,
                 format!("a plan of {} characters is not a plan; name the files, the changes, and the test", plan.chars().count()),
             ));
@@ -959,7 +1066,7 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
                 })
                 .collect();
             v.checks.push(l0(
-                "plan-names-real-paths",
+                Rule::PlanNamesRealPaths,
                 missing.is_empty(),
                 format!(
                     "the plan names paths that do not exist in the tree, in directories that do not exist either: {}",
@@ -1263,6 +1370,18 @@ mod tests {
         assert!(in_namespace(&ns, "tests/acceptance/a.sh"));
         assert!(!in_namespace(&ns, "tests/acceptance.sh"));
         assert!(!in_namespace(&ns, "src/a.ts"));
+    }
+
+    #[test]
+    fn every_rule_name_round_trips_and_is_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for r in Rule::ALL {
+            assert_eq!(Rule::parse(r.name()), Some(r));
+            assert!(seen.insert(r.name()), "duplicate rule name {}", r.name());
+        }
+        assert_eq!(Rule::RedOnBase.level(), "L1");
+        assert_eq!(Rule::ExecutedSomething.level(), "note");
+        assert_eq!(Rule::CleanTree.level(), "L0");
     }
 
     #[test]

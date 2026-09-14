@@ -209,7 +209,7 @@ operation env, the fifteen-edits sign; a sandbox test that fails loudly
 when bwrap is missing. This comes first because every later stage needs
 a suite that is fast, grouped, and not coupled to log wording.
 
-**Stage 2. Typed vocabularies (hand).** `Contract` and `Product` enums in
+**Stage 2. Typed vocabularies (hand). Done 2026-09-14: Contract, Product and Kind enums; the Rule registry with an exhaustive audit table; landed_sha.** `Contract` and `Product` enums in
 workflows.rs with `serde(rename_all = "lowercase")` so the stored
 `resolved` JSON is byte-identical (a round-trip test proves it);
 `Kind` in envelope.rs; a `Rule` enum whose `name()` returns today's
