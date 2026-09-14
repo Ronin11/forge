@@ -229,6 +229,33 @@ fn a_second_signal_aborts_and_requeues() {
 }
 
 #[test]
+fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let child = e
+        .cmd("slow.sh")
+        .args(["work", "--once"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // slow.sh takes 2s to answer; signal it well before that so the drain
+    // has real work to wait out, not a race with an attempt already done.
+    std::thread::sleep(Duration::from_millis(500));
+    let pid = child.id().to_string();
+    Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    eprintln!("--- sigterm drain ---\n{err}");
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("running attempt(s) will finish"),
+        "the worker announced the drain: {err}"
+    );
+    assert_eq!(e.task(id).0, "succeeded");
+    assert_eq!(e.attempts(id)[0].1, "succeeded");
+}
+
+#[test]
 fn gc_removes_only_what_is_published_and_clean() {
     let e = Env::new();
     assert!(e.run("ok.sh", &[]).status.success());

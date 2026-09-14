@@ -421,6 +421,59 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
 }
 
 #[test]
+fn an_operation_sees_prev_sha_verify_ref_hot_files_and_cache_dir() {
+    let e = Env::new();
+    // A first task reads hello.sh, so it becomes a hot file for the next one.
+    assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());
+    tdd_repo(&e);
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/envs.toml"),
+        "name = \"envs\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"verify_ref\"]\nrun = [\"bash\", \"-c\", \"echo PREV=$FORGE_PREV_SHA REF=$FORGE_VERIFY_REF HOT=$FORGE_HOT_FILES CACHE=$FORGE_CACHE_DIR\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/env-wf.toml"),
+        "name = \"env-wf\"\ndescription = \"d\"\nsteps = [{ action = \"tests\" }, { action = \"setup\" }, { action = \"code\" }, { action = \"envs\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE2_CLAUDE_BIN_TESTS", "testwriter.sh")],
+        "env-wf",
+        "write 42 to answer.txt",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = e.trace_json("2");
+    let envs_op = doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "envs")
+        .unwrap();
+    assert_eq!(envs_op["ok"], true, "{}", envs_op["detail"]);
+    let out = envs_op["output"].as_str().unwrap();
+    let prev = out
+        .split("PREV=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap();
+    assert_eq!(
+        prev.len(),
+        40,
+        "FORGE_PREV_SHA should be a commit sha: {out}"
+    );
+    assert!(out.contains("REF=verify/2"), "{out}");
+    assert!(out.contains("HOT=hello.sh"), "{out}");
+    assert!(
+        out.contains(&format!("CACHE={}", e.home.join("cache").display())),
+        "{out}"
+    );
+    assert!(e.home.join("cache").is_dir());
+}
+
+#[test]
 fn a_mutating_operation_is_committed_and_verified_by_the_kernel() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());

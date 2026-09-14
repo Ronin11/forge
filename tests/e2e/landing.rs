@@ -108,6 +108,45 @@ fn no_land_leaves_the_verified_branch_for_a_human() {
 }
 
 #[test]
+fn forge_land_lands_a_verified_no_land_task_by_hand() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded");
+    assert!(!reason.starts_with("landed"), "{reason}");
+    assert!(pushed);
+    assert_eq!(origin_sha(&e, "main"), "", "main was not created yet");
+
+    let o = e.forge("ok.sh", &["land", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("landed task 1 on main @ "), "{out}");
+
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    let main = origin_sha(&e, "main");
+    assert_ne!(main, "");
+    assert_eq!(
+        main,
+        origin_sha(&e, "forge/1-write-42-to-answertxt"),
+        "main fast-forwarded to the branch"
+    );
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    let o = e.forge("ok.sh", &["show", "1"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("landed main @"));
+
+    // Landing an already-landed task is refused.
+    let o = e.forge("ok.sh", &["land", "1"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("already landed"));
+}
+
+#[test]
 fn a_conflicting_landing_goes_back_to_the_coder_who_merges_the_base() {
     let e = Env::new();
     // Any non-empty answer will do: the two tasks disagree on it.

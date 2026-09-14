@@ -246,6 +246,60 @@ fn the_supervisor_stops_answering_after_its_share_of_a_piece_of_work() {
 }
 
 #[test]
+fn forge_supervise_by_hand_answers_a_blocked_task_and_re_queues_it() {
+    let e = Env::new();
+    // Blocked with the supervisor off: nothing answers it automatically.
+    let o = e.forge(
+        "needsinput.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to the answer file",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(!o.status.success(), "a blocked task exits non-zero");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(!reason.contains("supervisor"), "{reason}");
+    assert_eq!(e.attempts(1).len(), 1, "no supervisor attempt ran yet");
+
+    // A human runs the supervisor on it by hand.
+    let mut c = e.with_role("ok.sh", "SUPERVISOR", "supervisor-answer.sh");
+    c.env("FORGE2_SUPERVISOR", "1");
+    let o = c.args(["supervise", "1"]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(
+            "supervisor answered (citing hello.sh, forge.toml) and re-queued the task as 2"
+        ),
+        "{err}"
+    );
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("answered; re-queued as task 2"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+
+    assert_eq!(e.task(1).0, "blocked", "the blocked task itself stands");
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "the ruling is an attempt on the record: {a:?}");
+    assert_eq!(a[1].1, "succeeded");
+    assert!(a[1].2.starts_with("supervisor: answer"), "{}", a[1].2);
+    let doc: serde_json::Value = e.trace_json("2");
+    assert_eq!(doc["task"]["retry_of"], 1);
+    let ds: serde_json::Value = e.decisions_json();
+    assert_eq!(ds[0]["answered_by"], "supervisor");
+    assert_eq!(ds[0]["retry_id"], 2);
+
+    // The re-queued task runs and lands the answer.
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert_eq!(e.task(2).0, "succeeded");
+}
+
+#[test]
 fn the_supervisor_accepts_a_demotion_that_names_no_defect_and_the_branch_lands() {
     let e = Env::new();
     let mut c = e.cmd("ok.sh");
