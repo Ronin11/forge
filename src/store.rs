@@ -1099,16 +1099,22 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn list_tasks(&self, limit: u32, state: Option<TaskState>) -> Result<Vec<TaskSummary>> {
+    pub fn list_tasks(
+        &self,
+        limit: u32,
+        state: Option<TaskState>,
+        repo: Option<&str>,
+    ) -> Result<Vec<TaskSummary>> {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
                     t.workflow
-             FROM tasks t WHERE ?2 IS NULL OR t.state = ?2 ORDER BY t.id DESC LIMIT ?1",
+             FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
+             ORDER BY t.id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit, state.map(TaskState::as_str)], |r| {
+        let rows = stmt.query_map(params![limit, state.map(TaskState::as_str), repo], |r| {
             Ok(TaskSummary {
                 id: r.get(0)?,
                 state: r.get(1)?,

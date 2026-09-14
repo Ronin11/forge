@@ -853,9 +853,11 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
     Ok(v)
 }
 
-/// Path-like tokens in a plan: anything with a slash or a source
-/// extension, stripped of the punctuation prose wraps it in.
-pub fn plan_paths(text: &str) -> Vec<String> {
+/// Path-like tokens in a plan: anything with a source extension, or a
+/// slash-separated token whose first segment is a directory of the tree
+/// (`is_dir` says), stripped of the punctuation prose wraps it in. The
+/// directory test keeps prose such as `$/LANDED` or `none/dash` out.
+pub fn plan_paths(text: &str, is_dir: &dyn Fn(&str) -> bool) -> Vec<String> {
     const EXT: &[&str] = &[
         ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".sh", ".go", ".toml", ".md", ".json",
         ".yml", ".yaml", ".html", ".css", ".sql", ".txt",
@@ -879,9 +881,17 @@ pub fn plan_paths(text: &str) -> Vec<String> {
         {
             continue;
         }
-        let looks = (tok.contains('/') && !tok.starts_with('/') && !tok.contains("//"))
-            || EXT.iter().any(|e| tok.ends_with(e));
-        if looks && !tok.contains("..") && !out.contains(&tok.to_string()) {
+        let plain = tok
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | '@'));
+        if !plain {
+            continue;
+        }
+        let looks = EXT.iter().any(|e| tok.ends_with(e))
+            || (tok.contains('/')
+                && !tok.starts_with('/')
+                && is_dir(tok.split('/').next().unwrap_or("")));
+        if looks && !out.contains(&tok.to_string()) {
             out.push(tok.to_string());
         }
     }
@@ -948,7 +958,7 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
             // A path the plan names must exist, or be a new file in a
             // directory that does: plans create files, they do not
             // invent directories.
-            let missing: Vec<String> = plan_paths(&plan)
+            let missing: Vec<String> = plan_paths(&plan, &|d| s.worktree.join(d).is_dir())
                 .into_iter()
                 .filter(|p| {
                     let path = s.worktree.join(p);
@@ -1269,14 +1279,18 @@ mod tests {
     #[test]
     fn plan_paths_finds_files_and_ignores_prose() {
         let plan = "Change `src/cli.rs` (the run_doctor fn) and src/doctor.rs:112; add tests/e2e.rs::doctor_json. \
-                    See https://example.com/x and docs/ACTIONS.md. Not a path: a/b/.. or /abs/path or foo.";
+                    See https://example.com/x and docs/ACTIONS.md. Not paths: a/b/.., /abs/path, foo, $/LANDED, \
+                    OK/$/OK, none/dash, wf[\"$/LANDED. A new file in a real dir: src/new_mod.rs and web/x.";
+        let is_dir = |d: &str| matches!(d, "src" | "tests" | "docs" | "web");
         assert_eq!(
-            plan_paths(plan),
+            plan_paths(plan, &is_dir),
             vec![
                 "src/cli.rs",
                 "src/doctor.rs",
                 "tests/e2e.rs",
-                "docs/ACTIONS.md"
+                "docs/ACTIONS.md",
+                "src/new_mod.rs",
+                "web/x"
             ]
         );
     }

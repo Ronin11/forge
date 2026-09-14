@@ -4003,6 +4003,94 @@ fn an_operation_with_output_full_keeps_the_whole_thing_instead_of_the_tail() {
 }
 
 #[test]
+fn log_repo_filters_to_one_repository_canonicalized_like_add() {
+    let e = Env::new();
+    let repo2 = e._dir.path().join("repo2");
+    std::fs::create_dir_all(&repo2).unwrap();
+    git(&repo2, &["init", "-q", "-b", "main"]);
+    git(&repo2, &["config", "user.name", "Test"]);
+    git(&repo2, &["config", "user.email", "test@example.com"]);
+    std::fs::write(
+        repo2.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\n",
+    )
+    .unwrap();
+    git(&repo2, &["add", "-A"]);
+    git(&repo2, &["commit", "-qm", "init"]);
+
+    let a1 = e.add(&[]);
+    let a2 = e.add(&[]);
+    let o = e.forge(
+        "ok.sh",
+        &["add", repo2.to_str().unwrap(), "write 42 to answer.txt"],
+    );
+    assert!(o.status.success());
+    let b1: i64 = String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let list = |args: &[&str]| -> Vec<i64> {
+        let out: serde_json::Value =
+            serde_json::from_slice(&e.forge("ok.sh", args).stdout).unwrap();
+        out.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_i64().unwrap())
+            .collect()
+    };
+
+    assert_eq!(
+        list(&["log", "--json", "--repo", e.repo.to_str().unwrap()]),
+        vec![a2, a1],
+        "repo1 sees only its own tasks, newest first"
+    );
+    assert_eq!(
+        list(&["log", "--json", "--repo", repo2.to_str().unwrap()]),
+        vec![b1],
+        "repo2 sees only its own task"
+    );
+    assert_eq!(
+        list(&["log", "--json"]).len(),
+        3,
+        "unfiltered log still sees every repo"
+    );
+
+    // Combinable with --state.
+    assert_eq!(
+        list(&[
+            "log",
+            "--json",
+            "--repo",
+            e.repo.to_str().unwrap(),
+            "--state",
+            "queued",
+        ]),
+        vec![a2, a1]
+    );
+    assert!(
+        list(&[
+            "log",
+            "--json",
+            "--repo",
+            e.repo.to_str().unwrap(),
+            "--state",
+            "succeeded",
+        ])
+        .is_empty()
+    );
+
+    // Canonicalized the same way `add` canonicalizes: an uncanonical path still matches.
+    let uncanon = repo2.join(".").join("..").join("repo2");
+    assert_eq!(
+        list(&["log", "--json", "--repo", uncanon.to_str().unwrap()]),
+        vec![b1]
+    );
+}
+
+#[test]
 fn version_starts_with_the_crate_version() {
     let o = Command::new(env!("CARGO_BIN_EXE_forge"))
         .arg("version")
