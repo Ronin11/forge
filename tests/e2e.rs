@@ -2002,14 +2002,8 @@ fn the_document_directive_is_held_to_comments_and_docs() {
 /// A blocked task supervised by the given fake: the coder asks its
 /// question, the supervisor rules.
 fn supervised(e: &Env, supervisor: &str, task: &str) -> Output {
-    let mut c = e.cmd("needsinput.sh");
+    let mut c = e.with_role("needsinput.sh", "SUPERVISOR", supervisor);
     c.env("FORGE2_SUPERVISOR", "1");
-    c.env(
-        "FORGE2_CLAUDE_BIN_SUPERVISOR",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fakes")
-            .join(supervisor),
-    );
     let o = c
         .args(["run", e.repo.to_str().unwrap(), task, "--retries", "0"])
         .output()
@@ -2268,12 +2262,8 @@ fn the_supervisor_stops_answering_after_its_share_of_a_piece_of_work() {
     // One worker pass drains the queue: task 2 asks again (the coder fake
     // never changes) and the supervisor answers again as 3; task 3 asks
     // again and the supervisor must step aside.
-    let mut c = e.cmd("needsinput.sh");
+    let mut c = e.with_role("needsinput.sh", "SUPERVISOR", "supervisor-answer.sh");
     c.env("FORGE2_SUPERVISOR", "1");
-    c.env(
-        "FORGE2_CLAUDE_BIN_SUPERVISOR",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/supervisor-answer.sh"),
-    );
     let o = c.args(["work", "--once"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     eprintln!("--- work ---\n{err}");
@@ -2412,11 +2402,7 @@ fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     let map = origin_file(&e, "forge/1-write-42", "docs/SYSTEM.md").unwrap();
     assert!(map.contains("```mermaid"));
 
-    let mut c = e.cmd("ok.sh");
-    c.env(
-        "FORGE2_CLAUDE_BIN_GRAPH",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/grapher-bad.sh"),
-    );
+    let mut c = e.with_role("ok.sh", "GRAPH", "grapher-bad.sh");
     let o = c
         .args([
             "run",
