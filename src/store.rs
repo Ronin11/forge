@@ -711,6 +711,18 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     })
 }
 
+/// `id` and every task it retries, walking up through `retry_of` to the root.
+fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE up(id, parent) AS (
+           SELECT id, retry_of FROM tasks WHERE id = ?1
+           UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
+         SELECT id FROM up",
+    )?;
+    let rows = stmt.query_map(params![id], |r| r.get(0))?;
+    rows.collect()
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -932,14 +944,9 @@ impl Store {
 
     /// The first task in `id`'s chain of retries: itself when it retries nothing.
     pub fn root_of(&self, id: i64) -> Result<i64> {
-        Ok(self.lock().query_row(
-            "WITH RECURSIVE up(id, parent) AS (
-               SELECT id, retry_of FROM tasks WHERE id = ?1
-               UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
-             SELECT id FROM up WHERE parent IS NULL",
-            params![id],
-            |r| r.get(0),
-        )?)
+        // Retries always point at an already-existing task, so ids only
+        // shrink walking up the chain: the root is the smallest one.
+        Ok(lineage_ids(&self.lock(), id)?.into_iter().min().unwrap())
     }
 
     /// Every task in `id`'s lineage, root first: the root and everything
@@ -1227,28 +1234,31 @@ impl Store {
     ) -> Result<Vec<crate::profile::Run>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
+            "SELECT t.id, t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
                     COALESCE(t.finished_at - t.started_at, 0),
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
-                    (WITH RECURSIVE up(id, parent) AS (
-                       SELECT t.id, t.retry_of
-                       UNION ALL SELECT x.id, x.retry_of FROM up JOIN tasks x ON x.id = up.parent)
-                     SELECT id FROM up WHERE parent IS NULL)
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
                AND t.state IN ('succeeded','failed','blocked','unverified')
                AND t.started_at IS NOT NULL
              ORDER BY t.id DESC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![workflow, hash, limit as i64], |r| {
-            Ok(crate::profile::Run {
-                succeeded: r.get::<_, String>(0)? == "succeeded",
-                cost: r.get(1)?,
-                secs: r.get::<_, i64>(2)? as f64,
-                attempts: r.get(3)?,
-                root: r.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows: Vec<(i64, String, f64, i64, i64)> = stmt
+            .query_map(params![workflow, hash, limit as i64], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, state, cost, secs, attempts) in rows {
+            let root = lineage_ids(&c, id)?.into_iter().min().unwrap();
+            out.push(crate::profile::Run {
+                succeeded: state == "succeeded",
+                cost,
+                secs: secs as f64,
+                attempts,
+                root,
+            });
+        }
+        Ok(out)
     }
 
     /// Workflow versions seen, newest first, by the id of the last task that ran them.
@@ -1411,32 +1421,35 @@ impl Store {
 
     /// How many times the supervisor has answered within this piece of work.
     pub fn supervisor_answers_in_lineage(&self, task_id: i64) -> Result<u32> {
+        // self.lineage() walks *down* the whole retry tree from the root, so
+        // it counts every branch, not just task_id's own ancestor chain; a
+        // task can share a retry_of with a sibling (see dependents_retries /
+        // latest_retry_of), so this must not narrow to task_id's own chain.
+        // Computed before locking below: lineage() takes the lock itself.
         let ids: Vec<i64> = self.lineage(task_id)?.iter().map(|l| l.id).collect();
         let c = self.lock();
-        let mut n = 0u32;
-        for id in ids {
-            let k: i64 = c.query_row(
-                "SELECT COUNT(*) FROM decisions WHERE task_id=?1 AND answered_by='supervisor'",
-                params![id],
-                |r| r.get(0),
-            )?;
-            n += k as u32;
-        }
-        Ok(n)
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let n: i64 = c.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM decisions WHERE task_id IN ({placeholders}) AND answered_by='supervisor'"
+            ),
+            rusqlite::params_from_iter(ids.iter()),
+            |r| r.get(0),
+        )?;
+        Ok(n as u32)
     }
 
     /// Every decision recorded on `id` or any task it retries, oldest first.
     pub fn decisions_in_lineage(&self, id: i64) -> Result<Vec<Decision>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "WITH RECURSIVE up(id, parent) AS (
-               SELECT id, retry_of FROM tasks WHERE id = ?1
-               UNION ALL SELECT t.id, t.retry_of FROM up JOIN tasks t ON t.id = up.parent)
-             SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
-             FROM decisions d JOIN up ON up.id = d.task_id
-             ORDER BY d.id",
-        )?;
-        let rows = stmt.query_map(params![id], |r| {
+        let ids = lineage_ids(&c, id)?;
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut stmt = c.prepare(&format!(
+            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
+             FROM decisions d WHERE d.task_id IN ({placeholders})
+             ORDER BY d.id"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
             Ok(Decision {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
@@ -1568,6 +1581,30 @@ mod tests {
         assert_eq!(att[0].state, AttemptState::AgentFailed);
         assert_eq!(att[0].reason, "worker died");
         assert_eq!(s.claim_next(3).unwrap().map(|t| t.id), Some(id));
+    }
+
+    #[test]
+    fn supervisor_answers_in_lineage_counts_sibling_retries_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let root = s.insert_task(&t).unwrap();
+        let mut retry = t.clone();
+        retry.retry_of = Some(root);
+        let a = s.insert_task(&retry).unwrap();
+        let b = s.insert_task(&retry).unwrap();
+        s.insert_decision_by(a, "r", "q", "a", "supervisor", "")
+            .unwrap();
+        assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
     }
 }
 
