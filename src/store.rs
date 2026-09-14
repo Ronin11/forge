@@ -484,103 +484,190 @@ UPDATE tasks SET landed_sha = substr(reason, instr(reason, '@ ') + 2, 8) WHERE r
 ",
 ];
 
-const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
-    timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure, plan, landed_sha";
+const TASK_COLUMNS: &[&str] = &[
+    "id",
+    "repo",
+    "task",
+    "base_branch",
+    "base_sha",
+    "branch",
+    "worktree",
+    "model",
+    "max_turns",
+    "max_attempts",
+    "timeout_secs",
+    "checks_json",
+    "state",
+    "reason",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "pushed",
+    "worker_pid",
+    "budget_usd",
+    "worktree_removed_at",
+    "allow_protected",
+    "workflow",
+    "interface",
+    "show_checks",
+    "workflow_hash",
+    "workflow_text",
+    "actions_json",
+    "land",
+    "after_json",
+    "verify_base",
+    "retry_of",
+    "journal",
+    "context",
+    "context_enabled",
+    "resume_on_failure",
+    "plan",
+    "landed_sha",
+];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
-    idx: usize,
-    r: std::result::Result<T, E>,
+    r: &Row,
+    name: &str,
+    res: std::result::Result<T, E>,
 ) -> rusqlite::Result<T> {
-    r.map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e)))
+    res.map_err(|e| {
+        let idx = r.as_ref().column_index(name).unwrap_or(0);
+        rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e))
+    })
 }
 
 fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
-        id: r.get(0)?,
-        repo: r.get(1)?,
-        task: r.get(2)?,
-        base_branch: r.get(3)?,
-        base_sha: r.get(4)?,
-        branch: r.get(5)?,
-        worktree: r.get(6)?,
-        model: r.get(7)?,
-        max_turns: r.get(8)?,
-        max_attempts: r.get(9)?,
-        timeout_secs: r.get(10)?,
-        checks: conv(11, serde_json::from_str(&r.get::<_, String>(11)?))?,
-        state: conv(12, TaskState::try_from(r.get::<_, String>(12)?.as_str()))?,
-        reason: r.get(13)?,
-        created_at: r.get(14)?,
-        started_at: r.get(15)?,
-        finished_at: r.get(16)?,
-        pushed: r.get::<_, i64>(17)? != 0,
-        worker_pid: r.get(18)?,
-        budget_usd: r.get(19)?,
-        worktree_removed_at: r.get(20)?,
-        allow_protected: r.get::<_, i64>(21)? != 0,
-        workflow: r.get(22)?,
-        interface: r.get(23)?,
-        show_checks: r.get::<_, i64>(24)? != 0,
-        workflow_hash: r.get(25)?,
-        workflow_text: r.get(26)?,
-        actions_json: r.get(27)?,
-        land: r.get::<_, i64>(28)? != 0,
-        after: serde_json::from_str(&r.get::<_, String>(29)?).unwrap_or_default(),
-        verify_base: r.get(30)?,
-        retry_of: r.get(31)?,
-        journal: r.get::<_, i64>(32)? != 0,
-        context: r.get(33)?,
-        context_enabled: r.get::<_, i64>(34)? != 0,
-        resume_on_failure: r.get::<_, i64>(35)? != 0,
-        plan: r.get(36)?,
-        landed_sha: r.get(37)?,
+        id: r.get("id")?,
+        repo: r.get("repo")?,
+        task: r.get("task")?,
+        base_branch: r.get("base_branch")?,
+        base_sha: r.get("base_sha")?,
+        branch: r.get("branch")?,
+        worktree: r.get("worktree")?,
+        model: r.get("model")?,
+        max_turns: r.get("max_turns")?,
+        max_attempts: r.get("max_attempts")?,
+        timeout_secs: r.get("timeout_secs")?,
+        checks: conv(
+            r,
+            "checks_json",
+            serde_json::from_str(&r.get::<_, String>("checks_json")?),
+        )?,
+        state: conv(
+            r,
+            "state",
+            TaskState::try_from(r.get::<_, String>("state")?.as_str()),
+        )?,
+        reason: r.get("reason")?,
+        created_at: r.get("created_at")?,
+        started_at: r.get("started_at")?,
+        finished_at: r.get("finished_at")?,
+        pushed: r.get::<_, i64>("pushed")? != 0,
+        worker_pid: r.get("worker_pid")?,
+        budget_usd: r.get("budget_usd")?,
+        worktree_removed_at: r.get("worktree_removed_at")?,
+        allow_protected: r.get::<_, i64>("allow_protected")? != 0,
+        workflow: r.get("workflow")?,
+        interface: r.get("interface")?,
+        show_checks: r.get::<_, i64>("show_checks")? != 0,
+        workflow_hash: r.get("workflow_hash")?,
+        workflow_text: r.get("workflow_text")?,
+        actions_json: r.get("actions_json")?,
+        land: r.get::<_, i64>("land")? != 0,
+        after: serde_json::from_str(&r.get::<_, String>("after_json")?).unwrap_or_default(),
+        verify_base: r.get("verify_base")?,
+        retry_of: r.get("retry_of")?,
+        journal: r.get::<_, i64>("journal")? != 0,
+        context: r.get("context")?,
+        context_enabled: r.get::<_, i64>("context_enabled")? != 0,
+        resume_on_failure: r.get::<_, i64>("resume_on_failure")? != 0,
+        plan: r.get("plan")?,
+        landed_sha: r.get("landed_sha")?,
     })
 }
 
-const ATTEMPT_COLS: &str = "id, task_id, attempt_no, state, reason, started_at, finished_at, agent_exit, timed_out,
-    num_turns, tool_calls, cost_usd, agent_ms, commits, files_changed, dirty, verdict_json, result_text, log_path,
-    envelope_json, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets, step, start_sha, end_sha, inputs_json, outputs_json, step_seq, session_id, first_edit,
-    input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens";
+const ATTEMPT_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "attempt_no",
+    "state",
+    "reason",
+    "started_at",
+    "finished_at",
+    "agent_exit",
+    "timed_out",
+    "num_turns",
+    "tool_calls",
+    "cost_usd",
+    "agent_ms",
+    "commits",
+    "files_changed",
+    "dirty",
+    "verdict_json",
+    "result_text",
+    "log_path",
+    "envelope_json",
+    "rl_five_hour",
+    "rl_seven_day",
+    "rl_five_hour_resets",
+    "rl_seven_day_resets",
+    "step",
+    "start_sha",
+    "end_sha",
+    "inputs_json",
+    "outputs_json",
+    "step_seq",
+    "session_id",
+    "first_edit",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
-        id: r.get(0)?,
-        task_id: r.get(1)?,
-        attempt_no: r.get(2)?,
-        state: conv(3, AttemptState::try_from(r.get::<_, String>(3)?.as_str()))?,
-        reason: r.get(4)?,
-        started_at: r.get(5)?,
-        finished_at: r.get(6)?,
-        agent_exit: r.get(7)?,
-        timed_out: r.get::<_, i64>(8)? != 0,
-        num_turns: r.get(9)?,
-        tool_calls: r.get(10)?,
-        cost_usd: r.get(11)?,
-        agent_ms: r.get(12)?,
-        commits: r.get(13)?,
-        files_changed: r.get(14)?,
-        dirty: r.get::<_, i64>(15)? != 0,
-        verdict_json: r.get(16)?,
-        result_text: r.get(17)?,
-        log_path: r.get(18)?,
-        envelope_json: r.get(19)?,
-        rl_five_hour: r.get(20)?,
-        rl_seven_day: r.get(21)?,
-        rl_five_hour_resets: r.get(22)?,
-        rl_seven_day_resets: r.get(23)?,
-        step: r.get(24)?,
-        start_sha: r.get(25)?,
-        end_sha: r.get(26)?,
-        inputs_json: r.get(27)?,
-        outputs_json: r.get(28)?,
-        step_seq: r.get(29)?,
-        session_id: r.get(30)?,
-        first_edit: r.get(31)?,
-        input_tokens: r.get(32)?,
-        output_tokens: r.get(33)?,
-        cache_read_input_tokens: r.get(34)?,
-        cache_creation_input_tokens: r.get(35)?,
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        attempt_no: r.get("attempt_no")?,
+        state: conv(
+            r,
+            "state",
+            AttemptState::try_from(r.get::<_, String>("state")?.as_str()),
+        )?,
+        reason: r.get("reason")?,
+        started_at: r.get("started_at")?,
+        finished_at: r.get("finished_at")?,
+        agent_exit: r.get("agent_exit")?,
+        timed_out: r.get::<_, i64>("timed_out")? != 0,
+        num_turns: r.get("num_turns")?,
+        tool_calls: r.get("tool_calls")?,
+        cost_usd: r.get("cost_usd")?,
+        agent_ms: r.get("agent_ms")?,
+        commits: r.get("commits")?,
+        files_changed: r.get("files_changed")?,
+        dirty: r.get::<_, i64>("dirty")? != 0,
+        verdict_json: r.get("verdict_json")?,
+        result_text: r.get("result_text")?,
+        log_path: r.get("log_path")?,
+        envelope_json: r.get("envelope_json")?,
+        rl_five_hour: r.get("rl_five_hour")?,
+        rl_seven_day: r.get("rl_seven_day")?,
+        rl_five_hour_resets: r.get("rl_five_hour_resets")?,
+        rl_seven_day_resets: r.get("rl_seven_day_resets")?,
+        step: r.get("step")?,
+        start_sha: r.get("start_sha")?,
+        end_sha: r.get("end_sha")?,
+        inputs_json: r.get("inputs_json")?,
+        outputs_json: r.get("outputs_json")?,
+        step_seq: r.get("step_seq")?,
+        session_id: r.get("session_id")?,
+        first_edit: r.get("first_edit")?,
+        input_tokens: r.get("input_tokens")?,
+        output_tokens: r.get("output_tokens")?,
+        cache_read_input_tokens: r.get("cache_read_input_tokens")?,
+        cache_creation_input_tokens: r.get("cache_creation_input_tokens")?,
     })
 }
 
@@ -698,7 +785,7 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id=?1"),
+                &format!("SELECT {} FROM tasks WHERE id=?1", TASK_COLUMNS.join(", ")),
                 params![id],
                 task_from_row,
             )
@@ -1004,7 +1091,8 @@ impl Store {
     pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {ATTEMPT_COLS} FROM attempts WHERE task_id=?1 ORDER BY attempt_no"
+            "SELECT {} FROM attempts WHERE task_id=?1 ORDER BY attempt_no",
+            ATTEMPT_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(params![task_id], attempt_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1060,7 +1148,8 @@ impl Store {
     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {TASK_COLS} FROM tasks WHERE worktree != '' AND worktree_removed_at IS NULL ORDER BY id"
+            "SELECT {} FROM tasks WHERE worktree != '' AND worktree_removed_at IS NULL ORDER BY id",
+            TASK_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map([], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1079,9 +1168,10 @@ impl Store {
     pub fn blocked(&self, repo: Option<&str>) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
-            "SELECT {TASK_COLS} FROM tasks t WHERE t.state='blocked'
+            "SELECT {} FROM tasks t WHERE t.state='blocked'
                AND (?1 IS NULL OR t.repo = ?1)
-               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id"
+               AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id",
+            TASK_COLUMNS.join(", ")
         ))?;
         let rows = stmt.query_map(params![repo], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1463,10 +1553,10 @@ mod column_tests {
     #[test]
     fn the_column_lists_agree_with_the_schema() {
         let (_d, store) = open();
-        for (table, cols) in [("tasks", TASK_COLS), ("attempts", ATTEMPT_COLS)] {
+        for (table, cols) in [("tasks", TASK_COLUMNS), ("attempts", ATTEMPT_COLUMNS)] {
             let listed: Vec<String> = cols
-                .split(',')
-                .map(|c| c.trim().rsplit('.').next().unwrap().to_string())
+                .iter()
+                .map(|c| c.rsplit('.').next().unwrap().to_string())
                 .collect();
             let actual = columns(&store, table);
             for c in &listed {
