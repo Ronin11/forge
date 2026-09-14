@@ -632,27 +632,52 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// Persist every column the struct carries, except the id, the
+    /// creation time, and `worktree_removed_at`, which gc owns. A field
+    /// mutated after insert used to be silently dropped here.
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
-            "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15, context=?16, plan=?17 WHERE id=?1",
+            "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,
+             max_turns=?9, max_attempts=?10, timeout_secs=?11, checks_json=?12, state=?13, reason=?14,
+             started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
+             workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
+             land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
+             context_enabled=?33, resume_on_failure=?34, plan=?35 WHERE id=?1",
             params![
                 t.id,
+                t.repo,
+                t.task,
+                t.base_branch,
                 t.base_sha,
                 t.branch,
                 t.worktree,
+                t.model,
+                t.max_turns,
+                t.max_attempts,
+                t.timeout_secs,
+                serde_json::to_string(&t.checks)?,
                 t.state.as_str(),
                 t.reason,
                 t.started_at,
                 t.finished_at,
                 t.pushed as i64,
                 t.worker_pid,
-                t.interface,
+                t.budget_usd,
+                t.allow_protected as i64,
+                t.workflow,
                 t.workflow_hash,
                 t.workflow_text,
                 t.actions_json,
+                t.interface,
+                t.show_checks as i64,
+                t.land as i64,
+                serde_json::to_string(&t.after)?,
                 t.verify_base,
+                t.retry_of,
+                t.journal as i64,
                 t.context,
+                t.context_enabled as i64,
+                t.resume_on_failure as i64,
                 t.plan
             ],
         )?;
@@ -1376,5 +1401,106 @@ mod tests {
         assert_eq!(att[0].state, AttemptState::AgentFailed);
         assert_eq!(att[0].reason, "worker died");
         assert_eq!(s.claim_next(3).unwrap().map(|t| t.id), Some(id));
+    }
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+
+    fn open() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        (dir, store)
+    }
+
+    fn columns(store: &Store, table: &str) -> Vec<String> {
+        let c = store.lock();
+        let mut stmt = c.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_column_lists_agree_with_the_schema() {
+        let (_d, store) = open();
+        for (table, cols) in [("tasks", TASK_COLS), ("attempts", ATTEMPT_COLS)] {
+            let listed: Vec<String> = cols
+                .split(',')
+                .map(|c| c.trim().rsplit('.').next().unwrap().to_string())
+                .collect();
+            let actual = columns(&store, table);
+            for c in &listed {
+                assert!(
+                    actual.contains(c),
+                    "{table}: {c} is listed but not a column"
+                );
+            }
+            for c in &actual {
+                assert!(listed.contains(c), "{table}: column {c} is not in the list");
+            }
+        }
+    }
+
+    #[test]
+    fn update_task_persists_every_field() {
+        let (_d, store) = open();
+        let mut t = Task {
+            repo: "/r".into(),
+            task: "do".into(),
+            base_branch: "main".into(),
+            model: "sonnet".into(),
+            max_turns: 30,
+            max_attempts: 2,
+            timeout_secs: 60,
+            state: TaskState::Queued,
+            created_at: 1,
+            workflow: "direct".into(),
+            land: true,
+            journal: true,
+            context_enabled: true,
+            ..Default::default()
+        };
+        t.id = store.insert_task(&t).unwrap();
+        // Change every mutable field, then read it back.
+        t.repo = "/elsewhere".into();
+        t.task = "do more".into();
+        t.base_branch = "dev".into();
+        t.base_sha = "abc".into();
+        t.branch = "forge/x".into();
+        t.worktree = "/wt".into();
+        t.model = "opus".into();
+        t.max_turns = 99;
+        t.max_attempts = 5;
+        t.timeout_secs = 7;
+        t.checks = vec!["true".into()];
+        t.state = TaskState::Running;
+        t.reason = "why".into();
+        t.started_at = Some(2);
+        t.finished_at = Some(3);
+        t.pushed = true;
+        t.worker_pid = Some(4);
+        t.budget_usd = Some(1.5);
+        t.allow_protected = true;
+        t.workflow = "tdd".into();
+        t.workflow_hash = "h".into();
+        t.workflow_text = "text".into();
+        t.actions_json = "[]".into();
+        t.interface = "iface".into();
+        t.show_checks = true;
+        t.land = false;
+        t.after = vec![7, 8];
+        t.verify_base = "vb".into();
+        t.retry_of = Some(9);
+        t.journal = false;
+        t.context = "ctx".into();
+        t.context_enabled = false;
+        t.resume_on_failure = true;
+        t.plan = "plan".into();
+        store.update_task(&t).unwrap();
+        let back = store.task(t.id).unwrap().unwrap();
+        assert_eq!(format!("{back:?}"), format!("{t:?}"));
     }
 }

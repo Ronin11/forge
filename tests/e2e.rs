@@ -2383,6 +2383,63 @@ fn the_supervisor_marks_a_task_superseded_by_one_that_already_landed() {
 }
 
 #[test]
+fn a_supervisor_that_crashes_is_an_agent_failure_and_the_question_escalates() {
+    let e = Env::new();
+    let o = supervised(&e, "supervisor-crash.sh", "write 42 to the answer file");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("supervisor escalated: its run failed: agent exit 1"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1].1, "agent_failed", "{a:?}");
+    assert_eq!(a[1].2, "agent exit 1");
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.contains("[supervisor escalated: its run failed: agent exit 1]"),
+        "{reason}"
+    );
+    let ds: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["decisions", "--json"]).stdout).unwrap();
+    assert!(ds.as_array().unwrap().is_empty(), "{ds}");
+}
+
+#[test]
+fn a_failed_push_ends_the_task_failed_not_succeeded() {
+    // Verified work that could not be published is not a success.
+    let e = Env::new();
+    let lock = |mode: &str| {
+        assert!(
+            Command::new("chmod")
+                .args(["-R", mode])
+                .arg(&e.origin)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    lock("a-w");
+    let o = e.run("ok.sh", &[]);
+    lock("u+w");
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "failed", "{reason}");
+    assert!(reason.starts_with("push failed: "), "{reason}");
+    assert!(!pushed);
+    let a = e.attempts(1);
+    assert_eq!(
+        a[0].1, "succeeded",
+        "the attempt itself was verified: {a:?}"
+    );
+}
+
+#[test]
 fn the_supervisor_files_a_prerequisite_and_requeues_the_task_behind_it() {
     let e = Env::new();
     let o = supervised(&e, "supervisor-prereq.sh", "write 42 to the answer file");
@@ -3309,6 +3366,17 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
     .to_string();
     assert!(code_only.contains("code  ("), "{code_only}");
     assert!(!code_only.contains("fix  ("), "{code_only}");
+    // The kernel's own verify row carries the attempt's real duration.
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let verify_ms = doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "verify")
+        .map(|o| o["ms"].as_i64().unwrap_or(0))
+        .unwrap_or(0);
+    assert!(verify_ms >= 250, "verify row ms {verify_ms}");
 }
 
 #[test]

@@ -427,18 +427,6 @@ exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6
 "#,
     ),
     (
-        "repo-map.toml",
-        r#"name = "repo-map"
-kind = "operation"
-description = "where things are: every source file's declared symbols, ranked against the task's words and the files earlier work read most, cut to a budget; shown to the next directive so it starts by reading what matters instead of finding it. Deterministic: forge-repomap, no model."
-consumes = ["branch"]
-produces = ["context"]
-run = ["bash", "-c", '''
-exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
-''', "repo-map"]
-"#,
-    ),
-    (
         "diff-size.toml",
         r#"name = "diff-size"
 kind = "operation"
@@ -1173,11 +1161,9 @@ pub fn uncommitted(home: &Path) -> Result<Vec<String>> {
         .arg(&dir)
         .args(["status", "--porcelain", "--untracked-files=all"])
         .output()?;
-    Ok(String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| l[3..].to_string())
-        .collect())
+    Ok(crate::git::porcelain_paths(&String::from_utf8_lossy(
+        &o.stdout,
+    )))
 }
 
 /// The commit that introduced a blob into the directory's history, if it
@@ -1202,6 +1188,37 @@ mod tests {
 
     fn write(home: &Path, rel: &str, text: &str) {
         std::fs::write(home.join("workflows").join(rel), text).unwrap();
+    }
+
+    #[test]
+    fn every_built_in_parses_on_its_own_and_names_are_unique() {
+        // A built-in no workflow references would otherwise fail only at
+        // first load in production; and a duplicate entry is written once
+        // and never noticed. Actions and operations share a directory;
+        // workflows have their own, so `docs` may be both.
+        let dir = tempfile::tempdir().unwrap();
+        let mut actions = std::collections::HashSet::new();
+        for (file, text) in BUILTIN_ACTIONS.iter().chain(BUILTIN_OPERATIONS) {
+            std::fs::write(dir.path().join(file), text).unwrap();
+            let a = parse_action(dir.path(), &dir.path().join(file), text)
+                .unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            assert!(
+                actions.insert(a.name.clone()),
+                "{file}: duplicate built-in action {}",
+                a.name
+            );
+        }
+        let mut workflows = std::collections::HashSet::new();
+        for (file, text) in BUILTIN_WORKFLOWS {
+            std::fs::write(dir.path().join(file), text).unwrap();
+            let w = parse_workflow(dir.path(), &dir.path().join(file), text)
+                .unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            assert!(
+                workflows.insert(w.name.clone()),
+                "{file}: duplicate built-in workflow {}",
+                w.name
+            );
+        }
     }
 
     #[test]

@@ -324,6 +324,35 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     })
     .await?;
 
+    // A run that did not finish (timeout, crash, refused) is an agent
+    // failure on the record, not a failed ruling; the question escalates.
+    if let Some(why) = crate::verify::agent_failure(&outcome) {
+        let verdict = Verdict {
+            commits: 0,
+            files_changed: 0,
+            dirty: false,
+            envelope: None,
+            checks: Vec::new(),
+            state: AttemptState::AgentFailed,
+            reason: why.clone(),
+        };
+        engine::record(f, &mut a, wt, &verdict, &outcome, None)
+            .await
+            .map_err(|e| match e {
+                Fault::Task(e) | Fault::Env(e) => e,
+            })?;
+        let why = format!("its run failed: {why}");
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!("supervisor escalated: {why}"),
+            },
+        );
+        let mut t = t.clone();
+        t.reason = format!("{} [supervisor escalated: {why}]", t.reason);
+        f.store.update_task(&t)?;
+        return Ok(Ruled::Escalated(why));
+    }
     // The verdict: structured, untouched, citing things that exist,
     // substantive. Anything short of that is an escalation.
     let mut checks = Vec::new();
@@ -334,7 +363,14 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     checks.push(l0(
         "result-structured",
         ruling.is_some(),
-        crate::verify::agent_failure(&outcome).unwrap_or_else(|| "no structured ruling".into()),
+        outcome
+            .structured
+            .as_deref()
+            .map(|s| match serde_json::from_str::<Ruling>(s) {
+                Ok(_) => String::new(),
+                Err(e) => format!("the ruling does not fit the schema: {e}"),
+            })
+            .unwrap_or_else(|| "no structured ruling".into()),
     ));
     let changed = crate::git::changed_paths(wt, &a.start_sha).await?;
     let dirty: Vec<String> = crate::git::dirty_paths(wt)

@@ -189,7 +189,7 @@ more commits, each green. "Forge" marks work precise enough to hand to
 Forge as tasks; "hand" marks kernel semantics that need a human at the
 keyboard.
 
-**Stage 0. The defects (hand, today).** Items 1-5 and 8 of section 1 as
+**Stage 0. The defects (hand, today). Done 2026-09-14.** Items 1-5 and 8 of section 1 as
 small commits with a test each: push failure ends the task failed with
 the branch pushed; the verify row takes the attempt's timer; the
 duplicate built-in goes and a test parses every built-in on its own; the

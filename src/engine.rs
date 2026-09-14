@@ -299,6 +299,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let mut idx = 0usize;
     // The base branch's tip once the task landed on it.
     let mut landed: Option<String> = None;
+    // The final push failed: verified work that could not be published is
+    // not a success, whatever the last attempt did.
+    let mut push_failed = false;
     // Verified alone but could not land within its attempts or budget: the
     // branch is pushed for a human rather than lost.
     let mut stalled = false;
@@ -441,6 +444,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             },
                         );
                         let started = unix_now();
+                        let start = Instant::now();
                         let (a, verdict, outcome) = match step.action.contract.as_str() {
                             "code" => {
                                 run_code_attempt(
@@ -507,7 +511,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             "verify",
                             true,
                             started,
-                            Instant::now(),
+                            start,
                             a.state == AttemptState::Succeeded,
                             None,
                             &a.reason,
@@ -856,6 +860,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 }
                 Err(e) => {
                     last_reason = format!("push failed: {e:#}");
+                    push_failed = true;
                     f.report.emit(
                         id,
                         Event::PushFailed {
@@ -912,6 +917,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     t.state = match last {
         // A budget stop is never a success, whatever the last attempt did.
         _ if budget_stop.is_some() => TaskState::Failed,
+        _ if push_failed => TaskState::Failed,
         AttemptState::Succeeded => TaskState::Succeeded,
         AttemptState::Unverified => TaskState::Unverified,
         AttemptState::NeedsInput => TaskState::Blocked,
@@ -919,6 +925,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     };
     t.reason = match (budget_stop, last) {
         (Some(b), _) => b,
+        (None, _) if push_failed => last_reason,
         (None, AttemptState::Succeeded | AttemptState::NeedsInput) => last_reason,
         (None, AttemptState::Running) => "no attempts ran".into(),
         (None, _) if last_reason.starts_with("operation ") => last_reason,

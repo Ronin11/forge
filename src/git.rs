@@ -8,6 +8,12 @@ use std::path::Path;
 use tokio::process::Command;
 
 async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    Ok(git_raw(dir, args).await?.trim().to_string())
+}
+
+/// The runner without the trim, for output whose leading whitespace
+/// carries meaning (porcelain status).
+async fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -24,7 +30,29 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The paths in `git status --porcelain` output, one parser for every
+/// caller: the two status columns and a space, then the path; a first
+/// line whose leading space was trimmed still yields its path.
+pub fn porcelain_paths(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim_end)
+        .filter(|l| l.len() > 2)
+        .map(|l| {
+            let b = l.as_bytes();
+            // Untrimmed: two status columns and a space. Trimmed: the
+            // first column was a space and is gone, so the path follows
+            // the first space.
+            if l.starts_with("?? ") || b[0] == b' ' || (l.len() > 3 && b[2] == b' ' && b[1] != b' ')
+            {
+                l[3..].to_string()
+            } else {
+                l.split_once(' ').map(|(_, p)| p).unwrap_or(l).to_string()
+            }
+        })
+        .collect()
 }
 
 pub async fn current_branch(repo: &Path) -> Result<String> {
@@ -408,22 +436,9 @@ pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
 
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
-    let out = git(wt, &["status", "--porcelain"]).await?;
-    // The helper trims its output, which eats the leading space of a
-    // first entry whose index column is blank (" M path"); take the path
-    // after the status columns either way.
-    Ok(out
-        .lines()
-        .filter(|l| l.len() > 2)
-        .map(|l| {
-            let l = l.trim_end();
-            if l.len() > 3 && l.as_bytes()[2] == b' ' {
-                l[3..].to_string()
-            } else {
-                l.split_once(' ').map(|(_, p)| p).unwrap_or(l).to_string()
-            }
-        })
-        .collect())
+    Ok(porcelain_paths(
+        &git_raw(wt, &["status", "--porcelain"]).await?,
+    ))
 }
 
 pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
