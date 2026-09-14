@@ -130,11 +130,20 @@
         <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
         ${lineage ? `<div><span class="k">lineage</span>${esc(lineage)}</div>` : ''}
         ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
+        ${t.state === 'failed' || t.state === 'blocked' ? `<div><button id="retry">retry</button></div>` : ''}
       </div>
       <pre>${esc(t.text)}</pre>
       ${diag}
       ${attempts}
       ${t.journal ? `<h2>Journal</h2><pre>${esc(t.journal)}</pre>` : ''}`;
+    const retryBtn = $('#retry');
+    if (retryBtn) retryBtn.addEventListener('click', () => retry(t.id));
+  }
+
+  async function retry(id) {
+    const r = await fetch(`/api/retry/${id}`, { method: 'POST', credentials: 'same-origin' });
+    if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; return; }
+    await snapshot();
   }
 
   function renderFeed() {

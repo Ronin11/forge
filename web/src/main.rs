@@ -1,8 +1,9 @@
 //! forge-web: a browser client for Forge 2, the same seam as the TUI. It
 //! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
 //! `log`, `trace`, `journal`, `requests`) and the live feed is
-//! `events --follow` piped through as server-sent events. Read-only for
-//! now; write verbs come once they are worth a browser.
+//! `events --follow` piped through as server-sent events. Almost entirely
+//! read-only; the one write route, `POST /api/retry/<id>`, is the same
+//! `forge retry` verb the CLI runs.
 //!
 //! Every request carries a token. It is generated once into
 //! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
@@ -213,7 +214,8 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let (path, query) = (path.to_string(), query.to_string());
-    if req.method() != &Method::Get {
+    let retry_post = req.method() == &Method::Post && path.starts_with("/api/retry/");
+    if req.method() != &Method::Get && !retry_post {
         let _ = req.respond(text(405, "read-only for now", "text/plain"));
         return;
     }
@@ -257,6 +259,20 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             Some(id) => json_or_error(forge.json(&["journal", &id.to_string(), "--json"])),
             None => text(404, "no such task", "text/plain"),
         },
+        p if p.starts_with("/api/retry/") => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                match id_of(&p["/api/retry/".len()..]) {
+                    Some(id) => json_or_error(
+                        forge
+                            .json(&["retry", &id.to_string()])
+                            .map(|out| serde_json::json!({ "output": out }).to_string()),
+                    ),
+                    None => text(404, "no such task", "text/plain"),
+                }
+            }
+        }
         _ => text(404, "not found", "text/plain"),
     };
     let _ = req.respond(resp);

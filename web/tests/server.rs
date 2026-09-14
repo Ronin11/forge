@@ -9,6 +9,7 @@ const FAKE: &str = r#"#!/bin/bash
 case "$1" in
   snapshot) echo '{"events_offset":7,"tasks":[{"id":1,"state":"queued"}],"requests":[],"worker":{"running":false}}' ;;
   trace) echo "{\"task\":{\"id\":$2},\"attempts\":[]}" ;;
+  retry) echo "retried task $2 as 99" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -76,6 +77,20 @@ fn get(addr: &str, path: &str, extra: &str) -> (u16, String, String) {
     (status, head.to_string(), body.to_string())
 }
 
+/// One raw HTTP/1.0 POST; returns (status, headers, body).
+fn post(addr: &str, path: &str, extra: &str) -> (u16, String, String) {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    write!(s, "POST {path} HTTP/1.0\r\nHost: x\r\n{extra}\r\n").unwrap();
+    let mut raw = Vec::new();
+    let _ = s.read_to_end(&mut raw);
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_string(), body.to_string())
+}
+
 #[test]
 fn without_the_token_nothing_is_served() {
     let w = start();
@@ -108,6 +123,18 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
     assert_eq!(v["task"]["id"], 5);
     let (status, _, _) = get(&w.addr, "/api/task/x", &cookie);
     assert_eq!(status, 404);
+}
+
+#[test]
+fn retrying_a_task_posts_through_to_forge_retry_and_a_get_is_refused() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+    let (status, _, body) = post(&w.addr, "/api/retry/1", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["output"].as_str().unwrap().contains("1"), "{body}");
+    let (status, _, _) = get(&w.addr, "/api/retry/1", &cookie);
+    assert_eq!(status, 405);
 }
 
 #[test]
