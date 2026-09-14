@@ -2361,6 +2361,13 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
         "{}",
         String::from_utf8_lossy(&o.stdout)
     );
+    // Shown from the root, the lineage line still appears: root first, current task bracketed.
+    let o = e.forge("ok.sh", &["show", "3"]);
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("lineage    [3 failed] → 5 queued"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
     // Machine-readable listings for a client.
     let log: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
