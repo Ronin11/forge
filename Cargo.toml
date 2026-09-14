@@ -1,5 +1,5 @@
 [workspace]
-members = ["tui", "repomap"]
+members = ["tui", "repomap", "web"]
 
 [package]
 name = "forge"

@@ -1,0 +1,325 @@
+//! forge-web: a browser client for Forge 2, the same seam as the TUI. It
+//! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
+//! `log`, `trace`, `journal`, `requests`) and the live feed is
+//! `events --follow` piped through as server-sent events. Read-only for
+//! now; write verbs come once they are worth a browser.
+//!
+//! Every request carries a token. It is generated once into
+//! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
+//! with `?token=` sets a cookie. The server binds loopback unless told
+//! otherwise, and there are no routes without the token: Forge 1's web
+//! server had open operator routes and a tailnet proxy made every peer the
+//! operator.
+
+use anyhow::{Context, Result};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+
+const INDEX: &str = include_str!("index.html");
+
+/// The forge binary: `FORGE_BIN`, else `forge` on PATH.
+#[derive(Clone)]
+struct Forge {
+    bin: String,
+}
+
+impl Forge {
+    fn detect() -> Forge {
+        Forge {
+            bin: std::env::var("FORGE_BIN").unwrap_or_else(|_| "forge".into()),
+        }
+    }
+
+    /// One verb's JSON output, as text (passed through untouched).
+    fn json(&self, args: &[&str]) -> Result<String> {
+        let out = Command::new(&self.bin)
+            .args(args)
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "{} {} failed: {}",
+                self.bin,
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
+fn home() -> PathBuf {
+    if let Ok(h) = std::env::var("FORGE2_HOME") {
+        return PathBuf::from(h);
+    }
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share")
+        });
+    base.join("forge2")
+}
+
+/// The token: read from `web.token` under the data dir, generated on
+/// first start (32 bytes of OS randomness as hex, file mode 0600).
+fn token(dir: &std::path::Path) -> Result<String> {
+    let path = dir.join("web.token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim().to_string();
+        if t.len() >= 32 {
+            return Ok(t);
+        }
+    }
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .context("reading /dev/urandom")?;
+    let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(dir).ok();
+    std::fs::write(&path, &t).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(t)
+}
+
+/// Equal without leaking where they differ.
+fn same(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+fn header(req: &Request, name: &str) -> Option<String> {
+    req.headers()
+        .iter()
+        .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str().to_string())
+}
+
+/// The token a request presents: the cookie, a bearer header, or `?token=`.
+fn presented(req: &Request, query: &str) -> Option<String> {
+    if let Some(c) = header(req, "Cookie") {
+        for part in c.split(';') {
+            if let Some(v) = part.trim().strip_prefix("forge_token=") {
+                return Some(v.to_string());
+            }
+        }
+    }
+    if let Some(a) = header(req, "Authorization")
+        && let Some(v) = a.strip_prefix("Bearer ")
+    {
+        return Some(v.trim().to_string());
+    }
+    query_param(query, "token")
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v.to_string())
+}
+
+fn h(k: &str, v: &str) -> Header {
+    Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header")
+}
+
+fn text(status: u16, body: &str, ctype: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_string(body)
+        .with_status_code(StatusCode(status))
+        .with_header(h("Content-Type", ctype))
+        .with_header(h("Cache-Control", "no-store"))
+}
+
+fn json_or_error(r: Result<String>) -> Response<std::io::Cursor<Vec<u8>>> {
+    match r {
+        Ok(s) => text(200, &s, "application/json"),
+        Err(e) => text(
+            502,
+            &serde_json::json!({ "error": e.to_string() }).to_string(),
+            "application/json",
+        ),
+    }
+}
+
+/// `forge events --since <offset> --follow`, each line as one SSE frame.
+/// tiny_http buffers streamed bodies (a chunked encoder and a BufWriter,
+/// neither flushed until the end), so the connection is taken over and
+/// written directly, flushed per event. The child dies with the
+/// connection: a write to a closed socket fails and the thread kills it.
+fn events(req: Request, forge: &Forge, since: u64) {
+    let mut child = match Command::new(&forge.bin)
+        .args(["events", "--since", &since.to_string(), "--follow"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = req.respond(text(
+                502,
+                &format!("{} events: {e}", forge.bin),
+                "text/plain",
+            ));
+            return;
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = req.respond(text(502, "events stdout", "text/plain"));
+        return;
+    };
+    let head = Response::empty(StatusCode(200))
+        .with_header(h("Content-Type", "text/event-stream"))
+        .with_header(h("Cache-Control", "no-cache"))
+        .with_header(h("X-Accel-Buffering", "no"));
+    let mut stream = req.upgrade("sse", head);
+    let _ = stream
+        .write_all(b": connected\n\n")
+        .and_then(|_| stream.flush());
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if stream
+            .write_all(format!("data: {line}\n\n").as_bytes())
+            .and_then(|_| stream.flush())
+            .is_err()
+        {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn id_of(rest: &str) -> Option<i64> {
+    rest.trim_matches('/').parse().ok()
+}
+
+/// One request: authenticate, then route. Everything but `/` with a
+/// token in the query is refused without a valid token.
+fn handle(req: Request, forge: &Forge, secret: &str) {
+    let url = req.url().to_string();
+    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+    let (path, query) = (path.to_string(), query.to_string());
+    if req.method() != &Method::Get {
+        let _ = req.respond(text(405, "read-only for now", "text/plain"));
+        return;
+    }
+    let ok = presented(&req, &query).is_some_and(|t| same(&t, secret));
+    if !ok {
+        let _ = req.respond(text(
+            401,
+            "forge-web: open the link forge-web printed when it started (it carries the token).",
+            "text/plain",
+        ));
+        return;
+    }
+    if path == "/" && query_param(&query, "token").is_some() {
+        // First visit: pin the token in a cookie and drop it from the URL.
+        let resp = Response::empty(StatusCode(303))
+            .with_header(h("Location", "/"))
+            .with_header(h(
+                "Set-Cookie",
+                &format!("forge_token={secret}; Path=/; HttpOnly; SameSite=Strict"),
+            ));
+        let _ = req.respond(resp);
+        return;
+    }
+    let resp = match path.as_str() {
+        "/" => text(200, INDEX, "text/html; charset=utf-8"),
+        "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
+        "/api/log" => json_or_error(forge.json(&["log", "--json"])),
+        "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
+        "/api/events" => {
+            let since = query_param(&query, "since")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            events(req, forge, since);
+            return;
+        }
+        p if p.starts_with("/api/task/") => match id_of(&p["/api/task/".len()..]) {
+            Some(id) => json_or_error(forge.json(&["trace", &id.to_string(), "--json"])),
+            None => text(404, "no such task", "text/plain"),
+        },
+        p if p.starts_with("/api/journal/") => match id_of(&p["/api/journal/".len()..]) {
+            Some(id) => json_or_error(forge.json(&["journal", &id.to_string(), "--json"])),
+            None => text(404, "no such task", "text/plain"),
+        },
+        _ => text(404, "not found", "text/plain"),
+    };
+    let _ = req.respond(resp);
+}
+
+fn main() -> Result<()> {
+    let mut bind = "127.0.0.1:7788".to_string();
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--bind" => bind = args.next().context("--bind needs an address")?,
+            "-h" | "--help" => {
+                println!(
+                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE2_HOME honoured)"
+                );
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown argument {other}"),
+        }
+    }
+    let secret = token(&home())?;
+    let forge = Forge::detect();
+    let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("binding {bind}: {e}"))?;
+    let addr = server.server_addr();
+    eprintln!("forge-web listening on {addr}");
+    println!("http://{addr}/?token={secret}");
+    let server = Arc::new(server);
+    for req in server.incoming_requests() {
+        let forge = forge.clone();
+        let secret = secret.clone();
+        std::thread::spawn(move || handle(req, &forge, &secret));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_compare_is_exact() {
+        assert!(same("abc", "abc"));
+        assert!(!same("abc", "abd"));
+        assert!(!same("abc", "abcd"));
+    }
+
+    #[test]
+    fn query_params_and_ids_parse() {
+        assert_eq!(
+            query_param("a=1&token=xyz", "token").as_deref(),
+            Some("xyz")
+        );
+        assert_eq!(query_param("", "token"), None);
+        assert_eq!(id_of("12"), Some(12));
+        assert_eq!(id_of("x"), None);
+    }
+
+    #[test]
+    fn a_token_is_generated_once_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = token(dir.path()).unwrap();
+        let b = token(dir.path()).unwrap();
+        assert_eq!(a.len(), 64);
+        assert_eq!(a, b);
+    }
+}
