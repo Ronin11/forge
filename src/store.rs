@@ -276,6 +276,16 @@ pub struct LineageRow {
     pub cost: f64,
 }
 
+/// An operator's answer to a blocked task's question.
+pub struct Decision {
+    pub id: i64,
+    pub task_id: i64,
+    pub repo: String,
+    pub question: String,
+    pub answer: String,
+    pub created_at: i64,
+}
+
 pub struct TaskSummary {
     pub id: i64,
     pub state: String,
@@ -421,6 +431,16 @@ ALTER TABLE tasks ADD COLUMN context_enabled INTEGER NOT NULL DEFAULT 1;
 ",
     "
 ALTER TABLE tasks ADD COLUMN resume_on_failure INTEGER NOT NULL DEFAULT 0;
+",
+    "
+CREATE TABLE decisions (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  repo TEXT NOT NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 ",
 ];
 
@@ -1089,6 +1109,42 @@ impl Store {
                 attempts: r.get(5)?,
                 cost: r.get(6)?,
                 workflow: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Record the operator's answer to a blocked task's question.
+    pub fn insert_decision(
+        &self,
+        task_id: i64,
+        repo: &str,
+        question: &str,
+        answer: &str,
+    ) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task_id, repo, question, answer, crate::unix_now()],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Recorded answers, newest first; narrowed to one repository when given.
+    pub fn decisions(&self, repo: Option<&str>) -> Result<Vec<Decision>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, task_id, repo, question, answer, created_at FROM decisions
+             WHERE ?1 IS NULL OR repo = ?1 ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![repo], |r| {
+            Ok(Decision {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                repo: r.get(2)?,
+                question: r.get(3)?,
+                answer: r.get(4)?,
+                created_at: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

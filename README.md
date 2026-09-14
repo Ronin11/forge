@@ -88,7 +88,15 @@ asked a question or for another workflow). Attempt states:
 `forge retry <id>` re-queues a finished task as a new one: same text,
 workflow, budget, and flags, on a fresh branch; `--chain` also re-queues
 everything that had been queued `--after` it, with dependencies remapped
-onto the new ids. `forge journal <id>` prints what every earlier attempt
+onto the new ids. `forge answer <id> <text>` answers a task blocked on a
+question (state `blocked` with its last attempt `needs_input`; anything
+else is refused, naming why): it records the question and answer in a
+`decisions` table and re-queues the task through the same retry path
+(`retry_of` the answered task, same settings and dependencies), with the
+task text becoming the original text, a blank line, and "Operator's
+answer to a question from an earlier attempt: `<text>`". `forge decisions
+[--repo <path>] [--json]` lists every recorded answer, newest first, with
+the task id, the question, and the answer. `forge journal <id>` prints what every earlier attempt
 in a task's piece of work said it did and what the kernel found; that same
 text is fed to each new attempt unless the task was queued `--no-journal`,
 the control arm of a measurement. `forge stats` groups outcomes by
