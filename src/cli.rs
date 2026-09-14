@@ -158,6 +158,8 @@ enum Cmd {
     },
     /// Tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
     Snapshot,
+    /// Land an already-verified task's branch through the integrator: merge the base in, re-verify, push, fast-forward
+    Land { id: i64 },
     /// Merge verified tasks' branches together in order and re-verify after each, without landing:
     /// on success the result is a branch in the repository for a human to fast-forward
     Integrate {
@@ -216,6 +218,7 @@ pub async fn main() -> Result<()> {
         } => events(since, follow, task),
         Cmd::Snapshot => snapshot(),
         Cmd::Integrate { ids } => integrate(ids).await,
+        Cmd::Land { id } => land(id).await,
         Cmd::Journal { id } => journal(id),
         Cmd::Workflows { json } => list_workflows(json),
     }
@@ -1142,6 +1145,59 @@ fn journal(id: i64) -> Result<()> {
         out!("{j}");
     }
     Ok(())
+}
+
+/// The integrator, by hand, for a task that verified but did not land: a
+/// task from before the repository had a remote, or one queued --no-land
+/// that a human has now cleared.
+async fn land(id: i64) -> Result<()> {
+    let f = Forge::open(true, true)?;
+    let Some(mut t) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    if t.state != TaskState::Succeeded && t.state != TaskState::Unverified {
+        bail!(
+            "task {id} is {}; only a verified task lands",
+            t.state.as_str()
+        );
+    }
+    if t.reason.starts_with("landed ") {
+        bail!("task {id} already landed: {}", t.reason);
+    }
+    let repo = PathBuf::from(&t.repo);
+    if !Path::new(&t.worktree).join(".git").exists() {
+        bail!(
+            "task {id}'s worktree is gone ({}); retry the task instead",
+            t.worktree
+        );
+    }
+    let cfg = config::load_working(&repo).await?;
+    let Some(remote) = cfg.push_remote.clone() else {
+        bail!("{} has no push remote; nothing to land on", repo.display());
+    };
+    let Some(url) = git::remote_url(&repo, &remote).await else {
+        bail!("remote {remote} has no URL in {}", repo.display());
+    };
+    let mut seq = f.store.ops(id)?.len() as i64;
+    match crate::engine::integrate(&f, &mut t, &url, &remote, &mut seq)
+        .await
+        .map_err(|e| match e {
+            crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
+        })? {
+        crate::engine::Integrate::Landed(sha) => {
+            t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
+            t.pushed = true;
+            f.store.update_task(&t)?;
+            out!("landed task {id} on {} @ {}", t.base_branch, &sha[..8]);
+            Ok(())
+        }
+        crate::engine::Integrate::Rewind { first, .. } => {
+            bail!(
+                "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
+            )
+        }
+        crate::engine::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
+    }
 }
 
 /// The integrator's merge-and-verify half, by hand, for a repository that

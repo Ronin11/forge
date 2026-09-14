@@ -886,7 +886,7 @@ struct Resume {
     start_sha: String,
 }
 
-enum Integrate {
+pub enum Integrate {
     /// On the base branch; its new tip.
     Landed(String),
     /// The coder has to act: a conflict with the moved base, or checks that
@@ -921,7 +921,7 @@ async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
 /// everything with every hidden suite overlaid, push the branch, fast-forward
 /// the base, and fold the task's hidden tests into `forge-verify`. Three
 /// rows in the trace: `integrate`, `push`, `land`.
-async fn integrate(
+pub async fn integrate(
     f: &Forge,
     t: &mut Task,
     url: &str,
