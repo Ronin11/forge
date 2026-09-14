@@ -284,15 +284,20 @@
       const t = d.task || {};
       const steps = (d.resolved && d.resolved.steps) || [];
       const ops = d.ops || [], attempts = d.attempts || [];
-      const bySeq = n => ({ ops: ops.filter(o => o.seq === n), attempts: attempts.filter(a => a.step_seq === n) });
-      const maxSeq = Math.max(steps.length - 1, ...ops.map(o => o.seq), ...attempts.map(a => a.step_seq ?? -1));
+      // The kernel numbers the clone 0, the workflow's steps 1..n, and the
+      // landing (integrate, push, land) after them.
+      const n = steps.length;
+      const pick = (o, a) => ({ ops: ops.filter(o), attempts: attempts.filter(a) });
+      const groups = [{ title: 'clone', st: null, ...pick(o => o.seq === 0, a => a.step_seq === 0) }];
+      for (let i = 1; i <= n; i++) groups.push({ title: null, st: steps[i - 1], ...pick(o => o.seq === i, a => a.step_seq === i) });
+      groups.push({ title: 'landing', st: null, ...pick(o => o.seq > n, a => a.step_seq > n) });
       const cols = [];
-      for (let n = 0; n <= maxSeq; n++) {
-        const st = steps[n], { ops: o, attempts: at } = bySeq(n);
+      for (const g of groups) {
+        const { st, ops: o, attempts: at } = g;
         if (!st && !o.length && !at.length) continue;
         const act = st ? st.action : null;
         const head = act ? `<h3>${esc(act.name)} <small>${esc(act.kind)}${act.contract && act.contract !== act.name ? ' · ' + esc(act.contract) : ''} · ${esc((act.hash || '').slice(0, 8))}${st.model ? ' · ' + esc(st.model) : ''}${st.max_turns ? ' · ' + st.max_turns + ' turns' : ''}</small></h3><div class="mute" style="font-size:12px">${esc(act.description || '')}</div>`
-                            : `<h3>${n === 0 ? 'clone' : 'landing'} <small>kernel</small></h3>`;
+                            : `<h3>${esc(g.title)} <small>kernel</small></h3>`;
         const opsHtml = o.length ? `<div class="ops">${o.map(x => `<div class="${x.ok ? 'succeeded' : 'failed'}">${x.ok ? '✓' : '✗'} ${esc(x.name)}${x.kernel ? '' : ' [user]'} <span class="mute">${secs(x.ms)}${x.detail ? ' · ' + esc(x.detail).slice(0, 120) : ''}</span>${x.output ? `<details><summary>output</summary><pre>${esc(x.output)}</pre></details>` : ''}</div>`).join('')}</div>` : '';
         const atHtml = at.map(a => {
           const inputs = { model: a.inputs.model, max_turns: a.inputs.max_turns, timeout_secs: a.inputs.timeout_secs, base: (a.inputs.base_sha || '').slice(0, 8), start: (a.inputs.start_sha || '').slice(0, 8), resumed: a.inputs.resumed, prompt_chars: a.inputs.prompt_chars, feedback: a.inputs.feedback, interface: a.inputs.interface, plan: a.inputs.plan, context: a.inputs.context, journal: a.inputs.journal, overlay_refs: a.inputs.overlay_refs, protected: a.inputs.protected, namespace: a.inputs.namespace, task_checks: a.inputs.task_checks, checks_shown: a.inputs.checks_shown };
