@@ -895,7 +895,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
                 "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
-                "interface": t.interface, "pushed": t.pushed, "budget_usd": t.budget_usd,
+                "interface": t.interface, "plan": t.plan, "pushed": t.pushed, "budget_usd": t.budget_usd,
                 "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
             },
             "attempts": atts,
@@ -1773,6 +1773,12 @@ fn show(id: i64) -> Result<()> {
         out!(
             "interface  {}",
             t.interface.lines().collect::<Vec<_>>().join(" / ")
+        );
+    }
+    if !t.plan.is_empty() {
+        out!(
+            "plan       {}",
+            t.plan.lines().collect::<Vec<_>>().join(" / ")
         );
     }
     out!("text       {}", t.task);

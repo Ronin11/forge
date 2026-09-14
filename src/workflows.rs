@@ -28,7 +28,7 @@ pub const OPERATION_PRODUCES: &[&str] = &["branch", "interface", "context"];
 /// Contracts the kernel enforces for directives. A directive file names
 /// one (default: its own name); any other value is rejected. Many
 /// directives over few contracts (docs/ACTIONS.md).
-pub const KNOWN_CONTRACTS: &[&str] = &["code", "tests", "review"];
+pub const KNOWN_CONTRACTS: &[&str] = &["code", "tests", "review", "plan"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -266,6 +266,16 @@ produces = [\"verify_ref\", \"interface\"]\n\
 max_turns = 40\n",
     ),
     (
+        "investigate.toml",
+        "name = \"investigate\"\n\
+kind = \"directive\"\n\
+contract = \"plan\"\n\
+description = \"reads the repository without changing it and returns a plan the coder follows (files that exist, the changes, the test that proves them) or a question for the operator; the front door before any code\"\n\
+consumes = [\"branch\"]\n\
+produces = [\"plan\"]\n\
+max_turns = 25\n",
+    ),
+    (
         "review.toml",
         "name = \"review\"\n\
 kind = \"directive\"\n\
@@ -487,6 +497,23 @@ done
 ];
 
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
+    (
+        "planned.toml",
+        "name = \"planned\"\n\
+description = \"an investigator plans first and may stop with a question; then one agent writes the change to the plan; the kernel verifies\"\n\
+steps = [\n\
+  { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
+  { action = \"investigate\" },\n\
+  { action = \"code\" },\n\
+]\n\
+\n\
+[meta]\n\
+use_when = \"the task is described as an outcome rather than a change, or may be impossible as stated\"\n\
+avoid_when = \"the task already names the files and the change; the plan would only repeat it\"\n\
+requires = []\n\
+",
+    ),
     (
         "direct.toml",
         "name = \"direct\"\n\
@@ -1189,6 +1216,7 @@ mod tests {
                 "docs",
                 "documented",
                 "mapped",
+                "planned",
                 "playable",
                 "polish",
                 "reviewed",

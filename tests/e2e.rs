@@ -2122,6 +2122,85 @@ fn the_document_directive_is_held_to_comments_and_docs() {
 }
 
 #[test]
+fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_plan() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = run_wf(
+        &e,
+        "promptdump.sh",
+        &[("FORGE2_CLAUDE_BIN_INVESTIGATE", "planner.sh")],
+        "planned",
+        "make the answer 42",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("plan     "), "the plan is announced: {err}");
+    assert_eq!(e.task(1).0, "succeeded");
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[0].1, "succeeded", "the plan step: {a:?}");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    let names: Vec<String> = doc["attempts"][0]["verdict"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"untouched".to_string())
+            && names.contains(&"plan-names-real-paths".to_string()),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"has-commits".to_string()), "{names:?}");
+    assert_eq!(
+        doc["task"]["plan"]
+            .as_str()
+            .map(|p| p.starts_with("Plan: add answer.txt")),
+        Some(true)
+    );
+    let coder_prompt = e.log_text(1, 2);
+    assert!(
+        coder_prompt.contains("Plan from the investigate step"),
+        "{coder_prompt}"
+    );
+    assert!(
+        coder_prompt.contains("Leave hello.sh as it is"),
+        "{coder_prompt}"
+    );
+    assert_eq!(
+        doc["attempts"][1]["inputs"]["plan"]
+            .as_str()
+            .map(|p| p.starts_with("Plan:")),
+        Some(true)
+    );
+
+    // An investigator that starts implementing is refused; one that names
+    // files that do not exist is refused.
+    for (fake, row) in [
+        ("planner-bad.sh", "untouched"),
+        ("planner-lost.sh", "plan-names-real-paths"),
+    ] {
+        let o = run_wf(
+            &e,
+            "promptdump.sh",
+            &[("FORGE2_CLAUDE_BIN_INVESTIGATE", fake)],
+            "planned",
+            "make the answer 42 again",
+        );
+        assert!(!o.status.success(), "{fake}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(&format!("✗ L0 {row}")), "{fake}: {err}");
+    }
+    let (state, reason, _) = e.task(2);
+    assert_eq!(state, "failed");
+    assert!(reason.contains("L0 failed: untouched"), "{reason}");
+    let (state, reason, _) = e.task(3);
+    assert_eq!(state, "failed");
+    assert!(reason.contains("plan-names-real-paths"), "{reason}");
+}
+
+#[test]
 fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
@@ -2684,8 +2763,8 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
     let o = e.forge("ok.sh", &["journal", "1"]);
     let j = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(j.contains("So far in this piece of work"), "{j}");
-    assert!(j.contains("1 code    checks_failed"), "{j}");
-    assert!(j.contains("found: L1 answer:"), "{j}");
+    assert!(j.contains("1 code    rejected by the checks"), "{j}");
+    assert!(j.contains("found:   L1 answer:"), "{j}");
     let oj = e.forge("ok.sh", &["journal", "1", "--json"]);
     let entries: serde_json::Value = serde_json::from_slice(&oj.stdout).unwrap();
     let arr = entries.as_array().unwrap();
@@ -2707,7 +2786,7 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
         doc["attempts"][0]["inputs"]["journal"]
             .as_str()
             .unwrap()
-            .contains("found: L1 answer")
+            .contains("found:   L1 answer")
     );
     assert_eq!(
         doc["attempts"][0]["outputs"]["first_edit_call"], 0,

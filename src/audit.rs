@@ -26,6 +26,9 @@ pub struct Inputs {
     pub feedback: Option<String>,
     /// The interface handed to the coder, if any.
     pub interface: Option<String>,
+    /// The plan from the investigate step, if any.
+    #[serde(default)]
+    pub plan: Option<String>,
     /// Refs whose namespace files were overlaid before L1.
     pub overlay_refs: Vec<String>,
     /// Whether the task's --check commands were shown to the agent.

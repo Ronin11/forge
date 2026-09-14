@@ -159,6 +159,9 @@ pub struct Task {
     /// After an attempt fails its checks, hand the next one --resume with
     /// the same CLI session instead of a fresh one. Preserved by `forge retry`.
     pub resume_on_failure: bool,
+    /// What the last `plan` directive returned: the plan every later
+    /// directive on this task is shown.
+    pub plan: String,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -442,11 +445,14 @@ CREATE TABLE decisions (
   created_at INTEGER NOT NULL
 );
 ",
+    "
+ALTER TABLE tasks ADD COLUMN plan TEXT NOT NULL DEFAULT '';
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure, plan";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -493,6 +499,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         context: r.get(33)?,
         context_enabled: r.get::<_, i64>(34)? != 0,
         resume_on_failure: r.get::<_, i64>(35)? != 0,
+        plan: r.get(36)?,
     })
 }
 
@@ -602,7 +609,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15, context=?16 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15, context=?16, plan=?17 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -619,7 +626,8 @@ impl Store {
                 t.workflow_text,
                 t.actions_json,
                 t.verify_base,
-                t.context
+                t.context,
+                t.plan
             ],
         )?;
         Ok(())

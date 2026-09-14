@@ -853,6 +853,136 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
     Ok(v)
 }
 
+/// Path-like tokens in a plan: anything with a slash or a source
+/// extension, stripped of the punctuation prose wraps it in.
+pub fn plan_paths(text: &str) -> Vec<String> {
+    const EXT: &[&str] = &[
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".sh", ".go", ".toml", ".md", ".json",
+        ".yml", ".yaml", ".html", ".css", ".sql", ".txt",
+    ];
+    let mut out = Vec::new();
+    for raw in
+        text.split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '(' || c == ')')
+    {
+        let tok = raw.trim_matches(|c: char| {
+            matches!(
+                c,
+                '`' | '\'' | '"' | ':' | '.' | '*' | '[' | ']' | '<' | '>'
+            )
+        });
+        let tok = tok.split(':').next().unwrap_or(tok); // path:line
+        if tok.is_empty()
+            || tok.starts_with("http")
+            || tok.starts_with('-')
+            || tok.ends_with('/')
+            || raw.contains("..")
+        {
+            continue;
+        }
+        let looks = (tok.contains('/') && !tok.starts_with('/') && !tok.contains("//"))
+            || EXT.iter().any(|e| tok.ends_with(e));
+        if looks && !tok.contains("..") && !out.contains(&tok.to_string()) {
+            out.push(tok.to_string());
+        }
+    }
+    out
+}
+
+/// The plan contract's verdict. The investigator may not change the
+/// branch and must return either a substantive plan naming only paths
+/// that exist, or a question. No L1: nothing was built.
+pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdict> {
+    let agent_reason = agent_failure(agent);
+    let mut v = Verdict {
+        commits: 0,
+        files_changed: 0,
+        dirty: false,
+        envelope: None,
+        checks: Vec::new(),
+        state: AttemptState::Running,
+        reason: String::new(),
+    };
+    let (rows, env, question, commits, changed, _changed_now, dirty) = common_l0(
+        s.worktree,
+        s.base_sha,
+        s.start_sha,
+        None,
+        s.cfg,
+        agent,
+        s.report,
+        s.task_id,
+    )
+    .await?;
+    v.commits = commits;
+    v.files_changed = changed.len() as i64;
+    v.dirty = !dirty.is_empty();
+    if agent_reason.is_none() {
+        v.checks = rows
+            .into_iter()
+            .filter(|r| matches!(r.name.as_str(), "result-structured" | "clean-tree"))
+            .collect();
+        let added = crate::git::changed_paths(s.worktree, s.start_sha).await?;
+        v.checks.push(l0(
+            "untouched",
+            added.is_empty() && dirty.is_empty(),
+            format!(
+                "the investigator changed the branch: {}",
+                added
+                    .iter()
+                    .chain(dirty.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
+        if question.is_none() {
+            let plan = env
+                .as_ref()
+                .map(|e| e.summary.trim().to_string())
+                .unwrap_or_default();
+            v.checks.push(l0(
+                "plan-substantive",
+                plan.chars().count() >= 120,
+                format!("a plan of {} characters is not a plan; name the files, the changes, and the test", plan.chars().count()),
+            ));
+            // A path the plan names must exist, or be a new file in a
+            // directory that does: plans create files, they do not
+            // invent directories.
+            let missing: Vec<String> = plan_paths(&plan)
+                .into_iter()
+                .filter(|p| {
+                    let path = s.worktree.join(p);
+                    !path.exists() && !path.parent().is_some_and(|d| d.is_dir())
+                })
+                .collect();
+            v.checks.push(l0(
+                "plan-names-real-paths",
+                missing.is_empty(),
+                format!(
+                    "the plan names paths that do not exist in the tree, in directories that do not exist either: {}",
+                    missing.join(", ")
+                ),
+            ));
+        }
+        emit_rows(s.report, s.task_id, &v.checks);
+        v.envelope = env;
+    }
+    let (mut state, mut reason) = decide(
+        agent_reason.as_deref(),
+        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        &v.checks,
+    );
+    // A plan runs no checks of its own: nothing was built. Its L0 rows are
+    // the whole verdict.
+    if state == AttemptState::Unverified {
+        state = AttemptState::Succeeded;
+        reason = String::new();
+    }
+    v.state = state;
+    v.reason = reason;
+    Ok(v)
+}
+
 /// Why the agent run itself counts as failed, if it does.
 pub fn agent_failure(a: &Outcome) -> Option<String> {
     if a.rate_limited {
@@ -1134,6 +1264,21 @@ mod tests {
         assert!(in_namespace(&ns, "tests/acceptance/a.sh"));
         assert!(!in_namespace(&ns, "tests/acceptance.sh"));
         assert!(!in_namespace(&ns, "src/a.ts"));
+    }
+
+    #[test]
+    fn plan_paths_finds_files_and_ignores_prose() {
+        let plan = "Change `src/cli.rs` (the run_doctor fn) and src/doctor.rs:112; add tests/e2e.rs::doctor_json. \
+                    See https://example.com/x and docs/ACTIONS.md. Not a path: a/b/.. or /abs/path or foo.";
+        assert_eq!(
+            plan_paths(plan),
+            vec![
+                "src/cli.rs",
+                "src/doctor.rs",
+                "tests/e2e.rs",
+                "docs/ACTIONS.md"
+            ]
+        );
     }
 
     #[test]

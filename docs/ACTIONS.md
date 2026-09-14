@@ -45,8 +45,8 @@ A directive is a prompt template, a capability set, and a contract.
 - The prompt is the smallest part.
 
 A directive file names its `contract`, the kernel-enforced behavior that
-runs it (default: its own name). Three contracts exist: `code`, `tests`,
-and `review`. Many directives over few contracts: `docs`, `fix`,
+runs it (default: its own name). Four contracts exist: `code`, `tests`,
+`review`, and `plan`. Many directives over few contracts: `docs`, `fix`,
 `polish`, `document` (docs and comments brought in line with the diff),
 and `graph` (the system map in docs/SYSTEM.md) are all the `code`
 contract with different parameters. A file naming any other contract is
@@ -80,6 +80,23 @@ directive arrives when a workflow request shows the need, with one rule:
 it names the operations that verify its output. The Forge 1 directives
 library was prose agents could also bypass; a directive here is bound to
 a kernel-enforced contract, which is the difference.
+
+The `plan` contract is the front door: an investigator that reads the
+repository and returns either a plan or a question, before any code.
+It may not change the branch (`untouched`), and its plan must be
+substantive (`plan-substantive`, at least 120 characters) and name only
+paths that exist in the tree or are new files in directories that do
+(`plan-names-real-paths`; anything with a slash or a source extension
+is checked, since plans create files but do not invent directories). That is all the kernel can
+verify about a plan, and it is enough to catch the two ways a plan
+misleads: by inventing files, and by being too thin to follow. The plan
+is recorded on the task and shown to every later directive as "Plan from
+the investigate step", labelled as checked only for real paths, so the
+coder treats it as a map rather than a verdict. A question from the
+investigator blocks the task the way any question does; a task that is
+impossible as stated costs one read of the tree rather than several
+attempts at writing. `investigate` is the built-in directive on this
+contract; `planned` is the workflow that runs it before `code`.
 
 ## Operations
 
@@ -254,6 +271,7 @@ forms, one now and one later.
 | `playable` | setup, code, playwright (hidden suite, verifies) |
 | `documented` | (direct), document, comments-only (verifies) |
 | `mapped` | (direct), graph, graph-check (verifies) |
+| `planned` | setup, repo-map, investigate, code |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.

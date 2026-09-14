@@ -480,6 +480,19 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 )
                                 .await?
                             }
+                            "plan" => {
+                                run_plan_attempt(
+                                    &f,
+                                    &ts,
+                                    &cfg,
+                                    step,
+                                    seq,
+                                    attempt_no,
+                                    feedback.as_deref(),
+                                    resume.as_ref(),
+                                )
+                                .await?
+                            }
                             other => {
                                 return Err(Fault::Task(anyhow::anyhow!(
                                     "directive contract {other:?} is not enforced by this kernel"
@@ -576,6 +589,26 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         .map(|e| e.summary.clone())
                                         .unwrap_or_default();
                                     f.store.update_task(&t).env()?;
+                                }
+                                if step.action.contract == "plan" {
+                                    // The plan is the product: shown to every later
+                                    // directive, verified only to name real paths.
+                                    t.plan = verdict
+                                        .envelope
+                                        .as_ref()
+                                        .map(|e| e.summary.clone())
+                                        .unwrap_or_default();
+                                    f.store.update_task(&t).env()?;
+                                    f.report.emit(
+                                        id,
+                                        Event::Note {
+                                            text: &format!(
+                                                "plan     {} line(s) from {}",
+                                                t.plan.lines().count(),
+                                                step.action.name
+                                            ),
+                                        },
+                                    );
                                 }
                                 step_ok = true;
                                 break;
@@ -1687,17 +1720,29 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
                         format!("{} {}: {}", c.level, c.name, what)
                     })
                     .collect();
-            let short = format!("  {} {:<7} {}", a.attempt_no, a.step, a.state.as_str());
+            // Verdict first, then what the checks found, then what the
+            // agent claimed: a reader acts on the first two and treats the
+            // third as unverified. Measured the other way round, the journal
+            // cost an extra attempt on every paired task.
+            let verdict = match a.state {
+                AttemptState::Succeeded => "verified",
+                AttemptState::ChecksFailed => "rejected by the checks",
+                AttemptState::AgentFailed => "ended without a result",
+                AttemptState::NeedsInput => "stopped with a question",
+                AttemptState::Unverified => "unverified",
+                AttemptState::Running => "running",
+            };
+            let short = format!("  {} {:<7} {}", a.attempt_no, a.step, verdict);
             let mut long = short.clone();
-            if let Some(said) = &said {
-                long.push_str(&format!("\n    said:  {}", clip(said, 400)));
-            }
             if !found.is_empty() {
-                long.push_str(&format!("\n    found: {}", clip(&found.join("; "), 400)));
+                long.push_str(&format!("\n    found:   {}", clip(&found.join("; "), 400)));
             } else if a.state == AttemptState::AgentFailed {
-                long.push_str(&format!("\n    found: {}", first_line(&a.reason)));
+                long.push_str(&format!("\n    found:   {}", first_line(&a.reason)));
             } else if a.state == AttemptState::Succeeded {
-                long.push_str("\n    found: verified");
+                long.push_str("\n    found:   every check passed");
+            }
+            if let Some(said) = &said {
+                long.push_str(&format!("\n    claimed: {}", clip(said, 400)));
             }
             entries.push((short, long));
         }
@@ -1721,7 +1766,7 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
         body = render(cut);
     }
     Ok(format!(
-        "So far in this piece of work (each attempt: what its agent said it did, then what the checks found; only the checks are trusted):\n{body}"
+        "So far in this piece of work, oldest first. Each attempt's line is the kernel's verdict; `found` is what the checks established and is fact; `claimed` is what that agent said and is unverified. Act on what was found and do not spend turns re-checking claims. Commits from earlier attempts on this task are already on your branch.\n{body}"
     ))
 }
 
@@ -1918,6 +1963,12 @@ This directive may only change these paths: {}. Anything else fails verification
         p.push_str(&format!(
             "\n\nHidden tests will judge this work. They expect this interface:\n{}",
             t.interface
+        ));
+    }
+    if !t.plan.is_empty() {
+        p.push_str(&format!(
+            "\n\nPlan from the investigate step (it read the repository without changing it; the kernel checked only that the paths it names exist, the checks still decide):\n{}",
+            t.plan
         ));
     }
     if !t.checks.is_empty() {
@@ -2173,6 +2224,7 @@ async fn run_code_attempt(
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
         interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
+        plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
         overlay_refs: overlay_refs.clone(),
         checks_shown: t.show_checks,
         task_checks: t.checks.clone(),
@@ -2338,6 +2390,110 @@ fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String 
         p.push_str(&format!("\n\n{}", step.action.brief));
     }
     p.push_str(&format!("\n\nThe task that was given:\n{}", t.task));
+    if let Some(sp) = &step.action.prompt {
+        p.push_str(&format!("\n\nThis step:\n{sp}"));
+    }
+    p
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_plan_attempt(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    seq: i64,
+    attempt_no: i64,
+    feedback: Option<&str>,
+    resume: Option<&Resume>,
+) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
+    let wt = Path::new(&t.worktree);
+    let journal = if t.journal {
+        journal_for(f, t)?
+    } else {
+        String::new()
+    };
+    let journal = (!journal.is_empty()).then_some(journal);
+    let prompt_text = plan_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref());
+    let inputs = Inputs {
+        feedback: feedback.map(str::to_string),
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        prompt_chars: prompt_text.chars().count(),
+        resumed: resume.map(|r| r.session.clone()),
+        journal: journal.clone(),
+        context: (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone()),
+        ..Default::default()
+    };
+    let (mut a, log_path) =
+        new_attempt(f, t, &step.action.name, seq, wt, attempt_no, inputs, resume).await?;
+    let outcome = launch(
+        f,
+        t,
+        &step.action.name,
+        wt,
+        &prompt_text,
+        &log_path,
+        resume.map(|r| r.session.as_str()),
+    )
+    .await?;
+    let verdict = verify::verify_plan(
+        verify::ReviewSubject {
+            cfg,
+            task_id: t.id,
+            worktree: wt,
+            base_sha: &t.base_sha,
+            start_sha: &a.start_sha,
+            report: &f.report,
+        },
+        &outcome,
+    )
+    .await
+    .task()?;
+    record(f, &mut a, wt, &verdict, &outcome, None).await?;
+    Ok((a, verdict, outcome))
+}
+
+/// The plan contract's prompt: read, decide, change nothing; a plan the
+/// coder follows or a question for the operator.
+fn plan_prompt(
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    n: i64,
+    feedback: Option<&str>,
+    journal: Option<&str>,
+) -> String {
+    let mut p = preamble(t, cfg, &t.branch);
+    p.push_str(
+        "\n\nYou are investigating, not implementing. Read the repository and decide how this task should be done, \
+         or find out that it cannot be. Do not change any file and do not commit; the tree must be exactly as you found it.\n\n\
+         Your `summary` is the plan the next agent will follow, so it must be concrete: the files to change (paths that exist \
+         in this tree, exactly as written), what changes in each, the test that will prove the change, and the checks that \
+         must pass. Under 1500 characters. Name nothing that does not exist.\n\n\
+         If the task is impossible, contradicts what the repository does, depends on work that is not there yet, or needs a \
+         decision only the operator can make, do not plan around it: stop with `needs_input` of kind `question`, saying in \
+         `tried` what you read and where the contradiction is. That is a good outcome, not a failure.",
+    );
+    if t.context_enabled && !t.context.is_empty() {
+        p.push_str(&format!(
+            "\n\nWhere things are (this repository's files and their declared symbols, ranked for this task; read what matters rather than searching for it):\n{}",
+            t.context
+        ));
+    }
+    if let Some(j) = journal {
+        p.push_str(&format!("\n\n{j}"));
+    }
+    if !step.action.brief.is_empty() {
+        p.push_str(&format!("\n\n{}", step.action.brief));
+    }
+    p.push_str(&format!("\n\nTask:\n{}", t.task));
+    if n > 1
+        && let Some(fb) = feedback
+    {
+        p.push_str(&format!("\n\nThis is attempt {n}. {fb}"));
+    }
     if let Some(sp) = &step.action.prompt {
         p.push_str(&format!("\n\nThis step:\n{sp}"));
     }
