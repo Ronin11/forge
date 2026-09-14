@@ -11,7 +11,7 @@
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Attempt, AttemptState, Op, Task, TaskState};
+use crate::store::{Attempt, AttemptState, FinishAttempt, Op, Task, TaskState};
 use crate::verify::{self, Subject, TestsSubject, Verdict};
 use crate::workflows::{self, Contract, Kind, ResolvedStep};
 use crate::{agent, checks, config, git, unix_now};
@@ -2249,7 +2249,38 @@ pub(crate) async fn record(
     a.rl_five_hour_resets = outcome.rate_limits.five_hour.map(|(_, r)| r);
     a.rl_seven_day = outcome.rate_limits.seven_day.map(|(u, _)| u);
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
-    f.store.finish_attempt(a).env()?;
+    f.store
+        .finish_attempt(&FinishAttempt {
+            id: a.id,
+            state: a.state,
+            reason: a.reason.clone(),
+            finished_at: a.finished_at,
+            agent_exit: a.agent_exit,
+            timed_out: a.timed_out,
+            num_turns: a.num_turns,
+            tool_calls: a.tool_calls,
+            cost_usd: a.cost_usd,
+            agent_ms: a.agent_ms,
+            commits: a.commits,
+            files_changed: a.files_changed,
+            dirty: a.dirty,
+            verdict_json: a.verdict_json.clone(),
+            result_text: a.result_text.clone(),
+            envelope_json: a.envelope_json.clone(),
+            rl_five_hour: a.rl_five_hour,
+            rl_seven_day: a.rl_seven_day,
+            rl_five_hour_resets: a.rl_five_hour_resets,
+            rl_seven_day_resets: a.rl_seven_day_resets,
+            end_sha: a.end_sha.clone(),
+            outputs_json: a.outputs_json.clone(),
+            session_id: a.session_id.clone(),
+            first_edit: a.first_edit,
+            input_tokens: a.input_tokens,
+            output_tokens: a.output_tokens,
+            cache_read_input_tokens: a.cache_read_input_tokens,
+            cache_creation_input_tokens: a.cache_creation_input_tokens,
+        })
+        .env()?;
     f.report.emit(
         a.task_id,
         Event::AttemptDone {

@@ -216,6 +216,46 @@ pub struct Attempt {
     pub cache_creation_input_tokens: Option<i64>,
 }
 
+/// Everything `Store::finish_attempt` writes back for an attempt that has run to completion.
+pub struct FinishAttempt {
+    /// The attempt row to update.
+    pub id: i64,
+    pub state: AttemptState,
+    pub reason: String,
+    pub finished_at: Option<i64>,
+    pub agent_exit: Option<i32>,
+    pub timed_out: bool,
+    pub num_turns: i64,
+    pub tool_calls: i64,
+    pub cost_usd: Option<f64>,
+    pub agent_ms: i64,
+    pub commits: i64,
+    pub files_changed: i64,
+    pub dirty: bool,
+    pub verdict_json: String,
+    pub result_text: String,
+    /// The structured result as the CLI produced it, raw JSON; empty if none.
+    pub envelope_json: String,
+    pub rl_five_hour: Option<f64>,
+    pub rl_seven_day: Option<f64>,
+    /// Unix seconds at which each window resets, as the CLI reported.
+    pub rl_five_hour_resets: Option<i64>,
+    pub rl_seven_day_resets: Option<i64>,
+    /// HEAD when the attempt finished.
+    pub end_sha: String,
+    /// audit::Outputs as JSON: everything the step produced beyond the verdict.
+    pub outputs_json: String,
+    /// The CLI session the attempt ran in; empty when the stream never said.
+    pub session_id: String,
+    /// Tool calls before the first edit; `None` when it never edited.
+    pub first_edit: Option<i64>,
+    /// Token counts from the result frame's usage object.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+}
+
 pub struct RateLimitSample {
     pub seen_at: i64,
     pub five_hour: Option<f64>,
@@ -992,7 +1032,7 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
-    pub fn finish_attempt(&self, a: &Attempt) -> Result<()> {
+    pub fn finish_attempt(&self, a: &FinishAttempt) -> Result<()> {
         self.lock().execute(
             "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
