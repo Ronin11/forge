@@ -226,7 +226,7 @@ for `Attempt`; a `FinishAttempt` struct for the 28 parameters; one
 lineage query used by `root_of`, `runs`, `decisions_in_lineage` and
 `supervisor_answers_in_lineage`; `collect_tool_stats` as one query.
 
-**Stage 4. Kernel seams out of engine.rs and cli.rs (hand).** In order:
+**Stage 4. Kernel seams out of engine.rs and cli.rs (hand). Landed 2026-09-14: journal.rs, prompts.rs, queue.rs (with a task_queued event), landing.rs, operation.rs; engine.rs 2583 → 1540 lines. Still open from this stage: OpRow and a Timer for the op recorder's twelve arguments; Rewind returning the new base instead of mutating the task.** In order:
 `journal.rs` (entries derived once, `journal_for` renders them);
 `prompts.rs` with a `PromptCtx` and one shared tail, landed
 byte-identical first against the `forge_prompt` frame every log carries,
