@@ -80,7 +80,16 @@ impl Sandbox {
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
             write_paths,
-            extra_ro: paths.ro.clone(),
+            extra_ro: {
+                // Forge's own tools (forge-repomap) live beside the binary.
+                let mut ro = paths.ro.clone();
+                if let Ok(exe) = std::env::current_exe()
+                    && let Some(dir) = exe.parent()
+                {
+                    ro.push(dir.to_path_buf());
+                }
+                ro
+            },
             extra_rw: paths.rw.clone(),
         }))
     }

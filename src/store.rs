@@ -152,6 +152,10 @@ pub struct Task {
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
+    /// What the last `context` operation printed: where things are.
+    pub context: String,
+    /// Show the agents that context (the default); false for the control arm.
+    pub context_enabled: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -408,11 +412,15 @@ ALTER TABLE attempts ADD COLUMN output_tokens INTEGER;
 ALTER TABLE attempts ADD COLUMN cache_read_input_tokens INTEGER;
 ALTER TABLE attempts ADD COLUMN cache_creation_input_tokens INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN context TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN context_enabled INTEGER NOT NULL DEFAULT 1;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -456,6 +464,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         verify_base: r.get(30)?,
         retry_of: r.get(31)?,
         journal: r.get::<_, i64>(32)? != 0,
+        context: r.get(33)?,
+        context_enabled: r.get::<_, i64>(34)? != 0,
     })
 }
 
@@ -532,8 +542,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 t.repo,
                 t.task,
@@ -554,7 +564,8 @@ impl Store {
                 t.land as i64,
                 serde_json::to_string(&t.after)?,
                 t.retry_of,
-                t.journal as i64
+                t.journal as i64,
+                t.context_enabled as i64
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -563,7 +574,7 @@ impl Store {
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET base_sha=?2, branch=?3, worktree=?4, state=?5, reason=?6, started_at=?7, finished_at=?8,
-             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15 WHERE id=?1",
+             pushed=?9, worker_pid=?10, interface=?11, workflow_hash=?12, workflow_text=?13, actions_json=?14, verify_base=?15, context=?16 WHERE id=?1",
             params![
                 t.id,
                 t.base_sha,
@@ -579,7 +590,8 @@ impl Store {
                 t.workflow_hash,
                 t.workflow_text,
                 t.actions_json,
-                t.verify_base
+                t.verify_base,
+                t.context
             ],
         )?;
         Ok(())
@@ -884,6 +896,34 @@ impl Store {
     }
 
     /// Cost of every attempt started at or after `since`.
+    /// The files successful attempts on this repository read most: a prior
+    /// for where a new task's answer is likely to be. From the tool facts.
+    pub fn hot_files(&self, repo: &str, n: usize) -> Result<Vec<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT a.outputs_json FROM attempts a JOIN tasks t ON t.id = a.task_id
+             WHERE t.repo = ?1 AND a.state = 'succeeded' AND a.step != 'review'",
+        )?;
+        let rows: Vec<String> = stmt
+            .query_map(params![repo], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for json in rows {
+            if let Ok(o) = serde_json::from_str::<crate::audit::Outputs>(&json)
+                && let Some(t) = o.tools
+            {
+                for (path, k) in t.reads {
+                    if !path.starts_with('/') {
+                        *counts.entry(path).or_default() += k;
+                    }
+                }
+            }
+        }
+        let mut v: Vec<(String, u64)> = counts.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(v.into_iter().take(n).map(|(p, _)| p).collect())
+    }
+
     pub fn spent_since(&self, since: i64) -> Result<f64> {
         Ok(self.lock().query_row(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1",

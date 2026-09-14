@@ -8,7 +8,13 @@ use std::path::Path;
 #[test]
 fn the_tui_depends_on_nothing_of_the_kernel() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let manifest = std::fs::read_to_string(root.join("tui/Cargo.toml")).unwrap();
+    for member in ["tui", "repomap"] {
+        check_member(root, member);
+    }
+}
+
+fn check_member(root: &Path, member: &str) {
+    let manifest = std::fs::read_to_string(root.join(member).join("Cargo.toml")).unwrap();
     let deps = manifest.split("[dependencies]").nth(1).unwrap_or("");
     for forbidden in ["forge =", "forge = {", "rusqlite", "tokio"] {
         assert!(

@@ -106,3 +106,12 @@ An embeddings index, a context graph as infrastructure, an MCP gateway,
 or a long generated overview. Right at Uber's scale, wrong at one repo
 and one operator, and the studies say the overview would cost more than
 it returns.
+
+## Status (2026-09-13)
+
+Built: `history` as the journal (`forge journal`), and `repo-map` as the
+`forge-repomap` tool behind a `context`-producing operation in every
+workflow with a coder. Not built: the hand-written conventions file, and
+seeding, which the evidence argued against. Both sources have a control
+arm (`--no-journal`, `--no-context`) and are measured by calls before the
+first edit, attempts, and cost per piece of work.

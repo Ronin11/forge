@@ -151,7 +151,9 @@ declared in its file and each enforced by the kernel.
   `FORGE_TASK_ID`, `FORGE_WORKFLOW`, `FORGE_STEP`, `FORGE_BASE_BRANCH`,
   `FORGE_BASE_SHA`, `FORGE_BRANCH`, `FORGE_PREV_SHA` (HEAD before the
   preceding directive ran, so an operation can judge that step alone),
-  and `FORGE_NAMESPACE` (the verification
+  `FORGE_TASK` (the task text), `FORGE_BIN_DIR` (where forge and its
+  tools live), `FORGE_HOT_FILES` (the files successful attempts on this
+  repository read most, comma-separated), and `FORGE_NAMESPACE` (the verification
   directories, space-separated) in its environment, and nothing else of
   Forge's. Each is already recorded on the task; the operation learns
   nothing the trace does not show. This is what lets an operation judge
@@ -178,7 +180,7 @@ declared in its file and each enforced by the kernel.
   hidden tests, and the scratch has no git history. The output is
   recorded on the operation's row and shown by `forge trace`.
 
-An operation may produce only `branch` and `interface`; `verify_ref` and
+An operation may produce only `branch`, `interface`, and `context`; `verify_ref` and
 `verdict` are a directive's and the kernel's. A mutating operation
 produces a `verdict` for the data-flow check, since the kernel verifies
 after it.
@@ -193,7 +195,12 @@ assertions), `playwright` (the hidden e2e suite from `forge-verify`, run
 with the namespace overlaid; verifies), `comments-only` (fails when the
 preceding step changed anything but comments and docs; verifies), and
 `graph-check` (docs/SYSTEM.md exists, holds a Mermaid block, and names
-only real paths; verifies). Each is a starting point the operator edits,
+only real paths; verifies), and `repo-map` (produces `context`: every
+source file's declared symbols ranked against the task's words and the
+files earlier successful work read most, cut to a budget, by the
+deterministic `forge-repomap` tool; shown to the next directive as
+"where things are", recorded in the attempt's inputs; `--no-context` on
+a task is the control arm). Each is a starting point the operator edits,
 and every edit is a new hash with its own numbers.
 
 ## Data flow

@@ -485,7 +485,7 @@ fn tdd_is_refused_without_a_namespace_or_a_test_check() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("unknown workflow"));
     let o = e.forge("ok.sh", &["workflows"]);
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("tests → setup → code"), "{out}");
+    assert!(out.contains("tests → setup → repo-map → code"), "{out}");
     assert!(
         out.contains("measured   unknown (0 of 5 runs needed)"),
         "{out}"
@@ -812,7 +812,7 @@ fn inline_composition_runs_the_child_and_records_every_pin() {
         .iter()
         .map(|s| s["action"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["tests", "setup", "code"]);
+    assert_eq!(names, vec!["tests", "setup", "repo-map", "code"]);
     assert_eq!(
         doc["resolved"]["steps"][0]["via"],
         serde_json::json!(["outer", "tdd"])
@@ -830,6 +830,7 @@ fn inline_composition_runs_the_child_and_records_every_pin() {
             ("workflow", "tdd"),
             ("action", "tests"),
             ("action", "setup"),
+            ("action", "repo-map"),
             ("action", "code")
         ]
     );
@@ -1541,6 +1542,7 @@ fn a_verified_task_lands_on_the_base_and_the_next_task_starts_from_it() {
         vec![
             ("clone".into(), true),
             ("setup".into(), true),
+            ("repo-map".into(), true),
             ("verify".into(), true),
             ("integrate".into(), true),
             ("push".into(), true),
@@ -1649,6 +1651,7 @@ fn a_conflicting_landing_goes_back_to_the_coder_who_merges_the_base() {
         vec![
             "clone",
             "setup",
+            "repo-map",
             "verify",
             "integrate",
             "verify",
@@ -1919,6 +1922,7 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
             "clone",
             "verify",
             "setup",
+            "repo-map",
             "verify",
             "integrate",
             "verify",
@@ -2613,6 +2617,73 @@ fn integrate_merges_verified_branches_in_order_and_reverifies_or_stops_at_the_co
     let out = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(out.contains("task 3    CONFLICT in answer.txt"), "{out}");
     assert!(String::from_utf8_lossy(&o.stderr).contains("conflicts with what came before it"));
+}
+
+#[test]
+fn a_context_operation_shows_the_coder_where_things_are_unless_told_not_to() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/where.toml"),
+        "name = \"where\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nproduces = [\"context\"]\nrun = [\"bash\", \"-c\", \"echo \\\"hello.sh: greet (task: $FORGE_TASK) bin=$FORGE_BIN_DIR\\\"\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/ctx.toml"),
+        "name = \"ctx\"\ndescription = \"d\"\nsteps = [{ action = \"where\" }, { action = \"code\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "ctx",
+            "--retries",
+            "0",
+            "--no-land",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("context  1 line(s) from where"));
+    let prompt = e.log_text(1, 1);
+    assert!(prompt.contains("Where things are"), "{prompt}");
+    assert!(
+        prompt.contains("hello.sh: greet (task: write 42)"),
+        "the operation saw the task: {prompt}"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert!(
+        doc["attempts"][0]["inputs"]["context"]
+            .as_str()
+            .unwrap()
+            .contains("hello.sh: greet")
+    );
+    assert!(doc["task"]["context"].as_str().unwrap().contains("bin="));
+    // The control arm runs the operation and shows nothing.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 again",
+            "--workflow",
+            "ctx",
+            "--retries",
+            "0",
+            "--no-land",
+            "--no-context",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!e.log_text(2, 1).contains("Where things are"));
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "2", "--json"]).stdout).unwrap();
+    assert_eq!(doc["task"]["context_enabled"], false);
+    assert!(doc["attempts"][0]["inputs"]["context"].is_null());
 }
 
 #[test]

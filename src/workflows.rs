@@ -23,7 +23,7 @@ pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "land", "clone"
 /// kernel commits the result and verifies it. `interface`: its stdout is
 /// the interface the next code directive is shown. Everything else is a
 /// directive's or the kernel's to produce.
-pub const OPERATION_PRODUCES: &[&str] = &["branch", "interface"];
+pub const OPERATION_PRODUCES: &[&str] = &["branch", "interface", "context"];
 
 /// Contracts the kernel enforces for directives. A directive file names
 /// one (default: its own name); any other value is rejected. Many
@@ -118,6 +118,12 @@ impl ActionDef {
         self.kind == Kind::Operation && self.produces.iter().any(|p| p == "branch")
     }
     /// An operation whose stdout becomes the interface the coder is shown.
+    /// `context`: its stdout is shown to the next directive as a map of
+    /// where things are, cut to a budget and recorded in the attempt.
+    pub fn yields_context(&self) -> bool {
+        self.kind == Kind::Operation && self.produces.iter().any(|p| p == "context")
+    }
+
     pub fn yields_interface(&self) -> bool {
         self.kind == Kind::Operation && self.produces.iter().any(|p| p == "interface")
     }
@@ -395,6 +401,30 @@ echo "$f has a mermaid block and names only real paths"
 "#,
     ),
     (
+        "repo-map.toml",
+        r#"name = "repo-map"
+kind = "operation"
+description = "where things are: every source file's declared symbols, ranked against the task's words and the files earlier work read most, cut to a budget; shown to the next directive so it starts by reading what matters instead of finding it. Deterministic: forge-repomap, no model."
+consumes = ["branch"]
+produces = ["context"]
+run = ["bash", "-c", '''
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES"
+''', "repo-map"]
+"#,
+    ),
+    (
+        "repo-map.toml",
+        r#"name = "repo-map"
+kind = "operation"
+description = "where things are: every source file's declared symbols, ranked against the task's words and the files earlier work read most, cut to a budget; shown to the next directive so it starts by reading what matters instead of finding it. Deterministic: forge-repomap, no model."
+consumes = ["branch"]
+produces = ["context"]
+run = ["bash", "-c", '''
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES"
+''', "repo-map"]
+"#,
+    ),
+    (
         "diff-size.toml",
         r#"name = "diff-size"
 kind = "operation"
@@ -459,6 +489,7 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
 description = \"one agent writes the change; the kernel verifies\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"code\" },\n\
 ]\n\
 \n\
@@ -475,6 +506,7 @@ description = \"one agent writes hidden tests that fail on base; another makes t
 steps = [\n\
   { action = \"tests\" },\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"code\" },\n\
 ]\n\
 \n\
@@ -505,6 +537,7 @@ requires = []\n\
 description = \"a small fast model with few turns, for precisely specified small changes\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"fix\" },\n\
 ]\n\
 \n\
@@ -536,6 +569,7 @@ requires = []\n\
 description = \"the change, then an independent reviewer that can only demote to human review with executed evidence\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"code\" },\n\
   { action = \"review\" },\n\
 ]\n\
@@ -552,6 +586,7 @@ requires = []\n\
 description = \"the change, then the hidden Playwright suite drives the built page; a failure goes back to the coder\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"code\" },\n\
   { action = \"playwright\" },\n\
 ]\n\
@@ -1160,7 +1195,7 @@ mod tests {
                 .iter()
                 .map(|s| s.action.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["tests", "setup", "code"]
+            vec!["tests", "setup", "repo-map", "code"]
         );
         assert_eq!(
             r.steps[0].max_turns,
@@ -1168,14 +1203,14 @@ mod tests {
             "the action's own default applies"
         );
         assert_eq!(r.steps[1].action.kind, Kind::Operation);
-        assert_eq!(r.pins.len(), 4, "the workflow and three actions");
+        assert_eq!(r.pins.len(), 5, "the workflow and four actions");
         let rr = resolve(dir.path(), "tdd-reviewed").unwrap();
         assert_eq!(
             rr.steps
                 .iter()
                 .map(|s| s.action.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["tests", "setup", "code", "review"]
+            vec!["tests", "setup", "repo-map", "code", "review"]
         );
         assert!(r.pins.iter().all(|p| p.hash.len() == 40), "git blob hashes");
         assert!(check(dir.path()).unwrap().iter().all(|p| !p.blocking));
@@ -1188,7 +1223,11 @@ mod tests {
         );
         let after = resolve(dir.path(), "direct").unwrap();
         assert_ne!(before.pins, after.pins);
-        assert_eq!(after.steps[1].max_turns, Some(50));
+        assert_eq!(
+            after.steps[2].max_turns,
+            Some(50),
+            "code is now the third step, after repo-map"
+        );
         assert_eq!(
             before.pins.iter().find(|p| p.name == "setup"),
             after.pins.iter().find(|p| p.name == "setup"),
@@ -1211,7 +1250,7 @@ mod tests {
                 .iter()
                 .map(|s| s.action.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["setup", "tests", "setup", "code"]
+            vec!["setup", "tests", "setup", "repo-map", "code"]
         );
         assert_eq!(r.steps[1].via, vec!["outer", "tdd"]);
         assert!(
@@ -1458,7 +1497,7 @@ mod tests {
                 .iter()
                 .map(|s| s.action.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["setup", "code", "setup", "code"]
+            vec!["setup", "repo-map", "code", "setup", "repo-map", "code"]
         );
         assert_eq!(r.pins.iter().filter(|p| p.name == "direct").count(), 1);
         assert_eq!(r.pins.iter().filter(|p| p.name == "code").count(), 1);

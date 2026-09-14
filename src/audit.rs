@@ -41,6 +41,10 @@ pub struct Inputs {
     /// of work, what it said it did, and what the kernel found. Verbatim.
     #[serde(default)]
     pub journal: Option<String>,
+    /// The context the agent was shown: what the `context` operation
+    /// printed, where things are. Verbatim.
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 /// What a step produced, beyond the verdict rows.

@@ -1244,6 +1244,7 @@ fn operation_env(
     cfg: &config::Config,
     step: &ResolvedStep,
     prev_sha: &str,
+    hot_files: &[String],
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = [
         ("FORGE_TASK_ID", t.id.to_string()),
@@ -1254,6 +1255,15 @@ fn operation_env(
         ("FORGE_BRANCH", t.branch.clone()),
         ("FORGE_NAMESPACE", cfg.namespace.join(" ")),
         ("FORGE_PREV_SHA", prev_sha.to_string()),
+        ("FORGE_TASK", t.task.clone()),
+        (
+            "FORGE_BIN_DIR",
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.display().to_string()))
+                .unwrap_or_default(),
+        ),
+        ("FORGE_HOT_FILES", hot_files.join(",")),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -1336,7 +1346,8 @@ async fn run_operation(
             .map(|a| a.start_sha.clone())
             .unwrap_or_else(|| t.base_sha.clone())
     };
-    let env = operation_env(t, cfg, step, &prev_sha);
+    let hot_files = f.store.hot_files(&t.repo, 8).env()?;
+    let env = operation_env(t, cfg, step, &prev_sha, &hot_files);
     let scratch = step
         .action
         .reads_verify_ref()
@@ -1448,6 +1459,20 @@ async fn run_operation(
     )?;
     if !r.ok {
         return Ok((false, detail));
+    }
+    if step.action.yields_context() {
+        t.context = output.chars().take(12_000).collect();
+        f.store.update_task(t).env()?;
+        f.report.emit(
+            t.id,
+            Event::Note {
+                text: &format!(
+                    "context  {} line(s) from {}",
+                    t.context.lines().count(),
+                    step.action.name
+                ),
+            },
+        );
     }
     if step.action.yields_interface() {
         t.interface = output;
@@ -1816,6 +1841,12 @@ This directive may only change these paths: {}. Anything else fails verification
         "\nAnything you report is a claim; only the checks decide.\n\nTask:\n{}",
         t.task
     ));
+    if t.context_enabled && !t.context.is_empty() {
+        p.push_str(&format!(
+            "\n\nWhere things are (this repository's files and their declared symbols, ranked for this task; read what matters rather than searching for it):\n{}",
+            t.context
+        ));
+    }
     if let Some(j) = journal {
         p.push_str(&format!("\n\n{j}"));
     }
@@ -1851,6 +1882,12 @@ fn tests_prompt(
         cmd = cfg.checks.get("test").map(|a| a.join(" ")).unwrap_or_default(),
     ));
     p.push_str(&format!("\n\nTask:\n{}", t.task));
+    if t.context_enabled && !t.context.is_empty() {
+        p.push_str(&format!(
+            "\n\nWhere things are (this repository's files and their declared symbols, ranked for this task; read what matters rather than searching for it):\n{}",
+            t.context
+        ));
+    }
     if let Some(j) = journal {
         p.push_str(&format!("\n\n{j}"));
     }
@@ -2042,6 +2079,7 @@ async fn run_code_attempt(
         prompt_chars: prompt_text.chars().count(),
         resumed: resume.map(|r| r.session.clone()),
         journal: journal.clone(),
+        context: (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone()),
         ..Default::default()
     };
     let (mut a, log_path) =
@@ -2127,6 +2165,7 @@ async fn run_tests_attempt(
         prompt_chars: prompt_text.chars().count(),
         resumed: resume.map(|r| r.session.clone()),
         journal: journal.clone(),
+        context: (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone()),
         ..Default::default()
     };
     let (mut a, log_path) = new_attempt(
