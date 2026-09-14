@@ -866,3 +866,63 @@ fn a_blocked_dependency_keeps_its_dependents_waiting_and_a_retry_carries_them_al
         .unwrap();
     assert_eq!(after, "[6]");
 }
+
+#[test]
+fn a_retry_of_a_verified_task_starts_from_its_branch() {
+    // 1 writes the answer and passes the checks; the reviewer demotes it.
+    // The retry starts from 1's branch and only adds what the review asked.
+    let e = Env::new();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+        "reviewed",
+        "write 42",
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(
+        state,
+        "blocked",
+        "{reason}\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(reason.starts_with("review demoted"), "{reason}");
+    assert!(pushed);
+    assert!(e.forge("ok.sh", &["retry", "1"]).status.success());
+    let mut c = e.with_role("addfile.sh", "REVIEW", "reviewer-ok.sh");
+    let o = c.args(["work", "--once"]).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("start    from task 1's verified branch forge/1-write-42 @"),
+        "{err}"
+    );
+    assert_eq!(e.task(2).0, "succeeded", "{:?}", e.task(2));
+    // The retry's branch carries 1's answer and its own addition.
+    assert_eq!(
+        origin_file(&e, "forge/2-write-42", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    assert_eq!(
+        origin_file(&e, "forge/2-write-42", "extra.txt").as_deref(),
+        Some("extra\n")
+    );
+    let (base, start): (String, String) = e
+        .db()
+        .query_row(
+            "SELECT t.base_sha, a.start_sha FROM tasks t JOIN attempts a ON a.task_id = t.id WHERE t.id = 2 AND a.attempt_no = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(
+        base, start,
+        "the first attempt began past the base, on 1's commits"
+    );
+    // The journal tells the retry what the reviewer found.
+    let prompt = e.log_text(2, 1);
+    assert!(
+        prompt.contains("it stopped with: review demoted"),
+        "{prompt}"
+    );
+}
