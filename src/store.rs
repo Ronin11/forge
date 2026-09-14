@@ -1145,6 +1145,28 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// (task_id, step, outputs_json) for every attempt, in one query, so
+    /// callers can pull tool facts out of outputs_json without an N+1 over
+    /// tasks. Optionally restricted to a single step.
+    pub fn attempt_tool_facts(&self, step: Option<&str>) -> Result<Vec<(i64, String, String)>> {
+        let c = self.lock();
+        let rows = match step {
+            Some(step) => {
+                let mut stmt =
+                    c.prepare("SELECT task_id, step, outputs_json FROM attempts WHERE step=?1")?;
+                let rows =
+                    stmt.query_map(params![step], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            None => {
+                let mut stmt = c.prepare("SELECT task_id, step, outputs_json FROM attempts")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+        };
+        Ok(rows)
+    }
+
     /// Total cost of a task's attempts so far, from the CLI's accounting.
     pub fn task_cost(&self, task_id: i64) -> Result<f64> {
         Ok(self.lock().query_row(
@@ -1327,20 +1349,6 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    pub fn list_tasks(
-        &self,
-        limit: u32,
-        state: Option<TaskState>,
-        repo: Option<&str>,
-    ) -> Result<Vec<TaskSummary>> {
-        self.list_tasks_where(&TaskFilter {
-            limit,
-            state,
-            repo: repo.map(str::to_string),
-            ..Default::default()
-        })
     }
 
     /// The listing behind `forge log`: newest first, filtered, and paged by
