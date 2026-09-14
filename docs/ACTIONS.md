@@ -59,6 +59,16 @@ appended to the task. `brief` is the one prose surface, allowed because
 it is versioned, hashed, recorded on every task, and still verified by
 the kernel.
 
+A directive may also carry `prompt`, an optional string appended
+verbatim to the role prompt the agent receives, as a final section
+headed `This step:` — after the task, the interface, and any feedback,
+so it is the last thing the agent reads. Unlike `brief`, which is woven
+into the task text itself, `prompt` stands apart, for an instruction
+specific to how this step should be carried out rather than to what the
+task asks. It carries no extra identity of its own: the action hash
+already covers the whole file. An operation carrying `prompt` is
+rejected; the field is a directive's.
+
 The `review` contract is the executing, demote-only verifier from the
 research: a fresh session in the coder's clone that may not write
 (`no-writes`), must run something (`executed-something`), and may end the

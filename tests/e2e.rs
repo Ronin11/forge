@@ -776,6 +776,42 @@ fn operations_run_in_order_and_appear_as_rows() {
 }
 
 #[test]
+fn a_directives_prompt_field_lands_as_a_final_section_of_the_role_prompt() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/promptcode.toml"),
+        "name = \"promptcode\"\nkind = \"directive\"\ncontract = \"code\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nproduces = [\"branch\"]\nprompt = \"Write the answer in decimal, never hex.\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/prompted.toml"),
+        "name = \"prompted\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"promptcode\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "promptdump.sh",
+        &[
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "prompted",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let log = e.log_text(1, 1);
+    assert!(log.contains("This step:"), "{log}");
+    assert!(
+        log.contains("Write the answer in decimal, never hex."),
+        "{log}"
+    );
+}
+
+#[test]
 fn inline_composition_runs_the_child_and_records_every_pin() {
     let e = Env::new();
     tdd_repo(&e);

@@ -75,6 +75,9 @@ struct ActionRaw {
     /// Directive: a short instruction appended to the task text.
     #[serde(default)]
     brief: String,
+    /// Directive: text appended verbatim as a final "This step:" section
+    /// of the role prompt the agent receives.
+    prompt: Option<String>,
     /// Operation: run with the verification namespace overlaid from the
     /// trusted refs (a hidden suite the coder never sees).
     #[serde(default)]
@@ -104,6 +107,7 @@ pub struct ActionDef {
     pub contract: String,
     pub paths: Vec<String>,
     pub brief: String,
+    pub prompt: Option<String>,
     pub overlay: bool,
     pub verifies: bool,
     pub output: Output,
@@ -746,10 +750,13 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         }
     }
     if raw.kind == Kind::Operation
-        && (raw.contract.is_some() || !raw.paths.is_empty() || !raw.brief.is_empty())
+        && (raw.contract.is_some()
+            || !raw.paths.is_empty()
+            || !raw.brief.is_empty()
+            || raw.prompt.is_some())
     {
         bail!(
-            "{}: contract, paths, and brief apply to directives only",
+            "{}: contract, paths, brief, and prompt apply to directives only",
             path.display()
         );
     }
@@ -793,6 +800,7 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         contract,
         paths: raw.paths,
         brief: raw.brief,
+        prompt: raw.prompt,
         overlay: raw.overlay,
         verifies: raw.verifies,
         output: raw.output,

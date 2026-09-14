@@ -1950,12 +1950,16 @@ This directive may only change these paths: {}. Anything else fails verification
             t.max_attempts
         ));
     }
+    if let Some(sp) = &step.action.prompt {
+        p.push_str(&format!("\n\nThis step:\n{sp}"));
+    }
     p
 }
 
 fn tests_prompt(
     t: &Task,
     cfg: &config::Config,
+    step: &ResolvedStep,
     n: i64,
     feedback: Option<&str>,
     journal: Option<&str>,
@@ -1990,6 +1994,9 @@ fn tests_prompt(
             "\n\nThis is attempt {n} of {}. Your earlier commits are already on this branch.\n{fb}",
             t.max_attempts
         ));
+    }
+    if let Some(sp) = &step.action.prompt {
+        p.push_str(&format!("\n\nThis step:\n{sp}"));
     }
     p
 }
@@ -2250,7 +2257,7 @@ async fn run_tests_attempt(
         String::new()
     };
     let journal = (!journal.is_empty()).then_some(journal);
-    let prompt_text = tests_prompt(t, cfg, attempt_no, feedback, journal.as_deref());
+    let prompt_text = tests_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref());
     let inputs = Inputs {
         feedback: feedback.map(str::to_string),
         task_checks: t.checks.clone(),
@@ -2330,6 +2337,9 @@ fn review_prompt(t: &Task, cfg: &config::Config, step: &ResolvedStep) -> String 
         p.push_str(&format!("\n\n{}", step.action.brief));
     }
     p.push_str(&format!("\n\nThe task that was given:\n{}", t.task));
+    if let Some(sp) = &step.action.prompt {
+        p.push_str(&format!("\n\nThis step:\n{sp}"));
+    }
     p
 }
 
