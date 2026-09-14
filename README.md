@@ -85,6 +85,17 @@ Task states: `queued`, `running`, `succeeded`, `failed` (with the reason),
 asked a question or for another workflow). Attempt states:
 `succeeded`, `checks_failed`, `agent_failed`, `unverified`.
 
+`forge retry <id>` re-queues a finished task as a new one: same text,
+workflow, budget, and flags, on a fresh branch; `--chain` also re-queues
+everything that had been queued `--after` it, with dependencies remapped
+onto the new ids. `forge journal <id>` prints what every earlier attempt
+in a task's piece of work said it did and what the kernel found; that same
+text is fed to each new attempt unless the task was queued `--no-journal`,
+the control arm of a measurement. `forge stats` groups outcomes by
+workflow hash and by step; `--tools` shows what the agents actually ran
+there instead — tool and shell calls with their time, and files read,
+aggregated per step.
+
 ## The worker
 
 `forge work` claims the oldest queued task, runs it, and repeats. `--jobs N`
