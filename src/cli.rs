@@ -1626,12 +1626,12 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
         bail!("remote {remote} has no URL in {}", repo.display());
     };
     let mut seq = f.store.ops(id)?.len() as i64;
-    match crate::engine::integrate(f, &mut t, &url, &remote, &mut seq)
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
         })? {
-        crate::engine::Integrate::Landed(sha) => {
+        crate::landing::Integrate::Landed(sha) => {
             t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
             t.landed_sha = sha.clone();
             t.pushed = true;
@@ -1659,12 +1659,12 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
                 &sha[..8]
             ))
         }
-        crate::engine::Integrate::Rewind { first, .. } => {
+        crate::landing::Integrate::Rewind { first, .. } => {
             bail!(
                 "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
             )
         }
-        crate::engine::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
+        crate::landing::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
     }
 }
 

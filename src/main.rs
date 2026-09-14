@@ -13,8 +13,11 @@ mod ctx;
 mod doctor;
 mod engine;
 mod envelope;
+
 mod git;
 mod journal;
+mod landing;
+mod operation;
 mod profile;
 mod prompts;
 mod report;
