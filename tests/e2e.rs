@@ -4524,3 +4524,105 @@ fn version_starts_with_the_crate_version() {
         "expected output to start with the crate version: {out}"
     );
 }
+
+#[test]
+fn a_blocked_dependency_keeps_its_dependents_waiting_and_a_retry_carries_them_along() {
+    // 1 asks a question; 2 waits on 1. A blocked task is not finished, so 2
+    // stays queued; answering 1 re-queues it as 3, and 2 now waits on 3.
+    let e = Env::new();
+    let a = e.forge(
+        "needsinput.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(a.status.success());
+    let b = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt too",
+            "--retries",
+            "0",
+            "--after",
+            "1",
+        ],
+    );
+    assert!(b.status.success());
+    let o = e.forge("needsinput.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "blocked");
+    assert_eq!(
+        e.task(2).0,
+        "queued",
+        "a blocked dependency does not sweep its dependents: {:?}",
+        e.task(2)
+    );
+    let o = e.forge("ok.sh", &["answer", "1", "answer.txt, lowercase"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let after: String = e
+        .db()
+        .query_row("SELECT after_json FROM tasks WHERE id=2", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, "[3]", "the dependent follows the retry");
+    // 3 lands the answer; then 2 runs from that landing and adds its own file.
+    let o = e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(3).0, "succeeded");
+    let o = e.forge("addfile.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(2).0, "succeeded", "{:?}", e.task(2));
+    // A dependent already swept into blocked by a failed dependency is
+    // queued again when that dependency is retried.
+    let c = e.forge(
+        "wrong.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt again",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(c.status.success());
+    let d = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "and once more",
+            "--retries",
+            "0",
+            "--after",
+            "4",
+        ],
+    );
+    assert!(d.status.success());
+    let o = e.forge("wrong.sh", &["work", "--once"]);
+    assert!(
+        !o.status.success() || e.task(4).0 == "failed",
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(e.task(4).0, "failed");
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    let _ = o;
+    assert_eq!(e.task(5).0, "blocked", "{:?}", e.task(5));
+    assert!(
+        e.task(5).1.starts_with("waits on task 4 "),
+        "{:?}",
+        e.task(5)
+    );
+    assert!(e.forge("ok.sh", &["retry", "4"]).status.success());
+    assert_eq!(e.task(5).0, "queued", "{:?}", e.task(5));
+    let after: String = e
+        .db()
+        .query_row("SELECT after_json FROM tasks WHERE id=5", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, "[6]");
+}

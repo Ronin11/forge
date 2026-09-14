@@ -734,7 +734,7 @@ impl Store {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
-             WHERE t.state='queued' AND d.state IN ('failed', 'blocked', 'unverified')
+             WHERE t.state='queued' AND d.state IN ('failed', 'unverified')
                 OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.reason NOT LIKE 'landed %' AND d.finished_at IS NOT NULL)
              ORDER BY t.id, d.id",
         )?;
@@ -753,6 +753,44 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// A retry of `old` carries its dependents along: every task waiting
+    /// on `old` waits on `new` instead, and one that was swept into
+    /// blocked because `old` ended is queued again. Returns the ids moved.
+    pub fn reroute_dependents(&self, old: i64, new: i64) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.id, t.after_json, t.state, t.reason FROM tasks t, json_each(t.after_json) j
+             WHERE j.value = ?1 AND t.state IN ('queued', 'blocked') AND t.id != ?2",
+        )?;
+        let rows: Vec<(i64, String, String, String)> = stmt
+            .query_map(params![old, new], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut moved = Vec::new();
+        for (id, after_json, state, reason) in rows {
+            let after: Vec<i64> = serde_json::from_str(&after_json).unwrap_or_default();
+            let after: Vec<i64> = after
+                .into_iter()
+                .map(|d| if d == old { new } else { d })
+                .collect();
+            let swept = state == "blocked" && reason.starts_with(&format!("waits on task {old} "));
+            if swept {
+                c.execute(
+                    "UPDATE tasks SET after_json=?2, state='queued', reason='', finished_at=NULL WHERE id=?1",
+                    params![id, serde_json::to_string(&after)?],
+                )?;
+            } else {
+                c.execute(
+                    "UPDATE tasks SET after_json=?2 WHERE id=?1",
+                    params![id, serde_json::to_string(&after)?],
+                )?;
+            }
+            moved.push(id);
+        }
+        Ok(moved)
     }
 
     /// Queued or blocked tasks that wait on `id`, directly.

@@ -428,6 +428,19 @@ pub(crate) async fn enqueue_with(
         }
     }
     t.id = f.store.insert_task(&t)?;
+    if let Some(old) = retry_of {
+        // Whatever waited on the task this one retries now waits on this
+        // one; a dependent swept into blocked when the old task ended is
+        // queued again.
+        for d in f.store.reroute_dependents(old, t.id)? {
+            f.report.emit(
+                d,
+                crate::report::Event::Note {
+                    text: &format!("waits on task {} now (a retry of task {old})", t.id),
+                },
+            );
+        }
+    }
     Ok(t)
 }
 
