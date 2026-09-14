@@ -820,7 +820,8 @@ fn trace(id: i64, json: bool) -> Result<()> {
             a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
             if a.timed_out { " TIMED OUT" } else { "" }
         );
-        if let Ok(rows) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
+        if let Ok(rows) =
+            serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
         {
             for c in rows {
                 out!(
@@ -1806,7 +1807,8 @@ fn show(id: i64) -> Result<()> {
         {
             out!("  ran     {}", t.line());
         }
-        if let Ok(checks) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
+        if let Ok(checks) =
+            serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
         {
             for c in checks {
                 out!(
