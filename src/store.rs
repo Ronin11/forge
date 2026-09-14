@@ -1374,16 +1374,6 @@ impl Store {
     }
 
     /// Record the operator's answer to a blocked task's question.
-    pub fn insert_decision(
-        &self,
-        task_id: i64,
-        repo: &str,
-        question: &str,
-        answer: &str,
-    ) -> Result<i64> {
-        self.insert_decision_by(task_id, repo, question, answer, "operator", "")
-    }
-
     pub fn insert_decision_by(
         &self,
         task_id: i64,
