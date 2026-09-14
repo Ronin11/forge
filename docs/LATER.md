@@ -85,3 +85,16 @@ Three levers we don't pull yet, each measurable with what exists:
 
 Not for us at this scale: the MCP gateway, tool projection, code-mode,
 and the context graph as infrastructure. The CLI already caches.
+
+## Prompts: the frame in code, the voice in the file (2026-09-13)
+
+Prompts are assembled in the engine from pieces, no templates: the rules
+the kernel enforces (untrusted content, commit and leave clean, the result
+contract, the honest exits, protected paths, the namespace), then the
+contract's role paragraph, the action's `brief`, the task, the interface,
+the journal, the feedback. The exact text is the first frame of every
+attempt log. Keep the rules in code, since each one has an enforcer and a
+test; move the role paragraph into the action file as a `prompt` field, so
+a rewording is a new action hash the profiles measure and git can revert,
+and a future authoring tool has something to touch. No template language
+beyond that: the assembly order should stay in one place tests can read.
