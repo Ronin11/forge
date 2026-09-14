@@ -116,7 +116,9 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             return out;
         }
         TaskState::Unverified => {
-            if t.reason.starts_with("review could not finish") {
+            if t.reason.starts_with("ran out of turns after committing") {
+                out.push(d(&t.reason, "The code passed the checks but the coder never returned a result, so nothing vouches for what it did. Read the branch's diff; merge it if it is the task, or retry with more turns."));
+            } else if t.reason.starts_with("review could not finish") {
                 out.push(d(&t.reason, "The code step verified the branch; only the reviewer failed to reach a verdict, usually its turn limit. Review the branch yourself, or raise max_turns on the review action and run the task again."));
             } else {
                 out.push(d(&t.reason, "Nothing verified the work. Declare [checks] in forge.toml or add --check commands; the branch was not pushed."));
@@ -444,6 +446,14 @@ mod tests {
                 "waits on task 14 (failed: L1 failed: test)",
             ),
             (TaskState::Unverified, "no L1 or L2"),
+            (
+                TaskState::Unverified,
+                "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human",
+            ),
+            (
+                TaskState::Failed,
+                "ran out of turns after committing; the checks fail: L1 failed: test (after 2 attempt(s))",
+            ),
             (
                 TaskState::Unverified,
                 "review could not finish (agent exit 1); the branch verified at the code step and goes to human review (after 2 attempt(s))",

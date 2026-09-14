@@ -2482,6 +2482,107 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
 }
 
 #[test]
+fn a_coder_that_commits_then_runs_out_of_turns_leaves_checked_code_for_a_human() {
+    let e = Env::new();
+    let o = e.run("cappedcommit.sh", &["--retries", "0"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("capped   ran out of turns after committing; the checks pass"),
+        "{err}"
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(
+        reason.starts_with("ran out of turns after committing; the checks pass"),
+        "{reason}"
+    );
+    assert!(pushed, "the checked branch is not thrown away");
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    assert!(show.contains("nothing vouches for what it did"), "{show}");
+}
+
+#[test]
+fn integrate_merges_verified_branches_in_order_and_reverifies_or_stops_at_the_conflict() {
+    let e = Env::new();
+    // Only the shell check: each task adds its own file, and the third contradicts the first.
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "shell only"]);
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+    assert!(
+        e.forge(
+            "addfile.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "add extra",
+                "--no-land",
+                "--retries",
+                "0"
+            ]
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["integrate", "1", "2"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(
+        o.status.success(),
+        "{out}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        out.contains("task 1    merged") && out.contains("task 2    merged"),
+        "{out}"
+    );
+    assert!(
+        out.contains("task 2    verified with everything before it"),
+        "{out}"
+    );
+    let branch = out
+        .lines()
+        .find(|l| l.starts_with("integrated"))
+        .unwrap()
+        .split_whitespace()
+        .find(|w| w.starts_with("forge/integration-"))
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        git(&e.repo, &["show", &format!("{branch}:answer.txt")]),
+        "42"
+    );
+    assert_eq!(
+        git(&e.repo, &["show", &format!("{branch}:extra.txt")]),
+        "extra"
+    );
+    // A third branch that conflicts stops the integration and says where.
+    assert!(
+        e.forge(
+            "echoanswer.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "write 43 to answer.txt",
+                "--no-land",
+                "--retries",
+                "0"
+            ]
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["integrate", "1", "3"]);
+    assert!(!o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("task 3    CONFLICT in answer.txt"), "{out}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("conflicts with what came before it"));
+}
+
+#[test]
 fn no_structured_result_fails_l0() {
     let e = Env::new();
     assert!(!e.run("noenvelope.sh", &["--retries", "0"]).status.success());

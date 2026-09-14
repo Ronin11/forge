@@ -1,11 +1,10 @@
 # Forge 2 verified by Forge 2. What Forge re-runs after every attempt; `setup`
 # runs first and gates the rest. Its output (target/) is gitignored, as every
-# setup output must be. There is no push remote here on purpose: every branch
-# stays local and a human merges it, so Forge changes its own code only through
-# human-reviewed branches.
+# setup output must be. Verified changes land on main like in any repository;
+# a change a human wants to gate is queued with --no-land and proven with
+# `forge integrate` before it is merged by hand.
 [defaults]
 base_branch = "main"
-push = false
 check_timeout_secs = 900
 
 [checks]
