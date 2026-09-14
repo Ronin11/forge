@@ -2420,6 +2420,11 @@ fn the_journal_tells_the_next_agent_what_earlier_ones_said_and_what_the_checks_f
     assert!(j.contains("So far in this piece of work"), "{j}");
     assert!(j.contains("1 code    checks_failed"), "{j}");
     assert!(j.contains("found: L1 answer:"), "{j}");
+    let oj = e.forge("ok.sh", &["journal", "1", "--json"]);
+    let entries: serde_json::Value = serde_json::from_slice(&oj.stdout).unwrap();
+    let arr = entries.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "{entries}");
+    assert_eq!(arr[0]["state"], "checks_failed", "{entries}");
     // A retry inherits the whole lineage's journal, and its own attempt records it verbatim.
     assert!(e.forge("ok.sh", &["retry", "1"]).status.success());
     assert!(e.forge("ok.sh", &["work", "--once"]).status.success());

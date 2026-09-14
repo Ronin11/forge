@@ -1693,6 +1693,65 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
     ))
 }
 
+/// One attempt in a piece of work's journal, as data rather than prose.
+#[derive(serde::Serialize)]
+pub struct JournalEntry {
+    pub task: i64,
+    pub attempt: i64,
+    pub step: String,
+    pub state: String,
+    pub said: Option<String>,
+    pub found: Vec<String>,
+}
+
+/// The same lineage `journal_for` walks, as structured entries instead of
+/// prose: one per attempt, across every task in the piece of work.
+pub fn journal_entries_for(f: &Forge, t: &Task) -> Result<Vec<JournalEntry>, Fault> {
+    let lineage = f.store.lineage(t.id).env()?;
+    let mut entries = Vec::new();
+    for l in &lineage {
+        let attempts = f.store.attempts(l.id).env()?;
+        for a in attempts.iter().filter(|a| a.state != AttemptState::Running) {
+            let said = if a.step == "tests" {
+                None
+            } else {
+                serde_json::from_str::<crate::envelope::Envelope>(&a.envelope_json)
+                    .ok()
+                    .map(|e| e.summary)
+                    .filter(|s| !s.trim().is_empty())
+            };
+            let found: Vec<String> =
+                serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|c| !c.ok)
+                    .map(|c| {
+                        let what = if c.failing_tests.is_empty() {
+                            salient_line(&c.tail)
+                        } else {
+                            c.failing_tests
+                                .iter()
+                                .take(3)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        };
+                        format!("{} {}: {}", c.level, c.name, what)
+                    })
+                    .collect();
+            entries.push(JournalEntry {
+                task: l.id,
+                attempt: a.attempt_no,
+                step: a.step.clone(),
+                state: a.state.as_str().to_string(),
+                said,
+                found,
+            });
+        }
+    }
+    Ok(entries)
+}
+
 /// The line of a check's output that says what went wrong: the first that
 /// names a failure, else the last that says anything.
 fn salient_line(tail: &str) -> String {
