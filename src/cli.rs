@@ -4,7 +4,7 @@ use crate::audit;
 use crate::ctx::Forge;
 use crate::profile::{self, LOOKBACK};
 use crate::store::{Task, TaskState};
-use crate::{config, doctor, engine, git, unix_now, worker, workflows};
+use crate::{config, doctor, git, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::io::Write;
@@ -1960,7 +1960,7 @@ async fn gc(dry_run: bool) -> Result<()> {
             }
             if !dry_run {
                 std::fs::remove_dir_all(wt)?;
-                let _ = std::fs::remove_dir_all(engine::tests_clone_dir(&t.worktree));
+                let _ = std::fs::remove_dir_all(crate::attempt::tests_clone_dir(&t.worktree));
             }
             Ok(Ok(()))
         }

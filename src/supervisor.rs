@@ -23,7 +23,7 @@
 use crate::agent;
 use crate::audit::Inputs;
 use crate::ctx::Forge;
-use crate::engine::{self, Fault};
+use crate::engine::Fault;
 use crate::envelope::{Envelope, Kind};
 use crate::report::Event;
 use crate::store::{AttemptState, Task, TaskState};
@@ -293,7 +293,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // supervisor is held to what it adds, not to what it found.
     let dirty_before = crate::git::dirty_paths(wt).await.unwrap_or_default();
     let (mut a, log_path) =
-        engine::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None).await?;
+        crate::attempt::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None).await?;
     let outcome = agent::run(agent::Launch {
         task_id: id,
         worktree: wt,
@@ -316,7 +316,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if let Some(why) = crate::verify::agent_failure(&outcome) {
         let mut verdict = Verdict::open(&GitFacts::default());
         verdict.settle(Some(&why), None, false);
-        engine::record(f, &mut a, wt, &verdict, &outcome, None).await?;
+        crate::attempt::record(f, &mut a, wt, &verdict, &outcome, None).await?;
         let why = format!("its run failed: {why}");
         f.report.emit(
             id,
@@ -435,7 +435,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if ok {
         verdict.reason = format!("supervisor: {}", r.action);
     }
-    engine::record(f, &mut a, wt, &verdict, &outcome, None).await?;
+    crate::attempt::record(f, &mut a, wt, &verdict, &outcome, None).await?;
 
     let cited = r.citations.join(", ");
     let escalate = |why: String| -> Result<Ruled> {

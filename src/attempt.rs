@@ -1,0 +1,427 @@
+//! One attempt of a directive: the prompt for the contract, the record
+//! of what the agent was given, the launch, the contract's verdict, and
+//! the row. Every contract runs through `run_attempt`; what differs is
+//! the `Spec` the contract fills in: where the agent works, what it is
+//! told, which refs are overlaid, and what the verdict needs.
+
+use crate::audit::{Inputs, Outputs};
+use crate::ctx::Forge;
+use crate::engine::{Classify, Fault};
+use crate::landing::overlay_refs;
+use crate::prompts::{code_prompt, plan_prompt, review_prompt, tests_prompt};
+use crate::report::Event;
+use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
+use crate::verify::{self, Subject, Verdict};
+use crate::workflows::{Contract, ResolvedStep};
+use crate::{agent, config, git, unix_now};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// The refs whose namespace files are overlaid before L1: the standing
+/// suite when the repository has one, the task's own tests when it has
+/// some.
+/// A capped attempt to continue: the CLI session, and where that attempt
+/// started, since the agent reports for the whole session.
+#[derive(Clone, Debug)]
+pub struct Resume {
+    pub session: String,
+    pub start_sha: String,
+}
+
+/// What one contract's attempt differs in.
+struct Spec {
+    /// Where the agent works: the task's clone, or the tests step's own.
+    dir: PathBuf,
+    prompt: String,
+    inputs: Inputs,
+    /// Refs whose namespace files are overlaid before L1 (code only).
+    overlay_refs: Vec<String>,
+    /// The ref the attempt's commits are recorded under (tests only).
+    verify_ref: Option<String>,
+    /// The tests contract's scratch directory for red-on-base.
+    scratch: Option<PathBuf>,
+}
+
+/// Run one attempt of `step` for the task: build the contract's spec,
+/// open the attempt row, launch the agent, judge the result, record it.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_attempt(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    step: &ResolvedStep,
+    seq: i64,
+    attempt_no: i64,
+    feedback: Option<&str>,
+    resume: Option<&Resume>,
+) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
+    let contract = step.action.contract;
+    let repo = Path::new(&t.repo);
+    let journal = if t.journal && contract != Contract::Review {
+        let j = crate::journal::journal_for(f, t)?;
+        (!j.is_empty()).then_some(j)
+    } else {
+        None
+    };
+    let context = (t.context_enabled && !t.context.is_empty()).then(|| t.context.clone());
+    let common = Inputs {
+        feedback: feedback.map(str::to_string),
+        task_checks: t.checks.clone(),
+        protected: cfg.protected.clone(),
+        namespace: cfg.namespace.clone(),
+        resumed: resume.map(|r| r.session.clone()),
+        journal: journal.clone(),
+        context: context.clone(),
+        ..Default::default()
+    };
+    let spec = match contract {
+        Contract::Code => {
+            let refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
+            Spec {
+                dir: PathBuf::from(&t.worktree),
+                prompt: code_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+                inputs: Inputs {
+                    interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
+                    plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
+                    overlay_refs: refs.clone(),
+                    checks_shown: t.show_checks,
+                    ..common
+                },
+                overlay_refs: refs,
+                verify_ref: None,
+                scratch: None,
+            }
+        }
+        Contract::Tests => {
+            // The tests step's own clone of the base, apart from the coder's.
+            let dir = tests_clone_dir(&t.worktree);
+            if !dir.exists() {
+                let base_ref = cfg
+                    .push_remote
+                    .as_ref()
+                    .map(|n| format!("refs/remotes/{n}/{}", t.base_branch));
+                git::clone_task(
+                    repo,
+                    &t.base_branch,
+                    &dir,
+                    &format!("verify/{}", t.id),
+                    base_ref.as_deref(),
+                    Some(&t.base_sha),
+                )
+                .await
+                .task()?;
+            }
+            Spec {
+                dir,
+                prompt: tests_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+                inputs: common,
+                overlay_refs: Vec::new(),
+                verify_ref: Some(format!("verify/{}", t.id)),
+                scratch: Some(scratch_dir(&t.worktree)),
+            }
+        }
+        Contract::Plan => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: plan_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+            inputs: common,
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+        Contract::Review => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: review_prompt(t, cfg, step),
+            // A review is told nothing of earlier attempts: it judges the
+            // branch as it stands. Feedback owed to it is recorded, not shown.
+            inputs: Inputs {
+                journal: None,
+                context: None,
+                ..common
+            },
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
+    };
+    let mut inputs = spec.inputs;
+    inputs.prompt_chars = spec.prompt.chars().count();
+    let (mut a, log_path) = new_attempt(
+        f,
+        t,
+        &step.action.name,
+        seq,
+        &spec.dir,
+        attempt_no,
+        inputs,
+        resume,
+    )
+    .await?;
+    let outcome = launch(
+        f,
+        t,
+        &step.action.name,
+        &spec.dir,
+        &spec.prompt,
+        &log_path,
+        resume.map(|r| r.session.as_str()),
+        contract.writes(),
+    )
+    .await?;
+    // A branch that merged the moved base is measured from there.
+    let pending_main = match contract {
+        Contract::Code => git::rev_parse(&spec.dir, &format!("refs/heads/forge/{}", t.base_branch))
+            .await
+            .ok(),
+        _ => None,
+    };
+    let (task_checks, paths, allow_protected): (&[String], &[String], bool) = match contract {
+        Contract::Code => (&t.checks, &step.action.paths, t.allow_protected),
+        _ => (&[], &[], false),
+    };
+    let verdict = verify::verify_directive(
+        contract,
+        &Subject {
+            task_id: t.id,
+            repo,
+            worktree: &spec.dir,
+            base_sha: &t.base_sha,
+            start_sha: &a.start_sha,
+            cfg,
+            task_checks,
+            paths,
+            allow_protected,
+            overlay_refs: &spec.overlay_refs,
+            pending_main: pending_main.as_deref(),
+            sandbox: f.sandbox.as_ref(),
+            report: &f.report,
+            scratch: spec.scratch.as_deref(),
+        },
+        &outcome,
+    )
+    .await
+    .task()?;
+    record(f, &mut a, &spec.dir, &verdict, &outcome, spec.verify_ref).await?;
+    Ok((a, verdict, outcome))
+}
+
+pub fn tests_clone_dir(worktree: &str) -> PathBuf {
+    PathBuf::from(format!("{worktree}-tests"))
+}
+
+fn scratch_dir(worktree: &str) -> PathBuf {
+    PathBuf::from(format!("{worktree}-red"))
+}
+
+/// Tool calls before the first edit in an attempt's stream: exploration.
+fn first_edit_call(log_path: &Path) -> Option<i64> {
+    let text = std::fs::read_to_string(log_path).ok()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut calls = 0i64;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["type"] != "assistant" {
+            continue;
+        }
+        for b in v["message"]["content"].as_array().into_iter().flatten() {
+            if b["type"] != "tool_use" {
+                continue;
+            }
+            let id = b["id"].as_str().unwrap_or("").to_string();
+            if !seen.insert(id) {
+                continue;
+            }
+            if matches!(
+                b["name"].as_str(),
+                Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit")
+            ) {
+                return Some(calls);
+            }
+            calls += 1;
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn new_attempt(
+    f: &Forge,
+    t: &Task,
+    step: &str,
+    seq: i64,
+    dir: &Path,
+    attempt_no: i64,
+    mut inputs: Inputs,
+    resume: Option<&Resume>,
+) -> Result<(Attempt, PathBuf), Fault> {
+    let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
+    // A resumed attempt is measured from where the capped one began: the
+    // agent's report covers the whole session.
+    let start_sha = match resume {
+        Some(r) => r.start_sha.clone(),
+        None => git::head(dir).await.task()?,
+    };
+    inputs.workflow = t.workflow.clone();
+    inputs.workflow_hash = t.workflow_hash.clone();
+    inputs.step = step.to_string();
+    inputs.model = t.model.clone();
+    inputs.max_turns = t.max_turns;
+    inputs.timeout_secs = t.timeout_secs;
+    inputs.base_sha = t.base_sha.clone();
+    inputs.start_sha = start_sha.clone();
+    let mut a = Attempt {
+        task_id: t.id,
+        attempt_no,
+        step: step.to_string(),
+        step_seq: seq,
+        start_sha,
+        inputs_json: serde_json::to_string(&inputs).env()?,
+        state: AttemptState::Running,
+        started_at: unix_now(),
+        log_path: log_path.display().to_string(),
+        ..Default::default()
+    };
+    a.id = f.store.insert_attempt(&a).env()?;
+    Ok((a, log_path))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn launch(
+    f: &Forge,
+    t: &Task,
+    step: &str,
+    worktree: &Path,
+    prompt: &str,
+    log_path: &Path,
+    resume: Option<&str>,
+    writes: bool,
+) -> Result<agent::Outcome, Fault> {
+    let outcome = agent::run(agent::Launch {
+        task_id: t.id,
+        worktree,
+        prompt,
+        model: &t.model,
+        max_turns: t.max_turns as u32,
+        timeout: Duration::from_secs(t.timeout_secs as u64),
+        log_path,
+        sandbox: f.sandbox.as_ref(),
+        report: &f.report,
+        step,
+        resume,
+        writes,
+        schema: crate::envelope::SCHEMA,
+    })
+    .await
+    .env()?;
+    f.report.emit(
+        t.id,
+        Event::AgentDone {
+            exit: outcome.exit_code,
+            turns: outcome.num_turns,
+            tools: outcome.tool_calls,
+            ms: outcome.wall_ms,
+            cost: outcome.cost_usd,
+            timed_out: outcome.timed_out,
+        },
+    );
+    Ok(outcome)
+}
+
+pub async fn record(
+    f: &Forge,
+    a: &mut Attempt,
+    dir: &Path,
+    verdict: &Verdict,
+    outcome: &agent::Outcome,
+    verify_ref: Option<String>,
+) -> Result<(), Fault> {
+    let end_sha = git::head(dir).await.task()?;
+    a.session_id = outcome.session_id.clone().unwrap_or_default();
+    let outputs = Outputs {
+        end_sha: end_sha.clone(),
+        changed_files: git::changed_paths(dir, &a.start_sha).await.task()?,
+        dirty_files: git::dirty_paths(dir).await.task()?,
+        verify_ref: verify_ref.map(|r| format!("{r}@{end_sha}")),
+        interface: if a.step == "tests" {
+            verdict.envelope.as_ref().map(|e| e.summary.clone())
+        } else {
+            None
+        },
+        summary: verdict
+            .envelope
+            .as_ref()
+            .map(|e| e.summary.clone())
+            .unwrap_or_default(),
+        claims: verdict.envelope.as_ref().map_or(0, |e| e.claims.len()),
+        first_edit_call: first_edit_call(Path::new(&a.log_path)),
+        tools: crate::tools::summarize(Path::new(&a.log_path), dir.to_str().unwrap_or("")),
+        checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
+    };
+    a.end_sha = end_sha;
+    a.first_edit = outputs.first_edit_call;
+    a.outputs_json = serde_json::to_string(&outputs).env()?;
+    a.state = verdict.state;
+    a.reason = verdict.reason.clone();
+    a.finished_at = Some(unix_now());
+    a.agent_exit = outcome.exit_code;
+    a.timed_out = outcome.timed_out;
+    a.num_turns = outcome.num_turns;
+    a.tool_calls = outcome.tool_calls;
+    a.cost_usd = outcome.cost_usd;
+    a.input_tokens = outcome.input_tokens;
+    a.output_tokens = outcome.output_tokens;
+    a.cache_read_input_tokens = outcome.cache_read_input_tokens;
+    a.cache_creation_input_tokens = outcome.cache_creation_input_tokens;
+    a.agent_ms = outcome.wall_ms as i64;
+    a.commits = verdict.commits;
+    a.files_changed = verdict.files_changed;
+    a.dirty = verdict.dirty;
+    a.verdict_json = serde_json::to_string(&verdict.checks).env()?;
+    a.result_text = outcome.result_text.clone();
+    a.envelope_json = outcome.structured.clone().unwrap_or_default();
+    a.rl_five_hour = outcome.rate_limits.five_hour.map(|(u, _)| u);
+    a.rl_five_hour_resets = outcome.rate_limits.five_hour.map(|(_, r)| r);
+    a.rl_seven_day = outcome.rate_limits.seven_day.map(|(u, _)| u);
+    a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
+    f.store
+        .finish_attempt(&FinishAttempt {
+            id: a.id,
+            state: a.state,
+            reason: a.reason.clone(),
+            finished_at: a.finished_at,
+            agent_exit: a.agent_exit,
+            timed_out: a.timed_out,
+            num_turns: a.num_turns,
+            tool_calls: a.tool_calls,
+            cost_usd: a.cost_usd,
+            agent_ms: a.agent_ms,
+            commits: a.commits,
+            files_changed: a.files_changed,
+            dirty: a.dirty,
+            verdict_json: a.verdict_json.clone(),
+            result_text: a.result_text.clone(),
+            envelope_json: a.envelope_json.clone(),
+            rl_five_hour: a.rl_five_hour,
+            rl_seven_day: a.rl_seven_day,
+            rl_five_hour_resets: a.rl_five_hour_resets,
+            rl_seven_day_resets: a.rl_seven_day_resets,
+            end_sha: a.end_sha.clone(),
+            outputs_json: a.outputs_json.clone(),
+            session_id: a.session_id.clone(),
+            first_edit: a.first_edit,
+            input_tokens: a.input_tokens,
+            output_tokens: a.output_tokens,
+            cache_read_input_tokens: a.cache_read_input_tokens,
+            cache_creation_input_tokens: a.cache_creation_input_tokens,
+        })
+        .env()?;
+    f.report.emit(
+        a.task_id,
+        Event::AttemptDone {
+            state: a.state.as_str(),
+            reason: &a.reason,
+        },
+    );
+    Ok(())
+}

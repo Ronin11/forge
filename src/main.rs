@@ -5,6 +5,7 @@
 //! queues the same thing and `forge work` drains the queue.
 
 mod agent;
+mod attempt;
 mod audit;
 mod checks;
 mod cli;
