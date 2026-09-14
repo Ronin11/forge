@@ -220,7 +220,7 @@ reason prefix) read by `claim_next`, `block_dependents`,
 `workflow_stats`, `map_dep` and `land`. Engine string compares become
 enum matches and the `other =>` arm disappears.
 
-**Stage 3. Store plumbing (Forge, after 2).** Named columns via
+**Stage 3. Store plumbing (Forge, after 2). Done 2026-09-14: named columns, a FinishAttempt struct, one lineage query, tool statistics in one query; four tasks, one review catch, all landed by Forge.** Named columns via
 `r.get("name")`, one `TASK_COLUMNS` list the SQL is built from, the same
 for `Attempt`; a `FinishAttempt` struct for the 28 parameters; one
 lineage query used by `root_of`, `runs`, `decisions_in_lineage` and
