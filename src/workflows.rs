@@ -534,11 +534,12 @@ requires = []\n\
     (
         "cheap.toml",
         "name = \"cheap\"\n\
-description = \"a small fast model with few turns, for precisely specified small changes\"\n\
+description = \"a small fast model with few turns, for precisely specified small changes; the formatter runs after it so formatting never costs a retry\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
   { action = \"repo-map\" },\n\
   { action = \"fix\" },\n\
+  { action = \"fmt\" },\n\
 ]\n\
 \n\
 [meta]\n\
@@ -553,6 +554,7 @@ requires = []\n\
 description = \"the change, then a second pass that only finds and fixes defects\"\n\
 steps = [\n\
   { action = \"setup\" },\n\
+  { action = \"repo-map\" },\n\
   { action = \"code\" },\n\
   { action = \"polish\" },\n\
 ]\n\
