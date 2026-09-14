@@ -611,6 +611,28 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                         start_sha: a.start_sha.clone(),
                                     });
                                     feedback = Some("You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".into());
+                                } else if t.resume_on_failure
+                                    && a.state == AttemptState::ChecksFailed
+                                    && let Some(sid) = &outcome.session_id
+                                {
+                                    // The operator asked to keep going in the same
+                                    // session after a failed attempt, not just a
+                                    // capped one: same feedback, same CLI session.
+                                    f.report.emit(
+                                        id,
+                                        Event::Note {
+                                            text: &format!(
+                                                "resume   continuing session {} after failed checks",
+                                                &sid[..sid.len().min(8)]
+                                            ),
+                                        },
+                                    );
+                                    resume = Some(Resume {
+                                        session: sid.clone(),
+                                        start_sha: a.start_sha.clone(),
+                                    });
+                                    feedback =
+                                        Some(verify::feedback(&verdict, &outcome, ts.max_turns));
                                 } else {
                                     resume = None;
                                     feedback =

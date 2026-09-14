@@ -71,6 +71,10 @@ pub struct TaskArgs {
     /// Do not show the agents the repository map from the context operation (the control arm)
     #[arg(long)]
     no_context: bool,
+    /// After an attempt fails its checks, continue the next attempt in the
+    /// same CLI session instead of starting a fresh one
+    #[arg(long)]
+    resume_on_failure: bool,
 }
 
 #[derive(Subcommand)]
@@ -311,6 +315,7 @@ async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Resu
         after: args.after.clone(),
         journal: !args.no_journal,
         context_enabled: !args.no_context,
+        resume_on_failure: args.resume_on_failure,
         retry_of,
         ..Default::default()
     };
@@ -434,6 +439,7 @@ async fn retry(
             no_land: !t.land,
             no_journal: !t.journal,
             no_context: !t.context_enabled,
+            resume_on_failure: t.resume_on_failure,
             after,
         };
         let n = enqueue_with(&f, &args, Some(t.id)).await?;
@@ -716,7 +722,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context, "resume_on_failure": t.resume_on_failure,
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
                 "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),

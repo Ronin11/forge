@@ -2125,6 +2125,61 @@ fn a_capped_attempt_that_still_returned_a_result_is_not_resumed() {
 }
 
 #[test]
+fn resume_on_failure_continues_the_same_session_after_failed_checks() {
+    let e = Env::new();
+    let o = e.run(
+        "resumeonfail.sh",
+        &["--resume-on-failure", "--retries", "1"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("resume   continuing session sess-res after failed checks"),
+        "{err}"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[0].1, "checks_failed");
+    assert_eq!(a[0].2, "L1 failed: answer");
+    assert_eq!(a[1].1, "succeeded");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert_eq!(
+        doc["attempts"][1]["inputs"]["resumed"],
+        "sess-resumeonfail-1"
+    );
+    let sid: String = e
+        .db()
+        .query_row(
+            "SELECT session_id FROM attempts WHERE task_id=1 AND attempt_no=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sid, "sess-resumeonfail-1");
+}
+
+#[test]
+fn without_resume_on_failure_a_failed_check_starts_a_fresh_session() {
+    let e = Env::new();
+    let o = e.run("resumeonfail.sh", &["--retries", "1"]);
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("resume   continuing"), "{err}");
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[0].1, "checks_failed");
+    assert_eq!(
+        a[1].1, "checks_failed",
+        "without --resume the fake repeats the wrong answer instead of fixing it"
+    );
+}
+
+#[test]
 fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
     let e = Env::new();
     let t0 = Instant::now();
