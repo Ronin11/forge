@@ -98,3 +98,28 @@ test; move the role paragraph into the action file as a `prompt` field, so
 a rewording is a new action hash the profiles measure and git can revert,
 and a future authoring tool has something to touch. No template language
 beyond that: the assembly order should stay in one place tests can read.
+
+## The inspector: a debugger's view of a task (2026-09-13)
+
+Lower priority, noted so it is not lost. A human view of exactly what
+happened at each step of a task, stepped through like a debugger: task,
+workflow step, attempt, then frame by frame inside the attempt (the exact
+prompt, each tool call with its arguments and result, each edit, the
+verdict), with the tree and the checks as they stood at that point.
+
+Everything it needs is already recorded, so it is a reader, not a new
+recorder: the attempt logs hold the prompt and every CLI frame stamped
+`forge_ms`; `forge trace --json` holds the step and attempt structure;
+the tool facts hold timings; `events.jsonl` holds the kernel's side. Two
+modes fall out of that. Post-mortem: step through a finished attempt,
+forward and back, with a diff of the worktree at each edit (`git` can
+reconstruct it from the commits and the frame's edit contents). Live: a
+breakpoint, `--break-at <step>`, that holds the task before a step the
+way a needs_input holds it, so a human can look at the clone and the
+context the next directive will receive, then continue or stop.
+
+Belongs in the TUI as a screen, and later the web app, over the same
+snapshot and event subscription; the kernel adds only the breakpoint.
+Worth picking up once the escalation ladder is in, since the questions
+it answers ("why did attempt 3 go wrong here?") are the ones a supervisor
+will need to answer too.
