@@ -231,6 +231,7 @@ pub struct WorkflowStat {
     pub unverified: i64,
     pub cost: f64,
     pub attempts: i64,
+    pub landed: i64,
 }
 
 pub struct StepStat {
@@ -1050,7 +1051,8 @@ impl Store {
             "SELECT t.workflow, t.workflow_hash, COUNT(*),
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
-                    COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0)
+                    COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
+                    SUM(t.reason LIKE 'landed %')
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
         )?;
@@ -1065,6 +1067,7 @@ impl Store {
                 unverified: r.get(6)?,
                 cost: r.get(7)?,
                 attempts: r.get(8)?,
+                landed: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

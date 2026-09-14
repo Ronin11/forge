@@ -619,6 +619,9 @@ fn stats_json_is_the_text_form_as_one_object() {
     assert_eq!(wf["ATT"], 1);
     assert!(wf["COST"].as_f64().unwrap() > 0.0, "{wf}");
     assert_eq!(wf["$/OK"], wf["COST"]);
+    // The task ran with --no-land, so it succeeded without landing.
+    assert_eq!(wf["LANDED"], 0);
+    assert!(wf["$/LANDED"].is_null(), "{wf}");
     // No tools key without --tools.
     assert!(doc.get("tools").is_none(), "{doc}");
 
@@ -648,6 +651,37 @@ fn stats_json_is_the_text_form_as_one_object() {
             >= 1,
         "{both}"
     );
+
+    // Land a second task (default: land unless --no-land) and confirm it's
+    // counted separately from tasks that merely succeeded.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "write 43 to answer.txt",
+                "--retries",
+                "0",
+            ],
+        )
+        .status
+        .success()
+    );
+    let landed_text = String::from_utf8_lossy(&e.forge("ok.sh", &["stats"]).stdout).to_string();
+    assert!(landed_text.contains("LANDED"), "{landed_text}");
+    assert!(landed_text.contains("$/LANDED"), "{landed_text}");
+
+    let landed_doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["stats", "--json"]).stdout).unwrap();
+    let landed_wf = landed_doc["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["WF"] == "direct")
+        .expect("direct workflow entry");
+    assert_eq!(landed_wf["LANDED"], 1);
+    assert_eq!(landed_wf["$/LANDED"], landed_wf["COST"]);
 }
 
 #[test]

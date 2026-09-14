@@ -1295,6 +1295,8 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
                     "ATT": w.attempts,
                     "COST": w.cost,
                     "$/OK": if w.succeeded > 0 { Some(w.cost / w.succeeded as f64) } else { None },
+                    "LANDED": w.landed,
+                    "$/LANDED": if w.landed > 0 { Some(w.cost / w.landed as f64) } else { None },
                 })
             })
             .collect();
@@ -1330,7 +1332,7 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
         return tool_stats(&f, step.as_deref());
     }
     out!(
-        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
+        "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
         "WF",
         "HASH",
         "TASKS",
@@ -1340,11 +1342,13 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
         "UNV",
         "ATT",
         "COST",
-        "$/OK"
+        "$/OK",
+        "LANDED",
+        "$/LANDED"
     );
     for w in f.store.workflow_stats()? {
         out!(
-            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
+            "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
             w.workflow,
             w.hash,
             w.tasks,
@@ -1356,6 +1360,12 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
             format!("${:.2}", w.cost),
             if w.succeeded > 0 {
                 format!("${:.2}", w.cost / w.succeeded as f64)
+            } else {
+                "-".into()
+            },
+            w.landed,
+            if w.landed > 0 {
+                format!("${:.2}", w.cost / w.landed as f64)
             } else {
                 "-".into()
             }
