@@ -182,7 +182,12 @@ enum Cmd {
         ids: Vec<i64>,
     },
     /// What every earlier attempt in a task's piece of work said it did, and what the kernel found
-    Journal { id: i64 },
+    Journal {
+        id: i64,
+        /// Machine-readable: a JSON array of {task, attempt, step, state, said, found}
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove worktrees that are clean and whose commits are all on a remote
     Gc {
         /// Report what would happen without removing anything
@@ -235,7 +240,7 @@ pub async fn main() -> Result<()> {
         Cmd::Snapshot => snapshot(),
         Cmd::Integrate { ids } => integrate(ids).await,
         Cmd::Land { id } => land(id).await,
-        Cmd::Journal { id } => journal(id),
+        Cmd::Journal { id, json } => journal(id, json),
         Cmd::Workflows { json } => list_workflows(json),
     }
 }
@@ -1164,11 +1169,18 @@ fn worker_json(f: &Forge) -> serde_json::Value {
     serde_json::json!({"running": alive, "pid": pid, "exe": exe, "stale_binary": stale})
 }
 
-fn journal(id: i64) -> Result<()> {
+fn journal(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
+    if json {
+        let entries = crate::engine::journal_entries_for(&f, &t).map_err(|e| match e {
+            crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
+        })?;
+        out!("{}", serde_json::to_string(&entries)?);
+        return Ok(());
+    }
     let j = crate::engine::journal_for(&f, &t).map_err(|e| match e {
         crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
     })?;
