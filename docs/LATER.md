@@ -123,3 +123,17 @@ snapshot and event subscription; the kernel adds only the breakpoint.
 Worth picking up once the escalation ladder is in, since the questions
 it answers ("why did attempt 3 go wrong here?") are the ones a supervisor
 will need to answer too.
+
+## Early-ending thresholds as config (2026-09-14)
+
+The watcher that ends an attempt when two signs of going nowhere trip
+(`Watch` in src/agent.rs: thirty calls without an edit, fifteen edits
+without a commit, one command run five times, any two together) has its
+thresholds and its "any two" count as constants. They are guesses until
+the 100-turn regime has produced data; a replay over the first 244
+attempts found no case they would have stopped, because the old 30-turn
+cap ended everything first. Once the values have earned themselves, lift
+them into a `[watch]` section of the data-dir config, with a per-task
+override on `forge add` shaped like `--max-turns`. The read-only
+exemption for the review and plan contracts stays in code: it is a
+property of the contract, not a preference.
