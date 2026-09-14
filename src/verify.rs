@@ -22,7 +22,7 @@
 use crate::agent::Outcome;
 use crate::checks::{CheckResult, last_lines, run_one};
 use crate::config::{Config, is_protected};
-use crate::envelope::{self, Envelope};
+use crate::envelope::{self, Envelope, Kind};
 use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
 use crate::store::AttemptState;
@@ -108,7 +108,7 @@ async fn common_l0(
 ) -> Result<(
     Vec<CheckResult>,
     Option<Envelope>,
-    Option<(String, String)>,
+    Option<(Kind, String)>,
     i64,
     Vec<String>,
     Vec<String>,
@@ -156,23 +156,16 @@ async fn common_l0(
             Ok(Some(_)) => String::new(),
         },
     ));
-    let mut question = env.as_ref().and_then(|e| e.needs_input.as_ref()).map(|q| {
-        (
-            match q.kind.as_str() {
-                "workflow" => "workflow".to_string(),
-                "review" => "review".to_string(),
-                "suite" => "suite".to_string(),
-                _ => "question".to_string(),
-            },
-            q.question.clone(),
-        )
-    });
+    let mut question = env
+        .as_ref()
+        .and_then(|e| e.needs_input.as_ref())
+        .map(|q| (q.kind, q.question.clone()));
     // A suite exit is for a test the agent may not change: one under the
     // verification namespace or a protected path, named in `path`. Naming
     // a visible test, or none, is not a reason to stop; the step goes on
     // with that said.
     if let Some((kind, _)) = &question
-        && kind == "suite"
+        && *kind == Kind::Suite
     {
         let path = env
             .as_ref()
@@ -340,7 +333,7 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
         state: AttemptState::Running,
         reason: String::new(),
     };
-    let mut question: Option<(String, String)> = None;
+    let mut question: Option<(Kind, String)> = None;
     let (rows, env, q, commits, changed, changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
@@ -370,7 +363,7 @@ pub async fn verify(s: Subject<'_>, agent: &Outcome) -> Result<Verdict> {
     }
     let (state, reason) = decide(
         agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        question.as_ref().map(|(k, q)| (*k, q.as_str())),
         &v.checks,
     );
     v.state = state;
@@ -638,7 +631,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
         state: AttemptState::Running,
         reason: String::new(),
     };
-    let mut question: Option<(String, String)> = None;
+    let mut question: Option<(Kind, String)> = None;
     let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
@@ -743,7 +736,7 @@ pub async fn verify_tests(s: TestsSubject<'_>, agent: &Outcome) -> Result<Verdic
     }
     let (state, reason) = decide(
         agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        question.as_ref().map(|(k, q)| (*k, q.as_str())),
         &v.checks,
     );
     v.state = state;
@@ -776,7 +769,7 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
         state: AttemptState::Running,
         reason: String::new(),
     };
-    let mut question: Option<(String, String)> = None;
+    let mut question: Option<(Kind, String)> = None;
     let (rows, env, q, commits, changed, _changed_now, dirty) = common_l0(
         s.worktree,
         s.base_sha,
@@ -819,9 +812,9 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
         });
         emit_rows(s.report, s.task_id, &v.checks);
         match q {
-            Some((kind, text)) if kind == "review" => {
+            Some((Kind::Review, text)) => {
                 if agent.tool_calls > 0 {
-                    question = Some(("review".into(), text));
+                    question = Some((Kind::Review, text));
                 } else {
                     s.report.emit(
                         s.task_id,
@@ -839,7 +832,7 @@ pub async fn verify_review(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verd
     }
     let (mut state, mut reason) = decide(
         agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        question.as_ref().map(|(k, q)| (*k, q.as_str())),
         &v.checks,
     );
     // A review runs no checks of its own: the branch was verified before it
@@ -979,7 +972,7 @@ pub async fn verify_plan(s: ReviewSubject<'_>, agent: &Outcome) -> Result<Verdic
     }
     let (mut state, mut reason) = decide(
         agent_reason.as_deref(),
-        question.as_ref().map(|(k, q)| (k.as_str(), q.as_str())),
+        question.as_ref().map(|(k, q)| (*k, q.as_str())),
         &v.checks,
     );
     // A plan runs no checks of its own: nothing was built. Its L0 rows are
@@ -1016,23 +1009,17 @@ pub fn agent_failure(a: &Outcome) -> Option<String> {
 }
 
 /// The verdict table. Pure: the same rows always give the same answer.
-/// `question` is (kind, text): kind "workflow" or "question".
+/// `question` is (kind, text).
 pub fn decide(
     agent_failure: Option<&str>,
-    question: Option<(&str, &str)>,
+    question: Option<(Kind, &str)>,
     checks: &[CheckResult],
 ) -> (AttemptState, String) {
     if let Some(why) = agent_failure {
         return (AttemptState::AgentFailed, why.to_string());
     }
     if let Some((kind, q)) = question {
-        let label = match kind {
-            "workflow" => "needs workflow",
-            "review" => "review demoted",
-            "suite" => "needs suite",
-            _ => "needs input",
-        };
-        return (AttemptState::NeedsInput, format!("{label}: {q}"));
+        return (AttemptState::NeedsInput, format!("{}: {q}", kind.label()));
     }
     for level in ["L0", "L1", "L2"] {
         let failed: Vec<&str> = checks
@@ -1113,7 +1100,7 @@ mod tests {
     fn verdict_table() {
         type Case = (
             Option<&'static str>,
-            Option<(&'static str, &'static str)>,
+            Option<(Kind, &'static str)>,
             Vec<CheckResult>,
             AttemptState,
             &'static str,
@@ -1128,28 +1115,28 @@ mod tests {
             ),
             (
                 Some("agent exit 1"),
-                Some(("question", "q")),
+                Some((Kind::Question, "q")),
                 vec![c("L1", "test", true)],
                 AttemptState::AgentFailed,
                 "agent exit 1",
             ),
             (
                 None,
-                Some(("question", "which db?")),
+                Some((Kind::Question, "which db?")),
                 vec![c("L0", "a", false)],
                 AttemptState::NeedsInput,
                 "needs input: which db?",
             ),
             (
                 None,
-                Some(("workflow", "need e2e")),
+                Some((Kind::Workflow, "need e2e")),
                 vec![],
                 AttemptState::NeedsInput,
                 "needs workflow: need e2e",
             ),
             (
                 None,
-                Some(("review", "off by one")),
+                Some((Kind::Review, "off by one")),
                 vec![c("L1", "t", true)],
                 AttemptState::NeedsInput,
                 "review demoted: off by one",

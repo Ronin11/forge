@@ -22,6 +22,58 @@ pub struct Envelope {
     pub claims: Vec<Claim>,
 }
 
+/// Why an agent stopped. `Question` (default): the operator must answer.
+/// `Workflow`: the workflow given is wrong for the task or a needed step
+/// does not exist. `Review`: a reviewer demotes the task. `Suite`: a
+/// hidden test the agent cannot edit contradicts the task.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Question,
+    Workflow,
+    Review,
+    Suite,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Question => "question",
+            Kind::Workflow => "workflow",
+            Kind::Review => "review",
+            Kind::Suite => "suite",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        [Kind::Question, Kind::Workflow, Kind::Review, Kind::Suite]
+            .into_iter()
+            .find(|k| k.as_str() == s)
+    }
+
+    /// The label a stopped attempt's reason starts with.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Question => "needs input",
+            Kind::Workflow => "needs workflow",
+            Kind::Review => "review demoted",
+            Kind::Suite => "needs suite",
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+fn kind_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Kind, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(Kind::parse(&s).unwrap_or_default())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NeedsInput {
     pub question: String,
@@ -32,12 +84,10 @@ pub struct NeedsInput {
     /// For kind "suite": the test file that contradicts the task.
     #[serde(default)]
     pub path: String,
-    /// "question" (default): the operator must answer. "workflow": the
-    /// workflow given is wrong for the task or a needed step does not exist.
-    /// "review": a reviewer demotes the task to human review. "suite": a
-    /// hidden test the agent cannot edit contradicts the task.
-    #[serde(default)]
-    pub kind: String,
+    /// Why the agent stopped; see `Kind`. Absent or unknown reads as a
+    /// question.
+    #[serde(default, deserialize_with = "kind_lenient")]
+    pub kind: Kind,
     #[serde(default)]
     pub options: Vec<String>,
     #[serde(default)]
