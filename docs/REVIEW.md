@@ -197,7 +197,7 @@ supervisor's agent failure is `agent_failed`; `update_task` writes every
 mutable column and a test asserts the column lists agree with
 `PRAGMA table_info`; one porcelain parser. Docs items 6 and 7 are stage 9.
 
-**Stage 1. Test support (Forge).** `tests/support/mod.rs` with `Env`,
+**Stage 1. Test support (Forge). Done 2026-09-14: 102 e2e tests in eleven area modules, a support module, a fakes library, timing waits on the store, and the sandbox failing loudly when bwrap is missing. Two of seven tasks landed by hand after review demotions; the rest through Forge.** `tests/support/mod.rs` with `Env`,
 `git`, `check`, `trace_json`, `requests_json`, `decisions_json`,
 `with_role`, `wait_until`; the e2e file split by area under one
 `tests/e2e/main.rs` so it stays one binary; sleeps and minimum-elapsed
