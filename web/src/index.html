@@ -9,149 +9,117 @@
   @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#e6e6e6; --mute:#9a9a9a; --line:#2c2c2c; --panel:#1c1c1c; --ok:#5fc37a; --bad:#ff7b72; --warn:#e0b04a; --run:#7fb2ff; --sel:#20283a; } }
   * { box-sizing:border-box }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-  header { display:flex; gap:16px; align-items:baseline; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; }
+  a { color:var(--run); text-decoration:none } a:hover { text-decoration:underline }
+  header { display:flex; gap:14px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
   header h1 { font-size:16px; margin:0; letter-spacing:.02em }
-  header .mute { color:var(--mute) }
-  main { display:grid; grid-template-columns: minmax(420px, 1.2fr) minmax(380px, 1fr); gap:0; height:calc(100vh - 44px); }
-  section { overflow:auto; border-right:1px solid var(--line); }
-  section:last-child { border-right:0 }
+  header nav a { margin-right:10px }
+  .mute { color:var(--mute) }
+  main { padding:0 0 40px }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--mute); margin:14px 16px 6px; }
+  .filters { display:flex; gap:8px; margin:10px 16px; flex-wrap:wrap; align-items:center }
+  input, select, button { font:inherit; padding:4px 8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:4px }
+  input[type=search] { min-width:28ch }
+  button { cursor:pointer }
   table { border-collapse:collapse; width:100%; }
   th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--mute); font-weight:500; font-size:12px; position:sticky; top:0; background:var(--bg) }
+  th { color:var(--mute); font-weight:500; font-size:12px; position:sticky; top:41px; background:var(--bg); z-index:1 }
   td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
-  tr.task { cursor:pointer } tr.task:hover { background:var(--sel) } tr.task.sel { background:var(--sel) }
-  .state { font-weight:600 } .succeeded { color:var(--ok) } .failed { color:var(--bad) } .blocked { color:var(--warn) } .running { color:var(--run) } .queued { color:var(--mute) }
-  .task-text { max-width:52ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  tr.task { cursor:pointer } tr.task:hover { background:var(--sel) }
+  .state { font-weight:600 } .succeeded { color:var(--ok) } .failed { color:var(--bad) } .blocked { color:var(--warn) } .running { color:var(--run) } .queued { color:var(--mute) } .unverified { color:var(--warn) }
+  .task-text { max-width:70ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   pre, code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  pre { margin:0 16px 12px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; white-space:pre-wrap; word-break:break-word; }
+  pre { margin:0 0 8px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; white-space:pre-wrap; word-break:break-word; max-height:40vh; overflow:auto }
   .card { margin:0 16px 10px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; }
   .card .k { color:var(--mute); display:inline-block; min-width:9ch }
+  .req { border-left:3px solid var(--warn) }
   .feed { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding:0 16px 12px; }
   .feed div { white-space:pre-wrap; word-break:break-word; border-bottom:1px dotted var(--line); padding:2px 0 }
   .feed .t { color:var(--mute); margin-right:6px }
-  button { font:inherit; padding:2px 8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:4px; cursor:pointer }
-  .req { border-left:3px solid var(--warn) }
-  #detail:empty::before { content:"Select a task."; color:var(--mute); display:block; margin:16px }
+  .two { display:grid; grid-template-columns: minmax(420px, 1.3fr) minmax(360px, 1fr); gap:0 }
+  .two > section { overflow:auto; max-height:calc(100vh - 42px) }
+  .two > section:first-child { border-right:1px solid var(--line) }
+  details { margin:4px 0 } summary { cursor:pointer; color:var(--mute) }
+  .sentinel { text-align:center; color:var(--mute); padding:12px }
+  /* run view */
+  .pipeline { display:flex; gap:12px; padding:0 16px 16px; overflow-x:auto; align-items:flex-start }
+  .step { min-width:380px; max-width:520px; flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px }
+  .step h3 { margin:0 0 4px; font-size:14px } .step h3 small { color:var(--mute); font-weight:400 }
+  .step .ops div { font: 12px/1.5 ui-monospace, Menlo, monospace }
+  .attempt { border-top:1px solid var(--line); margin-top:8px; padding-top:6px }
+  .attempt h4 { margin:0 0 4px; font-size:13px }
+  .kv { display:grid; grid-template-columns: 10ch 1fr; gap:2px 8px; font-size:12px }
+  .kv .k { color:var(--mute) }
+  .rows div { font: 12px/1.5 ui-monospace, Menlo, monospace }
+  .arrow { align-self:center; color:var(--mute); font-size:20px }
 </style>
 </head>
 <body>
 <header>
-  <h1>Forge</h1>
+  <h1><a href="/tasks">Forge</a></h1>
+  <nav id="nav"></nav>
   <span id="worker" class="mute">worker …</span>
   <span id="live" class="mute">connecting</span>
   <span style="flex:1"></span>
   <button id="refresh">refresh</button>
 </header>
-<main>
-  <section>
-    <h2>Requests</h2>
-    <div id="requests"></div>
-    <h2>Tasks</h2>
-    <table>
-      <thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>task</th></tr></thead>
-      <tbody id="tasks"></tbody>
-    </table>
-  </section>
-  <section>
-    <div id="detail"></div>
-    <h2>Events <span id="feedscope" class="mute"></span></h2>
-    <div id="feed" class="feed"></div>
-  </main>
+<main id="main"></main>
 <script>
 (() => {
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
-  let selected = null, offset = 0, feed = [], es = null;
+  const secs = ms => ((ms || 0) / 1000).toFixed(0) + 's';
+  const PAGE = 100;
+  let offset = 0, feed = [], es = null, view = null;
 
   async function get(path) {
     const r = await fetch(path, { credentials: 'same-origin' });
     if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; throw new Error('401'); }
     return r.json();
   }
-
-  function renderTasks(tasks) {
-    $('#tasks').innerHTML = tasks.map(t => `
-      <tr class="task ${t.id === selected ? 'sel' : ''}" data-id="${t.id}">
-        <td class="num">${t.id}</td>
-        <td class="state ${esc(t.state)}">${esc(t.state)}</td>
-        <td>${esc(t.workflow)}</td>
-        <td class="num">${t.attempts}</td>
-        <td class="num">${usd(t.cost_usd)}</td>
-        <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
-      </tr>`).join('');
+  async function post(path) {
+    const r = await fetch(path, { method: 'POST', credentials: 'same-origin' });
+    if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; throw new Error('401'); }
+    return r.json();
   }
 
-  function renderRequests(reqs) {
-    $('#requests').innerHTML = reqs.length ? reqs.map(r => `
-      <div class="card req"><b>${r.id}</b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
-        <div>${esc(r.text)}</div>
-        ${r.tried ? `<div class="mute">tried: ${esc(r.tried)}</div>` : ''}
-        <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
-      : '<div class="card mute">No open questions.</div>';
+  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run
+  function route() {
+    const m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
+    if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
+    return { id: m[1] ? Number(m[1]) : null, run: !!m[2] };
+  }
+  function go(path) { history.pushState(null, '', path); render(); }
+  document.addEventListener('click', ev => {
+    const a = ev.target.closest('a[href^="/tasks"]');
+    if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
+  });
+  window.addEventListener('popstate', render);
+
+  function nav(r) {
+    $('#nav').innerHTML = r.id === null ? '' :
+      `<a href="/tasks">tasks</a> <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`;
   }
 
+  async function render() {
+    const r = route();
+    nav(r);
+    if (view && view.teardown) view.teardown();
+    view = r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id));
+    await view.show();
+  }
+
+  // ---- shared: worker + live stream
   function renderWorker(w) {
     $('#worker').textContent = w.running ? `worker pid ${w.pid}${w.stale_binary ? ' (stale binary)' : ''}` : 'worker not running';
     $('#worker').className = w.running ? '' : 'failed';
   }
-
-  async function snapshot() {
+  async function snapshotHead() {
     const s = await get('/api/snapshot');
     renderWorker(s.worker || {});
-    renderRequests(s.requests || []);
-    renderTasks(s.tasks || []);
     if (!es) { offset = s.events_offset || 0; subscribe(); }
+    return s;
   }
-
-  async function detail(id) {
-    selected = id;
-    document.querySelectorAll('tr.task').forEach(tr => tr.classList.toggle('sel', Number(tr.dataset.id) === id));
-    $('#feedscope').textContent = `· task ${id}`;
-    renderFeed();
-    const d = await get(`/api/task/${id}`);
-    const t = d.task || {};
-    const attempts = (d.attempts || []).map(a => `
-      <div class="card"><b>attempt ${a.attempt_no}</b> <span class="mute">[${esc(a.step)}]</span>
-        <span class="state ${esc(a.state)}">${esc(a.state)}</span>
-        <span class="mute">· ${a.num_turns} turns · ${a.tool_calls} tools · ${((a.agent_ms || 0) / 1000).toFixed(0)}s · ${usd(a.cost_usd)} · ${a.commits} commit(s)${a.dirty ? ' · DIRTY' : ''}</span>
-        ${a.reason ? `<div>${esc(a.reason)}</div>` : ''}
-        ${a.outputs && a.outputs.summary ? `<div class="mute">${esc(a.outputs.summary)}</div>` : ''}
-        ${(a.verdict || []).filter(c => !c.ok).map(c => `<div class="failed">✗ ${esc(c.level)} ${esc(c.name)}${c.detail ? ': ' + esc(c.detail).slice(0, 300) : ''}</div>`).join('')}
-      </div>`).join('');
-    const lineage = (t.lineage || []).map(l => `${l.id} ${l.state}${l.id === t.id ? ' ←' : ''}`).join(' → ');
-    const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
-    $('#detail').innerHTML = `
-      <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span></h2>
-      <div class="card">
-        <div><span class="k">repo</span>${esc(t.repo)}</div>
-        <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
-        <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
-        ${lineage ? `<div><span class="k">lineage</span>${esc(lineage)}</div>` : ''}
-        ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
-        ${t.state === 'failed' || t.state === 'blocked' ? `<div><button id="retry">retry</button></div>` : ''}
-      </div>
-      <pre>${esc(t.text)}</pre>
-      ${diag}
-      ${attempts}
-      ${t.journal ? `<h2>Journal</h2><pre>${esc(t.journal)}</pre>` : ''}`;
-    const retryBtn = $('#retry');
-    if (retryBtn) retryBtn.addEventListener('click', () => retry(t.id));
-  }
-
-  async function retry(id) {
-    const r = await fetch(`/api/retry/${id}`, { method: 'POST', credentials: 'same-origin' });
-    if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; return; }
-    await snapshot();
-  }
-
-  function renderFeed() {
-    const rows = feed.filter(e => selected === null || e.task === selected).slice(-300);
-    $('#feed').innerHTML = rows.map(e => `<div><span class="t">${new Date((e.ts || 0) * 1000).toLocaleTimeString()}</span>${selected === null && e.task != null ? `<b>${e.task}</b> ` : ''}${esc(e.text || e.type)}</div>`).join('');
-    $('#feed').lastElementChild?.scrollIntoView({ block: 'nearest' });
-  }
-
   function subscribe() {
     es = new EventSource(`/api/events?since=${offset}`);
     es.onopen = () => { $('#live').textContent = 'live'; $('#live').className = 'succeeded'; };
@@ -159,17 +127,204 @@
     es.onmessage = m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       feed.push(e); if (feed.length > 5000) feed.splice(0, feed.length - 5000);
-      if (['task_started', 'task_done', 'attempt_done', 'pushed'].includes(e.type)) snapshot().catch(() => {});
-      if (e.type === 'task_done' && e.task === selected) detail(selected).catch(() => {});
-      renderFeed();
+      if (view && view.onEvent) view.onEvent(e);
     };
   }
 
-  $('#tasks').addEventListener('click', ev => { const tr = ev.target.closest('tr.task'); if (tr) detail(Number(tr.dataset.id)).catch(console.error); });
-  $('#refresh').addEventListener('click', () => { snapshot(); if (selected !== null) detail(selected); });
-  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') { selected = null; $('#feedscope').textContent = ''; $('#detail').innerHTML = ''; document.querySelectorAll('tr.task.sel').forEach(x => x.classList.remove('sel')); renderFeed(); } });
-  snapshot().catch(console.error);
-  setInterval(() => snapshot().catch(() => {}), 30000);
+  // ---- list view
+  function listView() {
+    let rows = [], done = false, loading = false, filters = { q: '', state: '', workflow: '' };
+    let observer = null, debounce = null;
+    const qs = before => {
+      const p = new URLSearchParams({ limit: PAGE });
+      if (before) p.set('before', before);
+      for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+      return '/api/tasks?' + p;
+    };
+    async function page(reset) {
+      if (loading) return; loading = true;
+      try {
+        const before = reset ? null : (rows.length ? Math.min(...rows.map(t => t.id)) : null);
+        if (!reset && done) return;
+        const got = await get(qs(before));
+        if (reset) rows = got; else rows = rows.concat(got.filter(t => !rows.some(r => r.id === t.id)));
+        done = got.length < PAGE;
+        drawRows();
+      } finally { loading = false; }
+    }
+    async function refreshHead() {
+      // Newest page again: updates rows already shown, prepends new ones.
+      const got = await get(qs(null));
+      const known = new Map(rows.map(t => [t.id, t]));
+      for (const t of got) known.set(t.id, t);
+      rows = [...known.values()].sort((a, b) => b.id - a.id);
+      drawRows();
+    }
+    function drawRows() {
+      const wfs = [...new Set(rows.map(t => t.workflow))].sort();
+      const sel = $('#f-workflow');
+      if (sel && sel.options.length !== wfs.length + 1) {
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">any workflow</option>' + wfs.map(w => `<option ${w === cur ? 'selected' : ''}>${esc(w)}</option>`).join('');
+      }
+      $('#tasks').innerHTML = rows.map(t => `
+        <tr class="task" data-id="${t.id}">
+          <td class="num">${t.id}</td>
+          <td class="state ${esc(t.state)}">${esc(t.state)}</td>
+          <td>${esc(t.workflow)}</td>
+          <td class="num">${t.attempts}</td>
+          <td class="num">${usd(t.cost_usd)}</td>
+          <td class="mute" style="white-space:nowrap">${esc((t.created || '').slice(5, 16))}</td>
+          <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
+        </tr>`).join('');
+      $('#sentinel').textContent = done ? (rows.length ? `${rows.length} task(s)` : 'no tasks match') : 'loading more…';
+    }
+    function renderRequests(reqs) {
+      $('#requests').innerHTML = reqs.length ? reqs.map(r => `
+        <div class="card req"><b><a href="/tasks/${r.id}">${r.id}</a></b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
+          <div>${esc(r.text)}</div>
+          ${r.tried ? `<details><summary>tried</summary><div class="mute">${esc(r.tried)}</div></details>` : ''}
+          <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
+        : '<div class="card mute">No open questions.</div>';
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Requests</h2><div id="requests"></div>
+          <h2>Tasks</h2>
+          <div class="filters">
+            <input type="search" id="f-q" placeholder="search text or id" value="${esc(filters.q)}">
+            <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified'].map(s => `<option>${s}</option>`).join('')}</select>
+            <select id="f-workflow"><option value="">any workflow</option></select>
+          </div>
+          <table><thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>created</th><th>task</th></tr></thead><tbody id="tasks"></tbody></table>
+          <div id="sentinel" class="sentinel">loading…</div>`;
+        $('#f-q').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.q = ev.target.value.trim(); page(true); }, 250); });
+        $('#f-state').addEventListener('change', ev => { filters.state = ev.target.value; page(true); });
+        $('#f-workflow').addEventListener('change', ev => { filters.workflow = ev.target.value; page(true); });
+        $('#tasks').addEventListener('click', ev => { const tr = ev.target.closest('tr.task'); if (tr) go(`/tasks/${tr.dataset.id}`); });
+        observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) page(false); }, { rootMargin: '400px' });
+        observer.observe($('#sentinel'));
+        const s = await snapshotHead();
+        renderRequests(s.requests || []);
+        await page(true);
+      },
+      onEvent(e) {
+        if (['task_started', 'task_done', 'attempt_done', 'pushed'].includes(e.type)) {
+          refreshHead().catch(() => {});
+          snapshotHead().then(s => renderRequests(s.requests || [])).catch(() => {});
+        }
+      },
+      teardown() { if (observer) observer.disconnect(); clearTimeout(debounce); },
+    };
+  }
+
+  // ---- detail view
+  function detailView(id) {
+    function renderFeed() {
+      const rowsEl = $('#feed'); if (!rowsEl) return;
+      const rows = feed.filter(e => e.task === id).slice(-300);
+      rowsEl.innerHTML = rows.map(e => `<div><span class="t">${new Date((e.ts || 0) * 1000).toLocaleTimeString()}</span>${esc(e.text || e.type)}</div>`).join('');
+      rowsEl.lastElementChild?.scrollIntoView({ block: 'nearest' });
+    }
+    async function draw() {
+      const d = await get(`/api/task/${id}`);
+      const t = d.task || {};
+      const attempts = (d.attempts || []).map(a => `
+        <div class="card"><b>attempt ${a.attempt_no}</b> <span class="mute">[${esc(a.step)}]</span>
+          <span class="state ${esc(a.state)}">${esc(a.state)}</span>
+          <span class="mute">· ${a.num_turns} turns · ${a.tool_calls} tools · ${secs(a.agent_ms)} · ${usd(a.cost_usd)} · ${a.commits} commit(s)${a.dirty ? ' · DIRTY' : ''}</span>
+          ${a.reason ? `<div>${esc(a.reason)}</div>` : ''}
+          ${a.outputs && a.outputs.summary ? `<div class="mute">${esc(a.outputs.summary)}</div>` : ''}
+          ${(a.verdict || []).filter(c => !c.ok).map(c => `<div class="failed">✗ ${esc(c.level)} ${esc(c.name)}${c.tail ? ': ' + esc(c.tail).slice(0, 300) : ''}</div>`).join('')}
+        </div>`).join('');
+      const lineage = (t.lineage || []).map(l => l.id === t.id ? `<b>${l.id} ${esc(l.state)}</b>` : `<a href="/tasks/${l.id}">${l.id}</a> ${esc(l.state)}`).join(' → ');
+      const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
+      const retry = (t.state === 'failed' || t.state === 'blocked') ? `<button id="retry">retry</button>` : '';
+      $('#detail').innerHTML = `
+        <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span> <a href="/tasks/${t.id}/run">workflow run →</a> ${retry}</h2>
+        <div class="card">
+          <div><span class="k">repo</span>${esc(t.repo)}</div>
+          <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
+          <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
+          ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
+          ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
+        </div>
+        <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>
+        ${t.plan ? `<h2>Plan</h2><div class="card"><pre style="margin:0">${esc(t.plan)}</pre></div>` : ''}
+        ${diag}
+        ${attempts}
+        ${t.journal ? `<h2>Journal</h2><div class="card"><pre style="margin:0">${esc(t.journal)}</pre></div>` : ''}`;
+      const b = $('#retry');
+      if (b) b.addEventListener('click', async () => { b.disabled = true; const r = await post(`/api/retry/${t.id}`); alert(r.output || r.error || 'retried'); go('/tasks'); });
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `<div class="two"><section><div id="detail" class="mute" style="margin:16px">loading…</div></section><section><h2>Events · task ${id}</h2><div id="feed" class="feed"></div></section></div>`;
+        await snapshotHead();
+        await draw();
+        renderFeed();
+      },
+      onEvent(e) {
+        if (e.task === id) { renderFeed(); if (['task_done', 'attempt_done'].includes(e.type)) draw().catch(() => {}); }
+      },
+    };
+  }
+
+  // ---- run view: the task inside its workflow
+  function runView(id) {
+    const kvs = obj => Object.entries(obj).filter(([, v]) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length) && v !== false)
+      .map(([k, v]) => {
+        const s = typeof v === 'string' ? v : JSON.stringify(v);
+        const long = s.length > 160 || s.includes('\n');
+        return `<div class="k">${esc(k)}</div><div>${long ? `<details><summary>${esc(s.slice(0, 80))}…</summary><pre>${esc(s)}</pre></details>` : esc(s)}</div>`;
+      }).join('');
+    async function draw() {
+      const d = await get(`/api/task/${id}`);
+      const t = d.task || {};
+      const steps = (d.resolved && d.resolved.steps) || [];
+      const ops = d.ops || [], attempts = d.attempts || [];
+      const bySeq = n => ({ ops: ops.filter(o => o.seq === n), attempts: attempts.filter(a => a.step_seq === n) });
+      const maxSeq = Math.max(steps.length - 1, ...ops.map(o => o.seq), ...attempts.map(a => a.step_seq ?? -1));
+      const cols = [];
+      for (let n = 0; n <= maxSeq; n++) {
+        const st = steps[n], { ops: o, attempts: at } = bySeq(n);
+        if (!st && !o.length && !at.length) continue;
+        const act = st ? st.action : null;
+        const head = act ? `<h3>${esc(act.name)} <small>${esc(act.kind)}${act.contract && act.contract !== act.name ? ' · ' + esc(act.contract) : ''} · ${esc((act.hash || '').slice(0, 8))}${st.model ? ' · ' + esc(st.model) : ''}${st.max_turns ? ' · ' + st.max_turns + ' turns' : ''}</small></h3><div class="mute" style="font-size:12px">${esc(act.description || '')}</div>`
+                            : `<h3>${n === 0 ? 'clone' : 'landing'} <small>kernel</small></h3>`;
+        const opsHtml = o.length ? `<div class="ops">${o.map(x => `<div class="${x.ok ? 'succeeded' : 'failed'}">${x.ok ? '✓' : '✗'} ${esc(x.name)}${x.kernel ? '' : ' [user]'} <span class="mute">${secs(x.ms)}${x.detail ? ' · ' + esc(x.detail).slice(0, 120) : ''}</span>${x.output ? `<details><summary>output</summary><pre>${esc(x.output)}</pre></details>` : ''}</div>`).join('')}</div>` : '';
+        const atHtml = at.map(a => {
+          const inputs = { model: a.inputs.model, max_turns: a.inputs.max_turns, timeout_secs: a.inputs.timeout_secs, base: (a.inputs.base_sha || '').slice(0, 8), start: (a.inputs.start_sha || '').slice(0, 8), resumed: a.inputs.resumed, prompt_chars: a.inputs.prompt_chars, feedback: a.inputs.feedback, interface: a.inputs.interface, plan: a.inputs.plan, context: a.inputs.context, journal: a.inputs.journal, overlay_refs: a.inputs.overlay_refs, protected: a.inputs.protected, namespace: a.inputs.namespace, task_checks: a.inputs.task_checks, checks_shown: a.inputs.checks_shown };
+          const outputs = { summary: a.outputs.summary, changed_files: a.outputs.changed_files, dirty_files: a.outputs.dirty_files, end: (a.outputs.end_sha || '').slice(0, 8), checks_run: a.outputs.checks_run, claims: a.outputs.claims, first_edit_call: a.outputs.first_edit_call, interface: a.outputs.interface, verify_ref: a.outputs.verify_ref, tools: a.outputs.tools && a.outputs.tools.by_tool ? Object.entries(a.outputs.tools.by_tool).map(([k, v]) => `${k} ${v.calls ?? v}`).join(', ') : a.outputs.tools, tokens: a.tokens ? `in ${a.tokens.input} · out ${a.tokens.output} · cache read ${a.tokens.cache_read} · cache write ${a.tokens.cache_creation}` : null };
+          const rows = (a.verdict || []).map(c => `<div class="${c.ok ? 'succeeded' : 'failed'}">${c.ok ? '✓' : '✗'} ${esc(c.level)} ${esc(c.name)} <span class="mute">${c.ms ? secs(c.ms) : ''}</span>${!c.ok && c.tail ? `<details><summary>detail</summary><pre>${esc(c.tail)}</pre></details>` : ''}</div>`).join('');
+          return `<div class="attempt"><h4>attempt ${a.attempt_no} <span class="state ${esc(a.state)}">${esc(a.state)}</span> <span class="mute">${a.num_turns} turns · ${a.tool_calls} tools · ${secs(a.agent_ms)} · ${usd(a.cost_usd)} · ${a.commits} commit(s)${a.dirty ? ' · DIRTY' : ''}</span></h4>
+            ${a.reason ? `<div class="mute">${esc(a.reason)}</div>` : ''}
+            <details open><summary>inputs</summary><div class="kv">${kvs(inputs)}</div></details>
+            <details open><summary>outputs</summary><div class="kv">${kvs(outputs)}</div></details>
+            <details open><summary>verdict</summary><div class="rows">${rows || '<span class="mute">none</span>'}</div></details>
+            <div class="mute" style="font-size:12px">log ${esc(a.log_path)}</div>
+          </div>`;
+        }).join('');
+        cols.push(`<div class="step">${head}${opsHtml}${atHtml}</div>`);
+      }
+      const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
+      $('#main').innerHTML = `
+        <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span> · workflow ${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · <a href="/tasks/${t.id}">task view</a></h2>
+        <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>
+        <div class="pipeline">${cols.join('<div class="arrow">→</div>')}</div>
+        ${diag ? `<h2>Diagnosis</h2>${diag}` : ''}
+        ${t.workflow_text ? `<h2>Workflow file</h2><div class="card"><pre style="margin:0">${esc(t.workflow_text)}</pre></div>` : ''}`;
+    }
+    return {
+      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await snapshotHead(); await draw(); },
+      onEvent(e) { if (e.task === id && ['task_done', 'attempt_done', 'op'].includes(e.type)) draw().catch(() => {}); },
+    };
+  }
+
+  $('#refresh').addEventListener('click', () => render());
+  setInterval(() => snapshotHead().catch(() => {}), 30000);
+  render().catch(console.error);
 })();
 </script>
 </body>

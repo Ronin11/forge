@@ -9,6 +9,7 @@ const FAKE: &str = r#"#!/bin/bash
 case "$1" in
   snapshot) echo '{"events_offset":7,"tasks":[{"id":1,"state":"queued"}],"requests":[],"worker":{"running":false}}' ;;
   trace) echo "{\"task\":{\"id\":$2},\"attempts\":[]}" ;;
+  log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
@@ -94,7 +95,15 @@ fn post(addr: &str, path: &str, extra: &str) -> (u16, String, String) {
 #[test]
 fn without_the_token_nothing_is_served() {
     let w = start();
-    for path in ["/", "/api/snapshot", "/api/events", "/api/task/1"] {
+    for path in [
+        "/",
+        "/tasks",
+        "/tasks/1/run",
+        "/api/snapshot",
+        "/api/tasks",
+        "/api/events",
+        "/api/task/1",
+    ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
     }
@@ -108,10 +117,30 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
     let (status, head, _) = get(&w.addr, &format!("/?token={}", w.token), "");
     assert_eq!(status, 303);
     assert!(head.contains(&format!("forge_token={}", w.token)), "{head}");
+    assert!(head.contains("Location: /tasks"), "{head}");
     let cookie = format!("Cookie: forge_token={}\r\n", w.token);
-    let (status, _, body) = get(&w.addr, "/", &cookie);
+    let (status, head, _) = get(&w.addr, "/", &cookie);
+    assert_eq!(status, 303, "{head}");
+    for view in ["/tasks", "/tasks/12", "/tasks/12/run"] {
+        let (status, _, body) = get(&w.addr, view, &cookie);
+        assert_eq!(status, 200, "{view}");
+        assert!(body.contains("<title>Forge</title>"), "{view}");
+    }
+    // The task listing is forge log --json with the page's filters as argv.
+    let (status, _, body) = get(
+        &w.addr,
+        "/api/tasks?limit=50&before=120&q=doctor+json&state=failed&workflow=direct",
+        &cookie,
+    );
     assert_eq!(status, 200);
-    assert!(body.contains("<title>Forge</title>"));
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v[0]["args"],
+        "--json --limit 50 --before 120 --grep doctor json --state failed --workflow direct"
+    );
+    let (_, _, body) = get(&w.addr, "/api/tasks", &cookie);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["args"], "--json --limit 100");
     let (status, _, body) = get(&w.addr, "/api/snapshot", &cookie);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();

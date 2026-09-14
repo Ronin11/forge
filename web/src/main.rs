@@ -5,6 +5,12 @@
 //! read-only; the one write route, `POST /api/retry/<id>`, is the same
 //! `forge retry` verb the CLI runs.
 //!
+//! Views: `/tasks` (the queue, searched and paged through `forge log`),
+//! `/tasks/<id>` (one task: trace, diagnosis, journal, its events), and
+//! `/tasks/<id>/run` (the task inside its workflow: every step with its
+//! operations, and every attempt's inputs, outputs, and verdict). One
+//! page serves all three; the path picks the view.
+//!
 //! Every request carries a token. It is generated once into
 //! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
 //! with `?token=` sets a cookie. The server binds loopback unless told
@@ -134,6 +140,28 @@ fn query_param(query: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
+/// Percent-decoding for query values (plus as space).
+fn unescape(v: &str) -> String {
+    let bytes = v.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&v[i + 1..i + 3], 16) {
+                Ok(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                Err(_) => out.push(b'%'),
+            },
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn h(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header")
 }
@@ -228,10 +256,10 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         ));
         return;
     }
-    if path == "/" && query_param(&query, "token").is_some() {
+    if query_param(&query, "token").is_some() && !path.starts_with("/api/") {
         // First visit: pin the token in a cookie and drop it from the URL.
         let resp = Response::empty(StatusCode(303))
-            .with_header(h("Location", "/"))
+            .with_header(h("Location", if path == "/" { "/tasks" } else { &path }))
             .with_header(h(
                 "Set-Cookie",
                 &format!("forge_token={secret}; Path=/; HttpOnly; SameSite=Strict"),
@@ -239,10 +267,43 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         let _ = req.respond(resp);
         return;
     }
+    if path == "/" {
+        let _ = req.respond(Response::empty(StatusCode(303)).with_header(h("Location", "/tasks")));
+        return;
+    }
     let resp = match path.as_str() {
-        "/" => text(200, INDEX, "text/html; charset=utf-8"),
+        p if p == "/tasks" || p.starts_with("/tasks/") => {
+            text(200, INDEX, "text/html; charset=utf-8")
+        }
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
-        "/api/log" => json_or_error(forge.json(&["log", "--json"])),
+        "/api/tasks" => {
+            // forge log --json with the page's filters: limit, before, q
+            // (text or id), state, workflow, repo. Values are passed as
+            // separate argv entries, never through a shell.
+            let mut args: Vec<String> = vec!["log".into(), "--json".into()];
+            let limit = query_param(&query, "limit")
+                .and_then(|l| l.parse::<u32>().ok())
+                .unwrap_or(100)
+                .clamp(1, 500);
+            args.push("--limit".into());
+            args.push(limit.to_string());
+            for (key, flag) in [
+                ("before", "--before"),
+                ("q", "--grep"),
+                ("state", "--state"),
+                ("workflow", "--workflow"),
+                ("repo", "--repo"),
+            ] {
+                if let Some(v) = query_param(&query, key).map(|v| unescape(&v))
+                    && !v.is_empty()
+                {
+                    args.push(flag.into());
+                    args.push(v);
+                }
+            }
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            json_or_error(forge.json(&argv))
+        }
         "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
         "/api/events" => {
             let since = query_param(&query, "since")
@@ -328,6 +389,14 @@ mod tests {
         assert_eq!(query_param("", "token"), None);
         assert_eq!(id_of("12"), Some(12));
         assert_eq!(id_of("x"), None);
+    }
+
+    #[test]
+    fn query_values_are_percent_decoded() {
+        assert_eq!(unescape("a+b%20c%2Fd"), "a b c/d");
+        assert_eq!(unescape("100%"), "100%");
+        assert_eq!(unescape("%zz"), "%zz");
+        assert_eq!(unescape("x%4"), "x%4");
     }
 
     #[test]

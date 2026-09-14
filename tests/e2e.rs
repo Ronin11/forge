@@ -2228,7 +2228,7 @@ fn log_pages_back_with_before_and_searches_text_or_id() {
     assert_eq!(ids(&["--before", "3"]), vec![2, 1]);
     assert_eq!(ids(&["--before", "3", "--limit", "1"]), vec![2]);
     assert_eq!(ids(&["--grep", "answer.txt"]), vec![3, 2, 1]);
-    assert_eq!(ids(&["--grep", "2"]), vec![2], "an exact id matches");
+    assert_eq!(ids(&["--grep", "3"]), vec![3], "an exact id matches");
     assert_eq!(ids(&["--grep", "nothing like this"]), Vec::<i64>::new());
     assert_eq!(ids(&["--workflow", "direct"]), vec![3, 2, 1]);
     assert_eq!(ids(&["--workflow", "tdd"]), Vec::<i64>::new());
