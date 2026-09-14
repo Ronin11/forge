@@ -9,6 +9,8 @@ const FAKE: &str = r#"#!/bin/bash
 case "$1" in
   snapshot) echo '{"events_offset":7,"tasks":[{"id":1,"state":"queued"}],"requests":[],"worker":{"running":false}}' ;;
   trace) echo "{\"task\":{\"id\":$2},\"attempts\":[]}" ;;
+  journal) echo "[{\"task\":$2,\"note\":\"journal\"}]" ;;
+  requests) echo '[{"id":1,"status":"pending"}]' ;;
   log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
@@ -103,6 +105,8 @@ fn without_the_token_nothing_is_served() {
         "/api/tasks",
         "/api/events",
         "/api/task/1",
+        "/api/journal/1",
+        "/api/requests",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -152,6 +156,14 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
     assert_eq!(v["task"]["id"], 5);
     let (status, _, _) = get(&w.addr, "/api/task/x", &cookie);
     assert_eq!(status, 404);
+    let (status, _, body) = get(&w.addr, "/api/journal/5", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["task"], 5);
+    let (status, _, body) = get(&w.addr, "/api/requests", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["id"], 1);
 }
 
 #[test]
