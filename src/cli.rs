@@ -295,6 +295,11 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
 }
 
 async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Result<Task> {
+    if let Some(b) = args.budget
+        && b <= 0.0
+    {
+        bail!("budget must be positive");
+    }
     let repo = args.repo.canonicalize().context("repo path")?;
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
