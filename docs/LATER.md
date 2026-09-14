@@ -147,3 +147,18 @@ provider's strongest model means a second backend behind `agent::run`
 that produces the same stream (tool calls, a result with structured
 output and cost) or a thin adapter that does. Worth doing once the
 supervisor's decisions have an outcome record to compare models on.
+
+## A retry should start from its parent's branch when that branch was verified (2026-09-14)
+
+Task 155 verified, was demoted by review, the supervisor answered, and
+the retry (162) started from a fresh clone of main: everything 155 had
+built was thrown away and rebuilt, then 162 died and its branch had to
+be landed by hand. When the parent's last code attempt passed the
+checks, the retry should clone the parent's branch and be told what the
+review found, so the second agent finishes rather than restarts. The
+fresh clone stays right when the parent's checks failed.
+
+Also: the audit's diagnosis has no arm for "stopped early", so the
+first live early ending (162 attempt 1: fifteen edits without a commit,
+one grep run five times, resumed and then productive) was described as
+"the agent process failed outside Forge's rules".
