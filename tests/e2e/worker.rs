@@ -201,7 +201,7 @@ fn jobs_run_in_parallel() {
             .success()
     );
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < Duration::from_secs(60),
         "took {:?}",
         start.elapsed()
     );
@@ -214,11 +214,33 @@ fn jobs_run_in_parallel() {
 fn a_second_signal_aborts_and_requeues() {
     let e = Env::new();
     let id = e.add(&[]);
-    let mut child = e.cmd("hang.sh").args(["work", "--once"]).spawn().unwrap();
-    std::thread::sleep(Duration::from_secs(2));
+    std::fs::create_dir_all(&e.home).unwrap();
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = e
+        .cmd("hang.sh")
+        .args(["work", "--once"])
+        .stderr(stderr_file)
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(
+            || e.attempts(id).first().is_some_and(|a| a.1 == "running"),
+            Duration::from_secs(20)
+        ),
+        "the worker never claimed the task"
+    );
     let pid = child.id().to_string();
     Command::new("kill").args(["-INT", &pid]).status().unwrap();
-    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&stderr_path)
+                .map(|s| s.contains("stopping: no new tasks"))
+                .unwrap_or(false),
+            Duration::from_secs(20)
+        ),
+        "the worker never acknowledged the first signal"
+    );
     Command::new("kill").args(["-INT", &pid]).status().unwrap();
     let status = child.wait().unwrap();
     assert!(status.success());

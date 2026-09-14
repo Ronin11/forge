@@ -141,17 +141,26 @@ fn a_resumed_task_keeps_the_versions_it_resolved() {
         ])
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        wait_until(
+            || {
+                e.db()
+                    .query_row("SELECT actions_json FROM tasks WHERE id=1", [], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .map(|s| s.contains("\"pins\""))
+                    .unwrap_or(false)
+            },
+            Duration::from_secs(20)
+        ),
+        "resolution was never recorded at start"
+    );
     let pins_before: String = e
         .db()
         .query_row("SELECT actions_json FROM tasks WHERE id=1", [], |r| {
             r.get(0)
         })
         .unwrap();
-    assert!(
-        pins_before.contains("\"pins\""),
-        "resolution is recorded at start: {pins_before}"
-    );
     child.kill().unwrap();
     child.wait().unwrap();
     // Change the code action after the task resolved it.

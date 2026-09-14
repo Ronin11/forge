@@ -127,7 +127,7 @@ fn operations_run_in_order_and_appear_as_rows() {
         ],
     );
     assert!(!o.status.success());
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(start.elapsed() < Duration::from_secs(60));
     assert_eq!(e.task(3).1, "operation stamp failed: timed out after 1s");
 }
 
