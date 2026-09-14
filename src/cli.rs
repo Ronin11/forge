@@ -71,6 +71,10 @@ pub struct TaskArgs {
     /// Do not show the agents the repository map from the context operation (the control arm)
     #[arg(long)]
     no_context: bool,
+    /// After an attempt fails its checks, continue the next attempt in the
+    /// same CLI session instead of starting a fresh one
+    #[arg(long)]
+    resume_on_failure: bool,
 }
 
 #[derive(Subcommand)]
@@ -151,6 +155,9 @@ enum Cmd {
         /// What the agents ran: tools, shell commands, files read, with time, per step
         #[arg(long)]
         tools: bool,
+        /// With --tools, only this step's section
+        #[arg(long)]
+        step: Option<String>,
     },
     /// The event log as JSON lines: a client's subscription
     Events {
@@ -224,7 +231,7 @@ pub async fn main() -> Result<()> {
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
-        Cmd::Stats { tools } => stats(tools),
+        Cmd::Stats { tools, step } => stats(tools, step),
         Cmd::Events {
             since,
             follow,
@@ -319,6 +326,7 @@ async fn enqueue_with(f: &Forge, args: &TaskArgs, retry_of: Option<i64>) -> Resu
         after: args.after.clone(),
         journal: !args.no_journal,
         context_enabled: !args.no_context,
+        resume_on_failure: args.resume_on_failure,
         retry_of,
         ..Default::default()
     };
@@ -442,6 +450,7 @@ async fn retry(
             no_land: !t.land,
             no_journal: !t.journal,
             no_context: !t.context_enabled,
+            resume_on_failure: t.resume_on_failure,
             after,
         };
         let n = enqueue_with(&f, &args, Some(t.id)).await?;
@@ -724,7 +733,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
                 "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
                 "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context,
+                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context, "resume_on_failure": t.resume_on_failure,
                 "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
                 "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
                 "journal": crate::engine::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
@@ -930,7 +939,7 @@ fn requests(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tool_stats(f: &Forge) -> Result<()> {
+fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
     use std::collections::BTreeMap;
     let tasks = f.store.list_tasks(10_000, None)?;
     // step -> aggregated tools
@@ -961,6 +970,9 @@ fn tool_stats(f: &Forge) -> Result<()> {
                 *e.1.reads.entry(k).or_default() += n;
             }
         }
+    }
+    if let Some(step) = step {
+        per_step.retain(|s, _| s == step);
     }
     if per_step.is_empty() {
         out!("no attempts with tool facts yet (recorded from the next attempt on)");
@@ -1030,10 +1042,10 @@ fn tool_stats(f: &Forge) -> Result<()> {
     Ok(())
 }
 
-fn stats(tools: bool) -> Result<()> {
+fn stats(tools: bool, step: Option<String>) -> Result<()> {
     let f = Forge::open(false, false)?;
     if tools {
-        return tool_stats(&f);
+        return tool_stats(&f, step.as_deref());
     }
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",

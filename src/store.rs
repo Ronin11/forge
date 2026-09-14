@@ -156,6 +156,9 @@ pub struct Task {
     pub context: String,
     /// Show the agents that context (the default); false for the control arm.
     pub context_enabled: bool,
+    /// After an attempt fails its checks, hand the next one --resume with
+    /// the same CLI session instead of a fresh one. Preserved by `forge retry`.
+    pub resume_on_failure: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -416,11 +419,14 @@ ALTER TABLE attempts ADD COLUMN cache_creation_input_tokens INTEGER;
 ALTER TABLE tasks ADD COLUMN context TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN context_enabled INTEGER NOT NULL DEFAULT 1;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN resume_on_failure INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 const TASK_COLS: &str = "id, repo, task, base_branch, base_sha, branch, worktree, model, max_turns, max_attempts,
     timeout_secs, checks_json, state, reason, created_at, started_at, finished_at, pushed, worker_pid, budget_usd,
-    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled";
+    worktree_removed_at, allow_protected, workflow, interface, show_checks, workflow_hash, workflow_text, actions_json, land, after_json, verify_base, retry_of, journal, context, context_enabled, resume_on_failure";
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
     idx: usize,
@@ -466,6 +472,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         journal: r.get::<_, i64>(32)? != 0,
         context: r.get(33)?,
         context_enabled: r.get::<_, i64>(34)? != 0,
+        resume_on_failure: r.get::<_, i64>(35)? != 0,
     })
 }
 
@@ -542,8 +549,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 t.repo,
                 t.task,
@@ -565,7 +572,8 @@ impl Store {
                 serde_json::to_string(&t.after)?,
                 t.retry_of,
                 t.journal as i64,
-                t.context_enabled as i64
+                t.context_enabled as i64,
+                t.resume_on_failure as i64
             ],
         )?;
         Ok(c.last_insert_rowid())
