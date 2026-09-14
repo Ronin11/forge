@@ -2571,6 +2571,27 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
     let four: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["trace", "4", "--json"]).stdout).unwrap();
     assert_eq!(four["task"]["journal_enabled"], false);
+
+    // --step <name> filters the per_step map: a second, differently-named
+    // step ("fix", from the cheap workflow) must not leak into the section
+    // for "code" once filtered.
+    assert!(
+        e.run("tooly.sh", &["--workflow", "cheap", "--retries", "0"])
+            .status
+            .success()
+    );
+    let both = String::from_utf8_lossy(&e.forge("ok.sh", &["stats", "--tools"]).stdout).to_string();
+    assert!(
+        both.contains("code  (") && both.contains("fix  ("),
+        "{both}"
+    );
+    let code_only = String::from_utf8_lossy(
+        &e.forge("ok.sh", &["stats", "--tools", "--step", "code"])
+            .stdout,
+    )
+    .to_string();
+    assert!(code_only.contains("code  ("), "{code_only}");
+    assert!(!code_only.contains("fix  ("), "{code_only}");
 }
 
 #[test]

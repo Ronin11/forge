@@ -155,6 +155,9 @@ enum Cmd {
         /// What the agents ran: tools, shell commands, files read, with time, per step
         #[arg(long)]
         tools: bool,
+        /// With --tools, only this step's section
+        #[arg(long)]
+        step: Option<String>,
     },
     /// The event log as JSON lines: a client's subscription
     Events {
@@ -223,7 +226,7 @@ pub async fn main() -> Result<()> {
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { json } => requests(json),
-        Cmd::Stats { tools } => stats(tools),
+        Cmd::Stats { tools, step } => stats(tools, step),
         Cmd::Events {
             since,
             follow,
@@ -931,7 +934,7 @@ fn requests(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tool_stats(f: &Forge) -> Result<()> {
+fn tool_stats(f: &Forge, step: Option<&str>) -> Result<()> {
     use std::collections::BTreeMap;
     let tasks = f.store.list_tasks(10_000, None)?;
     // step -> aggregated tools
@@ -962,6 +965,9 @@ fn tool_stats(f: &Forge) -> Result<()> {
                 *e.1.reads.entry(k).or_default() += n;
             }
         }
+    }
+    if let Some(step) = step {
+        per_step.retain(|s, _| s == step);
     }
     if per_step.is_empty() {
         out!("no attempts with tool facts yet (recorded from the next attempt on)");
@@ -1031,10 +1037,10 @@ fn tool_stats(f: &Forge) -> Result<()> {
     Ok(())
 }
 
-fn stats(tools: bool) -> Result<()> {
+fn stats(tools: bool, step: Option<String>) -> Result<()> {
     let f = Forge::open(false, false)?;
     if tools {
-        return tool_stats(&f);
+        return tool_stats(&f, step.as_deref());
     }
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9}",
