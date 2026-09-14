@@ -88,6 +88,54 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
     };
     let last = attempts.last();
 
+    // Cost anti-patterns: facts about what an attempt ran and how far it
+    // got, independent of whether the task ultimately succeeded. A task
+    // can land and still have burned turns the way it shouldn't have.
+    for a in attempts {
+        let cost = a.cost_usd.map_or("-".to_string(), |c| format!("${c:.4}"));
+        let inputs: Inputs = serde_json::from_str(&a.inputs_json).unwrap_or_default();
+        let limit = if inputs.max_turns > 0 {
+            inputs.max_turns
+        } else {
+            t.max_turns
+        };
+        if !a.timed_out && limit > 0 && a.num_turns >= limit && a.dirty {
+            out.push(d(
+                &format!(
+                    "step {} attempt {} was capped with a dirty tree ({} of {} turns, {})",
+                    a.step, a.attempt_no, a.num_turns, limit, cost
+                ),
+                "Split the task into smaller pieces so an attempt can finish, and commit, inside its turn budget.",
+            ));
+        }
+
+        let outputs: Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
+        if let Some(tools) = &outputs.tools {
+            for (file, count) in &tools.reads {
+                if *count >= 4 {
+                    out.push(d(
+                        &format!(
+                            "step {} attempt {} read the same file {} times: {} ({})",
+                            a.step, a.attempt_no, count, file, cost
+                        ),
+                        "Give it the journal so it does not rediscover what an earlier attempt already read.",
+                    ));
+                }
+            }
+        }
+        if let Some(fe) = outputs.first_edit_call
+            && fe >= 15
+        {
+            out.push(d(
+                &format!(
+                    "step {} attempt {} explored {} calls before the first edit ({})",
+                    a.step, a.attempt_no, fe, cost
+                ),
+                "Add the file to context up front instead of making the agent explore to find it.",
+            ));
+        }
+    }
+
     match t.state {
         TaskState::Succeeded => {
             if !t.pushed && t.reason.starts_with("push failed") {
@@ -116,7 +164,9 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             return out;
         }
         TaskState::Unverified => {
-            if t.reason.starts_with("review could not finish") {
+            if t.reason.starts_with("ran out of turns after committing") {
+                out.push(d(&t.reason, "The code passed the checks but the coder never returned a result, so nothing vouches for what it did. Read the branch's diff; merge it if it is the task, or retry with more turns."));
+            } else if t.reason.starts_with("review could not finish") {
                 out.push(d(&t.reason, "The code step verified the branch; only the reviewer failed to reach a verdict, usually its turn limit. Review the branch yourself, or raise max_turns on the review action and run the task again."));
             } else {
                 out.push(d(&t.reason, "Nothing verified the work. Declare [checks] in forge.toml or add --check commands; the branch was not pushed."));
@@ -390,6 +440,102 @@ mod tests {
     }
 
     #[test]
+    fn capped_with_a_dirty_tree_is_a_cost_antipattern() {
+        let mut a = attempt(
+            "code",
+            AttemptState::AgentFailed,
+            vec![],
+            Inputs {
+                max_turns: 40,
+                ..Default::default()
+            },
+        );
+        a.num_turns = 40;
+        a.dirty = true;
+        a.cost_usd = Some(1.5);
+        let out = diagnose(
+            &task(TaskState::Failed, "agent exit 1 (after 1 attempt(s))"),
+            &[a],
+        );
+        let row = out
+            .iter()
+            .find(|d| d.what.contains("capped with a dirty tree"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        assert!(row.what.contains("code attempt 1"), "{row:?}");
+        assert!(row.what.contains("$1.5000"), "{row:?}");
+        assert!(row.action.contains("Split the task"), "{row:?}");
+
+        // A clean tree at the cap is not the anti-pattern.
+        let mut clean = attempt(
+            "code",
+            AttemptState::AgentFailed,
+            vec![],
+            Inputs {
+                max_turns: 40,
+                ..Default::default()
+            },
+        );
+        clean.num_turns = 40;
+        clean.dirty = false;
+        let out = diagnose(&task(TaskState::Failed, "agent exit 1"), &[clean]);
+        assert!(
+            !out.iter()
+                .any(|d| d.what.contains("capped with a dirty tree")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_reads_are_a_cost_antipattern() {
+        let mut tools = crate::tools::Tools::default();
+        tools.reads.insert("src/a.rs".into(), 4);
+        tools.reads.insert("src/b.rs".into(), 2);
+        let outputs = Outputs {
+            tools: Some(tools),
+            ..Default::default()
+        };
+        let mut a = attempt("code", AttemptState::Succeeded, vec![], Inputs::default());
+        a.outputs_json = serde_json::to_string(&outputs).unwrap();
+        a.cost_usd = Some(0.42);
+        let out = diagnose(&task(TaskState::Succeeded, ""), &[a]);
+        let row = out
+            .iter()
+            .find(|d| d.what.contains("read the same file"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        assert!(row.what.contains("4 times"), "{row:?}");
+        assert!(row.what.contains("src/a.rs"), "{row:?}");
+        assert!(!row.what.contains("src/b.rs"), "{row:?}");
+        assert!(row.action.contains("journal"), "{row:?}");
+    }
+
+    #[test]
+    fn heavy_exploration_before_the_first_edit_is_a_cost_antipattern() {
+        let outputs = Outputs {
+            first_edit_call: Some(15),
+            ..Default::default()
+        };
+        let mut a = attempt("code", AttemptState::Succeeded, vec![], Inputs::default());
+        a.outputs_json = serde_json::to_string(&outputs).unwrap();
+        let out = diagnose(&task(TaskState::Succeeded, ""), &[a]);
+        let row = out
+            .iter()
+            .find(|d| d.what.contains("explored"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        assert!(row.what.contains("15 calls"), "{row:?}");
+        assert!(row.action.contains("context"), "{row:?}");
+
+        // Below the threshold, it is unremarkable.
+        let below = Outputs {
+            first_edit_call: Some(14),
+            ..Default::default()
+        };
+        let mut a = attempt("code", AttemptState::Succeeded, vec![], Inputs::default());
+        a.outputs_json = serde_json::to_string(&below).unwrap();
+        let out = diagnose(&task(TaskState::Succeeded, ""), &[a]);
+        assert!(!out.iter().any(|d| d.what.contains("explored")), "{out:?}");
+    }
+
+    #[test]
     fn every_reason_the_engine_can_emit_has_a_diagnosis() {
         // The anti-fragility rule: no terminal state that a human must
         // diagnose by hand. Every reason shape the engine produces maps to
@@ -444,6 +590,14 @@ mod tests {
                 "waits on task 14 (failed: L1 failed: test)",
             ),
             (TaskState::Unverified, "no L1 or L2"),
+            (
+                TaskState::Unverified,
+                "ran out of turns after committing; the checks pass but no result was returned, so the branch goes to a human",
+            ),
+            (
+                TaskState::Failed,
+                "ran out of turns after committing; the checks fail: L1 failed: test (after 2 attempt(s))",
+            ),
             (
                 TaskState::Unverified,
                 "review could not finish (agent exit 1); the branch verified at the code step and goes to human review (after 2 attempt(s))",
