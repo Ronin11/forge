@@ -205,6 +205,11 @@ cargo build --release
 cargo test
 ```
 
+The e2e suite runs its fakes under the real sandbox, so it requires
+`bwrap`; a missing `bwrap` fails the suite loudly rather than silently
+skipping sandbox coverage. Set `FORGE2_TEST_NO_SANDBOX=1` to run the
+suite unsandboxed on a machine without bubblewrap.
+
 ## Where this is going
 
 docs/REVIEW.md is the architectural review of the first week and the

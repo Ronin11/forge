@@ -66,6 +66,23 @@ fn doctor_runs_and_reports_the_essentials() {
 }
 
 #[test]
+fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE2_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    let o = e.run("ok.sh", &[]);
+    assert!(o.status.success());
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(out.contains("sandboxed"), "{out}");
+}
+
+#[test]
 fn doctor_warns_when_the_repomap_cache_is_missing() {
     let e = Env::new();
     // Bootstraps FORGE2_HOME without ever running a task, so

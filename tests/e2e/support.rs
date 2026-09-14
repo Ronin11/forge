@@ -11,6 +11,7 @@ pub struct Env {
     pub home: PathBuf,
     pub repo: PathBuf,
     pub origin: PathBuf,
+    no_sandbox: bool,
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
@@ -56,11 +57,25 @@ impl Env {
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
+        let no_sandbox = std::env::var("FORGE2_TEST_NO_SANDBOX").as_deref() == Ok("1");
+        if !no_sandbox {
+            let bwrap_ok = Command::new("bwrap")
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(
+                bwrap_ok,
+                "bwrap is not available; install bubblewrap or set FORGE2_TEST_NO_SANDBOX=1 \
+                 to run the e2e suite unsandboxed (sandbox assertions will be skipped)"
+            );
+        }
         Env {
             _dir: dir,
             home,
             repo,
             origin,
+            no_sandbox,
         }
     }
 
@@ -73,17 +88,16 @@ impl Env {
                 .join("tests/fakes")
                 .join(fake),
         );
-        if Command::new("bwrap")
-            .arg("--version")
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
-        {
+        if self.no_sandbox {
             c.env("FORGE2_SANDBOX", "0");
         }
         // The supervisor only runs where a test hands it a fake.
         c.env("FORGE2_SUPERVISOR", "0");
         c
+    }
+
+    pub fn sandbox_disabled(&self) -> bool {
+        self.no_sandbox
     }
 
     /// `e.cmd(fake)` with `FORGE2_CLAUDE_BIN_<ROLE>` pointed at `tests/fakes/<role_fake>`.
