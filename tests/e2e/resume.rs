@@ -1,5 +1,4 @@
 use crate::support::*;
-use std::time::{Duration, Instant};
 
 #[test]
 fn an_attempt_that_hits_the_turn_cap_with_work_in_hand_is_resumed() {
@@ -188,7 +187,6 @@ fn without_resume_on_failure_a_failed_check_starts_a_fresh_session() {
 #[test]
 fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
     let e = Env::new();
-    let t0 = Instant::now();
     // --retries 0: one attempt allowed, and the refused run must not be it.
     let o = e.run("ratelimit-hit.sh", &["--retries", "0"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -201,15 +199,24 @@ fn a_run_the_provider_refuses_does_not_count_and_waits_for_the_window() {
         err.contains("rate window 5h at 100%"),
         "the hold used the refusal's window: {err}"
     );
-    assert!(
-        t0.elapsed() >= Duration::from_secs(1),
-        "waited for the reset"
-    );
     let a = e.attempts(1);
     assert_eq!(a.len(), 2, "the refused run is recorded, then the real one");
     assert_eq!(a[0].2, "rate limited by the provider");
     assert_eq!(a[1].1, "succeeded");
     assert_eq!(e.task(1).0, "succeeded");
+    let (resets, started2): (i64, i64) = e
+        .db()
+        .query_row(
+            "SELECT (SELECT rl_five_hour_resets FROM attempts WHERE task_id=1 AND attempt_no=1),
+                    (SELECT started_at FROM attempts WHERE task_id=1 AND attempt_no=2)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        started2 >= resets,
+        "the second attempt did not start until the refusal's window reset: started {started2}, resets {resets}"
+    );
 }
 
 #[test]
@@ -278,7 +285,6 @@ fn the_worker_holds_while_a_rate_window_is_at_its_cap_and_resumes_after_the_rese
         "[budget]\nfive_hour_max = 0.9\n",
     )
     .unwrap();
-    let t0 = Instant::now();
     let o = e.forge("ratelimited.sh", &["work", "--once"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
@@ -290,9 +296,18 @@ fn the_worker_holds_while_a_rate_window_is_at_its_cap_and_resumes_after_the_rese
         "succeeded",
         "the second task ran once the window reset"
     );
+    let (resets, started2): (i64, i64) = e
+        .db()
+        .query_row(
+            "SELECT (SELECT rl_five_hour_resets FROM attempts WHERE task_id=1 AND attempt_no=1),
+                    (SELECT started_at FROM attempts WHERE task_id=2 AND attempt_no=1)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert!(
-        t0.elapsed() >= Duration::from_secs(2),
-        "the worker waited for the reset"
+        started2 >= resets,
+        "the second task did not start until the window reset: started {started2}, resets {resets}"
     );
     let o = e.forge("ok.sh", &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);

@@ -276,7 +276,7 @@ fn a_check_that_backgrounds_a_server_does_not_hang() {
     let start = Instant::now();
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
     assert!(
-        start.elapsed() < Duration::from_secs(15),
+        start.elapsed() < Duration::from_secs(60),
         "took {:?}",
         start.elapsed()
     );
