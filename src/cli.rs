@@ -725,50 +725,8 @@ fn trace(id: i64, json: bool) -> Result<()> {
     let Some(t) = f.store.task(id)? else {
         bail!("no task {id}")
     };
-    let attempts = f.store.attempts(id)?;
-    let ops = f.store.ops(id)?;
-    let diagnosis = audit::diagnose(&t, &attempts);
+    let doc = crate::view::trace_doc(&f, &t)?;
     if json {
-        let atts: Vec<serde_json::Value> = attempts
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "attempt_no": a.attempt_no, "step": a.step, "step_seq": a.step_seq, "state": a.state.as_str(), "reason": a.reason,
-                    "started_at": a.started_at, "finished_at": a.finished_at, "agent_exit": a.agent_exit,
-                    "timed_out": a.timed_out, "num_turns": a.num_turns, "tool_calls": a.tool_calls,
-                    "cost_usd": a.cost_usd, "agent_ms": a.agent_ms, "commits": a.commits,
-                    "files_changed": a.files_changed, "dirty": a.dirty, "start_sha": a.start_sha, "end_sha": a.end_sha,
-                    "log_path": a.log_path,
-                    "tokens": {
-                        "input": a.input_tokens, "output": a.output_tokens,
-                        "cache_read": a.cache_read_input_tokens, "cache_creation": a.cache_creation_input_tokens,
-                    },
-                    "inputs": serde_json::from_str::<serde_json::Value>(&a.inputs_json).unwrap_or_default(),
-                    "outputs": serde_json::from_str::<serde_json::Value>(&a.outputs_json).unwrap_or_default(),
-                    "verdict": serde_json::from_str::<serde_json::Value>(&a.verdict_json).unwrap_or_default(),
-                    "envelope": serde_json::from_str::<serde_json::Value>(&a.envelope_json).unwrap_or_default(),
-                    "rate_limits": {"five_hour": a.rl_five_hour, "seven_day": a.rl_seven_day},
-                })
-            })
-            .collect();
-        let doc = serde_json::json!({
-            "task": {
-                "id": t.id, "repo": t.repo, "text": t.task, "state": t.state.as_str(), "reason": t.reason,
-                "workflow": t.workflow, "workflow_hash": t.workflow_hash, "workflow_text": t.workflow_text,
-                "base_branch": t.base_branch, "base_sha": t.base_sha, "branch": t.branch, "worktree": t.worktree,
-                "model": t.model, "max_turns": t.max_turns, "max_attempts": t.max_attempts, "timeout_secs": t.timeout_secs,
-                "checks": t.checks, "show_checks": t.show_checks, "allow_protected": t.allow_protected, "land": t.land, "after": t.after, "verify_base": t.verify_base, "retry_of": t.retry_of, "journal_enabled": t.journal, "context_enabled": t.context_enabled, "context": t.context, "resume_on_failure": t.resume_on_failure,
-                "parent": t.retry_of, "children": f.store.dependents_retries(t.id)?, "root": f.store.root_of(t.id)?,
-                "lineage": f.store.lineage(t.id)?.iter().map(|l| serde_json::json!({"id": l.id, "parent": l.parent, "state": l.state, "reason": l.reason, "workflow": l.workflow, "cost_usd": l.cost})).collect::<Vec<_>>(),
-                "journal": crate::journal::journal_for(&f, &t).ok().filter(|j| !j.is_empty()),
-                "interface": t.interface, "plan": t.plan, "pushed": t.pushed, "budget_usd": t.budget_usd,
-                "created_at": t.created_at, "started_at": t.started_at, "finished_at": t.finished_at,
-            },
-            "attempts": atts,
-            "ops": ops.iter().map(|o| serde_json::json!({"id": o.id, "seq": o.seq, "name": o.name, "kernel": o.kernel, "started_at": o.started_at, "ms": o.ms, "ok": o.ok, "exit": o.exit, "detail": o.detail, "attempt_id": o.attempt_id, "output": o.output})).collect::<Vec<_>>(),
-            "resolved": serde_json::from_str::<serde_json::Value>(&t.actions_json).unwrap_or_default(),
-            "diagnosis": diagnosis.iter().map(|d| serde_json::json!({"what": d.what, "action": d.action})).collect::<Vec<_>>(),
-        });
         out!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
@@ -785,7 +743,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
         out!("  | {l}");
     }
     out!("text       {}", t.task);
-    if let Ok(r) = serde_json::from_str::<workflows::Resolved>(&t.actions_json) {
+    if let Ok(r) = serde_json::from_value::<workflows::Resolved>(doc.resolved.clone()) {
         out!(
             "resolved   {}",
             r.steps
@@ -798,7 +756,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
             out!("  pin      {:<9} {:<10} {}", p.kind, p.name, p.hash);
         }
     }
-    for o in ops.iter().filter(|o| o.attempt_id.is_none()) {
+    for o in doc.ops.iter().filter(|o| o.attempt_id.is_none()) {
         out!(
             "op         {} seq {} {}{} {:.1}s {}",
             if o.ok { "✓" } else { "✗" },
@@ -812,21 +770,21 @@ fn trace(id: i64, json: bool) -> Result<()> {
             out!("           > {l}");
         }
     }
-    for a in &attempts {
+    for a in &doc.attempts {
         out!();
         out!(
             "=== attempt {} [{} seq {}] {}{}",
             a.attempt_no,
             a.step,
             a.step_seq,
-            a.state.as_str(),
+            a.state,
             if a.reason.is_empty() {
                 String::new()
             } else {
                 format!(": {}", a.reason)
             }
         );
-        let inputs: audit::Inputs = serde_json::from_str(&a.inputs_json).unwrap_or_default();
+        let inputs: audit::Inputs = serde_json::from_value(a.inputs.clone()).unwrap_or_default();
         out!(
             "inputs     model={} max_turns={} timeout={}s base={} start={}",
             inputs.model,
@@ -862,7 +820,8 @@ fn trace(id: i64, json: bool) -> Result<()> {
             a.cost_usd.map_or("-".into(), |c| format!("${c:.4}")),
             if a.timed_out { " TIMED OUT" } else { "" }
         );
-        if let Ok(rows) = serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json) {
+        if let Ok(rows) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
+        {
             for c in rows {
                 out!(
                     "verdict    {} {} {} ({:.1}s){}",
@@ -883,7 +842,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
                 }
             }
         }
-        let outputs: audit::Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
+        let outputs: audit::Outputs = serde_json::from_value(a.outputs.clone()).unwrap_or_default();
         out!(
             "outputs    end={} changed={:?} dirty={:?} claims={} checks_run={}",
             &outputs.end_sha[..outputs.end_sha.len().min(8)],
@@ -903,7 +862,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
         }
         out!("log        {}", a.log_path);
     }
-    for dgn in &diagnosis {
+    for dgn in &doc.diagnosis {
         out!();
         out!("what       {}", dgn.what);
         out!("action     {}", dgn.action);
@@ -1702,41 +1661,46 @@ fn show(id: i64) -> Result<()> {
     let Some(t) = f.store.task(id)? else {
         bail!("no task {id}")
     };
-    let attempts = f.store.attempts(id)?;
-    let cost: f64 = attempts.iter().filter_map(|a| a.cost_usd).sum();
-    out!("task       {}", t.id);
+    let doc = crate::view::trace_doc(&f, &t)?;
+    let task = &doc.task;
+    let cost: f64 = doc.attempts.iter().filter_map(|a| a.cost_usd).sum();
+    out!("task       {}", task.id);
     out!(
         "state      {}{}",
-        t.state.as_str(),
-        if t.reason.is_empty() {
+        task.state,
+        if task.reason.is_empty() {
             String::new()
         } else {
-            format!(" ({})", t.reason)
+            format!(" ({})", task.reason)
         }
     );
-    out!("repo       {}", t.repo);
+    out!("repo       {}", task.repo);
     out!(
         "base       {} @ {}",
-        t.base_branch,
-        if t.base_sha.is_empty() {
+        task.base_branch,
+        if task.base_sha.is_empty() {
             "-"
         } else {
-            &t.base_sha[..8]
+            &task.base_sha[..8]
         }
     );
     out!(
         "branch     {}{}",
-        if t.branch.is_empty() { "-" } else { &t.branch },
-        if t.pushed { " (pushed)" } else { "" }
+        if task.branch.is_empty() {
+            "-"
+        } else {
+            &task.branch
+        },
+        if task.pushed { " (pushed)" } else { "" }
     );
     out!(
         "worktree   {}{}",
-        if t.worktree.is_empty() {
+        if task.worktree.is_empty() {
             "-"
         } else {
-            &t.worktree
+            &task.worktree
         },
-        if t.worktree_removed_at.is_some() {
+        if task.worktree_removed_at.is_some() {
             " (removed)"
         } else {
             ""
@@ -1744,46 +1708,45 @@ fn show(id: i64) -> Result<()> {
     );
     out!(
         "model      {} (max {} turns, max {} attempts, {}s timeout)",
-        t.model,
-        t.max_turns,
-        t.max_attempts,
-        t.timeout_secs
+        task.model,
+        task.max_turns,
+        task.max_attempts,
+        task.timeout_secs
     );
     out!(
         "cost       ${cost:.4} over {} attempt(s){}",
-        attempts.len(),
-        t.budget_usd
+        doc.attempts.len(),
+        task.budget_usd
             .map_or(String::new(), |b| format!(" (task cap ${b:.2})"))
     );
-    for c in &t.checks {
+    for c in &task.checks {
         out!("check      $ {c}");
     }
-    if t.allow_protected {
+    if task.allow_protected {
         out!("protected  changes allowed");
     }
-    if !t.land {
+    if !task.land {
         out!("land       manual: the verified branch is left for a human");
     }
-    if !t.after.is_empty() {
+    if !task.after.is_empty() {
         out!(
             "after      {}",
-            t.after
+            task.after
                 .iter()
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
     }
-    if let Some(r) = t.retry_of {
+    if let Some(r) = task.retry_of {
         out!("retry of   {r}");
     }
-    let lineage = f.store.lineage(t.id)?;
-    if lineage.len() > 1 {
+    if task.lineage.len() > 1 {
         out!(
             "lineage    {}",
-            lineage
+            task.lineage
                 .iter()
-                .map(|l| if l.id == t.id {
+                .map(|l| if l.id == task.id {
                     format!("[{} {}]", l.id, l.state)
                 } else {
                     format!("{} {}", l.id, l.state)
@@ -1792,30 +1755,30 @@ fn show(id: i64) -> Result<()> {
                 .join(" → ")
         );
     }
-    for d in f.store.decisions_in_lineage(t.id)? {
+    for d in &task.decisions {
         out!("decision   {} → {}", d.question, d.answer);
     }
-    out!("workflow   {} {}", t.workflow, t.workflow_hash);
-    if !t.interface.is_empty() {
+    out!("workflow   {} {}", task.workflow, task.workflow_hash);
+    if !task.interface.is_empty() {
         out!(
             "interface  {}",
-            t.interface.lines().collect::<Vec<_>>().join(" / ")
+            task.interface.lines().collect::<Vec<_>>().join(" / ")
         );
     }
-    if !t.plan.is_empty() {
+    if !task.plan.is_empty() {
         out!(
             "plan       {}",
-            t.plan.lines().collect::<Vec<_>>().join(" / ")
+            task.plan.lines().collect::<Vec<_>>().join(" / ")
         );
     }
-    out!("text       {}", t.task);
-    for a in &attempts {
+    out!("text       {}", task.text);
+    for a in &doc.attempts {
         out!();
         out!(
             "attempt {} [{}]  {}{}  {}  {} turns  {} tools  {:.1}s  {}  {} commit(s)  {} file(s){}",
             a.attempt_no,
             a.step,
-            a.state.as_str(),
+            a.state,
             if a.reason.is_empty() {
                 String::new()
             } else {
@@ -1838,12 +1801,12 @@ fn show(id: i64) -> Result<()> {
             if a.dirty { "  DIRTY" } else { "" }
         );
         out!("  log     {}", a.log_path);
-        if let Ok(o) = serde_json::from_str::<audit::Outputs>(&a.outputs_json)
+        if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
             && let Some(t) = o.tools
         {
             out!("  ran     {}", t.line());
         }
-        if let Ok(checks) = serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
+        if let Ok(checks) = serde_json::from_value::<Vec<crate::checks::CheckResult>>(a.verdict.clone())
         {
             for c in checks {
                 out!(
@@ -1860,7 +1823,12 @@ fn show(id: i64) -> Result<()> {
                 );
             }
         }
-        if let Ok(Some(e)) = crate::envelope::parse(Some(&a.envelope_json), "") {
+        let envelope: Option<crate::envelope::Envelope> = if a.envelope.is_null() {
+            None
+        } else {
+            serde_json::from_value(a.envelope.clone()).ok()
+        };
+        if let Some(e) = envelope {
             out!(
                 "  reported {} change(s), {} check(s) run, {} claim(s)",
                 e.changes.len(),
@@ -1874,12 +1842,14 @@ fn show(id: i64) -> Result<()> {
                 out!("    QUESTION {}", q.question);
             }
         }
-        if a.rl_five_hour.is_some() || a.rl_seven_day.is_some() {
+        if a.rate_limits.five_hour.is_some() || a.rate_limits.seven_day.is_some() {
             out!(
                 "  usage   5h {} · 7d {}",
-                a.rl_five_hour
+                a.rate_limits
+                    .five_hour
                     .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                a.rl_seven_day
+                a.rate_limits
+                    .seven_day
                     .map_or("-".into(), |u| format!("{:.0}%", u * 100.0))
             );
         }
@@ -1893,7 +1863,7 @@ fn show(id: i64) -> Result<()> {
             out!("  result  {}", first.chars().take(200).collect::<String>());
         }
     }
-    for dgn in audit::diagnose(&t, &attempts) {
+    for dgn in &doc.diagnosis {
         out!();
         out!("what       {}", dgn.what);
         out!("action     {}", dgn.action);
