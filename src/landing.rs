@@ -5,13 +5,12 @@
 //! the coder as a rewind. `forge land` runs the same function by hand.
 
 use crate::ctx::Forge;
-use crate::engine::{Classify, Fault, op};
+use crate::engine::{Classify, Fault, OpRow, Timer, op};
 use crate::report::Event;
 use crate::store::{AttemptState, Task};
 use crate::verify::{self, Subject};
-use crate::{checks, config, git, unix_now};
+use crate::{checks, config, git};
 use std::path::Path;
-use std::time::Instant;
 
 pub enum Integrate {
     /// On the base branch; its new tip.
@@ -61,8 +60,7 @@ pub async fn integrate(
     let placed = format!("forge/{}", t.base_branch);
     for round in 0..3 {
         *seq += 1;
-        let started = unix_now();
-        let start = Instant::now();
+        let timer = Timer::now();
         // The base as the remote has it; a remote that has no base branch
         // yet gets it from this landing, starting from the local one.
         let main_sha = if git::remote_branch_exists(url, &t.base_branch).await {
@@ -73,16 +71,17 @@ pub async fn integrate(
                     op(
                         f,
                         t.id,
-                        *seq,
-                        "integrate",
-                        true,
-                        started,
-                        start,
-                        false,
-                        None,
-                        &d,
-                        None,
-                        "",
+                        &timer,
+                        OpRow {
+                            seq: *seq,
+                            name: "integrate",
+                            kernel: true,
+                            ok: false,
+                            exit: None,
+                            detail: &d,
+                            attempt_id: None,
+                            output: "",
+                        },
                     )?;
                     return Ok(Integrate::Failed(d));
                 }
@@ -118,16 +117,17 @@ pub async fn integrate(
                     op(
                         f,
                         t.id,
-                        *seq,
-                        "integrate",
-                        true,
-                        started,
-                        start,
-                        false,
-                        None,
-                        &d,
-                        None,
-                        "",
+                        &timer,
+                        OpRow {
+                            seq: *seq,
+                            name: "integrate",
+                            kernel: true,
+                            ok: false,
+                            exit: None,
+                            detail: &d,
+                            attempt_id: None,
+                            output: "",
+                        },
                     )?;
                     f.report.emit(
                         t.id,
@@ -173,16 +173,17 @@ pub async fn integrate(
             op(
                 f,
                 t.id,
-                *seq,
-                "integrate",
-                true,
-                started,
-                start,
-                false,
-                None,
-                &d,
-                None,
-                "",
+                &timer,
+                OpRow {
+                    seq: *seq,
+                    name: "integrate",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &d,
+                    attempt_id: None,
+                    output: "",
+                },
             )?;
             f.report.emit(
                 t.id,
@@ -216,29 +217,41 @@ pub async fn integrate(
         op(
             f,
             t.id,
-            *seq,
-            "integrate",
-            true,
-            started,
-            start,
-            true,
-            None,
-            &format!(
-                "{detail}verified against {} @ {}",
-                t.base_branch,
-                &t.base_sha[..8]
-            ),
-            None,
-            "",
+            &timer,
+            OpRow {
+                seq: *seq,
+                name: "integrate",
+                kernel: true,
+                ok: true,
+                exit: None,
+                detail: &format!(
+                    "{detail}verified against {} @ {}",
+                    t.base_branch,
+                    &t.base_sha[..8]
+                ),
+                attempt_id: None,
+                output: "",
+            },
         )?;
 
         *seq += 1;
-        let started = unix_now();
-        let start = Instant::now();
+        let timer = Timer::now();
         if let Err(e) = git::push(wt, url, &t.branch).await {
             let d = format!("push of {} failed: {e:#}", t.branch);
             op(
-                f, t.id, *seq, "push", true, started, start, false, None, &d, None, "",
+                f,
+                t.id,
+                &timer,
+                OpRow {
+                    seq: *seq,
+                    name: "push",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &d,
+                    attempt_id: None,
+                    output: "",
+                },
             )?;
             return Ok(Integrate::Failed(d));
         }
@@ -251,16 +264,39 @@ pub async fn integrate(
             },
         );
         op(
-            f, t.id, *seq, "push", true, started, start, true, None, &t.branch, None, "",
+            f,
+            t.id,
+            &timer,
+            OpRow {
+                seq: *seq,
+                name: "push",
+                kernel: true,
+                ok: true,
+                exit: None,
+                detail: &t.branch,
+                attempt_id: None,
+                output: "",
+            },
         )?;
 
         *seq += 1;
-        let started = unix_now();
-        let start = Instant::now();
+        let timer = Timer::now();
         if let Err(e) = git::push_head_to(wt, url, &t.base_branch).await {
             let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
             op(
-                f, t.id, *seq, "land", true, started, start, false, None, &d, None, "",
+                f,
+                t.id,
+                &timer,
+                OpRow {
+                    seq: *seq,
+                    name: "land",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &d,
+                    attempt_id: None,
+                    output: "",
+                },
             )?;
             if round < 2 {
                 f.report.emit(
@@ -320,16 +356,17 @@ pub async fn integrate(
         op(
             f,
             t.id,
-            *seq,
-            "land",
-            true,
-            started,
-            start,
-            true,
-            None,
-            &format!("{} @ {}{folded}", t.base_branch, &sha[..8]),
-            None,
-            "",
+            &timer,
+            OpRow {
+                seq: *seq,
+                name: "land",
+                kernel: true,
+                ok: true,
+                exit: None,
+                detail: &format!("{} @ {}{folded}", t.base_branch, &sha[..8]),
+                attempt_id: None,
+                output: "",
+            },
         )?;
         f.report.emit(
             t.id,

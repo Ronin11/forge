@@ -5,15 +5,15 @@
 //! and verifies.
 
 use crate::ctx::Forge;
-use crate::engine::{Classify, Fault, op};
+use crate::engine::{Classify, Fault, OpRow, Timer, op};
 use crate::landing::overlay_refs;
 use crate::report::Event;
 use crate::store::{AttemptState, Task};
 use crate::verify::{self, Subject};
 use crate::workflows::ResolvedStep;
-use crate::{checks, config, git, unix_now};
+use crate::{checks, config, git};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// What an operation is told about its task, as environment. Facts only,
 /// each one already recorded on the task.
@@ -77,8 +77,7 @@ pub(crate) async fn run_operation(
 ) -> Result<(bool, String), Fault> {
     let wt = PathBuf::from(&t.worktree);
     let repo = PathBuf::from(&t.repo);
-    let started = unix_now();
-    let start = Instant::now();
+    let timer = Timer::now();
     let timeout = Duration::from_secs(
         step.timeout_secs
             .map(u64::from)
@@ -93,16 +92,17 @@ pub(crate) async fn run_operation(
                 op(
                     f,
                     t.id,
-                    seq,
-                    &step.action.name,
-                    false,
-                    started,
-                    start,
-                    true,
-                    None,
-                    &detail,
-                    None,
-                    "",
+                    &timer,
+                    OpRow {
+                        seq,
+                        name: &step.action.name,
+                        kernel: false,
+                        ok: true,
+                        exit: None,
+                        detail: &detail,
+                        attempt_id: None,
+                        output: "",
+                    },
                 )?;
                 return Ok((true, detail));
             }
@@ -228,16 +228,17 @@ pub(crate) async fn run_operation(
     op(
         f,
         t.id,
-        seq,
-        &step.action.name,
-        false,
-        started,
-        start,
-        r.ok,
-        r.exit,
-        &detail,
-        None,
-        &output,
+        &timer,
+        OpRow {
+            seq,
+            name: &step.action.name,
+            kernel: false,
+            ok: r.ok,
+            exit: r.exit,
+            detail: &detail,
+            attempt_id: None,
+            output: &output,
+        },
     )?;
     if !r.ok {
         return Ok((false, detail));
@@ -271,8 +272,7 @@ pub(crate) async fn run_operation(
         );
     }
     if step.action.mutates() {
-        let started = unix_now();
-        let start = Instant::now();
+        let timer = Timer::now();
         let committed = git::commit_all(&wt, &format!("forge: {}", step.action.name))
             .await
             .task()?;
@@ -280,16 +280,17 @@ pub(crate) async fn run_operation(
             op(
                 f,
                 t.id,
-                seq,
-                "verify",
-                true,
-                started,
-                start,
-                true,
-                None,
-                "no changes; the verified tree stands",
-                None,
-                "",
+                &timer,
+                OpRow {
+                    seq,
+                    name: "verify",
+                    kernel: true,
+                    ok: true,
+                    exit: None,
+                    detail: "no changes; the verified tree stands",
+                    attempt_id: None,
+                    output: "",
+                },
             )?;
             return Ok((true, detail));
         };
@@ -324,20 +325,21 @@ pub(crate) async fn run_operation(
         op(
             f,
             t.id,
-            seq,
-            "verify",
-            true,
-            started,
-            start,
-            ok,
-            None,
-            &if ok {
-                format!("{} file(s) committed as {}", v.files_changed, &sha[..8])
-            } else {
-                v.reason.clone()
+            &timer,
+            OpRow {
+                seq,
+                name: "verify",
+                kernel: true,
+                ok,
+                exit: None,
+                detail: &if ok {
+                    format!("{} file(s) committed as {}", v.files_changed, &sha[..8])
+                } else {
+                    v.reason.clone()
+                },
+                attempt_id: None,
+                output: "",
             },
-            None,
-            "",
         )?;
         if !ok {
             return Ok((false, v.reason));

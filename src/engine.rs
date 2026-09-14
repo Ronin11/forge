@@ -75,46 +75,61 @@ fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 
+/// When an operation started: unix seconds for the row, an `Instant` for
+/// the elapsed time, taken together so they always agree.
+pub(crate) struct Timer {
+    pub(crate) started_at: i64,
+    pub(crate) start: Instant,
+}
+
+impl Timer {
+    pub(crate) fn now() -> Self {
+        Self {
+            started_at: unix_now(),
+            start: Instant::now(),
+        }
+    }
+}
+
+/// One operation row, kernel or user; `task_id` stays a separate parameter
+/// of `op` since it is never part of the row's own identity.
+pub(crate) struct OpRow<'a> {
+    pub(crate) seq: i64,
+    pub(crate) name: &'a str,
+    pub(crate) kernel: bool,
+    pub(crate) ok: bool,
+    pub(crate) exit: Option<i32>,
+    pub(crate) detail: &'a str,
+    pub(crate) attempt_id: Option<i64>,
+    pub(crate) output: &'a str,
+}
+
 /// Record one operation row, kernel or user.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn op(
-    f: &Forge,
-    task_id: i64,
-    seq: i64,
-    name: &str,
-    kernel: bool,
-    started_at: i64,
-    start: Instant,
-    ok: bool,
-    exit: Option<i32>,
-    detail: &str,
-    attempt_id: Option<i64>,
-    output: &str,
-) -> Result<(), Fault> {
+pub(crate) fn op(f: &Forge, task_id: i64, timer: &Timer, row: OpRow) -> Result<(), Fault> {
     f.store
         .insert_op(&Op {
             task_id,
-            seq,
-            name: name.into(),
-            kernel,
-            started_at,
-            ms: start.elapsed().as_millis() as i64,
-            ok,
-            exit,
-            detail: detail.into(),
-            attempt_id,
-            output: output.into(),
+            seq: row.seq,
+            name: row.name.into(),
+            kernel: row.kernel,
+            started_at: timer.started_at,
+            ms: timer.start.elapsed().as_millis() as i64,
+            ok: row.ok,
+            exit: row.exit,
+            detail: row.detail.into(),
+            attempt_id: row.attempt_id,
+            output: row.output.into(),
             ..Default::default()
         })
         .env()?;
     f.report.emit(
         task_id,
         Event::Op {
-            name,
-            kernel,
-            ok,
-            ms: start.elapsed().as_millis(),
-            detail,
+            name: row.name,
+            kernel: row.kernel,
+            ok: row.ok,
+            ms: timer.start.elapsed().as_millis(),
+            detail: row.detail,
         },
     );
     Ok(())
@@ -182,8 +197,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             }
         }
         let dir = f.paths.worktrees.join(t.id.to_string());
-        let started = unix_now();
-        let start = Instant::now();
+        let timer = Timer::now();
         // The base is the remote's, so a task started after a landing sees it.
         let base_ref = match (&base_cfg.push_remote, &remote_url) {
             (Some(name), Some(url)) if git::remote_branch_exists(url, &t.base_branch).await => {
@@ -217,18 +231,20 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         op(
             &f,
             id,
-            seq,
-            "clone",
-            true,
-            started,
-            start,
-            r.is_ok(),
-            None,
-            &r.as_ref()
-                .map(|s| s[..8].to_string())
-                .unwrap_or_else(|e| format!("{e:#}")),
-            None,
-            "",
+            &timer,
+            OpRow {
+                seq,
+                name: "clone",
+                kernel: true,
+                ok: r.is_ok(),
+                exit: None,
+                detail: &r
+                    .as_ref()
+                    .map(|s| s[..8].to_string())
+                    .unwrap_or_else(|e| format!("{e:#}")),
+                attempt_id: None,
+                output: "",
+            },
         )?;
         t.base_sha = r.task()?;
         // The standing hidden suite as it matches this base; a suite that
@@ -484,8 +500,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 ),
                             },
                         );
-                        let started = unix_now();
-                        let start = Instant::now();
+                        let timer = Timer::now();
                         let (a, verdict, outcome) = match step.action.contract {
                             Contract::Code => {
                                 run_code_attempt(
@@ -543,16 +558,17 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         op(
                             &f,
                             id,
-                            seq,
-                            "verify",
-                            true,
-                            started,
-                            start,
-                            a.state == AttemptState::Succeeded,
-                            None,
-                            &a.reason,
-                            Some(a.id),
-                            "",
+                            &timer,
+                            OpRow {
+                                seq,
+                                name: "verify",
+                                kernel: true,
+                                ok: a.state == AttemptState::Succeeded,
+                                exit: None,
+                                detail: &a.reason,
+                                attempt_id: Some(a.id),
+                                output: "",
+                            },
                         )?;
                         last = a.state;
                         last_reason = a.reason.clone();
@@ -880,8 +896,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     {
         seq += 1;
         if let Some(url) = &remote_url {
-            let started = unix_now();
-            let start = Instant::now();
+            let timer = Timer::now();
             match git::push(&wt, url, &t.branch).await {
                 Ok(()) => {
                     t.pushed = true;
@@ -894,7 +909,19 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         },
                     );
                     op(
-                        &f, id, seq, "push", true, started, start, true, None, &t.branch, None, "",
+                        &f,
+                        id,
+                        &timer,
+                        OpRow {
+                            seq,
+                            name: "push",
+                            kernel: true,
+                            ok: true,
+                            exit: None,
+                            detail: &t.branch,
+                            attempt_id: None,
+                            output: "",
+                        },
                     )?;
                 }
                 Err(e) => {
@@ -909,16 +936,17 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     op(
                         &f,
                         id,
-                        seq,
-                        "push",
-                        true,
-                        started,
-                        start,
-                        false,
-                        None,
-                        &format!("{e:#}"),
-                        None,
-                        "",
+                        &timer,
+                        OpRow {
+                            seq,
+                            name: "push",
+                            kernel: true,
+                            ok: false,
+                            exit: None,
+                            detail: &format!("{e:#}"),
+                            attempt_id: None,
+                            output: "",
+                        },
                     )?;
                 }
             }
