@@ -60,6 +60,10 @@ pub struct TaskArgs {
     /// The project this task belongs to (default: the repository's own project)
     #[arg(long)]
     project: Option<String>,
+    /// The initiative this task belongs to; its project applies (must
+    /// agree with --project when both are given)
+    #[arg(long)]
+    initiative: Option<i64>,
     /// Show the --check commands to the coder (hidden by default)
     #[arg(long)]
     show_checks: bool,
@@ -284,6 +288,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ProjectCmd,
     },
+    /// Initiatives: one outcome, pursued as a set of tasks, tracked as
+    /// one thing (see docs/PROJECTS.md)
+    Initiative {
+        #[command(subcommand)]
+        cmd: InitiativeCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -408,6 +418,56 @@ enum ProjectCmd {
         /// Mark a backlog item done, by id
         #[arg(long)]
         done: Option<i64>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum InitiativeCmd {
+    /// Register a new initiative and, with --from, file its tasks
+    New {
+        project: String,
+        /// One sentence saying what is true when the initiative is done;
+        /// placed in every task's prompt as "Why this task exists"
+        #[arg(long)]
+        outcome: String,
+        /// A file of task texts, one per paragraph (blank-line
+        /// separated); a paragraph may lead with `after: <n>` (an
+        /// earlier paragraph's 1-based number, as a dependency) and
+        /// `repo: <path>` (else the project's first repository)
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// This initiative's own cost cap in USD (default: the
+        /// project's per-initiative-usd)
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Hold the initiative after this many of its tasks fail in a
+        /// row on the same L0 rule (default: 3)
+        #[arg(long = "stop-after")]
+        stop_after: Option<u32>,
+    },
+    /// Every initiative, its state, task counts and cost
+    List {
+        /// Only this project's
+        project: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// One initiative: its state, task counts, cost and settings
+    Show {
+        id: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// The generated report: outcome, each task's fate, what
+    /// verification refused, supervisor rulings, questions that reached
+    /// the operator, cost and elapsed time
+    Report {
+        id: i64,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -544,6 +604,18 @@ pub async fn main() -> Result<()> {
                 json,
             } => project_backlog(name, add, done, json),
         },
+        Cmd::Initiative { cmd } => match cmd {
+            InitiativeCmd::New {
+                project,
+                outcome,
+                from,
+                budget,
+                stop_after,
+            } => initiative_new(project, outcome, from, budget, stop_after).await,
+            InitiativeCmd::List { project, json } => initiative_list(project, json),
+            InitiativeCmd::Show { id, json } => initiative_show(id, json),
+            InitiativeCmd::Report { id, json } => initiative_report(id, json),
+        },
     }
 }
 
@@ -561,6 +633,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             allow_protected: a.allow_protected,
             workflow: a.workflow.clone(),
             project: a.project.clone(),
+            initiative: a.initiative,
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
@@ -958,6 +1031,226 @@ fn project_show(name: String, json: bool) -> Result<()> {
         return Ok(());
     }
     print_project_row(&row);
+    Ok(())
+}
+
+fn print_initiative_row(r: &crate::view::InitiativeRow) {
+    out!("id         {}", r.id);
+    out!("project    {}", r.project);
+    out!("outcome    {}", r.outcome);
+    out!(
+        "state      {}{}",
+        r.state,
+        r.held_rule
+            .as_deref()
+            .map(|rule| format!(" ({rule})"))
+            .unwrap_or_default()
+    );
+    out!(
+        "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={}",
+        r.queued,
+        r.running,
+        r.succeeded,
+        r.failed,
+        r.unverified,
+        r.blocked,
+        r.withdrawn
+    );
+    out!(
+        "cost       ${:.2}{}",
+        r.cost_usd,
+        r.budget_usd
+            .map(|b| format!(" of ${b:.2}"))
+            .unwrap_or_default()
+    );
+    out!("stop-after {}", r.stop_after_same_rule);
+    if let Some(at) = r.settled_at {
+        out!("settled_at {at}");
+    }
+}
+
+async fn initiative_new(
+    project: String,
+    outcome: String,
+    from: Option<PathBuf>,
+    budget: Option<f64>,
+    stop_after: Option<u32>,
+) -> Result<()> {
+    if let Some(b) = budget
+        && b <= 0.0
+    {
+        bail!("budget must be positive");
+    }
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let id = f.store.create_initiative(&crate::store::Initiative {
+        project: project.clone(),
+        outcome,
+        budget_usd: budget,
+        stop_after_same_rule: stop_after.map(|n| n as i64).unwrap_or(3),
+        created_at: unix_now(),
+        ..Default::default()
+    })?;
+    out!("created initiative {id}");
+    if let Some(path) = from {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let default_repo = f.store.first_repo(&project)?;
+        let paragraphs = crate::queue::parse_initiative_file(&text)?;
+        let mut ids: Vec<i64> = Vec::new();
+        for p in &paragraphs {
+            let repo = match &p.repo {
+                Some(r) => r.clone(),
+                None => default_repo
+                    .clone()
+                    .with_context(|| format!("project {project} lists no repository"))?,
+            };
+            let after = match p.after {
+                Some(n) => vec![
+                    *ids.get(n - 1)
+                        .with_context(|| format!("after: {n} names a task not yet queued"))?,
+                ],
+                None => Vec::new(),
+            };
+            let req = crate::queue::TaskRequest {
+                repo: PathBuf::from(repo),
+                task: p.text.clone(),
+                model: "sonnet".to_string(),
+                max_turns: 100,
+                retries: 1,
+                timeout_secs: 1800,
+                after,
+                project: Some(project.clone()),
+                initiative: Some(id),
+                ..Default::default()
+            };
+            let t = crate::queue::enqueue(&f, &req, None).await?;
+            out!("queued task {} (paragraph {})", t.id, ids.len() + 1);
+            ids.push(t.id);
+        }
+    }
+    Ok(())
+}
+
+fn initiative_list(project: Option<String>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let rows = crate::view::initiative_rows(&f, project.as_deref())?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no initiatives");
+        return Ok(());
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            out!();
+        }
+        print_initiative_row(r);
+    }
+    Ok(())
+}
+
+fn initiative_show(id: i64, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let ini = f
+        .store
+        .initiative(id)?
+        .with_context(|| format!("no initiative {id}"))?;
+    let row = crate::view::initiative_row(&f, &ini)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&row)?);
+        return Ok(());
+    }
+    print_initiative_row(&row);
+    Ok(())
+}
+
+fn initiative_report(id: i64, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let ini = f
+        .store
+        .initiative(id)?
+        .with_context(|| format!("no initiative {id}"))?;
+    let doc = crate::view::initiative_doc(&f, &ini)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    out!("initiative {} ({})", doc.id, doc.project);
+    out!("outcome    {}", doc.outcome);
+    out!(
+        "state      {}{}",
+        doc.state,
+        doc.held_rule
+            .as_deref()
+            .map(|rule| format!(" ({rule})"))
+            .unwrap_or_default()
+    );
+    out!(
+        "cost       ${:.2}{}",
+        doc.cost_usd,
+        doc.budget_usd
+            .map(|b| format!(" of ${b:.2}"))
+            .unwrap_or_default()
+    );
+    out!(
+        "elapsed    {}",
+        doc.elapsed_secs
+            .map_or("-".to_string(), |s| format!("{s}s"))
+    );
+    out!("tasks");
+    for t in &doc.tasks {
+        out!(
+            "  {:<5} {:<10}{}",
+            t.id,
+            t.state,
+            if t.reason.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", t.reason)
+            }
+        );
+    }
+    if doc.refused.is_empty() {
+        out!("refused    none");
+    } else {
+        out!(
+            "refused    {}",
+            doc.refused
+                .iter()
+                .map(|r| format!("{} x{}", r.rule, r.count))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if doc.rulings.is_empty() {
+        out!("rulings    none");
+    } else {
+        out!("rulings");
+        for r in &doc.rulings {
+            out!("  task {} Q: {} A: {}", r.task_id, r.question, r.answer);
+        }
+    }
+    if doc.questions.is_empty() {
+        out!("questions  none");
+    } else {
+        out!("questions");
+        for q in &doc.questions {
+            out!(
+                "  task {} {}{}",
+                q.task_id,
+                q.question,
+                q.answer
+                    .as_deref()
+                    .map(|a| format!(" -> {a}"))
+                    .unwrap_or_else(|| " (unanswered)".to_string())
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1956,6 +2249,9 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
                 t.finished_at = Some(crate::unix_now());
             }
             f.store.update_task(&t)?;
+            if let Some(iid) = t.initiative {
+                crate::view::maybe_settle_initiative(f, id, iid)?;
+            }
             f.report.emit(
                 id,
                 crate::report::Event::TaskDone {

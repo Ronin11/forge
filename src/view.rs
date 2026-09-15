@@ -876,6 +876,352 @@ pub fn project_rows(f: &Forge) -> Result<Vec<ProjectRow>> {
         .collect()
 }
 
+/// The L0 rule name(s) a failed task's `reason` blames, in the exact form
+/// `engine::l0_failure_reason` writes it ("L0 failed: has-commits",
+/// optionally followed by " (after N attempt(s))"). `None` for any other
+/// kind of failure: an agent failure, a budget cap, or a failing L1/L2
+/// check never sets this prefix.
+fn l0_rule_of(reason: &str) -> Option<String> {
+    let rest = reason.strip_prefix("L0 failed: ")?;
+    let rest = rest.split(" (after").next().unwrap_or(rest).trim();
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// One line, exactly as docs/PROJECTS.md, "State" derives it: "open"
+/// while any task is queued or running; "held" when that is also true and
+/// the worker is holding new claims for the initiative; "done with
+/// failures" when none remain open and some failed; "done" otherwise.
+pub fn initiative_state(tasks: &[Task], hold: Option<&str>) -> &'static str {
+    let any_open = tasks
+        .iter()
+        .any(|t| matches!(t.state, TaskState::Queued | TaskState::Running));
+    if any_open {
+        return if hold.is_some() { "held" } else { "open" };
+    }
+    if tasks.iter().any(|t| t.state == TaskState::Failed) {
+        "done with failures"
+    } else {
+        "done"
+    }
+}
+
+/// `Some` when the worker is currently holding new claims for this
+/// initiative (see docs/PROJECTS.md, "Stop rule and budget"): its summed
+/// cost has reached its budget (reported as `"budget"`), or its trailing
+/// run of failed tasks all blame the same L0 rule and that run has
+/// reached `stop_after_same_rule` (reported as that rule's name).
+pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Option<String>> {
+    let budget = ini.budget_usd.or_else(|| {
+        f.store
+            .project(&ini.project)
+            .ok()
+            .flatten()
+            .and_then(|p| p.per_initiative_usd)
+    });
+    if let Some(b) = budget
+        && f.store.initiative_cost(ini.id)? >= b
+    {
+        return Ok(Some("budget".to_string()));
+    }
+    if ini.stop_after_same_rule <= 0 {
+        return Ok(None);
+    }
+    let tasks = f.store.initiative_tasks(ini.id)?;
+    let mut terminal: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.state,
+                TaskState::Succeeded
+                    | TaskState::Failed
+                    | TaskState::Unverified
+                    | TaskState::Withdrawn
+            )
+        })
+        .collect();
+    terminal.sort_by_key(|t| t.finished_at.unwrap_or(0));
+    let mut rule: Option<String> = None;
+    let mut len = 0i64;
+    for t in terminal {
+        match (t.state, l0_rule_of(&t.reason)) {
+            (TaskState::Failed, Some(r)) => {
+                if rule.as_deref() == Some(r.as_str()) {
+                    len += 1;
+                } else {
+                    len = 1;
+                    rule = Some(r);
+                }
+            }
+            _ => {
+                len = 0;
+                rule = None;
+            }
+        }
+    }
+    Ok((len >= ini.stop_after_same_rule).then_some(rule).flatten())
+}
+
+/// Settle an initiative once every one of its tasks has reached a
+/// terminal state (succeeded, failed, unverified or withdrawn): record
+/// `settled_at` and emit `Event::InitiativeSettled`, tagged with
+/// `task_id`, the task whose own change completed it (see
+/// docs/PROJECTS.md, "One notification and one report"). A no-op once
+/// already settled, or while the initiative still has open work.
+pub fn maybe_settle_initiative(f: &Forge, task_id: i64, initiative_id: i64) -> Result<()> {
+    let Some(ini) = f.store.initiative(initiative_id)? else {
+        return Ok(());
+    };
+    if ini.settled_at.is_some() {
+        return Ok(());
+    }
+    let tasks = f.store.initiative_tasks(initiative_id)?;
+    let all_terminal = tasks.iter().all(|t| {
+        matches!(
+            t.state,
+            TaskState::Succeeded | TaskState::Failed | TaskState::Unverified | TaskState::Withdrawn
+        )
+    });
+    if !all_terminal {
+        return Ok(());
+    }
+    if f.store
+        .settle_initiative(initiative_id, crate::unix_now())?
+    {
+        let cost = f.store.initiative_cost(initiative_id)?;
+        let state = initiative_state(&tasks, None).to_string();
+        f.report.emit(
+            task_id,
+            crate::report::Event::InitiativeSettled {
+                id: initiative_id,
+                state: &state,
+                cost,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// One row of `forge initiative list` / `--json` and `forge initiative
+/// show`: an initiative, its derived state, task counts by state, cost
+/// and its own settings.
+#[derive(Serialize)]
+pub struct InitiativeRow {
+    pub id: i64,
+    pub project: String,
+    pub outcome: String,
+    pub state: String,
+    pub held_rule: Option<String>,
+    pub queued: i64,
+    pub running: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub unverified: i64,
+    pub blocked: i64,
+    pub withdrawn: i64,
+    pub cost_usd: f64,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: i64,
+    pub created_at: i64,
+    pub settled_at: Option<i64>,
+}
+
+pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<InitiativeRow> {
+    let tasks = f.store.initiative_tasks(ini.id)?;
+    let hold = initiative_hold(f, ini)?;
+    let state = initiative_state(&tasks, hold.as_deref()).to_string();
+    let mut stats = crate::store::ProjectTaskStats::default();
+    for t in &tasks {
+        match t.state {
+            TaskState::Queued => stats.queued += 1,
+            TaskState::Running => stats.running += 1,
+            TaskState::Succeeded => stats.succeeded += 1,
+            TaskState::Failed => stats.failed += 1,
+            TaskState::Unverified => stats.unverified += 1,
+            TaskState::Blocked => stats.blocked += 1,
+            TaskState::Withdrawn => stats.withdrawn += 1,
+        }
+    }
+    Ok(InitiativeRow {
+        id: ini.id,
+        project: ini.project.clone(),
+        outcome: ini.outcome.clone(),
+        state,
+        held_rule: hold,
+        queued: stats.queued,
+        running: stats.running,
+        succeeded: stats.succeeded,
+        failed: stats.failed,
+        unverified: stats.unverified,
+        blocked: stats.blocked,
+        withdrawn: stats.withdrawn,
+        cost_usd: f.store.initiative_cost(ini.id)?,
+        budget_usd: ini.budget_usd,
+        stop_after_same_rule: ini.stop_after_same_rule,
+        created_at: ini.created_at,
+        settled_at: ini.settled_at,
+    })
+}
+
+/// Every initiative, oldest first; only `project`'s when given.
+pub fn initiative_rows(f: &Forge, project: Option<&str>) -> Result<Vec<InitiativeRow>> {
+    f.store
+        .list_initiatives(project)?
+        .iter()
+        .map(|i| initiative_row(f, i))
+        .collect()
+}
+
+/// One task in `InitiativeDoc.tasks`: its final state and reason.
+#[derive(Serialize)]
+pub struct InitiativeTaskRow {
+    pub id: i64,
+    pub state: String,
+    pub reason: String,
+}
+
+/// One row of `InitiativeDoc.refused`: a verification rule name and how
+/// many attempts of the initiative's tasks it refused.
+#[derive(Serialize)]
+pub struct RefusedRow {
+    pub rule: String,
+    pub count: i64,
+}
+
+/// One row of `InitiativeDoc.rulings`: a decision the supervisor made on
+/// one of the initiative's tasks.
+#[derive(Serialize)]
+pub struct InitiativeRulingRow {
+    pub task_id: i64,
+    pub question: String,
+    pub answer: String,
+    pub citations: String,
+}
+
+/// One row of `InitiativeDoc.questions`: a question that reached the
+/// operator, answered or (while the task is still blocked) not yet.
+#[derive(Serialize)]
+pub struct InitiativeQuestionRow {
+    pub task_id: i64,
+    pub question: String,
+    pub answer: Option<String>,
+}
+
+/// How many attempts of `tasks` each verification rule refused, by name,
+/// ordered by name.
+fn refused_counts(f: &Forge, tasks: &[Task]) -> Result<Vec<RefusedRow>> {
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+    for t in tasks {
+        for a in f.store.attempts(t.id)? {
+            let rows: Vec<crate::checks::CheckResult> =
+                serde_json::from_str(&a.verdict_json).unwrap_or_default();
+            for c in rows.iter().filter(|c| !c.ok) {
+                *counts.entry(c.name.clone()).or_default() += 1;
+            }
+        }
+    }
+    Ok(counts
+        .into_iter()
+        .map(|(rule, count)| RefusedRow { rule, count })
+        .collect())
+}
+
+/// The generated report `forge initiative report` shows: the outcome,
+/// each task and how it ended, what verification refused, what the
+/// supervisor ruled, what reached the operator, cost and elapsed time
+/// (see docs/PROJECTS.md, "One notification and one report").
+#[derive(Serialize)]
+pub struct InitiativeDoc {
+    pub id: i64,
+    pub project: String,
+    pub outcome: String,
+    pub state: String,
+    pub held_rule: Option<String>,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: i64,
+    pub tasks: Vec<InitiativeTaskRow>,
+    pub refused: Vec<RefusedRow>,
+    pub rulings: Vec<InitiativeRulingRow>,
+    pub questions: Vec<InitiativeQuestionRow>,
+    pub cost_usd: f64,
+    pub elapsed_secs: Option<i64>,
+    pub created_at: i64,
+    pub settled_at: Option<i64>,
+}
+
+pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<InitiativeDoc> {
+    let tasks = f.store.initiative_tasks(ini.id)?;
+    let hold = initiative_hold(f, ini)?;
+    let state = initiative_state(&tasks, hold.as_deref()).to_string();
+    let cost = f.store.initiative_cost(ini.id)?;
+    let elapsed = tasks
+        .iter()
+        .filter_map(|t| t.finished_at)
+        .max()
+        .map(|end| end - ini.created_at);
+    let ids: std::collections::HashSet<i64> = tasks.iter().map(|t| t.id).collect();
+    let repos: std::collections::HashSet<String> = tasks.iter().map(|t| t.repo.clone()).collect();
+    let mut decisions = Vec::new();
+    for repo in &repos {
+        decisions.extend(f.store.decisions(Some(repo))?);
+    }
+    decisions.retain(|d| ids.contains(&d.task_id));
+    let rulings = decisions
+        .iter()
+        .filter(|d| d.answered_by == "supervisor")
+        .map(|d| InitiativeRulingRow {
+            task_id: d.task_id,
+            question: d.question.clone(),
+            answer: d.answer.clone(),
+            citations: d.citations.clone(),
+        })
+        .collect();
+    let mut questions: Vec<InitiativeQuestionRow> = decisions
+        .iter()
+        .filter(|d| d.answered_by == "operator")
+        .map(|d| InitiativeQuestionRow {
+            task_id: d.task_id,
+            question: d.question.clone(),
+            answer: Some(d.answer.clone()),
+        })
+        .collect();
+    for t in tasks.iter().filter(|t| t.state == TaskState::Blocked) {
+        if !questions.iter().any(|q| q.task_id == t.id) {
+            let (_, text) = request_kind(&t.reason);
+            questions.push(InitiativeQuestionRow {
+                task_id: t.id,
+                question: text,
+                answer: None,
+            });
+        }
+    }
+    let refused = refused_counts(f, &tasks)?;
+    Ok(InitiativeDoc {
+        id: ini.id,
+        project: ini.project.clone(),
+        outcome: ini.outcome.clone(),
+        state,
+        held_rule: hold,
+        budget_usd: ini.budget_usd,
+        stop_after_same_rule: ini.stop_after_same_rule,
+        tasks: tasks
+            .iter()
+            .map(|t| InitiativeTaskRow {
+                id: t.id,
+                state: t.state.as_str().to_string(),
+                reason: t.reason.clone(),
+            })
+            .collect(),
+        refused,
+        rulings,
+        questions,
+        cost_usd: cost,
+        elapsed_secs: elapsed,
+        created_at: ini.created_at,
+        settled_at: ini.settled_at,
+    })
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;

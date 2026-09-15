@@ -154,6 +154,22 @@ fn p_config(f: &Forge) -> String {
     f.paths.home.join("config.toml").display().to_string()
 }
 
+/// Every initiative currently holding new claims: its budget is spent, or
+/// its trailing run of same-rule failures reached its stop rule (see
+/// docs/PROJECTS.md, "Stop rule and budget"). Only initiatives with a
+/// queued task are worth checking.
+fn held_initiatives(f: &Forge) -> Result<Vec<i64>> {
+    let mut held = Vec::new();
+    for id in f.store.initiatives_with_queued_tasks()? {
+        if let Some(ini) = f.store.initiative(id)?
+            && crate::view::initiative_hold(f, &ini)?.is_some()
+        {
+            held.push(id);
+        }
+    }
+    Ok(held)
+}
+
 pub struct WorkOpts {
     pub jobs: usize,
     /// Seconds between queue polls when idle; `None` exits when idle.
@@ -219,7 +235,8 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 break;
             }
             hold_until = None;
-            let Some(t) = f.store.claim_next(pid)? else {
+            let held = held_initiatives(&f)?;
+            let Some(t) = f.store.claim_next(pid, &held)? else {
                 break;
             };
             claimed += 1;

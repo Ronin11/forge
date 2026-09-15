@@ -57,6 +57,13 @@ pub async fn run_attempt(
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
+    // The initiative's outcome, when this task belongs to one: placed in
+    // every step's prompt as "Why this task exists" (see
+    // docs/PROJECTS.md, "Initiative").
+    let outcome = t
+        .initiative
+        .and_then(|id| f.store.initiative(id).ok().flatten())
+        .map(|i| i.outcome);
     let journal = if t.journal && contract != Contract::Review {
         let j = crate::journal::journal_for(f, t)?;
         (!j.is_empty()).then_some(j)
@@ -79,7 +86,15 @@ pub async fn run_attempt(
             let refs = overlay_refs(repo, t.id, Some(&t.verify_base)).await;
             Spec {
                 dir: PathBuf::from(&t.worktree),
-                prompt: code_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+                prompt: code_prompt(
+                    t,
+                    cfg,
+                    step,
+                    attempt_no,
+                    feedback,
+                    journal.as_deref(),
+                    outcome.as_deref(),
+                ),
                 inputs: Inputs {
                     interface: (!t.interface.is_empty()).then(|| t.interface.clone()),
                     plan: (!t.plan.is_empty()).then(|| t.plan.clone()),
@@ -113,7 +128,15 @@ pub async fn run_attempt(
             }
             Spec {
                 dir,
-                prompt: tests_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+                prompt: tests_prompt(
+                    t,
+                    cfg,
+                    step,
+                    attempt_no,
+                    feedback,
+                    journal.as_deref(),
+                    outcome.as_deref(),
+                ),
                 inputs: common,
                 overlay_refs: Vec::new(),
                 verify_ref: Some(format!("verify/{}", t.id)),
@@ -122,7 +145,15 @@ pub async fn run_attempt(
         }
         Contract::Plan => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: plan_prompt(t, cfg, step, attempt_no, feedback, journal.as_deref()),
+            prompt: plan_prompt(
+                t,
+                cfg,
+                step,
+                attempt_no,
+                feedback,
+                journal.as_deref(),
+                outcome.as_deref(),
+            ),
             inputs: common,
             overlay_refs: Vec::new(),
             verify_ref: None,
@@ -130,7 +161,7 @@ pub async fn run_attempt(
         },
         Contract::Review => Spec {
             dir: PathBuf::from(&t.worktree),
-            prompt: review_prompt(t, cfg, step),
+            prompt: review_prompt(t, cfg, step, outcome.as_deref()),
             // A review is told nothing of earlier attempts: it judges the
             // branch as it stands. Feedback owed to it is recorded, not shown.
             inputs: Inputs {

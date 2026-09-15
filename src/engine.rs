@@ -1003,6 +1003,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     t.finished_at = Some(unix_now());
     t.worker_pid = None;
     f.store.update_task(&t).env()?;
+    if let Some(iid) = t.initiative {
+        crate::view::maybe_settle_initiative(&f, id, iid).env()?;
+    }
 
     f.report.emit(
         id,

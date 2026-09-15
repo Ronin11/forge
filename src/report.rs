@@ -95,6 +95,15 @@ pub enum Event<'a> {
         ms: u128,
         detail: &'a str,
     },
+    /// The last of an initiative's tasks reached a terminal state: its
+    /// own record is closed (see docs/PROJECTS.md, "One notification and
+    /// one report").
+    InitiativeSettled {
+        id: i64,
+        state: &'a str,
+        #[serde(rename = "cost_usd")]
+        cost: f64,
+    },
 }
 
 impl Event<'_> {
@@ -173,6 +182,9 @@ impl Event<'_> {
                 if *ok { "✓" } else { "✗" },
                 detail.lines().next().unwrap_or("")
             ),
+            Event::InitiativeSettled { id, state, cost } => {
+                format!("initiative {id} settled {state} ({})", money(Some(*cost)))
+            }
         }
     }
 }
@@ -386,6 +398,7 @@ fn render(ev: Event) -> Vec<String> {
                 format!(": {}", detail.lines().next().unwrap_or(""))
             }
         )],
+        Event::InitiativeSettled { .. } => vec![String::new(), summary],
     }
 }
 
@@ -553,6 +566,18 @@ mod tests {
             json!({
                 "type": "op", "name": "build", "kernel": true, "ok": true, "ms": 800,
                 "detail": "ok\nmore", "text": "op ✓ build ok",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::InitiativeSettled {
+                id: 5,
+                state: "done",
+                cost: 2.5,
+            }),
+            json!({
+                "type": "initiative_settled", "id": 5, "state": "done", "cost_usd": 2.5,
+                "text": "initiative 5 settled done ($2.5000)",
             })
         );
     }

@@ -596,6 +596,9 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             t.state = TaskState::Failed;
             t.reason = format!("superseded by task {by} (supervisor): {}", r.reason);
             f.store.update_task(&t)?;
+            if let Some(iid) = t.initiative {
+                crate::view::maybe_settle_initiative(f, id, iid)?;
+            }
             f.report.emit(
                 id,
                 Event::Note {

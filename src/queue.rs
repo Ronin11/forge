@@ -32,6 +32,10 @@ pub struct TaskRequest {
     /// The project this task belongs to; `None` falls to the
     /// repository's default project (`Store::ensure_default_project`).
     pub project: Option<String>,
+    /// The initiative this task belongs to, if any; when set, its
+    /// project wins over `project` (which must then either agree or be
+    /// unset — see docs/PROJECTS.md, "Verbs").
+    pub initiative: Option<i64>,
     pub show_checks: bool,
     pub no_land: bool,
     pub after: Vec<i64>,
@@ -88,27 +92,51 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         bail!("{} is not a git repository", repo.display());
     }
     let repo_str = repo.display().to_string();
+    let initiative = args
+        .initiative
+        .map(|id| {
+            f.store
+                .initiative(id)?
+                .with_context(|| format!("no initiative {id}"))
+        })
+        .transpose()?;
     // A task named a project directly, or falls to its repository's
     // default project, created the first time the repository is seen; a
     // repository listed by several projects is ambiguous and must be
-    // told which with --project (see docs/PROJECTS.md, "Migration").
-    let project_name = match &args.project {
-        Some(p) => {
-            f.store
-                .project(p)?
-                .with_context(|| format!("no project {p}"))?;
-            p.clone()
+    // told which with --project (see docs/PROJECTS.md, "Migration"). A
+    // task named an initiative instead follows that initiative's project
+    // (see docs/PROJECTS.md, "Verbs"): --project must then agree or be
+    // absent.
+    let project_name = if let Some(ini) = &initiative {
+        if let Some(p) = &args.project
+            && p != &ini.project
+        {
+            bail!(
+                "--project {p} does not match initiative {}'s project ({})",
+                ini.id,
+                ini.project
+            );
         }
-        None => match f.store.ensure_default_project(&repo_str)? {
-            Some(name) => name,
-            None => {
-                let names = f.store.projects_listing_repo(&repo_str)?;
-                bail!(
-                    "{repo_str} is listed by several projects ({}); pass --project to say which",
-                    names.join(", ")
-                );
+        ini.project.clone()
+    } else {
+        match &args.project {
+            Some(p) => {
+                f.store
+                    .project(p)?
+                    .with_context(|| format!("no project {p}"))?;
+                p.clone()
             }
-        },
+            None => match f.store.ensure_default_project(&repo_str)? {
+                Some(name) => name,
+                None => {
+                    let names = f.store.projects_listing_repo(&repo_str)?;
+                    bail!(
+                        "{repo_str} is listed by several projects ({}); pass --project to say which",
+                        names.join(", ")
+                    );
+                }
+            },
+        }
     };
     let project = f.store.project(&project_name)?;
     // Configuration layering: operator config, repository config, the
@@ -192,6 +220,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         resume_on_failure: args.resume_on_failure,
         retry_of,
         project: Some(project_name),
+        initiative: initiative.as_ref().map(|i| i.id),
         ..Default::default()
     };
     for &dep in &t.after {
@@ -236,6 +265,69 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         }
     }
     Ok(t)
+}
+
+/// One task parsed from an initiative's `--from` file: a paragraph, its
+/// optional dependency on an earlier paragraph (1-based, within the
+/// file), its optional repository override, and its text.
+pub struct FileTask {
+    pub after: Option<usize>,
+    pub repo: Option<String>,
+    pub text: String,
+}
+
+/// Parse an initiative's task file: one task per paragraph (blank-line
+/// separated), each optionally led by an `after: <n>` line naming an
+/// earlier paragraph in the file as a dependency and a `repo: <path>`
+/// line naming the repository it runs against instead of the project's
+/// first one (see docs/PROJECTS.md, "Verbs"). Both lead lines may appear,
+/// in either order; whatever is left is the task's text.
+pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
+    let mut out: Vec<FileTask> = Vec::new();
+    for para in text.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        // 1-based, and counted only over paragraphs that hold a task, so
+        // it matches the position an `after:` line in a later paragraph
+        // means to name.
+        let this_no = out.len() + 1;
+        let mut after = None;
+        let mut repo = None;
+        let mut body: Vec<&str> = Vec::new();
+        let mut in_lead = true;
+        for line in para.lines() {
+            if in_lead && let Some(n) = line.strip_prefix("after:") {
+                let n: usize = n.trim().parse().with_context(|| {
+                    format!("paragraph {this_no}: `after:` needs a paragraph number")
+                })?;
+                if n == 0 || n >= this_no {
+                    bail!(
+                        "paragraph {this_no}: `after: {n}` does not name an earlier paragraph in this file"
+                    );
+                }
+                after = Some(n);
+                continue;
+            }
+            if in_lead && let Some(p) = line.strip_prefix("repo:") {
+                repo = Some(p.trim().to_string());
+                continue;
+            }
+            in_lead = false;
+            body.push(line);
+        }
+        let body = body.join("\n").trim().to_string();
+        if body.is_empty() {
+            bail!("paragraph {this_no} has no task text");
+        }
+        out.push(FileTask {
+            after,
+            repo,
+            text: body,
+        });
+    }
+    Ok(out)
 }
 
 /// A dependency for a re-queued task: the same one if it landed, the
@@ -326,6 +418,7 @@ pub fn retry_request(
             t.workflow.clone()
         }),
         project: t.project.clone(),
+        initiative: t.initiative,
         show_checks: t.show_checks,
         no_land: !t.land,
         // A retry keeps the arm it started with rather than drawing again.
@@ -434,6 +527,9 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
         .insert_decision_by(id, &old.repo, &question, reason, by, "")?;
     f.store.set_decision_retry(decision, id)?;
     f.report.emit(id, Event::TaskWithdrawn { reason });
+    if let Some(iid) = old.initiative {
+        crate::view::maybe_settle_initiative(f, id, iid)?;
+    }
     Ok(decision)
 }
 
@@ -467,6 +563,30 @@ mod tests {
         for (l, h) in lo.iter().zip(hi.iter()) {
             assert!(!l || *h, "raising the fraction dropped a control draw");
         }
+    }
+
+    #[test]
+    fn parse_initiative_file_reads_after_and_repo_lines_and_leaves_the_rest_as_text() {
+        let tasks = parse_initiative_file(
+            "repo: /a\nfirst task\nsecond line\n\nafter: 1\nsecond task\n\nafter: 1\nrepo: /b\nthird task",
+        )
+        .unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].repo.as_deref(), Some("/a"));
+        assert_eq!(tasks[0].after, None);
+        assert_eq!(tasks[0].text, "first task\nsecond line");
+        assert_eq!(tasks[1].repo, None);
+        assert_eq!(tasks[1].after, Some(1));
+        assert_eq!(tasks[1].text, "second task");
+        assert_eq!(tasks[2].repo.as_deref(), Some("/b"));
+        assert_eq!(tasks[2].after, Some(1));
+        assert_eq!(tasks[2].text, "third task");
+    }
+
+    #[test]
+    fn parse_initiative_file_refuses_after_that_names_itself_or_the_future() {
+        assert!(parse_initiative_file("after: 1\nonly task").is_err());
+        assert!(parse_initiative_file("first task\n\nafter: 2\nsecond task").is_err());
     }
 
     #[test]

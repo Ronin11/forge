@@ -476,6 +476,25 @@ pub struct BacklogItem {
     pub done_at: Option<i64>,
 }
 
+/// The unit of operation above a task: one outcome, pursued as a set of
+/// tasks, tracked as one thing (see docs/PROJECTS.md, "Initiative").
+/// `budget_usd` and `stop_after_same_rule` are nullable-in-spirit only for
+/// the budget: `None` falls to the project's `per_initiative_usd`, while
+/// the stop rule always has a value (the schema default, 3, when the
+/// operator names none).
+#[derive(Default, Debug, Clone)]
+pub struct Initiative {
+    pub id: i64,
+    pub project: String,
+    pub outcome: String,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: i64,
+    pub created_at: i64,
+    /// When every task settled and the initiative's own record closed;
+    /// `None` while it is still open or held.
+    pub settled_at: Option<i64>,
+}
+
 /// Task counts by state and total cost for one project.
 #[derive(Default, Debug, Clone)]
 pub struct ProjectTaskStats {
@@ -1051,28 +1070,35 @@ impl Store {
             .optional()?)
     }
 
-    /// Atomically take the oldest queued task for this worker.
-    /// The oldest queued task whose dependencies have all landed (or
-    /// succeeded without landing, when they were told not to).
-    pub fn claim_next(&self, pid: i64) -> Result<Option<Task>> {
-        let id: Option<i64> = self
-            .lock()
-            .query_row(
-                "UPDATE tasks SET state='running', worker_pid=?1, started_at=?2
-                 WHERE id = (
-                   SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
-                     SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                     WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
-                   ) ORDER BY t.id LIMIT 1)
-                 RETURNING id",
-                params![pid, crate::unix_now()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match id {
-            Some(id) => self.task(id),
-            None => Ok(None),
+    /// Atomically take the oldest queued task for this worker, skipping
+    /// any whose initiative is in `held`: the caller has already found
+    /// those initiatives are holding new claims (see
+    /// `view::initiative_hold`), so the worker leaves their tasks queued
+    /// rather than running them. The oldest queued, unheld task whose
+    /// dependencies have all landed (or succeeded without landing, when
+    /// they were told not to).
+    pub fn claim_next(&self, pid: i64, held: &[i64]) -> Result<Option<Task>> {
+        let candidates: Vec<i64> = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
+                   SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
+                   WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
+                 ) ORDER BY t.id",
+            )?;
+            stmt.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for id in candidates {
+            let Some(t) = self.task(id)? else { continue };
+            if t.initiative.is_some_and(|i| held.contains(&i)) {
+                continue;
+            }
+            if self.claim(id, pid)? {
+                return self.task(id);
+            }
         }
+        Ok(None)
     }
 
     /// Atomically take one specific queued task.
@@ -1935,6 +1961,21 @@ impl Store {
         Ok(())
     }
 
+    /// The project's first repository, in the order it was registered
+    /// (`forge project new --repo` lists it first, or a lone `forge
+    /// project new ... --repo` call the only one): what an initiative's
+    /// `--from` file falls to for a paragraph with no `repo:` line.
+    pub fn first_repo(&self, project: &str) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT repo FROM project_repos WHERE project=?1 ORDER BY rowid LIMIT 1",
+                params![project],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// A project's repositories, alphabetically.
     pub fn project_repos(&self, project: &str) -> Result<Vec<ProjectRepo>> {
         let c = self.lock();
@@ -1995,6 +2036,88 @@ impl Store {
         Ok(Some(name))
     }
 
+    /// Register a new initiative. Returns its id.
+    pub fn create_initiative(&self, ini: &Initiative) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO initiatives (project, outcome, budget_usd, stop_after_same_rule, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                ini.project,
+                ini.outcome,
+                ini.budget_usd,
+                ini.stop_after_same_rule,
+                ini.created_at
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    pub fn initiative(&self, id: i64) -> Result<Option<Initiative>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, project, outcome, budget_usd, stop_after_same_rule, created_at, settled_at
+                 FROM initiatives WHERE id=?1",
+                params![id],
+                initiative_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Every initiative, oldest first; only `project`'s when given.
+    pub fn list_initiatives(&self, project: Option<&str>) -> Result<Vec<Initiative>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, outcome, budget_usd, stop_after_same_rule, created_at, settled_at
+             FROM initiatives WHERE ?1 IS NULL OR project = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![project], initiative_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// An initiative's tasks, oldest first.
+    pub fn initiative_tasks(&self, id: i64) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE initiative=?1 ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![id], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The summed cost of every attempt of every one of an initiative's tasks.
+    pub fn initiative_cost(&self, id: i64) -> Result<f64> {
+        Ok(self.lock().query_row(
+            "SELECT COALESCE(SUM(a.cost_usd), 0) FROM attempts a
+             WHERE a.task_id IN (SELECT id FROM tasks WHERE initiative=?1)",
+            params![id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Every initiative id with at least one queued task: the only ones
+    /// worth checking for a hold before the worker claims (see
+    /// `view::initiative_hold`).
+    pub fn initiatives_with_queued_tasks(&self) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT DISTINCT initiative FROM tasks WHERE state='queued' AND initiative IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Mark an initiative settled now. `false` if it already was.
+    pub fn settle_initiative(&self, id: i64, at: i64) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE initiatives SET settled_at=?2 WHERE id=?1 AND settled_at IS NULL",
+            params![id, at],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Task counts by state and total cost for one project.
     pub fn project_task_stats(&self, project: &str) -> Result<ProjectTaskStats> {
         let c = self.lock();
@@ -2033,6 +2156,18 @@ fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
         supervisor_model: r.get(6)?,
         supervisor_per_lineage: r.get(7)?,
         protected: protected_json.map(|j| serde_json::from_str(&j).unwrap_or_default()),
+    })
+}
+
+fn initiative_from_row(r: &Row) -> rusqlite::Result<Initiative> {
+    Ok(Initiative {
+        id: r.get(0)?,
+        project: r.get(1)?,
+        outcome: r.get(2)?,
+        budget_usd: r.get(3)?,
+        stop_after_same_rule: r.get(4)?,
+        created_at: r.get(5)?,
+        settled_at: r.get(6)?,
     })
 }
 
@@ -2337,7 +2472,7 @@ mod tests {
         let att = s.attempts(id).unwrap();
         assert_eq!(att[0].state, AttemptState::AgentFailed);
         assert_eq!(att[0].reason, "worker died");
-        assert_eq!(s.claim_next(3).unwrap().map(|t| t.id), Some(id));
+        assert_eq!(s.claim_next(3, &[]).unwrap().map(|t| t.id), Some(id));
     }
 
     #[test]
