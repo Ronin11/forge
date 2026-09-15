@@ -65,6 +65,20 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge plugin list --json`: every plugin found, where it came from,
+    /// and whether it is enabled.
+    pub fn plugin_list(&self) -> Result<Vec<PluginRow>> {
+        let v = self.json(&["plugin", "list", "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge plugin status --json`: every plugin's enabled flag and
+    /// running state.
+    pub fn plugin_status(&self) -> Result<Vec<PluginStatusRow>> {
+        let v = self.json(&["plugin", "status", "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge events --since <offset> --follow`, as an iterator of typed
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
@@ -213,6 +227,47 @@ pub struct RequestRow {
     pub repo: String,
     #[serde(default)]
     pub task: String,
+}
+
+/// One row of `forge plugin list --json`: a plugin as discovered.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PluginRow {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub dir: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub restart: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// One row of `forge plugin status --json`: whether a plugin is enabled
+/// and, per the supervisor's last record, whether it is `running` (with
+/// `pid`/`uptime_secs`), `restarting` (with `restart_count`), or `stopped`
+/// (with `last_exit`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PluginStatusRow {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub pid: Option<i64>,
+    #[serde(default)]
+    pub uptime_secs: Option<i64>,
+    #[serde(default)]
+    pub restart_count: Option<u32>,
+    #[serde(default)]
+    pub last_exit: Option<String>,
 }
 
 /// One row of `forge decisions --json`: an operator's or the supervisor's

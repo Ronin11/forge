@@ -14,6 +14,15 @@ case "$1" in
   log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
+  plugin)
+    case "$2" in
+      list) echo '[{"name":"echo","description":"says things","dir":"/p/echo","source":"/p","capabilities":["events"],"restart":"always","enabled":true}]' ;;
+      status) echo '[{"name":"echo","enabled":true,"state":"running","pid":123,"uptime_secs":45,"restart_count":0,"last_exit":null}]' ;;
+      enable) echo "$3 enabled" ;;
+      disable) echo "$3 disabled" ;;
+      logs) echo "log line 1"; echo "log line 2" ;;
+      *) echo "unexpected plugin: $*" >&2; exit 2 ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -107,6 +116,7 @@ fn without_the_token_nothing_is_served() {
         "/api/task/1",
         "/api/journal/1",
         "/api/requests",
+        "/api/plugins",
         "/app.js",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
@@ -184,6 +194,46 @@ fn retrying_a_task_posts_through_to_forge_retry_and_a_get_is_refused() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v["output"].as_str().unwrap().contains("1"), "{body}");
     let (status, _, _) = get(&w.addr, "/api/retry/1", &cookie);
+    assert_eq!(status, 405);
+}
+
+#[test]
+fn the_plugins_route_merges_list_and_status_and_the_action_routes_hit_the_cli() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+    let (status, _, body) = get(&w.addr, "/plugins", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+
+    let (status, _, body) = get(&w.addr, "/api/plugins", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["name"], "echo");
+    assert_eq!(v[0]["description"], "says things");
+    assert_eq!(v[0]["capabilities"][0], "events");
+    assert_eq!(v[0]["enabled"], true);
+    assert_eq!(v[0]["state"], "running");
+    assert_eq!(v[0]["pid"], 123);
+    assert_eq!(v[0]["uptime_secs"], 45);
+
+    let (status, _, body) = post(&w.addr, "/api/plugins/echo/enable", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains("echo enabled"), "{body}");
+    let (status, _, _) = get(&w.addr, "/api/plugins/echo/enable", &cookie);
+    assert_eq!(status, 405);
+
+    let (status, _, body) = post(&w.addr, "/api/plugins/echo/disable", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains("echo disabled"), "{body}");
+
+    let (status, head, body) = get(&w.addr, "/api/plugins/echo/logs", &cookie);
+    assert_eq!(status, 200);
+    assert!(head.contains("Content-Type: text/plain"), "{head}");
+    assert!(
+        body.contains("log line 1") && body.contains("log line 2"),
+        "{body}"
+    );
+    let (status, _, _) = post(&w.addr, "/api/plugins/echo/logs", &cookie);
     assert_eq!(status, 405);
 }
 

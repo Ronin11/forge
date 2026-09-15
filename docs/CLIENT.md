@@ -293,14 +293,17 @@ One row of `forge plugin list --json`: a plugin as discovered.
 ### `PluginStatusRow`
 
 One row of `forge plugin status [<name>] --json`: whether a plugin is
-enabled. Supervision (running, pid, uptime, restarts, last exit) is not
-implemented yet; `supervision` says so until it is.
+enabled and, per the supervisor's last record, its running state.
 
 | field | type | meaning |
 |---|---|---|
 | `name` | string | The plugin's name. |
 | `enabled` | bool | Whether the operator has enabled it. |
-| `supervision` | string | Always `"not yet implemented"` for now. |
+| `state` | string | `running`, `restarting`, or `stopped`. |
+| `pid` | integer or null | Set when `state` is `running`. |
+| `uptime_secs` | integer or null | Set when `state` is `running`. |
+| `restart_count` | integer or null | Set when `state` is `restarting`. |
+| `last_exit` | string or null | Set when `state` is `stopped` and the supervisor has run it before; `null` for a plugin no worker has ever supervised. |
 
 ### Snapshot document
 
@@ -425,3 +428,9 @@ across a rotation, not to the snapshot protocol itself.
   --follow` reframed as one SSE `data:` line per event, and
   `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
   detail view, and run view apply the same re-read rules as above.
+  `/api/plugins` runs `plugin list --json` and `plugin status --json`
+  through `forge-client`'s typed `PluginRow`/`PluginStatusRow` and
+  merges them by name for the `/plugins` page;
+  `POST /api/plugins/<name>/enable` and `.../disable` → `forge plugin
+  enable|disable <name>`; `/api/plugins/<name>/logs` → `forge plugin
+  logs <name>` (no `--follow`), served as plain text.

@@ -22,29 +22,32 @@
   const get = path => call('GET', path);
   const post = path => call('POST', path);
 
-  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run
+  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins
   function route() {
+    if (location.pathname === '/plugins') return { page: 'plugins' };
     const m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
-    return { id: m[1] ? Number(m[1]) : null, run: !!m[2] };
+    return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
 
   function nav(r) {
-    $('#nav').innerHTML = r.id === null ? '' :
-      `<a href="/tasks">tasks</a> <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`;
+    const taskLinks = r.page === 'tasks' && r.id !== null
+      ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
+      : '';
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a>`;
   }
 
   async function render() {
     const r = route();
     nav(r);
     if (view && view.teardown) view.teardown();
-    view = r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id));
+    view = r.page === 'plugins' ? pluginsView() : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
 
@@ -178,6 +181,7 @@
           ${(a.verdict || []).filter(c => !c.ok).map(c => `<div class="failed">✗ ${esc(c.level)} ${esc(c.name)}${c.tail ? ': ' + esc(c.tail).slice(0, 300) : ''}</div>`).join('')}
         </div>`).join('');
       const lineage = (t.lineage || []).map(l => l.id === t.id ? `<b>${l.id} ${esc(l.state)}</b>` : `<a href="/tasks/${l.id}">${l.id}</a> ${esc(l.state)}`).join(' → ');
+      const refs = (t.refs || []).map(r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.kind)}${r.label ? ': ' + esc(r.label) : ''}</a>`).join(' · ');
       const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
       const retry = (t.state === 'failed' || t.state === 'blocked') ? `<button id="retry">retry</button>` : '';
       $('#detail').innerHTML = `
@@ -187,6 +191,7 @@
           <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
           <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
           ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
+          ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
           ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
         </div>
         <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>
@@ -206,6 +211,50 @@
       },
       onEvent(e) {
         if (e.task === id) { renderFeed(); if (INVALIDATES.detail.includes(e.type)) draw().catch(() => {}); }
+      },
+    };
+  }
+
+  // ---- plugins view
+  function pluginsView() {
+    let rows = [];
+    function running(p) {
+      if (p.state === 'running') return `running pid ${p.pid}, up ${p.uptime_secs}s`;
+      if (p.state === 'restarting') return `restarting (x${p.restart_count || 0})`;
+      return p.last_exit ? `stopped: ${p.last_exit}` : 'stopped';
+    }
+    function drawRows() {
+      $('#plugin-rows').innerHTML = rows.map(p => `
+        <tr data-name="${esc(p.name)}">
+          <td>${esc(p.name)}</td>
+          <td class="mute">${esc(p.description)}</td>
+          <td class="mute">${esc((p.capabilities || []).join(', '))}</td>
+          <td><span class="state ${p.enabled ? 'succeeded' : 'mute'}">${p.enabled ? 'enabled' : 'disabled'}</span></td>
+          <td class="mute">${esc(running(p))}</td>
+          <td>
+            <button class="toggle" data-action="${p.enabled ? 'disable' : 'enable'}">${p.enabled ? 'disable' : 'enable'}</button>
+            <a href="/api/plugins/${encodeURIComponent(p.name)}/logs" target="_blank" rel="noopener">logs</a>
+          </td>
+        </tr>`).join('');
+    }
+    async function refresh() {
+      rows = await get('/api/plugins');
+      drawRows();
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Plugins</h2>
+          <table><thead><tr><th>name</th><th>description</th><th>capabilities</th><th>enabled</th><th>state</th><th></th></tr></thead><tbody id="plugin-rows"></tbody></table>`;
+        $('#plugin-rows').addEventListener('click', async ev => {
+          const btn = ev.target.closest('button.toggle');
+          if (!btn) return;
+          const name = btn.closest('tr').dataset.name;
+          btn.disabled = true;
+          await post(`/api/plugins/${encodeURIComponent(name)}/${btn.dataset.action}`);
+          await refresh();
+        });
+        await refresh();
       },
     };
   }
