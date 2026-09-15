@@ -207,14 +207,69 @@ fn id_of(rest: &str) -> Option<i64> {
     rest.trim_matches('/').parse().ok()
 }
 
+/// `/api/plugins/<name>/<action>` split into the plugin's name and the
+/// trailing action (`enable`, `disable`, or `logs`); `None` for anything
+/// else, including a name that would smuggle a path segment.
+fn plugin_action(path: &str) -> Option<(String, &'static str)> {
+    let rest = path.strip_prefix("/api/plugins/")?;
+    for (suffix, action) in [
+        ("/enable", "enable"),
+        ("/disable", "disable"),
+        ("/logs", "logs"),
+    ] {
+        if let Some(name) = rest.strip_suffix(suffix)
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return Some((name.to_string(), action));
+        }
+    }
+    None
+}
+
+/// `forge plugin list --json` and `forge plugin status --json`, through
+/// the client crate's typed rows, merged by name into one document per
+/// plugin for the `/plugins` page.
+fn plugins_merged(forge: &Forge) -> Result<Value> {
+    let rows = forge.plugin_list()?;
+    let mut statuses: std::collections::HashMap<String, forge_client::PluginStatusRow> = forge
+        .plugin_status()?
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+    let merged = rows
+        .into_iter()
+        .map(|r| {
+            let s = statuses.remove(&r.name).unwrap_or_default();
+            serde_json::json!({
+                "name": r.name,
+                "description": r.description,
+                "capabilities": r.capabilities,
+                "enabled": r.enabled,
+                "state": s.state,
+                "pid": s.pid,
+                "uptime_secs": s.uptime_secs,
+                "restart_count": s.restart_count,
+                "last_exit": s.last_exit,
+            })
+        })
+        .collect();
+    Ok(Value::Array(merged))
+}
+
 /// One request: authenticate, then route. Everything but `/` with a
 /// token in the query is refused without a valid token.
 fn handle(req: Request, forge: &Forge, secret: &str) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let (path, query) = (path.to_string(), query.to_string());
-    let retry_post = req.method() == &Method::Post && path.starts_with("/api/retry/");
-    if req.method() != &Method::Get && !retry_post {
+    let write_post = req.method() == &Method::Post
+        && (path.starts_with("/api/retry/")
+            || matches!(
+                plugin_action(&path),
+                Some((_, "enable")) | Some((_, "disable"))
+            ));
+    if req.method() != &Method::Get && !write_post {
         let _ = req.respond(text(405, "read-only for now", "text/plain"));
         return;
     }
@@ -243,11 +298,36 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         return;
     }
     let resp = match path.as_str() {
-        p if p == "/tasks" || p.starts_with("/tasks/") => {
+        p if p == "/tasks" || p.starts_with("/tasks/") || p == "/plugins" => {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
+        "/api/plugins" => json_or_error(plugins_merged(forge)),
+        p if p.starts_with("/api/plugins/") => match plugin_action(p) {
+            Some((name, action @ ("enable" | "disable"))) => {
+                if req.method() != &Method::Post {
+                    text(405, "POST only", "text/plain")
+                } else {
+                    json_or_error(
+                        forge
+                            .run(&["plugin", action, &name])
+                            .map(|out| serde_json::json!({ "output": out })),
+                    )
+                }
+            }
+            Some((name, "logs")) => {
+                if req.method() != &Method::Get {
+                    text(405, "GET only", "text/plain")
+                } else {
+                    match forge.run(&["plugin", "logs", &name]) {
+                        Ok(s) => text(200, &s, "text/plain; charset=utf-8"),
+                        Err(e) => text(502, &e.to_string(), "text/plain"),
+                    }
+                }
+            }
+            _ => text(404, "not found", "text/plain"),
+        },
         "/api/tasks" => {
             // forge log --json with the page's filters: limit, before, q
             // (text or id), state, workflow, repo. Values are passed as
