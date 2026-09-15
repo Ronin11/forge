@@ -356,7 +356,7 @@ pub async fn answer(
         .attempts(id)?
         .into_iter()
         .rev()
-        .find(|a| a.step != "supervisor");
+        .find(|a| a.is_agent());
     if old.state != TaskState::Blocked
         || !matches!(
             last.as_ref().map(|a| a.state),

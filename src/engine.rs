@@ -1154,20 +1154,31 @@ struct VerifiedBranch {
 }
 
 async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
-    let parent = f.store.task(old).ok().flatten()?;
-    if parent.branch.is_empty() {
-        return None;
-    }
-    let attempts = f.store.attempts(old).ok()?;
-    let last = attempts.iter().rev().find(|a| a.step != "supervisor")?;
-    let verified = match last.state {
-        AttemptState::Succeeded => true,
-        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
-        _ => false,
+    // Walk up the retry chain: a retry that itself failed (a rebuild
+    // that capped, an integrate the coder could not settle) still has a
+    // verified ancestor whose branch is the right place to start.
+    let mut id = old;
+    let parent = loop {
+        let parent = f.store.task(id).ok().flatten()?;
+        let attempts = f.store.attempts(id).ok()?;
+        let verified = !parent.branch.is_empty()
+            && attempts
+                .iter()
+                .rev()
+                .find(|a| a.is_agent())
+                .is_some_and(|last| {
+                    let ok = match last.state {
+                        AttemptState::Succeeded => true,
+                        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
+                        _ => false,
+                    };
+                    ok && (last.commits > 0 || attempts.iter().any(|a| a.commits > 0))
+                });
+        if verified {
+            break parent;
+        }
+        id = parent.retry_of?;
     };
-    if !verified || last.commits == 0 && attempts.iter().all(|a| a.commits == 0) {
-        return None;
-    }
     if Path::new(&parent.worktree).join(".git").exists() {
         return Some(VerifiedBranch {
             source: parent.worktree.clone(),

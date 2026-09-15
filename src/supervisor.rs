@@ -233,7 +233,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     let attempts = f.store.attempts(id)?;
     // The question is on the last attempt that was not the supervisor's
     // own: an earlier ruling that failed its rows is on the record too.
-    let Some(last) = attempts.iter().rev().find(|a| a.step != "supervisor") else {
+    let Some(last) = attempts.iter().rev().find(|a| a.is_agent()) else {
         return Ok(Ruled::Skipped("no attempts".into()));
     };
     if last.state != AttemptState::NeedsInput {
