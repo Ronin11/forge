@@ -46,7 +46,13 @@ until the isolation work below is done.
   hold; failures open a task automatically; a change in their tool's
   API is our problem.
 - **A record.** Every task, attempt, decision and cost, in their portal,
-  forever.
+  forever: the exact prompt each agent was given, every check that ran
+  and its output, every question and who answered it. This is the answer
+  to the obvious objection. "No human reviewed this" is a hard sell to
+  an auditor; "no human reviewed it, and here is every gate it passed
+  and every decision anyone made about it" is a different conversation,
+  and one most of this industry cannot have, because their record stops
+  at the pull request.
 - **A human.** For decisions only they can make, and for the first
   conversation. The supervisor and the investigator take the rest.
 
@@ -115,13 +121,21 @@ Standard, the price is wrong or the intake is.
 In order. The first two are the ones that decide whether this is safe
 to sell; the rest are plumbing on tenancy that already exists.
 
-1. **Isolation that is a boundary.** Today the sandbox is bubblewrap
-   with the operator's toolchains bound in and unrestricted network. A
-   customer's repository content is untrusted input to a model that runs
-   commands. Each task runs in its own microVM or container with only
-   that customer's tree and secrets, egress limited to what the task
-   declares. This touches `sandbox.rs` and the launch path only; the
-   kernel already treats the sandbox as a wrapper around one command.
+1. **Isolation that is a boundary. The trigger is the first task filed
+   from text a stranger wrote, not the first customer.** The documented
+   2026 attack pattern (Clinejection, RoguePilot, poisoned agent config
+   files) is one sentence: an agent holding elevated credentials while
+   reading untrusted input. That describes Forge today. The agent runs
+   with the operator's git credentials, can push, has unrestricted
+   network egress, and the only thing between a hostile issue body and
+   that authority is a sentence in a prompt telling the model that
+   repository text is data. Each task must run in its own microVM or
+   container with only that customer's tree and secrets, egress limited
+   to what the task declares, and credentials scoped to the task and
+   expired when it ends. This touches `sandbox.rs` and the launch path
+   only; the kernel already treats the sandbox as a wrapper around one
+   command. **Until it lands, the github-issues plugin stays disabled**:
+   it is the piece that arms the pattern.
 2. **Agents on API keys, metered per customer.** The claude CLI on a
    subscription cannot be resold and its rate windows are shared. The
    agent runs on the API with a key per customer; the per-attempt cost
@@ -137,31 +151,56 @@ to sell; the rest are plumbing on tenancy that already exists.
    the customer's automation where it lives (a scheduled job, a
    webhook), with its own check. Operations already exist; this is one
    more action file and a host to run it on.
-5. **The customer portal.** Accounts (sign-in with Google or GitHub),
+5. **Digital twins of the tools a customer's automation talks to.** The
+   verification moat, and the piece this plan did not have. A customer's
+   automation is mostly integration: their accounting system, their
+   mailbox, their ticket tracker. Checks that hit the real services are
+   slow, rate limited, and cannot be made to fail on demand, so neither
+   the agent nor the hidden suite can iterate against them. The answer,
+   taken from StrongDM: generate self-contained behavioural clones of
+   those APIs from their public documentation, run them locally, and
+   point the checks at the clone. Thousands of runs an hour, no keys,
+   and failure modes you can ask for. Without this the automations are
+   verified shallowly, which is the one thing this business cannot
+   afford.
+
+6. **The customer portal.** Accounts (sign-in with Google or GitHub),
    membership in a customer, operator and viewer roles, per-customer
    tokens, TLS. Built on the client contract (`docs/CLIENT.md`) and the
    client crate landing this week, as a third client beside the TUI and
    the operator's web page. Requests, tasks, decisions and costs, and
    `forge answer` as a button for the questions that are theirs.
-6. **Secrets.** A per-customer store, injected into that customer's
+7. **Secrets.** A per-customer store, injected into that customer's
    sandbox as environment, never into a prompt, never into a log.
-7. **Fairness and quotas.** The queue claims oldest-first across every
+8. **Fairness and quotas.** The queue claims oldest-first across every
    repository; it needs round-robin across customers and a concurrency
    cap per customer. Budgets per task and per day already exist.
-8. **Retention and deletion.** Attempt logs hold customer code. A
+9. **Retention and deletion.** Attempt logs hold customer code. A
    retention policy, backups, and deletion on churn.
-9. **Intake by email**, so the first request never needs a login.
+10. **Intake by email**, so the first request never needs a login.
 
 Rough sizes: items 1 and 2 are two weeks each and cannot be skipped;
-3 and 4 a week together; 5 two weeks on the client crate; 6 through 9
-a week together.
+3 and 4 a week together; 5 is open-ended and pays for itself per
+integration; 6 two weeks on the client crate; 7 through 10 a week
+together.
 
 ## Risks, plainly
 
-- **Prompt injection.** A customer's data (an email, a PDF, a web page)
-  reaches the agent as untrusted content. The isolation work bounds
-  the blast radius to that customer; nothing bounds it further. Do not
-  take regulated data until item 1 is done and reviewed.
+- **Prompt injection, which is no longer hypothetical.** A customer's
+  data (an email, a PDF, a web page, an issue body) reaches the agent as
+  untrusted content, and 2026 has in-the-wild cases of exactly this
+  chain: a payload in an issue title compromising a coding tool's
+  published package, hidden comments making an agent exfiltrate its
+  token. The isolation work bounds the blast radius to one customer;
+  nothing bounds it further. Do not take regulated data, and do not open
+  external intake, until item 1 is done and reviewed.
+- **Our evidence is the favourable case.** Everything Forge has built is
+  greenfield and agent-authored: itself, and a game grown from a seed.
+  The independent research is consistent that autonomy works best on
+  exactly that and struggles on mature, high-constraint codebases, which
+  is where a customer's existing systems live. One operator, two
+  repositories, three weeks. Treat the numbers above as a floor on what
+  is possible and as no evidence at all about brownfield.
 - **The human rung.** If the supervisor answers fewer questions in
   customer work than in our own, the model above breaks on support
   time. This is the first thing the design partners measure.
@@ -187,6 +226,13 @@ customer per month; time from request to landed; customer-visible
 failures per month; and supervisor rulings that a later task showed to
 be wrong. All but the human minutes already exist in the store and the
 decisions table.
+
+One more, which the independent research calls the tell and which we do
+not yet compute: **defect escape**, the share of landed work that a
+later task had to fix. Throughput without it is the number every
+optimistic vendor report leads with and every independent study
+distrusts. It is derivable from what the store already holds, and it is
+the honest counterweight to a clean landing rate.
 
 ## The first ninety days
 
