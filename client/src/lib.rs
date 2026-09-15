@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 /// The `forge` binary: `FORGE_BIN`, else `forge` on `PATH` — resolved
 /// exactly as `tui/src/main.rs` resolves it.
+#[derive(Clone)]
 pub struct Forge {
     pub bin: String,
 }

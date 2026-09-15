@@ -107,6 +107,7 @@ fn without_the_token_nothing_is_served() {
         "/api/task/1",
         "/api/journal/1",
         "/api/requests",
+        "/app.js",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -129,7 +130,15 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
         let (status, _, body) = get(&w.addr, view, &cookie);
         assert_eq!(status, 200, "{view}");
         assert!(body.contains("<title>Forge</title>"), "{view}");
+        assert!(body.contains(r#"<script src="/app.js">"#), "{view}");
     }
+    let (status, head, body) = get(&w.addr, "/app.js", &cookie);
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("Content-Type: application/javascript"),
+        "{head}"
+    );
+    assert!(body.contains("INVALIDATES"), "{body}");
     // The task listing is forge log --json with the page's filters as argv.
     let (status, _, body) = get(
         &w.addr,

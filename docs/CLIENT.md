@@ -177,7 +177,7 @@ the store's column names):
 unchanged from what the attempt itself produced: `inputs`, `outputs`,
 `verdict`, `envelope`. A client that wants what a coder attempt's
 `outputs` or `verdict` contain reads `src/audit.rs`'s `Outputs` type and
-`checks::CheckResult`; the web UI's run view (`web/src/index.html`)
+`checks::CheckResult`; the web UI's run view (`web/src/app.js`)
 picks specific keys out of `inputs`/`outputs` (`model`, `summary`,
 `changed_files`, `tools`, and so on) as an example of what's there, not
 an exhaustive list — new keys can appear without notice, since these
@@ -330,7 +330,7 @@ across a rotation, not to the snapshot protocol itself.
   `log --json --limit 60` and `requests --json` on a list-dirty event;
   `trace ID --json` to open a task and again on a trace-dirty event for
   the task currently open; `forge retry [--chain]` to act.
-- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`): every
+- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`): every
   route under `/api/` runs one verb and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`
   (query params map to `--limit`/`--before`/`--grep`/`--state`/

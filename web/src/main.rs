@@ -19,6 +19,8 @@
 //! operator.
 
 use anyhow::{Context, Result};
+use forge_client::Forge;
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -26,38 +28,7 @@ use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const INDEX: &str = include_str!("index.html");
-
-/// The forge binary: `FORGE_BIN`, else `forge` on PATH.
-#[derive(Clone)]
-struct Forge {
-    bin: String,
-}
-
-impl Forge {
-    fn detect() -> Forge {
-        Forge {
-            bin: std::env::var("FORGE_BIN").unwrap_or_else(|_| "forge".into()),
-        }
-    }
-
-    /// One verb's JSON output, as text (passed through untouched).
-    fn json(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new(&self.bin)
-            .args(args)
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
-        if !out.status.success() {
-            anyhow::bail!(
-                "{} {} failed: {}",
-                self.bin,
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    }
-}
+const APP_JS: &str = include_str!("app.js");
 
 /// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
 fn home() -> PathBuf {
@@ -173,9 +144,9 @@ fn text(status: u16, body: &str, ctype: &str) -> Response<std::io::Cursor<Vec<u8
         .with_header(h("Cache-Control", "no-store"))
 }
 
-fn json_or_error(r: Result<String>) -> Response<std::io::Cursor<Vec<u8>>> {
+fn json_or_error(r: Result<Value>) -> Response<std::io::Cursor<Vec<u8>>> {
     match r {
-        Ok(s) => text(200, &s, "application/json"),
+        Ok(v) => text(200, &v.to_string(), "application/json"),
         Err(e) => text(
             502,
             &serde_json::json!({ "error": e.to_string() }).to_string(),
@@ -275,6 +246,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         p if p == "/tasks" || p.starts_with("/tasks/") => {
             text(200, INDEX, "text/html; charset=utf-8")
         }
+        "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
         "/api/tasks" => {
             // forge log --json with the page's filters: limit, before, q
@@ -327,8 +299,8 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                 match id_of(&p["/api/retry/".len()..]) {
                     Some(id) => json_or_error(
                         forge
-                            .json(&["retry", &id.to_string()])
-                            .map(|out| serde_json::json!({ "output": out }).to_string()),
+                            .run(&["retry", &id.to_string()])
+                            .map(|out| serde_json::json!({ "output": out })),
                     ),
                     None => text(404, "no such task", "text/plain"),
                 }
@@ -355,7 +327,7 @@ fn main() -> Result<()> {
         }
     }
     let secret = token(&home())?;
-    let forge = Forge::detect();
+    let forge = Forge::new();
     let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("binding {bind}: {e}"))?;
     let addr = server.server_addr();
     eprintln!("forge-web listening on {addr}");
