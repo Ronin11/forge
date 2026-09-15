@@ -330,6 +330,52 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     Ok(out)
 }
 
+/// Split a task's recorded plan into items: paragraphs (blank-line
+/// separated), trimmed, empties dropped. A plan is prose from the
+/// investigate directive rather than a delimited list, so this uses the
+/// same split `parse_initiative_file` gives a hand-written file.
+pub fn plan_items(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// File a task's recorded plan into an initiative: one task per plan
+/// item, in order, each depending on the previous, against the
+/// originating task's repository, with the originating task recorded as
+/// a reference of kind `plan` on each (see docs/PROJECTS.md, "Tasks").
+/// Returns the new tasks' ids, in order. The caller checks the plan is
+/// non-empty; called only once one is known to exist.
+pub async fn file_plan(f: &Forge, origin: &Task, initiative: i64) -> Result<Vec<i64>> {
+    let items = plan_items(&origin.plan);
+    let mut ids: Vec<i64> = Vec::new();
+    for item in &items {
+        let req = TaskRequest {
+            repo: PathBuf::from(&origin.repo),
+            task: item.clone(),
+            model: "sonnet".to_string(),
+            max_turns: 100,
+            retries: 1,
+            timeout_secs: 1800,
+            after: ids.last().copied().into_iter().collect(),
+            initiative: Some(initiative),
+            ..Default::default()
+        };
+        let t = enqueue(f, &req, None).await?;
+        f.store.insert_task_ref(
+            t.id,
+            "plan",
+            &format!("forge://task/{}", origin.id),
+            "",
+            "operator",
+        )?;
+        ids.push(t.id);
+    }
+    Ok(ids)
+}
+
 /// A dependency for a re-queued task: the same one if it landed, the
 /// newest retry of it if there is one, else a refusal naming it.
 pub fn map_dep(f: &Forge, d: i64, made: &std::collections::HashMap<i64, i64>) -> Result<i64> {
@@ -581,6 +627,13 @@ mod tests {
         assert_eq!(tasks[2].repo.as_deref(), Some("/b"));
         assert_eq!(tasks[2].after, Some(1));
         assert_eq!(tasks[2].text, "third task");
+    }
+
+    #[test]
+    fn plan_items_splits_on_blank_lines_and_drops_empties() {
+        let items = plan_items("first item\nmore of it\n\n\nsecond item\n\nthird item\n");
+        assert_eq!(items, vec!["first item\nmore of it", "second item", "third item"]);
+        assert_eq!(plan_items("  \n\n  "), Vec::<String>::new());
     }
 
     #[test]

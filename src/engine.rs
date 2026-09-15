@@ -647,6 +647,34 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                             ),
                                         },
                                     );
+                                    // file_into_initiative: the plan's items become
+                                    // sibling tasks in the same initiative instead
+                                    // of this task running the code step itself.
+                                    if step.action.file_into_initiative
+                                        && let Some(iid) = t.initiative
+                                    {
+                                        let filed =
+                                            crate::queue::file_plan(&f, &t, iid).await.task()?;
+                                        f.report.emit(
+                                            id,
+                                            Event::Note {
+                                                text: &format!(
+                                                    "filed    {} task(s) into initiative {iid}: {}",
+                                                    filed.len(),
+                                                    filed
+                                                        .iter()
+                                                        .map(i64::to_string)
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ")
+                                                ),
+                                            },
+                                        );
+                                        end = Some(End::Filed {
+                                            n: filed.len(),
+                                            initiative: iid,
+                                        });
+                                        break 'steps;
+                                    }
                                 }
                                 step_ok = true;
                                 break;
@@ -1099,6 +1127,10 @@ enum End {
     },
     /// The task's cost cap was reached before it finished.
     Budget(String),
+    /// A plan step with `file_into_initiative` filed its items as
+    /// sibling tasks in the task's initiative; nothing changed the tree,
+    /// so nothing is pushed.
+    Filed { n: usize, initiative: i64 },
 }
 
 /// Names the L0 rows the last attempt's verdict failed, the same shape
@@ -1118,7 +1150,7 @@ impl End {
     fn pushes(&self) -> bool {
         match self {
             End::Verified | End::Unverified(_) => true,
-            End::Landed(_) | End::Budget(_) => false,
+            End::Landed(_) | End::Budget(_) | End::Filed { .. } => false,
             End::Blocked { demoted, .. } => *demoted,
             End::Failed { pushes, .. } => *pushes,
         }
@@ -1126,7 +1158,7 @@ impl End {
 
     fn task_state(&self) -> TaskState {
         match self {
-            End::Verified | End::Landed(_) => TaskState::Succeeded,
+            End::Verified | End::Landed(_) | End::Filed { .. } => TaskState::Succeeded,
             End::Unverified(_) => TaskState::Unverified,
             End::Blocked { .. } => TaskState::Blocked,
             End::Failed { .. } | End::Budget(_) => TaskState::Failed,
@@ -1138,6 +1170,9 @@ impl End {
             End::Verified => String::new(),
             End::Landed(sha) => {
                 format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)])
+            }
+            End::Filed { n, initiative } => {
+                format!("filed {n} task(s) into initiative {initiative}")
             }
             End::Unverified(r) | End::Blocked { reason: r, .. } | End::Budget(r) => r.clone(),
             End::Failed {

@@ -467,6 +467,16 @@ enum InitiativeCmd {
         #[arg(long = "stop-after")]
         stop_after: Option<u32>,
     },
+    /// File a task's recorded plan (from the investigate directive) into
+    /// a new initiative: one task per plan item, chained in order,
+    /// against the task's repository, in the task's project
+    FromPlan {
+        /// The task whose `t.plan` is filed; refused if it has none
+        task: i64,
+        /// The initiative's outcome (default: the task's own text)
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Every initiative, its state, task counts and cost
     List {
         /// Only this project's
@@ -652,6 +662,9 @@ pub async fn main() -> Result<()> {
                 budget,
                 stop_after,
             } => initiative_new(project, outcome, from, budget, stop_after).await,
+            InitiativeCmd::FromPlan { task, outcome } => {
+                initiative_from_plan(task, outcome).await
+            }
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),
@@ -1179,6 +1192,34 @@ async fn initiative_new(
             out!("queued task {} (paragraph {})", t.id, ids.len() + 1);
             ids.push(t.id);
         }
+    }
+    Ok(())
+}
+
+async fn initiative_from_plan(task: i64, outcome: Option<String>) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let t = f
+        .store
+        .task(task)?
+        .with_context(|| format!("no task {task}"))?;
+    if t.plan.is_empty() {
+        bail!("task {task} has no recorded plan (the investigate directive did not run, or found none)");
+    }
+    let project = t
+        .project
+        .clone()
+        .with_context(|| format!("task {task} has no project"))?;
+    let id = f.store.create_initiative(&crate::store::Initiative {
+        project,
+        outcome: outcome.unwrap_or_else(|| t.task.clone()),
+        stop_after_same_rule: 3,
+        created_at: unix_now(),
+        ..Default::default()
+    })?;
+    out!("created initiative {id}");
+    let ids = crate::queue::file_plan(&f, &t, id).await?;
+    for (n, tid) in ids.iter().enumerate() {
+        out!("queued task {tid} (plan item {})", n + 1);
     }
     Ok(())
 }
