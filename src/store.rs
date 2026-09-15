@@ -214,6 +214,12 @@ pub struct Attempt {
     pub output_tokens: Option<i64>,
     pub cache_read_input_tokens: Option<i64>,
     pub cache_creation_input_tokens: Option<i64>,
+    /// `agent::Outcome::early_signals` as JSON: which of `Watch`'s signs
+    /// tripped, whether or not they ended the run.
+    pub early_signals: String,
+    /// `agent::Outcome::early_near` as JSON: which signs were within 20%
+    /// of tripping and did not, so the thresholds can be tuned from here.
+    pub early_near: String,
 }
 
 /// Everything `Store::finish_attempt` writes back for an attempt that has run to completion.
@@ -254,6 +260,8 @@ pub struct FinishAttempt {
     pub output_tokens: Option<i64>,
     pub cache_read_input_tokens: Option<i64>,
     pub cache_creation_input_tokens: Option<i64>,
+    pub early_signals: String,
+    pub early_near: String,
 }
 
 pub struct RateLimitSample {
@@ -563,6 +571,10 @@ CREATE TABLE task_refs (
 );
 CREATE INDEX task_refs_task ON task_refs(task_id, id);
 ",
+    "
+ALTER TABLE attempts ADD COLUMN early_signals TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE attempts ADD COLUMN early_near TEXT NOT NULL DEFAULT '[]';
+",
 ];
 
 const TASK_COLUMNS: &[&str] = &[
@@ -705,6 +717,8 @@ const ATTEMPT_COLUMNS: &[&str] = &[
     "output_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
+    "early_signals",
+    "early_near",
 ];
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
@@ -749,6 +763,8 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         output_tokens: r.get("output_tokens")?,
         cache_read_input_tokens: r.get("cache_read_input_tokens")?,
         cache_creation_input_tokens: r.get("cache_creation_input_tokens")?,
+        early_signals: r.get("early_signals")?,
+        early_near: r.get("early_near")?,
     })
 }
 
@@ -1085,7 +1101,8 @@ impl Store {
              tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
              result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
              rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
-             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28 WHERE id=?1",
+             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
+             early_signals=?29, early_near=?30 WHERE id=?1",
             params![
                 a.id,
                 a.state.as_str(),
@@ -1114,8 +1131,9 @@ impl Store {
                 a.input_tokens,
                 a.output_tokens,
                 a.cache_read_input_tokens,
-                a.cache_creation_input_tokens
-
+                a.cache_creation_input_tokens,
+                a.early_signals,
+                a.early_near,
             ],
         )?;
         Ok(())
@@ -1792,6 +1810,8 @@ mod tests {
             output_tokens: None,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            early_signals: "[]".into(),
+            early_near: "[]".into(),
         })
         .unwrap();
 

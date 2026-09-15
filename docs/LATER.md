@@ -124,19 +124,28 @@ Worth picking up once the escalation ladder is in, since the questions
 it answers ("why did attempt 3 go wrong here?") are the ones a supervisor
 will need to answer too.
 
-## Early-ending thresholds as config (2026-09-14)
+## Early-ending thresholds as config (2026-09-14, knob added 2026-09-15)
 
-The watcher that ends an attempt when two signs of going nowhere trip
+The watcher that ends an attempt when enough signs of going nowhere trip
 (`Watch` in src/agent.rs: thirty calls without an edit, fifteen edits
-without a commit, one command run five times, any two together) has its
+without a commit, one command run five times, any two together) had its
 thresholds and its "any two" count as constants. They are guesses until
 the 100-turn regime has produced data; a replay over the first 244
 attempts found no case they would have stopped, because the old 30-turn
-cap ended everything first. Once the values have earned themselves, lift
-them into a `[watch]` section of the data-dir config, with a per-task
-override on `forge add` shaped like `--max-turns`. The read-only
-exemption for the review and plan contracts stays in code: it is a
-property of the contract, not a preference.
+cap ended everything first.
+
+The knob now exists: `[early_ending]` in the operator's data-dir config
+(`no_edit_calls`, `edits_without_commit`, `repeats`, `signals_to_end`,
+defaults matching the numbers above; `signals_to_end = 0` disables early
+ending). Every attempt now also records, from `Watch`, which signals
+tripped (`early_signals`) and which were within 20% of tripping and did
+not (`early_near`), both as JSON columns on `attempts`, so the values can
+be tuned from the store once they have earned themselves. Still missing:
+a per-task override on `forge add` shaped like `--max-turns`, and the
+actual tuning pass once `early_signals`/`early_near` have accumulated
+enough rows to read. The read-only exemption for the review and plan
+contracts stays in code: it is a property of the contract, not a
+preference.
 
 ## A second runner for the supervisor (2026-09-14)
 

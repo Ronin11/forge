@@ -189,11 +189,33 @@ struct HomeRaw {
     sandbox: SandboxRaw,
     #[serde(default)]
     supervisor: SupervisorRaw,
+    #[serde(default)]
+    early_ending: EarlyEndingRaw,
     /// Extra roots to discover plugins under, beyond `<FORGE2_HOME>/plugins`
     /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
     /// this config file's own directory (`<FORGE2_HOME>`).
     #[serde(default)]
     plugin_dirs: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct EarlyEndingRaw {
+    no_edit_calls: Option<u32>,
+    edits_without_commit: Option<u32>,
+    repeats: Option<u32>,
+    signals_to_end: Option<u32>,
+}
+
+/// Thresholds for `agent::Watch`, the live check that ends an attempt going
+/// nowhere: no edit after this many tool calls, this many edits without a
+/// commit, or one command run this many times. `signals_to_end` of these
+/// tripping together ends the run; 0 disables early ending entirely.
+#[derive(Clone, Copy, Debug)]
+pub struct EarlyEnding {
+    pub no_edit_calls: u32,
+    pub edits_without_commit: u32,
+    pub repeats: u32,
+    pub signals_to_end: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -237,6 +259,7 @@ pub struct HomeConfig {
     pub budget: Budget,
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
+    pub early_ending: EarlyEnding,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
 }
@@ -317,6 +340,17 @@ model = \"opus\"
 max_turns = 30
 # Answers per piece of work before the question reaches you regardless.
 per_lineage = 2
+
+[early_ending]
+# The live check that ends an attempt when it looks like it is going
+# nowhere: no edit after this many tool calls, this many edits without a
+# commit, or one command run this many times. `signals_to_end` of these
+# tripping together ends the run early (the session is kept and resumed
+# with a prompt naming them); 0 disables early ending entirely.
+no_edit_calls = 30
+edits_without_commit = 15
+repeats = 5
+signals_to_end = 2
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -372,6 +406,12 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             max_turns: raw.supervisor.max_turns.unwrap_or(30),
             timeout_secs: raw.supervisor.timeout_secs.unwrap_or(900),
             per_lineage: raw.supervisor.per_lineage.unwrap_or(2),
+        },
+        early_ending: EarlyEnding {
+            no_edit_calls: raw.early_ending.no_edit_calls.unwrap_or(30),
+            edits_without_commit: raw.early_ending.edits_without_commit.unwrap_or(15),
+            repeats: raw.early_ending.repeats.unwrap_or(5),
+            signals_to_end: raw.early_ending.signals_to_end.unwrap_or(2),
         },
         plugin_dirs: raw
             .plugin_dirs
@@ -540,5 +580,36 @@ mod tests {
             from_template.supervisor.per_lineage,
             from_defaults.supervisor.per_lineage
         );
+        assert_eq!(
+            from_template.early_ending.no_edit_calls,
+            from_defaults.early_ending.no_edit_calls
+        );
+        assert_eq!(
+            from_template.early_ending.edits_without_commit,
+            from_defaults.early_ending.edits_without_commit
+        );
+        assert_eq!(
+            from_template.early_ending.repeats,
+            from_defaults.early_ending.repeats
+        );
+        assert_eq!(
+            from_template.early_ending.signals_to_end,
+            from_defaults.early_ending.signals_to_end
+        );
+    }
+
+    #[test]
+    fn early_ending_overrides_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[early_ending]\nno_edit_calls = 10\nedits_without_commit = 4\nrepeats = 3\nsignals_to_end = 0\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.early_ending.no_edit_calls, 10);
+        assert_eq!(c.early_ending.edits_without_commit, 4);
+        assert_eq!(c.early_ending.repeats, 3);
+        assert_eq!(c.early_ending.signals_to_end, 0);
     }
 }

@@ -39,12 +39,17 @@ pub struct Outcome {
     pub rate_limits: RateLimits,
     /// The CLI session, so a capped attempt can be resumed where it stopped.
     pub session_id: Option<String>,
-    /// Forge ended the run itself because two signs of an attempt going
+    /// Forge ended the run itself because enough signs of an attempt going
     /// nowhere tripped (see `Watch`): the signs, for the record and the
     /// continuation prompt.
     pub ended_early: Option<String>,
-    /// Which signs tripped: "no-edit", "uncommitted", "repeat".
+    /// Which signs tripped: "no-edit", "uncommitted", "repeat". Recorded
+    /// whether or not they ended the run, so the thresholds can be tuned
+    /// from the store.
     pub early_signals: Vec<&'static str>,
+    /// Which signs were within 20% of tripping when the run ended, and did
+    /// not: the same tuning signal for thresholds that were almost right.
+    pub early_near: Vec<&'static str>,
     /// The CLI ended the run at its turn limit.
     pub max_turns_hit: bool,
     /// The provider refused the run for a rate window: not the agent's fault.
@@ -152,26 +157,42 @@ pub struct Launch<'a> {
     /// The JSON schema the CLI holds the structured result to; the
     /// envelope for every directive, the supervisor's own for it.
     pub schema: &'a str,
+    /// Thresholds for `Watch`, the operator's `[early_ending]` config.
+    pub early_ending: crate::config::EarlyEnding,
 }
 
 /// Live signs that an attempt is going nowhere, computed from the tool
-/// calls as they stream. Any two together end the run: the session is
-/// kept and resumed with a prompt that names them, which is cheaper than
-/// letting the cap arrive. Thresholds come from the first 214 attempts,
-/// where capped coders had made no edit by call 30 and the ones that
-/// did edit were committing every few edits.
-#[derive(Default)]
+/// calls as they stream. `signals_to_end` of them together end the run:
+/// the session is kept and resumed with a prompt that names them, which is
+/// cheaper than letting the cap arrive. Default thresholds come from the
+/// first 214 attempts, where capped coders had made no edit by call 30 and
+/// the ones that did edit were committing every few edits; the operator's
+/// `[early_ending]` config can override them (see `src/config.rs`).
 struct Watch {
+    thresholds: crate::config::EarlyEnding,
     calls: u32,
     edits: u32,
     edits_since_commit: u32,
     commands: std::collections::HashMap<String, u32>,
 }
 
+/// Whether `value` sits in the top 20% below `threshold`, without having
+/// reached it: close enough to call a near miss. A threshold of 0 has no
+/// "near" band, only tripped or not.
+fn is_near(value: u32, threshold: u32) -> bool {
+    threshold > 0 && value < threshold && (value as f64) >= (threshold as f64) * 0.8
+}
+
 impl Watch {
-    const NO_EDIT_CALLS: u32 = 30;
-    const EDITS_WITHOUT_COMMIT: u32 = 15;
-    const REPEATS: u32 = 5;
+    fn new(thresholds: crate::config::EarlyEnding) -> Self {
+        Watch {
+            thresholds,
+            calls: 0,
+            edits: 0,
+            edits_since_commit: 0,
+            commands: std::collections::HashMap::new(),
+        }
+    }
 
     fn saw(&mut self, name: &str, input: &Value) {
         self.calls += 1;
@@ -193,28 +214,64 @@ impl Watch {
         }
     }
 
+    fn max_repeat(&self) -> Option<(&str, u32)> {
+        self.commands
+            .iter()
+            .max_by_key(|(_, n)| **n)
+            .map(|(cmd, n)| (cmd.as_str(), *n))
+    }
+
     /// The signs that have tripped: (kind, what happened).
     fn tripped(&self, writes: bool) -> Vec<(&'static str, String)> {
+        let t = &self.thresholds;
         let mut out = Vec::new();
-        if writes && self.calls >= Self::NO_EDIT_CALLS && self.edits == 0 {
+        if writes && self.calls >= t.no_edit_calls && self.edits == 0 {
             out.push(("no-edit", format!("{} tool calls with no edit", self.calls)));
         }
-        if writes && self.edits_since_commit >= Self::EDITS_WITHOUT_COMMIT {
+        if writes && self.edits_since_commit >= t.edits_without_commit {
             out.push((
                 "uncommitted",
                 format!("{} edits since the last commit", self.edits_since_commit),
             ));
         }
-        if let Some((cmd, n)) = self
-            .commands
-            .iter()
-            .filter(|(_, n)| **n >= Self::REPEATS)
-            .max_by_key(|(_, n)| **n)
+        if let Some((cmd, n)) = self.max_repeat()
+            && n >= t.repeats
         {
             let short: String = cmd.chars().take(60).collect();
             out.push(("repeat", format!("`{short}` run {n} times")));
         }
         out
+    }
+
+    /// Signs within 20% of tripping but that have not: the same signals,
+    /// so the thresholds can be tuned from attempts that did not trip them.
+    fn near(&self, writes: bool) -> Vec<&'static str> {
+        let t = &self.thresholds;
+        let mut out = Vec::new();
+        if writes && self.edits == 0 && is_near(self.calls, t.no_edit_calls) {
+            out.push("no-edit");
+        }
+        if writes && is_near(self.edits_since_commit, t.edits_without_commit) {
+            out.push("uncommitted");
+        }
+        if let Some((_, n)) = self.max_repeat()
+            && is_near(n, t.repeats)
+        {
+            out.push("repeat");
+        }
+        out
+    }
+
+    /// The signs that have tripped, when there are enough of them to end
+    /// the run; `None` when `signals_to_end` is 0 (early ending disabled)
+    /// or too few have tripped yet.
+    fn should_end(&self, writes: bool) -> Option<Vec<(&'static str, String)>> {
+        let n = self.thresholds.signals_to_end;
+        if n == 0 {
+            return None;
+        }
+        let tripped = self.tripped(writes);
+        (tripped.len() >= n as usize).then_some(tripped)
     }
 }
 
@@ -277,7 +334,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     )?;
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
-    let mut watch = Watch::default();
+    let mut watch = Watch::new(l.early_ending);
     let stdout = child.stdout.take().context("agent stdout")?;
     let mut lines = BufReader::new(stdout).lines();
 
@@ -313,8 +370,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                             }
                         }
                     }
-                    let tripped = watch.tripped(l.writes);
-                    if tripped.len() >= 2 {
+                    if let Some(tripped) = watch.should_end(l.writes) {
                         let text = tripped
                             .iter()
                             .map(|(_, w)| w.as_str())
@@ -332,7 +388,6 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                                 text: &format!("early    stopped: {text}"),
                             },
                         );
-                        out.early_signals = tripped.iter().map(|(k, _)| *k).collect();
                         out.ended_early = Some(text);
                         break;
                     }
@@ -416,6 +471,8 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         }
         Err(_) => out.timed_out = true,
     }
+    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
+    out.early_near = watch.near(l.writes);
     if out.timed_out {
         child.kill().await.ok();
         child.wait().await.ok();
@@ -436,4 +493,78 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         )?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EarlyEnding;
+    use serde_json::json;
+
+    fn thresholds(
+        no_edit_calls: u32,
+        edits_without_commit: u32,
+        repeats: u32,
+        signals_to_end: u32,
+    ) -> EarlyEnding {
+        EarlyEnding {
+            no_edit_calls,
+            edits_without_commit,
+            repeats,
+            signals_to_end,
+        }
+    }
+
+    #[test]
+    fn non_default_thresholds_trip_at_the_configured_count() {
+        let mut w = Watch::new(thresholds(3, 100, 100, 2));
+        for _ in 0..3 {
+            w.saw("Read", &Value::Null);
+        }
+        let tripped = w.tripped(true);
+        assert_eq!(tripped.len(), 1);
+        assert_eq!(tripped[0].0, "no-edit");
+        assert!(
+            w.should_end(true).is_none(),
+            "only one of the two required signals has tripped"
+        );
+    }
+
+    #[test]
+    fn should_end_fires_once_enough_signals_trip_at_custom_thresholds() {
+        let mut w = Watch::new(thresholds(100, 2, 3, 2));
+        w.saw("Edit", &Value::Null);
+        w.saw("Edit", &Value::Null);
+        for _ in 0..3 {
+            w.saw("Bash", &json!({"command": "grep foo"}));
+        }
+        let ended = w.should_end(true).expect("two signals tripped together");
+        let kinds: Vec<_> = ended.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&"uncommitted"));
+        assert!(kinds.contains(&"repeat"));
+    }
+
+    #[test]
+    fn signals_to_end_zero_disables_early_ending() {
+        let mut w = Watch::new(thresholds(1, 1, 1, 0));
+        w.saw("Read", &Value::Null);
+        assert!(
+            !w.tripped(true).is_empty(),
+            "the signal itself still trips at its threshold"
+        );
+        assert!(
+            w.should_end(true).is_none(),
+            "signals_to_end = 0 means nothing ever ends the run"
+        );
+    }
+
+    #[test]
+    fn near_reports_signals_close_to_but_under_their_threshold() {
+        let mut w = Watch::new(thresholds(10, 100, 100, 2));
+        for _ in 0..9 {
+            w.saw("Read", &Value::Null);
+        }
+        assert!(w.tripped(true).is_empty());
+        assert_eq!(w.near(true), vec!["no-edit"]);
+    }
 }

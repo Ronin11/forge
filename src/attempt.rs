@@ -311,6 +311,7 @@ async fn launch(
         resume,
         writes,
         schema: crate::envelope::SCHEMA,
+        early_ending: f.early_ending,
     })
     .await
     .env()?;
@@ -384,6 +385,8 @@ pub async fn record(
     a.rl_five_hour_resets = outcome.rate_limits.five_hour.map(|(_, r)| r);
     a.rl_seven_day = outcome.rate_limits.seven_day.map(|(u, _)| u);
     a.rl_seven_day_resets = outcome.rate_limits.seven_day.map(|(_, r)| r);
+    a.early_signals = serde_json::to_string(&outcome.early_signals).env()?;
+    a.early_near = serde_json::to_string(&outcome.early_near).env()?;
     f.store
         .finish_attempt(&FinishAttempt {
             id: a.id,
@@ -414,6 +417,8 @@ pub async fn record(
             output_tokens: a.output_tokens,
             cache_read_input_tokens: a.cache_read_input_tokens,
             cache_creation_input_tokens: a.cache_creation_input_tokens,
+            early_signals: a.early_signals.clone(),
+            early_near: a.early_near.clone(),
         })
         .env()?;
     f.report.emit(
