@@ -40,6 +40,11 @@ and does not parse stdout.
 - **`forge ref add ID --kind K --url U [--label TEXT] [--by NAME]`** —
   record a reference on a task. Not `--json`; a client re-reads
   `forge ref list` or `forge trace` for the row it just created.
+- **`forge project list --json`** — every project, alphabetically. A JSON
+  array of [`ProjectRow`](#projectrow).
+- **`forge project show NAME --json`** — one project. A single
+  [`ProjectRow`](#projectrow) object. Exits non-zero if `NAME` names no
+  known project.
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -88,7 +93,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project
 ```
 
 ## Naming: unified vs. legacy keys
@@ -183,6 +188,23 @@ One `kind` does carry a convention: `repairs`, whose `url` is
 is how a task says "this repairs task 41" without inventing a second
 id space; `forge stats --quality` reads it to count a landed task as
 repaired.
+
+### `ProjectRow`
+
+One row of `forge project list --json` / `forge project show --json`: a
+project, the repositories it works in, task counts by state, and cost.
+See docs/PROJECTS.md for the layer this belongs to; only the read-only
+shape exists so far; `forge project new`/`set` and initiatives are later
+build-order steps.
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | The project's name, its primary key. |
+| `purpose` | string | One paragraph saying what the project is for. |
+| `created_at` | integer | Unix seconds. |
+| `repos` | array of `{repo, scope}` | Repositories the project works in. `repo` is an absolute path; `scope` is the paths within it the project owns, or `null` for the whole repository. |
+| `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the project's tasks. |
+| `cost_usd` | number | Total cost across every attempt of every task in the project. |
 
 ### `TraceDoc`
 

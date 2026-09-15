@@ -178,6 +178,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
     t.journal = journal;
     t.journal_arm = arm.to_string();
+    t.project = f.store.ensure_default_project(&t.repo)?;
     f.store.update_task(&t)?;
     f.report.emit(
         t.id,

@@ -795,6 +795,76 @@ pub fn plugin_rows(f: &Forge) -> Result<(Vec<PluginRow>, Vec<Problem>)> {
     Ok((rows, cat.problems))
 }
 
+/// One repository listed under a project, and the paths it owns there
+/// (`None` scope means the whole repository).
+#[derive(Serialize)]
+pub struct ProjectRepoRow {
+    pub repo: String,
+    pub scope: Option<String>,
+}
+
+impl From<&crate::store::ProjectRepo> for ProjectRepoRow {
+    fn from(r: &crate::store::ProjectRepo) -> Self {
+        ProjectRepoRow {
+            repo: r.repo.clone(),
+            scope: r.scope.clone(),
+        }
+    }
+}
+
+/// One row of `forge project list --json` / `forge project show --json`:
+/// a project, its repositories and their scopes, task counts by state,
+/// and total cost. Exists so the projects migration (docs/PROJECTS.md) is
+/// visible from the CLI before any write verb touches it.
+#[derive(Serialize)]
+pub struct ProjectRow {
+    pub name: String,
+    pub purpose: String,
+    pub created_at: i64,
+    pub repos: Vec<ProjectRepoRow>,
+    pub queued: i64,
+    pub running: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub unverified: i64,
+    pub blocked: i64,
+    pub withdrawn: i64,
+    pub cost_usd: f64,
+}
+
+pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
+    let repos = f
+        .store
+        .project_repos(&p.name)?
+        .iter()
+        .map(ProjectRepoRow::from)
+        .collect();
+    let stats = f.store.project_task_stats(&p.name)?;
+    Ok(ProjectRow {
+        name: p.name.clone(),
+        purpose: p.purpose.clone(),
+        created_at: p.created_at,
+        repos,
+        queued: stats.queued,
+        running: stats.running,
+        succeeded: stats.succeeded,
+        failed: stats.failed,
+        unverified: stats.unverified,
+        blocked: stats.blocked,
+        withdrawn: stats.withdrawn,
+        cost_usd: stats.cost,
+    })
+}
+
+/// Every project, alphabetically, as `forge project list` shows it.
+pub fn project_rows(f: &Forge) -> Result<Vec<ProjectRow>> {
+    f.store
+        .list_projects()?
+        .iter()
+        .map(|p| project_row(f, p))
+        .collect()
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;

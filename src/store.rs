@@ -177,6 +177,12 @@ pub struct Task {
     /// then. The scheduler's notion of "landed" is this column, not the
     /// wording of `reason`.
     pub landed_sha: String,
+    /// The project this task belongs to; `None` for tasks predating
+    /// projects that no migration could place, or whose repository lists
+    /// more than one project.
+    pub project: Option<String>,
+    /// The initiative this task belongs to, if any.
+    pub initiative: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -421,6 +427,39 @@ pub struct TaskSummary {
     pub cost: f64,
 }
 
+/// The unit of ownership above a task: what is being built, and for whom.
+/// Defaults (workflow, budgets, protected paths, supervisor model and
+/// per-lineage cap) live as nullable columns on `projects` from this
+/// migration on, but wait for the verbs that set and read them
+/// (docs/PROJECTS.md build order step 2) before joining this struct.
+#[derive(Default, Debug, Clone)]
+pub struct Project {
+    pub name: String,
+    pub purpose: String,
+    pub created_at: i64,
+}
+
+/// One repository a project works in, and the paths it owns there;
+/// `scope` is `None` for the whole repository.
+#[derive(Debug, Clone)]
+pub struct ProjectRepo {
+    pub repo: String,
+    pub scope: Option<String>,
+}
+
+/// Task counts by state and total cost for one project.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectTaskStats {
+    pub queued: i64,
+    pub running: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub unverified: i64,
+    pub blocked: i64,
+    pub withdrawn: i64,
+    pub cost: f64,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -604,7 +643,50 @@ ALTER TABLE attempts ADD COLUMN early_near TEXT NOT NULL DEFAULT '[]';
     "
 ALTER TABLE tasks ADD COLUMN journal_arm TEXT NOT NULL DEFAULT 'treatment';
 ",
+    "
+CREATE TABLE projects (
+  name TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  workflow TEXT,
+  per_task_usd REAL,
+  per_initiative_usd REAL,
+  supervisor_model TEXT,
+  supervisor_per_lineage INTEGER,
+  protected_json TEXT
+);
+CREATE TABLE project_repos (
+  project TEXT NOT NULL REFERENCES projects(name),
+  repo TEXT NOT NULL,
+  scope_json TEXT,
+  PRIMARY KEY (project, repo)
+);
+CREATE TABLE initiatives (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  outcome TEXT NOT NULL,
+  budget_usd REAL,
+  stop_after_same_rule INTEGER NOT NULL DEFAULT 3,
+  created_at INTEGER NOT NULL,
+  settled_at INTEGER
+);
+CREATE TABLE backlog (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  done_at INTEGER
+);
+ALTER TABLE tasks ADD COLUMN project TEXT;
+ALTER TABLE tasks ADD COLUMN initiative INTEGER;
+",
 ];
+
+/// The version this migration brings the schema to; `migrate` also runs
+/// `seed_projects_from_tasks` in Rust when it applies this entry, since
+/// naming a project after the Forge repository itself needs a filesystem
+/// check no SQL string can express. Keep in sync with its position above.
+const PROJECTS_MIGRATION_VERSION: i64 = 27;
 
 const TASK_COLUMNS: &[&str] = &[
     "id",
@@ -646,6 +728,8 @@ const TASK_COLUMNS: &[&str] = &[
     "plan",
     "landed_sha",
     "journal_arm",
+    "project",
+    "initiative",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -708,6 +792,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         resume_on_failure: r.get::<_, i64>("resume_on_failure")? != 0,
         plan: r.get("plan")?,
         landed_sha: r.get("landed_sha")?,
+        project: r.get("project")?,
+        initiative: r.get("initiative")?,
     })
 }
 
@@ -878,7 +964,8 @@ impl Store {
              started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
-             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37 WHERE id=?1",
+             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
+             project=?38, initiative=?39 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -916,7 +1003,9 @@ impl Store {
                 t.resume_on_failure as i64,
                 t.plan,
                 t.landed_sha,
-                t.journal_arm
+                t.journal_arm,
+                t.project,
+                t.initiative
             ],
         )?;
         Ok(())
@@ -1692,6 +1781,212 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// Register a new project. Fails if the name is already taken.
+    pub fn create_project(&self, p: &Project) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO projects (name, purpose, created_at) VALUES (?1, ?2, ?3)",
+            params![p.name, p.purpose, p.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn project(&self, name: &str) -> Result<Option<Project>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT name, purpose, created_at FROM projects WHERE name=?1",
+                params![name],
+                project_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Every project, alphabetically.
+    pub fn list_projects(&self) -> Result<Vec<Project>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT name, purpose, created_at FROM projects ORDER BY name")?;
+        let rows = stmt.query_map([], project_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// List a repository under a project, with an optional scope (the
+    /// paths within it the project owns; `None` means the whole
+    /// repository). Registering the same pair again replaces the scope.
+    pub fn register_repo(&self, project: &str, repo: &str, scope: Option<&str>) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO project_repos (project, repo, scope_json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(project, repo) DO UPDATE SET scope_json = excluded.scope_json",
+            params![project, repo, scope],
+        )?;
+        Ok(())
+    }
+
+    /// A project's repositories, alphabetically.
+    pub fn project_repos(&self, project: &str) -> Result<Vec<ProjectRepo>> {
+        let c = self.lock();
+        let mut stmt =
+            c.prepare("SELECT repo, scope_json FROM project_repos WHERE project=?1 ORDER BY repo")?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok(ProjectRepo {
+                repo: r.get(0)?,
+                scope: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The project that lists `repo`, when exactly one does; `None` if no
+    /// project lists it, or more than one does.
+    pub fn default_project_for_repo(&self, repo: &str) -> Result<Option<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT project FROM project_repos WHERE repo=?1")?;
+        let names: Vec<String> = stmt
+            .query_map(params![repo], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(match names.len() {
+            1 => names.into_iter().next(),
+            _ => None,
+        })
+    }
+
+    /// The default project for `repo`, creating one if the repository is
+    /// not yet listed by any project: named by the repository's base
+    /// name, or `forge` for the Forge repository itself, the same rule
+    /// the migration applies to pre-existing tasks. `None` when the
+    /// repository is already listed by more than one project (ambiguous;
+    /// the operator must say which, once `forge add --project` exists).
+    pub fn ensure_default_project(&self, repo: &str) -> Result<Option<String>> {
+        if let Some(name) = self.default_project_for_repo(repo)? {
+            return Ok(Some(name));
+        }
+        let ambiguous: i64 = self.lock().query_row(
+            "SELECT COUNT(*) FROM project_repos WHERE repo=?1",
+            params![repo],
+            |r| r.get(0),
+        )?;
+        if ambiguous > 0 {
+            return Ok(None);
+        }
+        let name = project_name_for_repo(repo);
+        if self.project(&name)?.is_none() {
+            self.create_project(&Project {
+                name: name.clone(),
+                purpose: format!("Repository {repo}."),
+                created_at: crate::unix_now(),
+            })?;
+        }
+        self.register_repo(&name, repo, None)?;
+        Ok(Some(name))
+    }
+
+    /// Task counts by state and total cost for one project.
+    pub fn project_task_stats(&self, project: &str) -> Result<ProjectTaskStats> {
+        let c = self.lock();
+        Ok(c.query_row(
+            "SELECT SUM(state='queued'), SUM(state='running'), SUM(state='succeeded'), SUM(state='failed'),
+                    SUM(state='unverified'), SUM(state='blocked'), SUM(state='withdrawn'),
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN
+                        (SELECT id FROM tasks WHERE project=?1)), 0)
+             FROM tasks WHERE project=?1",
+            params![project],
+            |r| {
+                Ok(ProjectTaskStats {
+                    queued: r.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                    running: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    succeeded: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    unverified: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    blocked: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                    withdrawn: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                    cost: r.get(7)?,
+                })
+            },
+        )?)
+    }
+}
+
+fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
+    Ok(Project {
+        name: r.get(0)?,
+        purpose: r.get(1)?,
+        created_at: r.get(2)?,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct CargoManifest {
+    package: Option<CargoPackage>,
+}
+
+#[derive(serde::Deserialize)]
+struct CargoPackage {
+    name: String,
+}
+
+/// Whether `repo` is the Forge repository itself: its `Cargo.toml`
+/// declares the same package name this very binary was built from,
+/// regardless of what the checkout directory happens to be called (a
+/// worktree, a fork, a differently-named clone).
+fn is_forge_repo(repo: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(Path::new(repo).join("Cargo.toml")) else {
+        return false;
+    };
+    let Ok(manifest) = toml::from_str::<CargoManifest>(&text) else {
+        return false;
+    };
+    manifest.package.map(|p| p.name).as_deref() == Some(env!("CARGO_PKG_NAME"))
+}
+
+/// The project name a repository gets from the migration and from
+/// `Store::ensure_default_project`: the repository's base name, except
+/// the Forge repository itself, which is always named `forge`.
+fn project_name_for_repo(repo: &str) -> String {
+    if is_forge_repo(repo) {
+        return "forge".to_string();
+    }
+    Path::new(repo)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(repo)
+        .to_string()
+}
+
+/// Create the project `repo` would get from the migration, if none
+/// exists yet, and register the repository under it with no scope.
+/// Idempotent: a repository already listed keeps its existing project.
+fn seed_project_for_repo(conn: &Connection, repo: &str) -> rusqlite::Result<String> {
+    let name = project_name_for_repo(repo);
+    conn.execute(
+        "INSERT INTO projects (name, purpose, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(name) DO NOTHING",
+        params![name, format!("Repository {repo}."), crate::unix_now()],
+    )?;
+    conn.execute(
+        "INSERT INTO project_repos (project, repo, scope_json) VALUES (?1, ?2, NULL)
+         ON CONFLICT(project, repo) DO NOTHING",
+        params![name, repo],
+    )?;
+    Ok(name)
+}
+
+/// The migration's data half: every distinct repository already in
+/// `tasks` gets a project (see `seed_project_for_repo`), and every task
+/// in that repository is assigned to it. Run once, when `migrate` applies
+/// `PROJECTS_MIGRATION_VERSION`.
+fn seed_projects_from_tasks(conn: &Connection) -> rusqlite::Result<()> {
+    let repos: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT DISTINCT repo FROM tasks")?;
+        stmt.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for repo in repos {
+        let name = seed_project_for_repo(conn, &repo)?;
+        conn.execute(
+            "UPDATE tasks SET project = ?1 WHERE repo = ?2",
+            params![name, repo],
+        )?;
+    }
+    Ok(())
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -1705,9 +2000,13 @@ fn migrate(conn: &Connection) -> Result<()> {
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let v = i as i64 + 1;
         conn.execute_batch("BEGIN")?;
-        let r = conn
-            .execute_batch(sql)
-            .and_then(|_| conn.execute_batch(&format!("PRAGMA user_version={v}")));
+        let r: rusqlite::Result<()> = (|| {
+            conn.execute_batch(sql)?;
+            if v == PROJECTS_MIGRATION_VERSION {
+                seed_projects_from_tasks(conn)?;
+            }
+            conn.execute_batch(&format!("PRAGMA user_version={v}"))
+        })();
         match r {
             Ok(()) => conn.execute_batch("COMMIT")?,
             Err(e) => {
@@ -1747,6 +2046,135 @@ mod tests {
             Ok(_) => panic!("opened a db from the future"),
         };
         assert!(err.contains("newer than this forge"), "{err}");
+    }
+
+    #[test]
+    fn migration_assigns_one_project_per_distinct_repo_naming_forge_specially() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+
+        // A repository whose Cargo.toml declares it as the Forge package
+        // itself, under a checkout directory that is not called "forge" —
+        // the case the base-name rule alone would get wrong.
+        let forge_dir = dir.path().join("some-worktree");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("Cargo.toml"),
+            "[package]\nname = \"forge\"\n",
+        )
+        .unwrap();
+        let forge_dir = forge_dir.canonicalize().unwrap().display().to_string();
+
+        let other_dir = dir.path().join("nucleosynthesis");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let other_dir = other_dir.canonicalize().unwrap().display().to_string();
+
+        // Build a pre-projects fixture by hand: every migration up to but
+        // not including this one, with two tasks already in the table.
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..(PROJECTS_MIGRATION_VERSION as usize - 1)] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(&format!(
+                "PRAGMA user_version={}",
+                PROJECTS_MIGRATION_VERSION - 1
+            ))
+            .unwrap();
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at)
+                 VALUES (?1, 'do a', 'main', 'sonnet', 10, 1, 60, 'succeeded', 1)",
+                params![forge_dir],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at)
+                 VALUES (?1, 'do b', 'main', 'sonnet', 10, 1, 60, 'succeeded', 2)",
+                params![other_dir],
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+
+        let mut names: Vec<String> = s
+            .list_projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["forge".to_string(), "nucleosynthesis".to_string()]
+        );
+
+        assert_eq!(
+            s.task(1).unwrap().unwrap().project.as_deref(),
+            Some("forge")
+        );
+        assert_eq!(
+            s.task(2).unwrap().unwrap().project.as_deref(),
+            Some("nucleosynthesis")
+        );
+
+        let repos = s.project_repos("forge").unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].repo, forge_dir);
+        assert!(repos[0].scope.is_none());
+
+        // Every existing task is assigned; initiatives stay null.
+        assert!(s.task(1).unwrap().unwrap().initiative.is_none());
+    }
+
+    #[test]
+    fn default_project_for_repo_is_none_unless_exactly_one_project_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        assert_eq!(s.default_project_for_repo("/r").unwrap(), None);
+
+        s.create_project(&Project {
+            name: "a".into(),
+            purpose: "p".into(),
+            created_at: 1,
+        })
+        .unwrap();
+        s.register_repo("a", "/r", None).unwrap();
+        assert_eq!(
+            s.default_project_for_repo("/r").unwrap(),
+            Some("a".to_string())
+        );
+
+        s.create_project(&Project {
+            name: "b".into(),
+            purpose: "p".into(),
+            created_at: 1,
+        })
+        .unwrap();
+        s.register_repo("b", "/r", None).unwrap();
+        assert_eq!(
+            s.default_project_for_repo("/r").unwrap(),
+            None,
+            "listed by two projects now"
+        );
+    }
+
+    #[test]
+    fn ensure_default_project_creates_one_the_first_time_a_repo_is_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let repo = dir.path().join("myrepo").display().to_string();
+        assert_eq!(
+            s.ensure_default_project(&repo).unwrap(),
+            Some("myrepo".to_string())
+        );
+        // Idempotent: the same project is reused, not duplicated.
+        assert_eq!(
+            s.ensure_default_project(&repo).unwrap(),
+            Some("myrepo".to_string())
+        );
+        assert_eq!(s.list_projects().unwrap().len(), 1);
     }
 
     #[test]
@@ -2142,6 +2570,8 @@ mod column_tests {
         t.plan = "plan".into();
         t.landed_sha = "abc123".into();
         t.journal_arm = "control".into();
+        t.project = Some("proj".into());
+        t.initiative = Some(11);
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));

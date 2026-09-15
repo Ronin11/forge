@@ -276,6 +276,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RefCmd,
     },
+    /// Projects: the unit of ownership above a task (see docs/PROJECTS.md)
+    Project {
+        #[command(subcommand)]
+        cmd: ProjectCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -336,6 +341,23 @@ enum RefCmd {
     /// A task's references
     List {
         task: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// Every project, its repositories, task counts by state, and cost
+    List {
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// One project's repositories, task counts by state, and cost
+    Show {
+        name: String,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -439,6 +461,10 @@ pub async fn main() -> Result<()> {
                 by,
             } => ref_add(task, kind, url, label, by),
             RefCmd::List { task, json } => ref_list(task, json),
+        },
+        Cmd::Project { cmd } => match cmd {
+            ProjectCmd::List { json } => project_list(json),
+            ProjectCmd::Show { name, json } => project_show(name, json),
         },
     }
 }
@@ -668,6 +694,67 @@ fn ref_list(task: i64, json: bool) -> Result<()> {
             }
         );
     }
+    Ok(())
+}
+
+fn print_project_row(r: &crate::view::ProjectRow) {
+    out!("name       {}", r.name);
+    out!("purpose    {}", r.purpose);
+    out!("created_at {}", r.created_at);
+    if r.repos.is_empty() {
+        out!("repos      none");
+    }
+    for repo in &r.repos {
+        match &repo.scope {
+            Some(scope) => out!("repo       {} ({scope})", repo.repo),
+            None => out!("repo       {}", repo.repo),
+        }
+    }
+    out!(
+        "tasks      queued={} running={} succeeded={} failed={} unverified={} blocked={} withdrawn={}",
+        r.queued,
+        r.running,
+        r.succeeded,
+        r.failed,
+        r.unverified,
+        r.blocked,
+        r.withdrawn
+    );
+    out!("cost       ${:.2}", r.cost_usd);
+}
+
+fn project_list(json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let rows = crate::view::project_rows(&f)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no projects");
+        return Ok(());
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            out!();
+        }
+        print_project_row(r);
+    }
+    Ok(())
+}
+
+fn project_show(name: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let p = f
+        .store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    let row = crate::view::project_row(&f, &p)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&row)?);
+        return Ok(());
+    }
+    print_project_row(&row);
     Ok(())
 }
 

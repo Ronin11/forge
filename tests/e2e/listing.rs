@@ -721,3 +721,41 @@ fn log_repo_filters_to_one_repository_canonicalized_like_add() {
         vec![b1]
     );
 }
+
+#[test]
+fn project_list_shows_the_test_repository_after_one_task() {
+    let e = Env::new();
+    e.add(&[]);
+
+    let o = e.forge("ok.sh", &["project", "list", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+
+    let repo = e.repo.canonicalize().unwrap().display().to_string();
+    assert_eq!(rows[0]["name"], "repo", "{rows:?}");
+    let repos = rows[0]["repos"].as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["repo"], repo);
+    assert!(repos[0]["scope"].is_null());
+    assert_eq!(rows[0]["queued"], 1);
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+
+    // `forge project show` agrees, and the task itself carries the project.
+    let o = e.forge("ok.sh", &["project", "show", "repo", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["name"], "repo");
+    assert_eq!(row["queued"], 1);
+
+    let project: Option<String> = e
+        .db()
+        .query_row("SELECT project FROM tasks WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(project.as_deref(), Some("repo"));
+
+    // Unknown project names fail rather than printing nothing.
+    let bad = e.forge("ok.sh", &["project", "show", "no-such-project"]);
+    assert!(!bad.status.success());
+}
