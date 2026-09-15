@@ -219,11 +219,14 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: Kind) -> Resul
 /// Supervise one blocked task. Returns what was done; `Skipped` when the
 /// task is not the supervisor's to handle.
 pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
-    let cfg = &f.supervisor;
-    if !cfg.enabled {
+    if !f.supervisor.enabled {
         return Ok(Ruled::Skipped("supervisor disabled".into()));
     }
     let t = f.store.task(id)?.with_context(|| format!("no task {id}"))?;
+    // The project's own model and per-lineage cap, when it sets them,
+    // override the operator's (see docs/PROJECTS.md, "Configuration
+    // layering"); `enabled` stays the operator's alone.
+    let cfg = f.effective_supervisor(&t);
     if t.state != TaskState::Blocked {
         return Ok(Ruled::Skipped(format!("task is {}", t.state.as_str())));
     }

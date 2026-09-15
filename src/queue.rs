@@ -26,7 +26,12 @@ pub struct TaskRequest {
     pub budget: Option<f64>,
     pub checks: Vec<String>,
     pub allow_protected: bool,
-    pub workflow: String,
+    /// The workflow to run; `None` falls to the project's default, then
+    /// "direct" (see docs/PROJECTS.md, "Configuration layering").
+    pub workflow: Option<String>,
+    /// The project this task belongs to; `None` falls to the
+    /// repository's default project (`Store::ensure_default_project`).
+    pub project: Option<String>,
     pub show_checks: bool,
     pub no_land: bool,
     pub after: Vec<i64>,
@@ -82,13 +87,43 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     if !repo.join(".git").exists() {
         bail!("{} is not a git repository", repo.display());
     }
+    let repo_str = repo.display().to_string();
+    // A task named a project directly, or falls to its repository's
+    // default project, created the first time the repository is seen; a
+    // repository listed by several projects is ambiguous and must be
+    // told which with --project (see docs/PROJECTS.md, "Migration").
+    let project_name = match &args.project {
+        Some(p) => {
+            f.store
+                .project(p)?
+                .with_context(|| format!("no project {p}"))?;
+            p.clone()
+        }
+        None => match f.store.ensure_default_project(&repo_str)? {
+            Some(name) => name,
+            None => {
+                let names = f.store.projects_listing_repo(&repo_str)?;
+                bail!(
+                    "{repo_str} is listed by several projects ({}); pass --project to say which",
+                    names.join(", ")
+                );
+            }
+        },
+    };
+    let project = f.store.project(&project_name)?;
+    // Configuration layering: operator config, repository config, the
+    // project's defaults, then the task's own flags win (see
+    // docs/PROJECTS.md, "Configuration layering"). The workflow has no
+    // operator- or repository-level default, so only the last two layers
+    // apply here.
+    let workflow = args
+        .workflow
+        .clone()
+        .or_else(|| project.as_ref().and_then(|p| p.workflow.clone()))
+        .unwrap_or_else(|| "direct".to_string());
     let cfg = config::load_working(&repo).await?;
-    let wf = workflows::get(&f.paths.home, &args.workflow)?.with_context(|| {
-        format!(
-            "unknown workflow {:?}; see `forge workflows`",
-            args.workflow
-        )
-    })?;
+    let wf = workflows::get(&f.paths.home, &workflow)?
+        .with_context(|| format!("unknown workflow {workflow:?}; see `forge workflows`"))?;
     // Resolution happens at start; here it only has to be possible, and the
     // whole directory has to be sound: one broken file blocks every task.
     let problems = workflows::check(&f.paths.home)?;
@@ -99,7 +134,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
             p.what
         );
     }
-    let resolved = workflows::resolve(&f.paths.home, &args.workflow)?;
+    let resolved = workflows::resolve(&f.paths.home, &workflow)?;
     if resolved.steps.iter().any(|s| s.action.name == "tests") {
         if cfg.namespace.is_empty() {
             bail!(
@@ -144,7 +179,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         created_at: unix_now(),
         budget_usd: args.budget,
         allow_protected: args.allow_protected,
-        workflow: args.workflow.clone(),
+        workflow,
         workflow_hash: wf.hash.clone(),
         workflow_text: wf.text.clone(),
         show_checks: args.show_checks,
@@ -156,6 +191,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         context_enabled: !args.no_context,
         resume_on_failure: args.resume_on_failure,
         retry_of,
+        project: Some(project_name),
         ..Default::default()
     };
     for &dep in &t.after {
@@ -178,7 +214,6 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
     t.journal = journal;
     t.journal_arm = arm.to_string();
-    t.project = f.store.ensure_default_project(&t.repo)?;
     f.store.update_task(&t)?;
     f.report.emit(
         t.id,
@@ -285,11 +320,12 @@ pub fn retry_request(
         },
         checks: t.checks.clone(),
         allow_protected: t.allow_protected,
-        workflow: if first {
+        workflow: Some(if first {
             o.workflow.clone().unwrap_or(t.workflow.clone())
         } else {
             t.workflow.clone()
-        },
+        }),
+        project: t.project.clone(),
         show_checks: t.show_checks,
         no_land: !t.land,
         // A retry keeps the arm it started with rather than drawing again.

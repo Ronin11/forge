@@ -174,8 +174,21 @@ pub async fn run_attempt(
             .ok(),
         _ => None,
     };
+    // A directive scoped to its own paths keeps that scope; an unscoped
+    // one inherits the task's project's scope for this repository, if any
+    // (see docs/PROJECTS.md, "every task in the project inherits the
+    // scope as its `--paths`").
+    let project_scope;
     let (task_checks, paths, allow_protected): (&[String], &[String], bool) = match contract {
-        Contract::Code => (&t.checks, &step.action.paths, t.allow_protected),
+        Contract::Code => {
+            let paths = if step.action.paths.is_empty() {
+                project_scope = f.effective_paths(t);
+                project_scope.as_slice()
+            } else {
+                step.action.paths.as_slice()
+            };
+            (&t.checks, paths, t.allow_protected)
+        }
         _ => (&[], &[], false),
     };
     let verdict = verify::verify_directive(

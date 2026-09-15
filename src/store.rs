@@ -428,15 +428,34 @@ pub struct TaskSummary {
 }
 
 /// The unit of ownership above a task: what is being built, and for whom.
-/// Defaults (workflow, budgets, protected paths, supervisor model and
-/// per-lineage cap) live as nullable columns on `projects` from this
-/// migration on, but wait for the verbs that set and read them
-/// (docs/PROJECTS.md build order step 2) before joining this struct.
+/// Defaults are nullable: `None` means this project sets nothing for that
+/// column, and resolution falls through to the next layer (see
+/// docs/PROJECTS.md, "Configuration layering").
 #[derive(Default, Debug, Clone)]
 pub struct Project {
     pub name: String,
     pub purpose: String,
     pub created_at: i64,
+    pub workflow: Option<String>,
+    pub per_task_usd: Option<f64>,
+    pub per_initiative_usd: Option<f64>,
+    pub supervisor_model: Option<String>,
+    pub supervisor_per_lineage: Option<i64>,
+    /// Extra protected paths, on top of the repository's own `forge.toml`.
+    pub protected: Option<Vec<String>>,
+}
+
+/// What `forge project set` changes; a field left `None` keeps the
+/// project's current value for that column. There is no way to clear a
+/// column back to unset once set, which nothing here needs yet.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectDefaults {
+    pub workflow: Option<String>,
+    pub per_task_usd: Option<f64>,
+    pub per_initiative_usd: Option<f64>,
+    pub supervisor_model: Option<String>,
+    pub supervisor_per_lineage: Option<i64>,
+    pub protected: Option<Vec<String>>,
 }
 
 /// One repository a project works in, and the paths it owns there;
@@ -445,6 +464,16 @@ pub struct Project {
 pub struct ProjectRepo {
     pub repo: String,
     pub scope: Option<String>,
+}
+
+/// One backlog item: a thing worth doing that is not yet queued.
+#[derive(Debug, Clone)]
+pub struct BacklogItem {
+    pub id: i64,
+    pub project: String,
+    pub text: String,
+    pub created_at: i64,
+    pub done_at: Option<i64>,
 }
 
 /// Task counts by state and total cost for one project.
@@ -1795,7 +1824,9 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT name, purpose, created_at FROM projects WHERE name=?1",
+                "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
+                        supervisor_model, supervisor_per_lineage, protected_json
+                 FROM projects WHERE name=?1",
                 params![name],
                 project_from_row,
             )
@@ -1805,9 +1836,91 @@ impl Store {
     /// Every project, alphabetically.
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.lock();
-        let mut stmt = c.prepare("SELECT name, purpose, created_at FROM projects ORDER BY name")?;
+        let mut stmt = c.prepare(
+            "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
+                    supervisor_model, supervisor_per_lineage, protected_json
+             FROM projects ORDER BY name",
+        )?;
         let rows = stmt.query_map([], project_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Apply `forge project set`'s changes: only the columns given (not
+    /// `None`) change. Returns `false` if no project has this name.
+    pub fn set_project_defaults(&self, name: &str, d: &ProjectDefaults) -> Result<bool> {
+        let protected = d
+            .protected
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let n = self.lock().execute(
+            "UPDATE projects SET
+                workflow = COALESCE(?2, workflow),
+                per_task_usd = COALESCE(?3, per_task_usd),
+                per_initiative_usd = COALESCE(?4, per_initiative_usd),
+                supervisor_model = COALESCE(?5, supervisor_model),
+                supervisor_per_lineage = COALESCE(?6, supervisor_per_lineage),
+                protected_json = COALESCE(?7, protected_json)
+             WHERE name=?1",
+            params![
+                name,
+                d.workflow,
+                d.per_task_usd,
+                d.per_initiative_usd,
+                d.supervisor_model,
+                d.supervisor_per_lineage,
+                protected,
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Every project that lists `repo`, alphabetically: the names an
+    /// ambiguous-repository refusal names.
+    pub fn projects_listing_repo(&self, repo: &str) -> Result<Vec<String>> {
+        let c = self.lock();
+        let mut stmt =
+            c.prepare("SELECT project FROM project_repos WHERE repo=?1 ORDER BY project")?;
+        let rows = stmt.query_map(params![repo], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Add a backlog item to a project. Returns its id.
+    pub fn add_backlog(&self, project: &str, text: &str) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO backlog (project, text, created_at) VALUES (?1, ?2, ?3)",
+            params![project, text, crate::unix_now()],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// A project's backlog, oldest first.
+    pub fn backlog(&self, project: &str) -> Result<Vec<BacklogItem>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, text, created_at, done_at FROM backlog WHERE project=?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok(BacklogItem {
+                id: r.get(0)?,
+                project: r.get(1)?,
+                text: r.get(2)?,
+                created_at: r.get(3)?,
+                done_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Mark a backlog item done. `false` if it does not exist in this
+    /// project or is already done.
+    pub fn mark_backlog_done(&self, project: &str, id: i64) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE backlog SET done_at=?3 WHERE id=?1 AND project=?2 AND done_at IS NULL",
+            params![id, project, crate::unix_now()],
+        )?;
+        Ok(n > 0)
     }
 
     /// List a repository under a project, with an optional scope (the
@@ -1855,7 +1968,8 @@ impl Store {
     /// name, or `forge` for the Forge repository itself, the same rule
     /// the migration applies to pre-existing tasks. `None` when the
     /// repository is already listed by more than one project (ambiguous;
-    /// the operator must say which, once `forge add --project` exists).
+    /// `queue::enqueue` turns that into a refusal naming them, since only
+    /// the operator can say which with `forge add --project`).
     pub fn ensure_default_project(&self, repo: &str) -> Result<Option<String>> {
         if let Some(name) = self.default_project_for_repo(repo)? {
             return Ok(Some(name));
@@ -1874,6 +1988,7 @@ impl Store {
                 name: name.clone(),
                 purpose: format!("Repository {repo}."),
                 created_at: crate::unix_now(),
+                ..Default::default()
             })?;
         }
         self.register_repo(&name, repo, None)?;
@@ -1907,10 +2022,17 @@ impl Store {
 }
 
 fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
+    let protected_json: Option<String> = r.get(8)?;
     Ok(Project {
         name: r.get(0)?,
         purpose: r.get(1)?,
         created_at: r.get(2)?,
+        workflow: r.get(3)?,
+        per_task_usd: r.get(4)?,
+        per_initiative_usd: r.get(5)?,
+        supervisor_model: r.get(6)?,
+        supervisor_per_lineage: r.get(7)?,
+        protected: protected_json.map(|j| serde_json::from_str(&j).unwrap_or_default()),
     })
 }
 
@@ -2138,6 +2260,7 @@ mod tests {
             name: "a".into(),
             purpose: "p".into(),
             created_at: 1,
+            ..Default::default()
         })
         .unwrap();
         s.register_repo("a", "/r", None).unwrap();
@@ -2150,6 +2273,7 @@ mod tests {
             name: "b".into(),
             purpose: "p".into(),
             created_at: 1,
+            ..Default::default()
         })
         .unwrap();
         s.register_repo("b", "/r", None).unwrap();

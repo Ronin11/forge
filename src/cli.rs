@@ -54,9 +54,12 @@ pub struct TaskArgs {
     /// Let this task change the repo's [verify] protected paths
     #[arg(long)]
     allow_protected: bool,
-    /// Which workflow runs the task (see `forge workflows`)
-    #[arg(long, default_value = "direct")]
-    workflow: String,
+    /// Which workflow runs the task (default: the project's, else "direct")
+    #[arg(long)]
+    workflow: Option<String>,
+    /// The project this task belongs to (default: the repository's own project)
+    #[arg(long)]
+    project: Option<String>,
     /// Show the --check commands to the coder (hidden by default)
     #[arg(long)]
     show_checks: bool,
@@ -349,6 +352,17 @@ enum RefCmd {
 
 #[derive(Subcommand)]
 enum ProjectCmd {
+    /// Register a new project: what is being built, and for whom
+    New {
+        name: String,
+        /// One paragraph saying what the project is for
+        #[arg(long)]
+        purpose: String,
+        /// A repository the project works in, optionally with the paths
+        /// it owns there: `<path>` or `<path>:<scope1>,<scope2>` (repeatable)
+        #[arg(long = "repo")]
+        repos: Vec<String>,
+    },
     /// Every project, its repositories, task counts by state, and cost
     List {
         /// Machine-readable
@@ -358,6 +372,42 @@ enum ProjectCmd {
     /// One project's repositories, task counts by state, and cost
     Show {
         name: String,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set a project's defaults: what initiatives and tasks inherit
+    /// unless they say otherwise (see docs/PROJECTS.md, "Defaults")
+    Set {
+        name: String,
+        /// Which workflow a task in this project runs by default
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Default per-task cost cap in USD
+        #[arg(long = "per-task-usd")]
+        per_task_usd: Option<f64>,
+        /// Default per-initiative cost cap in USD
+        #[arg(long = "per-initiative-usd")]
+        per_initiative_usd: Option<f64>,
+        /// Default supervisor model
+        #[arg(long = "supervisor-model")]
+        supervisor_model: Option<String>,
+        /// Default supervisor answers per lineage before a question reaches the operator
+        #[arg(long = "supervisor-per-lineage")]
+        supervisor_per_lineage: Option<u32>,
+        /// Extra protected paths, on top of each repository's own forge.toml (repeatable)
+        #[arg(long = "protected")]
+        protected: Vec<String>,
+    },
+    /// This project's backlog: things worth doing that are not yet queued
+    Backlog {
+        name: String,
+        /// Add a backlog item
+        #[arg(long)]
+        add: Option<String>,
+        /// Mark a backlog item done, by id
+        #[arg(long)]
+        done: Option<i64>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -463,8 +513,36 @@ pub async fn main() -> Result<()> {
             RefCmd::List { task, json } => ref_list(task, json),
         },
         Cmd::Project { cmd } => match cmd {
+            ProjectCmd::New {
+                name,
+                purpose,
+                repos,
+            } => project_new(name, purpose, repos),
             ProjectCmd::List { json } => project_list(json),
             ProjectCmd::Show { name, json } => project_show(name, json),
+            ProjectCmd::Set {
+                name,
+                workflow,
+                per_task_usd,
+                per_initiative_usd,
+                supervisor_model,
+                supervisor_per_lineage,
+                protected,
+            } => project_set(
+                name,
+                workflow,
+                per_task_usd,
+                per_initiative_usd,
+                supervisor_model,
+                supervisor_per_lineage,
+                protected,
+            ),
+            ProjectCmd::Backlog {
+                name,
+                add,
+                done,
+                json,
+            } => project_backlog(name, add, done, json),
         },
     }
 }
@@ -482,6 +560,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             checks: a.checks.clone(),
             allow_protected: a.allow_protected,
             workflow: a.workflow.clone(),
+            project: a.project.clone(),
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
@@ -721,6 +800,130 @@ fn print_project_row(r: &crate::view::ProjectRow) {
         r.withdrawn
     );
     out!("cost       ${:.2}", r.cost_usd);
+    out!(
+        "defaults   workflow={} per-task=${} per-initiative=${} supervisor={} per-lineage={} protected={}",
+        r.workflow.as_deref().unwrap_or("-"),
+        r.per_task_usd
+            .map_or("-".to_string(), |v| format!("{v:.2}")),
+        r.per_initiative_usd
+            .map_or("-".to_string(), |v| format!("{v:.2}")),
+        r.supervisor_model.as_deref().unwrap_or("-"),
+        r.supervisor_per_lineage
+            .map_or("-".to_string(), |v| v.to_string()),
+        if r.protected.is_empty() {
+            "-".to_string()
+        } else {
+            r.protected.join(", ")
+        }
+    );
+}
+
+fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if f.store.project(&name)?.is_some() {
+        bail!("project {name} already exists");
+    }
+    f.store.create_project(&crate::store::Project {
+        name: name.clone(),
+        purpose,
+        created_at: unix_now(),
+        ..Default::default()
+    })?;
+    for r in repos {
+        let (path, scope) = match r.split_once(':') {
+            Some((p, s)) => (p, Some(s)),
+            None => (r.as_str(), None),
+        };
+        let repo = Path::new(path)
+            .canonicalize()
+            .with_context(|| format!("--repo {path}"))?;
+        let scope_json = scope
+            .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
+            .transpose()?;
+        f.store
+            .register_repo(&name, &repo.display().to_string(), scope_json.as_deref())?;
+    }
+    out!("created project {name}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_set(
+    name: String,
+    workflow: Option<String>,
+    per_task_usd: Option<f64>,
+    per_initiative_usd: Option<f64>,
+    supervisor_model: Option<String>,
+    supervisor_per_lineage: Option<u32>,
+    protected: Vec<String>,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let d = crate::store::ProjectDefaults {
+        workflow,
+        per_task_usd,
+        per_initiative_usd,
+        supervisor_model,
+        supervisor_per_lineage: supervisor_per_lineage.map(|v| v as i64),
+        protected: (!protected.is_empty()).then_some(protected),
+    };
+    if !f.store.set_project_defaults(&name, &d)? {
+        bail!("no project {name}");
+    }
+    out!("updated project {name}");
+    Ok(())
+}
+
+fn print_backlog_item(it: &crate::store::BacklogItem) {
+    out!(
+        "{:<5} {} {}",
+        it.id,
+        if it.done_at.is_some() { "done" } else { "open" },
+        it.text
+    );
+}
+
+fn project_backlog(name: String, add: Option<String>, done: Option<i64>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    if let Some(text) = add {
+        let id = f.store.add_backlog(&name, &text)?;
+        out!("added backlog item {id}");
+    }
+    if let Some(id) = done {
+        if !f.store.mark_backlog_done(&name, id)? {
+            bail!("no open backlog item {id} in project {name}");
+        }
+        out!("marked backlog item {id} done");
+    }
+    let items = f.store.backlog(&name)?;
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(
+                &items
+                    .iter()
+                    .map(|it| serde_json::json!({
+                        "id": it.id,
+                        "project": it.project,
+                        "text": it.text,
+                        "created_at": it.created_at,
+                        "done_at": it.done_at,
+                    }))
+                    .collect::<Vec<_>>()
+            )?
+        );
+        return Ok(());
+    }
+    if items.is_empty() {
+        out!("no backlog items");
+        return Ok(());
+    }
+    for it in &items {
+        print_backlog_item(it);
+    }
+    Ok(())
 }
 
 fn project_list(json: bool) -> Result<()> {
@@ -2091,6 +2294,22 @@ fn show(id: i64) -> Result<()> {
         }
     );
     out!("repo       {}", task.repo);
+    if let Some(pname) = &t.project {
+        out!("project    {pname}");
+    }
+    let effective_supervisor = f.effective_supervisor(&t);
+    let scope = f.effective_paths(&t);
+    out!(
+        "defaults   per-task cap ${:.2}, supervisor {} (per-lineage {}){}",
+        f.effective_per_task_usd(&t),
+        effective_supervisor.model,
+        effective_supervisor.per_lineage,
+        if scope.is_empty() {
+            String::new()
+        } else {
+            format!(", scope {}", scope.join(", "))
+        }
+    );
     out!(
         "base       {} @ {}",
         task.base_branch,

@@ -814,8 +814,7 @@ impl From<&crate::store::ProjectRepo> for ProjectRepoRow {
 
 /// One row of `forge project list --json` / `forge project show --json`:
 /// a project, its repositories and their scopes, task counts by state,
-/// and total cost. Exists so the projects migration (docs/PROJECTS.md) is
-/// visible from the CLI before any write verb touches it.
+/// cost, and its own defaults (see docs/PROJECTS.md, "Defaults").
 #[derive(Serialize)]
 pub struct ProjectRow {
     pub name: String,
@@ -830,6 +829,12 @@ pub struct ProjectRow {
     pub blocked: i64,
     pub withdrawn: i64,
     pub cost_usd: f64,
+    pub workflow: Option<String>,
+    pub per_task_usd: Option<f64>,
+    pub per_initiative_usd: Option<f64>,
+    pub supervisor_model: Option<String>,
+    pub supervisor_per_lineage: Option<i64>,
+    pub protected: Vec<String>,
 }
 
 pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
@@ -853,6 +858,12 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         blocked: stats.blocked,
         withdrawn: stats.withdrawn,
         cost_usd: stats.cost,
+        workflow: p.workflow.clone(),
+        per_task_usd: p.per_task_usd,
+        per_initiative_usd: p.per_initiative_usd,
+        supervisor_model: p.supervisor_model.clone(),
+        supervisor_per_lineage: p.supervisor_per_lineage,
+        protected: p.protected.clone().unwrap_or_default(),
     })
 }
 

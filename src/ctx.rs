@@ -105,4 +105,76 @@ impl Forge {
     pub fn sandboxed(&self) -> bool {
         self.sandbox.is_some()
     }
+
+    /// A task's project, when it has one and the row still exists. Errors
+    /// reading the store are swallowed to `None`: every caller of this
+    /// treats a project as an optional layer, never a hard dependency.
+    fn task_project(&self, t: &crate::store::Task) -> Option<crate::store::Project> {
+        t.project
+            .as_ref()
+            .and_then(|p| self.store.project(p).ok().flatten())
+    }
+
+    /// The per-task budget cap that actually applies: the task's own
+    /// `--budget`, else its project's `per_task_usd` default, else the
+    /// operator's (see docs/PROJECTS.md, "Configuration layering").
+    pub fn effective_per_task_usd(&self, t: &crate::store::Task) -> f64 {
+        t.budget_usd
+            .or_else(|| self.task_project(t).and_then(|p| p.per_task_usd))
+            .unwrap_or(self.budget.per_task_usd)
+    }
+
+    /// The supervisor settings that actually apply: the operator's, with
+    /// the task's project's model and per-lineage cap layered on top.
+    pub fn effective_supervisor(&self, t: &crate::store::Task) -> config::Supervisor {
+        let mut cfg = self.supervisor.clone();
+        if let Some(p) = self.task_project(t) {
+            if let Some(model) = p.supervisor_model {
+                cfg.model = model;
+            }
+            if let Some(per_lineage) = p.supervisor_per_lineage {
+                cfg.per_lineage = per_lineage as u32;
+            }
+        }
+        cfg
+    }
+
+    /// The protected paths that actually apply: the repository's own
+    /// (`repo_protected`, from `forge.toml`) plus its project's extra
+    /// ones, deduplicated.
+    pub fn effective_protected(
+        &self,
+        t: &crate::store::Task,
+        repo_protected: &[String],
+    ) -> Vec<String> {
+        let mut out = repo_protected.to_vec();
+        if let Some(extra) = self.task_project(t).and_then(|p| p.protected) {
+            for e in extra {
+                if !out.contains(&e) {
+                    out.push(e);
+                }
+            }
+        }
+        out
+    }
+
+    /// The write scope a task's own attempts inherit when a workflow
+    /// directive does not already narrow it: its project's scope for its
+    /// own repository, or unrestricted when the project does not list it.
+    pub fn effective_paths(&self, t: &crate::store::Task) -> Vec<String> {
+        let Some(name) = &t.project else {
+            return Vec::new();
+        };
+        let Ok(repos) = self.store.project_repos(name) else {
+            return Vec::new();
+        };
+        let Some(scope_json) = repos
+            .into_iter()
+            .find(|r| r.repo == t.repo)
+            .and_then(|r| r.scope)
+        else {
+            return Vec::new();
+        };
+        serde_json::from_str(&scope_json).unwrap_or_default()
+    }
 }

@@ -301,6 +301,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let wt = PathBuf::from(&t.worktree);
     // Checks and rules come from the trusted base, never from the branch under test.
     let mut cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
+    cfg.protected = f.effective_protected(&t, &cfg.protected);
 
     f.report.emit(
         id,
@@ -333,7 +334,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         },
     );
 
-    let task_cap = t.budget_usd.unwrap_or(f.budget.per_task_usd);
+    let task_cap = f.effective_per_task_usd(&t);
     let prior = f.store.attempts(id).env()?;
     let prior_ops = f.store.ops(id).env()?;
     let done_ops: HashSet<i64> = prior_ops
@@ -871,6 +872,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     );
                     // The base moved: its checks and rules are the ones that apply now.
                     cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
+                    cfg.protected = f.effective_protected(&t, &cfg.protected);
                     run.rewind(c_idx, feedback);
                     continue 'run;
                 }
