@@ -65,14 +65,7 @@ markdown, not a diagram: a diagram can be generated from this for display
 but is never parsed to execute. SQLite later means registering name and
 hash the first time a task uses one.
 
-The set of step kinds is closed and small.
-
-| name | steps | what the coder sees |
-|---|---|---|
-| `direct` | code | the task |
-| `tdd` | tests, code | the task and the interface the tests expect, never the assertions |
-
-Step kinds:
+The set of step kinds is closed and small:
 
 - `code`: an agent in a per-task clone of the base branch, writing the
   change. May not touch protected paths or the verification namespace.
@@ -81,6 +74,9 @@ Step kinds:
   and be committed to `verify/<id>`. Its summary is the interface handed
   to the coder.
 
+See docs/ACTIONS.md for every built-in workflow, its steps in order, and
+what each action does.
+
 Kernel steps, always, not listed:
 
 - verify: L0 on the step's tree; then the verification namespace is
@@ -88,7 +84,9 @@ Kernel steps, always, not listed:
   `verify/<id>` for the task's tests) and L1 and L2 run; then the overlay
   is removed so the next attempt starts blind.
 - push: the verified branch, by explicit refspec.
-- integrate: the merge queue, when it exists.
+
+What happens after the last step is landing: integrate the base, re-verify,
+push, fast-forward. See docs/ACTIONS.md, "Landing".
 
 ## The honest exits
 
@@ -125,8 +123,8 @@ the MCP server and skills when the first agent needs them, calling the
 same `check` rather than a second definition of validity. The Forge 1
 lesson applies: tools are built when an agent needs them, not before.
 
-Not Temporal, not Ansible. The engine is two hundred lines and the
-workflows are one to three steps on one machine with state in SQLite;
+Not Temporal, not Ansible. The engine is a bit over a thousand lines and
+the workflows are a handful of steps on one machine with state in SQLite;
 durable-execution infrastructure is ahead of demand until there is more
 than one worker machine or a wait measured in days. What is borrowed from
 Temporal is the discipline: definitions as data, an event history per run,
