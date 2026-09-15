@@ -1,0 +1,14 @@
+name = "fmt"
+kind = "operation"
+description = "runs the tree's formatter and commits what it changed, so a formatting difference never costs a retry; the kernel verifies the result. Edit `run` for a repository whose formatter is not recognised."
+consumes = ["branch"]
+produces = ["branch"]
+run = ["bash", "-c", '''
+set -e
+if [ -f Cargo.toml ]; then cargo fmt --all
+elif [ -f go.mod ]; then gofmt -w .
+elif [ -f pyproject.toml ] && command -v ruff >/dev/null; then ruff format .
+elif [ -f package.json ] && [ -x node_modules/.bin/prettier ]; then node_modules/.bin/prettier --write . --log-level warn
+else echo "no formatter recognised; nothing done"
+fi
+''']

@@ -1,0 +1,7 @@
+name = "setup"
+kind = "operation"
+description = "run the repository's setup check in the clone so the next directive starts check-ready"
+consumes = ["branch"]
+produces = []
+check = "setup"
+timeout_secs = 600

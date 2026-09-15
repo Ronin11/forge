@@ -1,0 +1,13 @@
+name = "diff-size"
+kind = "operation"
+description = "fails when the change against base is larger than a cap on lines and files: the guard against scope creep and rewrites. The caps are the two numbers at the end of `run`."
+consumes = ["branch"]
+run = ["bash", "-c", '''
+set -e
+max_lines=$1
+max_files=$2
+lines=$(git diff --numstat "$FORGE_BASE_SHA" -- | awk '{ if ($1 != "-") a += $1 + $2 } END { print a + 0 }')
+files=$(git diff --name-only "$FORGE_BASE_SHA" -- | wc -l)
+echo "$files file(s), $lines line(s) changed against base (cap $max_files files, $max_lines lines)"
+test "$lines" -le "$max_lines" && test "$files" -le "$max_files"
+''', "diff-size", "800", "25"]

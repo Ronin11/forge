@@ -1,0 +1,19 @@
+name = "comments-only"
+kind = "operation"
+description = "fails when the preceding step changed anything but comments and documentation: the guard behind the document directive. Comment syntax is recognised by line prefix (//, #, *, /*, */, <!--, -->, --, and triple quotes); docs/ and Markdown are free."
+consumes = ["branch"]
+verifies = true
+run = ["bash", "-c", '''
+set -e
+from="${FORGE_PREV_SHA:-$FORGE_BASE_SHA}"
+sq=$(printf "\x27")
+bad=$(git diff --unified=0 "$from" HEAD -- . ':(exclude)docs/**' ':(exclude,glob)**/*.md' ':(exclude,glob)*.md' \
+  | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' | sed -E 's/^[+-]//' \
+  | grep -vE "^[[:space:]]*(//|#|\*|/\*|\*/|<!--|-->|--|\"\"\"|$sq$sq$sq)" | grep -vE '^[[:space:]]*$' || true)
+if [ -n "$bad" ]; then
+  echo "the documentation pass changed more than comments and docs since $from:"
+  echo "$bad" | head -20
+  exit 1
+fi
+echo "only comments and docs changed since $from"
+''', "comments-only"]

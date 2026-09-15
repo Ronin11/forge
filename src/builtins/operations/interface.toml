@@ -1,0 +1,17 @@
+name = "interface"
+kind = "operation"
+description = "the interface the hidden tests expect, extracted from the tests themselves rather than described by the agent that wrote them: the files, what they import, and the names they call, never their assertions. Runs in a scratch copy of base with the verify ref overlaid; the coder's clone never sees the tests. Replaces the tests directive's summary as the interface the coder is shown."
+consumes = ["verify_ref"]
+produces = ["interface"]
+run = ["bash", "-c", '''
+set -e
+echo "Hidden tests, under $FORGE_NAMESPACE, judge this work. What they reference:"
+for d in $FORGE_NAMESPACE; do find "$d" -type f 2>/dev/null; done | sort | while read -r f; do
+  echo
+  echo "== $f"
+  grep -hE '^[[:space:]]*(use |import |from .+ import |require\(|#include|const .* = require)' "$f" | sed 's/^[[:space:]]*//' | sort -u || true
+  grep -ohE '\b[A-Za-z_][A-Za-z0-9_]*\(' "$f" | sed 's/($//' \
+    | grep -vxE 'if|for|while|switch|return|assert|print|println|printf|fn|function|def|expect|it|describe|test|catch|new' \
+    | sort | uniq -c | sort -rn | awk '{ print "  calls " $2 " (" $1 "x)" }' || true
+done
+''']

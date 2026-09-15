@@ -1,0 +1,11 @@
+name = "tdd-reviewed"
+description = "hidden tests first, the change, then an independent reviewer"
+steps = [
+{ workflow = "tdd" },
+{ action = "review" },
+]
+
+[meta]
+use_when = "the task is important enough for both a hidden specification and a reviewer"
+avoid_when = "cost matters; this is the most expensive built-in"
+requires = ["[verify] namespace in forge.toml", "a check named test"]

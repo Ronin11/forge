@@ -1,0 +1,13 @@
+name = "reviewed"
+description = "the change, then an independent reviewer that can only demote to human review with executed evidence"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "code" },
+{ action = "review" },
+]
+
+[meta]
+use_when = "the task's correctness is not fully captured by tests and a second pair of eyes that runs the code is worth its cost"
+avoid_when = "the checks are strong and the task is small; the reviewer adds cost, not signal"
+requires = []

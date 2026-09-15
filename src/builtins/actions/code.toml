@@ -1,0 +1,5 @@
+name = "code"
+kind = "directive"
+description = "an agent writes the change in the task's clone; may not touch protected paths or the verification namespace"
+consumes = ["branch"]
+produces = ["branch"]

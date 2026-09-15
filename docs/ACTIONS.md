@@ -261,17 +261,17 @@ forms, one now and one later.
 
 | name | steps |
 |---|---|
-| `direct` | setup, code |
-| `tdd` | tests, setup, code |
-| `docs` | setup, docs |
-| `cheap` | setup, fix (haiku, 15 turns) |
-| `polish` | setup, code, polish |
-| `reviewed` | setup, code, review |
-| `tdd-reviewed` | (tdd), review |
-| `playable` | setup, code, playwright (hidden suite, verifies) |
-| `documented` | (direct), document, comments-only (verifies) |
-| `mapped` | (direct), graph, graph-check (verifies) |
-| `planned` | setup, repo-map, investigate, code |
+| `direct` | setup → repo-map → code |
+| `tdd` | tests → setup → repo-map → code |
+| `docs` | setup → docs |
+| `cheap` | setup → repo-map → fix (haiku, 15 turns) → fmt |
+| `polish` | setup → repo-map → code → polish |
+| `reviewed` | setup → repo-map → code → review |
+| `tdd-reviewed` | tests → setup → repo-map → code → review |
+| `playable` | setup → repo-map → code → playwright (hidden suite, verifies) |
+| `documented` | setup → repo-map → code → document → comments-only (verifies) |
+| `mapped` | setup → repo-map → code → graph → graph-check (verifies) |
+| `planned` | setup → repo-map → investigate → code |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.

@@ -1,0 +1,8 @@
+name = "fix"
+kind = "directive"
+contract = "code"
+description = "the code contract on a small, fast model with few turns, for tasks that are precisely specified and small"
+consumes = ["branch"]
+produces = ["branch"]
+model = "haiku"
+max_turns = 15

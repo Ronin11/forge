@@ -1,0 +1,13 @@
+name = "planned"
+description = "an investigator plans first and may stop with a question; then one agent writes the change to the plan; the kernel verifies"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "investigate" },
+{ action = "code" },
+]
+
+[meta]
+use_when = "the task is described as an outcome rather than a change, or may be impossible as stated"
+avoid_when = "the task already names the files and the change; the plan would only repeat it"
+requires = []

@@ -1,0 +1,6 @@
+name = "review"
+kind = "directive"
+description = "an independent session reads and runs the branch; it may not commit; it can only demote the task to human review, and only with something it executed"
+consumes = ["branch", "verdict"]
+produces = ["review"]
+max_turns = 40

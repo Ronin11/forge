@@ -1,0 +1,6 @@
+name = "tests"
+kind = "directive"
+description = "an agent writes tests only inside the verification namespace that fail on base; its summary is the interface the coder sees"
+consumes = ["branch"]
+produces = ["verify_ref", "interface"]
+max_turns = 40

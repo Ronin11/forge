@@ -1,0 +1,9 @@
+name = "graph"
+kind = "directive"
+contract = "code"
+description = "maintains docs/SYSTEM.md, the system map: components, what each owns, and the data flows between them, as a Mermaid graph plus prose"
+consumes = ["branch"]
+produces = ["branch"]
+paths = ["docs/SYSTEM.md"]
+brief = "Maintain docs/SYSTEM.md, the map of this system: its components (modules, services, stores, entry points, external systems), what each one owns, and the data that flows between them. The file is one Mermaid `graph` block naming the components and their flows, followed by one short paragraph per component. Read the diff of this branch against the base branch named above and the tree it touched; add, remove, or reword only what the change affected, and create the file from the whole tree if it does not exist. Name real paths in the tree, never invented ones; an operation after you checks every path. Nothing but docs/SYSTEM.md may change."
+max_turns = 20

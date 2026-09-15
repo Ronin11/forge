@@ -1,0 +1,13 @@
+name = "polish"
+description = "the change, then a second pass that only finds and fixes defects"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "code" },
+{ action = "polish" },
+]
+
+[meta]
+use_when = "the task is medium-sized and correctness matters more than cost"
+avoid_when = "the task is trivial; the second pass would only burn turns"
+requires = []

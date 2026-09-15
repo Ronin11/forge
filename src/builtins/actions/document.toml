@@ -1,0 +1,8 @@
+name = "document"
+kind = "directive"
+contract = "code"
+description = "a documentation pass over the branch: docs and code comments brought in line with the diff, nothing else"
+consumes = ["branch"]
+produces = ["branch"]
+brief = "The change for this task is already on the branch. Your only job is documentation. Read the diff of this branch against the base branch named above (`git diff <base>...HEAD`) and bring the documentation in line with it: README and docs/ where behavior, commands, configuration, or interfaces changed; doc comments on the functions, types, and modules the diff added or changed, in the style the file already uses. Do not change behavior, tests, or any code outside comments; an operation after you checks exactly that. If nothing needs documenting, commit nothing and say so."
+max_turns = 20

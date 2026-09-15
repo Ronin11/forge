@@ -1,0 +1,11 @@
+name = "docs"
+description = "documentation only: the agent may change docs/ and Markdown files, nothing else"
+steps = [
+{ action = "setup" },
+{ action = "docs" },
+]
+
+[meta]
+use_when = "the task is documentation, a README, a changelog, or a design note"
+avoid_when = "any code has to change; the write scope will fail it"
+requires = []

@@ -1,0 +1,7 @@
+name = "investigate"
+kind = "directive"
+contract = "plan"
+description = "reads the repository without changing it and returns a plan the coder follows (files that exist, the changes, the test that proves them) or a question for the operator; the front door before any code"
+consumes = ["branch"]
+produces = ["plan"]
+max_turns = 25

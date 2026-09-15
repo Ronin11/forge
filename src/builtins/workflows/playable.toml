@@ -1,0 +1,13 @@
+name = "playable"
+description = "the change, then the hidden Playwright suite drives the built page; a failure goes back to the coder"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "code" },
+{ action = "playwright" },
+]
+
+[meta]
+use_when = "the task touches anything a user sees or clicks; unit tests cannot tell whether a page works"
+avoid_when = "the repo has no e2e/ suite on forge-verify, or the change is pure simulation"
+requires = ["[verify] namespace including e2e/ in forge.toml", "a forge-verify branch with e2e/playwright.config.ts", "@playwright/test installed by setup"]

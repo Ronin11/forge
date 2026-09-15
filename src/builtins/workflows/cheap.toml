@@ -1,0 +1,13 @@
+name = "cheap"
+description = "a small fast model with few turns, for precisely specified small changes; the formatter runs after it so formatting never costs a retry"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "fix" },
+{ action = "fmt" },
+]
+
+[meta]
+use_when = "the task names the file and the change, and the repo's checks will catch a mistake"
+avoid_when = "the task needs design judgment or touches more than a couple of files"
+requires = []

@@ -1,0 +1,8 @@
+name = "repo-map"
+kind = "operation"
+description = "where things are: every source file's declared symbols, ranked against the task's words and the files earlier work read most, cut to a budget; shown to the next directive so it starts by reading what matters instead of finding it. Deterministic: forge-repomap, no model."
+consumes = ["branch"]
+produces = ["context"]
+run = ["bash", "-c", '''
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
+''', "repo-map"]

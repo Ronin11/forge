@@ -1,0 +1,8 @@
+name = "docs"
+kind = "directive"
+contract = "code"
+description = "the code contract confined to documentation: only docs/ and Markdown files may change"
+consumes = ["branch"]
+produces = ["branch"]
+paths = ["docs/", "*.md"]
+max_turns = 20

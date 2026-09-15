@@ -348,421 +348,87 @@ impl Workflow {
 }
 
 const BUILTIN_ACTIONS: &[(&str, &str)] = &[
-    (
-        "code.toml",
-        "name = \"code\"\n\
-kind = \"directive\"\n\
-description = \"an agent writes the change in the task's clone; may not touch protected paths or the verification namespace\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"branch\"]\n",
-    ),
-    (
-        "tests.toml",
-        "name = \"tests\"\n\
-kind = \"directive\"\n\
-description = \"an agent writes tests only inside the verification namespace that fail on base; its summary is the interface the coder sees\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"verify_ref\", \"interface\"]\n\
-max_turns = 40\n",
-    ),
+    ("code.toml", include_str!("builtins/actions/code.toml")),
+    ("tests.toml", include_str!("builtins/actions/tests.toml")),
     (
         "investigate.toml",
-        "name = \"investigate\"\n\
-kind = \"directive\"\n\
-contract = \"plan\"\n\
-description = \"reads the repository without changing it and returns a plan the coder follows (files that exist, the changes, the test that proves them) or a question for the operator; the front door before any code\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"plan\"]\n\
-max_turns = 25\n",
+        include_str!("builtins/actions/investigate.toml"),
     ),
-    (
-        "review.toml",
-        "name = \"review\"\n\
-kind = \"directive\"\n\
-description = \"an independent session reads and runs the branch; it may not commit; it can only demote the task to human review, and only with something it executed\"\n\
-consumes = [\"branch\", \"verdict\"]\n\
-produces = [\"review\"]\n\
-max_turns = 40\n",
-    ),
-    (
-        "docs.toml",
-        "name = \"docs\"\n\
-kind = \"directive\"\n\
-contract = \"code\"\n\
-description = \"the code contract confined to documentation: only docs/ and Markdown files may change\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"branch\"]\n\
-paths = [\"docs/\", \"*.md\"]\n\
-max_turns = 20\n",
-    ),
-    (
-        "fix.toml",
-        "name = \"fix\"\n\
-kind = \"directive\"\n\
-contract = \"code\"\n\
-description = \"the code contract on a small, fast model with few turns, for tasks that are precisely specified and small\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"branch\"]\n\
-model = \"haiku\"\n\
-max_turns = 15\n",
-    ),
-    (
-        "polish.toml",
-        "name = \"polish\"\n\
-kind = \"directive\"\n\
-contract = \"code\"\n\
-description = \"a second pass over the branch told only to find and fix defects, never to add scope\"\n\
-consumes = [\"branch\", \"verdict\"]\n\
-produces = [\"branch\"]\n\
-brief = \"The change for this task is already on the branch. Do not add features or scope. Read the diff against the base, run the checks, look for defects, missing edge cases, and untested paths, and fix what you find with tests. If you find nothing to fix, commit nothing and say so.\"\n\
-max_turns = 20\n",
-    ),
+    ("review.toml", include_str!("builtins/actions/review.toml")),
+    ("docs.toml", include_str!("builtins/actions/docs.toml")),
+    ("fix.toml", include_str!("builtins/actions/fix.toml")),
+    ("polish.toml", include_str!("builtins/actions/polish.toml")),
     (
         "document.toml",
-        "name = \"document\"\n\
-kind = \"directive\"\n\
-contract = \"code\"\n\
-description = \"a documentation pass over the branch: docs and code comments brought in line with the diff, nothing else\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"branch\"]\n\
-brief = \"The change for this task is already on the branch. Your only job is documentation. Read the diff of this branch against the base branch named above (`git diff <base>...HEAD`) and bring the documentation in line with it: README and docs/ where behavior, commands, configuration, or interfaces changed; doc comments on the functions, types, and modules the diff added or changed, in the style the file already uses. Do not change behavior, tests, or any code outside comments; an operation after you checks exactly that. If nothing needs documenting, commit nothing and say so.\"\n\
-max_turns = 20\n",
+        include_str!("builtins/actions/document.toml"),
     ),
-    (
-        "graph.toml",
-        "name = \"graph\"\n\
-kind = \"directive\"\n\
-contract = \"code\"\n\
-description = \"maintains docs/SYSTEM.md, the system map: components, what each owns, and the data flows between them, as a Mermaid graph plus prose\"\n\
-consumes = [\"branch\"]\n\
-produces = [\"branch\"]\n\
-paths = [\"docs/SYSTEM.md\"]\n\
-brief = \"Maintain docs/SYSTEM.md, the map of this system: its components (modules, services, stores, entry points, external systems), what each one owns, and the data that flows between them. The file is one Mermaid `graph` block naming the components and their flows, followed by one short paragraph per component. Read the diff of this branch against the base branch named above and the tree it touched; add, remove, or reword only what the change affected, and create the file from the whole tree if it does not exist. Name real paths in the tree, never invented ones; an operation after you checks every path. Nothing but docs/SYSTEM.md may change.\"\n\
-max_turns = 20\n",
-    ),
+    ("graph.toml", include_str!("builtins/actions/graph.toml")),
     (
         "playwright.toml",
-        "name = \"playwright\"\n\
-kind = \"operation\"\n\
-description = \"run the hidden Playwright suite from forge-verify against the branch: the page must be playable; failure goes back to the coder\"\n\
-consumes = [\"branch\"]\n\
-produces = []\n\
-run = [\"npx\", \"playwright\", \"test\", \"--config\", \"e2e/playwright.config.ts\"]\n\
-overlay = true\n\
-verifies = true\n\
-timeout_secs = 900\n",
+        include_str!("builtins/actions/playwright.toml"),
     ),
-    (
-        "setup.toml",
-        "name = \"setup\"\n\
-kind = \"operation\"\n\
-description = \"run the repository's setup check in the clone so the next directive starts check-ready\"\n\
-consumes = [\"branch\"]\n\
-produces = []\n\
-check = \"setup\"\n\
-timeout_secs = 600\n",
-    ),
+    ("setup.toml", include_str!("builtins/actions/setup.toml")),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
     (
         "comments-only.toml",
-        r#"name = "comments-only"
-kind = "operation"
-description = "fails when the preceding step changed anything but comments and documentation: the guard behind the document directive. Comment syntax is recognised by line prefix (//, #, *, /*, */, <!--, -->, --, and triple quotes); docs/ and Markdown are free."
-consumes = ["branch"]
-verifies = true
-run = ["bash", "-c", '''
-set -e
-from="${FORGE_PREV_SHA:-$FORGE_BASE_SHA}"
-sq=$(printf "\x27")
-bad=$(git diff --unified=0 "$from" HEAD -- . ':(exclude)docs/**' ':(exclude,glob)**/*.md' ':(exclude,glob)*.md' \
-  | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' | sed -E 's/^[+-]//' \
-  | grep -vE "^[[:space:]]*(//|#|\*|/\*|\*/|<!--|-->|--|\"\"\"|$sq$sq$sq)" | grep -vE '^[[:space:]]*$' || true)
-if [ -n "$bad" ]; then
-  echo "the documentation pass changed more than comments and docs since $from:"
-  echo "$bad" | head -20
-  exit 1
-fi
-echo "only comments and docs changed since $from"
-''', "comments-only"]
-"#,
+        include_str!("builtins/operations/comments-only.toml"),
     ),
     (
         "graph-check.toml",
-        r#"name = "graph-check"
-kind = "operation"
-description = "fails unless docs/SYSTEM.md exists, holds a Mermaid block, and names only paths that exist in the tree: the guard behind the graph directive"
-consumes = ["branch"]
-verifies = true
-run = ["bash", "-c", '''
-set -e
-f=docs/SYSTEM.md
-test -f "$f" || { echo "$f is missing"; exit 1; }
-grep -qE '^```mermaid' "$f" || { echo "$f has no mermaid block"; exit 1; }
-# A path is a slash-separated token whose first segment is a top-level entry of the tree,
-# so prose like "export/import" is left alone.
-tops=$(git ls-tree --name-only HEAD | tr '\n' '|' | sed 's/|$//')
-missing=$(grep -oE '\b[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+' "$f" | grep -E "^($tops)/" | sed -E 's/[.,;:)]+$//' | sort -u \
-  | while read -r p; do git ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || test -d "$p" || echo "$p"; done)
-if [ -n "$missing" ]; then
-  echo "$f names paths that do not exist in the tree:"
-  echo "$missing"
-  exit 1
-fi
-echo "$f has a mermaid block and names only real paths"
-''', "graph-check"]
-"#,
+        include_str!("builtins/operations/graph-check.toml"),
     ),
     (
         "repo-map.toml",
-        r#"name = "repo-map"
-kind = "operation"
-description = "where things are: every source file's declared symbols, ranked against the task's words and the files earlier work read most, cut to a budget; shown to the next directive so it starts by reading what matters instead of finding it. Deterministic: forge-repomap, no model."
-consumes = ["branch"]
-produces = ["context"]
-run = ["bash", "-c", '''
-exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
-''', "repo-map"]
-"#,
+        include_str!("builtins/operations/repo-map.toml"),
     ),
     (
         "diff-size.toml",
-        r#"name = "diff-size"
-kind = "operation"
-description = "fails when the change against base is larger than a cap on lines and files: the guard against scope creep and rewrites. The caps are the two numbers at the end of `run`."
-consumes = ["branch"]
-run = ["bash", "-c", '''
-set -e
-max_lines=$1
-max_files=$2
-lines=$(git diff --numstat "$FORGE_BASE_SHA" -- | awk '{ if ($1 != "-") a += $1 + $2 } END { print a + 0 }')
-files=$(git diff --name-only "$FORGE_BASE_SHA" -- | wc -l)
-echo "$files file(s), $lines line(s) changed against base (cap $max_files files, $max_lines lines)"
-test "$lines" -le "$max_lines" && test "$files" -le "$max_files"
-''', "diff-size", "800", "25"]
-"#,
+        include_str!("builtins/operations/diff-size.toml"),
     ),
-    (
-        "fmt.toml",
-        r#"name = "fmt"
-kind = "operation"
-description = "runs the tree's formatter and commits what it changed, so a formatting difference never costs a retry; the kernel verifies the result. Edit `run` for a repository whose formatter is not recognised."
-consumes = ["branch"]
-produces = ["branch"]
-run = ["bash", "-c", '''
-set -e
-if [ -f Cargo.toml ]; then cargo fmt --all
-elif [ -f go.mod ]; then gofmt -w .
-elif [ -f pyproject.toml ] && command -v ruff >/dev/null; then ruff format .
-elif [ -f package.json ] && [ -x node_modules/.bin/prettier ]; then node_modules/.bin/prettier --write . --log-level warn
-else echo "no formatter recognised; nothing done"
-fi
-''']
-"#,
-    ),
+    ("fmt.toml", include_str!("builtins/operations/fmt.toml")),
     (
         "interface.toml",
-        r#"name = "interface"
-kind = "operation"
-description = "the interface the hidden tests expect, extracted from the tests themselves rather than described by the agent that wrote them: the files, what they import, and the names they call, never their assertions. Runs in a scratch copy of base with the verify ref overlaid; the coder's clone never sees the tests. Replaces the tests directive's summary as the interface the coder is shown."
-consumes = ["verify_ref"]
-produces = ["interface"]
-run = ["bash", "-c", '''
-set -e
-echo "Hidden tests, under $FORGE_NAMESPACE, judge this work. What they reference:"
-for d in $FORGE_NAMESPACE; do find "$d" -type f 2>/dev/null; done | sort | while read -r f; do
-  echo
-  echo "== $f"
-  grep -hE '^[[:space:]]*(use |import |from .+ import |require\(|#include|const .* = require)' "$f" | sed 's/^[[:space:]]*//' | sort -u || true
-  grep -ohE '\b[A-Za-z_][A-Za-z0-9_]*\(' "$f" | sed 's/($//' \
-    | grep -vxE 'if|for|while|switch|return|assert|print|println|printf|fn|function|def|expect|it|describe|test|catch|new' \
-    | sort | uniq -c | sort -rn | awk '{ print "  calls " $2 " (" $1 "x)" }' || true
-done
-''']
-"#,
+        include_str!("builtins/operations/interface.toml"),
     ),
 ];
 
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "planned.toml",
-        "name = \"planned\"\n\
-description = \"an investigator plans first and may stop with a question; then one agent writes the change to the plan; the kernel verifies\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"investigate\" },\n\
-  { action = \"code\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task is described as an outcome rather than a change, or may be impossible as stated\"\n\
-avoid_when = \"the task already names the files and the change; the plan would only repeat it\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/planned.toml"),
     ),
     (
         "direct.toml",
-        "name = \"direct\"\n\
-description = \"one agent writes the change; the kernel verifies\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"code\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task is small and precisely described, and the repo's own checks cover it\"\n\
-avoid_when = \"the task's correctness is not captured by existing tests and no --check can express it\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/direct.toml"),
     ),
-    (
-        "tdd.toml",
-        "name = \"tdd\"\n\
-description = \"one agent writes hidden tests that fail on base; another makes them pass seeing only the interface\"\n\
-steps = [\n\
-  { action = \"tests\" },\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"code\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task adds behavior that a test can pin down and the repo's checks would not otherwise catch a wrong implementation\"\n\
-avoid_when = \"the task is a refactor, a rename, docs, or config; or the repo has no test check\"\n\
-requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
-",
-    ),
-    (
-        "docs.toml",
-        "name = \"docs\"\n\
-description = \"documentation only: the agent may change docs/ and Markdown files, nothing else\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"docs\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task is documentation, a README, a changelog, or a design note\"\n\
-avoid_when = \"any code has to change; the write scope will fail it\"\n\
-requires = []\n\
-",
-    ),
-    (
-        "cheap.toml",
-        "name = \"cheap\"\n\
-description = \"a small fast model with few turns, for precisely specified small changes; the formatter runs after it so formatting never costs a retry\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"fix\" },\n\
-  { action = \"fmt\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task names the file and the change, and the repo's checks will catch a mistake\"\n\
-avoid_when = \"the task needs design judgment or touches more than a couple of files\"\n\
-requires = []\n\
-",
-    ),
+    ("tdd.toml", include_str!("builtins/workflows/tdd.toml")),
+    ("docs.toml", include_str!("builtins/workflows/docs.toml")),
+    ("cheap.toml", include_str!("builtins/workflows/cheap.toml")),
     (
         "polish.toml",
-        "name = \"polish\"\n\
-description = \"the change, then a second pass that only finds and fixes defects\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"code\" },\n\
-  { action = \"polish\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task is medium-sized and correctness matters more than cost\"\n\
-avoid_when = \"the task is trivial; the second pass would only burn turns\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/polish.toml"),
     ),
     (
         "reviewed.toml",
-        "name = \"reviewed\"\n\
-description = \"the change, then an independent reviewer that can only demote to human review with executed evidence\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"code\" },\n\
-  { action = \"review\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task's correctness is not fully captured by tests and a second pair of eyes that runs the code is worth its cost\"\n\
-avoid_when = \"the checks are strong and the task is small; the reviewer adds cost, not signal\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/reviewed.toml"),
     ),
     (
         "playable.toml",
-        "name = \"playable\"\n\
-description = \"the change, then the hidden Playwright suite drives the built page; a failure goes back to the coder\"\n\
-steps = [\n\
-  { action = \"setup\" },\n\
-  { action = \"repo-map\" },\n\
-  { action = \"code\" },\n\
-  { action = \"playwright\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task touches anything a user sees or clicks; unit tests cannot tell whether a page works\"\n\
-avoid_when = \"the repo has no e2e/ suite on forge-verify, or the change is pure simulation\"\n\
-requires = [\"[verify] namespace including e2e/ in forge.toml\", \"a forge-verify branch with e2e/playwright.config.ts\", \"@playwright/test installed by setup\"]\n",
+        include_str!("builtins/workflows/playable.toml"),
     ),
     (
         "documented.toml",
-        "name = \"documented\"\n\
-description = \"the change, then a documentation pass held to comments and docs\"\n\
-steps = [\n\
-  { workflow = \"direct\" },\n\
-  { action = \"document\" },\n\
-  { action = \"comments-only\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the change alters behavior, commands, configuration, or interfaces that the docs or doc comments describe\"\n\
-avoid_when = \"the change is internal and the docs do not mention what it touches; the pass would commit nothing\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/documented.toml"),
     ),
     (
         "mapped.toml",
-        "name = \"mapped\"\n\
-description = \"the change, then the system map in docs/SYSTEM.md brought in line with it\"\n\
-steps = [\n\
-  { workflow = \"direct\" },\n\
-  { action = \"graph\" },\n\
-  { action = \"graph-check\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the change adds, removes, or rewires a component or a data flow\"\n\
-avoid_when = \"the change stays inside one component; the map would not move\"\n\
-requires = []\n\
-",
+        include_str!("builtins/workflows/mapped.toml"),
     ),
     (
         "tdd-reviewed.toml",
-        "name = \"tdd-reviewed\"\n\
-description = \"hidden tests first, the change, then an independent reviewer\"\n\
-steps = [\n\
-  { workflow = \"tdd\" },\n\
-  { action = \"review\" },\n\
-]\n\
-\n\
-[meta]\n\
-use_when = \"the task is important enough for both a hidden specification and a reviewer\"\n\
-avoid_when = \"cost matters; this is the most expensive built-in\"\n\
-requires = [\"[verify] namespace in forge.toml\", \"a check named test\"]\n\
-",
+        include_str!("builtins/workflows/tdd-reviewed.toml"),
     ),
 ];
 
@@ -1770,6 +1436,40 @@ mod tests {
             assert!(
                 docs.contains(&format!("`{name}`")),
                 "docs/ACTIONS.md does not mention `{name}` ({file})"
+            );
+        }
+
+        // The built-in workflows table must list each workflow's steps in
+        // the exact order the kernel resolves them, compositions spliced
+        // inline: a table that lied about the order would mislead whoever
+        // picks a workflow by reading it.
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        for (file, _) in BUILTIN_WORKFLOWS {
+            let name = file.strip_suffix(".toml").unwrap();
+            let resolved = resolve(dir.path(), name).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let steps: Vec<&str> = resolved
+                .steps
+                .iter()
+                .map(|s| s.action.name.as_str())
+                .collect();
+            let row = docs
+                .lines()
+                .find(|l| l.starts_with(&format!("| `{name}` |")))
+                .unwrap_or_else(|| {
+                    panic!("docs/ACTIONS.md has no built-in workflows row for `{name}`")
+                });
+            let cell = row
+                .split('|')
+                .nth(2)
+                .unwrap_or_else(|| panic!("malformed built-in workflows row for `{name}`: {row}"));
+            let listed: Vec<&str> = cell
+                .split('→')
+                .map(|s| s.split('(').next().unwrap().trim())
+                .collect();
+            assert_eq!(
+                listed, steps,
+                "docs/ACTIONS.md built-in workflows row for `{name}` does not match how it resolves"
             );
         }
     }

@@ -1,0 +1,12 @@
+name = "mapped"
+description = "the change, then the system map in docs/SYSTEM.md brought in line with it"
+steps = [
+{ workflow = "direct" },
+{ action = "graph" },
+{ action = "graph-check" },
+]
+
+[meta]
+use_when = "the change adds, removes, or rewires a component or a data flow"
+avoid_when = "the change stays inside one component; the map would not move"
+requires = []

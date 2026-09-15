@@ -1,0 +1,12 @@
+name = "direct"
+description = "one agent writes the change; the kernel verifies"
+steps = [
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "code" },
+]
+
+[meta]
+use_when = "the task is small and precisely described, and the repo's own checks cover it"
+avoid_when = "the task's correctness is not captured by existing tests and no --check can express it"
+requires = []

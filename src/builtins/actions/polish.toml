@@ -1,0 +1,8 @@
+name = "polish"
+kind = "directive"
+contract = "code"
+description = "a second pass over the branch told only to find and fix defects, never to add scope"
+consumes = ["branch", "verdict"]
+produces = ["branch"]
+brief = "The change for this task is already on the branch. Do not add features or scope. Read the diff against the base, run the checks, look for defects, missing edge cases, and untested paths, and fix what you find with tests. If you find nothing to fix, commit nothing and say so."
+max_turns = 20

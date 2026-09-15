@@ -1,0 +1,12 @@
+name = "documented"
+description = "the change, then a documentation pass held to comments and docs"
+steps = [
+{ workflow = "direct" },
+{ action = "document" },
+{ action = "comments-only" },
+]
+
+[meta]
+use_when = "the change alters behavior, commands, configuration, or interfaces that the docs or doc comments describe"
+avoid_when = "the change is internal and the docs do not mention what it touches; the pass would commit nothing"
+requires = []

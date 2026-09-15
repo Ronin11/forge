@@ -1,0 +1,13 @@
+name = "tdd"
+description = "one agent writes hidden tests that fail on base; another makes them pass seeing only the interface"
+steps = [
+{ action = "tests" },
+{ action = "setup" },
+{ action = "repo-map" },
+{ action = "code" },
+]
+
+[meta]
+use_when = "the task adds behavior that a test can pin down and the repo's checks would not otherwise catch a wrong implementation"
+avoid_when = "the task is a refactor, a rename, docs, or config; or the repo has no test check"
+requires = ["[verify] namespace in forge.toml", "a check named test"]

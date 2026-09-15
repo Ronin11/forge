@@ -1,0 +1,9 @@
+name = "playwright"
+kind = "operation"
+description = "run the hidden Playwright suite from forge-verify against the branch: the page must be playable; failure goes back to the coder"
+consumes = ["branch"]
+produces = []
+run = ["npx", "playwright", "test", "--config", "e2e/playwright.config.ts"]
+overlay = true
+verifies = true
+timeout_secs = 900
