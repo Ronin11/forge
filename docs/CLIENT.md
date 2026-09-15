@@ -61,6 +61,14 @@ and does not parse stdout.
 `{name, status, detail, hint}`) but no current client calls it; it is
 listed for completeness, not as part of the stable contract.
 
+The verb names above, as a plain fenced list a test can parse without
+scraping this prose (`tests/client_boundary.rs` reads this block and
+asserts every verb a client source file invokes appears in it):
+
+```text
+snapshot log requests decisions trace journal workflows stats events retry doctor
+```
+
 ## Naming: unified vs. legacy keys
 
 Several documents grew a JSON form before they had a consistent naming
