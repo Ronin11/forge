@@ -1,3 +1,12 @@
+// Rule for every test in this file: no test asserts on a clock. A plugin's
+// poll loop and any fake it drives (`gh`, `signal-cli`, ...) run on their
+// own schedule, so a test must never assume a fixed sleep gave them enough
+// wall-clock time to finish a step. Instead, wait on a file or database row
+// the plugin writes only once that step is actually done, bounded by a
+// generous `wait_until` timeout, and never assert on a related-but-weaker
+// condition (e.g. "a task exists") as a stand-in for the one that actually
+// matters (e.g. "its ref was filed").
+
 use crate::support::*;
 use rusqlite::OptionalExtension;
 use std::os::unix::fs::PermissionsExt;
@@ -370,26 +379,30 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         .spawn()
         .unwrap();
 
-    let found: std::cell::Cell<Option<i64>> = std::cell::Cell::new(None);
+    // Wait on the plugin's own `filed` state file rather than the tasks
+    // table: `intake_once` writes it only after both `forge add` and
+    // `forge ref add` have completed, so once it names the issue the ref
+    // is guaranteed to exist too. Racing on the task row instead (as an
+    // earlier version of this test did) could catch the task between
+    // those two calls, with no ref written yet.
+    let filed = e.home.join("plugins-state/github-issues/filed");
     assert!(
         wait_until(
-            || {
-                found.set(
-                    e.db()
-                        .query_row(
-                            "SELECT id FROM tasks WHERE task LIKE 'Add a frobnicator%'",
-                            [],
-                            |r| r.get(0),
-                        )
-                        .ok(),
-                );
-                found.get().is_some()
-            },
+            || std::fs::read_to_string(&filed)
+                .unwrap_or_default()
+                .starts_with("42 "),
             Duration::from_secs(15)
         ),
-        "expected a task queued from the issue"
+        "expected issue 42 filed: {:?}",
+        std::fs::read_to_string(&filed)
     );
-    let task_id = found.get().unwrap();
+    let filed_text = std::fs::read_to_string(&filed).unwrap();
+    let task_id: i64 = filed_text
+        .split_whitespace()
+        .nth(1)
+        .expect("filed line is \"<issue> <task>\"")
+        .parse()
+        .unwrap();
 
     let refs: serde_json::Value = serde_json::from_slice(
         &e.forge("ok.sh", &["ref", "list", &task_id.to_string(), "--json"])
@@ -408,17 +421,23 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
     let (_, reason, _) = e.task(task_id);
     assert!(reason.starts_with("landed"), "{reason}");
 
+    // Wait for the `edit 42` call, not just the `comment 42` that precedes
+    // it: the events loop runs both `gh` calls one after another for the
+    // same `task_done` line, but they are separate subprocesses, so
+    // stopping at the first one and asserting on the second immediately
+    // (with no wait) is itself a clock assumption under load.
     assert!(
         wait_until(
             || std::fs::read_to_string(&calls)
                 .unwrap_or_default()
-                .contains("comment 42"),
+                .contains("edit 42"),
             Duration::from_secs(15)
         ),
-        "expected a gh issue comment call: {:?}",
+        "expected a gh issue edit call: {:?}",
         std::fs::read_to_string(&calls)
     );
     let calls_text = std::fs::read_to_string(&calls).unwrap();
+    assert!(calls_text.contains("comment 42"), "{calls_text}");
     assert!(calls_text.contains("succeeded"), "{calls_text}");
     assert!(calls_text.contains("landed"), "{calls_text}");
     assert!(
