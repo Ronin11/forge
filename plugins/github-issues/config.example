@@ -1,3 +1,22 @@
+# ---------------------------------------------------------------------
+# HOLD: do not enable this plugin yet.
+#
+# It is the first intake that carries text a stranger wrote into an
+# agent that runs with your git credentials, can push, and has
+# unrestricted network egress. That combination, an agent holding
+# elevated credentials while reading untrusted input, is the 2026
+# supply-chain pattern (Clinejection, RoguePilot): a payload in an issue
+# title reaching a published package, hidden comments making an agent
+# leak its token. Forge quotes the issue body and tells the model it is
+# data, which is a mitigation, not a boundary.
+#
+# The boundary is item 1 of docs/GTM.md: each attempt in its own
+# container, egress limited to what the task declares, credentials
+# scoped to the task and expired when it ends. Enable this plugin after
+# that lands, or only against a repository whose issues only you can
+# open.
+# ---------------------------------------------------------------------
+
 # Copy this file to "config" next to plugin.toml (or into the installed
 # copy under FORGE2_HOME/plugins/github-issues/) and fill it in. It is
 # shell, sourced by github-issues.sh: KEY=value lines, one per line.
