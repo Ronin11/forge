@@ -472,9 +472,25 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                         let spent = f.store.task_cost(id).env()?;
                         if spent >= task_cap {
-                            end = Some(End::Budget(format!(
-                                "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
-                            )));
+                            // A code attempt already verified, and the run stopped
+                            // before the review that would vouch for it: not a
+                            // failure, the same as a review that could not finish.
+                            let code_verified = resolved.steps.iter().enumerate().any(
+                                |(i, s)| {
+                                    s.action.contract == Contract::Code
+                                        && run.done.contains(&(i as i64 + 1))
+                                },
+                            );
+                            end = Some(if code_verified {
+                                End::Unverified(
+                                    "budget reached after the code step verified; review did not run"
+                                        .to_string(),
+                                )
+                            } else {
+                                End::Budget(format!(
+                                    "task budget reached: ${spent:.4} of ${task_cap:.2} after {attempt_no} attempt(s)"
+                                ))
+                            });
                             break 'steps;
                         }
                         *run.used.entry(seq).or_insert(0) += 1;
@@ -704,6 +720,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         }
                     }
                     if step_ok {
+                        run.done.insert(seq);
                         run.idx += 1;
                         continue;
                     }
@@ -1045,6 +1062,7 @@ impl Run {
 /// How a run ended. Set exactly once at the point that decides it; the
 /// push decision and the task's state and reason derive from it, so
 /// they cannot disagree.
+#[derive(Debug)]
 enum End {
     /// Every step verified; the branch is pushed for a human (no landing
     /// asked for, or no remote to land on).
@@ -1147,4 +1165,57 @@ async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
         });
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_state_maps_every_end_variant() {
+        let cases: Vec<(End, TaskState)> = vec![
+            (End::Verified, TaskState::Succeeded),
+            (End::Landed("abc123".to_string()), TaskState::Succeeded),
+            (End::Unverified("reason".to_string()), TaskState::Unverified),
+            (
+                End::Blocked {
+                    reason: "reason".to_string(),
+                    demoted: false,
+                },
+                TaskState::Blocked,
+            ),
+            (
+                End::Blocked {
+                    reason: "reason".to_string(),
+                    demoted: true,
+                },
+                TaskState::Blocked,
+            ),
+            (
+                End::Failed {
+                    reason: "reason".to_string(),
+                    counted: true,
+                    pushes: false,
+                },
+                TaskState::Failed,
+            ),
+            (
+                End::Budget("task budget reached".to_string()),
+                TaskState::Failed,
+            ),
+            (
+                // Budget hit after the code step verified but before review
+                // completed: not a failure, a human review the same as a
+                // review that could not finish.
+                End::Unverified(
+                    "budget reached after the code step verified; review did not run"
+                        .to_string(),
+                ),
+                TaskState::Unverified,
+            ),
+        ];
+        for (end, expected) in cases {
+            assert_eq!(end.task_state(), expected, "{end:?} -> {expected:?}");
+        }
+    }
 }
