@@ -1,5 +1,7 @@
 use crate::support::*;
+use rusqlite::OptionalExtension;
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 use std::time::Duration;
 
 #[test]
@@ -283,4 +285,167 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
         hits.display(),
         std::fs::read_to_string(&hits)
     );
+}
+
+/// The Signal plugin end to end, against a stub `signal-cli` early on
+/// `PATH` (the plugin's `SIGNAL_CLI` variable defaults to the bare name,
+/// so shadowing it on `PATH` is enough): a task that blocks on a
+/// question gets one outbound message carrying that question, and an
+/// `/answer` reply from an allowed sender re-queues the task with the
+/// answer appended to its text, the same way `forge answer` does by
+/// hand.
+#[test]
+fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/signal");
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    let outgoing = e._dir.path().join("signal-out.txt");
+    let incoming = e._dir.path().join("signal-in.txt");
+    std::fs::write(&outgoing, "").unwrap();
+    std::fs::write(&incoming, "").unwrap();
+
+    std::fs::write(
+        e.home.join("plugins/signal/config"),
+        format!(
+            "SIGNAL_ACCOUNT=+15555550100\n\
+             SIGNAL_TO=+15555550199\n\
+             SIGNAL_ALLOWED=+15555550199\n\
+             POLL_SECONDS=1\n\
+             TARGET_REPO={}\n\
+             WORKFLOW=direct\n\
+             NOTIFY_ON=blocked failed\n",
+            e.repo.display()
+        ),
+    )
+    .unwrap();
+
+    let stub_dir = e._dir.path().join("stub-bin");
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("signal-cli"),
+        format!(
+            "#!/bin/sh\n\
+             case \"$3\" in\n\
+             send)\n\
+             shift 3\n\
+             msg=\"\"\n\
+             while [ $# -gt 0 ]; do\n\
+             case \"$1\" in\n\
+             -m) msg=$2; shift 2 ;;\n\
+             *) shift ;;\n\
+             esac\n\
+             done\n\
+             printf '%s\\n===\\n' \"$msg\" >> {out}\n\
+             ;;\n\
+             receive)\n\
+             if [ -s {inc} ]; then\n\
+             cat {inc}\n\
+             : > {inc}\n\
+             fi\n\
+             ;;\n\
+             esac\n",
+            out = outgoing.display(),
+            inc = incoming.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        stub_dir.join("signal-cli"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "signal"])
+            .status
+            .success()
+    );
+
+    let id = e.add(&[]);
+
+    let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = e
+        .cmd("needsinput.sh")
+        .env("PATH", path)
+        .args(["work"])
+        .stderr(stderr_file)
+        .spawn()
+        .unwrap();
+
+    assert!(
+        wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
+        "the task never blocked: {:?}",
+        std::fs::read_to_string(&stderr_path)
+    );
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&outgoing)
+                .unwrap_or_default()
+                .contains("Which answer file"),
+            Duration::from_secs(10)
+        ),
+        "expected the question in {}: {:?}",
+        outgoing.display(),
+        std::fs::read_to_string(&outgoing)
+    );
+
+    std::fs::write(
+        &incoming,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "envelope": {
+                    "source": "+15555550199",
+                    "sourceNumber": "+15555550199",
+                    "dataMessage": {"message": format!("/answer {id} Use answer.txt")}
+                }
+            })
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || e.db()
+                .query_row(
+                    "SELECT task, retry_of FROM tasks WHERE retry_of=?1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+                )
+                .optional()
+                .unwrap()
+                .is_some(),
+            Duration::from_secs(10)
+        ),
+        "the answer never re-queued a task"
+    );
+
+    let (task_text, retry_of): (String, Option<i64>) = e
+        .db()
+        .query_row(
+            "SELECT task, retry_of FROM tasks WHERE retry_of=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retry_of, Some(id));
+    assert!(
+        task_text.contains("Use answer.txt"),
+        "expected the answer in the re-queued task's text: {task_text}"
+    );
+
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    let _ = child.wait();
 }

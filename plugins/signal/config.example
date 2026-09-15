@@ -1,0 +1,22 @@
+# Copy to $FORGE_PLUGIN_DIR/config (KEY=value, one per line, '#' comments
+# and blank lines ignored). Nothing here is parsed as shell.
+
+# The number this bot is registered as with signal-cli.
+SIGNAL_ACCOUNT=+15555550100
+
+# Who outbound notifications go to: a phone number or a group id.
+SIGNAL_TO=+15555550199
+
+# Senders allowed to drive Forge back over Signal (space-separated phone
+# numbers). A message from anyone else is ignored and logged.
+SIGNAL_ALLOWED=+15555550199
+
+# How often to poll signal-cli for new messages.
+POLL_SECONDS=30
+
+# Repo and workflow `forge add` uses for a message that isn't a command.
+TARGET_REPO=/path/to/repo
+WORKFLOW=direct
+
+# Task states worth a Signal message, space-separated.
+NOTIFY_ON=blocked failed
