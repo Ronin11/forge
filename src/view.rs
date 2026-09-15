@@ -626,13 +626,49 @@ impl From<&plugins::Plugin> for PluginRow {
 }
 
 /// One row of `forge plugin status` / `forge plugin status --json`: whether
-/// a plugin is enabled. Supervision (running, pid, restarts, last exit) is
-/// not implemented yet; `supervision` says so until it is.
+/// a plugin is enabled and, per the supervisor's last record, whether it is
+/// `running` (with `pid`/`uptime_secs`), `restarting` (with `restart_count`),
+/// or `stopped` (with `last_exit`). A plugin no worker has ever supervised
+/// reads as `stopped` with no `last_exit`.
 #[derive(Serialize)]
 pub struct PluginStatusRow {
     pub name: String,
     pub enabled: bool,
-    pub supervision: String,
+    pub state: String,
+    pub pid: Option<i64>,
+    pub uptime_secs: Option<i64>,
+    pub restart_count: Option<u32>,
+    pub last_exit: Option<String>,
+}
+
+impl PluginStatusRow {
+    pub fn new(name: String, enabled: bool, run_state: &plugins::RunState) -> PluginStatusRow {
+        let mut row = PluginStatusRow {
+            name,
+            enabled,
+            state: String::new(),
+            pid: None,
+            uptime_secs: None,
+            restart_count: None,
+            last_exit: None,
+        };
+        match run_state {
+            plugins::RunState::Running { pid, since } => {
+                row.state = "running".into();
+                row.pid = Some(*pid);
+                row.uptime_secs = Some((crate::unix_now() - since).max(0));
+            }
+            plugins::RunState::Restarting { count } => {
+                row.state = "restarting".into();
+                row.restart_count = Some(*count);
+            }
+            plugins::RunState::Stopped { last_exit } => {
+                row.state = "stopped".into();
+                row.last_exit = last_exit.clone();
+            }
+        }
+        row
+    }
 }
 
 /// Every plugin found, in catalog order, with the store's enabled flag

@@ -3,12 +3,19 @@
 //! and for the same reason: one broken `plugin.toml` must not stop the
 //! others loading. See docs/PLUGINS.md.
 
+use crate::ctx::Forge;
 use crate::workflows::Problem;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::process::{Child, Command};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,7 +41,7 @@ impl std::fmt::Display for Capability {
 
 /// The supervision policy. `on-failure` (the default) restarts only on a
 /// non-zero exit; `always` restarts unconditionally; `never` leaves it
-/// stopped. Supervision itself is not implemented yet (see docs/PLUGINS.md).
+/// stopped. See `Supervisor` below and docs/PLUGINS.md.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Restart {
@@ -224,6 +231,358 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
     }
 
     Catalog { plugins, problems }
+}
+
+// --- Supervision -----------------------------------------------------
+//
+// `forge work` starts every enabled plugin and stops them when it drains
+// (see `Supervisor`); `forge run`, a single task, never constructs one.
+// See docs/PLUGINS.md "Supervision" and "Environment".
+
+const BACKOFF_START: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+const UPTIME_RESET: Duration = Duration::from_secs(60);
+const STOP_GRACE: Duration = Duration::from_secs(10);
+/// How often the supervisor re-reads the enabled set while the worker is
+/// up, so `forge plugin enable`/`disable` takes effect without a restart.
+const RECONCILE_SECS: u64 = 5;
+
+/// What a plugin is doing right now, as the supervisor last recorded it.
+/// Persisted to `<FORGE2_HOME>/plugins-run/<name>.json` so `forge plugin
+/// status`, its `--json`, and `forge doctor` can read it from another
+/// process; not the plugin's own state (see `FORGE_PLUGIN_STATE`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum RunState {
+    Running { pid: i64, since: i64 },
+    Restarting { count: u32 },
+    Stopped { last_exit: Option<String> },
+}
+
+impl RunState {
+    /// A human line for `forge plugin status` and `forge doctor`.
+    pub fn describe(&self) -> String {
+        match self {
+            RunState::Running { pid, since } => {
+                format!(
+                    "running pid {pid}, up {}s",
+                    (crate::unix_now() - since).max(0)
+                )
+            }
+            RunState::Restarting { count } => format!("restarting (x{count})"),
+            RunState::Stopped { last_exit: Some(e) } => format!("stopped: {e}"),
+            RunState::Stopped { last_exit: None } => "stopped".to_string(),
+        }
+    }
+}
+
+fn run_state_path(home: &Path, name: &str) -> PathBuf {
+    home.join("plugins-run").join(format!("{name}.json"))
+}
+
+/// The last state the supervisor recorded for `name`, or `Stopped { last_exit: None }`
+/// when nothing has ever run it (no worker has supervised it yet).
+pub fn read_run_state(home: &Path, name: &str) -> RunState {
+    std::fs::read_to_string(run_state_path(home, name))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(RunState::Stopped { last_exit: None })
+}
+
+fn write_run_state(home: &Path, name: &str, state: &RunState) {
+    let path = run_state_path(home, name);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(text) = serde_json::to_string(state) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+fn describe_exit(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match status.code() {
+        Some(c) => format!("exit {c}"),
+        None => match status.signal() {
+            Some(s) => format!("signal {s}"),
+            None => "unknown exit".to_string(),
+        },
+    }
+}
+
+async fn wait_for_stop(stop: &mut watch::Receiver<bool>) {
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Sleeps `dur` unless a stop is requested first; `true` when it was.
+async fn wait_backoff_or_stop(stop: &mut watch::Receiver<bool>, dur: Duration) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(dur) => false,
+        _ = wait_for_stop(stop) => true,
+    }
+}
+
+/// SIGTERM, then SIGKILL ten seconds later if it has not exited.
+async fn stop_child(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    if tokio::time::timeout(STOP_GRACE, child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
+/// `run` in the plugin directory, stdout/stderr appended to its log, and
+/// exactly the environment docs/PLUGINS.md promises: `FORGE_BIN`,
+/// `FORGE2_HOME`, `FORGE_PLUGIN_DIR`, `FORGE_PLUGIN_STATE`, plus the
+/// pass-through list every agent and check gets (`agent::agent_env`).
+fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path) -> Result<Child> {
+    let stdout_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("opening {}", log_path.display()))?;
+    let stderr_file = stdout_file.try_clone()?;
+    let bin = std::env::current_exe().context("the forge binary's own path")?;
+    let mut cmd = Command::new(&plugin.manifest.run[0]);
+    cmd.args(&plugin.manifest.run[1..])
+        .current_dir(&plugin.dir)
+        .env_clear()
+        .envs(crate::agent::agent_env())
+        .env("FORGE_BIN", bin)
+        .env("FORGE2_HOME", home)
+        .env("FORGE_PLUGIN_DIR", &plugin.dir)
+        .env("FORGE_PLUGIN_STATE", state_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .kill_on_drop(true);
+    cmd.spawn()
+        .with_context(|| format!("spawning {:?}", plugin.manifest.run))
+}
+
+/// One plugin, started, restarted per its manifest's policy, and stopped
+/// when `stop` fires. Runs until told to stop; a plugin's own failure
+/// never propagates out of this task.
+async fn supervise_plugin(home: PathBuf, plugin: Plugin, mut stop: watch::Receiver<bool>) {
+    let name = plugin.name.clone();
+    let state_dir = home.join("plugins-state").join(&name);
+    let _ = std::fs::create_dir_all(&state_dir);
+    let log_path = home
+        .join("logs")
+        .join("plugins")
+        .join(format!("{name}.log"));
+    if let Some(dir) = log_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    let mut backoff = BACKOFF_START;
+    let mut restarts: u32 = 0;
+
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+
+        let mut child = match spawn_plugin(&plugin, &home, &state_dir, &log_path) {
+            Ok(c) => c,
+            Err(e) => {
+                write_run_state(
+                    &home,
+                    &name,
+                    &RunState::Stopped {
+                        last_exit: Some(format!("failed to start: {e:#}")),
+                    },
+                );
+                if plugin.manifest.restart == Restart::Never
+                    || wait_backoff_or_stop(&mut stop, backoff).await
+                {
+                    return;
+                }
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        };
+
+        let pid = child.id().unwrap_or(0) as i64;
+        let started = Instant::now();
+        write_run_state(
+            &home,
+            &name,
+            &RunState::Running {
+                pid,
+                since: crate::unix_now(),
+            },
+        );
+
+        let waited = tokio::select! {
+            r = child.wait() => Some(r),
+            _ = wait_for_stop(&mut stop) => None,
+        };
+
+        let status = match waited {
+            None => {
+                stop_child(&mut child).await;
+                write_run_state(
+                    &home,
+                    &name,
+                    &RunState::Stopped {
+                        last_exit: Some("stopped by worker".to_string()),
+                    },
+                );
+                return;
+            }
+            Some(Ok(s)) => s,
+            Some(Err(e)) => {
+                write_run_state(
+                    &home,
+                    &name,
+                    &RunState::Stopped {
+                        last_exit: Some(format!("wait failed: {e:#}")),
+                    },
+                );
+                return;
+            }
+        };
+
+        let desc = describe_exit(status);
+        let should_restart = match plugin.manifest.restart {
+            Restart::Always => true,
+            Restart::OnFailure => !status.success(),
+            Restart::Never => false,
+        };
+        if !should_restart {
+            write_run_state(
+                &home,
+                &name,
+                &RunState::Stopped {
+                    last_exit: Some(desc),
+                },
+            );
+            return;
+        }
+
+        restarts += 1;
+        write_run_state(&home, &name, &RunState::Restarting { count: restarts });
+        if started.elapsed() >= UPTIME_RESET {
+            backoff = BACKOFF_START;
+        }
+        let wait = backoff;
+        backoff = (backoff * 2).min(BACKOFF_MAX);
+        if wait_backoff_or_stop(&mut stop, wait).await {
+            write_run_state(
+                &home,
+                &name,
+                &RunState::Stopped {
+                    last_exit: Some(desc),
+                },
+            );
+            return;
+        }
+    }
+}
+
+/// Every enabled plugin right now: the catalog and the store's enabled
+/// flags, re-read each time so `forge plugin enable`/`disable` is seen.
+fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
+    let Ok(cfg) = crate::config::load_home(&f.paths.home) else {
+        return BTreeMap::new();
+    };
+    let cat = load_catalog(&f.paths.home, &cfg.plugin_dirs);
+    let Ok(enabled) = f.store.enabled_plugins() else {
+        return BTreeMap::new();
+    };
+    cat.plugins
+        .into_iter()
+        .filter(|(name, _)| enabled.contains(name))
+        .collect()
+}
+
+/// Supervises every enabled plugin for the life of `forge work`: starts
+/// them, restarts them per their manifest's `restart` policy, and stops
+/// them (SIGTERM, then SIGKILL after ten seconds) when told to. While
+/// running it polls the enabled set every `RECONCILE_SECS` seconds, so
+/// `forge plugin enable`/`disable` take effect within a few seconds
+/// without needing the worker restarted.
+pub struct Supervisor {
+    stop: watch::Sender<bool>,
+    reconciler: JoinHandle<()>,
+}
+
+impl Supervisor {
+    pub fn start(f: Arc<Forge>) -> Supervisor {
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let reconciler = tokio::spawn(async move {
+            let mut running: BTreeMap<String, (watch::Sender<bool>, JoinHandle<()>)> =
+                BTreeMap::new();
+            loop {
+                let enabled = enabled_plugins_now(&f);
+                for (name, plugin) in &enabled {
+                    if !running.contains_key(name) {
+                        let (ptx, prx) = watch::channel(false);
+                        let handle = tokio::spawn(supervise_plugin(
+                            f.paths.home.clone(),
+                            plugin.clone(),
+                            prx,
+                        ));
+                        running.insert(name.clone(), (ptx, handle));
+                    }
+                }
+                let gone: Vec<String> = running
+                    .keys()
+                    .filter(|n| !enabled.contains_key(*n))
+                    .cloned()
+                    .collect();
+                for name in gone {
+                    if let Some((ptx, handle)) = running.remove(&name) {
+                        let _ = ptx.send(true);
+                        handle.await.ok();
+                    }
+                }
+
+                if *stop_rx.borrow() {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(RECONCILE_SECS)) => {}
+                    _ = stop_rx.changed() => {}
+                }
+                if *stop_rx.borrow() {
+                    for (_, (ptx, handle)) in std::mem::take(&mut running) {
+                        let _ = ptx.send(true);
+                        handle.await.ok();
+                    }
+                    break;
+                }
+            }
+        });
+        Supervisor {
+            stop: stop_tx,
+            reconciler,
+        }
+    }
+
+    pub async fn stop(self) {
+        let _ = self.stop.send(true);
+        self.reconciler.await.ok();
+    }
 }
 
 #[cfg(test)]

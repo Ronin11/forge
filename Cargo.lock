@@ -531,6 +531,7 @@ dependencies = [
  "anyhow",
  "clap",
  "forge-client",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

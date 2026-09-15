@@ -274,20 +274,36 @@ fn check_workflows(paths: &Paths) -> Vec<Check> {
 }
 
 /// Every plugin found across `<FORGE2_HOME>/plugins` and the configured
-/// `plugin_dirs`, and any problem loading one (a broken `plugin.toml`, a
-/// shadowed name, a configured root that does not exist). Never fails: one
-/// broken plugin is a warning, not a reason to fail doctor.
-fn check_plugins(paths: &Paths) -> Vec<Check> {
+/// `plugin_dirs`, any problem loading one (a broken `plugin.toml`, a
+/// shadowed name, a configured root that does not exist), and each enabled
+/// plugin's last-known supervision state (running, restarting, or stopped;
+/// see `crate::plugins::Supervisor`). Never fails: a broken or crash-looping
+/// plugin is a warning, not a reason to fail doctor.
+fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
     let cfg = match config::load_home(&paths.home) {
         Ok(c) => c,
         Err(e) => return vec![check("plugins", Status::Fail, format!("{e:#}"), "")],
     };
     let cat = crate::plugins::load_catalog(&paths.home, &cfg.plugin_dirs);
-    let detail = format!(
+    let mut detail = format!(
         "{} plugin(s) found, {} problem(s)",
         cat.plugins.len(),
         cat.problems.len()
     );
+    if let Ok(enabled) = store.enabled_plugins()
+        && !enabled.is_empty()
+    {
+        let states: Vec<String> = enabled
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name} ({})",
+                    crate::plugins::read_run_state(&paths.home, name).describe()
+                )
+            })
+            .collect();
+        detail = format!("{detail}; enabled: {}", states.join(", "));
+    }
     vec![if cat.problems.is_empty() {
         check("plugins", Status::Ok, detail, "")
     } else {
@@ -590,7 +606,7 @@ pub fn run() -> Result<Vec<Check>> {
     };
     out.extend(check_schema(&store));
     out.extend(check_workflows(&paths));
-    out.extend(check_plugins(&paths));
+    out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));
     out.extend(check_worker(&paths));
     out.extend(check_queue(&store));

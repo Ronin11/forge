@@ -186,6 +186,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 .unwrap_or_default()
         ),
     );
+    let plugins = crate::plugins::Supervisor::start(f.clone());
     let jobs = opts.jobs.max(1);
     let mut running: JoinSet<(i64, Result<TaskState>)> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
@@ -300,6 +301,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         }
     }
 
+    plugins.stop().await;
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
     match env_error {
         Some(e) => Err(e),

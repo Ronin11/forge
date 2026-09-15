@@ -262,11 +262,19 @@ enum PluginCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Mark a plugin enabled (supervision is not implemented yet: this only
-    /// records the flag)
+    /// Enable a plugin: a running `forge work` notices within a few
+    /// seconds and starts it, no restart needed
     Enable { name: String },
-    /// Mark a plugin disabled
+    /// Disable a plugin: a running `forge work` notices within a few
+    /// seconds and stops it, no restart needed
     Disable { name: String },
+    /// A plugin's stdout/stderr log
+    Logs {
+        name: String,
+        /// Keep printing as the log grows
+        #[arg(long, short)]
+        follow: bool,
+    },
 }
 
 pub async fn main() -> Result<()> {
@@ -346,6 +354,7 @@ pub async fn main() -> Result<()> {
             PluginCmd::Status { name, json } => plugin_status(name, json),
             PluginCmd::Enable { name } => plugin_set_enabled(name, true),
             PluginCmd::Disable { name } => plugin_set_enabled(name, false),
+            PluginCmd::Logs { name, follow } => plugin_logs(name, follow),
         },
     }
 }
@@ -761,10 +770,9 @@ fn plugin_status(name: Option<String>, json: bool) -> Result<()> {
     let statuses: Vec<crate::view::PluginStatusRow> = rows
         .iter()
         .filter(|r| name.as_deref().map(|n| n == r.name).unwrap_or(true))
-        .map(|r| crate::view::PluginStatusRow {
-            name: r.name.clone(),
-            enabled: r.enabled,
-            supervision: "not yet implemented".into(),
+        .map(|r| {
+            let run_state = crate::plugins::read_run_state(&f.paths.home, &r.name);
+            crate::view::PluginStatusRow::new(r.name.clone(), r.enabled, &run_state)
         })
         .collect();
     if let Some(n) = &name
@@ -782,10 +790,21 @@ fn plugin_status(name: Option<String>, json: bool) -> Result<()> {
     }
     for s in &statuses {
         out!(
-            "{:<16} {}  supervision: {}",
+            "{:<16} {}  {}",
             s.name,
             if s.enabled { "enabled" } else { "disabled" },
-            s.supervision
+            match s.state.as_str() {
+                "running" => format!(
+                    "running pid {}, up {}s",
+                    s.pid.unwrap_or(0),
+                    s.uptime_secs.unwrap_or(0)
+                ),
+                "restarting" => format!("restarting (x{})", s.restart_count.unwrap_or(0)),
+                _ => match &s.last_exit {
+                    Some(e) => format!("stopped: {e}"),
+                    None => "stopped".to_string(),
+                },
+            }
         );
     }
     Ok(())
@@ -800,6 +819,35 @@ fn plugin_set_enabled(name: String, enabled: bool) -> Result<()> {
     }
     f.store.set_plugin_enabled(&name, enabled, unix_now())?;
     out!("{name} {}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+fn plugin_logs(name: String, follow: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let path = f
+        .paths
+        .home
+        .join("logs")
+        .join("plugins")
+        .join(format!("{name}.log"));
+    use std::io::Read;
+    let mut file = std::fs::File::open(&path)
+        .with_context(|| format!("no log yet for plugin {name:?} ({})", path.display()))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    std::io::stdout().write_all(&buf)?;
+    std::io::stdout().flush()?;
+    if follow {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let mut more = Vec::new();
+            file.read_to_end(&mut more)?;
+            if !more.is_empty() {
+                std::io::stdout().write_all(&more)?;
+                std::io::stdout().flush()?;
+            }
+        }
+    }
     Ok(())
 }
 

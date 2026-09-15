@@ -1,4 +1,5 @@
 use crate::support::*;
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn plugin_list_shows_the_valid_plugin_and_doctor_reports_the_invalid_one_without_failing() {
@@ -51,19 +52,15 @@ fn plugin_list_shows_the_valid_plugin_and_doctor_reports_the_invalid_one_without
     assert!(out.contains("WARN plugins"), "{out}");
     assert!(out.contains("does not match the directory name"), "{out}");
 
-    // `forge plugin status` reports enabled/not, with supervision unimplemented.
+    // `forge plugin status` reports enabled/not, and the run state: never
+    // supervised (no worker has run it yet) reads as stopped.
     let o = e.forge("ok.sh", &["plugin", "status", "notify", "--json"]);
     assert!(o.status.success());
     let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(status["name"], "notify");
     assert_eq!(status["enabled"], false);
-    assert!(
-        status["supervision"]
-            .as_str()
-            .unwrap()
-            .contains("not yet implemented"),
-        "{status:?}"
-    );
+    assert_eq!(status["state"], "stopped");
+    assert_eq!(status["last_exit"], serde_json::Value::Null);
 
     let o = e.forge("ok.sh", &["plugin", "status", "nope"]);
     assert!(!o.status.success(), "an unknown plugin name is refused");
@@ -113,4 +110,78 @@ fn a_shadowed_plugin_dirs_entry_and_a_missing_root_are_non_blocking_problems() {
     assert!(o.status.success());
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("WARN plugins"), "{out}");
+}
+
+/// `forge work` supervises an enabled plugin (starts it, restarts it per
+/// its manifest's `restart` policy) and stops supervising a disabled one.
+#[test]
+fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
+    let e = Env::new();
+    let plugin_dir = e.home.join("plugins").join("flaky");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        "name = \"flaky\"\nrun = [\"./run.sh\"]\ncapabilities = [\"events\"]\nrestart = \"always\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_dir.join("run.sh"),
+        "#!/bin/bash\necho line >> \"$FORGE_PLUGIN_STATE/count\"\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        plugin_dir.join("run.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "flaky"])
+            .status
+            .success()
+    );
+
+    // A task that takes a couple of seconds gives the plugin's supervisor
+    // enough wall-clock time to fail and restart at least once.
+    e.add(&[]);
+    let o = e
+        .cmd("ok.sh")
+        .env("FAKE_SLEEP", "1")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let count_file = e.home.join("plugins-state").join("flaky").join("count");
+    let lines = std::fs::read_to_string(&count_file)
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert!(lines > 1, "expected a restart, only ran {lines} time(s)");
+
+    let log_path = e.home.join("logs").join("plugins").join("flaky.log");
+    assert!(log_path.exists(), "expected a plugin log at {log_path:?}");
+
+    // Disabled, a fresh worker run must not start it at all.
+    assert!(
+        e.forge("ok.sh", &["plugin", "disable", "flaky"])
+            .status
+            .success()
+    );
+    let before = std::fs::read_to_string(&count_file)
+        .unwrap()
+        .lines()
+        .count();
+    e.add(&[]);
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let after = std::fs::read_to_string(&count_file)
+        .unwrap()
+        .lines()
+        .count();
+    assert_eq!(before, after, "a disabled plugin must not run");
+
+    let o = e.forge("ok.sh", &["plugin", "status", "flaky", "--json"]);
+    let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["state"], "stopped");
 }
