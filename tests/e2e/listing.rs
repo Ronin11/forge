@@ -572,6 +572,7 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
     );
     let four: serde_json::Value = e.trace_json("4");
     assert_eq!(four["task"]["journal_enabled"], false);
+    assert_eq!(four["task"]["journal_arm"], "explicit");
 
     // --step <name> filters the per_step map: a second, differently-named
     // step ("fix", from the cheap workflow) must not leak into the section

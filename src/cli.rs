@@ -66,7 +66,12 @@ pub struct TaskArgs {
     /// Run only after this task has landed (repeatable); blocked if it ends otherwise
     #[arg(long = "after")]
     after: Vec<i64>,
-    /// Do not show the agents the journal of earlier attempts (the control arm of a measurement)
+    /// Show the agents the journal of earlier attempts, overriding the
+    /// operator's control-arm fraction for this task
+    #[arg(long, conflicts_with = "no_journal")]
+    journal: bool,
+    /// Do not show the agents the journal of earlier attempts, overriding
+    /// the operator's control-arm fraction for this task
     #[arg(long)]
     no_journal: bool,
     /// Do not show the agents the repository map from the context operation (the control arm)
@@ -449,7 +454,13 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             show_checks: a.show_checks,
             no_land: a.no_land,
             after: a.after.clone(),
-            no_journal: a.no_journal,
+            journal_choice: if a.journal {
+                Some(true)
+            } else if a.no_journal {
+                Some(false)
+            } else {
+                None
+            },
             no_context: a.no_context,
             resume_on_failure: a.resume_on_failure,
         }
@@ -1998,6 +2009,11 @@ fn show(id: i64) -> Result<()> {
     if !task.land {
         out!("land       manual: the verified branch is left for a human");
     }
+    out!(
+        "journal    {} ({})",
+        if task.journal_enabled { "on" } else { "off" },
+        task.journal_arm
+    );
     if !task.after.is_empty() {
         out!(
             "after      {}",

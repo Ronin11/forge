@@ -205,6 +205,9 @@ pub struct TraceTask {
     pub verify_base: String,
     pub retry_of: Option<i64>,
     pub journal_enabled: bool,
+    /// How `journal_enabled` got its value: "explicit", "control", or
+    /// "treatment" (see `queue::assign_journal_arm`).
+    pub journal_arm: String,
     pub context_enabled: bool,
     pub context: String,
     pub resume_on_failure: bool,
@@ -350,6 +353,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         verify_base: t.verify_base.clone(),
         retry_of: t.retry_of,
         journal_enabled: t.journal,
+        journal_arm: t.journal_arm.clone(),
         context_enabled: t.context_enabled,
         context: t.context.clone(),
         resume_on_failure: t.resume_on_failure,

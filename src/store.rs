@@ -158,6 +158,11 @@ pub struct Task {
     /// Show the agents the journal of earlier attempts (the default);
     /// false for the control arm of a measurement.
     pub journal: bool,
+    /// How `journal` got its value: "explicit" when the request said
+    /// `--journal` or `--no-journal` itself, else "control" or "treatment"
+    /// from the operator's `[measure] journal_control` fraction, drawn
+    /// deterministically from the task id.
+    pub journal_arm: String,
     /// What the last `context` operation printed: where things are.
     pub context: String,
     /// Show the agents that context (the default); false for the control arm.
@@ -581,6 +586,9 @@ CREATE INDEX task_refs_task ON task_refs(task_id, id);
 ALTER TABLE attempts ADD COLUMN early_signals TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE attempts ADD COLUMN early_near TEXT NOT NULL DEFAULT '[]';
 ",
+    "
+ALTER TABLE tasks ADD COLUMN journal_arm TEXT NOT NULL DEFAULT 'treatment';
+",
 ];
 
 const TASK_COLUMNS: &[&str] = &[
@@ -622,6 +630,7 @@ const TASK_COLUMNS: &[&str] = &[
     "resume_on_failure",
     "plan",
     "landed_sha",
+    "journal_arm",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -678,6 +687,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         verify_base: r.get("verify_base")?,
         retry_of: r.get("retry_of")?,
         journal: r.get::<_, i64>("journal")? != 0,
+        journal_arm: r.get("journal_arm")?,
         context: r.get("context")?,
         context_enabled: r.get::<_, i64>("context_enabled")? != 0,
         resume_on_failure: r.get::<_, i64>("resume_on_failure")? != 0,
@@ -812,8 +822,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 t.repo,
                 t.task,
@@ -836,7 +846,8 @@ impl Store {
                 t.retry_of,
                 t.journal as i64,
                 t.context_enabled as i64,
-                t.resume_on_failure as i64
+                t.resume_on_failure as i64,
+                t.journal_arm
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -852,7 +863,7 @@ impl Store {
              started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
-             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36 WHERE id=?1",
+             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -889,7 +900,8 @@ impl Store {
                 t.context_enabled as i64,
                 t.resume_on_failure as i64,
                 t.plan,
-                t.landed_sha
+                t.landed_sha,
+                t.journal_arm
             ],
         )?;
         Ok(())
@@ -1965,6 +1977,7 @@ mod column_tests {
         t.resume_on_failure = true;
         t.plan = "plan".into();
         t.landed_sha = "abc123".into();
+        t.journal_arm = "control".into();
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));

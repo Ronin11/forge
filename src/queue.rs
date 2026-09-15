@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
 /// What a new task is made from. Field names follow the CLI flags; the
-/// negatives (`no_land`, `no_journal`, `no_context`) are the operator's
-/// control arms and default to off.
+/// negatives (`no_land`, `no_context`) are the operator's control arms
+/// and default to off.
 #[derive(Debug, Clone, Default)]
 pub struct TaskRequest {
     pub repo: PathBuf,
@@ -30,9 +30,46 @@ pub struct TaskRequest {
     pub show_checks: bool,
     pub no_land: bool,
     pub after: Vec<i64>,
-    pub no_journal: bool,
+    /// Whether the request said `--journal` (`Some(true)`) or
+    /// `--no-journal` (`Some(false)`) itself; `None` when it said
+    /// neither, leaving the arm to the operator's control fraction (see
+    /// `assign_journal_arm`).
+    pub journal_choice: Option<bool>,
     pub no_context: bool,
     pub resume_on_failure: bool,
+}
+
+/// The task's journal flag and how it got that value. An explicit
+/// `--journal`/`--no-journal` always wins and records `"explicit"`;
+/// otherwise a deterministic draw from the task id assigns `"control"`
+/// (journal off) with probability `fraction`, else `"treatment"`. See
+/// docs/LATER.md, "The journal measurement was ill-posed three times".
+fn assign_journal_arm(id: i64, choice: Option<bool>, fraction: f64) -> (bool, &'static str) {
+    match choice {
+        Some(on) => (on, "explicit"),
+        None if journal_control_draw(id, fraction) => (false, "control"),
+        None => (true, "treatment"),
+    }
+}
+
+/// Whether `id` draws into the control arm at `fraction`: a pure function
+/// of the two, so the assignment is reproducible from the id alone and
+/// never needs to be persisted separately from the id it came from.
+/// `fraction <= 0.0` never draws control; `fraction >= 1.0` always does.
+fn journal_control_draw(id: i64, fraction: f64) -> bool {
+    if fraction <= 0.0 {
+        return false;
+    }
+    // A splitmix64-style finalizer: built to take a small sequential
+    // counter (task ids) to well-spread output, unlike a plain multiply.
+    let mut x = id as u64;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
+    x ^= x >> 33;
+    let draw = (x % 1_000_000) as f64 / 1_000_000.0;
+    draw < fraction
 }
 
 pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
@@ -113,7 +150,9 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         show_checks: args.show_checks,
         land: !args.no_land,
         after: args.after.clone(),
-        journal: !args.no_journal,
+        // Placeholder: the real arm needs the task id, assigned below
+        // once it exists.
+        journal: true,
         context_enabled: !args.no_context,
         resume_on_failure: args.resume_on_failure,
         retry_of,
@@ -136,6 +175,10 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         }
     }
     t.id = f.store.insert_task(&t)?;
+    let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
+    t.journal = journal;
+    t.journal_arm = arm.to_string();
+    f.store.update_task(&t)?;
     f.report.emit(
         t.id,
         Event::TaskQueued {
@@ -248,7 +291,8 @@ pub fn retry_request(
         },
         show_checks: t.show_checks,
         no_land: !t.land,
-        no_journal: !t.journal,
+        // A retry keeps the arm it started with rather than drawing again.
+        journal_choice: Some(t.journal),
         no_context: !t.context_enabled,
         resume_on_failure: t.resume_on_failure,
         after,
@@ -354,4 +398,47 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     f.store.set_decision_retry(decision, id)?;
     f.report.emit(id, Event::TaskWithdrawn { reason });
     Ok(decision)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_control_draw_is_a_pure_function_of_id_and_fraction() {
+        // Same inputs, called independently, always agree: nothing but
+        // (id, fraction) feeds the draw.
+        for id in [1, 2, 3, 42, 1_000, 1_000_000] {
+            for frac in [0.0, 0.1, 0.3, 0.5, 0.9, 1.0] {
+                let a = journal_control_draw(id, frac);
+                let b = journal_control_draw(id, frac);
+                assert_eq!(a, b, "id {id} fraction {frac} disagreed with itself");
+            }
+        }
+        // Raising the fraction only adds control assignments: each id's
+        // draw is fixed and only the threshold moves, so the set of ids
+        // assigned control at a lower fraction is a subset of a higher one.
+        let ids: Vec<i64> = (1..5_000).collect();
+        let lo: Vec<bool> = ids
+            .iter()
+            .map(|&id| journal_control_draw(id, 0.2))
+            .collect();
+        let hi: Vec<bool> = ids
+            .iter()
+            .map(|&id| journal_control_draw(id, 0.6))
+            .collect();
+        for (l, h) in lo.iter().zip(hi.iter()) {
+            assert!(!l || *h, "raising the fraction dropped a control draw");
+        }
+    }
+
+    #[test]
+    fn a_fraction_of_zero_never_assigns_control() {
+        for id in 1..10_000 {
+            assert!(
+                !journal_control_draw(id, 0.0),
+                "id {id} drew control at fraction 0.0"
+            );
+        }
+    }
 }

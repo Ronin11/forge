@@ -196,6 +196,8 @@ struct HomeRaw {
     /// this config file's own directory (`<FORGE2_HOME>`).
     #[serde(default)]
     plugin_dirs: Vec<String>,
+    #[serde(default)]
+    measure: MeasureRaw,
 }
 
 #[derive(Deserialize, Default)]
@@ -262,6 +264,7 @@ pub struct HomeConfig {
     pub early_ending: EarlyEnding,
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
+    pub measure: Measure,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -305,6 +308,22 @@ pub struct Budget {
     pub per_day_usd: Option<f64>,
     pub five_hour_max: f64,
     pub seven_day_max: f64,
+}
+
+#[derive(Deserialize, Default)]
+struct MeasureRaw {
+    journal_control: Option<f64>,
+}
+
+/// Fixed fractions of tasks the operator assigns to a control arm so a
+/// measurement accumulates on its own, without touching every task by
+/// hand (see docs/LATER.md, "The journal measurement was ill-posed three
+/// times").
+pub struct Measure {
+    /// Fraction of tasks, chosen deterministically from the task id, that
+    /// run with the journal off when the request itself does not say
+    /// `--journal` or `--no-journal`. `0.0` (the default) assigns none.
+    pub journal_control: f64,
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
@@ -351,6 +370,13 @@ no_edit_calls = 30
 edits_without_commit = 15
 repeats = 5
 signals_to_end = 2
+
+[measure]
+# Fixed fraction of tasks assigned to the journal's control arm (run with
+# no journal), chosen deterministically from the task id, when a task's
+# own request does not say --journal or --no-journal. 0.0 assigns none;
+# see docs/LATER.md, \"The journal measurement was ill-posed three times\".
+journal_control = 0.0
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -418,6 +444,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .iter()
             .map(|p| resolve_config_relative(home, p))
             .collect(),
+        measure: Measure {
+            journal_control: raw.measure.journal_control.unwrap_or(0.0),
+        },
     })
 }
 

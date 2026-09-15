@@ -44,6 +44,7 @@ pub struct Forge {
     pub budget: Budget,
     pub supervisor: config::Supervisor,
     pub early_ending: config::EarlyEnding,
+    pub measure: config::Measure,
     pub sandbox: Option<Sandbox>,
     pub report: Reporter,
 }
@@ -79,6 +80,7 @@ impl Forge {
             budget: home.budget,
             supervisor: home.supervisor,
             early_ending: home.early_ending,
+            measure: home.measure,
             sandbox,
             report,
         })
@@ -94,6 +96,7 @@ impl Forge {
             budget: home.budget,
             supervisor: home.supervisor,
             early_ending: home.early_ending,
+            measure: home.measure,
             sandbox: None,
             report,
         })
