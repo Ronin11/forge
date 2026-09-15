@@ -4,7 +4,9 @@
 //! cannot drift apart.
 
 use crate::ctx::Forge;
-use crate::store::{Decision, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat};
+use crate::store::{
+    Decision, JournalStat, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat,
+};
 use crate::workflows::Problem;
 use crate::{config, plugins};
 use anyhow::Result;
@@ -624,22 +626,74 @@ impl From<&StepStat> for StatsStepRow {
     }
 }
 
+/// One side of `StatsDoc.journal` / `StatsDoc.no_journal`: code attempts
+/// after the first (`attempt_no > 1`), for attempts that either were or
+/// were not handed a journal. See docs/LATER.md, "The journal measurement
+/// was ill-posed three times".
+#[derive(Serialize, Default)]
+pub struct StatsJournalRow {
+    /// Code retries in this arm.
+    pub attempts: i64,
+    /// Of those, how many finished in state `succeeded`.
+    pub succeeded: i64,
+    /// `succeeded` divided by `attempts`; `None` when there are none.
+    pub succeeded_share: Option<f64>,
+    /// Mean agent turns per attempt.
+    pub mean_turns: f64,
+    /// Mean tool calls before the first edit, over attempts that edited;
+    /// `None` when none did.
+    pub mean_first_edit: Option<f64>,
+    /// Mean cost in USD per attempt.
+    pub mean_cost_usd: f64,
+}
+
+impl From<&JournalStat> for StatsJournalRow {
+    fn from(j: &JournalStat) -> Self {
+        StatsJournalRow {
+            attempts: j.attempts,
+            succeeded: j.succeeded,
+            succeeded_share: (j.attempts > 0).then(|| j.succeeded as f64 / j.attempts as f64),
+            mean_turns: j.mean_turns,
+            mean_first_edit: j.mean_first_edit,
+            mean_cost_usd: j.mean_cost_usd,
+        }
+    }
+}
+
 /// Everything `forge stats` shows: outcomes per workflow, outcomes per
-/// step, and (with `--tools`) tool usage per step. `forge stats --json`
-/// serializes this directly; `forge stats` renders the same two tables as
+/// step, the journal control arm's retrospective split (with `--journal`),
+/// and (with `--tools`) tool usage per step. `forge stats --json`
+/// serializes this directly; `forge stats` renders the same tables as
 /// text from the same rows.
 #[derive(Serialize)]
 pub struct StatsDoc {
     pub workflows: Vec<StatsWorkflowRow>,
     pub steps: Vec<StatsStepRow>,
+    /// Code retries that were handed a journal.
+    pub journal: StatsJournalRow,
+    /// Code retries that were not.
+    pub no_journal: StatsJournalRow,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
 
 pub fn stats_doc(f: &Forge) -> Result<StatsDoc> {
+    let journal_stats = f.store.journal_control_stats()?;
+    let journal = journal_stats
+        .iter()
+        .find(|j| j.has_journal)
+        .map(Into::into)
+        .unwrap_or_default();
+    let no_journal = journal_stats
+        .iter()
+        .find(|j| !j.has_journal)
+        .map(Into::into)
+        .unwrap_or_default();
     Ok(StatsDoc {
         workflows: f.store.workflow_stats()?.iter().map(Into::into).collect(),
         steps: f.store.step_stats()?.iter().map(Into::into).collect(),
+        journal,
+        no_journal,
         tools: None,
     })
 }
@@ -837,9 +891,36 @@ mod stats_tests {
         let doc = StatsDoc {
             workflows: vec![],
             steps: vec![],
+            journal: StatsJournalRow::default(),
+            no_journal: StatsJournalRow::default(),
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
         assert!(v.get("tools").is_none(), "{v}");
+    }
+
+    #[test]
+    fn journal_row_computes_succeeded_share_and_carries_options_through() {
+        let j = JournalStat {
+            has_journal: true,
+            attempts: 4,
+            succeeded: 3,
+            mean_turns: 25.0,
+            mean_first_edit: Some(8.0),
+            mean_cost_usd: 0.75,
+        };
+        let row = StatsJournalRow::from(&j);
+        let v = serde_json::to_value(&row).unwrap();
+        assert_eq!(v["attempts"], 4);
+        assert_eq!(v["succeeded"], 3);
+        assert_eq!(v["succeeded_share"], 0.75);
+        assert_eq!(v["mean_turns"], 25.0);
+        assert_eq!(v["mean_first_edit"], 8.0);
+        assert_eq!(v["mean_cost_usd"], 0.75);
+
+        let empty = StatsJournalRow::default();
+        let v = serde_json::to_value(&empty).unwrap();
+        assert!(v["succeeded_share"].is_null());
+        assert!(v["mean_first_edit"].is_null());
     }
 }

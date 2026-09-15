@@ -321,6 +321,21 @@ pub struct StepStat {
     pub mean_input_tokens: Option<f64>,
 }
 
+/// One side of the journal control arm's retrospective split: code attempts
+/// after the first (`attempt_no > 1`), grouped by whether `inputs_json`'s
+/// `journal` field was present and non-empty. See docs/LATER.md, "The
+/// journal measurement was ill-posed three times".
+pub struct JournalStat {
+    pub has_journal: bool,
+    pub attempts: i64,
+    pub succeeded: i64,
+    pub mean_turns: f64,
+    /// Mean tool calls before the first edit, over attempts that edited.
+    pub mean_first_edit: Option<f64>,
+    /// Mean cost in USD per attempt.
+    pub mean_cost_usd: f64,
+}
+
 /// One operation, kernel or user, as it ran.
 #[derive(Default, Debug, Clone)]
 pub struct Op {
@@ -1454,6 +1469,35 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The journal control arm's retrospective split, over code attempts
+    /// after the first: one row for attempts handed a journal
+    /// (`inputs_json`'s `journal` field present and non-empty), one for
+    /// attempts that were not. A side with no matching attempts is omitted.
+    pub fn journal_control_stats(&self) -> Result<Vec<JournalStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT
+                json_extract(a.inputs_json, '$.journal') IS NOT NULL
+                    AND json_extract(a.inputs_json, '$.journal') != '' AS has_journal,
+                COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), AVG(a.first_edit),
+                COALESCE(AVG(a.cost_usd), 0)
+             FROM attempts a
+             WHERE a.step = 'code' AND a.attempt_no > 1 AND a.state != 'running'
+             GROUP BY has_journal",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(JournalStat {
+                has_journal: r.get(0)?,
+                attempts: r.get(1)?,
+                succeeded: r.get(2)?,
+                mean_turns: r.get(3)?,
+                mean_first_edit: r.get(4)?,
+                mean_cost_usd: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The listing behind `forge log`: newest first, filtered, and paged by
     /// `before` (ids strictly below it) so a client can scroll back.
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
@@ -1864,6 +1908,126 @@ mod tests {
         assert_eq!(w.landed, 1, "only A landed");
         assert_eq!(w.broke_base, 1, "A counts once for breaking B's base");
         assert_eq!(w.repaired, 1, "A counts once as repaired by C");
+    }
+
+    #[test]
+    fn journal_control_stats_splits_code_retries_by_whether_the_journal_was_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 4,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let task_id = s.insert_task(&t).unwrap();
+
+        let attempt = |attempt_no, step: &str, inputs_json: &str| Attempt {
+            task_id,
+            attempt_no,
+            step: step.into(),
+            started_at: 0,
+            inputs_json: inputs_json.into(),
+            ..Default::default()
+        };
+        let finish = |id, state, num_turns, first_edit, cost_usd| {
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state,
+                reason: String::new(),
+                finished_at: Some(1),
+                agent_exit: Some(0),
+                timed_out: false,
+                num_turns,
+                tool_calls: 1,
+                cost_usd: Some(cost_usd),
+                agent_ms: 0,
+                commits: 1,
+                files_changed: 1,
+                dirty: false,
+                verdict_json: "[]".into(),
+                result_text: String::new(),
+                envelope_json: String::new(),
+                rl_five_hour: None,
+                rl_seven_day: None,
+                rl_five_hour_resets: None,
+                rl_seven_day_resets: None,
+                end_sha: String::new(),
+                outputs_json: String::new(),
+                session_id: String::new(),
+                first_edit,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                early_signals: "[]".into(),
+                early_near: "[]".into(),
+            })
+            .unwrap();
+        };
+
+        // Two retries handed a journal.
+        let a = s
+            .insert_attempt(&attempt(
+                2,
+                "code",
+                r#"{"journal":"earlier attempt said..."}"#,
+            ))
+            .unwrap();
+        finish(a, AttemptState::Succeeded, 30, Some(10), 1.0);
+        let b = s
+            .insert_attempt(&attempt(3, "code", r#"{"journal":"more history"}"#))
+            .unwrap();
+        finish(b, AttemptState::ChecksFailed, 20, Some(6), 0.5);
+
+        // One retry with no journal (absent field).
+        let c = s.insert_attempt(&attempt(2, "code", "{}")).unwrap();
+        finish(c, AttemptState::Succeeded, 25, None, 0.6);
+
+        // Excluded: a first attempt (never a retry) even though it carries
+        // a journal, and a non-code step's retry.
+        let d = s
+            .insert_attempt(&attempt(
+                1,
+                "code",
+                r#"{"journal":"ignored, first attempt"}"#,
+            ))
+            .unwrap();
+        finish(d, AttemptState::Succeeded, 99, Some(1), 9.0);
+        let e = s
+            .insert_attempt(&attempt(
+                2,
+                "review",
+                r#"{"journal":"ignored, wrong step"}"#,
+            ))
+            .unwrap();
+        finish(e, AttemptState::Succeeded, 99, Some(1), 9.0);
+
+        let stats = s.journal_control_stats().unwrap();
+        assert_eq!(stats.len(), 2);
+        let journal = stats.iter().find(|j| j.has_journal).expect("a journal row");
+        assert_eq!(journal.attempts, 2);
+        assert_eq!(journal.succeeded, 1);
+        assert_eq!(journal.mean_turns, 25.0);
+        assert_eq!(journal.mean_first_edit, Some(8.0));
+        assert_eq!(journal.mean_cost_usd, 0.75);
+
+        let no_journal = stats
+            .iter()
+            .find(|j| !j.has_journal)
+            .expect("a no-journal row");
+        assert_eq!(no_journal.attempts, 1);
+        assert_eq!(no_journal.succeeded, 1);
+        assert_eq!(no_journal.mean_turns, 25.0);
+        assert_eq!(
+            no_journal.mean_first_edit, None,
+            "the only attempt never edited"
+        );
+        assert_eq!(no_journal.mean_cost_usd, 0.6);
     }
 
     #[test]
