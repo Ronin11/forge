@@ -300,16 +300,26 @@ max_turns = 30
 per_lineage = 2
 ";
 
-pub fn load_home(home: &Path) -> Result<HomeConfig> {
+/// Write the operator's config the first time `home` is used, so there is a
+/// file for them to edit; never overwrites one that already exists. Called
+/// once, from `Forge::open`: reading the config (`load_home`) must never
+/// have the side effect of writing it, or every read-only verb would too.
+pub fn ensure_home_config(home: &Path) -> Result<()> {
     let path = home.join("config.toml");
     if !path.exists() {
         std::fs::write(&path, DEFAULT_HOME_CONFIG)
             .with_context(|| format!("writing {}", path.display()))?;
     }
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let raw: HomeRaw =
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(())
+}
+
+pub fn load_home(home: &Path) -> Result<HomeConfig> {
+    let path = home.join("config.toml");
+    let raw: HomeRaw = match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HomeRaw::default(),
+        Err(e) => return Err(e).context(format!("reading {}", path.display())),
+    };
     let ro = raw
         .sandbox
         .ro_paths
@@ -401,8 +411,8 @@ mod tests {
         assert_eq!(c.budget.per_task_usd, 2.0);
         assert!(c.sandbox.rw.iter().any(|p| p.ends_with(".npm")));
         assert!(
-            dir.path().join("config.toml").exists(),
-            "defaults are written for the operator to edit"
+            !dir.path().join("config.toml").exists(),
+            "reading the config must not write it"
         );
         std::fs::write(
             dir.path().join("config.toml"),
@@ -414,5 +424,78 @@ mod tests {
         assert!(c.sandbox.rw.is_empty());
         assert_eq!(c.budget.per_day_usd, None);
         assert_eq!(c.budget.five_hour_max, 0.9);
+    }
+
+    #[test]
+    fn ensure_home_config_writes_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        ensure_home_config(dir.path()).unwrap();
+        assert!(
+            path.exists(),
+            "defaults are written for the operator to edit"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_HOME_CONFIG);
+        std::fs::write(&path, "[budget]\nper_task_usd = 9.0\n").unwrap();
+        ensure_home_config(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[budget]\nper_task_usd = 9.0\n",
+            "an existing config is never overwritten"
+        );
+    }
+
+    /// The template written for a fresh operator and `load_home`'s own
+    /// fallbacks must agree: the defaults exist in two places (the template
+    /// text and the `unwrap_or` calls), and drift between them would leave
+    /// a freshly written config.toml describing values the code does not
+    /// actually fall back to.
+    #[test]
+    fn default_home_config_matches_load_homes_fallback_defaults() {
+        let templated = tempfile::tempdir().unwrap();
+        std::fs::write(templated.path().join("config.toml"), DEFAULT_HOME_CONFIG).unwrap();
+        let from_template = load_home(templated.path()).unwrap();
+
+        let empty = tempfile::tempdir().unwrap();
+        let from_defaults = load_home(empty.path()).unwrap();
+
+        assert_eq!(
+            from_template.budget.per_task_usd,
+            from_defaults.budget.per_task_usd
+        );
+        assert_eq!(
+            from_template.budget.per_day_usd,
+            from_defaults.budget.per_day_usd
+        );
+        assert_eq!(
+            from_template.budget.five_hour_max,
+            from_defaults.budget.five_hour_max
+        );
+        assert_eq!(
+            from_template.budget.seven_day_max,
+            from_defaults.budget.seven_day_max
+        );
+        assert_eq!(from_template.sandbox.ro, from_defaults.sandbox.ro);
+        assert_eq!(from_template.sandbox.rw, from_defaults.sandbox.rw);
+        assert_eq!(
+            from_template.supervisor.enabled,
+            from_defaults.supervisor.enabled
+        );
+        assert_eq!(
+            from_template.supervisor.model,
+            from_defaults.supervisor.model
+        );
+        assert_eq!(
+            from_template.supervisor.max_turns,
+            from_defaults.supervisor.max_turns
+        );
+        assert_eq!(
+            from_template.supervisor.timeout_secs,
+            from_defaults.supervisor.timeout_secs
+        );
+        assert_eq!(
+            from_template.supervisor.per_lineage,
+            from_defaults.supervisor.per_lineage
+        );
     }
 }

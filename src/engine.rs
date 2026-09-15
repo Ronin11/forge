@@ -6,7 +6,11 @@
 //! action; those are recorded as operations too, so the trace is complete.
 //! Every error is classified: a `Task` fault is this task's problem and it
 //! fails; an `Env` fault means the worker itself cannot do its job and must
-//! stop without blaming the task.
+//! stop without blaming the task. The git fault rule: an operation on a
+//! task's own worktree (its clone) is a `Task` fault, since only that
+//! task's state can make it fail; cloning, fetching from a remote, and
+//! taking the repository lock are `Env` faults, since a dead remote or a
+//! full disk stops the worker rather than failing the task.
 
 use crate::attempt::{Resume, tests_clone_dir};
 use crate::ctx::Forge;
@@ -246,7 +250,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 output: "",
             },
         )?;
-        t.base_sha = r.task()?;
+        t.base_sha = r.env()?;
         // The standing hidden suite as it matches this base; a suite that
         // grows while the task runs is for the landing, not for the coder.
         t.verify_base = git::rev_parse(&repo, "refs/heads/forge-verify")
