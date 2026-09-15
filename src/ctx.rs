@@ -55,7 +55,18 @@ impl Forge {
         let store = Store::open(&paths.home.join("forge.db"))?;
         let home = config::load_home(&paths.home)?;
         let sandbox = if need_agent {
-            Sandbox::detect(&agent::agent_bin(), &home.sandbox)?
+            // Forge's own tools (forge-repomap) live beside the binary.
+            let mut extra_ro = Vec::new();
+            if let Ok(exe) = std::env::current_exe()
+                && let Some(dir) = exe.parent()
+            {
+                extra_ro.push(dir.to_path_buf());
+            }
+            // The repository map's parsed blobs are cached here and
+            // written from inside the sandbox.
+            let cache = paths.home.join("cache");
+            let _ = std::fs::create_dir_all(&cache);
+            Sandbox::detect(&agent::agent_bin(), &home.sandbox, extra_ro, vec![cache])?
         } else {
             None
         };

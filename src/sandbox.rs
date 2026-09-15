@@ -47,7 +47,15 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
 
 impl Sandbox {
     /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
-    pub fn detect(agent_bin: &str, paths: &crate::config::SandboxPaths) -> Result<Option<Sandbox>> {
+    /// `extra_ro` and `extra_rw` are bound alongside `paths.ro`/`paths.rw`;
+    /// the caller resolves them (the executable's own directory, the cache
+    /// directory) so detection stays a pure read of its inputs.
+    pub fn detect(
+        agent_bin: &str,
+        paths: &crate::config::SandboxPaths,
+        extra_ro: Vec<PathBuf>,
+        extra_rw: Vec<PathBuf>,
+    ) -> Result<Option<Sandbox>> {
         if std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
@@ -80,27 +88,8 @@ impl Sandbox {
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
             write_paths,
-            extra_ro: {
-                // Forge's own tools (forge-repomap) live beside the binary.
-                let mut ro = paths.ro.clone();
-                if let Ok(exe) = std::env::current_exe()
-                    && let Some(dir) = exe.parent()
-                {
-                    ro.push(dir.to_path_buf());
-                }
-                ro
-            },
-            extra_rw: {
-                // Shared caches (the repository map's parsed blobs) are
-                // written from inside the sandbox.
-                let mut rw = paths.rw.clone();
-                if let Ok(p) = crate::ctx::Paths::resolve() {
-                    let cache = p.home.join("cache");
-                    let _ = std::fs::create_dir_all(&cache);
-                    rw.push(cache);
-                }
-                rw
-            },
+            extra_ro: paths.ro.iter().cloned().chain(extra_ro).collect(),
+            extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
         }))
     }
 
@@ -165,5 +154,60 @@ impl Sandbox {
         cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.env("HOME", &self.home);
         cmd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
+        let sandbox = Sandbox {
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            home: PathBuf::from("/home/attempt"),
+            agent_dirs: vec![PathBuf::from("/opt/agent")],
+            write_paths: vec![PathBuf::from("/home/attempt/.claude")],
+            extra_ro: vec![PathBuf::from("/opt/toolchain")],
+            extra_rw: vec![PathBuf::from("/opt/cache")],
+        };
+        let worktree = PathBuf::from("/work/tree");
+        let cmd = sandbox.command(&worktree, &["true".to_string()], &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let pos = |flag: &str, value: &str| {
+            args.windows(2)
+                .position(|w| w[0] == flag && w[1] == value)
+                .unwrap_or_else(|| panic!("missing `{flag} {value}` in {args:?}"))
+        };
+
+        let tmpfs_home = pos("--tmpfs", "/home/attempt");
+        let ro_agent = pos("--ro-bind-try", "/opt/agent");
+        let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
+        let worktree_bind = pos("--bind", "/work/tree");
+        let rw_write = pos("--bind-try", "/home/attempt/.claude");
+        let rw_extra = pos("--bind-try", "/opt/cache");
+
+        assert!(tmpfs_home < ro_agent, "tmpfs $HOME must precede ro binds");
+        assert!(tmpfs_home < ro_extra, "tmpfs $HOME must precede ro binds");
+        assert!(
+            ro_agent < worktree_bind,
+            "agent ro bind must precede the worktree bind"
+        );
+        assert!(
+            ro_extra < worktree_bind,
+            "extra ro binds must precede the worktree bind"
+        );
+        assert!(
+            worktree_bind < rw_write,
+            "worktree bind must precede rw binds"
+        );
+        assert!(
+            worktree_bind < rw_extra,
+            "worktree bind must precede rw binds"
+        );
     }
 }
