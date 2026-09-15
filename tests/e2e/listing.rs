@@ -874,3 +874,81 @@ fn forge_add_refuses_a_repository_listed_by_several_projects() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
+
+#[test]
+fn stats_project_filters_the_workflow_rows_and_lists_every_project_when_unfiltered() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+
+    // No project named yet: the repository's own default project, named
+    // after its directory ("repo"), gets this one.
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+
+    // A second project, not registered to any repository, still takes a
+    // task named explicitly with --project (see
+    // `forge_add_refuses_a_repository_listed_by_several_projects`: naming
+    // a project does not require it to list the repository).
+    assert!(
+        e.forge("ok.sh", &["project", "new", "other", "--purpose", "p"])
+            .status
+            .success()
+    );
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "run",
+                repo,
+                "write 42 to answer.txt",
+                "--no-land",
+                "--retries",
+                "0",
+                "--project",
+                "other",
+            ],
+        )
+        .status
+        .success()
+    );
+
+    // Filtered to the default project: only its one task is counted.
+    let filtered: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["stats", "--project", "repo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let wf = filtered["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["workflow"] == "direct")
+        .expect("direct workflow entry");
+    assert_eq!(wf["pieces"], 1, "{filtered}");
+    // Scoped: no per-project rollup.
+    assert!(filtered.get("projects").is_none(), "{filtered}");
+
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["stats", "--project", "repo"]).stdout)
+        .to_string();
+    assert!(text.contains("direct"), "{text}");
+
+    // Unfiltered: both tasks are counted together, and a per-project
+    // section lists both projects.
+    let all: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["stats", "--json"]).stdout).unwrap();
+    let wf_all = all["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["workflow"] == "direct")
+        .expect("direct workflow entry");
+    assert_eq!(wf_all["pieces"], 2, "{all}");
+
+    let mut names: Vec<&str> = all["projects"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{all}"))
+        .iter()
+        .map(|p| p["project"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["other", "repo"]);
+}

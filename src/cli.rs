@@ -525,7 +525,17 @@ pub async fn main() -> Result<()> {
             project,
             initiative,
         } => log(
-            limit, json, state, repo, before, grep, workflow, project, initiative,
+            LogArgs {
+                limit,
+                state,
+                repo,
+                before,
+                grep,
+                workflow,
+                project,
+                initiative,
+            },
+            json,
         ),
         Cmd::Retry {
             id,
@@ -2568,9 +2578,10 @@ fn events(since: Option<u64>, follow: bool, task: Option<i64>) -> Result<()> {
     }
 }
 
-fn log(
+/// `forge log`'s filters, gathered into one struct so the function that
+/// applies them stays under clippy's argument-count lint.
+struct LogArgs {
     limit: u32,
-    json: bool,
     state: Option<String>,
     repo: Option<PathBuf>,
     before: Option<i64>,
@@ -2578,7 +2589,19 @@ fn log(
     workflow: Option<String>,
     project: Option<String>,
     initiative: Option<i64>,
-) -> Result<()> {
+}
+
+fn log(args: LogArgs, json: bool) -> Result<()> {
+    let LogArgs {
+        limit,
+        state,
+        repo,
+        before,
+        grep,
+        workflow,
+        project,
+        initiative,
+    } = args;
     let state = state
         .map(|s| {
             TaskState::try_from(s.as_str()).map_err(|_| {
