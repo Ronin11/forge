@@ -298,3 +298,46 @@ runs unattended.
 A system can sit at the top of one axis and the middle of the other,
 and which one a vendor means is usually the difference between an
 impressive claim and a true one.
+
+## The journal measurement was ill-posed three times (2026-09-15)
+
+Three batches tried to measure whether showing an agent the journal (what
+earlier attempts in this piece of work said, and what the checks found)
+helps. All three failed, and not because of noise. The design was wrong,
+for a reason worth recording so nobody attempts a fourth.
+
+**The journal is empty on a fresh task's first attempt.** It lists the
+attempts already made in this lineage, so the first agent to touch a new
+task is handed nothing whichever arm it is in. Of 89 recorded first
+attempts on the code contract, only 16 carried a journal, and every one
+of those was a retry task inheriting its parent's history. Pairing two
+fresh tasks and turning the journal off on one therefore compares two
+identical prompts, which is what the last pair did: both landed in one
+attempt, neither saw a journal, and they came out at 45 turns and $1.06
+against 25 turns and $0.58.
+
+That number is the useful thing salvaged from the exercise. **The same
+prompt, the same base, the same model, twice, cost about twice as much
+one time as the other.** Any A/B on single tasks has to clear that noise
+floor, which means many pairs, not one.
+
+**The measurement that can be made** is retrospective, over attempts that
+could actually have had a journal: retries. Across all history, among
+code attempts after the first:
+
+| arm | attempts | mean turns | first edit at | succeeded | mean cost |
+|---|---|---|---|---|---|
+| journal | 47 | 30.0 | 9.6 | 55% | $0.60 |
+| no journal | 8 | 28.4 | 5.1 | 38% | $0.62 |
+
+Eight control attempts is not an answer. It leans the journal's way on
+the outcome that matters (whether the retry succeeded) and against it on
+exploration, and neither lean survives contact with the sample size.
+
+**What to do.** Stop putting `--no-journal` on fresh tasks: it changes
+nothing and buys a confounded comparison. If the question is worth
+settling later, assign the control arm to a fixed fraction of *all*
+tasks and let the control group accumulate on retries by itself, then
+read the table above when the control column reaches a few dozen. Until
+then, keep the journal: it is free on the attempts where it is empty,
+and costs nothing measurable on the attempts where it is not.
