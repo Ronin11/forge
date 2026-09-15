@@ -16,8 +16,14 @@ pub enum Integrate {
     /// On the base branch; its new tip.
     Landed(String),
     /// The coder has to act: a conflict with the moved base, or checks that
-    /// fail with the base merged in. The feedback and its first line.
-    Rewind { feedback: String, first: String },
+    /// fail with the base merged in. The feedback, its first line, and the
+    /// base commit the task now measures from: the caller must set the
+    /// task's `base_sha` to it and reload the repository config from there.
+    Rewind {
+        feedback: String,
+        first: String,
+        base_sha: String,
+    },
     /// Nothing the coder can do about it.
     Failed(String),
 }
@@ -46,7 +52,10 @@ pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, F
 /// Land the verified branch on the base branch: bring the base in, verify
 /// everything with every hidden suite overlaid, push the branch, fast-forward
 /// the base, and fold the task's hidden tests into `forge-verify`. Three
-/// rows in the trace: `integrate`, `push`, `land`.
+/// rows in the trace: `integrate`, `push`, `land`. Does not mutate the
+/// task's `base_sha`: the base commit found along the way is carried out in
+/// the result (`Rewind`'s `base_sha`), and it is the caller's job to store
+/// it on the task and reload the config from it.
 pub async fn integrate(
     f: &Forge,
     t: &mut Task,
@@ -58,6 +67,7 @@ pub async fn integrate(
     let wt = Path::new(&t.worktree);
     let _lock = repo_lock(f, repo).await?;
     let placed = format!("forge/{}", t.base_branch);
+    let mut base_sha = t.base_sha.clone();
     for round in 0..3 {
         *seq += 1;
         let timer = Timer::now();
@@ -94,7 +104,7 @@ pub async fn integrate(
                 .task()?
         };
         let mut detail = String::new();
-        if main_sha != t.base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
+        if main_sha != base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
             git::place_branch(repo, wt, &main_sha, &placed)
                 .await
                 .task()?;
@@ -142,23 +152,26 @@ pub async fn integrate(
                         base = t.base_branch,
                         files = files.join("\n"),
                     );
-                    return Ok(Integrate::Rewind { feedback, first: d });
+                    return Ok(Integrate::Rewind {
+                        feedback,
+                        first: d,
+                        base_sha,
+                    });
                 }
             }
         }
         // The branch contains the base as it is now: measure from there.
-        if t.base_sha != main_sha && git::is_ancestor(wt, &main_sha, "HEAD").await {
-            t.base_sha = main_sha.clone();
-            f.store.update_task(t).env()?;
+        if base_sha != main_sha && git::is_ancestor(wt, &main_sha, "HEAD").await {
+            base_sha = main_sha.clone();
         }
-        let cfg_now = config::load_at(repo, wt, &t.base_sha).await.task()?;
+        let cfg_now = config::load_at(repo, wt, &base_sha).await.task()?;
         let overlay = overlay_refs(repo, t.id, None).await;
         let v = verify::verify_integration(&Subject {
             task_id: t.id,
             repo,
             worktree: wt,
-            base_sha: &t.base_sha,
-            start_sha: &t.base_sha,
+            base_sha: &base_sha,
+            start_sha: &base_sha,
             cfg: &cfg_now,
             task_checks: &t.checks,
             paths: &[],
@@ -215,6 +228,7 @@ pub async fn integrate(
             return Ok(Integrate::Rewind {
                 feedback,
                 first: v.reason.clone(),
+                base_sha,
             });
         }
         op(
@@ -230,7 +244,7 @@ pub async fn integrate(
                 detail: &format!(
                     "{detail}verified against {} @ {}",
                     t.base_branch,
-                    &t.base_sha[..8]
+                    &base_sha[..8]
                 ),
                 attempt_id: None,
                 output: "",
