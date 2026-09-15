@@ -125,11 +125,14 @@ to sell; the rest are plumbing on tenancy that already exists.
    from text a stranger wrote, not the first customer.** The documented
    2026 attack pattern (Clinejection, RoguePilot, poisoned agent config
    files) is one sentence: an agent holding elevated credentials while
-   reading untrusted input. That describes Forge today. The agent runs
-   with the operator's git credentials, can push, has unrestricted
-   network egress, and the only thing between a hostile issue body and
-   that authority is a sentence in a prompt telling the model that
-   repository text is data. Each task must run in its own microVM or
+   reading untrusted input. Forge is already better than that in one respect and no better
+   in another. An attempt's clone has no remote, its home directory is
+   an empty tmpfs, and the kernel does the push, so the agent holds no
+   git credentials and cannot land anything the checks did not pass.
+   But it has unrestricted network egress and the operator's model
+   token, so a hostile issue body can make it send the repository, or
+   the token, anywhere; and the only thing against that is a sentence
+   in a prompt telling the model that repository text is data. Each task must run in its own microVM or
    container with only that customer's tree and secrets, egress limited
    to what the task declares, and credentials scoped to the task and
    expired when it ends. This touches `sandbox.rs` and the launch path
