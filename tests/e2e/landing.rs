@@ -459,7 +459,7 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
         "{err}"
     );
     assert!(
-        e.log_text(1, 3).contains("verification fails"),
+        e.log_text(1, 4).contains("verification fails"),
         "the coder saw why"
     );
     let names: Vec<String> = op_names(&e, 1).into_iter().map(|(n, _)| n).collect();
@@ -479,6 +479,40 @@ fn landing_reverifies_against_the_moved_base_and_folds_the_hidden_tests() {
         ],
         "{names:?}"
     );
+    // The integrator's own check run leaves a record, not just a line in
+    // the coder's feedback: an attempts row, step "integrate", no agent,
+    // with the failing check named.
+    let integrate_attempts: Vec<(String, String)> = {
+        let c = e.db();
+        let mut s = c
+            .prepare(
+                "SELECT state, verdict_json FROM attempts WHERE task_id=1 AND step='integrate' ORDER BY attempt_no",
+            )
+            .unwrap();
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert_eq!(integrate_attempts.len(), 1, "{integrate_attempts:?}");
+    let (state, verdict_json) = &integrate_attempts[0];
+    assert_eq!(state, "checks_failed");
+    assert_eq!(check(verdict_json, "L1", "extra"), Some(false));
+    // forge trace --json and forge show both carry it, no agent involved.
+    let doc = e.trace_json(1);
+    let integrate = doc["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["step"] == "integrate")
+        .expect("integrate attempt in trace");
+    assert_eq!(integrate["num_turns"], 0);
+    assert_eq!(integrate["cost_usd"], serde_json::Value::Null);
+    assert_eq!(integrate["inputs"]["model"], "");
+    let o = e.forge("ok.sh", &["show", "1"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("[integrate]"), "{out}");
+    assert!(out.contains("✗ L1 extra"), "{out}");
     assert_eq!(
         origin_file(&e, "main", "extra.txt").as_deref(),
         Some("extra\n")

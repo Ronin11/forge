@@ -4,13 +4,83 @@
 //! under a per-repository lock; a conflict or a failing check goes back to
 //! the coder as a rewind. `forge land` runs the same function by hand.
 
+use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault, OpRow, Timer, op};
 use crate::report::Event;
-use crate::store::{AttemptState, Task};
-use crate::verify::{self, Subject};
-use crate::{checks, config, git};
+use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
+use crate::verify::{self, Subject, Verdict};
+use crate::{checks, config, git, unix_now};
 use std::path::Path;
+
+/// Record the integrator's own check run as an attempts row, the way a
+/// directive's does: no agent ran it, so turns, cost and model are all
+/// empty, but the rows and tails are the same ones `verify_integration`
+/// produced, and `forge show` / `forge trace --json` / the audit read it
+/// like any other attempt.
+async fn record_verdict(
+    f: &Forge,
+    t: &Task,
+    attempt_no: i64,
+    step_seq: i64,
+    sha: &str,
+    v: &Verdict,
+) -> Result<i64, Fault> {
+    let inputs = Inputs {
+        step: "integrate".to_string(),
+        base_sha: sha.to_string(),
+        start_sha: sha.to_string(),
+        task_checks: t.checks.clone(),
+        ..Default::default()
+    };
+    let mut a = Attempt {
+        task_id: t.id,
+        attempt_no,
+        step: "integrate".to_string(),
+        step_seq,
+        start_sha: sha.to_string(),
+        inputs_json: serde_json::to_string(&inputs).env()?,
+        state: AttemptState::Running,
+        started_at: unix_now(),
+        ..Default::default()
+    };
+    a.id = f.store.insert_attempt(&a).env()?;
+    f.store
+        .finish_attempt(&FinishAttempt {
+            id: a.id,
+            state: v.state,
+            reason: v.reason.clone(),
+            finished_at: Some(unix_now()),
+            agent_exit: None,
+            timed_out: false,
+            num_turns: 0,
+            tool_calls: 0,
+            cost_usd: None,
+            agent_ms: 0,
+            commits: v.commits,
+            files_changed: v.files_changed,
+            dirty: v.dirty,
+            verdict_json: serde_json::to_string(&v.checks).env()?,
+            result_text: String::new(),
+            envelope_json: String::new(),
+            rl_five_hour: None,
+            rl_seven_day: None,
+            rl_five_hour_resets: None,
+            rl_seven_day_resets: None,
+            end_sha: sha.to_string(),
+            outputs_json: serde_json::to_string(&Outputs::default()).env()?,
+            session_id: String::new(),
+            first_edit: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            early_signals: "[]".to_string(),
+            early_near: "[]".to_string(),
+        })
+        .env()?;
+    Ok(a.id)
+}
 
 pub enum Integrate {
     /// On the base branch; its new tip.
@@ -55,13 +125,16 @@ pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, F
 /// rows in the trace: `integrate`, `push`, `land`. Does not mutate the
 /// task's `base_sha`: the base commit found along the way is carried out in
 /// the result (`Rewind`'s `base_sha`), and it is the caller's job to store
-/// it on the task and reload the config from it.
+/// it on the task and reload the config from it. `attempt_no` is the same
+/// running count `run_attempt` draws its own numbers from, so a check run
+/// recorded here never collides with the directive attempt that follows it.
 pub async fn integrate(
     f: &Forge,
     t: &mut Task,
     url: &str,
     remote: &str,
     seq: &mut i64,
+    attempt_no: &mut i64,
 ) -> Result<Integrate, Fault> {
     let repo = Path::new(&t.repo);
     let wt = Path::new(&t.worktree);
@@ -185,6 +258,8 @@ pub async fn integrate(
         .await
         .task()?;
         if v.state != AttemptState::Succeeded {
+            *attempt_no += 1;
+            let attempt_id = record_verdict(f, t, *attempt_no, *seq, &base_sha, &v).await?;
             let d = format!("{detail}{}", v.reason);
             op(
                 f,
@@ -197,7 +272,7 @@ pub async fn integrate(
                     ok: false,
                     exit: None,
                     detail: &d,
-                    attempt_id: None,
+                    attempt_id: Some(attempt_id),
                     output: "",
                 },
             )?;
