@@ -54,8 +54,9 @@ pub fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
          Commit as soon as something compiles and keep committing; work left uncommitted when your turns run out is lost. \
          Every check in the repository is run by Forge after you stop, so never wait on a long test run and never \
          leave work uncommitted because one is still going: commit, report what you did run, and stop.\n\n\
-         Your final result must be the structured object the CLI asks for: a summary; `changes` listing every path you \
-         added, modified, or deleted; `checks_run` listing only checks you actually ran, with their real outcome; `claims` \
+         Your final result must be the structured object the CLI asks for: a summary; `changes` listing every path this \
+         attempt added, modified, or deleted (lockfiles included; not what earlier attempts already committed); `checks_run` \
+         listing only checks you actually ran, with their real outcome; `claims` \
          each with concrete evidence; and `needs_input` when you must stop.\n\n\
          Two honest exits, never penalized and never retried: `needs_input` with kind `question` when you cannot proceed \
          without the operator, and kind `workflow` when the workflow you are in (`{wf}`) is wrong for this task or a step \
