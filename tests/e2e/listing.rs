@@ -759,3 +759,118 @@ fn project_list_shows_the_test_repository_after_one_task() {
     let bad = e.forge("ok.sh", &["project", "show", "no-such-project"]);
     assert!(!bad.status.success());
 }
+
+#[test]
+fn a_projects_scope_fails_a_task_that_writes_outside_it() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "scoped",
+                "--purpose",
+                "p",
+                "--repo",
+                &format!("{repo}:src/"),
+            ],
+        )
+        .status
+        .success()
+    );
+
+    // The only task's repository (this one) lists exactly one project, so
+    // it is the default: no --project needed. `ok.sh` writes answer.txt,
+    // outside the project's "src/" scope.
+    assert!(!e.run("ok.sh", &["--retries", "0"]).status.success());
+    let a = e.attempts(1);
+    assert_eq!(a[0].2, "L0 failed: paths-in-scope");
+    assert_eq!(check(&a[0].4, "L0", "paths-in-scope"), Some(false));
+}
+
+#[test]
+fn a_projects_per_task_budget_applies_unless_the_task_overrides_it() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "budgeted",
+                "--purpose",
+                "p",
+                "--repo",
+                repo
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "set", "budgeted", "--per-task-usd", "0.005"],
+        )
+        .status
+        .success()
+    );
+
+    // No --budget on the task: the project's default applies and stops
+    // it after the first $0.01 attempt, the same way an explicit
+    // `--budget 0.005` would (see `task_budget_stops_retries`).
+    assert!(!e.run("flaky.sh", &["--retries", "3"]).status.success());
+    assert_eq!(e.attempts(1).len(), 1);
+    assert!(
+        e.task(1).1.starts_with("task budget reached"),
+        "{}",
+        e.task(1).1
+    );
+
+    // The task's own --budget wins over the project's default, so it
+    // affords the second attempt `flaky.sh` needs to get it right.
+    assert!(
+        e.run("flaky.sh", &["--retries", "3", "--budget", "1.0"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(2).0, "succeeded");
+}
+
+#[test]
+fn forge_add_refuses_a_repository_listed_by_several_projects() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "a", "--purpose", "p", "--repo", repo]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "b", "--purpose", "p", "--repo", repo]
+        )
+        .status
+        .success()
+    );
+
+    let o = e.forge("ok.sh", &["add", repo, "write 42 to answer.txt"]);
+    assert!(!o.status.success());
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("listed by several projects"), "{stderr}");
+    assert!(stderr.contains('a') && stderr.contains('b'), "{stderr}");
+
+    // Naming which one with --project succeeds.
+    let o = e.forge(
+        "ok.sh",
+        &["add", repo, "write 42 to answer.txt", "--project", "a"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}

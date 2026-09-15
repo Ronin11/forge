@@ -45,6 +45,10 @@ and does not parse stdout.
 - **`forge project show NAME --json`** — one project. A single
   [`ProjectRow`](#projectrow) object. Exits non-zero if `NAME` names no
   known project.
+- **`forge project backlog NAME --json`** — one project's backlog, oldest
+  first. A JSON array of [`BacklogRow`](#backlogrow). `--add`/`--done`
+  write before printing, so a client re-reads this rather than parsing
+  the write's own (non-JSON) output.
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -192,19 +196,36 @@ repaired.
 ### `ProjectRow`
 
 One row of `forge project list --json` / `forge project show --json`: a
-project, the repositories it works in, task counts by state, and cost.
-See docs/PROJECTS.md for the layer this belongs to; only the read-only
-shape exists so far; `forge project new`/`set` and initiatives are later
-build-order steps.
+project, the repositories it works in, task counts by state, cost, and
+its own defaults. See docs/PROJECTS.md for the layer this belongs to;
+initiatives are a later build-order step.
 
 | field | type | meaning |
 |---|---|---|
 | `name` | string | The project's name, its primary key. |
 | `purpose` | string | One paragraph saying what the project is for. |
 | `created_at` | integer | Unix seconds. |
-| `repos` | array of `{repo, scope}` | Repositories the project works in. `repo` is an absolute path; `scope` is the paths within it the project owns, or `null` for the whole repository. |
+| `repos` | array of `{repo, scope}` | Repositories the project works in. `repo` is an absolute path; `scope` is the paths within it the project owns (a JSON-encoded array, as a string), or `null` for the whole repository. |
 | `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the project's tasks. |
 | `cost_usd` | number | Total cost across every attempt of every task in the project. |
+| `workflow` | string or null | Default workflow for a task in this project, set by `forge project set --workflow`; `null` falls to "direct". |
+| `per_task_usd`, `per_initiative_usd` | number or null | Default cost caps, set by `forge project set`; `null` falls to the operator's config (per-task) or means no cap (per-initiative). |
+| `supervisor_model` | string or null | Default supervisor model, set by `forge project set --supervisor-model`; `null` falls to the operator's. |
+| `supervisor_per_lineage` | integer or null | Default supervisor answers per lineage, set by `forge project set --supervisor-per-lineage`; `null` falls to the operator's. |
+| `protected` | array of string | Extra protected paths, on top of each repository's own `forge.toml`, set by `forge project set --protected` (repeatable). |
+
+### `BacklogRow`
+
+One row of `forge project backlog NAME --json`: a thing worth doing that
+is not yet queued (see docs/PROJECTS.md, "Backlog").
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | The item's id, used by `--done`. |
+| `project` | string | The project it belongs to. |
+| `text` | string | What it says, one line or a paragraph. |
+| `created_at` | integer | Unix seconds. |
+| `done_at` | integer or null | Unix seconds it was marked done, or `null` while open. |
 
 ### `TraceDoc`
 
