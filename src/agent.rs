@@ -275,6 +275,98 @@ impl Watch {
     }
 }
 
+/// A child's stderr, either fully read already (it exited quickly, during
+/// the relaunch check) or still draining on a background task (it outlived
+/// the grace period, the common case).
+enum StderrSrc {
+    Done(String),
+    Pending(tokio::task::JoinHandle<String>),
+}
+
+/// The launch race this covers: two sandboxes seed `$HOME/.claude.json`
+/// from the same host file at once, and bwrap's own bind-mount setup (not
+/// the claude CLI's rename) loses. bwrap always reports it exactly this
+/// way, so matching the message is precise enough without a regex crate.
+fn is_transient_bwrap_failure(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix("bwrap: Can") else {
+            return false;
+        };
+        let mut chars = rest.chars();
+        chars.next().is_some() && chars.as_str().starts_with("t bind mount")
+    })
+}
+
+/// Spawn `argv`, retrying up to three times when bwrap loses the seed-bind
+/// race documented on `is_transient_bwrap_failure`: the child exits within
+/// two seconds with that message on stderr. Any other quick exit (a real
+/// crash, a fast fake in tests) is returned as is, stderr fully drained, for
+/// the caller to treat as a normal run.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_with_relaunch(
+    sandbox: Option<&Sandbox>,
+    worktree: &Path,
+    argv: &[String],
+    identity: &[(String, String)],
+    prompt: &str,
+    bin: &str,
+    task_id: i64,
+    report: &Reporter,
+    log: &mut File,
+) -> Result<(tokio::process::Child, StderrSrc)> {
+    const MAX_RELAUNCHES: u32 = 3;
+    let mut relaunches = 0u32;
+    loop {
+        let mut child = Command::from(command_in(sandbox, worktree, argv, identity))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("spawning {bin}"))?;
+
+        {
+            let mut stdin = child.stdin.take().context("agent stdin")?;
+            // A transient bwrap failure closes this pipe before the write
+            // lands; that must not fail the launch outright.
+            let _ = stdin.write_all(prompt.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        let stderr = child.stderr.take().context("agent stderr")?;
+        let stderr_task = tokio::spawn(async move {
+            let mut s = String::new();
+            BufReader::new(stderr).read_to_string(&mut s).await.ok();
+            s
+        });
+
+        if relaunches >= MAX_RELAUNCHES {
+            return Ok((child, StderrSrc::Pending(stderr_task)));
+        }
+
+        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(Ok(_)) => {
+                let text = stderr_task.await.unwrap_or_default();
+                if is_transient_bwrap_failure(&text) {
+                    relaunches += 1;
+                    let msg = format!(
+                        "transient bwrap bind-mount failure on launch, relaunching (attempt {relaunches}/{MAX_RELAUNCHES})"
+                    );
+                    report.emit(task_id, Event::Note { text: &msg });
+                    writeln!(
+                        log,
+                        "{{\"type\":\"forge_relaunch\",\"attempt\":{relaunches},\"reason\":{}}}",
+                        serde_json::to_string(&text)?
+                    )?;
+                    continue;
+                }
+                return Ok((child, StderrSrc::Done(text)));
+            }
+            Ok(Err(e)) => return Err(e).context("waiting on agent"),
+            Err(_) => return Ok((child, StderrSrc::Pending(stderr_task))),
+        }
+    }
+}
+
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     // The binary itself, never a version-manager shim: a shim inside the
     // sandbox reaches for state the sandbox does not have (a global tool
@@ -303,28 +395,6 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         argv.push(id.to_string());
     }
     let identity = crate::git::identity(&l.worktree.join(".git")).await;
-    let start = Instant::now();
-    let deadline = tokio::time::Instant::now() + l.timeout;
-    let mut child = Command::from(command_in(l.sandbox, l.worktree, &argv, &identity))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning {bin}"))?;
-
-    {
-        let mut stdin = child.stdin.take().context("agent stdin")?;
-        stdin.write_all(l.prompt.as_bytes()).await?;
-        stdin.shutdown().await?;
-    }
-    let stderr = child.stderr.take().context("agent stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut s = String::new();
-        BufReader::new(stderr).read_to_string(&mut s).await.ok();
-        s
-    });
-
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
@@ -332,6 +402,14 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         "{{\"type\":\"forge_prompt\",\"text\":{}}}",
         serde_json::to_string(l.prompt)?
     )?;
+
+    let (mut child, stderr_src) = spawn_with_relaunch(
+        l.sandbox, l.worktree, &argv, &identity, l.prompt, &bin, l.task_id, l.report, &mut log,
+    )
+    .await?;
+
+    let start = Instant::now();
+    let deadline = tokio::time::Instant::now() + l.timeout;
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
     let mut watch = Watch::new(l.early_ending);
@@ -484,7 +562,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     }
     out.wall_ms = start.elapsed().as_millis();
 
-    let stderr_text = stderr_task.await.unwrap_or_default();
+    let stderr_text = match stderr_src {
+        StderrSrc::Pending(t) => t.await.unwrap_or_default(),
+        StderrSrc::Done(s) => s,
+    };
     if !stderr_text.trim().is_empty() {
         writeln!(
             log,
@@ -566,5 +647,113 @@ mod tests {
         }
         assert!(w.tripped(true).is_empty());
         assert_eq!(w.near(true), vec!["no-edit"]);
+    }
+
+    #[test]
+    fn is_transient_bwrap_failure_matches_the_bind_mount_race() {
+        let msg = "bwrap: Can't bind mount /home/ronin/.claude.json on \
+                    /home/ronin/.claude.json: Unable to mount source on \
+                    destination: No such file or directory";
+        assert!(is_transient_bwrap_failure(msg));
+        // Leading indentation on the line is still a match.
+        assert!(is_transient_bwrap_failure(&format!("  {msg}")));
+    }
+
+    #[test]
+    fn is_transient_bwrap_failure_ignores_other_stderr() {
+        assert!(!is_transient_bwrap_failure(""));
+        assert!(!is_transient_bwrap_failure("agent crashed: out of memory"));
+        assert!(!is_transient_bwrap_failure(
+            "bwrap: Can't create file /run/forge/seed/claude.json: Permission denied"
+        ));
+        assert!(!is_transient_bwrap_failure(
+            "bwrap: execvp claude: No such file or directory"
+        ));
+    }
+
+    async fn spawn_counting_script(
+        dir: &std::path::Path,
+        body: &str,
+    ) -> (tokio::process::Child, StderrSrc) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("agent.sh");
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let report = crate::report::Reporter::new(false, None);
+        spawn_with_relaunch(
+            None,
+            dir,
+            &[script.to_string_lossy().to_string()],
+            &[],
+            "prompt",
+            "agent.sh",
+            1,
+            &report,
+            log.as_file_mut(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn relaunches_up_to_three_times_on_the_bwrap_bind_mount_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("count");
+        let body = format!(
+            "#!/bin/sh\n\
+             n=$(cat {c} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {c}\n\
+             if [ \"$n\" -lt 3 ]; then\n\
+             echo \"bwrap: Can't bind mount /h/.claude.json on /h/.claude.json: \
+             Unable to mount source on destination: No such file or directory\" >&2\n\
+             exit 1\n\
+             fi\n\
+             exit 0\n",
+            c = counter.display()
+        );
+        let (mut child, stderr_src) = spawn_counting_script(dir.path(), &body).await;
+        let status = child.wait().await.unwrap();
+        assert!(status.success(), "the third launch should succeed");
+        let stderr_text = match stderr_src {
+            StderrSrc::Done(s) => s,
+            StderrSrc::Pending(t) => t.await.unwrap(),
+        };
+        assert!(
+            stderr_text.trim().is_empty(),
+            "the surviving run's own stderr is clean: {stderr_text}"
+        );
+        let launches: u32 = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(launches, 3, "two relaunches, then the run that succeeds");
+    }
+
+    #[tokio::test]
+    async fn does_not_relaunch_on_unrelated_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("count");
+        let body = format!(
+            "#!/bin/sh\n\
+             n=$(cat {c} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {c}\n\
+             echo 'agent: something else went wrong' >&2\n\
+             exit 1\n",
+            c = counter.display()
+        );
+        let (mut child, stderr_src) = spawn_counting_script(dir.path(), &body).await;
+        let status = child.wait().await.unwrap();
+        assert!(!status.success());
+        let stderr_text = match stderr_src {
+            StderrSrc::Done(s) => s,
+            StderrSrc::Pending(t) => t.await.unwrap(),
+        };
+        assert!(stderr_text.contains("something else went wrong"));
+        let launches: u32 = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(launches, 1, "an unrelated failure is never relaunched");
     }
 }
