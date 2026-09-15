@@ -350,3 +350,55 @@ tasks and let the control group accumulate on retries by itself, then
 read the table above when the control column reaches a few dozen. Until
 then, keep the journal: it is free on the attempts where it is empty,
 and costs nothing measurable on the attempts where it is not.
+
+## The rate-limit experiment (2026-09-15): what happened and what did not
+
+The question was how Forge behaves when the subscription runs out, and
+how it resumes. The weekly cap was raised from 95% to 100% at 10:20 with
+the window at 93%, and about $70 of real work was queued so the provider
+would refuse an attempt before the 14:00 reset.
+
+**What did not happen.** The provider never refused. The window read 99%
+from 12:57 to the reset, and the CLI reports utilization as a whole
+percent, so the last observable value before 100 is 99 and there is no
+way to see how close an attempt is. Thirty-one attempts ran in that last
+percent. The refusal path in `agent.rs` (a `rate_limit_event` with
+status `rejected`, or an error result mentioning a rate limit), the
+refund in `engine.rs`, and the worker's sleep until the reset remain
+exercised only by fakes. Next week, run the same experiment from 97%
+with more fuel queued, and accept that hitting the edge is a matter of
+luck at whole-percent resolution.
+
+**What did happen.** The pacing half worked: with the cap at 100% the
+worker ran to the last percent without holding, which is the
+use-it-or-lose-it policy the economist note describes, done by hand.
+Every sample carried `status: allowed_warning` and
+`surpassedThreshold: 0.75` from 93% on, so the CLI does signal the
+approach, just not finely.
+
+**What the day surfaced instead**, none of it about the window:
+
+- A verified code attempt followed by budget exhaustion before review
+  ended as failed with the work stranded on its branch (230, 235, 239).
+  Fixed the same day: it now ends unverified and `forge land` accepts it.
+- The escalation ladder had no "never mind": a task escalated to the
+  operator whose answer is no had only answer and retry. `forge withdraw`
+  exists now and was used on the task that needed it.
+- The review step's 40-turn cap is too tight for kernel-sized diffs:
+  eleven review attempts in one day ended by running out of turns or
+  failing to produce structured output. The reviewer only reads; give it
+  room.
+- The integrator's check run leaves no record, so an integrate-time
+  failure the coder cannot reproduce (232) is undiagnosable. Task 239
+  records it as an attempt row.
+- An attempt that exhausts its attempts on `has-commits` after an
+  integrate rewind fails with an empty reason.
+- An intermittent bubblewrap failure binding `~/.claude.json` inside a
+  nested sandbox took out 98 e2e tests in two different trees. A
+  200-run probe of the same bind passed. Cause unknown; the integrator
+  record will catch the next one.
+- Two tasks (225, 230) hit the 100-turn guard with a dirty tree on
+  their first attempt: task size again, not the guard.
+
+The cap is back at 95% and the config matches the copy taken before the
+experiment.
