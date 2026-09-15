@@ -1604,7 +1604,8 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
         bail!("remote {remote} has no URL in {}", repo.display());
     };
     let mut seq = f.store.ops(id)?.len() as i64;
-    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq)
+    let mut attempt_no = f.store.attempts(id)?.len() as i64;
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no)
         .await
         .map_err(|e| match e {
             crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,

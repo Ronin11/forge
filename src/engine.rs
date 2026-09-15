@@ -823,7 +823,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             break 'run;
         };
         let mut seq = run.seq;
-        let outcome = integrate(&f, &mut t, url, remote, &mut seq).await?;
+        let outcome = integrate(&f, &mut t, url, remote, &mut seq, &mut attempt_no).await?;
         run.seq = seq;
         match outcome {
             Integrate::Landed(sha) => {
