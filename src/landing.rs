@@ -83,7 +83,9 @@ pub async fn integrate(
                             output: "",
                         },
                     )?;
-                    return Ok(Integrate::Failed(d));
+                    // A remote that cannot be fetched is the worker's
+                    // environment, not this branch's: stop rather than fail it.
+                    return Err(Fault::Env(anyhow::anyhow!(d)));
                 }
             }
         } else {

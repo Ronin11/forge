@@ -109,7 +109,7 @@ pub async fn run_attempt(
                     Some(&t.base_sha),
                 )
                 .await
-                .task()?;
+                .env()?;
             }
             Spec {
                 dir,

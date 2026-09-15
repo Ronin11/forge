@@ -53,6 +53,7 @@ impl Forge {
     pub fn open(need_agent: bool, prefix: bool) -> Result<Forge> {
         let paths = Paths::resolve()?;
         let store = Store::open(&paths.home.join("forge.db"))?;
+        config::ensure_home_config(&paths.home)?;
         let home = config::load_home(&paths.home)?;
         let sandbox = if need_agent {
             // Forge's own tools (forge-repomap) live beside the binary.
