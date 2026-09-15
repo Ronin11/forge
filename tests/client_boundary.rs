@@ -38,9 +38,6 @@ fn assert_manifest_forbids(member: &str, manifest_path: &Path, forbidden: &[&str
 fn assert_sources_clean(src_dir: &Path) {
     for entry in std::fs::read_dir(src_dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
         let src = std::fs::read_to_string(&path).unwrap();
         for forbidden in SOURCE_FORBIDDEN {
             assert!(
