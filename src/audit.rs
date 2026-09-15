@@ -176,6 +176,11 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 out.push(d(&t.reason, "The code passed the checks but the coder never returned a result, so nothing vouches for what it did. Read the branch's diff; merge it if it is the task, or retry with more turns."));
             } else if t.reason.starts_with("review could not finish") {
                 out.push(d(&t.reason, "The code step verified the branch; only the reviewer failed to reach a verdict, usually its turn limit. Review the branch yourself, or raise max_turns on the review action and run the task again."));
+            } else if t
+                .reason
+                .starts_with("budget reached after the code step verified")
+            {
+                out.push(d(&t.reason, "The code step verified the branch and pushed it; the task budget ran out before the review step ran, so no reviewer vouched for it. Review the branch yourself and `forge land <id>` accepts it, or raise --budget for the task or per_task_usd in config.toml and run the task again."));
             } else {
                 out.push(d(&t.reason, "Nothing verified the work. Declare [checks] in forge.toml or add --check commands; the branch was not pushed."));
             }
@@ -799,6 +804,10 @@ mod tests {
                 TaskState::Unverified,
                 "review could not finish (agent exit 1); the branch verified at the code step and goes to human review (after 2 attempt(s))",
             ),
+            (
+                TaskState::Unverified,
+                "budget reached after the code step verified; review did not run",
+            ),
         ];
         for (state, reason) in cases {
             let mut t = task(state, reason);
@@ -807,5 +816,24 @@ mod tests {
             assert!(!out.is_empty(), "no diagnosis for {state:?} {reason:?}");
             assert!(!out[0].action.is_empty(), "no action for {reason:?}");
         }
+    }
+
+    #[test]
+    fn budget_after_code_verified_says_the_branch_was_pushed_not_that_it_was_not() {
+        let t = task(
+            TaskState::Unverified,
+            "budget reached after the code step verified; review did not run",
+        );
+        let out = diagnose(&t, &[]);
+        assert!(
+            !out[0].action.contains("the branch was not pushed"),
+            "{out:?}"
+        );
+        assert!(
+            out[0]
+                .action
+                .contains("the task budget ran out before the review step ran"),
+            "{out:?}"
+        );
     }
 }
