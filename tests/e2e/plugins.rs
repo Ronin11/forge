@@ -284,3 +284,127 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
         std::fs::read_to_string(&hits)
     );
 }
+
+/// The github-issues plugin end to end, against a stub `gh`: intake files a
+/// task for the one open issue the stub serves, records the issue as a
+/// `ref`, and the events side comments back on the issue (and applies
+/// `DONE_LABEL`) once the task lands.
+#[test]
+fn github_issues_files_a_task_and_reports_back_when_it_lands() {
+    let e = Env::new();
+
+    let bin_dir = e._dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fixture = bin_dir.join("issues.json").display().to_string();
+    std::fs::write(
+        &fixture,
+        serde_json::json!([{
+            "number": 42,
+            "title": "Add a frobnicator",
+            "body": "Please add a frobnicator.\nThanks!",
+            "url": "https://github.com/acme/widgets/issues/42",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let calls = bin_dir.join("gh-calls.txt").display().to_string();
+    std::fs::write(
+        bin_dir.join("gh"),
+        format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  \"issue list\") cat {fixture:?} ;;\n  \"issue comment\"|\"issue edit\") printf '%s\\n' \"$*\" >> {calls:?} ;;\n  *) echo \"gh-stub: unhandled $*\" >&2; exit 1 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin_dir.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/github-issues");
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+    std::fs::write(
+        e.home.join("plugins/github-issues/config"),
+        format!(
+            "GH_REPO=acme/widgets\nLABEL=forge\nDONE_LABEL=forge-done\nPOLL_SECONDS=30\nTARGET_REPO={}\nWORKFLOW=direct\n",
+            e.repo.display()
+        ),
+    )
+    .unwrap();
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "github-issues"])
+            .status
+            .success()
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut child = e
+        .cmd("ok.sh")
+        .env("PATH", path)
+        .args(["work", "--poll", "1"])
+        .spawn()
+        .unwrap();
+
+    let found: std::cell::Cell<Option<i64>> = std::cell::Cell::new(None);
+    assert!(
+        wait_until(
+            || {
+                found.set(
+                    e.db()
+                        .query_row(
+                            "SELECT id FROM tasks WHERE task LIKE 'Add a frobnicator%'",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .ok(),
+                );
+                found.get().is_some()
+            },
+            Duration::from_secs(15)
+        ),
+        "expected a task queued from the issue"
+    );
+    let task_id = found.get().unwrap();
+
+    let refs: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["ref", "list", &task_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(refs[0]["kind"], "issue");
+    assert_eq!(refs[0]["url"], "https://github.com/acme/widgets/issues/42");
+    assert_eq!(refs[0]["by"], "github-issues");
+
+    assert!(
+        wait_until(|| e.task(task_id).0 == "succeeded", Duration::from_secs(15)),
+        "expected the task to land: {:?}",
+        e.task(task_id)
+    );
+    let (_, reason, _) = e.task(task_id);
+    assert!(reason.starts_with("landed"), "{reason}");
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .contains("comment 42"),
+            Duration::from_secs(15)
+        ),
+        "expected a gh issue comment call: {:?}",
+        std::fs::read_to_string(&calls)
+    );
+    let calls_text = std::fs::read_to_string(&calls).unwrap();
+    assert!(calls_text.contains("succeeded"), "{calls_text}");
+    assert!(calls_text.contains("landed"), "{calls_text}");
+    assert!(
+        calls_text.contains("edit 42") && calls_text.contains("forge-done"),
+        "expected DONE_LABEL applied: {calls_text}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}

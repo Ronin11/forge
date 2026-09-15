@@ -1,0 +1,5 @@
+name = "github-issues"
+description = "files a task for every open issue carrying a label, and reports back to the issue when the task lands"
+run = ["./github-issues.sh"]
+capabilities = ["intake", "events"]
+restart = "on-failure"

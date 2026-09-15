@@ -1,0 +1,24 @@
+# Copy this file to "config" next to plugin.toml (or into the installed
+# copy under FORGE2_HOME/plugins/github-issues/) and fill it in. It is
+# shell, sourced by github-issues.sh: KEY=value lines, one per line.
+
+# owner/name of the GitHub repository to watch. Required.
+GH_REPO=owner/name
+
+# Only open issues carrying this label are filed as tasks.
+LABEL=forge
+
+# Added to the issue when its task lands. Unset (the default) skips
+# labeling.
+#DONE_LABEL=forge-done
+
+# How often to check GH_REPO for new issues, in seconds. Never less than
+# 30, regardless of what is set here.
+POLL_SECONDS=120
+
+# Local path to the git repository new tasks are queued against.
+# Required.
+TARGET_REPO=/path/to/repo
+
+# The workflow new tasks run (see `forge workflows`).
+WORKFLOW=direct
