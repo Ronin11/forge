@@ -266,28 +266,33 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
             && let Some(from) = verified_branch_of(&f, old).await
         {
             match git::fetch_ref(&dir, &from.source, &from.branch).await {
-                Ok(()) if git::is_ancestor(&dir, &t.base_sha, "FETCH_HEAD").await => {
+                Ok(()) => {
                     let tip = git::rev_parse(&dir, "FETCH_HEAD").await.unwrap_or_default();
+                    let short = &tip[..tip.len().min(8)];
                     git::reset_hard(&dir, "FETCH_HEAD").await.task()?;
-                    f.report.emit(
-                        id,
-                        Event::Note {
-                            text: &format!(
-                                "start    from task {old}'s verified branch {} @ {}",
-                                from.branch,
-                                &tip[..tip.len().min(8)]
-                            ),
-                        },
-                    );
+                    if git::is_ancestor(&dir, &t.base_sha, "HEAD").await {
+                        f.report.emit(id, Event::Note { text: &format!("start    from task {old}'s verified branch {} @ {short}", from.branch) });
+                    } else {
+                        // Main moved while the branch was verified: merge the
+                        // current base into it, as the integrator would at
+                        // landing, rather than throw the verified work away.
+                        // Only a conflict sends the retry back to scratch.
+                        let msg = format!("Merge the current base into {}", from.branch);
+                        match git::merge(&dir, &t.base_sha, &msg).await {
+                            Ok(git::Merge::Merged(_)) | Ok(git::Merge::UpToDate) => {
+                                f.report.emit(id, Event::Note { text: &format!("start    from task {old}'s verified branch {} @ {short}, with the current base merged in", from.branch) });
+                            }
+                            Ok(git::Merge::Conflict(files)) => {
+                                git::reset_hard(&dir, &t.base_sha).await.task()?;
+                                f.report.emit(id, Event::Note { text: &format!("start    task {old}'s branch conflicts with the current base in {}; starting fresh", files.join(", ")) });
+                            }
+                            Err(e) => {
+                                git::reset_hard(&dir, &t.base_sha).await.task()?;
+                                f.report.emit(id, Event::Note { text: &format!("start    could not merge the current base into task {old}'s branch ({e:#}); starting fresh") });
+                            }
+                        }
+                    }
                 }
-                Ok(()) => f.report.emit(
-                    id,
-                    Event::Note {
-                        text: &format!(
-                            "start    task {old}'s branch does not contain the current base; starting fresh"
-                        ),
-                    },
-                ),
                 Err(e) => f.report.emit(
                     id,
                     Event::Note {
@@ -1157,20 +1162,31 @@ struct VerifiedBranch {
 }
 
 async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
-    let parent = f.store.task(old).ok().flatten()?;
-    if parent.branch.is_empty() {
-        return None;
-    }
-    let attempts = f.store.attempts(old).ok()?;
-    let last = attempts.iter().rev().find(|a| a.step != "supervisor")?;
-    let verified = match last.state {
-        AttemptState::Succeeded => true,
-        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
-        _ => false,
+    // Walk up the retry chain: a retry that itself failed (a rebuild
+    // that capped, an integrate the coder could not settle) still has a
+    // verified ancestor whose branch is the right place to start.
+    let mut id = old;
+    let parent = loop {
+        let parent = f.store.task(id).ok().flatten()?;
+        let attempts = f.store.attempts(id).ok()?;
+        let verified = !parent.branch.is_empty()
+            && attempts
+                .iter()
+                .rev()
+                .find(|a| a.is_agent())
+                .is_some_and(|last| {
+                    let ok = match last.state {
+                        AttemptState::Succeeded => true,
+                        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
+                        _ => false,
+                    };
+                    ok && (last.commits > 0 || attempts.iter().any(|a| a.commits > 0))
+                });
+        if verified {
+            break parent;
+        }
+        id = parent.retry_of?;
     };
-    if !verified || last.commits == 0 && attempts.iter().all(|a| a.commits == 0) {
-        return None;
-    }
     if Path::new(&parent.worktree).join(".git").exists() {
         return Some(VerifiedBranch {
             source: parent.worktree.clone(),

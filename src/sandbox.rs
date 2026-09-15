@@ -13,17 +13,36 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Where the host's `~/.claude.json` is bound read-only inside the sandbox.
+/// Not under `/opt`: on a host with a real `/opt`, that directory is itself
+/// bound read-only a few flags earlier, and bwrap cannot create the
+/// `forge/seed` path inside a read-only mount to bind onto. `/run` is a
+/// tmpfs bwrap creates itself, so it always has room.
+const CLAUDE_JSON_SEED: &str = "/run/forge/seed/claude.json";
+
 pub struct Sandbox {
     bwrap: PathBuf,
     home: PathBuf,
     /// Directories holding the agent binary (as named and as resolved).
     agent_dirs: Vec<PathBuf>,
-    /// Paths under $HOME the claude CLI must be able to write.
+    /// Paths under $HOME the claude CLI must be able to write: today just
+    /// the config directory, where credentials live.
     write_paths: Vec<PathBuf>,
+    /// The host's `~/.claude.json`, bound read-only at `CLAUDE_JSON_SEED`
+    /// and copied into the tmpfs $HOME before the agent runs. Never bound
+    /// at its real path: many claude CLIs write it concurrently (rename
+    /// over a lockfile), and two sandboxes sharing that bind race bwrap's
+    /// own bind-mount setup.
+    claude_json_seed: PathBuf,
     /// Operator-configured toolchain paths, read-only.
     extra_ro: Vec<PathBuf>,
     /// Operator-configured package caches, read-write.
     extra_rw: Vec<PathBuf>,
+}
+
+/// Quote `s` as a single POSIX shell argument.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Resolve a binary the way the shell would, then follow symlinks.
@@ -82,12 +101,14 @@ impl Sandbox {
         let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".claude"));
-        let write_paths = vec![config_dir, home.join(".claude.json")];
+        let claude_json_seed = home.join(".claude.json");
+        let write_paths = vec![config_dir];
         Ok(Some(Sandbox {
             bwrap,
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
             write_paths,
+            claude_json_seed,
             extra_ro: paths.ro.iter().cloned().chain(extra_ro).collect(),
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
         }))
@@ -144,11 +165,28 @@ impl Sandbox {
         for d in self.agent_dirs.iter().chain(&self.extra_ro) {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
+        cmd.args(["--ro-bind-try"])
+            .arg(&self.claude_json_seed)
+            .arg(CLAUDE_JSON_SEED);
         cmd.arg("--bind").arg(worktree).arg(worktree);
         for p in self.write_paths.iter().chain(&self.extra_rw) {
             cmd.arg("--bind-try").arg(p).arg(p);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
+        // The claude CLI's own config file, not the credential-bearing
+        // config directory: seed it into the tmpfs $HOME as a real, private
+        // file before exec, so the CLI's rename-over-a-lockfile update
+        // never races another sandbox's copy of the same host file. Absent
+        // on the host, the `--ro-bind-try` above is a no-op and this `cp`
+        // silently does nothing, which is fine: the agent just starts
+        // without one.
+        let dest = self.home.join(".claude.json");
+        let script = format!(
+            "cp -f {} {} 2>/dev/null; exec \"$@\"",
+            shell_quote(CLAUDE_JSON_SEED),
+            shell_quote(&dest.to_string_lossy())
+        );
+        cmd.args(["/bin/sh", "-c"]).arg(script).arg("sh");
         cmd.args(argv);
         cmd.env_clear();
         cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
@@ -168,6 +206,7 @@ mod tests {
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![PathBuf::from("/opt/agent")],
             write_paths: vec![PathBuf::from("/home/attempt/.claude")],
+            claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![PathBuf::from("/opt/cache")],
         };
@@ -187,6 +226,7 @@ mod tests {
         let tmpfs_home = pos("--tmpfs", "/home/attempt");
         let ro_agent = pos("--ro-bind-try", "/opt/agent");
         let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
+        let ro_seed = pos("--ro-bind-try", "/home/real/.claude.json");
         let worktree_bind = pos("--bind", "/work/tree");
         let rw_write = pos("--bind-try", "/home/attempt/.claude");
         let rw_extra = pos("--bind-try", "/opt/cache");
@@ -202,6 +242,10 @@ mod tests {
             "extra ro binds must precede the worktree bind"
         );
         assert!(
+            ro_seed < worktree_bind,
+            "the claude.json seed ro bind must precede the worktree bind"
+        );
+        assert!(
             worktree_bind < rw_write,
             "worktree bind must precede rw binds"
         );
@@ -209,5 +253,48 @@ mod tests {
             worktree_bind < rw_extra,
             "worktree bind must precede rw binds"
         );
+
+        // The seed is bound read-only at a neutral path, never at the real
+        // `.claude.json` path: nothing binds that path read-write anymore.
+        assert!(
+            !args.iter().any(|a| a == "/home/attempt/.claude.json"),
+            "the sandbox must never bind the host file at the real .claude.json path: {args:?}"
+        );
+        let seed_dest_pos = args
+            .windows(2)
+            .position(|w| w[0] == "/home/real/.claude.json")
+            .map(|i| i + 1)
+            .expect("seed source arg present");
+        assert_eq!(
+            args[seed_dest_pos], "/run/forge/seed/claude.json",
+            "seed must land at the neutral in-sandbox path"
+        );
+
+        // The sandboxed command is a copy-then-exec wrapper around the real
+        // argv, not the real argv directly: `true` must not appear as argv[0].
+        let dash_dash = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("-- separates bwrap flags from the sandboxed command");
+        let tail = &args[dash_dash + 1..];
+        assert_eq!(tail[0], "/bin/sh");
+        assert_eq!(tail[1], "-c");
+        assert!(
+            tail[2].contains("/run/forge/seed/claude.json"),
+            "wrapper must copy from the seed path: {}",
+            tail[2]
+        );
+        assert!(
+            tail[2].contains("/home/attempt/.claude.json"),
+            "wrapper must copy to $HOME/.claude.json: {}",
+            tail[2]
+        );
+        assert!(
+            tail[2].contains("exec \"$@\""),
+            "wrapper must exec the real argv after copying: {}",
+            tail[2]
+        );
+        assert_eq!(tail[3], "sh", "argv[0] for the wrapper script is $0");
+        assert_eq!(&tail[4..], &["true"], "the real argv follows the wrapper");
     }
 }

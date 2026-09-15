@@ -2195,7 +2195,7 @@ pub(crate) fn review_demoted(f: &Forge, t: &Task) -> Result<bool> {
         .attempts(t.id)?
         .iter()
         .rev()
-        .find(|a| a.step != "supervisor")
+        .find(|a| a.is_agent())
         .is_some_and(|a| {
             a.state == crate::store::AttemptState::NeedsInput
                 && a.reason.starts_with("review demoted")

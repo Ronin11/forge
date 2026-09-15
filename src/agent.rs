@@ -275,37 +275,43 @@ impl Watch {
     }
 }
 
-pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    // The binary itself, never a version-manager shim: a shim inside the
-    // sandbox reaches for state the sandbox does not have (a global tool
-    // config, a registry cache, a writable shims directory) and dies
-    // before the agent starts. Forge 1 learned this the same way.
-    let bin = real_bin(&agent_bin_for(l.step));
-    let mut argv: Vec<String> = [
-        bin.as_str(),
-        "--print",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--dangerously-skip-permissions",
-        "--model",
-        l.model,
-        "--max-turns",
-        &l.max_turns.to_string(),
-        "--json-schema",
-        l.schema,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    if let Some(id) = l.resume {
-        argv.push("--resume".into());
-        argv.push(id.to_string());
-    }
-    let identity = crate::git::identity(&l.worktree.join(".git")).await;
-    let start = Instant::now();
-    let deadline = tokio::time::Instant::now() + l.timeout;
-    let mut child = Command::from(command_in(l.sandbox, l.worktree, &argv, &identity))
+/// The launch race this covers: two sandboxes seed `$HOME/.claude.json`
+/// from the same host file at once, and bwrap's own bind-mount setup (not
+/// the claude CLI's rename) loses. bwrap always reports it exactly this
+/// way, so matching the message is precise enough without a regex crate.
+fn is_transient_bwrap_failure(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix("bwrap: Can") else {
+            return false;
+        };
+        let mut chars = rest.chars();
+        chars.next().is_some() && chars.as_str().starts_with("t bind mount")
+    })
+}
+
+/// One spawn of `argv` through to exit or timeout: the same shape `run` has
+/// always had, just factored out so `run` can retry it on the bwrap
+/// bind-mount race without re-deriving `bin`/`argv` from `Launch` (which
+/// would need a live `claude` binary in tests) and without disturbing the
+/// per-line `forge_ms` timestamps, which must measure from this attempt's
+/// own spawn, not from whenever a caller-side retry loop happens to notice
+/// it finished.
+#[allow(clippy::too_many_arguments)]
+async fn run_once(
+    sandbox: Option<&Sandbox>,
+    worktree: &Path,
+    argv: &[String],
+    identity: &[(String, String)],
+    prompt: &str,
+    bin: &str,
+    timeout: Duration,
+    writes: bool,
+    early_ending: crate::config::EarlyEnding,
+    task_id: i64,
+    report: &Reporter,
+    log: &mut File,
+) -> Result<(Outcome, String)> {
+    let mut child = Command::from(command_in(sandbox, worktree, argv, identity))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -315,8 +321,10 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
 
     {
         let mut stdin = child.stdin.take().context("agent stdin")?;
-        stdin.write_all(l.prompt.as_bytes()).await?;
-        stdin.shutdown().await?;
+        // A transient bwrap failure closes this pipe before the write
+        // lands; that must not fail the launch outright.
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+        let _ = stdin.shutdown().await;
     }
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {
@@ -325,16 +333,11 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         s
     });
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
-    writeln!(
-        log,
-        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
-        serde_json::to_string(l.prompt)?
-    )?;
+    let start = Instant::now();
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut out = Outcome::default();
     let mut seen_tools: HashSet<String> = HashSet::new();
-    let mut watch = Watch::new(l.early_ending);
+    let mut watch = Watch::new(early_ending);
     let stdout = child.stdout.take().context("agent stdout")?;
     let mut lines = BufReader::new(stdout).lines();
 
@@ -364,13 +367,13 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                                 if seen_tools.insert(id) {
                                     out.tool_calls += 1;
                                     let name = b["name"].as_str().unwrap_or("?");
-                                    l.report.emit(l.task_id, Event::ToolCall { name });
+                                    report.emit(task_id, Event::ToolCall { name });
                                     watch.saw(name, &b["input"]);
                                 }
                             }
                         }
                     }
-                    if let Some(tripped) = watch.should_end(l.writes) {
+                    if let Some(tripped) = watch.should_end(writes) {
                         let text = tripped
                             .iter()
                             .map(|(_, w)| w.as_str())
@@ -382,8 +385,8 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                             start.elapsed().as_millis(),
                             serde_json::to_string(&text)?
                         )?;
-                        l.report.emit(
-                            l.task_id,
+                        report.emit(
+                            task_id,
                             Event::Note {
                                 text: &format!("early    stopped: {text}"),
                             },
@@ -471,20 +474,133 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
         }
         Err(_) => out.timed_out = true,
     }
-    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
-    out.early_near = watch.near(l.writes);
+    out.early_signals = watch.tripped(writes).iter().map(|(k, _)| *k).collect();
+    out.early_near = watch.near(writes);
     if out.timed_out {
         child.kill().await.ok();
         child.wait().await.ok();
         writeln!(
             log,
             "{{\"type\":\"forge_timeout\",\"after_secs\":{}}}",
-            l.timeout.as_secs()
+            timeout.as_secs()
         )?;
     }
     out.wall_ms = start.elapsed().as_millis();
 
     let stderr_text = stderr_task.await.unwrap_or_default();
+    Ok((out, stderr_text))
+}
+
+/// Runs `run_once`, retrying up to three times when bwrap loses the
+/// seed-bind race documented on `is_transient_bwrap_failure`: the child
+/// exits within two seconds with that message on stderr. That is a launch
+/// failure, not an attempt, so it gets a few silent relaunches rather than
+/// burning one of the attempt's own retries. Any other quick exit (a real
+/// crash, a fast fake in tests) is returned as is.
+#[allow(clippy::too_many_arguments)]
+async fn run_with_relaunch(
+    sandbox: Option<&Sandbox>,
+    worktree: &Path,
+    argv: &[String],
+    identity: &[(String, String)],
+    prompt: &str,
+    bin: &str,
+    timeout: Duration,
+    writes: bool,
+    early_ending: crate::config::EarlyEnding,
+    task_id: i64,
+    report: &Reporter,
+    log: &mut File,
+) -> Result<(Outcome, String)> {
+    const MAX_RELAUNCHES: u32 = 3;
+    let mut relaunches = 0u32;
+    loop {
+        let (out, stderr_text) = run_once(
+            sandbox,
+            worktree,
+            argv,
+            identity,
+            prompt,
+            bin,
+            timeout,
+            writes,
+            early_ending,
+            task_id,
+            report,
+            log,
+        )
+        .await?;
+
+        let quick_exit = !out.timed_out && out.wall_ms < 2_000;
+        if quick_exit && relaunches < MAX_RELAUNCHES && is_transient_bwrap_failure(&stderr_text) {
+            relaunches += 1;
+            let msg = format!(
+                "transient bwrap bind-mount failure on launch, relaunching (attempt {relaunches}/{MAX_RELAUNCHES})"
+            );
+            report.emit(task_id, Event::Note { text: &msg });
+            writeln!(
+                log,
+                "{{\"type\":\"forge_relaunch\",\"attempt\":{relaunches},\"reason\":{}}}",
+                serde_json::to_string(&stderr_text)?
+            )?;
+            continue;
+        }
+        return Ok((out, stderr_text));
+    }
+}
+
+pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    // The binary itself, never a version-manager shim: a shim inside the
+    // sandbox reaches for state the sandbox does not have (a global tool
+    // config, a registry cache, a writable shims directory) and dies
+    // before the agent starts. Forge 1 learned this the same way.
+    let bin = real_bin(&agent_bin_for(l.step));
+    let mut argv: Vec<String> = [
+        bin.as_str(),
+        "--print",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--dangerously-skip-permissions",
+        "--model",
+        l.model,
+        "--max-turns",
+        &l.max_turns.to_string(),
+        "--json-schema",
+        l.schema,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let Some(id) = l.resume {
+        argv.push("--resume".into());
+        argv.push(id.to_string());
+    }
+    let identity = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut log =
+        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+        serde_json::to_string(l.prompt)?
+    )?;
+
+    let (out, stderr_text) = run_with_relaunch(
+        l.sandbox,
+        l.worktree,
+        &argv,
+        &identity,
+        l.prompt,
+        &bin,
+        l.timeout,
+        l.writes,
+        l.early_ending,
+        l.task_id,
+        l.report,
+        &mut log,
+    )
+    .await?;
+
     if !stderr_text.trim().is_empty() {
         writeln!(
             log,
@@ -566,5 +682,102 @@ mod tests {
         }
         assert!(w.tripped(true).is_empty());
         assert_eq!(w.near(true), vec!["no-edit"]);
+    }
+
+    #[test]
+    fn is_transient_bwrap_failure_matches_the_bind_mount_race() {
+        let msg = "bwrap: Can't bind mount /home/ronin/.claude.json on \
+                    /home/ronin/.claude.json: Unable to mount source on \
+                    destination: No such file or directory";
+        assert!(is_transient_bwrap_failure(msg));
+        // Leading indentation on the line is still a match.
+        assert!(is_transient_bwrap_failure(&format!("  {msg}")));
+    }
+
+    #[test]
+    fn is_transient_bwrap_failure_ignores_other_stderr() {
+        assert!(!is_transient_bwrap_failure(""));
+        assert!(!is_transient_bwrap_failure("agent crashed: out of memory"));
+        assert!(!is_transient_bwrap_failure(
+            "bwrap: Can't create file /run/forge/seed/claude.json: Permission denied"
+        ));
+        assert!(!is_transient_bwrap_failure(
+            "bwrap: execvp claude: No such file or directory"
+        ));
+    }
+
+    async fn run_counting_script(dir: &std::path::Path, body: &str) -> (Outcome, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("agent.sh");
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let report = crate::report::Reporter::new(false, None);
+        run_with_relaunch(
+            None,
+            dir,
+            &[script.to_string_lossy().to_string()],
+            &[],
+            "prompt",
+            "agent.sh",
+            Duration::from_secs(5),
+            true,
+            thresholds(0, 0, 0, 0),
+            1,
+            &report,
+            log.as_file_mut(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn relaunches_up_to_three_times_on_the_bwrap_bind_mount_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("count");
+        let body = format!(
+            "#!/bin/sh\n\
+             n=$(cat {c} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {c}\n\
+             if [ \"$n\" -lt 3 ]; then\n\
+             echo \"bwrap: Can't bind mount /h/.claude.json on /h/.claude.json: \
+             Unable to mount source on destination: No such file or directory\" >&2\n\
+             exit 1\n\
+             fi\n\
+             exit 0\n",
+            c = counter.display()
+        );
+        let (out, stderr_text) = run_counting_script(dir.path(), &body).await;
+        assert!(!out.timed_out);
+        assert!(
+            stderr_text.trim().is_empty(),
+            "the surviving run's own stderr is clean: {stderr_text}"
+        );
+        let launches: u32 = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(launches, 3, "two relaunches, then the run that succeeds");
+    }
+
+    #[tokio::test]
+    async fn does_not_relaunch_on_unrelated_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("count");
+        let body = format!(
+            "#!/bin/sh\n\
+             n=$(cat {c} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {c}\n\
+             echo 'agent: something else went wrong' >&2\n\
+             exit 1\n",
+            c = counter.display()
+        );
+        let (_out, stderr_text) = run_counting_script(dir.path(), &body).await;
+        assert!(stderr_text.contains("something else went wrong"));
+        let launches: u32 = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(launches, 1, "an unrelated failure is never relaunched");
     }
 }

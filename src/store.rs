@@ -2836,3 +2836,13 @@ mod column_tests {
         assert_eq!(format!("{back:?}"), format!("{t:?}"));
     }
 }
+
+impl Attempt {
+    /// An attempt an agent made, as opposed to a row the kernel wrote
+    /// about the task: the supervisor's rulings and the integrator's
+    /// check runs are on the record but are not the agent's work, so a
+    /// rule about "the last attempt" skips them.
+    pub fn is_agent(&self) -> bool {
+        self.step != "supervisor" && self.step != "integrate"
+    }
+}

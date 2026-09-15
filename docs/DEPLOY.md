@@ -1,0 +1,134 @@
+# Deploy targets
+
+*2026-09-15. Forge owns deployment: what a target is, how a deploy runs,
+and what is deliberately not built.*
+
+A landed change that nobody can use is not done. Forge verifies and
+lands; the last step, putting the landed thing where it runs, has been
+the operator's by hand. This note makes it Forge's, without building a
+continuous-integration system, and without deciding for a project what
+"production" means. For one project it is a web host; for another it is
+a scheduled job on a family member's laptop; for a third it is a
+service on a machine in the next room. All three are the same shape.
+
+## A target
+
+A project declares targets. A target is four things:
+
+- **Where**: a host. `local`, a name resolvable over SSH, a static host,
+  or a hosted pipeline that does its own hosting.
+- **How**: a method, which is a built-in action file like every other
+  operation Forge runs, with the target's arguments.
+- **What proves it is up**: a check command, run where the thing runs,
+  whose exit status is the verdict. A URL to fetch is the common case
+  and is a check command too.
+- **What to roll back to**: the previous deploy that passed its check.
+  Forge keeps this; the target does not have to.
+
+Targets belong to projects, not repositories, because a project is the
+thing that is *for* someone and a repository can serve several. A target
+names the repository it deploys and, for a monorepo, the scope.
+
+```
+forge project deploy add <project> <name> --repo <path> --method <action> [--arg k=v]... --check <command> [--on-landing]
+forge project deploy list <project>
+forge deploy <project> <name> [--sha <commit>]     run it now
+forge deploy log <project> [<name>]                what was deployed when, and what the check said
+```
+
+## Methods
+
+A method is an action file under `src/builtins/operations/deploy-*.toml`,
+so it is versioned, hashed and measured like every operation, and an
+operator can add one in the workflows directory without touching Forge.
+The first four:
+
+- **`deploy-command`**: the generic one. Copy the landed tree (or the
+  build output the repository's `build` check produces) to the host with
+  rsync over SSH, then run a command there. The check runs there too.
+  This covers a laptop in the house, a server, and most things between.
+- **`deploy-user-service`**: `deploy-command` plus restarting a user-level
+  systemd unit on the host and waiting for it to report active. The
+  shape for "an automation that runs on her machine": the unit is a
+  timer or a service, Forge replaces its files and restarts it, the
+  check asks the service whether it is healthy.
+- **`deploy-static`**: push a built directory to a static host: a
+  branch a pages service serves, or a bucket. The check fetches the
+  published URL and looks for a marker the build writes (the commit
+  hash in a meta tag is enough).
+- **`deploy-pipeline`**: trigger a pipeline the host runs itself (a
+  workflow dispatch, a deploy hook) with the landed commit, then wait
+  for it to report success and run the check. This is the whole
+  integration with hosted CI: Forge triggers and waits; it does not
+  reimplement.
+
+Nothing here is an agent. A method is a script with arguments. An agent
+may be given a task to *write* a deploy script for a project; running
+it is the kernel's, deterministic, with a record.
+
+## When a deploy runs
+
+After a landing on the target's repository, if the target was declared
+`--on-landing`; otherwise on `forge deploy`. Landing and deploying are
+separate steps with separate records on purpose: a landing can be good
+and a deploy can still fail, and the record must say which.
+
+A deploy is recorded like an operation: target, commit, started,
+finished, the check's output and verdict, and what it rolled back to if
+it did. It emits `DeployStarted` and `DeployFinished` events, so the
+notify and signal plugins can say "equitizr is live at <commit>" or "the
+deploy failed and rolled back", and the factory-floor page can show it.
+
+## Rollback and the human rung
+
+If the check fails, Forge deploys the previous passing commit with the
+same method and runs the check again. If that passes, the project gets
+a blocked question: "the deploy of <commit> failed its check and was
+rolled back to <previous>; here is the check's output". If the rollback
+fails its check too, the question says so and nothing further is
+attempted. Either way a person decides; the record has everything they
+need. There is no third try.
+
+## Secrets and hosts
+
+A method gets its host credentials the way a plugin gets its
+configuration: from the operator's environment or a file the target
+names, injected into the operation's environment, never into a prompt
+and never into a log. SSH uses the operator's agent. A hosted pipeline's
+token lives in the operator config under the target and nowhere else.
+
+## The laptop case, concretely
+
+Project `household`, repository `~/Projects/household-automations`,
+target `mary-laptop`: method `deploy-user-service`, host `mary-laptop`
+over SSH on the home network, unit `household-automations.timer`, check
+`systemctl --user is-active household-automations.timer`, on landing.
+When a task lands, Forge copies the tree to her machine, restarts the
+timer, asks whether it is active, and records the answer. If her machine
+is off, the deploy fails its check, rolls back to nothing (there is no
+previous deploy to restore, so it records that), and the project asks
+the operator. When she turns it on, `forge deploy household mary-laptop`.
+
+## What is not built
+
+No pipeline definition language, no build matrix, no artifact store, no
+environments-as-a-concept beyond the target's name. A target that needs
+a staging step is two targets. Blue-green, canaries and progressive
+rollout belong to the hosted pipelines that already do them; Forge
+triggers and waits.
+
+## Build order
+
+1. The deploy record: a `deploys` table, the two events, `forge deploy
+   log`.
+2. `deploy-command` and the target verbs, with rollback and the
+   question, tested against a fake host (a directory on the same
+   machine reached by a fake `ssh` on `PATH`).
+3. `deploy-user-service`, tested the same way with a fake `systemctl`.
+4. `deploy-static` and `deploy-pipeline`, each with a fake.
+5. The on-landing hook in `landing.rs`, and the deploy on the initiative
+   report.
+
+Equitizr is the first user: a `deploy-static` or `deploy-pipeline`
+target to wherever it is hosted, on landing, with its data-freshness
+endpoint as the check.
