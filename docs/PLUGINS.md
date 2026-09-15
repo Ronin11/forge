@@ -135,8 +135,10 @@ forge plugin list                 every plugin found, where it came from, enable
 forge plugin status [<name>]      running state, pid, uptime, restarts, last exit
 forge plugin enable <name>        enable and start it
 forge plugin disable <name>       stop it and leave it installed
-forge plugin install <path>       copy a directory into <FORGE2_HOME>/plugins, run `build`
-forge plugin uninstall <name>     stop it and remove the installed copy
+forge plugin install <path>       copy into <FORGE2_HOME>/plugins/<name> (refusing a name already
+                                   installed there, validating the manifest first), then run `build`
+forge plugin uninstall <name>     stop it, clear its enabled flag, remove the installed copy;
+                                   its plugins-state is left alone
 forge plugin logs <name> [-f]     its log
 ```
 

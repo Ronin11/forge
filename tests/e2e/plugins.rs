@@ -1,5 +1,6 @@
 use crate::support::*;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 #[test]
 fn plugin_list_shows_the_valid_plugin_and_doctor_reports_the_invalid_one_without_failing() {
@@ -184,4 +185,102 @@ fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
     let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(status["enabled"], false);
     assert_eq!(status["state"], "stopped");
+}
+
+/// `forge plugin install` refuses a name already installed, and
+/// `forge plugin uninstall` clears the enabled flag and removes the
+/// installed copy but leaves plugins-state (the plugin's own memory)
+/// alone.
+#[test]
+fn install_refuses_a_duplicate_name_and_uninstall_leaves_plugins_state_alone() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/notify");
+
+    let o = e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(e.home.join("plugins/notify/plugin.toml").is_file());
+    assert!(e.home.join("plugins/notify/notify.sh").is_file());
+
+    let o = e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()]);
+    assert!(
+        !o.status.success(),
+        "a second install of the same name must be refused"
+    );
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "notify"])
+            .status
+            .success()
+    );
+    std::fs::create_dir_all(e.home.join("plugins-state/notify")).unwrap();
+    std::fs::write(e.home.join("plugins-state/notify/cursor"), "123").unwrap();
+
+    let o = e.forge("ok.sh", &["plugin", "uninstall", "notify"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        !e.home.join("plugins/notify").exists(),
+        "the installed copy is removed"
+    );
+    assert!(
+        e.home.join("plugins-state/notify/cursor").is_file(),
+        "plugins-state is left alone"
+    );
+
+    let o = e.forge("ok.sh", &["plugin", "status", "notify", "--json"]);
+    assert!(!o.status.success(), "notify is no longer in the catalog");
+}
+
+/// The reference plugin end to end: installed from the repository path,
+/// enabled, and run by the worker. It follows events for the task it
+/// watches and, on `task_done`, runs the command file dropped into its
+/// installed directory with the task id as `$1`.
+#[test]
+fn the_reference_plugin_runs_its_command_on_task_done() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/notify");
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    let hits = e._dir.path().join("hits.txt");
+    std::fs::write(
+        e.home.join("plugins/notify/command"),
+        format!(
+            "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> {}\n",
+            hits.display()
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "notify"])
+            .status
+            .success()
+    );
+
+    let id = e.add(&[]);
+
+    let o = e
+        .cmd("ok.sh")
+        .env("FAKE_SLEEP", "1")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&hits)
+                .unwrap_or_default()
+                .lines()
+                .any(|l| l == id.to_string()),
+            Duration::from_secs(5)
+        ),
+        "expected task {id} to appear in {}: {:?}",
+        hits.display(),
+        std::fs::read_to_string(&hits)
+    );
 }

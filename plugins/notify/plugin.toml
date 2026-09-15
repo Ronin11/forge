@@ -1,0 +1,5 @@
+name = "notify"
+description = "runs a command of the operator's choosing when a task lands, fails, or blocks on a question"
+run = ["./notify.sh"]
+capabilities = ["events"]
+restart = "on-failure"

@@ -268,6 +268,14 @@ enum PluginCmd {
     /// Disable a plugin: a running `forge work` notices within a few
     /// seconds and stops it, no restart needed
     Disable { name: String },
+    /// Copy a plugin directory into FORGE2_HOME/plugins and run its build
+    Install {
+        /// The plugin's own directory, holding plugin.toml
+        path: PathBuf,
+    },
+    /// Stop a plugin, clear its enabled flag, and remove the installed
+    /// copy; its FORGE2_HOME/plugins-state is left alone
+    Uninstall { name: String },
     /// A plugin's stdout/stderr log
     Logs {
         name: String,
@@ -354,6 +362,8 @@ pub async fn main() -> Result<()> {
             PluginCmd::Status { name, json } => plugin_status(name, json),
             PluginCmd::Enable { name } => plugin_set_enabled(name, true),
             PluginCmd::Disable { name } => plugin_set_enabled(name, false),
+            PluginCmd::Install { path } => plugin_install(path),
+            PluginCmd::Uninstall { name } => plugin_uninstall(name),
             PluginCmd::Logs { name, follow } => plugin_logs(name, follow),
         },
     }
@@ -819,6 +829,28 @@ fn plugin_set_enabled(name: String, enabled: bool) -> Result<()> {
     }
     f.store.set_plugin_enabled(&name, enabled, unix_now())?;
     out!("{name} {}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+fn plugin_install(path: PathBuf) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let manifest = crate::plugins::install(&f.paths.home, &path)?;
+    out!(
+        "installed {} at {}",
+        manifest.name,
+        f.paths.home.join("plugins").join(&manifest.name).display()
+    );
+    if let Some(build) = &manifest.build {
+        out!("build {} ok", build.join(" "));
+    }
+    Ok(())
+}
+
+fn plugin_uninstall(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store.set_plugin_enabled(&name, false, unix_now())?;
+    crate::plugins::remove_installed(&f.paths.home, &name)?;
+    out!("uninstalled {name}; left plugins-state/{name} alone");
     Ok(())
 }
 

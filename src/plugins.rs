@@ -233,6 +233,77 @@ pub fn load_catalog(home: &Path, plugin_dirs: &[PathBuf]) -> Catalog {
     Catalog { plugins, problems }
 }
 
+/// Copies `src` into `<home>/plugins/<name>`, `<name>` taken from `src`'s own
+/// base name, refusing a name already installed there. The manifest is
+/// parsed and validated (same rules as `load_catalog`) before anything is
+/// copied. Runs the manifest's `build` argv in the installed directory
+/// afterward, if it has one. See docs/PLUGINS.md "The verbs".
+pub fn install(home: &Path, src: &Path) -> Result<Manifest> {
+    let name = src
+        .file_name()
+        .with_context(|| format!("{}: no directory name", src.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let manifest_path = src.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let manifest = parse_manifest(&manifest_path, &text, &name)?;
+
+    let dest = home.join("plugins").join(&name);
+    if dest.exists() {
+        bail!(
+            "a plugin named {name:?} is already installed at {}",
+            dest.display()
+        );
+    }
+    copy_dir(src, &dest)
+        .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+
+    if let Some(build) = &manifest.build {
+        let status = std::process::Command::new(&build[0])
+            .args(&build[1..])
+            .current_dir(&dest)
+            .status()
+            .with_context(|| format!("running build {build:?} in {}", dest.display()))?;
+        if !status.success() {
+            bail!("build {build:?} failed in {}", dest.display());
+        }
+    }
+
+    Ok(manifest)
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+            let perms = std::fs::metadata(&from)?.permissions();
+            std::fs::set_permissions(&to, perms)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes `<home>/plugins/<name>`, the installed copy `install` made.
+/// Stopping the plugin and clearing its enabled flag is the caller's job
+/// (the same store update `forge plugin disable` makes; see `cli::plugin_uninstall`),
+/// because that needs the store, which this module does not hold.
+/// `<home>/plugins-state/<name>` is left alone, deliberately: it is the
+/// plugin's own memory, not part of what was installed.
+pub fn remove_installed(home: &Path, name: &str) -> Result<()> {
+    let dir = home.join("plugins").join(name);
+    if !dir.is_dir() {
+        bail!("no installed plugin named {name:?} at {}", dir.display());
+    }
+    std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))
+}
+
 // --- Supervision -----------------------------------------------------
 //
 // `forge work` starts every enabled plugin and stops them when it drains
