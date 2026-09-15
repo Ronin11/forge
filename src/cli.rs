@@ -1397,6 +1397,11 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
             ))
         }
         crate::landing::Integrate::Rewind { first, .. } => {
+            // No need to store base_sha or reload cfg here: this command
+            // only reports the conflict and exits without touching `t` or
+            // `cfg` again. `forge retry` enqueues a brand-new task rather
+            // than resuming this one, so the stale base_sha left on this
+            // task is never read.
             bail!(
                 "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
             )

@@ -816,7 +816,13 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                 end = Some(End::Landed(sha));
                 break 'run;
             }
-            Integrate::Rewind { feedback, first } => {
+            Integrate::Rewind {
+                feedback,
+                first,
+                base_sha,
+            } => {
+                t.base_sha = base_sha;
+                f.store.update_task(&t).env()?;
                 let Some(c_idx) = (0..resolved.steps.len())
                     .rev()
                     .find(|&i| resolved.steps[i].action.contract == Contract::Code)
