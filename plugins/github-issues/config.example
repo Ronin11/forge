@@ -2,17 +2,17 @@
 # HOLD: do not enable this plugin yet.
 #
 # It is the first intake that carries text a stranger wrote into an
-# agent that runs with your git credentials, can push, and has
-# unrestricted network egress. That combination, an agent holding
-# elevated credentials while reading untrusted input, is the 2026
-# supply-chain pattern (Clinejection, RoguePilot): a payload in an issue
-# title reaching a published package, hidden comments making an agent
-# leak its token. Forge quotes the issue body and tells the model it is
-# data, which is a mitigation, not a boundary.
+# agent with unrestricted network egress. The agent cannot push (its
+# clone has no remote and its home is an empty tmpfs; the kernel lands
+# only what the checks pass), but it can send the repository's contents,
+# or the model token it runs with, anywhere on the network. That is the
+# 2026 pattern (Clinejection, RoguePilot): untrusted text making an
+# agent leak what it holds. Forge quotes the issue body and tells the
+# model it is data, which is a mitigation, not a boundary.
 #
-# The boundary is item 1 of docs/GTM.md: each attempt in its own
-# container, egress limited to what the task declares, credentials
-# scoped to the task and expired when it ends. Enable this plugin after
+# The boundary is item 1 of docs/GTM.md: egress limited to the model
+# endpoint and the registries the setup step names, and a model token
+# scoped to the task. Enable this plugin after
 # that lands, or only against a repository whose issues only you can
 # open.
 # ---------------------------------------------------------------------

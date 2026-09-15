@@ -134,8 +134,9 @@ to sell; the rest are plumbing on tenancy that already exists.
    the token, anywhere; and the only thing against that is a sentence
    in a prompt telling the model that repository text is data. Each task must run in its own microVM or
    container with only that customer's tree and secrets, egress limited
-   to what the task declares, and credentials scoped to the task and
-   expired when it ends. This touches `sandbox.rs` and the launch path
+   to what the task declares (the model endpoint and the registries its
+   setup names), and the model token scoped to the task and expired
+   when it ends. This touches `sandbox.rs` and the launch path
    only; the kernel already treats the sandbox as a wrapper around one
    command. **Until it lands, the github-issues plugin stays disabled**:
    it is the piece that arms the pattern.
