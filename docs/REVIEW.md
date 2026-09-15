@@ -278,7 +278,7 @@ e2e; `index.html` split into page and `app.js` with one `call()` and one
 invalidation set per view; a boundary test that parses each manifest
 with `toml` and checks every dependencies table.
 
-**Stage 9. Workflows, git, sandbox, repomap, docs (Forge).** Built-ins as
+**Stage 9. Workflows, git, sandbox, repomap, docs (Forge). Done 2026-09-14: nine tasks; one reviewer demotion answered by the supervisor and one mistaken demotion set aside by its accept ruling; the system map regenerated last.** Built-ins as
 files under `src/builtins/` included by `include_str!`, a per-file parse
 test, and the ACTIONS.md table generated and asserted step-by-step by
 the doctrine test; one `Catalog` loader with `resolve`/`check` over it
@@ -306,3 +306,29 @@ clients a contract and turn the docs from claims into generated facts.
 Nothing in the plan changes what Forge does; every stage is checked by
 the same 92 tests plus the ones stage 1 adds, and the last thirty
 landings say Forge can carry the mechanical stages itself.
+
+## 6. Outcome (2026-09-14, evening)
+
+The whole plan landed in one day. Stages 0, 2, 4, 5 and 6 by hand, in
+nineteen commits; stages 1, 3, 7, 8 and 9 through Forge, as thirty-nine
+tasks of which thirty-one landed on their own, two were landed by hand
+after review demotions early in the day, and the rest were measurement
+twins or retries whose successor landed. Forge's part cost $75.38 in
+agent time. The supervisor ruled seven times during it, at 41 cents a
+ruling, including one accept of a mistaken demotion; no question
+reached the human.
+
+The kernel: engine.rs 2583 → 1144 lines, with the run explicit and
+attempt, landing, operation, queue, journal and prompts as modules;
+one verdict path; typed contracts, products, kinds and rules; a landed
+column; named store columns. The clients: one contract document, one
+client crate, both clients on it, a real boundary test. The workflows:
+built-ins as files, one catalog. Tests: 188 across the workspace in
+area modules with a support library and a fakes library, none timing
+dependent. Docs: generated where they can be, deleted where they were
+stale.
+
+Still open, by design: the `landing.rs` rewind returning the base
+rather than mutating the task (folded into the End design, low value
+now), and the early-ending thresholds as config once they have data
+(docs/LATER.md).
