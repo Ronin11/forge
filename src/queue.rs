@@ -632,7 +632,10 @@ mod tests {
     #[test]
     fn plan_items_splits_on_blank_lines_and_drops_empties() {
         let items = plan_items("first item\nmore of it\n\n\nsecond item\n\nthird item\n");
-        assert_eq!(items, vec!["first item\nmore of it", "second item", "third item"]);
+        assert_eq!(
+            items,
+            vec!["first item\nmore of it", "second item", "third item"]
+        );
         assert_eq!(plan_items("  \n\n  "), Vec::<String>::new());
     }
 

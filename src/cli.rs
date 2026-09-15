@@ -662,9 +662,7 @@ pub async fn main() -> Result<()> {
                 budget,
                 stop_after,
             } => initiative_new(project, outcome, from, budget, stop_after).await,
-            InitiativeCmd::FromPlan { task, outcome } => {
-                initiative_from_plan(task, outcome).await
-            }
+            InitiativeCmd::FromPlan { task, outcome } => initiative_from_plan(task, outcome).await,
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),
@@ -1203,7 +1201,9 @@ async fn initiative_from_plan(task: i64, outcome: Option<String>) -> Result<()> 
         .task(task)?
         .with_context(|| format!("no task {task}"))?;
     if t.plan.is_empty() {
-        bail!("task {task} has no recorded plan (the investigate directive did not run, or found none)");
+        bail!(
+            "task {task} has no recorded plan (the investigate directive did not run, or found none)"
+        );
     }
     let project = t
         .project

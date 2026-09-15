@@ -430,12 +430,19 @@ fn file_into_initiative_files_siblings_and_the_origin_task_ends_succeeded() {
     );
     let o = e.forge(
         "ok.sh",
-        &["initiative", "new", "demo", "--outcome", "the plan's steps are all filed"],
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "the plan's steps are all filed",
+        ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let iid = created_id(&o);
 
-    let o = e.with_role("neverrun.sh", "INVESTIGATE_FILER", "planner-multi.sh")
+    let o = e
+        .with_role("neverrun.sh", "INVESTIGATE_FILER", "planner-multi.sh")
         .args([
             "run",
             "--no-land",
