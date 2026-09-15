@@ -235,7 +235,8 @@ fn install_refuses_a_duplicate_name_and_uninstall_leaves_plugins_state_alone() {
 /// The reference plugin end to end: installed from the repository path,
 /// enabled, and run by the worker. It follows events for the task it
 /// watches and, on `task_done`, runs the command file dropped into its
-/// installed directory with the task id as `$1`.
+/// installed directory with the task id as `$1`, the task's state as
+/// `$2`, and the first line of its reason as `$3`.
 #[test]
 fn the_reference_plugin_runs_its_command_on_task_done() {
     let e = Env::new();
@@ -251,7 +252,7 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
     std::fs::write(
         e.home.join("plugins/notify/command"),
         format!(
-            "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> {}\n",
+            "#!/bin/sh\ncat >/dev/null\necho \"$1|$2|$3\" >> {}\n",
             hits.display()
         ),
     )
@@ -265,23 +266,41 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
 
     let id = e.add(&[]);
 
+    // A fake that blocks on a question (like needsinput.sh, but pausing
+    // first when FAKE_SLEEP is set) so the command sees a non-empty state
+    // and reason instead of the empty reason a plain success leaves
+    // behind, with enough wall-clock time for the plugin to subscribe
+    // before task_done fires.
+    let claude_fake = e._dir.path().join("needsinput-slow.sh");
+    std::fs::write(
+        &claude_fake,
+        "#!/bin/bash\n\
+         cat >/dev/null\n\
+         [ -n \"$FAKE_SLEEP\" ] && sleep 2\n\
+         echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":2,\"total_cost_usd\":0.01,\"result\":\"done\",\"structured_output\":{\"schema_version\":1,\"summary\":\"blocked\",\"needs_input\":{\"tried\":\"read the tree and the task; stopped before writing anything\",\"question\":\"Which answer file: answer.txt or ANSWER.txt?\",\"options\":[\"answer.txt\",\"ANSWER.txt\"],\"context\":\"\",\"checkpoint\":null},\"changes\":[],\"checks_run\":[],\"claims\":[]}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude_fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
     let o = e
         .cmd("ok.sh")
+        .env("FORGE2_CLAUDE_BIN", &claude_fake)
         .env("FAKE_SLEEP", "1")
         .args(["work", "--once"])
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
+    let want = format!("{id}|blocked|needs input: Which answer file: answer.txt or ANSWER.txt?");
     assert!(
         wait_until(
             || std::fs::read_to_string(&hits)
                 .unwrap_or_default()
                 .lines()
-                .any(|l| l == id.to_string()),
+                .any(|l| l == want),
             Duration::from_secs(5)
         ),
-        "expected task {id} to appear in {}: {:?}",
+        "expected {want:?} in {}: {:?}",
         hits.display(),
         std::fs::read_to_string(&hits)
     );

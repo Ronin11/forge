@@ -1,0 +1,17 @@
+#!/bin/sh
+# Copy this file to 'command' (next to notify.sh) to take effect; notify.sh
+# runs whatever is there, and any command works, not just this one.
+cat >/dev/null
+
+task="$1"
+state="$2"
+reason="$3"
+
+case "$state" in
+blocked) urgency=critical ;;
+failed) urgency=normal ;;
+succeeded) urgency=low ;;
+*) urgency=normal ;;
+esac
+
+notify-send --urgency="$urgency" "forge task $task: $state" "$reason"
