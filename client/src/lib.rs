@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::io::BufRead;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// The `forge` binary: `FORGE_BIN`, else `forge` on `PATH` — resolved
 /// exactly as `tui/src/main.rs` resolves it.
@@ -75,7 +76,7 @@ impl Forge {
             .with_context(|| format!("running {} events --follow", self.bin))?;
         let stdout = child.stdout.take().context("events stdout")?;
         Ok(Subscription {
-            child,
+            child: Arc::new(Mutex::new(child)),
             lines: std::io::BufReader::new(stdout).lines(),
         })
     }
@@ -86,8 +87,20 @@ impl Forge {
 /// skipped. Killing its subordinate `forge events` process on drop is what
 /// makes it safe to stop iterating early.
 pub struct Subscription {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     lines: std::io::Lines<std::io::BufReader<ChildStdout>>,
+}
+
+impl Subscription {
+    /// A cloneable handle that kills the subordinate process from any
+    /// thread — including one that is, right now, blocked in `next()` on
+    /// another thread: killing the process closes its stdout, which wakes
+    /// that read with EOF. This is what lets a caller that reads a
+    /// `Subscription` on a background thread still tear it down promptly
+    /// from its main thread.
+    pub fn killer(&self) -> Killer {
+        Killer(Arc::clone(&self.child))
+    }
 }
 
 impl Iterator for Subscription {
@@ -105,7 +118,21 @@ impl Iterator for Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
+/// See [`Subscription::killer`].
+#[derive(Clone)]
+pub struct Killer(Arc<Mutex<Child>>);
+
+impl Killer {
+    pub fn kill(&self) {
+        if let Ok(mut child) = self.0.lock() {
+            let _ = child.kill();
+        }
     }
 }
 

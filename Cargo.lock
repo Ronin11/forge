@@ -564,6 +564,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "forge-client",
  "ratatui",
  "serde_json",
 ]
