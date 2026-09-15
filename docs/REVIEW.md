@@ -268,7 +268,7 @@ by one function) with the old keys kept as aliases for one release;
 functions reporting the real `user_version`; the profile measure shared
 with cli. `stats --json` keys named for what they are.
 
-**Stage 8. The client contract (Forge, after 7).** `docs/CLIENT.md`
+**Stage 8. The client contract (Forge, after 7). Done 2026-09-14: CLIENT.md, the forge-client crate, both clients on it, the boundary test made real; five tasks, one review catch, one retry from the verified branch.** `docs/CLIENT.md`
 listing the verbs, every field each client reads, and which event types
 invalidate which list; a `client/` crate (serde_json only) with
 `Forge{bin}`, `snapshot()`, `subscribe()` and `#[serde(default)]`
