@@ -240,6 +240,33 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Plugins: integrations discovered under FORGE2_HOME/plugins and plugin_dirs
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// Every plugin found, where it came from, enabled or not
+    List {
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Whether a plugin (or every plugin) is enabled
+    Status {
+        name: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a plugin enabled (supervision is not implemented yet: this only
+    /// records the flag)
+    Enable { name: String },
+    /// Mark a plugin disabled
+    Disable { name: String },
 }
 
 pub async fn main() -> Result<()> {
@@ -314,6 +341,12 @@ pub async fn main() -> Result<()> {
         Cmd::Land { id } => land(id).await,
         Cmd::Journal { id, json } => journal(id, json),
         Cmd::Workflows { json } => list_workflows(json),
+        Cmd::Plugin { cmd } => match cmd {
+            PluginCmd::List { json } => plugin_list(json),
+            PluginCmd::Status { name, json } => plugin_status(name, json),
+            PluginCmd::Enable { name } => plugin_set_enabled(name, true),
+            PluginCmd::Disable { name } => plugin_set_enabled(name, false),
+        },
     }
 }
 
@@ -685,6 +718,88 @@ fn list_workflows(json: bool) -> Result<()> {
             out!("             since      {c}");
         }
     }
+    Ok(())
+}
+
+fn plugin_list(json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let (rows, problems) = crate::view::plugin_rows(&f)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    let home_cfg = config::load_home(&f.paths.home)?;
+    let cat = crate::plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+    for r in &rows {
+        out!(
+            "{:<16} {:<8} {:<10} {:<16} {}",
+            r.name,
+            if r.enabled { "enabled" } else { "disabled" },
+            r.restart,
+            r.capabilities.join(","),
+            r.dir,
+        );
+        if !r.description.is_empty() {
+            out!("             {}", r.description);
+        }
+        if let Some(p) = cat.plugins.get(&r.name) {
+            out!("             runs       {}", p.manifest.run.join(" "));
+            if let Some(b) = &p.manifest.build {
+                out!("             build      {}", b.join(" "));
+            }
+        }
+    }
+    for p in &problems {
+        out!("problem: {} {}", p.file, p.what);
+    }
+    Ok(())
+}
+
+fn plugin_status(name: Option<String>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let (rows, _) = crate::view::plugin_rows(&f)?;
+    let statuses: Vec<crate::view::PluginStatusRow> = rows
+        .iter()
+        .filter(|r| name.as_deref().map(|n| n == r.name).unwrap_or(true))
+        .map(|r| crate::view::PluginStatusRow {
+            name: r.name.clone(),
+            enabled: r.enabled,
+            supervision: "not yet implemented".into(),
+        })
+        .collect();
+    if let Some(n) = &name
+        && statuses.is_empty()
+    {
+        bail!("no such plugin: {n:?}");
+    }
+    if json {
+        if name.is_some() {
+            out!("{}", serde_json::to_string_pretty(&statuses[0])?);
+        } else {
+            out!("{}", serde_json::to_string_pretty(&statuses)?);
+        }
+        return Ok(());
+    }
+    for s in &statuses {
+        out!(
+            "{:<16} {}  supervision: {}",
+            s.name,
+            if s.enabled { "enabled" } else { "disabled" },
+            s.supervision
+        );
+    }
+    Ok(())
+}
+
+fn plugin_set_enabled(name: String, enabled: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let home_cfg = config::load_home(&f.paths.home)?;
+    let cat = crate::plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+    if !cat.plugins.contains_key(&name) {
+        bail!("no such plugin: {name:?}");
+    }
+    f.store.set_plugin_enabled(&name, enabled, unix_now())?;
+    out!("{name} {}", if enabled { "enabled" } else { "disabled" });
     Ok(())
 }
 

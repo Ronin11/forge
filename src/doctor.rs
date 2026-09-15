@@ -273,6 +273,34 @@ fn check_workflows(paths: &Paths) -> Vec<Check> {
     }]
 }
 
+/// Every plugin found across `<FORGE2_HOME>/plugins` and the configured
+/// `plugin_dirs`, and any problem loading one (a broken `plugin.toml`, a
+/// shadowed name, a configured root that does not exist). Never fails: one
+/// broken plugin is a warning, not a reason to fail doctor.
+fn check_plugins(paths: &Paths) -> Vec<Check> {
+    let cfg = match config::load_home(&paths.home) {
+        Ok(c) => c,
+        Err(e) => return vec![check("plugins", Status::Fail, format!("{e:#}"), "")],
+    };
+    let cat = crate::plugins::load_catalog(&paths.home, &cfg.plugin_dirs);
+    let detail = format!(
+        "{} plugin(s) found, {} problem(s)",
+        cat.plugins.len(),
+        cat.problems.len()
+    );
+    vec![if cat.problems.is_empty() {
+        check("plugins", Status::Ok, detail, "")
+    } else {
+        let first = &cat.problems[0];
+        check(
+            "plugins",
+            Status::Warn,
+            format!("{detail}: {} {}", first.file, first.what),
+            "fix the plugin directory or its plugin.toml; other plugins still load",
+        )
+    }]
+}
+
 /// The lookback: workflows whose current version regressed against the
 /// previous, and known workflows that are mostly failing.
 fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
@@ -562,6 +590,7 @@ pub fn run() -> Result<Vec<Check>> {
     };
     out.extend(check_schema(&store));
     out.extend(check_workflows(&paths));
+    out.extend(check_plugins(&paths));
     out.extend(check_learning(&paths, &store));
     out.extend(check_worker(&paths));
     out.extend(check_queue(&store));

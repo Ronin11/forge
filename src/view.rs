@@ -5,6 +5,8 @@
 
 use crate::ctx::Forge;
 use crate::store::{Decision, StepStat, Task, TaskState, TaskSummary, WorkflowStat};
+use crate::workflows::Problem;
+use crate::{config, plugins};
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -589,6 +591,67 @@ pub fn stats_doc(f: &Forge) -> Result<StatsDoc> {
         steps: f.store.step_stats()?.iter().map(Into::into).collect(),
         tools: None,
     })
+}
+
+/// One row of `forge plugin list` / `forge plugin list --json`: a plugin as
+/// discovered, where it came from, and whether it is enabled.
+#[derive(Serialize)]
+pub struct PluginRow {
+    pub name: String,
+    pub description: String,
+    pub dir: String,
+    pub source: String,
+    pub capabilities: Vec<String>,
+    pub restart: String,
+    pub enabled: bool,
+}
+
+impl From<&plugins::Plugin> for PluginRow {
+    fn from(p: &plugins::Plugin) -> Self {
+        PluginRow {
+            name: p.name.clone(),
+            description: p.manifest.description.clone(),
+            dir: p.dir.display().to_string(),
+            source: p.root.display().to_string(),
+            capabilities: p
+                .manifest
+                .capabilities
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect(),
+            restart: p.manifest.restart.as_str().to_string(),
+            enabled: false,
+        }
+    }
+}
+
+/// One row of `forge plugin status` / `forge plugin status --json`: whether
+/// a plugin is enabled. Supervision (running, pid, restarts, last exit) is
+/// not implemented yet; `supervision` says so until it is.
+#[derive(Serialize)]
+pub struct PluginStatusRow {
+    pub name: String,
+    pub enabled: bool,
+    pub supervision: String,
+}
+
+/// Every plugin found, in catalog order, with the store's enabled flag
+/// merged in, plus the catalog's problems (a shadowed copy, a missing
+/// configured root, a `plugin.toml` that failed to parse).
+pub fn plugin_rows(f: &Forge) -> Result<(Vec<PluginRow>, Vec<Problem>)> {
+    let home_cfg = config::load_home(&f.paths.home)?;
+    let cat = plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+    let enabled = f.store.enabled_plugins()?;
+    let rows = cat
+        .plugins
+        .values()
+        .map(|p| {
+            let mut row = PluginRow::from(p);
+            row.enabled = enabled.contains(&p.name);
+            row
+        })
+        .collect();
+    Ok((rows, cat.problems))
 }
 
 #[cfg(test)]

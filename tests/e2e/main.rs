@@ -8,6 +8,7 @@ mod contracts;
 mod landing;
 mod listing;
 mod ops;
+mod plugins;
 mod resume;
 mod supervisor;
 mod tdd;

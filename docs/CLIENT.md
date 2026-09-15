@@ -48,6 +48,14 @@ and does not parse stdout.
   until a client depends on it.
 - **`forge stats --json [--tools] [--step S]`** — outcomes per workflow
   version and per step. One [`StatsDoc`](#statsdoc) object.
+- **`forge plugin list --json`** — every plugin found under
+  `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
+  from, and whether it is enabled. A JSON array of
+  [`PluginRow`](#pluginrow).
+- **`forge plugin status [<name>] --json`** — whether a plugin (or, with
+  no name, every plugin) is enabled. A JSON array of
+  [`PluginStatusRow`](#pluginstatusrow), or a single such object when
+  `<name>` is given. Exits non-zero if `<name>` names no known plugin.
 - **`forge events [--since OFFSET] [--follow] [--task ID]`** — the event
   log as JSON lines, one [`Event`](#events) per line. See
   [Snapshot, then subscribe](#snapshot-then-subscribe).
@@ -66,7 +74,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin
 ```
 
 ## Naming: unified vs. legacy keys
@@ -224,6 +232,32 @@ if nothing edited), `mean_secs`, `cost_usd`, `mean_input_tokens` (null
 if nothing reported usage). Plus the legacy keys `WF`, `STEP`, `ATT`,
 `OK`, `AGENTF`, `CHECKF`, `ASK`, `TURNS`, `EDIT@`, `SECS`, `COST`,
 `TOKENS` — same one-release caveat.
+
+### `PluginRow`
+
+One row of `forge plugin list --json`: a plugin as discovered.
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | The plugin's name (its manifest name, which matches its directory's base name). |
+| `description` | string | From its `plugin.toml`. |
+| `dir` | string | Absolute path to the plugin's directory. |
+| `source` | string | Absolute path to the root it was discovered under: `<FORGE2_HOME>/plugins`, or one of the operator's `plugin_dirs`. |
+| `capabilities` | array of string | `events`, `intake`, or both. |
+| `restart` | string | `always`, `on-failure`, or `never`. |
+| `enabled` | bool | Whether the operator has enabled it. |
+
+### `PluginStatusRow`
+
+One row of `forge plugin status [<name>] --json`: whether a plugin is
+enabled. Supervision (running, pid, uptime, restarts, last exit) is not
+implemented yet; `supervision` says so until it is.
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | The plugin's name. |
+| `enabled` | bool | Whether the operator has enabled it. |
+| `supervision` | string | Always `"not yet implemented"` for now. |
 
 ### Snapshot document
 

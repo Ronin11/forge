@@ -523,6 +523,13 @@ ALTER TABLE decisions ADD COLUMN retry_id INTEGER;
 ALTER TABLE tasks ADD COLUMN landed_sha TEXT NOT NULL DEFAULT '';
 UPDATE tasks SET landed_sha = substr(reason, instr(reason, '@ ') + 2, 8) WHERE reason LIKE 'landed %' AND instr(reason, '@ ') > 0;
 ",
+    "
+CREATE TABLE plugins (
+  name TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  enabled_at INTEGER
+);
+",
 ];
 
 const TASK_COLUMNS: &[&str] = &[
@@ -1464,6 +1471,26 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every plugin recorded as enabled.
+    pub fn enabled_plugins(&self) -> Result<std::collections::BTreeSet<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare("SELECT name FROM plugins WHERE enabled = 1")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Set a plugin's enabled flag, recording when it was enabled (`None`
+    /// when disabling).
+    pub fn set_plugin_enabled(&self, name: &str, enabled: bool, at: i64) -> Result<()> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO plugins (name, enabled, enabled_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled, enabled_at = excluded.enabled_at",
+            params![name, enabled as i64, enabled.then_some(at)],
+        )?;
+        Ok(())
+    }
+
     /// Recorded answers, newest first; narrowed to one repository when given.
     pub fn decisions(&self, repo: Option<&str>) -> Result<Vec<Decision>> {
         let c = self.lock();
@@ -1604,6 +1631,20 @@ mod tests {
         s.insert_decision_by(a, "r", "q", "a", "supervisor", "")
             .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
+    }
+
+    #[test]
+    fn plugin_enabled_flag_reads_and_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        assert!(s.enabled_plugins().unwrap().is_empty(), "never recorded");
+        s.set_plugin_enabled("notify", true, 100).unwrap();
+        assert_eq!(
+            s.enabled_plugins().unwrap(),
+            ["notify".to_string()].into_iter().collect()
+        );
+        s.set_plugin_enabled("notify", false, 200).unwrap();
+        assert!(s.enabled_plugins().unwrap().is_empty());
     }
 }
 

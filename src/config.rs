@@ -189,6 +189,11 @@ struct HomeRaw {
     sandbox: SandboxRaw,
     #[serde(default)]
     supervisor: SupervisorRaw,
+    /// Extra roots to discover plugins under, beyond `<FORGE2_HOME>/plugins`
+    /// (see `src/plugins.rs`). `~` expands; a relative path resolves against
+    /// this config file's own directory (`<FORGE2_HOME>`).
+    #[serde(default)]
+    plugin_dirs: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -232,12 +237,26 @@ pub struct HomeConfig {
     pub budget: Budget,
     pub sandbox: SandboxPaths,
     pub supervisor: Supervisor,
+    /// Extra plugin roots, in the order given, resolved to absolute paths.
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 fn expand(p: &str) -> PathBuf {
     match (p.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => PathBuf::from(home).join(rest),
         _ => PathBuf::from(p),
+    }
+}
+
+/// `~` expands; a relative path resolves against `config_dir` (the config
+/// file's own directory), so what Forge discovers never depends on its
+/// working directory.
+fn resolve_config_relative(config_dir: &Path, p: &str) -> PathBuf {
+    let expanded = expand(p);
+    if expanded.is_relative() {
+        config_dir.join(expanded)
+    } else {
+        expanded
     }
 }
 
@@ -354,6 +373,11 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             timeout_secs: raw.supervisor.timeout_secs.unwrap_or(900),
             per_lineage: raw.supervisor.per_lineage.unwrap_or(2),
         },
+        plugin_dirs: raw
+            .plugin_dirs
+            .iter()
+            .map(|p| resolve_config_relative(home, p))
+            .collect(),
     })
 }
 
@@ -442,6 +466,25 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "[budget]\nper_task_usd = 9.0\n",
             "an existing config is never overwritten"
+        );
+    }
+
+    #[test]
+    fn plugin_dirs_expand_tilde_and_resolve_relative_paths_against_home() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "plugin_dirs = [\"~/.config/forge2/plugins\", \"relative/plugins\", \"/opt/forge2/plugins\"]\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(
+            c.plugin_dirs,
+            vec![
+                PathBuf::from(std::env::var("HOME").unwrap()).join(".config/forge2/plugins"),
+                dir.path().join("relative/plugins"),
+                PathBuf::from("/opt/forge2/plugins"),
+            ]
         );
     }
 

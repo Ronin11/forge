@@ -19,6 +19,7 @@ mod git;
 mod journal;
 mod landing;
 mod operation;
+mod plugins;
 mod profile;
 mod prompts;
 mod queue;
