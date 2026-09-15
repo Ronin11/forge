@@ -23,7 +23,15 @@ pub struct Tools {
     pub reads: BTreeMap<String, u64>,
     /// Milliseconds from the first frame to the last.
     pub span_ms: u64,
+    /// The last `RECENT_CALLS` tool calls, oldest first: what an attempt
+    /// was doing right before it stopped, for a run that never reached a
+    /// result frame.
+    #[serde(default)]
+    pub recent: Vec<String>,
 }
+
+/// How many of the most recent tool calls `summarize` keeps in `Tools::recent`.
+const RECENT_CALLS: usize = 5;
 
 /// The family of a shell command: its program, plus the subcommand for
 /// the runners that have one (`npm run x`, `npx x`, `cargo x`, `git x`).
@@ -116,6 +124,13 @@ pub fn summarize(log_path: &Path, worktree: &str) -> Option<Tools> {
                         && let Some(k) = &key
                     {
                         *out.reads.entry(k.clone()).or_default() += 1;
+                    }
+                    out.recent.push(match &key {
+                        Some(k) => format!("{name}: {k}"),
+                        None => name.clone(),
+                    });
+                    if out.recent.len() > RECENT_CALLS {
+                        out.recent.remove(0);
                     }
                     open.insert(id, (name, key, ms));
                 }
@@ -210,6 +225,10 @@ mod tests {
         assert_eq!(t.shell["npx vitest"], Use { calls: 1, ms: 1200 });
         assert_eq!(t.reads["src/a.ts"], 2);
         assert_eq!(t.span_ms, 1500);
+        assert_eq!(
+            t.recent,
+            vec!["Read: src/a.ts", "Bash: npx vitest", "Read: src/a.ts"]
+        );
         assert!(
             t.line().contains("shell: npx vitest 1 (1.2s)"),
             "{}",

@@ -255,6 +255,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 &format!("step {} attempt {} hit its turn limit ({} of {})", a.step, a.attempt_no, a.num_turns, limit),
                 &format!("Raise max_turns for the {} step in the workflow file, or make the task smaller.", a.step),
             ));
+        } else if let Ok(signals) = serde_json::from_str::<Vec<String>>(&a.early_signals)
+            && !signals.is_empty()
+        {
+            out.push(ended_early_diagnosis(a, &signals));
         } else if !a.reason.is_empty() {
             out.push(d(&format!("step {} attempt {}: {}", a.step, a.attempt_no, a.reason), "The agent process failed outside Forge's rules. Read the attempt's log; if the CLI crashed, retry the task."));
         }
@@ -308,6 +312,49 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
         out.push(d(&t.reason, "Read `forge trace` for this task; this failure has no table entry yet and deserves one."));
     }
     out
+}
+
+/// The diagnosis for an attempt Forge itself killed for spinning (`Watch`'s
+/// signs; see `agent::Outcome::early_signals`): which signs tripped, at
+/// what point, what it was doing right before, and what to do about each
+/// sign. `signals` and the detail clauses in `a.reason` line up index for
+/// index: both come from the same ordered pass over `Watch::tripped`.
+fn ended_early_diagnosis(a: &Attempt, signals: &[String]) -> Diagnosis {
+    let details: Vec<&str> = a
+        .reason
+        .strip_prefix("stopped early: ")
+        .unwrap_or(&a.reason)
+        .split("; ")
+        .collect();
+    let outputs: Outputs = serde_json::from_str(&a.outputs_json).unwrap_or_default();
+    let recent = outputs.tools.as_ref().map(|t| t.recent.join(", "));
+
+    let mut what = format!(
+        "step {} attempt {} was stopped early at call {}: {}",
+        a.step,
+        a.attempt_no,
+        a.tool_calls,
+        details.join("; "),
+    );
+    if let Some(r) = recent.filter(|r| !r.is_empty()) {
+        what.push_str(&format!("; its last calls were: {r}"));
+    }
+
+    let action = signals
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let detail = details.get(i).copied().unwrap_or("");
+            match s.as_str() {
+                "no-edit" => "No edits after that many calls: the task text or the context did not point it at a file to change; check that one of them does.".to_string(),
+                "uncommitted" => "Edits piled up with no commit: the agent does not know the commit rule for this workflow; check the preamble tells it to commit as it goes.".to_string(),
+                "repeat" => format!("{detail}: the same command was not going to start working by running it again. Read why it failed and fix the underlying cause."),
+                _ => format!("Read the attempt's log for what `{detail}` means."),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Diagnosis { what, action }
 }
 
 /// One line per rule the kernel can fail an attempt on: what happened
@@ -597,6 +644,60 @@ mod tests {
     }
 
     #[test]
+    fn an_attempt_forge_ended_for_spinning_gets_a_forensic_diagnosis() {
+        let mut a = attempt("code", AttemptState::AgentFailed, vec![], Inputs::default());
+        a.reason =
+            "stopped early: 30 tool calls with no edit; `grep -rn answer .` run 5 times".into();
+        a.tool_calls = 30;
+        a.early_signals = serde_json::to_string(&["no-edit", "repeat"]).unwrap();
+        let outputs = Outputs {
+            tools: Some(crate::tools::Tools {
+                recent: vec!["Bash: grep -rn answer .".into(), "Read: src/a.rs".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        a.outputs_json = serde_json::to_string(&outputs).unwrap();
+
+        let out = diagnose(
+            &task(
+                TaskState::Failed,
+                "stopped early: 30 tool calls with no edit; `grep -rn answer .` run 5 times (after 1 attempt(s))",
+            ),
+            &[a],
+        );
+        let row = out
+            .iter()
+            .find(|d| d.what.contains("stopped early"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        assert!(row.what.contains("call 30"), "{row:?}");
+        assert!(row.what.contains("no edit"), "{row:?}");
+        assert!(row.what.contains("run 5 times"), "{row:?}");
+        assert!(row.what.contains("Bash: grep -rn answer ."), "{row:?}");
+        assert!(row.action.contains("task text"), "{row:?}");
+        assert!(row.action.contains("did not point"), "{row:?}");
+        assert!(
+            row.action.contains("`grep -rn answer .` run 5 times"),
+            "{row:?}"
+        );
+
+        // The other signal Watch can trip gets its own line naming the preamble.
+        let mut u = attempt("code", AttemptState::AgentFailed, vec![], Inputs::default());
+        u.reason = "stopped early: 6 edits since the last commit".into();
+        u.tool_calls = 12;
+        u.early_signals = serde_json::to_string(&["uncommitted"]).unwrap();
+        let out = diagnose(
+            &task(
+                TaskState::Failed,
+                "stopped early: 6 edits since the last commit (after 1 attempt(s))",
+            ),
+            &[u],
+        );
+        assert!(out[0].action.contains("preamble"), "{out:?}");
+        assert!(out[0].action.contains("commit rule"), "{out:?}");
+    }
+
+    #[test]
     fn heavy_exploration_before_the_first_edit_is_a_cost_antipattern() {
         let outputs = Outputs {
             first_edit_call: Some(15),
@@ -640,6 +741,10 @@ mod tests {
             ),
             (TaskState::Failed, "agent exit 1 (after 1 attempt(s))"),
             (TaskState::Failed, "agent timed out (after 1 attempt(s))"),
+            (
+                TaskState::Failed,
+                "stopped early: 30 tool calls with no edit (after 1 attempt(s))",
+            ),
             (
                 TaskState::Failed,
                 "agent produced no result (after 1 attempt(s))",
