@@ -316,3 +316,42 @@ pub async fn answer(
     f.store.set_decision_retry(decision, n.id)?;
     Ok((decision, n))
 }
+
+/// Withdraw a task the operator has decided not to do: written against a
+/// stale description, superseded, or the product decision went the other
+/// way. Only a blocked or queued task is withdrawn — a running attempt
+/// might still finish, and a landed task is already merged. Sets a
+/// terminal `withdrawn` state with `reason` as the task's own reason,
+/// records the reason as a decision row (pointed at the task itself, so
+/// `forge decisions` and `forge show` display it beside supervisor
+/// rulings), and emits `Event::TaskWithdrawn`. Unlike `forge retry`,
+/// which carries dependents forward onto the new task, a withdrawn task
+/// creates nothing to carry them onto: its dependents simply block, the
+/// same path a failed or unverified task's dependents take (see
+/// `Store::block_dependents`). `by` is "operator" or a caller-chosen
+/// name. Returns the decision id.
+pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
+    let Some(old) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    if !matches!(old.state, TaskState::Blocked | TaskState::Queued) {
+        bail!(
+            "task {id} is {}; only a blocked or queued task is withdrawn (a running attempt might still finish, and a landed task is already merged)",
+            old.state.as_str()
+        );
+    }
+    if !f.store.withdraw(id, reason)? {
+        bail!("task {id} changed state before it could be withdrawn");
+    }
+    let question = if old.reason.is_empty() {
+        old.task.clone()
+    } else {
+        old.reason.clone()
+    };
+    let decision = f
+        .store
+        .insert_decision_by(id, &old.repo, &question, reason, by, "")?;
+    f.store.set_decision_retry(decision, id)?;
+    f.report.emit(id, Event::TaskWithdrawn { reason });
+    Ok(decision)
+}

@@ -136,7 +136,7 @@
           <h2>Tasks</h2>
           <div class="filters">
             <input type="search" id="f-q" placeholder="search text or id" value="${esc(filters.q)}">
-            <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified'].map(s => `<option>${s}</option>`).join('')}</select>
+            <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified','withdrawn'].map(s => `<option>${s}</option>`).join('')}</select>
             <select id="f-workflow"><option value="">any workflow</option></select>
           </div>
           <table><thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>created</th><th>task</th></tr></thead><tbody id="tasks"></tbody></table>

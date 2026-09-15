@@ -19,6 +19,10 @@ pub enum TaskState {
     Unverified,
     /// The agent asked a question or for a different workflow; not a failure.
     Blocked,
+    /// The operator decided this should not be done: a stale description,
+    /// superseded, or the product decision went the other way. Terminal,
+    /// like `Failed`, but never a defect in the work.
+    Withdrawn,
 }
 
 impl TaskState {
@@ -30,6 +34,7 @@ impl TaskState {
             TaskState::Failed => "failed",
             TaskState::Unverified => "unverified",
             TaskState::Blocked => "blocked",
+            TaskState::Withdrawn => "withdrawn",
         }
     }
 }
@@ -44,6 +49,7 @@ impl TryFrom<&str> for TaskState {
             "failed" => TaskState::Failed,
             "unverified" => TaskState::Unverified,
             "blocked" => TaskState::Blocked,
+            "withdrawn" => TaskState::Withdrawn,
             other => {
                 return Err(std::io::Error::other(format!(
                     "unknown task state {other:?}"
@@ -933,13 +939,24 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// Withdraw a blocked or queued task: the operator decided it should
+    /// not be done. Atomic on state, so a task the worker claims in
+    /// between is left alone. Returns whether it changed anything.
+    pub fn withdraw(&self, id: i64, reason: &str) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
+            params![id, reason, crate::unix_now()],
+        )?;
+        Ok(n == 1)
+    }
+
     /// Block every queued task that waits on a task which ended without
     /// landing. Returns the (dependent, dependency) pairs it blocked.
     pub fn block_dependents(&self) -> Result<Vec<(i64, i64, String)>> {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
-             WHERE t.state='queued' AND d.state IN ('failed', 'unverified')
+             WHERE t.state='queued' AND d.state IN ('failed', 'unverified', 'withdrawn')
                 OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.landed_sha = '' AND d.finished_at IS NOT NULL)
              ORDER BY t.id, d.id",
         )?;

@@ -20,7 +20,12 @@ an artifact the kernel checks; none can reach main.
   attempt what to fix.
 - **escalate**: leave the question for the human, with a reason. The
   request still shows in `forge requests` and the web page, marked
-  escalated.
+  escalated. The human's own reply is `forge answer` or `forge retry`,
+  both of which re-queue the task — or, when the task was written
+  against a stale description, is superseded, or the product decision
+  goes the other way, `forge withdraw <id> --reason <text>`, which ends
+  it as `withdrawn` instead of spending an attempt re-running work that
+  was never going to be done.
 
 ## What it reads
 

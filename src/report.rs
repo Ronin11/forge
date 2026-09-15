@@ -83,6 +83,11 @@ pub enum Event<'a> {
     Note {
         text: &'a str,
     },
+    /// The operator decided this task should not be done: terminal, and
+    /// never a defect in the work.
+    TaskWithdrawn {
+        reason: &'a str,
+    },
     Op {
         name: &'a str,
         kernel: bool,
@@ -160,6 +165,7 @@ impl Event<'_> {
                 }
             ),
             Event::Note { text } => text.to_string(),
+            Event::TaskWithdrawn { reason } => format!("withdrawn: {reason}"),
             Event::Op {
                 name, ok, detail, ..
             } => format!(
@@ -361,6 +367,7 @@ fn render(ev: Event) -> Vec<String> {
             v
         }
         Event::Note { .. } => vec![summary],
+        Event::TaskWithdrawn { .. } => vec![String::new(), summary],
         Event::Op {
             name,
             kernel,

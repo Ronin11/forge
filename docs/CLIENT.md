@@ -28,7 +28,7 @@ and does not parse stdout.
   [`TaskRow`](#taskrow). `--limit` defaults to 20; `--before` pages
   backward by id; `--grep` matches the task text or an exact id;
   `--state` is one of `queued`, `running`, `succeeded`, `failed`,
-  `blocked`, `unverified`.
+  `blocked`, `unverified`, `withdrawn`.
 - **`forge requests --json [--repo P]`** — blocked tasks and what each
   is waiting on. A JSON array of [`RequestRow`](#requestrow).
 - **`forge decisions --json [--repo P]`** — operator and supervisor
@@ -113,7 +113,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | field | type | meaning |
 |---|---|---|
 | `id` | integer | Task id. |
-| `state` | string | `queued`, `running`, `succeeded`, `failed`, `blocked`, or `unverified`. |
+| `state` | string | `queued`, `running`, `succeeded`, `failed`, `blocked`, `unverified`, or `withdrawn` (the operator decided not to do it; not a failure). |
 | `workflow` | string | Workflow name the task ran (or will run). |
 | `attempts` | integer | Attempts run so far. |
 | `cost_usd` | number | Total cost across all attempts, in USD. |

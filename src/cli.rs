@@ -106,7 +106,7 @@ enum Cmd {
         /// Machine-readable
         #[arg(long)]
         json: bool,
-        /// Only tasks in this state (queued, running, succeeded, failed, blocked, unverified)
+        /// Only tasks in this state (queued, running, succeeded, failed, blocked, unverified, withdrawn)
         #[arg(long)]
         state: Option<String>,
         /// Only tasks in this repository
@@ -149,6 +149,19 @@ enum Cmd {
         id: i64,
         /// The answer, appended to the task's text for the re-queued attempt
         text: String,
+    },
+    /// Withdraw a blocked or queued task the operator has decided not to
+    /// do: written against a stale description, superseded, or the
+    /// product decision went the other way. Terminal; refused on a
+    /// running or landed task.
+    Withdraw {
+        id: i64,
+        /// Why: recorded as the task's reason and as a decision row
+        #[arg(long)]
+        reason: String,
+        /// Who decided
+        #[arg(long, default_value = "operator")]
+        by: String,
     },
     /// List recorded operator answers, newest first
     Decisions {
@@ -373,6 +386,7 @@ pub async fn main() -> Result<()> {
             .await
         }
         Cmd::Answer { id, text } => answer(id, text).await,
+        Cmd::Withdraw { id, reason, by } => withdraw(id, reason, by),
         Cmd::Decisions { repo, json } => decisions(repo, json),
         Cmd::Show { id } => show(id),
         Cmd::Supervise { id } => supervise_now(id).await,
@@ -451,6 +465,14 @@ async fn answer(id: i64, text: String) -> Result<()> {
     let f = Forge::open(false, false)?;
     let (_, n) = crate::queue::answer(&f, id, &text, "operator", "").await?;
     out!("answered task {id} as {}", n.id);
+    Ok(())
+}
+
+/// Withdraw a blocked or queued task, as the operator.
+fn withdraw(id: i64, reason: String, by: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    crate::queue::withdraw(&f, id, &reason, &by)?;
+    out!("withdrew task {id}: {reason}");
     Ok(())
 }
 

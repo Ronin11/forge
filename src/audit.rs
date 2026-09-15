@@ -181,6 +181,10 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
             }
             return out;
         }
+        TaskState::Withdrawn => {
+            out.push(d(&t.reason, "The operator decided this should not be done; nothing to fix. A dependent that blocked on it needs its own decision: retry it fresh, against whatever replaced this task, or withdraw it too."));
+            return out;
+        }
         TaskState::Queued | TaskState::Running => return out,
         TaskState::Failed => {}
     }

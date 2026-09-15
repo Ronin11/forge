@@ -60,6 +60,91 @@ fn answer_records_a_decision_and_requeues_with_the_answer_appended() {
 }
 
 #[test]
+fn a_blocked_task_is_withdrawn_and_a_dependent_blocks_with_the_reason() {
+    let e = Env::new();
+    // Lands (no --no-land) so a dependent may be queued --after it.
+    let o = e.forge(
+        "needsinput.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--retries",
+            "2",
+        ],
+    );
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.starts_with("needs input: Which answer file"),
+        "{reason}"
+    );
+
+    // A dependent queued behind the blocked task.
+    let dep = e.add(&["--after", "1"]);
+
+    let o = e.forge(
+        "ok.sh",
+        &["withdraw", "1", "--reason", "superseded by task 9"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("withdrew task 1: superseded by task 9"),
+        "{out}"
+    );
+
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "withdrawn");
+    assert_eq!(reason, "superseded by task 9");
+
+    // The reason is a decision row, beside supervisor rulings.
+    let ds: serde_json::Value = e.decisions_json();
+    let d = &ds.as_array().unwrap()[0];
+    assert_eq!(d["task_id"], 1);
+    assert_eq!(d["answered_by"], "operator");
+    assert_eq!(d["answer"], "superseded by task 9");
+    assert_eq!(d["retry_id"], 1);
+    assert_eq!(d["outcome"], "withdrawn");
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["decisions"]).stdout).to_string();
+    assert!(
+        text.contains("A (operator): superseded by task 9"),
+        "{text}"
+    );
+    assert!(text.contains("→ task 1 withdrawn"), "{text}");
+
+    // The worker notices on its next pass and blocks the dependent with the
+    // withdrawn reason, the same path a failed or unverified dependency
+    // takes; withdraw creates no replacement task to reroute it onto.
+    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    let (state, reason, _) = e.task(dep);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(
+        reason.starts_with("waits on task 1 (withdrawn: superseded by task 9)"),
+        "{reason}"
+    );
+
+    // Withdrawing a running task is refused.
+    let running = e.add(&[]);
+    e.db()
+        .execute("UPDATE tasks SET state='running' WHERE id=?1", [running])
+        .unwrap();
+    let bad = e.forge(
+        "ok.sh",
+        &["withdraw", &running.to_string(), "--reason", "no"],
+    );
+    assert!(!bad.status.success());
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(err.contains("running"), "{err}");
+    assert_eq!(e.task(running).0, "running", "left untouched");
+
+    // Only a blocked or queued task is withdrawn; task 1 is already withdrawn.
+    let bad2 = e.forge("ok.sh", &["withdraw", "1", "--reason", "again"]);
+    assert!(!bad2.status.success());
+}
+
+#[test]
 fn stats_json_is_the_text_form_as_one_object() {
     let e = Env::new();
     assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());

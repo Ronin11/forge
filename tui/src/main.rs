@@ -273,6 +273,7 @@ fn state_style(state: &str) -> Style {
         "blocked" => Color::Yellow,
         "failed" => Color::Red,
         "unverified" => Color::Magenta,
+        "withdrawn" => Color::DarkGray,
         _ => Color::White,
     };
     Style::default().fg(color)
