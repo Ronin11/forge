@@ -156,14 +156,59 @@ forge plugin logs <name> [-f]     its log
 records, so the clients can show plugins without shelling out to
 anything else.
 
-## The reference plugin
+## The plugins in this repository
 
-`plugins/notify/` in this repository is the one to copy. It is a shell
-script: it takes a snapshot, subscribes from its offset, and runs a
-command of the operator's choosing when a task blocks on a question,
-fails, or lands. It keeps its cursor in `FORGE_PLUGIN_STATE`, so a
-restart resumes where it stopped. It is a plugin in thirty lines and it
-imports nothing.
+Four plugins ship here, each `forge plugin install`-able straight from a
+checkout, and each a different shape a plugin can take.
+
+**notify** (`events`) is the reference plugin, and the one to copy. It is
+a shell script: it takes a snapshot, subscribes from its offset, and
+runs a command of the operator's choosing when a task blocks on a
+question, fails, or lands. It keeps its cursor in `FORGE_PLUGIN_STATE`,
+so a restart resumes where it stopped. Its configuration is
+`plugins/notify/command`, a script `notify.sh` runs with the task, its
+state and its reason as arguments; `command.example` ships a working
+example that shells out to `notify-send` for a desktop notification. It
+is a plugin in thirty lines and it imports nothing. Install with `forge
+plugin install plugins/notify`.
+
+**github-issues** (`intake`, `events`) files a task for every open issue
+on a GitHub repository that carries a chosen label, quoting the issue
+body into the task text with a note that it is data, not instructions,
+and records the issue as a `ref` on the task it files. When that task's
+`task_done` event arrives, it comments back on the issue with the
+outcome, adding a configured label if the task landed. Its configuration
+is `plugins/github-issues/config` (see `config.example`): which repo to
+watch, the label, the repo and workflow new tasks are queued against,
+and the poll interval. `config.example` currently holds this plugin back
+from being enabled until Forge bounds a task's network egress, since it
+hands untrusted issue text to an agent that already has a real git
+credential. Install with `forge plugin install plugins/github-issues`.
+
+**signal** (`events`, `intake`) is a two-way bridge to Signal, run as one
+process with two loops so either exiting stops both. Outbound follows
+`forge events` the way notify does and messages a configured Signal
+number or group when a task reaches a state on its watch list (blocked,
+by default, or failed), including the blocked question if there is one.
+Inbound polls `signal-cli receive` and, for a message from an allowed
+sender, either answers a task (`/answer <id> <text>`), reports queue
+status (`/status`), or files new work via `forge add`; anyone else's
+message is logged and dropped. Its configuration is
+`plugins/signal/config` (see `config.example`): the bot's Signal
+account, who to notify, the allowed senders, the target repo and
+workflow, and which states to notify on. Install with `forge plugin
+install plugins/signal`.
+
+**statusline** (`events`) maintains a status document, not a bar itself:
+it writes `$XDG_STATE_HOME/forge2/status.json` atomically on every event
+that changes the picture and on a five-second heartbeat otherwise, so a
+widget can tell a stale file from an idle one. The document carries an
+overall state (`attention`, `working`, or `idle`, derived from open
+questions, a recent failure, or a running task, in that order), the
+running tasks, queued and blocked counts, and the open question count.
+Its configuration is `plugins/statusline/config` (see `config.example`),
+which can set the forge-web URL to include in the document. Install with
+`forge plugin install plugins/statusline`.
 
 ## What this is not
 
