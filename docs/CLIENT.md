@@ -53,11 +53,15 @@ and does not parse stdout.
   agent choosing a workflow, not documented field-by-field here since no
   client (`tui/`, `web/`) reads it today — treat its shape as informal
   until a client depends on it.
-- **`forge stats --json [--tools] [--step S] [--quality]`** — outcomes
-  per workflow version and per step. One [`StatsDoc`](#statsdoc)
-  object. `--quality` (text mode only; the JSON form always carries the
-  fields) prints defect escape per workflow instead: of the tasks that
-  landed, how many broke the next task's base or were later repaired.
+- **`forge stats --json [--tools] [--step S] [--quality] [--journal]`** —
+  outcomes per workflow version and per step. One
+  [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
+  form always carries the fields) prints defect escape per workflow
+  instead: of the tasks that landed, how many broke the next task's
+  base or were later repaired. `--journal` (also text mode only; the
+  JSON form always carries `journal`/`no_journal`) prints the journal
+  control arm's retrospective split instead: code attempts after the
+  first, by whether they were handed a journal.
 - **`forge plugin list --json`** — every plugin found under
   `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
   from, and whether it is enabled. A JSON array of
@@ -245,9 +249,9 @@ why the task ended as it did, and what a human or a retry could try.
 
 ### `StatsDoc`
 
-The document `forge stats --json` prints: `{workflows, steps, tools}`.
-`tools` is present only with `--tools` (an object keyed by step name);
-otherwise it is omitted.
+The document `forge stats --json` prints: `{workflows, steps, journal,
+no_journal, tools}`. `tools` is present only with `--tools` (an object
+keyed by step name); otherwise it is omitted.
 
 **`workflows`** — array of `StatsWorkflowRow`, one per workflow name +
 definition hash: `workflow`, `hash`, `pieces` (task count),
@@ -275,6 +279,17 @@ if nothing edited), `mean_secs`, `cost_usd`, `mean_input_tokens` (null
 if nothing reported usage). Plus the legacy keys `WF`, `STEP`, `ATT`,
 `OK`, `AGENTF`, `CHECKF`, `ASK`, `TURNS`, `EDIT@`, `SECS`, `COST`,
 `TOKENS` — same one-release caveat.
+
+**`journal`** and **`no_journal`** — the journal control arm's
+retrospective split (docs/LATER.md, "The journal measurement was
+ill-posed three times"): both are a single `StatsJournalRow` object
+over code attempts after the first (`attempt_no > 1`, step `code`),
+grouped by whether `inputs_json`'s `journal` field was present and
+non-empty (`journal`) or not (`no_journal`). Fields: `attempts`,
+`succeeded`, `succeeded_share` (null when `attempts` is 0),
+`mean_turns`, `mean_first_edit` (null if nothing in the group edited),
+`mean_cost_usd`. Both objects are always present, zeroed out when a
+side has no matching attempts yet.
 
 ### `PluginRow`
 

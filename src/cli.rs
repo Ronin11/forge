@@ -223,6 +223,10 @@ enum Cmd {
         /// task's base, or were later repaired, each as a share of landed
         #[arg(long)]
         quality: bool,
+        /// The journal control arm's retrospective split: code attempts
+        /// after the first, by whether they were handed a journal
+        #[arg(long)]
+        journal: bool,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -404,8 +408,9 @@ pub async fn main() -> Result<()> {
             tools,
             step,
             quality,
+            journal,
             json,
-        } => stats(tools, step, quality, json),
+        } => stats(tools, step, quality, journal, json),
         Cmd::Events {
             since,
             follow,
@@ -1353,7 +1358,13 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(steps))
 }
 
-fn stats(tools: bool, step: Option<String>, quality: bool, json: bool) -> Result<()> {
+fn stats(
+    tools: bool,
+    step: Option<String>,
+    quality: bool,
+    journal: bool,
+    json: bool,
+) -> Result<()> {
     let f = Forge::open(false, false)?;
     if json {
         let mut doc = crate::view::stats_doc(&f)?;
@@ -1368,6 +1379,9 @@ fn stats(tools: bool, step: Option<String>, quality: bool, json: bool) -> Result
     }
     if quality {
         return quality_stats(&f);
+    }
+    if journal {
+        return journal_control_stats(&f);
     }
     let doc = crate::view::stats_doc(&f)?;
     out!(
@@ -1474,6 +1488,39 @@ fn quality_stats(f: &Forge) -> Result<()> {
             pct(w.broke_base_share),
             w.repaired,
             pct(w.repaired_share)
+        );
+    }
+    Ok(())
+}
+
+/// The journal control arm's retrospective split: code attempts after the
+/// first (`attempt_no > 1`), by whether they were handed a journal. See
+/// docs/LATER.md, "The journal measurement was ill-posed three times".
+fn journal_control_stats(f: &Forge) -> Result<()> {
+    let doc = crate::view::stats_doc(f)?;
+    out!(
+        "{:<11} {:>5} {:>6} {:>7} {:>10} {:>9}",
+        "ARM",
+        "ATT",
+        "TURNS",
+        "EDIT@",
+        "SUCCEED%",
+        "COST"
+    );
+    let pct = |share: Option<f64>| match share {
+        Some(s) => format!("{:.0}%", s * 100.0),
+        None => "-".into(),
+    };
+    for (arm, row) in [("journal", &doc.journal), ("no journal", &doc.no_journal)] {
+        out!(
+            "{:<11} {:>5} {:>6.1} {:>7} {:>10} {:>9}",
+            arm,
+            row.attempts,
+            row.mean_turns,
+            row.mean_first_edit
+                .map_or("-".to_string(), |v| format!("{v:.1}")),
+            pct(row.succeeded_share),
+            format!("${:.2}", row.mean_cost_usd)
         );
     }
     Ok(())
