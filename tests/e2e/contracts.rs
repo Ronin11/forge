@@ -180,6 +180,44 @@ fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
 }
 
 #[test]
+fn a_budget_the_code_step_exhausts_exactly_strands_a_verified_branch_that_forge_land_accepts() {
+    let e = Env::new();
+    let o = e.run(
+        "ok.sh",
+        &[
+            "--workflow",
+            "reviewed",
+            "--budget",
+            "0.01",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(!o.status.success());
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert_eq!(
+        reason,
+        "budget reached after the code step verified; review did not run"
+    );
+    assert!(
+        pushed,
+        "the code step verified the branch; the human needs to see it"
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 1, "the review step never got an attempt");
+    assert_eq!(a[0].1, "succeeded");
+
+    let o = e.forge("ok.sh", &["land", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("landed task 1 on main @ "),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+}
+
+#[test]
 fn the_document_directive_is_held_to_comments_and_docs() {
     let e = Env::new();
     assert!(e.forge("ok.sh", &["workflows"]).status.success());

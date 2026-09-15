@@ -475,12 +475,10 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             // A code attempt already verified, and the run stopped
                             // before the review that would vouch for it: not a
                             // failure, the same as a review that could not finish.
-                            let code_verified = resolved.steps.iter().enumerate().any(
-                                |(i, s)| {
-                                    s.action.contract == Contract::Code
-                                        && run.done.contains(&(i as i64 + 1))
-                                },
-                            );
+                            let code_verified = resolved.steps.iter().enumerate().any(|(i, s)| {
+                                s.action.contract == Contract::Code
+                                    && run.done.contains(&(i as i64 + 1))
+                            });
                             end = Some(if code_verified {
                                 End::Unverified(
                                     "budget reached after the code step verified; review did not run"
@@ -1208,8 +1206,7 @@ mod tests {
                 // completed: not a failure, a human review the same as a
                 // review that could not finish.
                 End::Unverified(
-                    "budget reached after the code step verified; review did not run"
-                        .to_string(),
+                    "budget reached after the code step verified; review did not run".to_string(),
                 ),
                 TaskState::Unverified,
             ),
