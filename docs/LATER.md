@@ -228,3 +228,73 @@ Still worth doing when there is more data: make the thresholds and the
 "any two" count configurable per the note above, and record on the
 attempt which signals were near tripping, so this question can be
 answered from the store instead of by reading logs.
+
+## Defect escape: the measurement we do not have (2026-09-15)
+
+We measure cost per landed piece of work, attempts, turns, and calls
+before the first edit. We do not measure whether landed work was any
+good. The independent research on agentic development (DORA, Faros,
+GitClear) is consistent that throughput without a quality counterweight
+is the number that misleads: teams ship more and merge more while
+review time and change-failure rates rise.
+
+The metric to add is defect escape: of the tasks that landed, what
+share did a later task have to repair. Two signals are already in the
+store and need no new recording. A task that repairs an earlier one is
+the direct case, and the retry chain and the decisions table already
+link them. A check that fails on a base a previous task landed is the
+indirect case, visible in the first attempt of the next task on that
+repository: its L1 rows fail before the agent has changed anything,
+which today reads as "the repo was broken" and is attributed to nobody.
+
+Worth doing as a column or a `--quality` flag on `forge stats`
+reporting, per workflow, the share of landed tasks followed by a repair
+and the share of tasks whose first attempt failed a check on an
+untouched base. Both are queries, not new instrumentation. Until they
+exist, a clean landing rate is a claim about speed that says nothing
+about correctness.
+
+## Digital twins of external dependencies (2026-09-15)
+
+Taken from StrongDM by way of the 2026 software-factory survey
+(docs/research/05-software-factory-2026.md), and recorded here because
+it is a verification technique we lack rather than an idea we invented.
+
+An agent can only iterate against something it can run. When the thing
+under test talks to an external service, the checks either hit the real
+service (slow, rate limited, unable to fail on demand, and requiring
+credentials inside the sandbox) or they mock it by hand, which drifts
+and ends up testing the mock. The third option is to generate a
+self-contained behavioural clone of the service from its public API
+documentation and reference SDKs, run it locally, and point both the
+checks and the agent at the clone. Thousands of runs an hour, no keys,
+and failure modes you can request.
+
+This matters in two places. It is the verification moat for the
+operated model in docs/GTM.md, where a customer's automation is mostly
+integration and a shallow check is worse than none. And it is the shape
+of a hidden suite for any task whose correctness depends on something
+the sandbox cannot reach, which is why the egress policy and this
+technique are the same conversation: a twin is how you say no to the
+network without saying no to the test.
+
+## Autonomy has two axes, not one (2026-09-15)
+
+The industry's ladder (spicy autocomplete, intern, pair, reviewer,
+engineering team, dark factory) measures one thing: what merges without
+a human. By that measure Forge is at the top rung, since the kernel
+lands on main and no person reads the diff.
+
+That is a poor description of what Forge does, and the mismatch is
+worth holding on to when reading anyone's autonomy claim. Code autonomy
+and intent autonomy are separate axes. Forge is fully out of the loop
+on code: the checks decide and no person approves a change. It is
+deliberately in the loop on intent: the investigate directive stops and
+asks when a task is impossible or contradictory, a reviewer may demote,
+and the supervisor escalates whatever the record cannot settle. The
+escalation ladder exists to keep the second axis honest while the first
+runs unattended.
+
+A system can sit at the top of one axis and the middle of the other,
+and which one a vendor means is usually the difference between an
+impressive claim and a true one.
