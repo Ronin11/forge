@@ -66,6 +66,182 @@ impl BlobCache {
     }
 }
 
+/// A `Vec<Symbol>` that also dedups by (name, kind) in O(1) instead of a
+/// linear scan per push, while keeping first-seen order.
+#[derive(Default)]
+struct Sink {
+    out: Vec<Symbol>,
+    seen: HashSet<(String, String)>,
+}
+
+impl Sink {
+    fn push(&mut self, name: &str, kind: &str) {
+        let name = name.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'));
+        if name.is_empty() {
+            return;
+        }
+        if self.seen.insert((name.to_string(), kind.to_string())) {
+            self.out.push(Symbol {
+                name: name.to_string(),
+                kind: kind.to_string(),
+            });
+        }
+    }
+}
+
+/// A line split on the punctuation that separates a declaration's keywords
+/// from its name, shared by every extractor below.
+fn words_of(line: &str) -> Vec<&str> {
+    line.split(|c: char| c.is_whitespace() || matches!(c, '(' | '<' | '{' | ':' | '=' | ';'))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn extract_rust(text: &str) -> Vec<Symbol> {
+    let mut sink = Sink::default();
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        let words = words_of(line);
+        let mut i = 0;
+        // Visibility and qualifiers: `pub(crate)` splits on '(' into "pub", "crate)".
+        while i < words.len()
+            && (words[i].starts_with("pub")
+                || words[i].ends_with(')')
+                || matches!(words[i], "async" | "unsafe" | "const" | "extern" | "\"C\""))
+        {
+            i += 1;
+        }
+        if i + 1 < words.len() {
+            let kind = match words[i] {
+                "fn" => "fn",
+                "struct" => "struct",
+                "enum" => "enum",
+                "trait" => "trait",
+                "type" => "type",
+                "mod" => "mod",
+                "static" => "static",
+                _ => "",
+            };
+            if !kind.is_empty() && !line.starts_with("//") {
+                sink.push(words[i + 1], kind);
+            }
+            if words[i] == "impl" {
+                let target = words[i + 1..]
+                    .iter()
+                    .find(|w| !w.starts_with('\'') && **w != "for")
+                    .copied()
+                    .unwrap_or("");
+                if let Some(t) = words[i + 1..].iter().position(|w| *w == "for") {
+                    sink.push(words[i + 1 + t + 1], "impl");
+                } else {
+                    sink.push(target, "impl");
+                }
+            }
+        }
+        if line.starts_with("const ") && words.len() > 1 {
+            sink.push(words[1], "const");
+        }
+    }
+    sink.out
+}
+
+fn extract_typescript(text: &str) -> Vec<Symbol> {
+    let mut sink = Sink::default();
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        let words = words_of(line);
+        let mut i = 0;
+        while i < words.len()
+            && matches!(
+                words[i],
+                "export" | "default" | "async" | "declare" | "abstract"
+            )
+        {
+            i += 1;
+        }
+        if i + 1 < words.len() {
+            let kind = match words[i] {
+                "function" => "function",
+                "class" => "class",
+                "interface" => "interface",
+                "type" => "type",
+                "enum" => "enum",
+                "const" | "let" | "var" if i > 0 && words[0] == "export" => "const",
+                _ => "",
+            };
+            if !kind.is_empty() && !line.starts_with("//") {
+                sink.push(words[i + 1], kind);
+            }
+        }
+    }
+    sink.out
+}
+
+fn extract_python(text: &str) -> Vec<Symbol> {
+    let mut sink = Sink::default();
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        let words = words_of(line);
+        if (line.starts_with("def ") || line.starts_with("async def ")) && words.len() > 1 {
+            sink.push(words[if words[0] == "async" { 2 } else { 1 }], "def");
+        } else if line.starts_with("class ") && words.len() > 1 {
+            sink.push(words[1], "class");
+        }
+    }
+    sink.out
+}
+
+fn extract_shell(text: &str) -> Vec<Symbol> {
+    let mut sink = Sink::default();
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        if let Some(rest) = line.strip_prefix("function ") {
+            sink.push(
+                rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or(""),
+                "function",
+            );
+        } else if let Some((name, rest)) = line.split_once("()")
+            && !name.contains(char::is_whitespace)
+            && rest.trim_start().starts_with('{')
+        {
+            sink.push(name, "function");
+        }
+    }
+    sink.out
+}
+
+fn extract_go(text: &str) -> Vec<Symbol> {
+    let mut sink = Sink::default();
+    for raw in text.lines() {
+        let line = raw.trim_start();
+        let words = words_of(line);
+        if line.starts_with("func ") && words.len() > 1 {
+            let name = if words[1].starts_with('(') || words[1].is_empty() {
+                words.get(3).copied().unwrap_or("")
+            } else {
+                words[1]
+            };
+            sink.push(name, "func");
+        } else if line.starts_with("type ") && words.len() > 1 {
+            sink.push(words[1], "type");
+        }
+    }
+    sink.out
+}
+
+/// Extensions to their extractor: adding a language means adding one row
+/// and one function, never touching the others.
+type Extractor = fn(&str) -> Vec<Symbol>;
+const EXTRACTORS: &[(&[&str], Extractor)] = &[
+    (&["rs"], extract_rust),
+    (&["ts", "tsx", "js", "jsx", "mjs"], extract_typescript),
+    (&["py"], extract_python),
+    (&["sh", "bash"], extract_shell),
+    (&["go"], extract_go),
+];
+
 /// Symbols in one file, by its extension. Regex-free, line-oriented: the
 /// declarations a reader would scan for, never bodies.
 pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
@@ -73,136 +249,11 @@ pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    let mut out = Vec::new();
-    let push = |out: &mut Vec<Symbol>, name: &str, kind: &str| {
-        let name = name.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'));
-        if !name.is_empty()
-            && !out
-                .iter()
-                .any(|s: &Symbol| s.name == name && s.kind == kind)
-        {
-            out.push(Symbol {
-                name: name.to_string(),
-                kind: kind.to_string(),
-            });
-        }
-    };
-    for raw in text.lines() {
-        let line = raw.trim_start();
-        let words: Vec<&str> = line
-            .split(|c: char| c.is_whitespace() || matches!(c, '(' | '<' | '{' | ':' | '=' | ';'))
-            .filter(|w| !w.is_empty())
-            .collect();
-        match ext {
-            "rs" => {
-                let mut i = 0;
-                // Visibility and qualifiers: `pub(crate)` splits on '(' into "pub", "crate)".
-                while i < words.len()
-                    && (words[i].starts_with("pub")
-                        || words[i].ends_with(')')
-                        || matches!(words[i], "async" | "unsafe" | "const" | "extern" | "\"C\""))
-                {
-                    i += 1;
-                }
-                if i + 1 < words.len() {
-                    let kind = match words[i] {
-                        "fn" => "fn",
-                        "struct" => "struct",
-                        "enum" => "enum",
-                        "trait" => "trait",
-                        "type" => "type",
-                        "mod" => "mod",
-                        "static" => "static",
-                        _ => "",
-                    };
-                    if !kind.is_empty() && !line.starts_with("//") {
-                        push(&mut out, words[i + 1], kind);
-                    }
-                    if words[i] == "impl" {
-                        let target = words[i + 1..]
-                            .iter()
-                            .find(|w| !w.starts_with('\'') && **w != "for")
-                            .copied()
-                            .unwrap_or("");
-                        if let Some(t) = words[i + 1..].iter().position(|w| *w == "for") {
-                            push(&mut out, words[i + 1 + t + 1], "impl");
-                        } else {
-                            push(&mut out, target, "impl");
-                        }
-                    }
-                }
-                if line.starts_with("const ") && words.len() > 1 {
-                    push(&mut out, words[1], "const");
-                }
-            }
-            "ts" | "tsx" | "js" | "jsx" | "mjs" => {
-                let mut i = 0;
-                while i < words.len()
-                    && matches!(
-                        words[i],
-                        "export" | "default" | "async" | "declare" | "abstract"
-                    )
-                {
-                    i += 1;
-                }
-                if i + 1 < words.len() {
-                    let kind = match words[i] {
-                        "function" => "function",
-                        "class" => "class",
-                        "interface" => "interface",
-                        "type" => "type",
-                        "enum" => "enum",
-                        "const" | "let" | "var" if i > 0 && words[0] == "export" => "const",
-                        _ => "",
-                    };
-                    if !kind.is_empty() && !line.starts_with("//") {
-                        push(&mut out, words[i + 1], kind);
-                    }
-                }
-            }
-            "py" => {
-                if (line.starts_with("def ") || line.starts_with("async def ")) && words.len() > 1 {
-                    push(
-                        &mut out,
-                        words[if words[0] == "async" { 2 } else { 1 }],
-                        "def",
-                    );
-                } else if line.starts_with("class ") && words.len() > 1 {
-                    push(&mut out, words[1], "class");
-                }
-            }
-            "sh" | "bash" => {
-                if let Some(rest) = line.strip_prefix("function ") {
-                    push(
-                        &mut out,
-                        rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                            .next()
-                            .unwrap_or(""),
-                        "function",
-                    );
-                } else if let Some((name, rest)) = line.split_once("()")
-                    && !name.contains(char::is_whitespace)
-                    && rest.trim_start().starts_with('{')
-                {
-                    push(&mut out, name, "function");
-                }
-            }
-            "go" => {
-                if line.starts_with("func ") && words.len() > 1 {
-                    let name = if words[1].starts_with('(') || words[1].is_empty() {
-                        words.get(3).copied().unwrap_or("")
-                    } else {
-                        words[1]
-                    };
-                    push(&mut out, name, "func");
-                } else if line.starts_with("type ") && words.len() > 1 {
-                    push(&mut out, words[1], "type");
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+    EXTRACTORS
+        .iter()
+        .find(|(exts, _)| exts.contains(&ext))
+        .map(|(_, f)| f(text))
+        .unwrap_or_default()
 }
 
 /// Tracked files with their blob hashes: what the tree holds, from git.
@@ -277,10 +328,7 @@ pub fn index(dir: &Path, shared: Option<&BlobCache>) -> Result<(Files, usize)> {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        if !matches!(
-            ext,
-            "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "py" | "sh" | "bash" | "go"
-        ) {
+        if !EXTRACTORS.iter().any(|(exts, _)| exts.contains(&ext)) {
             continue;
         }
         let syms = if let Some(s) = shared.and_then(|c| c.get(&blob)) {
@@ -431,33 +479,53 @@ pub fn render(
 
 const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA]";
 
-fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+#[derive(Debug)]
+struct Args {
+    dir: PathBuf,
+    task: String,
+    budget: usize,
+    hot: Vec<String>,
+    cache: Option<PathBuf>,
+    since: Option<String>,
+    cmd: String,
+}
+
+/// The value following a flag, or an error with the usage line when the
+/// flag is the last argument instead of a panic on an out-of-bounds index.
+fn flag_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a str> {
+    args.get(i + 1)
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("{flag} needs a value; {USAGE}"))
+}
+
+fn parse_args(args: &[String]) -> Result<Args> {
     let mut dir = PathBuf::from(".");
     let mut task = String::new();
     let mut budget = 6000usize;
     let mut hot: Vec<String> = Vec::new();
     let mut cache: Option<PathBuf> = None;
     let mut since: Option<String> = None;
-    let mut cmd = "";
+    let mut cmd = String::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "index" | "rank" => cmd = if args[i] == "index" { "index" } else { "rank" },
+            "index" | "rank" => cmd = if args[i] == "index" { "index" } else { "rank" }.into(),
             "--dir" => {
-                dir = PathBuf::from(&args[i + 1]);
+                dir = PathBuf::from(flag_value(args, i, "--dir")?);
                 i += 1;
             }
             "--task" => {
-                task = args[i + 1].clone();
+                task = flag_value(args, i, "--task")?.to_string();
                 i += 1;
             }
             "--budget" => {
-                budget = args[i + 1].parse().context("--budget")?;
+                budget = flag_value(args, i, "--budget")?
+                    .parse()
+                    .context("--budget")?;
                 i += 1;
             }
             "--hot" => {
-                hot = args[i + 1]
+                hot = flag_value(args, i, "--hot")?
                     .split(',')
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
@@ -465,17 +533,39 @@ fn main() -> Result<()> {
                 i += 1;
             }
             "--cache" => {
-                cache = Some(PathBuf::from(&args[i + 1]));
+                cache = Some(PathBuf::from(flag_value(args, i, "--cache")?));
                 i += 1;
             }
             "--changed-since" => {
-                since = Some(args[i + 1].clone());
+                since = Some(flag_value(args, i, "--changed-since")?.to_string());
                 i += 1;
             }
             other => anyhow::bail!("unknown argument {other}; {USAGE}"),
         }
         i += 1;
     }
+    Ok(Args {
+        dir,
+        task,
+        budget,
+        hot,
+        cache,
+        since,
+        cmd,
+    })
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let Args {
+        dir,
+        task,
+        budget,
+        hot,
+        cache,
+        since,
+        cmd,
+    } = parse_args(&args)?;
     let shared = cache
         .as_deref()
         .filter(|p| !p.as_os_str().is_empty())
@@ -486,7 +576,7 @@ fn main() -> Result<()> {
         .filter(|s| !s.is_empty())
         .map(|b| changed_since(&dir, b))
         .unwrap_or_default();
-    match cmd {
+    match cmd.as_str() {
         "index" => {
             let map: BTreeMap<&String, &Vec<Symbol>> = files.iter().map(|(p, s)| (p, s)).collect();
             println!("{}", serde_json::to_string_pretty(&map)?);
@@ -540,6 +630,40 @@ mod tests {
         assert_eq!(extract("a.py", py).len(), 3);
         let sh = "function one {\n}\ntwo() {\n}\n";
         assert_eq!(extract("x.sh", sh).len(), 2);
+    }
+
+    #[test]
+    fn go_functions_and_types_are_symbols() {
+        let go = "package main\n\nfunc Alpha() {\n}\n\ntype Widget struct {\n}\n";
+        let names: Vec<String> = extract("a.go", go)
+            .iter()
+            .map(|s| format!("{} {}", s.kind, s.name))
+            .collect();
+        assert_eq!(names, vec!["func Alpha", "type Widget"]);
+    }
+
+    #[test]
+    fn rust_traits_type_aliases_and_modules_are_symbols() {
+        let rs = "pub trait Speak {\n    fn talk(&self);\n}\ntype Alias = Star;\nmod inner {\n}\n";
+        let names: Vec<String> = extract("src/sim/tick.rs", rs)
+            .iter()
+            .map(|s| format!("{} {}", s.kind, s.name))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["trait Speak", "fn talk", "type Alias", "mod inner"]
+        );
+    }
+
+    #[test]
+    fn a_trailing_flag_with_no_value_is_an_error_not_a_panic() {
+        let args: Vec<String> = ["forge-repomap", "rank", "--task"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let err = parse_args(&args).unwrap_err().to_string();
+        assert!(err.contains("--task"), "{err}");
+        assert!(err.contains("usage:"), "{err}");
     }
 
     #[test]

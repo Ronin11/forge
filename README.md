@@ -4,14 +4,27 @@ The Forge rebuild, in Rust. One binary, no daemon: the worker is the
 long-running process.
 
 ```sh
-forge run  <repo> "<task>" [--workflow W] [--check CMD]...   # do one task now
-forge add  <repo> "<task>" [--workflow W] [--check CMD]...   # queue it
-forge workflows                               # the workflows a task can run
-forge work [--jobs N] [--poll SECS] [--once]  # run the queue and stay up
-forge log                                     # tasks, newest first
-forge show <id>                               # one task, its attempts, every check
-forge gc [--dry-run]                          # remove worktrees that are safe to remove
-forge doctor                                  # can this machine run attempts; is anything stuck
+forge run  <repo> "<task>" [--workflow W] [--check CMD]...  # run one task now
+forge add  <repo> "<task>" [--workflow W] [--check CMD]...  # queue a task for `forge work`
+forge work [--jobs N] [--poll SECS] [--once]                # run queued tasks: stay up and poll, or drain and exit with --once
+forge log                                                   # list tasks, newest first
+forge retry <id>                                            # re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
+forge answer <id> "<text>"                                  # answer a task blocked on a question and re-queue it as a retry
+forge decisions                                             # list recorded operator answers, newest first
+forge show <id>                                             # show one task and its attempts
+forge supervise <id>                                        # run the supervisor on a task blocked with a question, now
+forge doctor                                                # check this machine can run attempts and nothing is stuck
+forge version                                               # print the crate version and, if built from a git checkout, its commit
+forge workflows                                             # list the workflows a task can run, with declared metadata and measured outcomes
+forge trace <id>                                            # everything about one task: every step's inputs, outputs, verdict rows, and a diagnosis
+forge requests                                              # blocked tasks: questions for the operator and workflow requests
+forge stats                                                 # outcomes per workflow version and per step
+forge events                                                # the event log as JSON lines: a client's subscription
+forge snapshot                                              # tasks, requests, the worker, and the event offset to subscribe from, as one JSON object
+forge land <id>                                             # land an already-verified task's branch through the integrator: merge the base in, re-verify, push, fast-forward
+forge integrate <id>...                                     # merge verified tasks' branches together in order and re-verify after each, without landing
+forge journal <id>                                          # what every earlier attempt in a task's piece of work said it did, and what the kernel found
+forge gc [--dry-run]                                        # remove worktrees that are clean and whose commits are all on a remote
 ```
 
 ## What happens to a task
@@ -163,23 +176,40 @@ See docs/ACTIONS.md.
 ## Layout
 
 ```
-src/main.rs     entry, unix_now
-src/cli.rs      commands and all terminal output
-src/ctx.rs      Forge: paths, store, budget, sandbox, reporter, built once
-src/engine.rs   run_task / run_attempt, Fault::{Task, Env}
-src/verify.rs   L0/L1/L2, the claim rule, and the pure verdict table
-src/envelope.rs the result contract: schema and parser
-src/doctor.rs   forge doctor
-src/worker.rs   drive, the queue loop, signals
-src/workflows.rs the workflow table
-src/agent.rs    spawn the CLI, parse stream-json, timeout
-src/checks.rs   run one command as a check under a timeout
-src/sandbox.rs  bubblewrap
-src/git.rs      the few git operations Forge performs
-src/store.rs    SQLite, forward-only migrations by user_version
-src/config.rs   forge.toml and config.toml
-src/report.rs   typed events; the stderr printer is one consumer
-tests/e2e.rs    the real binary against fake agents in tests/fakes/
+src/main.rs       entry, unix_now
+src/cli.rs        commands and all terminal output
+src/ctx.rs        Forge: paths, store, budget, sandbox, reporter, built once
+src/engine.rs     run_task / run_attempt, Fault::{Task, Env}
+src/attempt.rs    one attempt of a directive: prompt, launch, verdict, the row
+src/audit.rs      diagnosis for a terminal failure; cost anti-patterns
+src/verify.rs     L0/L1/L2, the claim rule, and the pure verdict table
+src/envelope.rs   the result contract: schema and parser
+src/doctor.rs     forge doctor
+src/worker.rs     drive, the queue loop, signals
+src/workflows.rs  the workflow and action tables, loaded as one Catalog
+src/agent.rs      spawn the CLI, parse stream-json, timeout
+src/checks.rs     run one command as a check under a timeout
+src/sandbox.rs    bubblewrap
+src/git.rs        the few git operations Forge performs
+src/store.rs      SQLite, forward-only migrations by user_version
+src/config.rs     forge.toml and config.toml
+src/report.rs     typed events; the stderr printer is one consumer
+src/journal.rs    what earlier attempts in a piece of work said, and what the kernel found
+src/landing.rs    the integrator: merge base in, re-verify, push, fast-forward
+src/operation.rs  a workflow step that is a command, not an agent
+src/profile.rs    a workflow's measured cost and success, from its runs
+src/prompts.rs    what each contract's agent is told, assembled from pieces
+src/queue.rs      how a task comes to exist; enqueue validates a TaskRequest
+src/supervisor.rs the rung between a blocked task and the human
+src/tools.rs      what an attempt ran, read back from its stream
+src/view.rs       shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
+src/builtins/     built-in actions, operations, and workflows, as TOML
+tests/e2e.rs      the real binary against fake agents in tests/fakes/
+
+tui/      forge-tui: the operator's seat, a client of the CLI only
+web/      forge-web: the same seat in a browser
+client/   forge-client: the one Rust client of the CLI; typed rows from --json
+repomap/  forge-repomap: symbol index and task-ranked file list
 ```
 
 ## Environment
@@ -192,13 +222,7 @@ tests/e2e.rs    the real binary against fake agents in tests/fakes/
 - `FORGE2_SANDBOX=0` runs the agent and checks directly on the host.
   Without it, missing `bwrap` is an error.
 
-## Deliberately absent
-
-No web UI, no merge queue, no GitHub issue source, no L2 by an independent
-agent session, no human sign-off queue, no answering of `needs_input`
-questions (the question is recorded; the task ends), no personas, no
-plugins, no learning loop. Each is added only when a real run demonstrates
-the need.
+## Building
 
 ```sh
 cargo build --release

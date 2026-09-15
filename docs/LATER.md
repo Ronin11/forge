@@ -148,6 +148,44 @@ that produces the same stream (tool calls, a result with structured
 output and cost) or a thin adapter that does. Worth doing once the
 supervisor's decisions have an outcome record to compare models on.
 
+## A `history` operation and per-step context budgets (2026-09-13)
+
+Moved here from docs/CONTEXT.md, which now carries only the status of
+what shipped. `repo-map` and the journal (`forge journal`) covered the
+two sources below; `history` as its own operation and the explicit
+budget were never built.
+
+One mechanism, three sources, one measurement.
+
+- **Mechanism.** Operations may `produces = ["context"]`. What such an
+  operation prints, cut to a per-step budget (default 1,500 tokens),
+  is appended to the next directive's prompt under a heading, and
+  recorded verbatim in the attempt's `inputs` so the audit shows exactly
+  what the coder was told. A kernel operation `history` does the same
+  from the store.
+- **Sources, in the order to build them.** `history` first, because
+  it is the strongest effect in the evidence and unique to us:
+  every landed task's summary, changed files, and hidden-test
+  interface, plus every prior attempt in this lineage and why it
+  ended — "the last attempt failed L1 test on planetesimals pricing;
+  task 33 landed light upgrades touching data.ts and tick.ts" is the
+  200-token summary the literature found most effective, and it is a
+  query, not a model call. `repo-map` second, ranked by task words,
+  ctags-based. The repo's `CLAUDE.md` third, hand-written from the
+  rules already in the preamble. A static map (`docs/SYSTEM.md`) rides
+  along for free once `repo-map` exists; seeding whole files not at all.
+- **Measurement.** Two workflow versions differ only by the context
+  operation; tasks alternate between them; the profiles compare turns
+  before the first edit, tool calls, attempts, and cost per piece of
+  work. `stats` gains "turns before first edit" as a column so the
+  effect is read from data, not felt. If a source does not move the
+  number, it goes.
+
+Worth revisiting once `forge journal`'s always-on text form needs the
+same per-step budget and heading treatment that a `produces = ["context"]`
+operation gets, or once a source is added that isn't already a kernel
+command in its own right.
+
 ## A retry should start from its parent's branch when that branch was verified (2026-09-14)
 
 Task 155 verified, was demoted by review, the supervisor answered, and
