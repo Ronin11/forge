@@ -494,6 +494,21 @@ fn blob_hash(dir: &Path, path: &Path) -> Result<String> {
 fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
     let raw: ActionRaw =
         toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    if raw.name != stem {
+        bail!(
+            "{}: name {:?} does not match the file name {:?}",
+            path.display(),
+            raw.name,
+            stem
+        );
+    }
+    if raw.max_turns == Some(0) || raw.timeout_secs == Some(0) {
+        bail!(
+            "{}: max_turns and timeout_secs must be positive",
+            path.display()
+        );
+    }
     match raw.kind {
         Kind::Operation => {
             if raw.run.is_none() == raw.check.is_none() {
@@ -619,6 +634,15 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
 fn parse_workflow(dir: &Path, path: &Path, text: &str) -> Result<Workflow> {
     let raw: WorkflowRaw =
         toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    if raw.name != stem {
+        bail!(
+            "{}: name {:?} does not match the file name {:?}",
+            path.display(),
+            raw.name,
+            stem
+        );
+    }
     if raw.steps.is_empty() {
         bail!("{}: a workflow needs at least one step", path.display());
     }
@@ -628,6 +652,12 @@ fn parse_workflow(dir: &Path, path: &Path, text: &str) -> Result<Workflow> {
         if action.is_some() == s.workflow.is_some() {
             bail!(
                 "{}: a step names exactly one of `action` or `workflow`",
+                path.display()
+            );
+        }
+        if s.max_turns == Some(0) || s.timeout_secs == Some(0) {
+            bail!(
+                "{}: max_turns and timeout_secs must be positive",
                 path.display()
             );
         }
@@ -660,32 +690,128 @@ fn toml_files(d: &Path) -> Result<Vec<PathBuf>> {
     Ok(v)
 }
 
+/// Every action and every workflow, loaded once: one read of each
+/// directory, one git blob hash per file. A file that fails to parse
+/// contributes a problem instead of aborting the load, so one bad file
+/// does not hide the rest. `check` adds the problems that need every
+/// action and workflow already loaded (kernel shadowing, and resolving
+/// every workflow) on top of this.
+pub struct Catalog {
+    pub workflows: BTreeMap<String, Workflow>,
+    pub actions: BTreeMap<String, ActionDef>,
+    pub problems: Vec<Problem>,
+}
+
+fn load_dir<T>(
+    files: Vec<PathBuf>,
+    file_of: impl Fn(&Path) -> String,
+    mut parse: impl FnMut(&Path, &str) -> Result<T>,
+) -> Result<(Vec<T>, Vec<Problem>)> {
+    let mut items = Vec::new();
+    let mut problems = Vec::new();
+    for path in files {
+        let text = std::fs::read_to_string(&path)?;
+        match parse(&path, &text) {
+            Ok(item) => items.push(item),
+            Err(e) => problems.push(Problem {
+                file: file_of(&path),
+                blocking: true,
+                what: format!("{e:#}"),
+            }),
+        }
+    }
+    Ok((items, problems))
+}
+
+pub fn load_catalog(home: &Path) -> Result<Catalog> {
+    let dir = ensure(home)?;
+    let (raw_actions, mut problems) = load_dir(
+        toml_files(&dir.join("actions"))?,
+        |p| format!("actions/{}", p.file_name().unwrap().to_string_lossy()),
+        |p, t| parse_action(&dir, p, t),
+    )?;
+    let mut actions = BTreeMap::new();
+    for a in raw_actions {
+        if a.description.trim().is_empty() {
+            problems.push(Problem {
+                file: format!("actions/{}.toml", a.name),
+                blocking: false,
+                what: "no description".into(),
+            });
+        }
+        actions.insert(a.name.clone(), a);
+    }
+
+    let (raw_workflows, wf_problems) = load_dir(
+        toml_files(&dir)?,
+        |p| p.file_name().unwrap().to_string_lossy().into_owned(),
+        |p, t| parse_workflow(&dir, p, t),
+    )?;
+    problems.extend(wf_problems);
+    let mut workflows = BTreeMap::new();
+    for w in raw_workflows {
+        let file = format!("{}.toml", w.name);
+        if w.meta.cost_factor.is_some() {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: false,
+                what: "[meta] cost_factor is ignored: costs are measured from runs, never declared; remove it".into(),
+            });
+        }
+        if w.description.trim().is_empty() {
+            problems.push(Problem {
+                file: file.clone(),
+                blocking: false,
+                what: "no description".into(),
+            });
+        }
+        if w.meta.use_when.trim().is_empty() || w.meta.avoid_when.trim().is_empty() {
+            problems.push(Problem {
+                file,
+                blocking: false,
+                what: "[meta] use_when and avoid_when are empty; a chooser has nothing to read"
+                    .into(),
+            });
+        }
+        workflows.insert(w.name.clone(), w);
+    }
+
+    Ok(Catalog {
+        workflows,
+        actions,
+        problems,
+    })
+}
+
+/// Every problem in a catalog that means a file failed to load at all
+/// (as opposed to a convention `check` alone enforces, like kernel
+/// shadowing): the same gate `load_all`, `load_actions`, `resolve`, and
+/// `get` used to get for free from `?` on a per-file parse.
+fn ensure_sound(cat: &Catalog) -> Result<()> {
+    if let Some(p) = cat.problems.iter().find(|p| p.blocking) {
+        bail!("{}", p.what);
+    }
+    Ok(())
+}
+
 /// Every action file, by name.
 pub fn load_actions(home: &Path) -> Result<BTreeMap<String, ActionDef>> {
-    let dir = ensure(home)?;
-    let mut out = BTreeMap::new();
-    for path in toml_files(&dir.join("actions"))? {
-        let text = std::fs::read_to_string(&path)?;
-        let a = parse_action(&dir, &path, &text)?;
-        out.insert(a.name.clone(), a);
-    }
-    Ok(out)
+    let cat = load_catalog(home)?;
+    ensure_sound(&cat)?;
+    Ok(cat.actions)
 }
 
 /// Every workflow, sorted by name.
 pub fn load_all(home: &Path) -> Result<Vec<Workflow>> {
-    let dir = ensure(home)?;
-    let mut out = Vec::new();
-    for path in toml_files(&dir)? {
-        let text = std::fs::read_to_string(&path)?;
-        out.push(parse_workflow(&dir, &path, &text)?);
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    let cat = load_catalog(home)?;
+    ensure_sound(&cat)?;
+    Ok(cat.workflows.into_values().collect())
 }
 
 pub fn get(home: &Path, name: &str) -> Result<Option<Workflow>> {
-    Ok(load_all(home)?.into_iter().find(|w| w.name == name))
+    let mut cat = load_catalog(home)?;
+    ensure_sound(&cat)?;
+    Ok(cat.workflows.remove(name))
 }
 
 fn splice(
@@ -801,16 +927,14 @@ fn check_flow(steps: &[ResolvedStep]) -> Result<()> {
 /// splicing referenced workflows inline. Fails on unknown references,
 /// cycles, and data-flow violations.
 pub fn resolve(home: &Path, name: &str) -> Result<Resolved> {
-    let workflows: BTreeMap<String, Workflow> = load_all(home)?
-        .into_iter()
-        .map(|w| (w.name.clone(), w))
-        .collect();
-    let actions = load_actions(home)?;
-    let wf = workflows
+    let cat = load_catalog(home)?;
+    ensure_sound(&cat)?;
+    let wf = cat
+        .workflows
         .get(name)
         .with_context(|| format!("unknown workflow {name:?}; see `forge workflows`"))?;
     let mut out = Resolved::default();
-    splice(wf, &workflows, &actions, &mut Vec::new(), &mut out)?;
+    splice(wf, &cat.workflows, &cat.actions, &mut Vec::new(), &mut out)?;
     check_flow(&out.steps)?;
     Ok(out)
 }
@@ -827,110 +951,19 @@ pub struct Problem {
 /// errors are problems rather than errors, so one bad file does not hide
 /// the rest. Deterministic: same files, same list.
 pub fn check(home: &Path) -> Result<Vec<Problem>> {
-    let dir = ensure(home)?;
-    let mut problems = Vec::new();
-    let mut actions: BTreeMap<String, ActionDef> = BTreeMap::new();
-    for path in toml_files(&dir.join("actions"))? {
-        let file = format!("actions/{}", path.file_name().unwrap().to_string_lossy());
-        let text = std::fs::read_to_string(&path)?;
-        let a = match parse_action(&dir, &path, &text) {
-            Ok(a) => a,
-            Err(e) => {
-                problems.push(Problem {
-                    file,
-                    blocking: true,
-                    what: format!("{e:#}"),
-                });
-                continue;
-            }
-        };
-        let stem = path.file_stem().unwrap().to_string_lossy();
-        if a.name != stem {
+    let Catalog {
+        workflows,
+        actions,
+        mut problems,
+    } = load_catalog(home)?;
+    for (name, a) in &actions {
+        if a.kind == Kind::Operation && KERNEL_OPS.contains(&name.as_str()) {
             problems.push(Problem {
-                file: file.clone(),
+                file: format!("actions/{name}.toml"),
                 blocking: true,
-                what: format!("name {:?} does not match the file name {:?}", a.name, stem),
+                what: format!("operation {name:?} shadows a kernel operation"),
             });
         }
-        if a.kind == Kind::Operation && KERNEL_OPS.contains(&a.name.as_str()) {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: true,
-                what: format!("operation {:?} shadows a kernel operation", a.name),
-            });
-        }
-
-        if a.max_turns == Some(0) || a.timeout_secs == Some(0) {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: true,
-                what: "max_turns and timeout_secs must be positive".into(),
-            });
-        }
-        if a.description.trim().is_empty() {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: false,
-                what: "no description".into(),
-            });
-        }
-        actions.insert(a.name.clone(), a);
-    }
-    let mut workflows: BTreeMap<String, Workflow> = BTreeMap::new();
-    for path in toml_files(&dir)? {
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path)?;
-        let w = match parse_workflow(&dir, &path, &text) {
-            Ok(w) => w,
-            Err(e) => {
-                problems.push(Problem {
-                    file,
-                    blocking: true,
-                    what: format!("{e:#}"),
-                });
-                continue;
-            }
-        };
-        let stem = path.file_stem().unwrap().to_string_lossy();
-        if w.name != stem {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: true,
-                what: format!("name {:?} does not match the file name {:?}", w.name, stem),
-            });
-        }
-        if w.meta.cost_factor.is_some() {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: false,
-                what: "[meta] cost_factor is ignored: costs are measured from runs, never declared; remove it".into(),
-            });
-        }
-        if w.description.trim().is_empty() {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: false,
-                what: "no description".into(),
-            });
-        }
-        if w.meta.use_when.trim().is_empty() || w.meta.avoid_when.trim().is_empty() {
-            problems.push(Problem {
-                file: file.clone(),
-                blocking: false,
-                what: "[meta] use_when and avoid_when are empty; a chooser has nothing to read"
-                    .into(),
-            });
-        }
-        for s in &w.steps {
-            if s.max_turns == Some(0) || s.timeout_secs == Some(0) {
-                problems.push(Problem {
-                    file: file.clone(),
-                    blocking: true,
-                    what: "max_turns and timeout_secs must be positive".into(),
-                });
-            }
-        }
-        workflows.insert(w.name.clone(), w);
     }
     for (name, wf) in &workflows {
         let mut out = Resolved::default();
