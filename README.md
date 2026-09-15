@@ -253,7 +253,9 @@ line to `events.jsonl` under `FORGE2_HOME`; `forge snapshot` returns the
 tasks, the requests, the worker, and the log's byte offset at that
 instant, and `forge events --since <offset> --follow` is the subscription
 from there. A client applies events to its own state and re-reads a task
-only when an event says it changed.
+only when an event says it changed. See docs/CLIENT.md for the full
+contract: every verb a client may call, every JSON document's fields,
+every event type, and which listing to re-read on which event.
 
 The worker runs as a user service: `deploy/forge2-worker.service`, with
 a stop timeout long enough to drain a running attempt. After a rebuild,
