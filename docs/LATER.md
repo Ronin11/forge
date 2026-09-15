@@ -200,3 +200,31 @@ Also: the audit's diagnosis has no arm for "stopped early", so the
 first live early ending (162 attempt 1: fifteen edits without a commit,
 one grep run five times, resumed and then productive) was described as
 "the agent process failed outside Forge's rules".
+
+## What a capped attempt costs at 100 turns (measured 2026-09-14)
+
+The turn guard went from 30 to 100 on the argument that cost and wall
+time, not turns, should bound the work. The first measurements of that
+regime, from the plugin chain:
+
+- Two attempts have reached the 100-turn guard. They cost $4.18 on
+  average, against roughly $0.50 for a capped attempt under the old
+  30-turn cap.
+- Neither was a runaway. Task 194's first attempt made a commit across
+  ten files, read one file four times, and explored 25 calls before its
+  first edit: all under the early-ending thresholds, correctly, because
+  it was working rather than spinning. The resume rule then let its
+  second attempt finish the same session in 20 turns.
+
+So the lesson is not that the early-ending thresholds are too loose.
+A long, productive attempt is meant to cost what it costs, and the
+per-task budget is the guard that worked (194 landed at $7.92 against
+an $8 cap). The lever on cost is task size: 194 asked for a catalog, a
+store migration, a view row, two CLI verbs, docs and tests in one
+piece of work, and cost five times the $1.48 mean. Ask for less per
+task before reaching for the threshold knob.
+
+Still worth doing when there is more data: make the thresholds and the
+"any two" count configurable per the note above, and record on the
+attempt which signals were near tripping, so this question can be
+answered from the store instead of by reading logs.
