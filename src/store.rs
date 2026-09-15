@@ -276,6 +276,13 @@ pub struct WorkflowStat {
     pub cost: f64,
     pub attempts: i64,
     pub landed: i64,
+    /// Landed tasks whose `landed_sha` became a later task's `base_sha`,
+    /// where that later task's first `code` attempt carries a failing L1
+    /// verdict row: the base was already broken when the next task started.
+    pub broke_base: i64,
+    /// Landed tasks named by another task's `repairs` reference
+    /// (`forge://task/<id>`).
+    pub repaired: i64,
 }
 
 pub struct StepStat {
@@ -1334,7 +1341,21 @@ impl Store {
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
                     COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
-                    SUM(t.landed_sha != '')
+                    SUM(t.landed_sha != ''),
+                    SUM(t.landed_sha != '' AND EXISTS (
+                        SELECT 1 FROM attempts a
+                        JOIN tasks b ON b.id = a.task_id
+                        WHERE b.base_sha = t.landed_sha
+                          AND a.step = 'code'
+                          AND a.attempt_no = (SELECT MIN(a2.attempt_no) FROM attempts a2 WHERE a2.task_id = a.task_id AND a2.step = 'code')
+                          AND EXISTS (
+                              SELECT 1 FROM json_each(a.verdict_json) j
+                              WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
+                          )
+                    )),
+                    SUM(t.landed_sha != '' AND EXISTS (
+                        SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
+                    ))
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
         )?;
@@ -1350,6 +1371,8 @@ impl Store {
                 cost: r.get(7)?,
                 attempts: r.get(8)?,
                 landed: r.get(9)?,
+                broke_base: r.get(10)?,
+                repaired: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1696,6 +1719,102 @@ mod tests {
         s.insert_decision_by(a, "r", "q", "a", "supervisor", "")
             .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
+    }
+
+    #[test]
+    fn defect_escape_counts_broke_base_and_repaired_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+        let base_task = |started_at: i64| Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: started_at,
+            started_at: Some(started_at),
+            finished_at: Some(started_at + 1),
+            workflow: "direct".into(),
+            ..Default::default()
+        };
+
+        // A lands.
+        let mut a = base_task(1);
+        a.id = s.insert_task(&a).unwrap();
+        a.landed_sha = "aaaaaaaa".into();
+        s.update_task(&a).unwrap();
+
+        // B starts from A's landed sha, and its first (and only) code
+        // attempt is red on that base: an L1 row fails before B has done
+        // anything of its own.
+        let mut b = base_task(2);
+        b.base_sha = "aaaaaaaa".into();
+        b.id = s.insert_task(&b).unwrap();
+        s.update_task(&b).unwrap();
+        let b_attempt = Attempt {
+            task_id: b.id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at: 2,
+            ..Default::default()
+        };
+        let b_attempt_id = s.insert_attempt(&b_attempt).unwrap();
+        s.finish_attempt(&FinishAttempt {
+            id: b_attempt_id,
+            state: AttemptState::ChecksFailed,
+            reason: "L1 failed: test".into(),
+            finished_at: Some(3),
+            agent_exit: Some(0),
+            timed_out: false,
+            num_turns: 1,
+            tool_calls: 1,
+            cost_usd: Some(0.0),
+            agent_ms: 0,
+            commits: 0,
+            files_changed: 0,
+            dirty: false,
+            verdict_json: r#"[{"level":"L1","name":"test","ok":false,"exit":1,"ms":0,"timed_out":false,"tail":"","failing_tests":[]}]"#.into(),
+            result_text: String::new(),
+            envelope_json: String::new(),
+            rl_five_hour: None,
+            rl_seven_day: None,
+            rl_five_hour_resets: None,
+            rl_seven_day_resets: None,
+            end_sha: String::new(),
+            outputs_json: String::new(),
+            session_id: String::new(),
+            first_edit: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        })
+        .unwrap();
+
+        // C carries a repairs reference to A.
+        let mut c = base_task(4);
+        c.id = s.insert_task(&c).unwrap();
+        s.update_task(&c).unwrap();
+        s.insert_task_ref(
+            c.id,
+            "repairs",
+            &format!("forge://task/{}", a.id),
+            "",
+            "operator",
+        )
+        .unwrap();
+
+        let stats = s.workflow_stats().unwrap();
+        assert_eq!(stats.len(), 1);
+        let w = &stats[0];
+        assert_eq!(w.tasks, 3);
+        assert_eq!(w.landed, 1, "only A landed");
+        assert_eq!(w.broke_base, 1, "A counts once for breaking B's base");
+        assert_eq!(w.repaired, 1, "A counts once as repaired by C");
     }
 
     #[test]

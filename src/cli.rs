@@ -201,6 +201,10 @@ enum Cmd {
         /// With --tools, only this step's section
         #[arg(long)]
         step: Option<String>,
+        /// Defect escape per workflow: landed tasks that broke the next
+        /// task's base, or were later repaired, each as a share of landed
+        #[arg(long)]
+        quality: bool,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -377,7 +381,12 @@ pub async fn main() -> Result<()> {
         Cmd::Version => version(),
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { repo, json } => requests(repo, json),
-        Cmd::Stats { tools, step, json } => stats(tools, step, json),
+        Cmd::Stats {
+            tools,
+            step,
+            quality,
+            json,
+        } => stats(tools, step, quality, json),
         Cmd::Events {
             since,
             follow,
@@ -1311,7 +1320,7 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(steps))
 }
 
-fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
+fn stats(tools: bool, step: Option<String>, quality: bool, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     if json {
         let mut doc = crate::view::stats_doc(&f)?;
@@ -1323,6 +1332,9 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
     }
     if tools {
         return tool_stats(&f, step.as_deref());
+    }
+    if quality {
+        return quality_stats(&f);
     }
     let doc = crate::view::stats_doc(&f)?;
     out!(
@@ -1396,6 +1408,39 @@ fn stats(tools: bool, step: Option<String>, json: bool) -> Result<()> {
             format!("${:.2}", st.cost_usd),
             st.mean_input_tokens
                 .map_or("-".to_string(), |v| format!("{v:.0}"))
+        );
+    }
+    Ok(())
+}
+
+/// Defect escape, per workflow: of the tasks that landed, how many broke
+/// the next task's base or were later repaired.
+fn quality_stats(f: &Forge) -> Result<()> {
+    let doc = crate::view::stats_doc(f)?;
+    out!(
+        "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9}",
+        "WF",
+        "HASH",
+        "LANDED",
+        "BROKEBASE",
+        "BROKE%",
+        "REPAIRED",
+        "REPAIR%"
+    );
+    let pct = |share: Option<f64>| match share {
+        Some(s) => format!("{:.0}%", s * 100.0),
+        None => "-".into(),
+    };
+    for w in &doc.workflows {
+        out!(
+            "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9}",
+            w.workflow,
+            w.hash,
+            w.landed,
+            w.broke_base,
+            pct(w.broke_base_share),
+            w.repaired,
+            pct(w.repaired_share)
         );
     }
     Ok(())

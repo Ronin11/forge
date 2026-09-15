@@ -53,8 +53,11 @@ and does not parse stdout.
   agent choosing a workflow, not documented field-by-field here since no
   client (`tui/`, `web/`) reads it today — treat its shape as informal
   until a client depends on it.
-- **`forge stats --json [--tools] [--step S]`** — outcomes per workflow
-  version and per step. One [`StatsDoc`](#statsdoc) object.
+- **`forge stats --json [--tools] [--step S] [--quality]`** — outcomes
+  per workflow version and per step. One [`StatsDoc`](#statsdoc)
+  object. `--quality` (text mode only; the JSON form always carries the
+  fields) prints defect escape per workflow instead: of the tasks that
+  landed, how many broke the next task's base or were later repaired.
 - **`forge plugin list --json`** — every plugin found under
   `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
   from, and whether it is enabled. A JSON array of
@@ -171,6 +174,12 @@ external reference a plugin or the operator recorded on a task.
 | `by` | string | Who recorded it: `"operator"` by default, or a plugin's own name. |
 | `created_at` | integer | Unix seconds. |
 
+One `kind` does carry a convention: `repairs`, whose `url` is
+`forge://task/<id>`, naming the earlier landed task this one fixes. It
+is how a task says "this repairs task 41" without inventing a second
+id space; `forge stats --quality` reads it to count a landed task as
+repaired.
+
 ### `TraceDoc`
 
 The document `forge trace ID --json` prints: everything about one task,
@@ -248,6 +257,16 @@ definition hash: `workflow`, `hash`, `pieces` (task count),
 header-named legacy key flattened onto the same object: `WF`, `HASH`,
 `TASKS`, `OK`, `FAIL`, `BLK`, `UNV`, `ATT`, `COST`, `$/OK`, `LANDED`,
 `$/LANDED` — kept for one release only; read the named fields instead.
+
+Defect escape, the two signals docs/LATER.md calls out: `broke_base`
+(landed tasks whose `landed_sha` became a later task's `base_sha`,
+where that later task's first `code` attempt carries a failing L1
+verdict row on the unmodified base) and `repaired` (landed tasks named
+by a later task's `repairs` reference, see [`RefRow`](#refrow)).
+`broke_base_share` and `repaired_share` divide each by `landed`; both
+are null when nothing landed. Both counts and shares are always
+present in the JSON form; `forge stats --quality` is the text-mode
+view of the same numbers.
 
 **`steps`** — array of `StatsStepRow`, one per workflow + step:
 `workflow`, `step`, `attempts`, `succeeded`, `agent_failed`,

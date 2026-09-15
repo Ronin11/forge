@@ -492,6 +492,16 @@ pub struct StatsWorkflowRow {
     pub landed: i64,
     /// `mean_cost_usd` divided by `landed`; `None` when nothing landed.
     pub cost_per_landed_usd: Option<f64>,
+    /// Landed tasks whose `landed_sha` became a later task's `base_sha`,
+    /// where that later task's first `code` attempt carries a failing L1
+    /// verdict row on an unmodified base.
+    pub broke_base: i64,
+    /// `broke_base` divided by `landed`; `None` when nothing landed.
+    pub broke_base_share: Option<f64>,
+    /// Landed tasks named by a later task's `repairs` reference.
+    pub repaired: i64,
+    /// `repaired` divided by `landed`; `None` when nothing landed.
+    pub repaired_share: Option<f64>,
     #[serde(flatten)]
     pub legacy: serde_json::Map<String, Value>,
 }
@@ -500,6 +510,8 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
     fn from(w: &WorkflowStat) -> Self {
         let cost_per_success_usd = (w.succeeded > 0).then(|| w.cost / w.succeeded as f64);
         let cost_per_landed_usd = (w.landed > 0).then(|| w.cost / w.landed as f64);
+        let broke_base_share = (w.landed > 0).then(|| w.broke_base as f64 / w.landed as f64);
+        let repaired_share = (w.landed > 0).then(|| w.repaired as f64 / w.landed as f64);
         let mut legacy = serde_json::Map::new();
         legacy.insert("WF".into(), Value::from(w.workflow.clone()));
         legacy.insert("HASH".into(), Value::from(w.hash.clone()));
@@ -526,6 +538,10 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             cost_per_success_usd,
             landed: w.landed,
             cost_per_landed_usd,
+            broke_base: w.broke_base,
+            broke_base_share,
+            repaired: w.repaired,
+            repaired_share,
             legacy,
         }
     }
@@ -739,6 +755,8 @@ mod stats_tests {
             cost: 2.0,
             attempts: 1,
             landed: 0,
+            broke_base: 0,
+            repaired: 0,
         };
         let row = StatsWorkflowRow::from(&w);
         let v = serde_json::to_value(&row).unwrap();
@@ -747,11 +765,39 @@ mod stats_tests {
         assert_eq!(v["mean_cost_usd"], 2.0);
         assert_eq!(v["cost_per_success_usd"], 2.0);
         assert!(v["cost_per_landed_usd"].is_null());
+        assert_eq!(v["broke_base"], 0);
+        assert!(v["broke_base_share"].is_null(), "nothing landed");
+        assert_eq!(v["repaired"], 0);
+        assert!(v["repaired_share"].is_null(), "nothing landed");
         // Deprecated header-named keys stay present, flattened alongside.
         assert_eq!(v["WF"], "direct");
         assert_eq!(v["TASKS"], 1);
         assert_eq!(v["$/OK"], 2.0);
         assert!(v["$/LANDED"].is_null());
+    }
+
+    #[test]
+    fn workflow_row_shares_defect_escape_over_landed() {
+        let w = WorkflowStat {
+            workflow: "direct".into(),
+            hash: "abc123".into(),
+            tasks: 4,
+            succeeded: 4,
+            failed: 0,
+            blocked: 0,
+            unverified: 0,
+            cost: 4.0,
+            attempts: 4,
+            landed: 4,
+            broke_base: 1,
+            repaired: 2,
+        };
+        let row = StatsWorkflowRow::from(&w);
+        let v = serde_json::to_value(&row).unwrap();
+        assert_eq!(v["broke_base"], 1);
+        assert_eq!(v["broke_base_share"], 0.25);
+        assert_eq!(v["repaired"], 2);
+        assert_eq!(v["repaired_share"], 0.5);
     }
 
     #[test]
