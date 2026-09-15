@@ -133,6 +133,12 @@ enum Cmd {
         /// Only tasks that ran this workflow
         #[arg(long)]
         workflow: Option<String>,
+        /// Only tasks in this project
+        #[arg(long)]
+        project: Option<String>,
+        /// Only tasks in this initiative
+        #[arg(long)]
+        initiative: Option<i64>,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -180,6 +186,12 @@ enum Cmd {
         /// Only decisions for this repository
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Only decisions on this project's tasks
+        #[arg(long)]
+        project: Option<String>,
+        /// Only decisions on this initiative's tasks
+        #[arg(long)]
+        initiative: Option<i64>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -234,6 +246,13 @@ enum Cmd {
         /// after the first, by whether they were handed a journal
         #[arg(long)]
         journal: bool,
+        /// Only this project's tasks (also adds the per-project section
+        /// when neither this nor --initiative is given)
+        #[arg(long)]
+        project: Option<String>,
+        /// Only this initiative's tasks
+        #[arg(long)]
+        initiative: Option<i64>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -503,7 +522,11 @@ pub async fn main() -> Result<()> {
             before,
             grep,
             workflow,
-        } => log(limit, json, state, repo, before, grep, workflow),
+            project,
+            initiative,
+        } => log(
+            limit, json, state, repo, before, grep, workflow, project, initiative,
+        ),
         Cmd::Retry {
             id,
             chain,
@@ -528,7 +551,12 @@ pub async fn main() -> Result<()> {
         }
         Cmd::Answer { id, text } => answer(id, text).await,
         Cmd::Withdraw { id, reason, by } => withdraw(id, reason, by),
-        Cmd::Decisions { repo, json } => decisions(repo, json),
+        Cmd::Decisions {
+            repo,
+            project,
+            initiative,
+            json,
+        } => decisions(repo, project, initiative, json),
         Cmd::Show { id } => show(id),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
@@ -541,8 +569,10 @@ pub async fn main() -> Result<()> {
             step,
             quality,
             journal,
+            project,
+            initiative,
             json,
-        } => stats(tools, step, quality, journal, json),
+        } => stats(tools, step, quality, journal, project, initiative, json),
         Cmd::Events {
             since,
             follow,
@@ -758,7 +788,12 @@ async fn supervise_now(id: i64) -> Result<()> {
     Ok(())
 }
 
-fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
+fn decisions(
+    repo: Option<PathBuf>,
+    project: Option<String>,
+    initiative: Option<i64>,
+    json: bool,
+) -> Result<()> {
     let f = Forge::open(false, false)?;
     let repo = repo
         .map(|p| p.canonicalize().context("repo path"))
@@ -766,7 +801,11 @@ fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
         .map(|p| p.display().to_string());
     let rows: Vec<crate::view::DecisionRow> = f
         .store
-        .decisions(repo.as_deref())?
+        .decisions(&crate::store::DecisionFilter {
+            repo,
+            project,
+            initiative,
+        })?
         .iter()
         .map(|d| {
             let outcome = d
@@ -1946,11 +1985,17 @@ fn stats(
     step: Option<String>,
     quality: bool,
     journal: bool,
+    project: Option<String>,
+    initiative: Option<i64>,
     json: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
+    let scope = crate::store::StatsFilter {
+        project,
+        initiative,
+    };
     if json {
-        let mut doc = crate::view::stats_doc(&f)?;
+        let mut doc = crate::view::stats_doc(&f, &scope)?;
         if tools {
             doc.tools = Some(tools_json(&f, step.as_deref())?);
         }
@@ -1961,12 +2006,12 @@ fn stats(
         return tool_stats(&f, step.as_deref());
     }
     if quality {
-        return quality_stats(&f);
+        return quality_stats(&f, &scope);
     }
     if journal {
         return journal_control_stats(&f);
     }
-    let doc = crate::view::stats_doc(&f)?;
+    let doc = crate::view::stats_doc(&f, &scope)?;
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
         "WF",
@@ -2040,13 +2085,37 @@ fn stats(
                 .map_or("-".to_string(), |v| format!("{v:.0}"))
         );
     }
+    if !doc.projects.is_empty() {
+        out!();
+        out!(
+            "{:<16} {:>5} {:>6} {:>9} {:>7}",
+            "PROJECT",
+            "TASKS",
+            "LANDED",
+            "COST",
+            "DEFECT%"
+        );
+        for p in &doc.projects {
+            out!(
+                "{:<16} {:>5} {:>6} {:>9} {:>7}",
+                p.project,
+                p.tasks,
+                p.landed,
+                format!("${:.2}", p.cost_usd),
+                match p.broke_base_share {
+                    Some(s) => format!("{:.0}%", s * 100.0),
+                    None => "-".into(),
+                }
+            );
+        }
+    }
     Ok(())
 }
 
 /// Defect escape, per workflow: of the tasks that landed, how many broke
 /// the next task's base or were later repaired.
-fn quality_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f)?;
+fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
+    let doc = crate::view::stats_doc(f, scope)?;
     out!(
         "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9}",
         "WF",
@@ -2080,7 +2149,7 @@ fn quality_stats(f: &Forge) -> Result<()> {
 /// first (`attempt_no > 1`), by whether they were handed a journal. See
 /// docs/LATER.md, "The journal measurement was ill-posed three times".
 fn journal_control_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f)?;
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default())?;
     out!(
         "{:<11} {:>5} {:>6} {:>7} {:>10} {:>9}",
         "ARM",
@@ -2507,6 +2576,8 @@ fn log(
     before: Option<i64>,
     grep: Option<String>,
     workflow: Option<String>,
+    project: Option<String>,
+    initiative: Option<i64>,
 ) -> Result<()> {
     let state = state
         .map(|s| {
@@ -2529,6 +2600,8 @@ fn log(
         before,
         grep,
         workflow,
+        project,
+        initiative,
     };
     let rows = tasks_json(&f, &q)?;
     if json {

@@ -412,6 +412,30 @@ pub struct TaskFilter {
     /// A substring of the task text, or an exact id.
     pub grep: Option<String>,
     pub workflow: Option<String>,
+    /// Only this project's tasks.
+    pub project: Option<String>,
+    /// Only this initiative's tasks.
+    pub initiative: Option<i64>,
+}
+
+/// What `forge decisions` filters on, and what the supervisor's prompt
+/// scopes its own reading of the record to (see docs/PROJECTS.md, "The
+/// record, scoped"): a decision has no `project`/`initiative` column of
+/// its own, so these narrow through the task it was recorded on.
+#[derive(Default, Debug, Clone)]
+pub struct DecisionFilter {
+    pub repo: Option<String>,
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
+}
+
+/// What `forge stats` filters on: the same project/initiative scope as
+/// `TaskFilter` and `DecisionFilter`, without the paging/grep fields that
+/// only `forge log`'s raw listing needs.
+#[derive(Default, Debug, Clone)]
+pub struct StatsFilter {
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
 }
 
 pub struct TaskSummary {
@@ -506,6 +530,20 @@ pub struct ProjectTaskStats {
     pub blocked: i64,
     pub withdrawn: i64,
     pub cost: f64,
+}
+
+/// Tasks, landed count, cost and defect escape for one project, as
+/// `forge stats`'s per-project section shows it.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectStat {
+    pub project: String,
+    pub tasks: i64,
+    pub landed: i64,
+    pub cost: f64,
+    /// Landed tasks whose `landed_sha` became a later task's `base_sha`,
+    /// where that later task's first `code` attempt carries a failing L1
+    /// verdict row on an unmodified base (see `WorkflowStat::broke_base`).
+    pub broke_base: i64,
 }
 
 pub struct Store {
@@ -1540,13 +1578,19 @@ impl Store {
     }
 
     /// Outcomes per workflow version: the table that compares workflows.
-    pub fn workflow_stats(&self) -> Result<Vec<WorkflowStat>> {
+    pub fn workflow_stats(&self, scope: &StatsFilter) -> Result<Vec<WorkflowStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.workflow, t.workflow_hash, COUNT(*),
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
-                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
-                    COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash)), 0),
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (
+                        SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
+                          AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
+                    )), 0),
+                    COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (
+                        SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
+                          AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
+                    )), 0),
                     SUM(t.landed_sha != ''),
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a
@@ -1563,9 +1607,10 @@ impl Store {
                         SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
                     ))
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
+               AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
             Ok(WorkflowStat {
                 workflow: r.get(0)?,
                 hash: r.get(1)?,
@@ -1585,16 +1630,17 @@ impl Store {
     }
 
     /// Outcomes per workflow step.
-    pub fn step_stats(&self) -> Result<Vec<StepStat>> {
+    pub fn step_stats(&self, scope: &StatsFilter) -> Result<Vec<StepStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT t.workflow, a.step, COUNT(*), SUM(a.state='succeeded'), SUM(a.state='agent_failed'),
                     SUM(a.state='checks_failed'), SUM(a.state='needs_input'), AVG(a.num_turns), COALESCE(SUM(a.cost_usd),0), AVG(a.agent_ms),
                     AVG(a.first_edit), AVG(a.input_tokens)
              FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
+               AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
             Ok(StepStat {
                 workflow: r.get(0)?,
                 step: r.get(1)?,
@@ -1655,6 +1701,8 @@ impl Store {
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
                AND (?6 IS NULL OR t.workflow = ?6)
+               AND (?7 IS NULL OR t.project = ?7)
+               AND (?8 IS NULL OR t.initiative = ?8)
              ORDER BY t.id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(
@@ -1664,7 +1712,9 @@ impl Store {
                 q.repo.as_deref(),
                 q.before,
                 q.grep.as_deref(),
-                q.workflow.as_deref()
+                q.workflow.as_deref(),
+                q.project.as_deref(),
+                q.initiative,
             ],
             |r| {
                 Ok(TaskSummary {
@@ -1776,14 +1826,21 @@ impl Store {
         Ok(())
     }
 
-    /// Recorded answers, newest first; narrowed to one repository when given.
-    pub fn decisions(&self, repo: Option<&str>) -> Result<Vec<Decision>> {
+    /// Recorded answers, newest first; narrowed by repository, project,
+    /// and/or initiative when given. Project and initiative narrow
+    /// through the task the decision was recorded on, since a decision
+    /// carries no such column of its own.
+    pub fn decisions(&self, q: &DecisionFilter) -> Result<Vec<Decision>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, task_id, repo, question, answer, created_at, answered_by, citations, retry_id FROM decisions
-             WHERE ?1 IS NULL OR repo = ?1 ORDER BY id DESC",
+            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
+             FROM decisions d JOIN tasks t ON t.id = d.task_id
+             WHERE (?1 IS NULL OR d.repo = ?1)
+               AND (?2 IS NULL OR t.project = ?2)
+               AND (?3 IS NULL OR t.initiative = ?3)
+             ORDER BY d.id DESC",
         )?;
-        let rows = stmt.query_map(params![repo], |r| {
+        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], |r| {
             Ok(Decision {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
@@ -2141,6 +2198,41 @@ impl Store {
                 })
             },
         )?)
+    }
+
+    /// Tasks, landed count, cost and defect escape per project: what
+    /// `forge stats` adds below the per-workflow table when it is not
+    /// itself scoped to one project or initiative (see docs/PROJECTS.md,
+    /// "The record, scoped").
+    pub fn project_stats(&self) -> Result<Vec<ProjectStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.project, COUNT(*), SUM(t.landed_sha != ''),
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.project=t.project)), 0),
+                    SUM(t.landed_sha != '' AND EXISTS (
+                        SELECT 1 FROM attempts a
+                        JOIN tasks b ON b.id = a.task_id
+                        WHERE b.base_sha = t.landed_sha
+                          AND a.step = 'code'
+                          AND a.attempt_no = (SELECT MIN(a2.attempt_no) FROM attempts a2 WHERE a2.task_id = a.task_id AND a2.step = 'code')
+                          AND EXISTS (
+                              SELECT 1 FROM json_each(a.verdict_json) j
+                              WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
+                          )
+                    ))
+             FROM tasks t WHERE t.project IS NOT NULL AND t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
+             GROUP BY t.project ORDER BY t.project",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ProjectStat {
+                project: r.get(0)?,
+                tasks: r.get(1)?,
+                landed: r.get(2)?,
+                cost: r.get(3)?,
+                broke_base: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 
@@ -2588,7 +2680,7 @@ mod tests {
         )
         .unwrap();
 
-        let stats = s.workflow_stats().unwrap();
+        let stats = s.workflow_stats(&StatsFilter::default()).unwrap();
         assert_eq!(stats.len(), 1);
         let w = &stats[0];
         assert_eq!(w.tasks, 3);

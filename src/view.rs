@@ -660,6 +660,34 @@ impl From<&JournalStat> for StatsJournalRow {
     }
 }
 
+/// One row of `StatsDoc.projects`: tasks, landed count, cost and defect
+/// escape for one project, shown when `forge stats` is not itself scoped
+/// to a project or initiative.
+#[derive(Serialize)]
+pub struct StatsProjectRow {
+    pub project: String,
+    pub tasks: i64,
+    pub landed: i64,
+    pub cost_usd: f64,
+    /// See `StatsWorkflowRow::broke_base`.
+    pub broke_base: i64,
+    /// `broke_base` divided by `landed`; `None` when nothing landed.
+    pub broke_base_share: Option<f64>,
+}
+
+impl From<&crate::store::ProjectStat> for StatsProjectRow {
+    fn from(p: &crate::store::ProjectStat) -> Self {
+        StatsProjectRow {
+            project: p.project.clone(),
+            tasks: p.tasks,
+            landed: p.landed,
+            cost_usd: p.cost,
+            broke_base: p.broke_base,
+            broke_base_share: (p.landed > 0).then(|| p.broke_base as f64 / p.landed as f64),
+        }
+    }
+}
+
 /// Everything `forge stats` shows: outcomes per workflow, outcomes per
 /// step, the journal control arm's retrospective split (with `--journal`),
 /// and (with `--tools`) tool usage per step. `forge stats --json`
@@ -673,11 +701,16 @@ pub struct StatsDoc {
     pub journal: StatsJournalRow,
     /// Code retries that were not.
     pub no_journal: StatsJournalRow,
+    /// Tasks, landed count, cost and defect escape per project; only
+    /// filled when `stats_doc` was called with no project/initiative
+    /// scope of its own (see docs/PROJECTS.md, "The record, scoped").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<StatsProjectRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
 
-pub fn stats_doc(f: &Forge) -> Result<StatsDoc> {
+pub fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
     let journal_stats = f.store.journal_control_stats()?;
     let journal = journal_stats
         .iter()
@@ -689,11 +722,22 @@ pub fn stats_doc(f: &Forge) -> Result<StatsDoc> {
         .find(|j| !j.has_journal)
         .map(Into::into)
         .unwrap_or_default();
+    let projects = if scope.project.is_none() && scope.initiative.is_none() {
+        f.store.project_stats()?.iter().map(Into::into).collect()
+    } else {
+        Vec::new()
+    };
     Ok(StatsDoc {
-        workflows: f.store.workflow_stats()?.iter().map(Into::into).collect(),
-        steps: f.store.step_stats()?.iter().map(Into::into).collect(),
+        workflows: f
+            .store
+            .workflow_stats(scope)?
+            .iter()
+            .map(Into::into)
+            .collect(),
+        steps: f.store.step_stats(scope)?.iter().map(Into::into).collect(),
         journal,
         no_journal,
+        projects,
         tools: None,
     })
 }
@@ -1162,13 +1206,10 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         .filter_map(|t| t.finished_at)
         .max()
         .map(|end| end - ini.created_at);
-    let ids: std::collections::HashSet<i64> = tasks.iter().map(|t| t.id).collect();
-    let repos: std::collections::HashSet<String> = tasks.iter().map(|t| t.repo.clone()).collect();
-    let mut decisions = Vec::new();
-    for repo in &repos {
-        decisions.extend(f.store.decisions(Some(repo))?);
-    }
-    decisions.retain(|d| ids.contains(&d.task_id));
+    let decisions = f.store.decisions(&crate::store::DecisionFilter {
+        initiative: Some(ini.id),
+        ..Default::default()
+    })?;
     let rulings = decisions
         .iter()
         .filter(|d| d.answered_by == "supervisor")
@@ -1323,10 +1364,12 @@ mod stats_tests {
             steps: vec![],
             journal: StatsJournalRow::default(),
             no_journal: StatsJournalRow::default(),
+            projects: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
         assert!(v.get("tools").is_none(), "{v}");
+        assert!(v.get("projects").is_none(), "{v}");
     }
 
     #[test]
