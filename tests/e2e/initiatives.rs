@@ -189,3 +189,68 @@ fn same_rule_failures_hold_the_initiative_and_the_report_names_the_rule() {
     assert!(out.contains("held"), "{out}");
     assert!(out.contains("has-commits"), "{out}");
 }
+
+#[test]
+fn a_task_blocked_on_a_question_keeps_the_initiative_open() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(&file, "write an answer").unwrap();
+
+    let o = e.forge(
+        "commitneedsinput.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "an answer is on record",
+            "--from",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = created_id(&o);
+
+    // The task commits an answer, then asks the operator a question
+    // instead of finishing: not terminal, not landed, not withdrawn.
+    assert!(
+        e.forge("commitneedsinput.sh", &["work", "--once"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(1).0, "blocked");
+
+    let o = e.forge(
+        "commitneedsinput.sh",
+        &["initiative", "show", &id.to_string(), "--json"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["state"], "open");
+    assert_eq!(row["blocked"], 1);
+    assert_eq!(row["settled_at"], serde_json::Value::Null);
+
+    // No settlement event fired for a still-blocked initiative.
+    let events_path = e.home.join("events.jsonl");
+    if events_path.exists() {
+        let events = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            !events
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .any(|v| v["type"] == "initiative_settled"),
+            "{events}"
+        );
+    }
+}

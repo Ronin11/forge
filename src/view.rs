@@ -892,9 +892,12 @@ fn l0_rule_of(reason: &str) -> Option<String> {
 /// the worker is holding new claims for the initiative; "done with
 /// failures" when none remain open and some failed; "done" otherwise.
 pub fn initiative_state(tasks: &[Task], hold: Option<&str>) -> &'static str {
-    let any_open = tasks
-        .iter()
-        .any(|t| matches!(t.state, TaskState::Queued | TaskState::Running));
+    let any_open = tasks.iter().any(|t| {
+        !matches!(
+            t.state,
+            TaskState::Succeeded | TaskState::Failed | TaskState::Unverified | TaskState::Withdrawn
+        )
+    });
     if any_open {
         return if hold.is_some() { "held" } else { "open" };
     }
