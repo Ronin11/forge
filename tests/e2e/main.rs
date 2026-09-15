@@ -11,6 +11,7 @@ mod ops;
 mod plugins;
 mod refs;
 mod resume;
+mod statusline;
 mod supervisor;
 mod tdd;
 mod verdicts;

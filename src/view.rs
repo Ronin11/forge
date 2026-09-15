@@ -28,6 +28,7 @@ pub struct TaskRow {
     pub task: String,
     pub text: String,
     pub created_at: i64,
+    pub finished_at: Option<i64>,
 }
 
 impl From<&TaskSummary> for TaskRow {
@@ -43,6 +44,7 @@ impl From<&TaskSummary> for TaskRow {
             task: s.task.clone(),
             text: s.task.clone(),
             created_at: s.created_at,
+            finished_at: s.finished_at,
         }
     }
 }

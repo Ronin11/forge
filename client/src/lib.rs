@@ -187,6 +187,8 @@ pub struct TaskRow {
     pub created_at: i64,
     #[serde(default)]
     pub created: String,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
 }
 
 /// One row of `forge requests --json`: a blocked task and what it is

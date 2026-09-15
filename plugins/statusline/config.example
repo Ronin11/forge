@@ -1,0 +1,8 @@
+# Copy this file to "config" next to plugin.toml (or into the installed
+# copy under FORGE2_HOME/plugins/statusline/) and fill it in. It is shell,
+# sourced by statusline.sh: KEY=value lines, one per line.
+
+# The forge-web URL, if this operator runs it. Included in the status
+# document as "ui" so a bar widget can offer a link. Unset (the default)
+# omits "ui" from the document entirely.
+#FORGE_WEB_URL=http://127.0.0.1:8080

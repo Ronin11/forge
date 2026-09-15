@@ -1,0 +1,5 @@
+name = "statusline"
+description = "maintains a status file a bar widget can read: state, running/queued/blocked counts, recent failures, open questions"
+run = ["./statusline.sh"]
+capabilities = ["events"]
+restart = "on-failure"

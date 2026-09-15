@@ -119,6 +119,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `task` | string | Legacy key for `text`; kept for compatibility. |
 | `created_at` | integer | **Preferred.** Creation time, Unix seconds. |
 | `created` | string | Legacy key for `created_at`: a localtime string, kept for compatibility. |
+| `finished_at` | integer or null | When the task reached a final state, Unix seconds; null while it is queued or running. |
 
 ### `RequestRow`
 
