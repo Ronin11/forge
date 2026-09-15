@@ -4,7 +4,7 @@
 //! cannot drift apart.
 
 use crate::ctx::Forge;
-use crate::store::{Decision, StepStat, Task, TaskState, TaskSummary, WorkflowStat};
+use crate::store::{Decision, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat};
 use crate::workflows::Problem;
 use crate::{config, plugins};
 use anyhow::Result;
@@ -134,6 +134,33 @@ impl DecisionRow {
     }
 }
 
+/// One row of `TraceDoc.task.refs` / `forge ref list --json`: an external
+/// reference recorded on a task, mirrors `store::TaskRef`.
+#[derive(Serialize)]
+pub struct RefRow {
+    pub id: i64,
+    pub task_id: i64,
+    pub kind: String,
+    pub url: String,
+    pub label: String,
+    pub by: String,
+    pub created_at: i64,
+}
+
+impl From<&TaskRef> for RefRow {
+    fn from(r: &TaskRef) -> Self {
+        RefRow {
+            id: r.id,
+            task_id: r.task_id,
+            kind: r.kind.clone(),
+            url: r.url.clone(),
+            label: r.label.clone(),
+            by: r.by.clone(),
+            created_at: r.created_at,
+        }
+    }
+}
+
 /// One task in `TraceDoc.task.lineage`: mirrors `store::LineageRow`, with
 /// `cost` renamed `cost_usd` to match the rest of the document.
 #[derive(Serialize)]
@@ -183,6 +210,7 @@ pub struct TraceTask {
     pub children: Vec<i64>,
     pub root: i64,
     pub lineage: Vec<TraceLineage>,
+    pub refs: Vec<RefRow>,
     pub journal: Option<String>,
     pub interface: String,
     pub plan: String,
@@ -337,6 +365,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
                 cost_usd: l.cost,
             })
             .collect(),
+        refs: f.store.task_refs(t.id)?.iter().map(RefRow::from).collect(),
         journal: crate::journal::journal_for(f, t)
             .ok()
             .filter(|j| !j.is_empty()),

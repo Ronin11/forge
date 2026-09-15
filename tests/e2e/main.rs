@@ -9,6 +9,7 @@ mod landing;
 mod listing;
 mod ops;
 mod plugins;
+mod refs;
 mod resume;
 mod supervisor;
 mod tdd;

@@ -33,6 +33,13 @@ and does not parse stdout.
   is waiting on. A JSON array of [`RequestRow`](#requestrow).
 - **`forge decisions --json [--repo P]`** — operator and supervisor
   answers, newest first. A JSON array of [`DecisionRow`](#decisionrow).
+- **`forge ref list ID --json`** — external references recorded on one
+  task: the pull request it landed as, the issue it came from. A JSON
+  array of [`RefRow`](#refrow). They are also carried on `TraceDoc.task`
+  (see below).
+- **`forge ref add ID --kind K --url U [--label TEXT] [--by NAME]`** —
+  record a reference on a task. Not `--json`; a client re-reads
+  `forge ref list` or `forge trace` for the row it just created.
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -74,7 +81,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref
 ```
 
 ## Naming: unified vs. legacy keys
@@ -148,6 +155,21 @@ answer to a blocked task's question.
 | `retry_id` | integer or null | The task the answer re-queued, once known. |
 | `outcome` | string or null | State of `retry_id`'s task (e.g. `succeeded`), or `null` until it is known to have landed, failed, or otherwise settled. |
 
+### `RefRow`
+
+One row of `forge ref list --json`, and of `TraceDoc.task.refs`: an
+external reference a plugin or the operator recorded on a task.
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | Reference id. |
+| `task_id` | integer | The task it was recorded on. |
+| `kind` | string | Whatever the caller passed to `--kind`, e.g. `"pr"` or `"issue"`. Not a closed vocabulary. |
+| `url` | string | The reference's URL. |
+| `label` | string | Free text, e.g. the PR's title; empty if not given. |
+| `by` | string | Who recorded it: `"operator"` by default, or a plugin's own name. |
+| `created_at` | integer | Unix seconds. |
+
 ### `TraceDoc`
 
 The document `forge trace ID --json` prints: everything about one task,
@@ -174,6 +196,7 @@ the store's column names):
 | `children` | array of integer | tasks that retry this one. |
 | `root` | integer | the first task in this lineage. |
 | `lineage` | array of `TraceLineage` | every task in the lineage: `{id, parent, state, reason, workflow, cost_usd}`. |
+| `refs` | array of [`RefRow`](#refrow) | external references recorded on the task: the pull request it landed as, the issue it came from. |
 | `journal_enabled`, `context_enabled`, `resume_on_failure` | bool | run flags. |
 | `context` | string | what the last `context` operation printed. |
 | `journal` | string or null | the prose journal of earlier attempts in this piece of work; `null` if empty. |
@@ -243,7 +266,7 @@ One row of `forge plugin list --json`: a plugin as discovered.
 | `description` | string | From its `plugin.toml`. |
 | `dir` | string | Absolute path to the plugin's directory. |
 | `source` | string | Absolute path to the root it was discovered under: `<FORGE2_HOME>/plugins`, or one of the operator's `plugin_dirs`. |
-| `capabilities` | array of string | `events`, `intake`, or both. |
+| `capabilities` | array of string | any combination of `events`, `intake`, `annotate`. |
 | `restart` | string | `always`, `on-failure`, or `never`. |
 | `enabled` | bool | Whether the operator has enabled it. |
 

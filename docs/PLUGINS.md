@@ -20,7 +20,7 @@ name = "notify"
 description = "posts a desktop notification when a task needs a human"
 run = ["./notify.sh"]                    # argv, resolved against the plugin dir
 build = ["cargo", "build", "--release"]  # optional; run once at install
-capabilities = ["events"]                # events | intake
+capabilities = ["events"]                # events | intake | annotate
 restart = "on-failure"                   # always | on-failure | never
 ```
 
@@ -66,17 +66,27 @@ business tracking a plugin's progress when the plugin can.
 whatever flags the request calls for. How it learns of the work, an
 inbox, a webhook, a poll, is its business.
 
-A plugin may declare both, and most useful ones do: watch for a blocked
-task, ask a person, file the answer with `forge answer`.
+**annotate.** The plugin records references on a task: the pull request
+it landed as, the issue it came from. `forge ref add <task> --kind
+<kind> --url <url> [--label <text>] [--by <name>]` inserts one;
+`forge ref list <task> [--json]` reads them back. `forge trace --json`
+carries a task's references too, and `forge show` prints them under the
+lineage as `ref` lines. As with `events` and `intake`, declaring
+`annotate` is a promise the operator reads, not a permission the kernel
+enforces: nothing stops a plugin that didn't declare it, or the
+operator directly, from calling `forge ref add`, and nothing checks
+that a plugin declaring it ever does. The kernel enforces nothing here
+beyond the manifest itself being valid.
 
-**Not yet: tools and annotate.** Forge 1 aggregated plugin MCP servers
-into the tool list the agent sees. Forge 2's agent is the claude CLI,
-which loads its own MCP servers, so the shape here would be a generated
-per-task config rather than an aggregator, and it is deferred because a
-plugin tool with network access is a new path out of what the
-verification rules can see, which deserves its own design. External
-references on a task (the pull request, the issue) are deferred to the
-task that adds them to the store and the client contract.
+A plugin may declare more than one, and most useful ones do: watch for
+a blocked task, ask a person, file the answer with `forge answer`.
+
+**Not yet: tools.** Forge 1 aggregated plugin MCP servers into the tool
+list the agent sees. Forge 2's agent is the claude CLI, which loads its
+own MCP servers, so the shape here would be a generated per-task config
+rather than an aggregator, and it is deferred because a plugin tool
+with network access is a new path out of what the verification rules
+can see, which deserves its own design.
 
 ## Trust
 

@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
 pub enum Capability {
     Events,
     Intake,
+    Annotate,
 }
 
 impl Capability {
@@ -29,6 +30,7 @@ impl Capability {
         match self {
             Capability::Events => "events",
             Capability::Intake => "intake",
+            Capability::Annotate => "annotate",
         }
     }
 }

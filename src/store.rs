@@ -341,6 +341,19 @@ pub struct Decision {
     pub retry_id: Option<i64>,
 }
 
+/// An external reference a plugin or the operator recorded on a task: the
+/// pull request it landed as, the issue it came from.
+pub struct TaskRef {
+    pub id: i64,
+    pub task_id: i64,
+    pub kind: String,
+    pub url: String,
+    pub label: String,
+    /// Who recorded it: "operator" by default, or a plugin's own name.
+    pub by: String,
+    pub created_at: i64,
+}
+
 /// What `forge log` filters on.
 #[derive(Default, Debug, Clone)]
 pub struct TaskFilter {
@@ -529,6 +542,18 @@ CREATE TABLE plugins (
   enabled INTEGER NOT NULL DEFAULT 0,
   enabled_at INTEGER
 );
+",
+    "
+CREATE TABLE task_refs (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  kind TEXT NOT NULL,
+  url TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  by TEXT NOT NULL DEFAULT 'operator',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX task_refs_task ON task_refs(task_id, id);
 ",
 ];
 
@@ -1509,6 +1534,44 @@ impl Store {
                 answered_by: r.get(6)?,
                 citations: r.get(7)?,
                 retry_id: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Record a reference on a task: the pull request it landed as, the
+    /// issue it came from.
+    pub fn insert_task_ref(
+        &self,
+        task_id: i64,
+        kind: &str,
+        url: &str,
+        label: &str,
+        by: &str,
+    ) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO task_refs (task_id, kind, url, label, by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![task_id, kind, url, label, by, crate::unix_now()],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// A task's references, oldest first.
+    pub fn task_refs(&self, task_id: i64) -> Result<Vec<TaskRef>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, task_id, kind, url, label, by, created_at FROM task_refs WHERE task_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            Ok(TaskRef {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                kind: r.get(2)?,
+                url: r.get(3)?,
+                label: r.get(4)?,
+                by: r.get(5)?,
+                created_at: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

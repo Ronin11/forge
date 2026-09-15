@@ -245,6 +245,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PluginCmd,
     },
+    /// External references on a task: the pull request it landed as, the issue it came from
+    Ref {
+        #[command(subcommand)]
+        cmd: RefCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -282,6 +287,32 @@ enum PluginCmd {
         /// Keep printing as the log grows
         #[arg(long, short)]
         follow: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RefCmd {
+    /// Record a reference on a task: the pull request it landed as, the issue it came from
+    Add {
+        task: i64,
+        /// What kind of reference it is, e.g. "pr" or "issue"
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        url: String,
+        /// Free text, e.g. the PR's title
+        #[arg(long, default_value = "")]
+        label: String,
+        /// Who recorded it: "operator" by default, or a plugin's own name
+        #[arg(long, default_value = "operator")]
+        by: String,
+    },
+    /// A task's references
+    List {
+        task: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -365,6 +396,16 @@ pub async fn main() -> Result<()> {
             PluginCmd::Install { path } => plugin_install(path),
             PluginCmd::Uninstall { name } => plugin_uninstall(name),
             PluginCmd::Logs { name, follow } => plugin_logs(name, follow),
+        },
+        Cmd::Ref { cmd } => match cmd {
+            RefCmd::Add {
+                task,
+                kind,
+                url,
+                label,
+                by,
+            } => ref_add(task, kind, url, label, by),
+            RefCmd::List { task, json } => ref_list(task, json),
         },
     }
 }
@@ -536,6 +577,48 @@ fn decisions(repo: Option<PathBuf>, json: bool) -> Result<()> {
             },
             d.answer,
             outcome
+        );
+    }
+    Ok(())
+}
+
+fn ref_add(task: i64, kind: String, url: String, label: String, by: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if f.store.task(task)?.is_none() {
+        bail!("no task {task}")
+    }
+    let id = f.store.insert_task_ref(task, &kind, &url, &label, &by)?;
+    out!("{id} {kind} {url}");
+    Ok(())
+}
+
+fn ref_list(task: i64, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let rows: Vec<crate::view::RefRow> = f
+        .store
+        .task_refs(task)?
+        .iter()
+        .map(crate::view::RefRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no references");
+        return Ok(());
+    }
+    for r in &rows {
+        out!(
+            "{:<5} {:<8} {}{}",
+            r.id,
+            r.kind,
+            r.url,
+            if r.label.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", r.label)
+            }
         );
     }
     Ok(())
@@ -1874,6 +1957,14 @@ fn show(id: i64) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" → ")
         );
+    }
+    for r in &task.refs {
+        let label = if r.label.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", r.label)
+        };
+        out!("{:<11}{} {}{}", "ref", r.kind, r.url, label);
     }
     for d in &task.decisions {
         out!("decision   {} → {}", d.question, d.answer);
