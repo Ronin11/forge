@@ -456,6 +456,73 @@ pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// One line of `git diff --name-status -M`: a plain add, modify or
+/// delete, or a rename with both endpoints (git detected the same
+/// content moving, at or above the default similarity threshold).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitChange {
+    Added(String),
+    Modified(String),
+    Deleted(String),
+    Renamed { from: String, to: String },
+}
+
+fn parse_status_line(line: &str) -> Option<GitChange> {
+    let mut parts = line.split('\t');
+    let code = parts.next()?;
+    match code.as_bytes().first()? {
+        b'A' => Some(GitChange::Added(parts.next()?.to_string())),
+        b'M' => Some(GitChange::Modified(parts.next()?.to_string())),
+        b'D' => Some(GitChange::Deleted(parts.next()?.to_string())),
+        b'R' => Some(GitChange::Renamed {
+            from: parts.next()?.to_string(),
+            to: parts.next()?.to_string(),
+        }),
+        // A copy reads as a new file at its destination.
+        b'C' => Some(GitChange::Added(parts.nth(1)?.to_string())),
+        _ => None,
+    }
+}
+
+/// Paths changed between `from` and `to`, with rename detection forced
+/// (`-M`) so a move reads as one `Renamed` entry rather than a delete and
+/// an add that happen to land in the same diff.
+pub async fn changed_with_status(wt: &Path, from: &str, to: &str) -> Result<Vec<GitChange>> {
+    let out = Git::new(wt)
+        .line(&["diff", "--name-status", "-M", from, to])
+        .await?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(parse_status_line)
+        .collect())
+}
+
+/// The same range as [`changed_paths`], but with renames split out: the
+/// plain list still carries a rename's destination (as `changed_paths`
+/// always has, since git detects renames by default), and the source is
+/// reported separately, paired with its destination, for callers that
+/// need to reconcile a report written either as a split add/delete or as
+/// one move.
+pub async fn changed_paths_and_renames(
+    wt: &Path,
+    from: &str,
+    to: &str,
+) -> Result<(Vec<String>, Vec<(String, String)>)> {
+    let mut plain = Vec::new();
+    let mut renamed = Vec::new();
+    for gc in changed_with_status(wt, from, to).await? {
+        match gc {
+            GitChange::Added(p) | GitChange::Modified(p) | GitChange::Deleted(p) => plain.push(p),
+            GitChange::Renamed { from, to } => {
+                plain.push(to.clone());
+                renamed.push((from, to));
+            }
+        }
+    }
+    Ok((plain, renamed))
+}
+
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(

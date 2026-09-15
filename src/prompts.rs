@@ -57,7 +57,9 @@ pub fn preamble(t: &Task, cfg: &config::Config, branch: &str) -> String {
          Your final result must be the structured object the CLI asks for: a summary; `changes` listing every path this \
          attempt added, modified, or deleted (lockfiles included; not what earlier attempts already committed); `checks_run` \
          listing only checks you actually ran, with their real outcome; `claims` \
-         each with concrete evidence; and `needs_input` when you must stop.\n\n\
+         each with concrete evidence; and `needs_input` when you must stop. For a rename or move, either list the \
+         destination as `added` or `modified` and the source as `deleted`, or list one entry whose `summary` says so \
+         by naming both paths (e.g. \"moved from old/path to new/path\").\n\n\
          Two honest exits, never penalized and never retried: `needs_input` with kind `question` when you cannot proceed \
          without the operator, and kind `workflow` when the workflow you are in (`{wf}`) is wrong for this task or a step \
          you need does not exist. A third: kind `suite` when a test under the verification namespace that is not \
