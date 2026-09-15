@@ -530,12 +530,22 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "forge-client",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "forge-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

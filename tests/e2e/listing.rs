@@ -1,4 +1,5 @@
 use crate::support::*;
+use forge_client::{RequestRow, Snapshot, TaskRow, TraceDoc};
 
 #[test]
 fn answer_records_a_decision_and_requeues_with_the_answer_appended() {
@@ -517,6 +518,34 @@ fn what_an_attempt_ran_is_recorded_with_durations_and_shown() {
         .map(|o| o["ms"].as_i64().unwrap_or(0))
         .unwrap_or(0);
     assert!(verify_ms >= 250, "verify row ms {verify_ms}");
+}
+
+#[test]
+fn forge_client_parses_trace_snapshot_log_and_requests() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
+
+    let trace: TraceDoc =
+        serde_json::from_slice(&e.forge("ok.sh", &["trace", "1", "--json"]).stdout).unwrap();
+    assert_eq!(trace.task["id"], 1);
+    assert_eq!(trace.task["state"], "succeeded");
+
+    let snap: Snapshot = serde_json::from_slice(&e.forge("ok.sh", &["snapshot"]).stdout).unwrap();
+    let row = snap
+        .tasks
+        .iter()
+        .find(|t| t.id == 1)
+        .expect("task 1 in snapshot");
+    assert_eq!(row.state, "succeeded");
+
+    let log: Vec<TaskRow> =
+        serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
+    let row = log.iter().find(|t| t.id == 1).expect("task 1 in log");
+    assert_eq!(row.state, "succeeded");
+
+    let requests: Vec<RequestRow> =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    assert!(requests.is_empty(), "{requests:?}");
 }
 
 #[test]

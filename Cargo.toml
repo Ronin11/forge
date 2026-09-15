@@ -1,5 +1,5 @@
 [workspace]
-members = ["tui", "repomap", "web"]
+members = ["tui", "repomap", "web", "client"]
 
 [package]
 name = "forge"
@@ -17,3 +17,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 
 [dev-dependencies]
 tempfile = "3"
+forge-client = { path = "client" }
