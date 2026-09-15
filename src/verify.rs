@@ -363,13 +363,13 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
         let mut detail = String::new();
         if !unreported.is_empty() {
             detail.push_str(&format!(
-                "changed in git but not reported: {}\n",
+                "changed in git during this attempt but not reported (lockfiles count): {}\n",
                 unreported.join(", ")
             ));
         }
         if !phantom.is_empty() {
             detail.push_str(&format!(
-                "reported but unchanged in git: {}",
+                "reported but unchanged during this attempt: {} (an earlier attempt's changes are already on the record; list only what this attempt added, modified or deleted)",
                 phantom.join(", ")
             ));
         }
