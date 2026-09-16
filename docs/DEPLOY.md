@@ -31,10 +31,20 @@ names the repository it deploys and, for a monorepo, the scope.
 
 ```
 forge project deploy add <project> <name> --repo <path> --method <action> [--arg k=v]... --check <command> [--smoke <url>] [--on-landing]
+forge project deploy set <project> <name> [--repo <path>] [--method <action>] [--arg k=v]... [--check <command>] [--smoke <url>] [--on-landing|--no-on-landing]
+forge project deploy remove <project> <name>       refused while a deploy of it is running
 forge project deploy list <project>
 forge deploy <project> <name> [--sha <commit>]     run it now
 forge deploy log <project> [<name>]                what was deployed when, and what the check said
 ```
+
+`set` replaces only the fields given, leaving the rest as they were: an
+`--arg` replaces or adds that one key in the args map rather than
+clearing it, and `--check`, `--smoke` and `--on-landing`/`--no-on-landing`
+each replace their own field the same way. `remove` deletes the target
+outright, so a repository it was `--on-landing` for stops deploying it on
+future landings; it is refused while a deploy of that target is still
+running, since there would be nothing left to record the result on.
 
 ## Methods
 

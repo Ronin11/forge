@@ -2537,6 +2537,46 @@ impl Store {
         Ok(())
     }
 
+    /// Replace a deploy target's fields in place (project and name stay
+    /// the primary key): what `forge project deploy set` writes after
+    /// merging only the flags given onto the row `deploy_target` returned.
+    pub fn update_deploy_target(&self, t: &DeployTarget) -> Result<()> {
+        let args_json = serde_json::to_string(&t.args)?;
+        let n = self.lock().execute(
+            "UPDATE deploy_targets SET repo=?3, scope_json=?4, method=?5, args_json=?6, check_cmd=?7, on_landing=?8, smoke_url=?9
+             WHERE project=?1 AND name=?2",
+            params![
+                t.project,
+                t.name,
+                t.repo,
+                t.scope,
+                t.method,
+                args_json,
+                t.check_cmd,
+                t.on_landing,
+                t.smoke_url,
+            ],
+        )?;
+        if n != 1 {
+            bail!("no deploy target {} in project {}", t.name, t.project);
+        }
+        Ok(())
+    }
+
+    /// Delete a deploy target. Its past deploys (`deploys`, `forge deploy
+    /// log`) are untouched; only future `--on-landing` runs and `forge
+    /// deploy` of this name stop.
+    pub fn remove_deploy_target(&self, project: &str, name: &str) -> Result<()> {
+        let n = self.lock().execute(
+            "DELETE FROM deploy_targets WHERE project=?1 AND name=?2",
+            params![project, name],
+        )?;
+        if n != 1 {
+            bail!("no deploy target {name} in project {project}");
+        }
+        Ok(())
+    }
+
     /// One project's deploy target by name.
     pub fn deploy_target(&self, project: &str, name: &str) -> Result<Option<DeployTarget>> {
         Ok(self
@@ -3633,6 +3673,67 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_deploy_target_is_updated_in_place_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+
+        let mut args = BTreeMap::new();
+        args.insert("unit".to_string(), "equitizr.service".to_string());
+        s.add_deploy_target(&DeployTarget {
+            project: "equitizr".into(),
+            name: "prod".into(),
+            repo: "/repo".into(),
+            scope: None,
+            method: "deploy-user-service".into(),
+            args: args.clone(),
+            check_cmd: "systemctl is-active equitizr".into(),
+            on_landing: true,
+            smoke_url: Some("https://equitizr.example.com/".into()),
+        })
+        .unwrap();
+
+        // Updating a target that does not exist is refused.
+        assert!(
+            s.update_deploy_target(&DeployTarget {
+                project: "equitizr".into(),
+                name: "ghost".into(),
+                repo: "/repo".into(),
+                scope: None,
+                method: "deploy-command".into(),
+                args: BTreeMap::new(),
+                check_cmd: "true".into(),
+                on_landing: false,
+                smoke_url: None,
+            })
+            .is_err()
+        );
+
+        // Update in place: the row stays under the same primary key.
+        let mut t = s.deploy_target("equitizr", "prod").unwrap().unwrap();
+        t.args.insert("host".to_string(), "box2".to_string());
+        t.on_landing = false;
+        s.update_deploy_target(&t).unwrap();
+
+        let updated = s.deploy_target("equitizr", "prod").unwrap().unwrap();
+        assert_eq!(
+            updated.args.get("unit").map(String::as_str),
+            Some("equitizr.service")
+        );
+        assert_eq!(updated.args.get("host").map(String::as_str), Some("box2"));
+        assert!(!updated.on_landing);
+        assert_eq!(updated.check_cmd, "systemctl is-active equitizr");
+        assert_eq!(s.deploy_targets("equitizr").unwrap().len(), 1);
+
+        // Removing an unknown target is refused; removing the real one
+        // leaves no targets behind.
+        assert!(s.remove_deploy_target("equitizr", "ghost").is_err());
+        s.remove_deploy_target("equitizr", "prod").unwrap();
+        assert!(s.deploy_targets("equitizr").unwrap().is_empty());
+        assert!(s.deploy_target("equitizr", "prod").unwrap().is_none());
     }
 
     #[test]
