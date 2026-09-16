@@ -207,6 +207,23 @@ fn id_of(rest: &str) -> Option<i64> {
     rest.trim_matches('/').parse().ok()
 }
 
+/// `/api/projects/<name>`, `/api/projects/<name>/backlog`, or
+/// `/api/projects/<name>/initiatives`, split into the project's name and
+/// which of the three routes it is; `None` for anything else, including a
+/// name that would smuggle a path segment.
+fn project_sub(path: &str) -> Option<(String, Option<&'static str>)> {
+    let rest = path.strip_prefix("/api/projects/")?;
+    for (suffix, sub) in [("/backlog", "backlog"), ("/initiatives", "initiatives")] {
+        if let Some(name) = rest.strip_suffix(suffix)
+            && !name.is_empty()
+            && !name.contains('/')
+        {
+            return Some((name.to_string(), Some(sub)));
+        }
+    }
+    (!rest.is_empty() && !rest.contains('/')).then(|| (rest.to_string(), None))
+}
+
 /// `/api/plugins/<name>/<action>` split into the plugin's name and the
 /// trailing action (`enable`, `disable`, or `logs`); `None` for anything
 /// else, including a name that would smuggle a path segment.
@@ -298,7 +315,13 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         return;
     }
     let resp = match path.as_str() {
-        p if p == "/tasks" || p.starts_with("/tasks/") || p == "/plugins" => {
+        p if p == "/tasks"
+            || p.starts_with("/tasks/")
+            || p == "/plugins"
+            || p == "/projects"
+            || p.starts_with("/projects/")
+            || p.starts_with("/initiatives/") =>
+        {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/app.js" => text(200, APP_JS, "application/javascript"),
@@ -345,6 +368,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                 ("state", "--state"),
                 ("workflow", "--workflow"),
                 ("repo", "--repo"),
+                ("project", "--project"),
             ] {
                 if let Some(v) = query_param(&query, key).map(|v| unescape(&v))
                     && !v.is_empty()
@@ -357,6 +381,23 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             json_or_error(forge.json(&argv))
         }
         "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
+        "/api/projects" => json_or_error(forge.json(&["project", "list", "--json"])),
+        p if p.starts_with("/api/projects/") => match project_sub(p) {
+            Some((name, None)) => json_or_error(forge.json(&["project", "show", &name, "--json"])),
+            Some((name, Some("backlog"))) => {
+                json_or_error(forge.json(&["project", "backlog", &name, "--json"]))
+            }
+            Some((name, Some("initiatives"))) => {
+                json_or_error(forge.json(&["initiative", "list", &name, "--json"]))
+            }
+            _ => text(404, "not found", "text/plain"),
+        },
+        p if p.starts_with("/api/initiatives/") => match id_of(&p["/api/initiatives/".len()..]) {
+            Some(id) => {
+                json_or_error(forge.json(&["initiative", "report", &id.to_string(), "--json"]))
+            }
+            None => text(404, "no such initiative", "text/plain"),
+        },
         "/api/events" => {
             let since = query_param(&query, "since")
                 .and_then(|s| s.parse().ok())

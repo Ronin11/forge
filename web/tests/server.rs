@@ -23,6 +23,19 @@ case "$1" in
       logs) echo "log line 1"; echo "log line 2" ;;
       *) echo "unexpected plugin: $*" >&2; exit 2 ;;
     esac ;;
+  project)
+    case "$2" in
+      list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"repos":[],"created_at":1}]' ;;
+      show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[],\"created_at\":1}" ;;
+      backlog) echo "[{\"id\":1,\"project\":\"$3\",\"text\":\"do the thing\",\"created_at\":1,\"done_at\":null}]" ;;
+      *) echo "unexpected project: $*" >&2; exit 2 ;;
+    esac ;;
+  initiative)
+    case "$2" in
+      list) echo "[{\"id\":5,\"project\":\"$3\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"queued\":1,\"running\":0,\"succeeded\":0,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":1.25,\"budget_usd\":null,\"stop_after_same_rule\":3,\"created_at\":1,\"settled_at\":null}]" ;;
+      report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\"}],\"refused\":[],\"rulings\":[],\"questions\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
+      *) echo "unexpected initiative: $*" >&2; exit 2 ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -118,6 +131,12 @@ fn without_the_token_nothing_is_served() {
         "/api/requests",
         "/api/plugins",
         "/app.js",
+        "/projects",
+        "/projects/demo",
+        "/initiatives/5",
+        "/api/projects",
+        "/api/projects/demo",
+        "/api/initiatives/5",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -235,6 +254,58 @@ fn the_plugins_route_merges_list_and_status_and_the_action_routes_hit_the_cli() 
     );
     let (status, _, _) = post(&w.addr, "/api/plugins/echo/logs", &cookie);
     assert_eq!(status, 405);
+}
+
+#[test]
+fn the_projects_and_initiatives_routes_pass_forge_json_through() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    for view in ["/projects", "/projects/demo", "/initiatives/5"] {
+        let (status, _, body) = get(&w.addr, view, &cookie);
+        assert_eq!(status, 200, "{view}");
+        assert!(body.contains(r#"<script src="/app.js">"#), "{view}: {body}");
+    }
+
+    let (status, _, body) = get(&w.addr, "/api/projects", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["name"], "demo");
+    assert_eq!(v[0]["cost_usd"], 3.5);
+
+    let (status, _, body) = get(&w.addr, "/api/projects/demo", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["name"], "demo");
+    assert_eq!(v["purpose"], "a demo project");
+
+    let (status, _, body) = get(&w.addr, "/api/projects/demo/backlog", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["project"], "demo");
+    assert_eq!(v[0]["text"], "do the thing");
+
+    let (status, _, body) = get(&w.addr, "/api/projects/demo/initiatives", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["id"], 5);
+    assert_eq!(v[0]["project"], "demo");
+
+    let (status, _, body) = get(&w.addr, "/api/initiatives/5", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["id"], 5);
+    assert_eq!(v["outcome"], "ship it");
+    assert_eq!(v["tasks"][0]["id"], 9);
+
+    let (status, _, _) = get(&w.addr, "/api/initiatives/x", &cookie);
+    assert_eq!(status, 404);
+
+    // The project filter on /tasks passes through as --project.
+    let (status, _, body) = get(&w.addr, "/api/tasks?project=demo", &cookie);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["args"], "--json --limit 100 --project demo");
 }
 
 #[test]

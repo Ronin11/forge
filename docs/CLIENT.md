@@ -24,11 +24,11 @@ and does not parse stdout.
   plus the point in the event log to subscribe from. See
   [Snapshot](#snapshot-document).
 - **`forge log --json [--limit N] [--state S] [--repo P] [--before ID]
-  [--grep TEXT] [--workflow W]`** — tasks, newest first. A JSON array of
-  [`TaskRow`](#taskrow). `--limit` defaults to 20; `--before` pages
-  backward by id; `--grep` matches the task text or an exact id;
-  `--state` is one of `queued`, `running`, `succeeded`, `failed`,
-  `blocked`, `unverified`, `withdrawn`.
+  [--grep TEXT] [--workflow W] [--project NAME] [--initiative ID]`** —
+  tasks, newest first. A JSON array of [`TaskRow`](#taskrow). `--limit`
+  defaults to 20; `--before` pages backward by id; `--grep` matches the
+  task text or an exact id; `--state` is one of `queued`, `running`,
+  `succeeded`, `failed`, `blocked`, `unverified`, `withdrawn`.
 - **`forge requests --json [--repo P]`** — blocked tasks and what each
   is waiting on. A JSON array of [`RequestRow`](#requestrow).
 - **`forge decisions --json [--repo P]`** — operator and supervisor
@@ -49,6 +49,16 @@ and does not parse stdout.
   first. A JSON array of [`BacklogRow`](#backlogrow). `--add`/`--done`
   write before printing, so a client re-reads this rather than parsing
   the write's own (non-JSON) output.
+- **`forge initiative list [<project>] --json`** — every initiative, or
+  only `<project>`'s, oldest first. A JSON array of
+  [`InitiativeRow`](#initiativerow).
+- **`forge initiative show ID --json`** — one initiative: its state, task
+  counts, cost and settings. A single [`InitiativeRow`](#initiativerow)
+  object. Exits non-zero if `ID` names no known initiative.
+- **`forge initiative report ID --json`** — the generated report: the
+  outcome, each task and how it ended, what verification refused, what
+  the supervisor ruled, what reached the operator, cost and elapsed time.
+  A single [`InitiativeDoc`](#initiativedoc) object.
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -97,7 +107,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative
 ```
 
 ## Naming: unified vs. legacy keys
@@ -136,6 +146,8 @@ One row of `forge log --json`, one task as the queue lists it.
 | `created_at` | integer | **Preferred.** Creation time, Unix seconds. |
 | `created` | string | Legacy key for `created_at`: a localtime string, kept for compatibility. |
 | `finished_at` | integer or null | When the task reached a final state, Unix seconds; null while it is queued or running. |
+| `project` | string or null | The project the task belongs to; null for a task predating projects that no migration could place. |
+| `initiative` | integer or null | The initiative the task belongs to, if any. |
 
 ### `RequestRow`
 
@@ -227,6 +239,40 @@ is not yet queued (see docs/PROJECTS.md, "Backlog").
 | `created_at` | integer | Unix seconds. |
 | `done_at` | integer or null | Unix seconds it was marked done, or `null` while open. |
 
+### `InitiativeRow`
+
+One row of `forge initiative list --json` / `forge initiative show
+--json`: an initiative, its derived state, task counts by state, cost
+and its own settings. See docs/PROJECTS.md, "Initiative".
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | The initiative's id. |
+| `project` | string | The project it belongs to. |
+| `outcome` | string | One sentence saying what is true when the initiative is done. |
+| `state` | string | `open`, `held`, `done`, or `done with failures` (see docs/PROJECTS.md, "State"). |
+| `held_rule` | string or null | While `state` is `held`: `"budget"`, or the L0 rule name whose repeated failure triggered the stop rule. |
+| `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the initiative's tasks. |
+| `cost_usd` | number | Total cost across every attempt of every task in the initiative. |
+| `budget_usd` | number or null | This initiative's own cost cap; `null` falls to the project's `per_initiative_usd`. |
+| `stop_after_same_rule` | integer | Hold the initiative after this many of its tasks fail in a row on the same L0 rule. |
+| `created_at` | integer | Unix seconds. |
+| `settled_at` | integer or null | When every task reached a terminal state and the initiative's own record closed; `null` while still open or held. |
+
+### `InitiativeDoc`
+
+The document `forge initiative report ID --json` prints: the generated
+report (see docs/PROJECTS.md, "One notification and one report").
+
+| field | type | meaning |
+|---|---|---|
+| `id`, `project`, `outcome`, `state`, `held_rule`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
+| `tasks` | array of `{id, state, reason}` | Every task in the initiative and how it ended. |
+| `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
+| `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
+| `questions` | array of `{task_id, question, answer}` | Questions that reached the operator; `answer` is `null` while the task is still blocked. |
+| `elapsed_secs` | integer or null | Seconds from creation to the last task's `finished_at`; `null` if nothing has finished yet. |
+
 ### `TraceDoc`
 
 The document `forge trace ID --json` prints: everything about one task,
@@ -262,6 +308,8 @@ the store's column names):
 | `pushed` | bool | whether the branch has been pushed. |
 | `budget_usd` | number or null | per-task cost cap override. |
 | `created_at`, `started_at`, `finished_at` | integer / integer or null | Unix seconds. |
+| `project` | string or null | the project the task belongs to. |
+| `initiative` | integer or null | the initiative the task belongs to, if any. |
 
 **`attempts`** — array of `TraceAttempt`, one per attempt:
 `attempt_no`, `step`, `step_seq`, `state`, `reason`, `started_at`,
@@ -475,20 +523,31 @@ across a rotation, not to the snapshot protocol itself.
   60 seconds; `events --since <offset> --follow` for the live stream;
   `log --json --limit 60` and `requests --json` on a list-dirty event;
   `trace ID --json` to open a task and again on a trace-dirty event for
-  the task currently open; `forge retry [--chain]` to act.
+  the task currently open; `forge retry [--chain]` to act. The queue
+  table's `TaskRow.project` is shown as a column; the task view shows
+  `TraceDoc.task.initiative` alongside the rest of the record.
 - **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`): every
   route under `/api/` runs one verb and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`
   (query params map to `--limit`/`--before`/`--grep`/`--state`/
-  `--workflow`/`--repo`), `/api/requests` → `requests --json`,
+  `--workflow`/`--repo`/`--project`), `/api/requests` → `requests --json`,
   `/api/task/<id>` → `trace <id> --json`, `/api/journal/<id>` →
   `journal <id> --json`, `/api/events?since=` → `events --since
   --follow` reframed as one SSE `data:` line per event, and
   `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
-  detail view, and run view apply the same re-read rules as above.
+  detail view, and run view apply the same re-read rules as above; the
+  list view's `TaskRow.initiative`, when set, links to `/initiatives/<id>`.
   `/api/plugins` runs `plugin list --json` and `plugin status --json`
   through `forge-client`'s typed `PluginRow`/`PluginStatusRow` and
   merges them by name for the `/plugins` page;
   `POST /api/plugins/<name>/enable` and `.../disable` → `forge plugin
   enable|disable <name>`; `/api/plugins/<name>/logs` → `forge plugin
   logs <name>` (no `--follow`), served as plain text.
+  `/api/projects` → `project list --json` for the `/projects` page;
+  `/api/projects/<name>` → `project show <name> --json`,
+  `/api/projects/<name>/initiatives` → `initiative list <name> --json`,
+  and `/api/projects/<name>/backlog` → `project backlog <name> --json`,
+  together for the `/projects/<name>` page; `/api/initiatives/<id>` →
+  `initiative report <id> --json` for the `/initiatives/<id>` page,
+  which is the outcome, the tasks and their states, and the rest of the
+  generated report all from that one document.

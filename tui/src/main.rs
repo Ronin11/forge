@@ -363,6 +363,7 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
             Cell::from(t.workflow.clone()),
             Cell::from(t.attempts.to_string()),
             Cell::from(format!("${:.2}", t.cost_usd)),
+            Cell::from(t.project.clone().unwrap_or_default()),
             Cell::from(short(&t.task, 200)),
         ])
     });
@@ -374,11 +375,12 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(13),
             Constraint::Length(4),
             Constraint::Length(7),
+            Constraint::Length(12),
             Constraint::Min(20),
         ],
     )
     .header(
-        Row::new(vec!["ID", "STATE", "WF", "ATT", "COST", "TASK"])
+        Row::new(vec!["ID", "STATE", "WF", "ATT", "COST", "PROJECT", "TASK"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -495,6 +497,15 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
             &t["base_sha"].as_str().unwrap_or("")
                 [..8.min(t["base_sha"].as_str().unwrap_or("").len())]
         )));
+        if !t["project"].is_null() || !t["initiative"].is_null() {
+            lines.push(Line::raw(format!(
+                "project {}   initiative {}",
+                t["project"].as_str().unwrap_or("-"),
+                t["initiative"]
+                    .as_i64()
+                    .map_or("-".to_string(), |i| i.to_string()),
+            )));
+        }
         for (k, v) in [("after", &t["after"]), ("retry of", &t["retry_of"])] {
             if !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()) {
                 lines.push(Line::raw(format!("{k} {v}")));
@@ -704,7 +715,7 @@ mod tests {
     #[test]
     fn the_queue_lists_tasks_with_their_state_and_counts_them() {
         let app = app_with(
-            r#"[{"id":7,"state":"running","workflow":"tdd","attempts":1,"cost_usd":0.5,"task":"stars tier"},
+            r#"[{"id":7,"state":"running","workflow":"tdd","attempts":1,"cost_usd":0.5,"task":"stars tier","project":"forge"},
                 {"id":6,"state":"queued","workflow":"direct","attempts":0,"cost_usd":0,"task":"docs"}]"#,
             "[]",
         );
@@ -712,6 +723,8 @@ mod tests {
         assert!(text.contains("1 queued, 1 running"), "{text}");
         assert!(text.contains("7     running"), "{text}");
         assert!(text.contains("stars tier"), "{text}");
+        assert!(text.contains("PROJECT"), "{text}");
+        assert!(text.contains("forge"), "{text}");
         assert!(text.contains("Enter open"), "{text}");
     }
 
@@ -767,7 +780,7 @@ mod tests {
     fn a_trace_renders_attempts_operations_and_the_diagnosis() {
         let mut app = app_with("[]", "[]");
         app.trace = Some(serde_json::from_value(serde_json::json!({
-            "task": {"id": 3, "state": "failed", "workflow": "tdd", "reason": "L1 failed: test (after 2 attempt(s))", "branch": "forge/3-x", "base_sha": "abcdef1234567890", "text": "do the thing", "after": [], "retry_of": null},
+            "task": {"id": 3, "state": "failed", "workflow": "tdd", "reason": "L1 failed: test (after 2 attempt(s))", "branch": "forge/3-x", "base_sha": "abcdef1234567890", "text": "do the thing", "after": [], "retry_of": null, "project": "forge", "initiative": 9},
             "attempts": [{"attempt_no": 1, "step": "code", "state": "checks_failed", "num_turns": 12, "cost_usd": 0.4, "reason": "L1 failed: test", "verdict": [{"level": "L1", "name": "test", "ok": false, "tail": "FAIL x\nmore"}]}],
             "ops": [{"name": "clone", "ok": true, "detail": "abc"}, {"name": "verify", "ok": false, "detail": "L1 failed: test"}],
             "diagnosis": [{"what": "the repo's test check fails", "action": "read the failing tests"}]
@@ -778,5 +791,6 @@ mod tests {
         assert!(text.contains("✗ L1 test: FAIL x"), "{text}");
         assert!(text.contains("✗ verify"), "{text}");
         assert!(text.contains("action read the failing tests"), "{text}");
+        assert!(text.contains("project forge   initiative 9"), "{text}");
     }
 }
