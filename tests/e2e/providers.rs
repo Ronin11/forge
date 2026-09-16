@@ -172,3 +172,190 @@ fn an_unconfigured_provider_is_refused_at_creation() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+/// The engine resolves a step's provider as: task flag, then project,
+/// then the operator's [roles] table, then "anthropic". This exercises
+/// the operator and project layers end to end (task-flag precedence is
+/// covered by `ctx::resolve_provider`'s own unit tests); every provider
+/// here runs codex-cli against the same fake, so only the recorded
+/// `provider` name on the attempt distinguishes which layer won.
+#[test]
+fn a_projects_role_wins_over_the_operators_and_a_tasks_flag_wins_over_both() {
+    let e = Env::new();
+    write_config(
+        &e,
+        "[providers.op-role]\nrunner = \"codex-cli\"\n\
+         [providers.proj-role]\nrunner = \"codex-cli\"\n\
+         [providers.task-flag]\nrunner = \"codex-cli\"\n\
+         [roles]\ncode = \"op-role\"\n",
+    );
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        e.forge("ok.sh", &["project", "set", "demo", "--role", "code=proj-role"])
+            .status
+            .success()
+    );
+
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.args([
+        "run",
+        repo,
+        "write 42 to answer.txt",
+        "--no-land",
+        "--retries",
+        "0",
+    ]);
+    let o = cmd.output().expect("forge run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let provider: String = e
+        .db()
+        .query_row("SELECT provider FROM attempts WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        provider, "proj-role",
+        "the project's own role wins over the operator's"
+    );
+
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.args([
+        "run",
+        repo,
+        "write 42 to answer.txt",
+        "--no-land",
+        "--retries",
+        "0",
+        "--provider",
+        "task-flag",
+    ]);
+    let o = cmd.output().expect("forge run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let provider: String = e
+        .db()
+        .query_row("SELECT provider FROM attempts WHERE task_id=2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        provider, "task-flag",
+        "the task's own --provider wins over every role"
+    );
+}
+
+/// `forge project set --role` validates the role name and the provider
+/// name, and persists what it accepts.
+#[test]
+fn project_set_role_validates_and_persists() {
+    let e = Env::new();
+    write_config(&e, "[providers.devhome]\nrunner = \"codex-cli\"\n");
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let bad_role = e.forge(
+        "ok.sh",
+        &["project", "set", "demo", "--role", "bogus=devhome"],
+    );
+    assert!(!bad_role.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad_role.stderr).contains("bogus"),
+        "{}",
+        String::from_utf8_lossy(&bad_role.stderr)
+    );
+
+    let bad_provider = e.forge(
+        "ok.sh",
+        &["project", "set", "demo", "--role", "code=does-not-exist"],
+    );
+    assert!(!bad_provider.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad_provider.stderr).contains("does-not-exist"),
+        "{}",
+        String::from_utf8_lossy(&bad_provider.stderr)
+    );
+
+    let ok = e.forge(
+        "ok.sh",
+        &["project", "set", "demo", "--role", "code=devhome"],
+    );
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["project", "show", "demo"]).stdout)
+        .to_string();
+    assert!(show.contains("code=devhome"), "{show}");
+}
+
+/// Each provider holds on its own rate window alone: a task routed to a
+/// provider with no samples of its own still runs even while the
+/// default (anthropic) provider's window sits at its cap from an
+/// earlier attempt.
+#[test]
+fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap() {
+    let e = Env::new();
+    write_config(
+        &e,
+        "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\n",
+    );
+    let anthropic_task = e.add(&["--no-land"]);
+    let other_task = e.add(&["--no-land", "--provider", "fake-codex"]);
+
+    let mut cmd = e.cmd("ratelimited.sh");
+    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.args(["work", "--once"]);
+    let o = cmd.output().expect("forge work");
+    eprintln!(
+        "--- forge work --once (anthropic capped, fake-codex free) ---\n{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    assert_eq!(e.task(anthropic_task).0, "succeeded");
+    assert_eq!(
+        e.task(other_task).0,
+        "succeeded",
+        "routed to a provider with no samples of its own, so anthropic's \
+         capped window did not hold it"
+    );
+
+    let (five_hour, resets): (f64, i64) = e
+        .db()
+        .query_row(
+            "SELECT rl_five_hour, rl_five_hour_resets FROM attempts WHERE provider='anthropic'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(five_hour >= 0.9, "anthropic's window is at its cap");
+    // The other task's own attempt is unaffected by anthropic's hold: it
+    // is not made to wait for anthropic's window to reset.
+    let started: i64 = e
+        .db()
+        .query_row(
+            "SELECT started_at FROM attempts WHERE provider='fake-codex'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        started < resets,
+        "the other-provider task ran without waiting for anthropic's reset \
+         (started {started}, anthropic resets {resets})"
+    );
+}

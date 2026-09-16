@@ -2612,6 +2612,130 @@ mod tests {
     }
 
     #[test]
+    fn set_project_defaults_role_providers_merges_instead_of_replacing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        s.create_project(&Project {
+            name: "p".into(),
+            purpose: "purpose".into(),
+            created_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        s.set_project_defaults(
+            "p",
+            &ProjectDefaults {
+                role_providers: [("code".to_string(), "devhome".to_string())].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_project_defaults(
+            "p",
+            &ProjectDefaults {
+                role_providers: [("review".to_string(), "openai".to_string())].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = s.project("p").unwrap().unwrap();
+        assert_eq!(p.role_providers["code"], "devhome", "not clobbered");
+        assert_eq!(p.role_providers["review"], "openai");
+        assert_eq!(p.role_providers.len(), 2);
+
+        // Naming the same role again overwrites just that entry.
+        s.set_project_defaults(
+            "p",
+            &ProjectDefaults {
+                role_providers: [("code".to_string(), "openai".to_string())].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = s.project("p").unwrap().unwrap();
+        assert_eq!(p.role_providers["code"], "openai");
+        assert_eq!(p.role_providers["review"], "openai");
+    }
+
+    #[test]
+    fn latest_rate_limit_is_keyed_by_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let id = s.insert_task(&t).unwrap();
+        let finish = |aid: i64, five_hour: f64| FinishAttempt {
+            id: aid,
+            state: AttemptState::Succeeded,
+            reason: String::new(),
+            finished_at: Some(2),
+            agent_exit: Some(0),
+            timed_out: false,
+            num_turns: 1,
+            tool_calls: 1,
+            cost_usd: Some(0.0),
+            agent_ms: 0,
+            commits: 0,
+            files_changed: 0,
+            dirty: false,
+            verdict_json: "[]".into(),
+            result_text: String::new(),
+            envelope_json: String::new(),
+            rl_five_hour: Some(five_hour),
+            rl_seven_day: None,
+            rl_five_hour_resets: Some(2_000_000_000),
+            rl_seven_day_resets: None,
+            end_sha: String::new(),
+            outputs_json: String::new(),
+            session_id: String::new(),
+            first_edit: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            early_signals: "[]".into(),
+            early_near: "[]".into(),
+        };
+        let anthropic_attempt = s
+            .insert_attempt(&Attempt {
+                task_id: id,
+                attempt_no: 1,
+                started_at: 1,
+                provider: "anthropic".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.finish_attempt(&finish(anthropic_attempt, 0.95)).unwrap();
+        let devhome_attempt = s
+            .insert_attempt(&Attempt {
+                task_id: id,
+                attempt_no: 2,
+                started_at: 2,
+                provider: "devhome".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.finish_attempt(&finish(devhome_attempt, 0.1)).unwrap();
+        assert_eq!(
+            s.latest_rate_limit("anthropic").unwrap().unwrap().five_hour,
+            Some(0.95)
+        );
+        assert_eq!(
+            s.latest_rate_limit("devhome").unwrap().unwrap().five_hour,
+            Some(0.1)
+        );
+        assert!(s.latest_rate_limit("openai").unwrap().is_none());
+    }
+
+    #[test]
     fn unknown_state_is_an_error_not_a_default() {
         assert!(TaskState::try_from("bogus").is_err());
         assert!(AttemptState::try_from("bogus").is_err());
