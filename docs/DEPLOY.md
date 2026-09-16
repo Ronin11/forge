@@ -128,6 +128,52 @@ it did. It emits `DeployStarted` and `DeployFinished` events, so the
 notify and signal plugins can say "equitizr is live at <commit>" or "the
 deploy failed and rolled back", and the factory-floor page can show it.
 
+## Provisioning
+
+Declaring a target is one command; standing up the box it names is not —
+by hand it is a firewall, a server, a wait, and editing `~/.ssh/config`,
+each a place to get it wrong. `forge provision` collapses that into one:
+
+```
+forge provision <project> <name> [--arg k=v]...
+```
+
+`<name>` must already be a deploy target on `<project>` (`forge project
+deploy add`), because provisioning is about the box, not the target's
+method or check. It runs the `provision-hetzner` operation
+(`src/builtins/operations/provision-hetzner.toml`), a script like every
+other operation, never an agent:
+
+1. Create a firewall named `<name>` if one by that name does not already
+   exist, allowing TCP 22, 80, 443 and ICMP from anywhere.
+2. `hcloud server create` with `--arg type` (default `cpx21`),
+   `--arg location` (default `ash`), `--arg image` (default `debian-12`),
+   the firewall, `--arg cloud_init`'s file as user data, and an
+   `--ssh-key` for each name in the comma-separated `--arg ssh_keys`
+   (keys already uploaded to the Hetzner project; this never creates
+   one).
+3. Wait for the server to report running.
+4. Write a `Host` block naming it by its ipv4 address to
+   `FORGE2_HOME/provision/<project>/<name>/ssh-config`, a file the
+   operator appends to their own `~/.ssh/config` — never written there
+   directly, since that file is the operator's and Forge does not edit
+   it unasked.
+
+The server's ipv4 is then recorded as the target's own `host` arg, the
+same field `--arg host=<ip>` sets by hand, so the very next `forge deploy
+<project> <name>` reaches the box it just built.
+
+`docs/ops/hetzner-equitizr-cloud-init.yaml` is the reference cloud-init:
+a user, its ssh keys, a Caddy config reverse-proxying the app, and a
+user-level systemd unit for it. One step in it matters beyond that one
+project: Debian 12 ships Caddy 2.6.2 (2022), which fails against Let's
+Encrypt's current ACME endpoints ("downloading certificate chain ...
+404") and silently falls back to the staging CA, so the site never gets
+a real certificate. `runcmd` replaces the packaged binary with the
+current GitHub release before Caddy's first start, keeping the package's
+unit and user; every Hetzner box provisioned this way needs the same
+step until Debian ships a newer Caddy.
+
 ## Rollback and the human rung
 
 If the check fails, Forge deploys the previous passing commit with the
