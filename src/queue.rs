@@ -199,7 +199,10 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
             cfg.config_path
         );
     }
-    let provider_name = args.provider.clone().unwrap_or_else(|| "anthropic".to_string());
+    let provider_name = args
+        .provider
+        .clone()
+        .unwrap_or_else(|| "anthropic".to_string());
     let provider = f.providers.get(&provider_name).with_context(|| {
         format!("unknown provider {provider_name:?}; see `forge providers` for what is configured")
     })?;

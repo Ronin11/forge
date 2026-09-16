@@ -755,7 +755,10 @@ mod tests {
                 "http://dev.home:11434/v1".to_string()
             )]
         );
-        assert_eq!(devhome.extra_args, vec!["--oss", "--local-provider", "ollama"]);
+        assert_eq!(
+            devhome.extra_args,
+            vec!["--oss", "--local-provider", "ollama"]
+        );
         assert_eq!(devhome.price_input_per_million, 0.0);
 
         let openai = &c.providers["openai"];
@@ -765,7 +768,10 @@ mod tests {
         assert_eq!(openai.notes.as_deref(), Some("signed in with codex login"));
 
         // The built-in default is still there alongside the operator's own.
-        assert_eq!(c.providers["anthropic"].runner, crate::agent::Runner::ClaudeCli);
+        assert_eq!(
+            c.providers["anthropic"].runner,
+            crate::agent::Runner::ClaudeCli
+        );
     }
 
     #[test]

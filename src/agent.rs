@@ -725,7 +725,12 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
 /// call) are the caller's, in `run_codex`, so this stays pure enough to
 /// unit-test against captured lines. Returns the early-ending signals'
 /// text when `Watch` says enough of them tripped to stop the run.
-fn apply_codex_event(v: &Value, out: &mut Outcome, watch: &mut Watch, writes: bool) -> Option<String> {
+fn apply_codex_event(
+    v: &Value,
+    out: &mut Outcome,
+    watch: &mut Watch,
+    writes: bool,
+) -> Option<String> {
     match v["type"].as_str() {
         Some("thread.started") => {
             if let Some(id) = v["thread_id"].as_str() {
@@ -736,7 +741,7 @@ fn apply_codex_event(v: &Value, out: &mut Outcome, watch: &mut Watch, writes: bo
             if v["item"]["type"] == "command_execution" {
                 out.tool_calls += 1;
                 let cmd = v["item"]["command"].as_str().unwrap_or("").to_string();
-                watch.saw("Bash", &Value::from(serde_json::json!({ "command": cmd })));
+                watch.saw("Bash", &serde_json::json!({ "command": cmd }));
                 if let Some(tripped) = watch.should_end(writes) {
                     let text = tripped
                         .iter()
@@ -753,7 +758,9 @@ fn apply_codex_event(v: &Value, out: &mut Outcome, watch: &mut Watch, writes: bo
             Some("agent_message") => {
                 let text = v["item"]["text"].as_str().unwrap_or("").to_string();
                 out.got_result = true;
-                out.structured = serde_json::from_str::<Value>(&text).ok().map(|_| text.clone());
+                out.structured = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .map(|_| text.clone());
                 out.result_text = text;
             }
             _ => {}

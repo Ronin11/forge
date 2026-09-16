@@ -259,7 +259,7 @@ fn trace_requests_and_stats_expose_the_whole_run() {
         "{out}"
     );
     assert!(
-        out.contains("inputs     model=sonnet max_turns=40"),
+        out.contains("inputs     model=sonnet runner=claude-cli provider=anthropic max_turns=40"),
         "per-step params are recorded:\n{out}"
     );
     assert!(out.contains("verdict    ✗ L1 red-on-base"), "{out}");

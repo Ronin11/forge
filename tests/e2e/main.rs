@@ -10,6 +10,7 @@ mod landing;
 mod listing;
 mod ops;
 mod plugins;
+mod providers;
 mod refs;
 mod resume;
 mod statusline;

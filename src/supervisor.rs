@@ -386,7 +386,15 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // model, regardless of which provider the task's own steps selected.
     let provider = agent::Provider::default();
     let (mut a, log_path) = crate::attempt::new_attempt(
-        f, &t, "supervisor", seq, wt, attempt_no, inputs, None, &provider,
+        f,
+        &t,
+        "supervisor",
+        seq,
+        wt,
+        attempt_no,
+        inputs,
+        None,
+        &provider,
     )
     .await?;
     let outcome = agent::run(agent::Launch {
