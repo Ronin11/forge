@@ -372,7 +372,7 @@ pub async fn file_plan(f: &Forge, origin: &Task, initiative: i64) -> Result<Vec<
         let req = TaskRequest {
             repo: PathBuf::from(&origin.repo),
             task: item.clone(),
-            model: "sonnet".to_string(),
+            model: Some("sonnet".to_string()),
             max_turns: 100,
             retries: 1,
             timeout_secs: 1800,
