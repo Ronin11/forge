@@ -142,6 +142,34 @@ impl Forge {
     }
 }
 
+/// Runs a tool other than `forge` itself — resolved on `PATH`, exactly as
+/// the shell would — and returns its stdout as text, or an error carrying
+/// stderr on a non-zero exit: the same contract as [`Forge::run`], for the
+/// rest of Forge's own toolchain (`forge-repomap`, today). A client spawns
+/// these directly rather than through a `forge` verb because they aren't
+/// part of the kernel's contract with a client; `docs/CLIENT.md` doesn't
+/// describe them.
+pub fn spawn(bin: &str, args: &[&str]) -> Result<String> {
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {bin} {}", args.join(" ")))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{bin} {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// [`spawn`], then parsed as one JSON value.
+pub fn spawn_json(bin: &str, args: &[&str]) -> Result<Value> {
+    let text = spawn(bin, args)?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {bin} {}", args.join(" ")))
+}
+
 /// The live iterator behind [`Forge::subscribe`]. Yields one [`Event`] per
 /// line of `forge events --follow`; lines that aren't valid JSON are
 /// skipped. Killing its subordinate `forge events` process on drop is what
