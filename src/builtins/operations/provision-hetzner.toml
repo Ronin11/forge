@@ -1,0 +1,64 @@
+name = "provision-hetzner"
+kind = "operation"
+description = "provision a Hetzner Cloud box: create a firewall named after the server, allowing TCP 22, 80, 443 and ICMP from anywhere, if one by that name does not already exist; run `hcloud server create` with the given type (default cpx21), location (default ash) and image (default debian-12), the cloud-init file at the cloud_init arg, and the ssh keys already in the Hetzner project named in the comma-separated ssh_keys arg; wait for the server to report running; then write a Host block naming it by its ipv4 address to FORGE_ARG_OUT_DIR/ssh-config, a file the operator appends to their own ~/.ssh/config. Prints the server's ipv4 address as the last line of its output, which `forge provision` records as the target's host arg (see docs/DEPLOY.md, 'Provisioning')."
+run = ["bash", "-c", '''
+set -e
+name="$FORGE_ARG_NAME"
+type="${FORGE_ARG_TYPE:-cpx21}"
+location="${FORGE_ARG_LOCATION:-ash}"
+image="${FORGE_ARG_IMAGE:-debian-12}"
+cloud_init="$FORGE_ARG_CLOUD_INIT"
+ssh_keys="$FORGE_ARG_SSH_KEYS"
+outdir="$FORGE_ARG_OUT_DIR"
+
+if [ -z "$name" ]; then
+  echo "provision-hetzner: no name arg" >&2
+  exit 1
+fi
+if [ -z "$cloud_init" ]; then
+  echo "provision-hetzner: no cloud_init arg" >&2
+  exit 1
+fi
+mkdir -p "$outdir"
+
+if ! hcloud firewall describe "$name" >/dev/null 2>&1; then
+  hcloud firewall create --name "$name" >/dev/null
+  hcloud firewall add-rule "$name" --direction in --protocol tcp --port 22 --source-ips 0.0.0.0/0 --source-ips ::/0 >/dev/null
+  hcloud firewall add-rule "$name" --direction in --protocol tcp --port 80 --source-ips 0.0.0.0/0 --source-ips ::/0 >/dev/null
+  hcloud firewall add-rule "$name" --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0 >/dev/null
+  hcloud firewall add-rule "$name" --direction in --protocol icmp --source-ips 0.0.0.0/0 --source-ips ::/0 >/dev/null
+fi
+
+create_args=(server create --name "$name" --type "$type" --location "$location" --image "$image" --firewall "$name" --user-data-from-file "$cloud_init")
+if [ -n "$ssh_keys" ]; then
+  IFS=',' read -ra keys <<< "$ssh_keys"
+  for k in "${keys[@]}"; do
+    create_args+=(--ssh-key "$k")
+  done
+fi
+hcloud "${create_args[@]}" >/dev/null
+
+tries=0
+while true; do
+  status="$(hcloud server describe "$name" -o json | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))')"
+  if [ "$status" = "running" ]; then
+    break
+  fi
+  tries=$((tries + 1))
+  if [ "$tries" -ge 60 ]; then
+    echo "timed out waiting for $name to report running (last status: $status)" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+ipv4="$(hcloud server describe "$name" -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)["public_net"]["ipv4"]["ip"])')"
+
+cat >> "$outdir/ssh-config" <<HOST
+Host $name
+    HostName $ipv4
+    User root
+HOST
+
+echo "$ipv4"
+''', "provision-hetzner"]

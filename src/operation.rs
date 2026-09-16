@@ -13,6 +13,7 @@ use crate::verify::{self, Subject};
 use crate::workflows::{self, ResolvedStep};
 use crate::{checks, config, git};
 use anyhow::Context as _;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -433,5 +434,43 @@ pub(crate) async fn run_deploy_smoke(
             out_dir.display().to_string(),
         ),
     ];
+    Ok(checks::run_one("OP", &action.name, argv, out_dir, None, timeout, &env).await)
+}
+
+/// The `provision-hetzner` operation, resolved once up front exactly like
+/// `resolve_deploy_smoke`.
+pub(crate) fn resolve_provision(f: &Forge) -> anyhow::Result<workflows::ActionDef> {
+    let actions = workflows::load_actions(&f.paths.home)?;
+    let action = actions
+        .get("provision-hetzner")
+        .context("no provision-hetzner operation registered")?;
+    if action.run.is_none() {
+        anyhow::bail!("provision-hetzner declares no run command");
+    }
+    Ok(action.clone())
+}
+
+/// `forge provision <project> <name>`: run `provision-hetzner` with
+/// `args` as `FORGE_ARG_<KEY>` (uppercased), plus `FORGE_ARG_OUT_DIR` for
+/// the ssh-config fragment it writes (see
+/// src/builtins/operations/provision-hetzner.toml). Never sandboxed, like
+/// `run_deploy_method`: it reaches the operator's real Hetzner account and
+/// ssh keys.
+pub(crate) async fn run_provision(
+    action: &workflows::ActionDef,
+    args: &BTreeMap<String, String>,
+    out_dir: &Path,
+    timeout: Duration,
+) -> anyhow::Result<checks::CheckResult> {
+    let argv = action.run.as_ref().expect("checked by resolve_provision");
+    std::fs::create_dir_all(out_dir)?;
+    let mut env: Vec<(String, String)> = args
+        .iter()
+        .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
+        .collect();
+    env.push((
+        "FORGE_ARG_OUT_DIR".to_string(),
+        out_dir.display().to_string(),
+    ));
     Ok(checks::run_one("OP", &action.name, argv, out_dir, None, timeout, &env).await)
 }
