@@ -225,6 +225,35 @@ fn accepting_a_confirmed_brief_yields_a_project_with_two_backlog_entries_and_the
     let stdout = String::from_utf8_lossy(&show.stdout);
     assert!(stdout.contains("brief"), "{stdout}");
     assert!(stdout.contains("quote by photo"), "{stdout}");
+
+    // Accepting the same confirmed task again is a no-op: no duplicate
+    // backlog entries, no duplicate draft deploy target.
+    let o = e.forge("ok.sh", &["intake", "accept", &id.to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let backlog: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "backlog", "nate", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let items = backlog.as_array().expect("backlog is an array");
+    assert_eq!(
+        items.len(),
+        2,
+        "re-accepting must not duplicate backlog entries: {items:?}"
+    );
+
+    let targets: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "nate", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let targets = targets.as_array().expect("targets is an array");
+    assert_eq!(
+        targets.len(),
+        1,
+        "re-accepting must not duplicate the draft deploy target: {targets:?}"
+    );
 }
 
 #[test]

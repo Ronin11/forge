@@ -1615,8 +1615,20 @@ fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> R
         out!("registered repository {repo} to project {project_name}");
     }
 
+    let existing_backlog: std::collections::BTreeSet<String> = f
+        .store
+        .backlog(&project_name)?
+        .into_iter()
+        .map(|item| item.text)
+        .collect();
+
     for w in &brief.workflows {
-        let id = f.store.add_backlog(&project_name, &workflow_paragraph(w))?;
+        let text = workflow_paragraph(w);
+        if existing_backlog.contains(&text) {
+            out!("backlog item for {} already exists", w.name);
+            continue;
+        }
+        let id = f.store.add_backlog(&project_name, &text)?;
         out!("added backlog item {id}: {}", w.name);
     }
 
@@ -1644,17 +1656,19 @@ fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> R
             }
         }
         None => {
-            let id = f.store.add_backlog(
-                &project_name,
-                &format!(
-                    "deploy target: {} (names no host and method Forge already supports; complete with `forge project deploy add`)",
-                    brief.where_it_runs
-                ),
-            )?;
-            out!(
-                "added backlog item {id}: deploy target ({})",
+            let text = format!(
+                "deploy target: {} (names no host and method Forge already supports; complete with `forge project deploy add`)",
                 brief.where_it_runs
             );
+            if existing_backlog.contains(&text) {
+                out!("backlog item for deploy target already exists");
+            } else {
+                let id = f.store.add_backlog(&project_name, &text)?;
+                out!(
+                    "added backlog item {id}: deploy target ({})",
+                    brief.where_it_runs
+                );
+            }
         }
     }
 
