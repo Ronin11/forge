@@ -44,6 +44,11 @@ runcmd:
   - mkdir -p /home/equitizr/app /home/equitizr/data /home/equitizr/.config/systemd/user
   - chown -R equitizr:equitizr /home/equitizr
   - sudo -u equitizr -H bash -lc 'curl -fsSL https://mise.run | sh && ~/.local/bin/mise use -g node@22 >/dev/null 2>&1 && ~/.local/bin/mise exec -- node --version > ~/node-version.txt'
+  # Debian 12 ships caddy 2.6.2 (2022), which fails against Let's Encrypt's
+  # current ACME endpoints ("downloading certificate chain … 404") and then
+  # falls back to the staging CA. Replace the binary with the current release
+  # before the first start; the package's unit and user are kept.
+  - bash -c 'v=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest | python3 -c "import sys,json; print(json.load(sys.stdin)[\"tag_name\"])"); cd /tmp && curl -sL "https://github.com/caddyserver/caddy/releases/download/${v}/caddy_${v#v}_linux_amd64.tar.gz" -o caddy.tgz && tar -xzf caddy.tgz caddy && install -m 755 caddy /usr/bin/caddy && rm -f caddy caddy.tgz'
   - systemctl enable --now caddy
   - systemctl restart caddy
   - touch /home/equitizr/.provisioned
