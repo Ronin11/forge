@@ -382,9 +382,21 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // The clone may already be dirty from the attempt that asked; the
     // supervisor is held to what it adds, not to what it found.
     let dirty_before = crate::git::dirty_paths(wt).await.unwrap_or_default();
-    // The supervisor always runs the built-in anthropic provider on its own
-    // model, regardless of which provider the task's own steps selected.
-    let provider = agent::Provider::default();
+    // The supervisor's own model (`cfg.model`) is unaffected by any of
+    // this; only which CLI runs it follows the same role chain as every
+    // other step (task flag, then project, then operator [roles], then
+    // "anthropic" — see `ctx::resolve_provider`).
+    let provider = f.effective_provider(&t, "supervisor")?;
+    while let Some((msg, until)) = crate::worker::window_hold(f, &provider.name)? {
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!("rate     {msg}; waiting"),
+            },
+        );
+        let wait = (until - crate::unix_now()).clamp(1, 3600) as u64;
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+    }
     let (mut a, log_path) = crate::attempt::new_attempt(
         f,
         &t,
@@ -394,7 +406,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         attempt_no,
         inputs,
         None,
-        &provider,
+        provider,
     )
     .await?;
     let outcome = agent::run(agent::Launch {
@@ -408,7 +420,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
         step: "supervisor",
-        provider: &provider,
+        provider,
         resume: None,
         writes: false,
         schema: SCHEMA,
