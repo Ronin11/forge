@@ -104,6 +104,23 @@ pub enum Event<'a> {
         #[serde(rename = "cost_usd")]
         cost: f64,
     },
+    /// A deploy began (see docs/DEPLOY.md, "When a deploy runs").
+    DeployStarted {
+        project: &'a str,
+        target: &'a str,
+        sha: &'a str,
+    },
+    /// A deploy reached a verdict: `ok` is the check's result, and
+    /// `rolled_back_to` is the previous passing commit it fell back to
+    /// when the check failed (`None` if it passed, or if there was
+    /// nothing to roll back to).
+    DeployFinished {
+        project: &'a str,
+        target: &'a str,
+        sha: &'a str,
+        ok: bool,
+        rolled_back_to: Option<&'a str>,
+    },
 }
 
 impl Event<'_> {
@@ -185,6 +202,35 @@ impl Event<'_> {
             Event::InitiativeSettled { id, state, cost } => {
                 format!("initiative {id} settled {state} ({})", money(Some(*cost)))
             }
+            Event::DeployStarted {
+                project,
+                target,
+                sha,
+            } => format!(
+                "deploying {project}/{target} @ {}",
+                &sha[..sha.len().min(8)]
+            ),
+            Event::DeployFinished {
+                project,
+                target,
+                sha,
+                ok,
+                rolled_back_to,
+            } => match (*ok, rolled_back_to) {
+                (true, _) => format!(
+                    "{project}/{target} is live at {}",
+                    &sha[..sha.len().min(8)]
+                ),
+                (false, Some(to)) => format!(
+                    "deploy of {project}/{target} @ {} failed its check and was rolled back to {}",
+                    &sha[..sha.len().min(8)],
+                    &to[..to.len().min(8)]
+                ),
+                (false, None) => format!(
+                    "deploy of {project}/{target} @ {} failed its check; nothing to roll back to",
+                    &sha[..sha.len().min(8)]
+                ),
+            },
         }
     }
 }
@@ -399,6 +445,8 @@ fn render(ev: Event) -> Vec<String> {
             }
         )],
         Event::InitiativeSettled { .. } => vec![String::new(), summary],
+        Event::DeployStarted { .. } => vec![summary],
+        Event::DeployFinished { .. } => vec![String::new(), summary],
     }
 }
 
@@ -578,6 +626,33 @@ mod tests {
             json!({
                 "type": "initiative_settled", "id": 5, "state": "done", "cost_usd": 2.5,
                 "text": "initiative 5 settled done ($2.5000)",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::DeployStarted {
+                project: "equitizr",
+                target: "prod",
+                sha: "abcdef1234567890",
+            }),
+            json!({
+                "type": "deploy_started", "project": "equitizr", "target": "prod",
+                "sha": "abcdef1234567890", "text": "deploying equitizr/prod @ abcdef12",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::DeployFinished {
+                project: "equitizr",
+                target: "prod",
+                sha: "abcdef1234567890",
+                ok: false,
+                rolled_back_to: Some("1234567890abcdef"),
+            }),
+            json!({
+                "type": "deploy_finished", "project": "equitizr", "target": "prod",
+                "sha": "abcdef1234567890", "ok": false, "rolled_back_to": "1234567890abcdef",
+                "text": "deploy of equitizr/prod @ abcdef12 failed its check and was rolled back to 12345678",
             })
         );
     }

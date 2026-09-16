@@ -538,6 +538,40 @@ pub struct BacklogItem {
     pub done_at: Option<i64>,
 }
 
+/// A deploy target: where a project's landed code runs, how it gets
+/// there, and what proves it is up (see docs/DEPLOY.md, "A target").
+/// `scope` is the raw JSON array of paths within `repo` the target
+/// deploys, `None` for the whole repository, mirroring `ProjectRepo`.
+#[derive(Debug, Clone)]
+pub struct DeployTarget {
+    pub project: String,
+    pub name: String,
+    pub repo: String,
+    pub scope: Option<String>,
+    /// The action file this target runs, e.g. "deploy-command".
+    pub method: String,
+    pub args: BTreeMap<String, String>,
+    pub check_cmd: String,
+    pub on_landing: bool,
+}
+
+/// One deploy: a target, the commit deployed, when it started and
+/// finished, the check's verdict and output, and what it rolled back to
+/// if the check failed (see docs/DEPLOY.md, "When a deploy runs").
+#[derive(Debug, Clone)]
+pub struct Deploy {
+    pub id: i64,
+    pub project: String,
+    pub target: String,
+    pub sha: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub check_ok: Option<bool>,
+    pub check_output: String,
+    pub rolled_back_to: Option<String>,
+    pub reason: String,
+}
+
 /// The unit of operation above a task: one outcome, pursued as a set of
 /// tasks, tracked as one thing (see docs/PROJECTS.md, "Initiative").
 /// `budget_usd` and `stop_after_same_rule` are nullable-in-spirit only for
@@ -811,6 +845,32 @@ ALTER TABLE attempts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
 ",
     "
 ALTER TABLE projects ADD COLUMN role_providers_json TEXT;
+",
+    "
+CREATE TABLE deploy_targets (
+  project TEXT NOT NULL REFERENCES projects(name),
+  name TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  scope_json TEXT,
+  method TEXT NOT NULL,
+  args_json TEXT NOT NULL DEFAULT '{}',
+  check_cmd TEXT NOT NULL,
+  on_landing INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (project, name)
+);
+CREATE TABLE deploys (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL,
+  target TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  check_ok INTEGER,
+  check_output TEXT NOT NULL DEFAULT '',
+  rolled_back_to TEXT,
+  reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX deploys_project_target ON deploys(project, target, id);
 ",
 ];
 
@@ -2391,6 +2451,121 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// Declare a deploy target. Fails if `(project, name)` already exists.
+    pub fn add_deploy_target(&self, t: &DeployTarget) -> Result<()> {
+        let args_json = serde_json::to_string(&t.args)?;
+        self.lock().execute(
+            "INSERT INTO deploy_targets (project, name, repo, scope_json, method, args_json, check_cmd, on_landing)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                t.project,
+                t.name,
+                t.repo,
+                t.scope,
+                t.method,
+                args_json,
+                t.check_cmd,
+                t.on_landing,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One project's deploy target by name.
+    pub fn deploy_target(&self, project: &str, name: &str) -> Result<Option<DeployTarget>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing
+                 FROM deploy_targets WHERE project=?1 AND name=?2",
+                params![project, name],
+                deploy_target_from_row,
+            )
+            .optional()?)
+    }
+
+    /// A project's deploy targets, alphabetically.
+    pub fn deploy_targets(&self, project: &str) -> Result<Vec<DeployTarget>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing
+             FROM deploy_targets WHERE project=?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![project], deploy_target_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Record a deploy starting. Returns its id; `finish_deploy` completes it.
+    pub fn start_deploy(&self, project: &str, target: &str, sha: &str, at: i64) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO deploys (project, target, sha, started_at) VALUES (?1, ?2, ?3, ?4)",
+            params![project, target, sha, at],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Record a deploy's outcome: the check's verdict and output, what it
+    /// rolled back to (if it did), and why.
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_deploy(
+        &self,
+        id: i64,
+        at: i64,
+        check_ok: bool,
+        check_output: &str,
+        rolled_back_to: Option<&str>,
+        reason: &str,
+    ) -> Result<()> {
+        self.lock().execute(
+            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6
+             WHERE id=?1",
+            params![id, at, check_ok, check_output, rolled_back_to, reason],
+        )?;
+        Ok(())
+    }
+
+    /// A project's deploys, newest first; only `target`'s when given: what
+    /// `forge deploy log` shows.
+    pub fn deploys(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason
+             FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![project, target], deploy_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+fn deploy_target_from_row(r: &Row) -> rusqlite::Result<DeployTarget> {
+    let args_json: String = r.get(5)?;
+    Ok(DeployTarget {
+        project: r.get(0)?,
+        name: r.get(1)?,
+        repo: r.get(2)?,
+        scope: r.get(3)?,
+        method: r.get(4)?,
+        args: serde_json::from_str(&args_json).unwrap_or_default(),
+        check_cmd: r.get(6)?,
+        on_landing: r.get(7)?,
+    })
+}
+
+fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
+    Ok(Deploy {
+        id: r.get(0)?,
+        project: r.get(1)?,
+        target: r.get(2)?,
+        sha: r.get(3)?,
+        started_at: r.get(4)?,
+        finished_at: r.get(5)?,
+        check_ok: r.get(6)?,
+        check_output: r.get(7)?,
+        rolled_back_to: r.get(8)?,
+        reason: r.get(9)?,
+    })
 }
 
 fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
@@ -3273,6 +3448,117 @@ mod tests {
         );
         s.set_plugin_enabled("notify", false, 200).unwrap();
         assert!(s.enabled_plugins().unwrap().is_empty());
+    }
+
+    fn mk_project(s: &Store, name: &str) {
+        s.create_project(&Project {
+            name: name.to_string(),
+            purpose: "p".into(),
+            created_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn deploy_targets_are_added_and_listed_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        assert!(s.deploy_targets("equitizr").unwrap().is_empty());
+        assert!(s.deploy_target("equitizr", "prod").unwrap().is_none());
+
+        let mut args = BTreeMap::new();
+        args.insert("unit".to_string(), "equitizr.service".to_string());
+        s.add_deploy_target(&DeployTarget {
+            project: "equitizr".into(),
+            name: "prod".into(),
+            repo: "/repo".into(),
+            scope: None,
+            method: "deploy-user-service".into(),
+            args: args.clone(),
+            check_cmd: "systemctl is-active equitizr".into(),
+            on_landing: true,
+        })
+        .unwrap();
+        s.add_deploy_target(&DeployTarget {
+            project: "equitizr".into(),
+            name: "staging".into(),
+            repo: "/repo".into(),
+            scope: Some(r#"["web/"]"#.into()),
+            method: "deploy-static".into(),
+            args: BTreeMap::new(),
+            check_cmd: "curl -f https://staging.example.com/health".into(),
+            on_landing: false,
+        })
+        .unwrap();
+
+        let targets = s.deploy_targets("equitizr").unwrap();
+        assert_eq!(targets.len(), 2);
+        // Alphabetical: "prod" before "staging".
+        assert_eq!(targets[0].name, "prod");
+        assert_eq!(targets[0].method, "deploy-user-service");
+        assert_eq!(targets[0].args, args);
+        assert!(targets[0].on_landing);
+        assert_eq!(targets[1].name, "staging");
+        assert_eq!(targets[1].scope.as_deref(), Some(r#"["web/"]"#));
+        assert!(!targets[1].on_landing);
+
+        let one = s.deploy_target("equitizr", "prod").unwrap().unwrap();
+        assert_eq!(one.check_cmd, "systemctl is-active equitizr");
+
+        // A duplicate (project, name) is refused.
+        assert!(
+            s.add_deploy_target(&DeployTarget {
+                project: "equitizr".into(),
+                name: "prod".into(),
+                repo: "/repo".into(),
+                scope: None,
+                method: "deploy-command".into(),
+                args: BTreeMap::new(),
+                check_cmd: "true".into(),
+                on_landing: false,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn deploys_are_recorded_and_listed_newest_first_optionally_by_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        assert!(s.deploys("equitizr", None).unwrap().is_empty());
+
+        let a = s.start_deploy("equitizr", "prod", "aaaaaaa", 100).unwrap();
+        let b = s
+            .start_deploy("equitizr", "staging", "bbbbbbb", 200)
+            .unwrap();
+        s.finish_deploy(a, 150, true, "active", None, "").unwrap();
+        s.finish_deploy(
+            b,
+            250,
+            false,
+            "connection refused",
+            Some("aaaaaaa"),
+            "the deploy of bbbbbbb failed its check and was rolled back to aaaaaaa",
+        )
+        .unwrap();
+
+        let all = s.deploys("equitizr", None).unwrap();
+        assert_eq!(all.len(), 2);
+        // Newest first.
+        assert_eq!(all[0].id, b);
+        assert_eq!(all[0].target, "staging");
+        assert_eq!(all[0].check_ok, Some(false));
+        assert_eq!(all[0].rolled_back_to.as_deref(), Some("aaaaaaa"));
+        assert_eq!(all[1].id, a);
+        assert_eq!(all[1].check_ok, Some(true));
+        assert_eq!(all[1].finished_at, Some(150));
+
+        let prod_only = s.deploys("equitizr", Some("prod")).unwrap();
+        assert_eq!(prod_only.len(), 1);
+        assert_eq!(prod_only[0].id, a);
     }
 }
 

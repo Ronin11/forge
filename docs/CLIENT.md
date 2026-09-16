@@ -487,6 +487,8 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `task_done` | `state`, `attempts`, `cost_usd`, `reason`, `branch`, `pushed`, `compare` (string or null) | The task reached a final state. (`remove_cmd` exists on the Rust side but is never serialized — `#[serde(skip)]` — so it never appears on the wire.) |
 | `note` | `text` only | A free-text note (its `text` *is* its content, not a summary of something else). |
 | `op` | `name`, `kernel`, `ok`, `ms`, `detail` | One kernel or user operation (clone, landing, a `--check` command) finished. |
+| `deploy_started` | `project`, `target`, `sha` | A deploy of `project`/`target` began. |
+| `deploy_finished` | `project`, `target`, `sha`, `ok`, `rolled_back_to` (string or null) | A deploy reached a verdict; `rolled_back_to` is the previous passing commit it fell back to when `ok` is false. |
 
 ### What to re-read on which event
 
