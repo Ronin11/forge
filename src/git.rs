@@ -572,6 +572,13 @@ pub async fn changed_paths_and_renames(
     Ok((plain, renamed))
 }
 
+/// The full unified diff from `from` to `to`, as a human or an agent
+/// reviewer would read it (unlike `diff_lines`, which strips markers for
+/// the churn measurement).
+pub async fn diff_text(dir: &Path, from: &str, to: &str) -> Result<String> {
+    Git::new(dir).raw(&["diff", from, to]).await
+}
+
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(

@@ -1,0 +1,5 @@
+name = "assess"
+kind = "directive"
+contract = "plan"
+description = "reads the landed diff and the task, without changing anything, and scores the change's maintainability with a list of findings"
+max_turns = 15

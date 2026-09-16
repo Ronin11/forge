@@ -298,6 +298,32 @@ content-addressed cache as symbols, keyed by blob hash, so an unchanged
 file costs nothing on the next run. Each is a starting point the
 operator edits, and every edit is a new hash with its own numbers.
 
+## Assessment
+
+Forge knows the true cost of a landed piece of work, including what it
+cost later, but that number lags: it needs later tasks to land near it
+before delayed cost and follow-on repair show up. `assess` is a fast
+proxy, in place the moment a task lands.
+
+`assess` is a directive on the `plan` contract, read-only like
+`investigate` — no writes, and its run never blocks the task or changes
+its state. It is given the landed diff (`git diff base..landed`) and the
+task text, and returns a structured result: a `score` from 0
+(unmaintainable) to 10 (excellent), and `findings`, each a `path`, one
+sentence, and a `severity` of `notable` or `concern`. Its provider is a
+role like the others (`[roles] assess`, default `anthropic`).
+
+Unlike every other directive, `assess` never sits in a workflow's `steps`
+list. A workflow opts in with its own top-level `assess = true` (default
+false); of the built-ins, only `reviewed` and `tdd` set it. After a
+landing on such a workflow — automatic or by `forge land` — the kernel
+runs `assess` once against the landed diff and stores the row on
+`assessments` (`task_id`, `score`, `findings_json`, `model`, `provider`,
+`cost_usd`, `created_at`). A run that fails — the agent errors, its
+result does not fit the schema, or it touched the tree — is logged and
+ignored: no row, no effect on the task. No view or `forge stats` reads
+this table yet.
+
 ## Data flow
 
 Each action declares what it consumes and produces from a small

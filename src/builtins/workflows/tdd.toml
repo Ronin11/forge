@@ -6,6 +6,7 @@ steps = [
 { action = "repo-map" },
 { action = "code" },
 ]
+assess = true
 
 [meta]
 use_when = "the task adds behavior that a test can pin down and the repo's checks would not otherwise catch a wrong implementation"

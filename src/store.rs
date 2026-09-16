@@ -627,6 +627,25 @@ pub struct Deploy {
     pub smoke_json: Option<String>,
 }
 
+/// One run of the assess directive against a landed task (see
+/// src/assess.rs): a maintainability score 0-10 and a list of findings, as
+/// the JSON `[{"path":...,"finding":...,"severity":"notable"|"concern"}]`
+/// the directive returned, with what ran it and what it cost. Never read
+/// by a view or `forge stats`.
+#[derive(Debug, Clone)]
+pub struct Assessment {
+    /// Recorded now; surfaced to a view once a later step needs it.
+    #[allow(dead_code)]
+    pub id: i64,
+    pub task_id: i64,
+    pub score: i64,
+    pub findings_json: String,
+    pub model: String,
+    pub provider: String,
+    pub cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
 /// The unit of operation above a task: one outcome, pursued as a set of
 /// tasks, tracked as one thing (see docs/PROJECTS.md, "Initiative").
 /// `budget_usd` and `stop_after_same_rule` are nullable-in-spirit only for
@@ -989,6 +1008,23 @@ CREATE TABLE line_overlap_cache (
   removed_lines INTEGER NOT NULL,
   PRIMARY KEY (t_sha, l_sha)
 );
+",
+    // The assess directive's own record: one row per landing that ran it
+    // (see src/assess.rs), never read by a view or `forge stats` — a
+    // fast proxy for a landed task's true cost, kept beside it rather than
+    // folded into either.
+    "
+CREATE TABLE assessments (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  score INTEGER NOT NULL,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  model TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  cost_usd REAL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX assessments_task ON assessments(task_id, id);
 ",
 ];
 
@@ -3059,6 +3095,52 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![task_id], deploy_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Record one assess directive run against a landed task. Returns its id.
+    pub fn insert_assessment(&self, a: &Assessment) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO assessments (task_id, score, findings_json, model, provider, cost_usd, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                a.task_id,
+                a.score,
+                a.findings_json,
+                a.model,
+                a.provider,
+                a.cost_usd,
+                a.created_at
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// A task's most recent assessment, if the assess directive has ever
+    /// run against it. Recorded now; surfaced to a view once a later step
+    /// needs it (see `Assessment::id`).
+    #[allow(dead_code)]
+    pub fn assessment(&self, task_id: i64) -> Result<Option<Assessment>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, task_id, score, findings_json, model, provider, cost_usd, created_at
+                 FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+                params![task_id],
+                |r| {
+                    Ok(Assessment {
+                        id: r.get(0)?,
+                        task_id: r.get(1)?,
+                        score: r.get(2)?,
+                        findings_json: r.get(3)?,
+                        model: r.get(4)?,
+                        provider: r.get(5)?,
+                        cost_usd: r.get(6)?,
+                        created_at: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 }
 

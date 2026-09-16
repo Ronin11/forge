@@ -236,9 +236,10 @@ struct ProviderRaw {
     report_from_git: Option<bool>,
 }
 
-/// The five roles a provider is chosen for: the four contracts, and the
-/// supervisor (which is not a contract but picks a provider the same way).
-pub const ROLES: [&str; 5] = ["code", "tests", "review", "plan", "supervisor"];
+/// The six roles a provider is chosen for: the four contracts, the
+/// supervisor, and assess (neither is a contract; both pick a provider the
+/// same way).
+pub const ROLES: [&str; 6] = ["code", "tests", "review", "plan", "supervisor", "assess"];
 
 #[derive(Deserialize, Default)]
 struct RolesRaw {
@@ -247,6 +248,7 @@ struct RolesRaw {
     review: Option<String>,
     plan: Option<String>,
     supervisor: Option<String>,
+    assess: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -672,6 +674,7 @@ fn build_roles(
         ("review", raw.review),
         ("plan", raw.plan),
         ("supervisor", raw.supervisor),
+        ("assess", raw.assess),
     ] {
         let name = v.unwrap_or_else(|| "anthropic".to_string());
         if !providers.contains_key(&name) {

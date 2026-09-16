@@ -6,6 +6,7 @@ steps = [
 { action = "code" },
 { action = "review" },
 ]
+assess = true
 
 [meta]
 use_when = "the task's correctness is not fully captured by tests and a second pair of eyes that runs the code is worth its cost"

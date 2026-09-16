@@ -1,4 +1,5 @@
 use crate::support::*;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -1152,4 +1153,74 @@ fn a_retry_whose_merged_base_does_not_build_feeds_setup_to_the_coder() {
         Some("42\n")
     );
     assert_eq!(origin_file(&e, "main", "broken.txt"), None);
+}
+
+#[test]
+fn a_landing_on_the_reviewed_workflow_runs_assess_and_stores_the_row() {
+    let e = Env::new();
+    let mut c = e.cmd("ok.sh");
+    for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
+        c.env(
+            format!("FORGE2_CLAUDE_BIN_{role}"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(fake),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    let (score, findings_json, model, provider, cost_usd): (i64, String, String, String, f64) = e
+        .db()
+        .query_row(
+            "SELECT score, findings_json, model, provider, cost_usd FROM assessments WHERE task_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(score, 7);
+    assert!(findings_json.contains("answer.txt"), "{findings_json}");
+    assert!(findings_json.contains("notable"), "{findings_json}");
+    assert!(!model.is_empty());
+    assert_eq!(provider, "anthropic");
+    assert_eq!(cost_usd, 0.02);
+}
+
+#[test]
+fn a_landing_on_the_direct_workflow_does_not_run_assess() {
+    let e = Env::new();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "direct",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+    let n: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM assessments", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
 }

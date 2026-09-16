@@ -270,6 +270,12 @@ struct WorkflowRaw {
     #[serde(default)]
     description: String,
     steps: Vec<StepRaw>,
+    /// Run the `assess` directive after this workflow lands, storing its
+    /// score and findings on the `assessments` table; never on a step
+    /// list, never blocking, never changing task state (see
+    /// docs/ACTIONS.md, "Assessment"). Default false.
+    #[serde(default)]
+    assess: bool,
     #[serde(default)]
     meta: Meta,
 }
@@ -307,6 +313,9 @@ pub struct Workflow {
     pub name: String,
     pub description: String,
     pub steps: Vec<StepRef>,
+    /// Run the `assess` directive after a landing on this workflow (see
+    /// `WorkflowRaw::assess`).
+    pub assess: bool,
     pub meta: Meta,
     pub hash: String,
     pub path: PathBuf,
@@ -379,6 +388,7 @@ const BUILTIN_ACTIONS: &[(&str, &str)] = &[
         "interview.toml",
         include_str!("builtins/actions/interview.toml"),
     ),
+    ("assess.toml", include_str!("builtins/actions/assess.toml")),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
@@ -716,6 +726,7 @@ fn parse_workflow(dir: &Path, path: &Path, text: &str) -> Result<Workflow> {
         name: raw.name,
         description: raw.description,
         steps,
+        assess: raw.assess,
         meta: raw.meta,
         hash: blob_hash(dir, path)?,
         path: path.to_path_buf(),
