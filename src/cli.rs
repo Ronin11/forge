@@ -704,9 +704,12 @@ pub async fn main() -> Result<()> {
             project,
             initiative,
             json,
-        } => stats(
-            tools, step, quality, journal, by_role, project, initiative, json,
-        ),
+        } => {
+            stats(
+                tools, step, quality, journal, by_role, project, initiative, json,
+            )
+            .await
+        }
         Cmd::Events {
             since,
             follow,
@@ -2440,7 +2443,7 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stats(
+async fn stats(
     tools: bool,
     step: Option<String>,
     quality: bool,
@@ -2456,7 +2459,7 @@ fn stats(
         initiative,
     };
     if json {
-        let mut doc = crate::view::stats_doc(&f, &scope)?;
+        let mut doc = crate::view::stats_doc(&f, &scope).await?;
         if tools {
             doc.tools = Some(tools_json(&f, step.as_deref())?);
         }
@@ -2467,15 +2470,15 @@ fn stats(
         return tool_stats(&f, step.as_deref());
     }
     if quality {
-        return quality_stats(&f, &scope);
+        return quality_stats(&f, &scope).await;
     }
     if journal {
-        return journal_control_stats(&f);
+        return journal_control_stats(&f).await;
     }
     if by_role {
-        return by_role_stats(&f);
+        return by_role_stats(&f).await;
     }
-    let doc = crate::view::stats_doc(&f, &scope)?;
+    let doc = crate::view::stats_doc(&f, &scope).await?;
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
         "WF",
@@ -2577,45 +2580,53 @@ fn stats(
 }
 
 /// Defect escape, per workflow: of the tasks that landed, how many broke
-/// the next task's base or were later repaired.
-fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
-    let doc = crate::view::stats_doc(f, scope)?;
+/// the next task's base or were later repaired, plus delayed cost
+/// (follow-on cost, true cost per landed piece, and churn).
+async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
+    let doc = crate::view::stats_doc(f, scope).await?;
     out!(
-        "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9}",
+        "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>9} {:>10} {:>7}",
         "WF",
         "HASH",
         "LANDED",
         "BROKEBASE",
         "BROKE%",
         "REPAIRED",
-        "REPAIR%"
+        "REPAIR%",
+        "FOLLOWON",
+        "TRUECOST",
+        "CHURN%"
     );
     let pct = |share: Option<f64>| match share {
         Some(s) => format!("{:.0}%", s * 100.0),
         None => "-".into(),
     };
+    let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for w in &doc.workflows {
         out!(
-            "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9}",
+            "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>9} {:>10} {:>7}",
             w.workflow,
             w.hash,
             w.landed,
             w.broke_base,
             pct(w.broke_base_share),
             w.repaired,
-            pct(w.repaired_share)
+            pct(w.repaired_share),
+            format!("${:.2}", w.follow_on_cost_usd),
+            dollar(w.true_cost_per_landed_usd),
+            pct(w.churn_share)
         );
     }
     Ok(())
 }
 
 /// Attempts, outcomes, cost and wall time per (role, provider, model),
-/// role being the attempt's step; landed and broke-base counts for the
-/// `code` role only.
-fn by_role_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default())?;
+/// role being the attempt's step; landed, broke-base and delayed-cost
+/// columns for the `code` role only.
+async fn by_role_stats(f: &Forge) -> Result<()> {
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
     out!(
-        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7}",
+        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>9} {:>10} {:>7}",
         "ROLE",
         "PROVIDER",
         "MODEL",
@@ -2626,16 +2637,20 @@ fn by_role_stats(f: &Forge) -> Result<()> {
         "SECS",
         "LANDED",
         "BROKEBASE",
-        "BROKE%"
+        "BROKE%",
+        "FOLLOWON",
+        "TRUECOST",
+        "CHURN%"
     );
     let pct = |share: Option<f64>| match share {
         Some(s) => format!("{:.0}%", s * 100.0),
         None => "-".into(),
     };
     let count = |v: Option<i64>| v.map_or("-".to_string(), |n| n.to_string());
+    let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for r in &doc.by_role {
         out!(
-            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7}",
+            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7} {:>9} {:>10} {:>7}",
             r.role,
             r.provider,
             r.model,
@@ -2646,7 +2661,10 @@ fn by_role_stats(f: &Forge) -> Result<()> {
             r.mean_secs,
             count(r.landed),
             count(r.broke_base),
-            pct(r.broke_base_share)
+            pct(r.broke_base_share),
+            dollar(r.follow_on_cost_usd),
+            dollar(r.true_cost_per_landed_usd),
+            pct(r.churn_share)
         );
     }
     Ok(())
@@ -2655,8 +2673,8 @@ fn by_role_stats(f: &Forge) -> Result<()> {
 /// The journal control arm's retrospective split: code attempts after the
 /// first (`attempt_no > 1`), by whether they were handed a journal. See
 /// docs/LATER.md, "The journal measurement was ill-posed three times".
-fn journal_control_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default())?;
+async fn journal_control_stats(f: &Forge) -> Result<()> {
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
     out!(
         "{:<11} {:>5} {:>6} {:>7} {:>10} {:>9}",
         "ARM",

@@ -379,6 +379,19 @@ are null when nothing landed. Both counts and shares are always
 present in the JSON form; `forge stats --quality` is the text-mode
 view of the same numbers.
 
+Delayed cost, docs/LATER.md's follow-up to defect escape: `follow_on_cost_usd`
+(the cost of later tasks on the same repository whose attempts changed a
+path a landed task's own landing changed, within 30 days of landing,
+summed across the workflow's landed tasks — a later task that follows on
+from two of them has its cost counted against each) and `churn_share` (of
+the lines the workflow's landed tasks added, the share a later landing on
+the same repository removed or rewrote within 30 days; null until
+something has been added to measure). `true_cost_per_landed_usd` is
+`(mean_cost_usd + follow_on_cost_usd) / landed` — landing cost and delayed
+cost together, null when nothing landed. All three are always present in
+the JSON form (subject to the landed-count null rule above); `forge stats
+--quality` prints them beside the defect-escape columns.
+
 **`steps`** — array of `StatsStepRow`, one per workflow + step:
 `workflow`, `step`, `attempts`, `succeeded`, `agent_failed`,
 `checks_failed`, `needs_input`, `mean_turns`, `mean_first_edit` (null
@@ -408,10 +421,15 @@ also `landed` (tasks with an attempt in this group that landed) and
 defect-escape signal as `StatsWorkflowRow::broke_base`, keyed by the
 group's own tasks instead of by workflow) with `broke_base_share`
 (`broke_base` divided by `landed`; null when `landed` is null or 0).
-Outside the `code` role, `landed`, `broke_base`, and `broke_base_share`
-are omitted from the JSON row entirely, since landing is not a
-role-specific concept. `forge stats --by-role` is the text-mode view of
-the same rows.
+Also for the `code` role only, the same delayed-cost signals as
+`StatsWorkflowRow` (see above), keyed by the group's own landed tasks
+instead of by workflow: `follow_on_cost_usd`, `true_cost_per_landed_usd`
+(null when `landed` is null or 0), and `churn_share` (null when nothing
+was added yet to measure). Outside the `code` role, `landed`,
+`broke_base`, `broke_base_share`, `follow_on_cost_usd`,
+`true_cost_per_landed_usd`, and `churn_share` are all omitted from the
+JSON row entirely, since landing is not a role-specific concept. `forge
+stats --by-role` is the text-mode view of the same rows.
 
 ### `PluginRow`
 

@@ -329,6 +329,19 @@ pub struct WorkflowStat {
     /// Landed tasks named by another task's `repairs` reference
     /// (`forge://task/<id>`).
     pub repaired: i64,
+    /// Delayed cost, summed across this workflow's landed tasks (see
+    /// `Store::follow_on_cost`): the cost of later tasks on the same
+    /// repository whose attempts changed a path a landed task's own
+    /// landing changed, within `THIRTY_DAYS_SECS` of landing. A later
+    /// task following on from two landed tasks in this workflow has its
+    /// cost counted once for each.
+    pub follow_on_cost: f64,
+    /// Lines this workflow's landed tasks added, summed from the
+    /// `task_churn` cache.
+    pub added_lines: i64,
+    /// Of `added_lines`, how many a later landing on the same repository
+    /// removed or rewrote within `THIRTY_DAYS_SECS` (`task_churn`), summed.
+    pub churned_lines: i64,
 }
 
 pub struct StepStat {
@@ -380,6 +393,13 @@ pub struct RoleStat {
     /// the `code` role, where landing is not meaningful.
     pub landed: Option<i64>,
     pub broke_base: Option<i64>,
+    /// See `WorkflowStat::follow_on_cost`, summed over this group's own
+    /// landed tasks; `None` outside the `code` role.
+    pub follow_on_cost: Option<f64>,
+    /// See `WorkflowStat::added_lines`/`churned_lines`, summed over this
+    /// group's own landed tasks; `None` outside the `code` role.
+    pub added_lines: Option<i64>,
+    pub churned_lines: Option<i64>,
 }
 
 /// One operation, kernel or user, as it ran.
@@ -918,7 +938,20 @@ ALTER TABLE deploy_targets ADD COLUMN smoke_url TEXT;
 ALTER TABLE deploys ADD COLUMN smoke_ok INTEGER;
 ALTER TABLE deploys ADD COLUMN smoke_json TEXT;
 ",
+    "
+CREATE TABLE task_churn (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+  added_lines INTEGER NOT NULL,
+  churned_lines INTEGER NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+",
 ];
+
+/// Width of the delayed-cost window: how long after a task lands a later
+/// task's cost or a later landing's rewrite still counts against it (see
+/// docs/LATER.md, "Defect escape" and the delayed-cost follow-up).
+pub const THIRTY_DAYS_SECS: i64 = 30 * 86400;
 
 /// The version this migration brings the schema to; `migrate` also runs
 /// `seed_projects_from_tasks` in Rust when it applies this entry, since
@@ -1147,6 +1180,87 @@ fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
     )?;
     let rows = stmt.query_map(params![id], |r| r.get(0))?;
     rows.collect()
+}
+
+/// The cost of later tasks on `task_id`'s repository whose attempts
+/// changed a path `task_id`'s own attempts changed, within
+/// `THIRTY_DAYS_SECS` of `task_id`'s `finished_at` (see docs/LATER.md,
+/// "Defect escape" and the delayed-cost follow-up). A later task's full
+/// cost (every attempt, not just the one that overlapped) counts once it
+/// qualifies at all. Both sides read `changes[].path` out of
+/// `envelope_json` via a CTE that filters to valid, non-empty JSON before
+/// `json_each` ever sees a row, since `envelope_json` (unlike
+/// `inputs_json`/`outputs_json`) defaults to `''`, not `'{}'`.
+fn follow_on_cost_query(c: &Connection, task_id: i64) -> Result<f64> {
+    Ok(c.query_row(
+        "WITH valid_attempts AS (
+            SELECT id, task_id, started_at, envelope_json FROM attempts
+            WHERE envelope_json != '' AND json_valid(envelope_json)
+         ),
+         changes AS (
+            SELECT va.task_id AS task_id, va.started_at AS started_at,
+                   json_extract(ce.value, '$.path') AS path
+            FROM valid_attempts va, json_each(va.envelope_json, '$.changes') ce
+         )
+         SELECT COALESCE(SUM(later.cost), 0) FROM (
+            SELECT au.task_id AS task_id, COALESCE(SUM(au.cost_usd), 0) AS cost
+            FROM attempts au
+            JOIN tasks u ON u.id = au.task_id
+            JOIN tasks t ON t.id = ?1
+            WHERE u.repo = t.repo AND u.id != t.id
+            GROUP BY au.task_id
+            HAVING EXISTS (
+                SELECT 1 FROM changes cu
+                WHERE cu.task_id = au.task_id
+                  AND cu.started_at >= t.finished_at
+                  AND cu.started_at <= t.finished_at + 2592000
+                  AND EXISTS (SELECT 1 FROM changes ct WHERE ct.task_id = t.id AND ct.path = cu.path)
+            )
+         ) later",
+        params![task_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// The (provider, model) pairs `task_id` ran a `code` attempt under: which
+/// `by_role` groups a landed task's delayed cost is attributed to.
+fn code_attempt_groups_query(c: &Connection, task_id: i64) -> Result<Vec<(String, String)>> {
+    let mut stmt = c.prepare(
+        "SELECT DISTINCT provider, COALESCE(json_extract(inputs_json, '$.model'), '')
+         FROM attempts WHERE task_id = ?1 AND step = 'code'",
+    )?;
+    let rows = stmt.query_map(params![task_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// `task_churn`'s cached row for `task_id`: `(added_lines, churned_lines,
+/// computed_at)`, or `None` if it has never been computed.
+fn churn_cache_query(c: &Connection, task_id: i64) -> Result<Option<(i64, i64, i64)>> {
+    Ok(c.query_row(
+        "SELECT added_lines, churned_lines, computed_at FROM task_churn WHERE task_id = ?1",
+        params![task_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()?)
+}
+
+fn set_churn_cache_query(
+    c: &Connection,
+    task_id: i64,
+    added_lines: i64,
+    churned_lines: i64,
+    computed_at: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO task_churn (task_id, added_lines, churned_lines, computed_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(task_id) DO UPDATE SET
+           added_lines = excluded.added_lines,
+           churned_lines = excluded.churned_lines,
+           computed_at = excluded.computed_at",
+        params![task_id, added_lines, churned_lines, computed_at],
+    )?;
+    Ok(())
 }
 
 impl Store {
@@ -1698,6 +1812,62 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Landed tasks, scoped like every other `forge stats` query: the
+    /// input to both delayed-cost signals (`follow_on_cost`, the
+    /// `task_churn` cache).
+    pub fn landed_tasks(&self, scope: &StatsFilter) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE landed_sha != ''
+               AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
+             ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![scope.project, scope.initiative], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Landed tasks on `repo`, other than `exclude`, whose landing fell in
+    /// `(from, to]`: the later landings a churn computation diffs `added`
+    /// against (see docs/LATER.md, the delayed-cost follow-up to "Defect
+    /// escape").
+    pub fn later_landings(&self, repo: &str, exclude: i64, from: i64, to: i64) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE repo = ?1 AND id != ?2 AND landed_sha != ''
+               AND finished_at > ?3 AND finished_at <= ?4
+             ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![repo, exclude, from, to], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// See the free function of the same name: the cost of later tasks on
+    /// this repository whose attempts overlapped `task_id`'s own changed
+    /// paths, within 30 days of landing.
+    pub fn follow_on_cost(&self, task_id: i64) -> Result<f64> {
+        follow_on_cost_query(&self.lock(), task_id)
+    }
+
+    /// `task_churn`'s cached row for `task_id`, if it has been computed.
+    pub fn churn_cache(&self, task_id: i64) -> Result<Option<(i64, i64, i64)>> {
+        churn_cache_query(&self.lock(), task_id)
+    }
+
+    /// Write (or overwrite) `task_id`'s cached churn: lines it added and,
+    /// of those, how many a later landing removed or rewrote within the
+    /// window, as of `computed_at`.
+    pub fn set_churn_cache(
+        &self,
+        task_id: i64,
+        added_lines: i64,
+        churned_lines: i64,
+        computed_at: i64,
+    ) -> Result<()> {
+        set_churn_cache_query(&self.lock(), task_id, added_lines, churned_lines, computed_at)
+    }
+
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
@@ -1769,9 +1939,10 @@ impl Store {
 
     /// Outcomes per workflow version: the table that compares workflows.
     pub fn workflow_stats(&self, scope: &StatsFilter) -> Result<Vec<WorkflowStat>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT t.workflow, t.workflow_hash, COUNT(*),
+        let mut stats = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT t.workflow, t.workflow_hash, COUNT(*),
                     SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
@@ -1799,24 +1970,44 @@ impl Store {
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
-        )?;
-        let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
-            Ok(WorkflowStat {
-                workflow: r.get(0)?,
-                hash: r.get(1)?,
-                tasks: r.get(2)?,
-                succeeded: r.get(3)?,
-                failed: r.get(4)?,
-                blocked: r.get(5)?,
-                unverified: r.get(6)?,
-                cost: r.get(7)?,
-                attempts: r.get(8)?,
-                landed: r.get(9)?,
-                broke_base: r.get(10)?,
-                repaired: r.get(11)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            )?;
+            let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
+                Ok(WorkflowStat {
+                    workflow: r.get(0)?,
+                    hash: r.get(1)?,
+                    tasks: r.get(2)?,
+                    succeeded: r.get(3)?,
+                    failed: r.get(4)?,
+                    blocked: r.get(5)?,
+                    unverified: r.get(6)?,
+                    cost: r.get(7)?,
+                    attempts: r.get(8)?,
+                    landed: r.get(9)?,
+                    broke_base: r.get(10)?,
+                    repaired: r.get(11)?,
+                    follow_on_cost: 0.0,
+                    added_lines: 0,
+                    churned_lines: 0,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<WorkflowStat>>>()?
+        };
+        let landed = self.landed_tasks(scope)?;
+        let c = self.lock();
+        for t in &landed {
+            let Some(w) = stats
+                .iter_mut()
+                .find(|w| w.workflow == t.workflow && w.hash == t.workflow_hash)
+            else {
+                continue;
+            };
+            w.follow_on_cost += follow_on_cost_query(&c, t.id)?;
+            if let Some((added, churned, _)) = churn_cache_query(&c, t.id)? {
+                w.added_lines += added;
+                w.churned_lines += churned;
+            }
+        }
+        Ok(stats)
     }
 
     /// Outcomes per workflow step.
@@ -1884,9 +2075,10 @@ impl Store {
     /// (see `WorkflowStat::broke_base`) for tasks with an attempt in the
     /// group.
     pub fn role_stats(&self) -> Result<Vec<RoleStat>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
+        let mut stats = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
                     COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END),
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' AND EXISTS (
@@ -1904,26 +2096,54 @@ impl Store {
              WHERE a.state != 'running'
              GROUP BY a.step, a.provider, attempt_model
              ORDER BY a.step, a.provider, attempt_model",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            let role: String = r.get(0)?;
-            let landed: i64 = r.get(8)?;
-            let broke_base: i64 = r.get(9)?;
-            let is_code = role == "code";
-            Ok(RoleStat {
-                role,
-                provider: r.get(1)?,
-                model: r.get(2)?,
-                attempts: r.get(3)?,
-                succeeded: r.get(4)?,
-                mean_turns: r.get(5)?,
-                mean_cost_usd: r.get(6)?,
-                mean_ms: r.get(7)?,
-                landed: is_code.then_some(landed),
-                broke_base: is_code.then_some(broke_base),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            )?;
+            let rows = stmt.query_map([], |r| {
+                let role: String = r.get(0)?;
+                let landed: i64 = r.get(8)?;
+                let broke_base: i64 = r.get(9)?;
+                let is_code = role == "code";
+                Ok(RoleStat {
+                    role,
+                    provider: r.get(1)?,
+                    model: r.get(2)?,
+                    attempts: r.get(3)?,
+                    succeeded: r.get(4)?,
+                    mean_turns: r.get(5)?,
+                    mean_cost_usd: r.get(6)?,
+                    mean_ms: r.get(7)?,
+                    landed: is_code.then_some(landed),
+                    broke_base: is_code.then_some(broke_base),
+                    follow_on_cost: is_code.then_some(0.0),
+                    added_lines: is_code.then_some(0),
+                    churned_lines: is_code.then_some(0),
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<RoleStat>>>()?
+        };
+        let landed = self.landed_tasks(&StatsFilter::default())?;
+        let c = self.lock();
+        for t in &landed {
+            let groups = code_attempt_groups_query(&c, t.id)?;
+            if groups.is_empty() {
+                continue;
+            }
+            let cost = follow_on_cost_query(&c, t.id)?;
+            let churn = churn_cache_query(&c, t.id)?;
+            for (provider, model) in groups {
+                let Some(r) = stats
+                    .iter_mut()
+                    .find(|r| r.role == "code" && r.provider == provider && r.model == model)
+                else {
+                    continue;
+                };
+                r.follow_on_cost = Some(r.follow_on_cost.unwrap_or(0.0) + cost);
+                if let Some((added, churned, _)) = churn {
+                    r.added_lines = Some(r.added_lines.unwrap_or(0) + added);
+                    r.churned_lines = Some(r.churned_lines.unwrap_or(0) + churned);
+                }
+            }
+        }
+        Ok(stats)
     }
 
     /// The listing behind `forge log`: newest first, filtered, and paged by

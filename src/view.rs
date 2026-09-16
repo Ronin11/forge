@@ -546,6 +546,21 @@ pub struct StatsWorkflowRow {
     pub repaired: i64,
     /// `repaired` divided by `landed`; `None` when nothing landed.
     pub repaired_share: Option<f64>,
+    /// Delayed cost: the cost of later tasks on the same repository whose
+    /// attempts changed a path a landed task's own landing changed,
+    /// within 30 days of landing, summed across this workflow's landed
+    /// tasks (see docs/LATER.md, the delayed-cost follow-up to "Defect
+    /// escape"). `Store::follow_on_cost`.
+    pub follow_on_cost_usd: f64,
+    /// `(mean_cost_usd + follow_on_cost_usd) / landed`: what a piece of
+    /// work in this workflow actually cost once its delayed cost is in,
+    /// not only what landing it cost. `None` when nothing landed.
+    pub true_cost_per_landed_usd: Option<f64>,
+    /// Churn: of the lines this workflow's landed tasks added, the share
+    /// a later landing on the same repository removed or rewrote within
+    /// 30 days (`task_churn`, cached per task). `None` when nothing was
+    /// added yet to measure.
+    pub churn_share: Option<f64>,
     #[serde(flatten)]
     pub legacy: serde_json::Map<String, Value>,
 }
@@ -556,6 +571,9 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
         let cost_per_landed_usd = (w.landed > 0).then(|| w.cost / w.landed as f64);
         let broke_base_share = (w.landed > 0).then(|| w.broke_base as f64 / w.landed as f64);
         let repaired_share = (w.landed > 0).then(|| w.repaired as f64 / w.landed as f64);
+        let true_cost_per_landed_usd =
+            (w.landed > 0).then(|| (w.cost + w.follow_on_cost) / w.landed as f64);
+        let churn_share = (w.added_lines > 0).then(|| w.churned_lines as f64 / w.added_lines as f64);
         let mut legacy = serde_json::Map::new();
         legacy.insert("WF".into(), Value::from(w.workflow.clone()));
         legacy.insert("HASH".into(), Value::from(w.hash.clone()));
@@ -586,6 +604,9 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             broke_base_share,
             repaired: w.repaired,
             repaired_share,
+            follow_on_cost_usd: w.follow_on_cost,
+            true_cost_per_landed_usd,
+            churn_share,
             legacy,
         }
     }
@@ -752,12 +773,34 @@ pub struct StatsRoleRow {
     /// `broke_base` divided by `landed`; `None` when `landed` is `None` or 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broke_base_share: Option<f64>,
+    /// See `StatsWorkflowRow::follow_on_cost_usd`, summed over this
+    /// group's own landed tasks; `None` outside the `code` role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_on_cost_usd: Option<f64>,
+    /// See `StatsWorkflowRow::true_cost_per_landed_usd`; `None` outside
+    /// the `code` role or when `landed` is `None` or 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub true_cost_per_landed_usd: Option<f64>,
+    /// See `StatsWorkflowRow::churn_share`; `None` outside the `code`
+    /// role or when nothing was added yet to measure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub churn_share: Option<f64>,
 }
 
 impl From<&crate::store::RoleStat> for StatsRoleRow {
     fn from(r: &crate::store::RoleStat) -> Self {
         let broke_base_share = match (r.landed, r.broke_base) {
             (Some(landed), Some(broke)) if landed > 0 => Some(broke as f64 / landed as f64),
+            _ => None,
+        };
+        let true_cost_per_landed_usd = match (r.landed, r.follow_on_cost) {
+            (Some(landed), Some(follow_on)) if landed > 0 => {
+                Some((r.mean_cost_usd * r.attempts as f64 + follow_on) / landed as f64)
+            }
+            _ => None,
+        };
+        let churn_share = match (r.added_lines, r.churned_lines) {
+            (Some(added), Some(churned)) if added > 0 => Some(churned as f64 / added as f64),
             _ => None,
         };
         StatsRoleRow {
@@ -773,6 +816,9 @@ impl From<&crate::store::RoleStat> for StatsRoleRow {
             landed: r.landed,
             broke_base: r.broke_base,
             broke_base_share,
+            follow_on_cost_usd: r.follow_on_cost,
+            true_cost_per_landed_usd,
+            churn_share,
         }
     }
 }
@@ -802,7 +848,60 @@ pub struct StatsDoc {
     pub tools: Option<Value>,
 }
 
-pub fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
+/// Refresh `task_churn` for every landed task (scope does not narrow this:
+/// `by_role` and an unscoped `forge stats` both read the whole table, so a
+/// scoped call would leave the rest stale) whose 30-day window has not yet
+/// closed as of its last computation, or that has never been computed:
+/// the only part of `forge stats` that reads git rather than the store,
+/// since churn is a diff over the repository's own history (docs/LATER.md,
+/// the delayed-cost follow-up to "Defect escape"). Once a task's window
+/// has closed, its cache is never touched again.
+async fn refresh_churn(f: &Forge) -> Result<()> {
+    let now = crate::unix_now();
+    for t in f.store.landed_tasks(&crate::store::StatsFilter::default())? {
+        let Some(finished_at) = t.finished_at else {
+            continue;
+        };
+        let window_closes = finished_at + crate::store::THIRTY_DAYS_SECS;
+        let stale = match f.store.churn_cache(t.id)? {
+            Some((_, _, computed_at)) => computed_at < window_closes,
+            None => true,
+        };
+        if !stale {
+            continue;
+        }
+        let (added, churned) = compute_churn(f, &t, finished_at).await?;
+        f.store.set_churn_cache(t.id, added, churned, now)?;
+    }
+    Ok(())
+}
+
+/// One landed task's churn: lines its landing added (`base_sha` to
+/// `landed_sha`), and of those, how many exact `(path, content)` pairs a
+/// later landing on the same repository removed or rewrote within 30 days
+/// of this one landing.
+async fn compute_churn(f: &Forge, t: &Task, finished_at: i64) -> Result<(i64, i64)> {
+    let repo = std::path::Path::new(&t.repo);
+    let (added, _) = crate::git::diff_lines(repo, &t.base_sha, &t.landed_sha).await?;
+    if added.is_empty() {
+        return Ok((0, 0));
+    }
+    let window_end = finished_at + crate::store::THIRTY_DAYS_SECS;
+    let later = f
+        .store
+        .later_landings(&t.repo, t.id, finished_at, window_end)?;
+    let mut removed_set: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    for u in later {
+        let (_, removed) = crate::git::diff_lines(repo, &u.base_sha, &u.landed_sha).await?;
+        removed_set.extend(removed);
+    }
+    let churned = added.iter().filter(|line| removed_set.contains(*line)).count() as i64;
+    Ok((added.len() as i64, churned))
+}
+
+pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
+    refresh_churn(f).await?;
     let journal_stats = f.store.journal_control_stats()?;
     let journal = journal_stats
         .iter()
@@ -1548,6 +1647,9 @@ mod stats_tests {
             landed: 0,
             broke_base: 0,
             repaired: 0,
+            follow_on_cost: 0.0,
+            added_lines: 0,
+            churned_lines: 0,
         };
         let row = StatsWorkflowRow::from(&w);
         let v = serde_json::to_value(&row).unwrap();
@@ -1560,6 +1662,11 @@ mod stats_tests {
         assert!(v["broke_base_share"].is_null(), "nothing landed");
         assert_eq!(v["repaired"], 0);
         assert!(v["repaired_share"].is_null(), "nothing landed");
+        assert!(
+            v["true_cost_per_landed_usd"].is_null(),
+            "nothing landed"
+        );
+        assert!(v["churn_share"].is_null(), "nothing added yet");
         // Deprecated header-named keys stay present, flattened alongside.
         assert_eq!(v["WF"], "direct");
         assert_eq!(v["TASKS"], 1);
@@ -1582,6 +1689,9 @@ mod stats_tests {
             landed: 4,
             broke_base: 1,
             repaired: 2,
+            follow_on_cost: 2.0,
+            added_lines: 20,
+            churned_lines: 5,
         };
         let row = StatsWorkflowRow::from(&w);
         let v = serde_json::to_value(&row).unwrap();
@@ -1589,6 +1699,9 @@ mod stats_tests {
         assert_eq!(v["broke_base_share"], 0.25);
         assert_eq!(v["repaired"], 2);
         assert_eq!(v["repaired_share"], 0.5);
+        assert_eq!(v["follow_on_cost_usd"], 2.0);
+        assert_eq!(v["true_cost_per_landed_usd"], 1.5, "(4.0 + 2.0) / 4");
+        assert_eq!(v["churn_share"], 0.25, "5 / 20");
     }
 
     #[test]

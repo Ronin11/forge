@@ -471,6 +471,40 @@ pub async fn changed_paths(wt: &Path, base_sha: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Added and removed content lines between two commits, as `(path,
+/// content)` pairs with the `+`/`-` marker stripped: what a landing's
+/// diff actually put in the tree and took out of it, for the delayed-cost
+/// churn measurement (docs/LATER.md). A zero-context diff (`--unified=0`)
+/// so a line is only "added" or "removed" here when its exact content
+/// changed, not because it happened to sit near a change. Duplicates are
+/// kept (an identical line added twice counts twice), and a binary file's
+/// change contributes nothing to either side.
+pub async fn diff_lines(
+    repo: &Path,
+    from: &str,
+    to: &str,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>)> {
+    let raw = Git::new(repo)
+        .raw(&["diff", "--unified=0", "--no-color", from, to])
+        .await?;
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut old_path = String::new();
+    let mut new_path = String::new();
+    for line in raw.lines() {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            old_path = rest.strip_prefix("a/").unwrap_or(rest).to_string();
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            new_path = rest.strip_prefix("b/").unwrap_or(rest).to_string();
+        } else if let Some(content) = line.strip_prefix('-') {
+            removed.push((old_path.clone(), content.to_string()));
+        } else if let Some(content) = line.strip_prefix('+') {
+            added.push((new_path.clone(), content.to_string()));
+        }
+    }
+    Ok((added, removed))
+}
+
 /// One line of `git diff --name-status -M`: a plain add, modify or
 /// delete, or a rename with both endpoints (git detected the same
 /// content moving, at or above the default similarity threshold).
@@ -755,6 +789,26 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains(&dir.path().display().to_string()), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn diff_lines_reports_content_added_and_removed_by_path() {
+        let dir = init_repo();
+        let wt = dir.path();
+        std::fs::write(wt.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let base = commit_all(wt, "base").await.unwrap().unwrap();
+        std::fs::write(wt.join("a.txt"), "one\nTWO\nthree\nfour\n").unwrap();
+        let tip = commit_all(wt, "edit").await.unwrap().unwrap();
+
+        let (added, removed) = diff_lines(wt, &base, &tip).await.unwrap();
+        assert_eq!(
+            added,
+            vec![
+                ("a.txt".to_string(), "TWO".to_string()),
+                ("a.txt".to_string(), "four".to_string()),
+            ]
+        );
+        assert_eq!(removed, vec![("a.txt".to_string(), "two".to_string())]);
     }
 
     #[tokio::test]

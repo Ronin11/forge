@@ -755,8 +755,9 @@ pub struct TraceDoc {
 
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
 /// for one (role, provider, model) combination, role being the attempt's
-/// step (`code`, `review`, and so on). `landed`, `broke_base` and
-/// `broke_base_share` are only ever present for the `code` role.
+/// step (`code`, `review`, and so on). `landed`, `broke_base`,
+/// `broke_base_share`, `follow_on_cost_usd`, `true_cost_per_landed_usd`
+/// and `churn_share` are only ever present for the `code` role.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StatsRoleRow {
     #[serde(default)]
@@ -783,6 +784,12 @@ pub struct StatsRoleRow {
     pub broke_base: Option<i64>,
     #[serde(default)]
     pub broke_base_share: Option<f64>,
+    #[serde(default)]
+    pub follow_on_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub true_cost_per_landed_usd: Option<f64>,
+    #[serde(default)]
+    pub churn_share: Option<f64>,
 }
 
 /// The document `forge stats --json` prints. `docs/CLIENT.md` documents
