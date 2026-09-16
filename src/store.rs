@@ -642,6 +642,15 @@ pub struct Initiative {
     pub settled_at: Option<i64>,
 }
 
+/// A change to an existing initiative: only the fields given replace the
+/// stored value, the rest are left alone (see `Store::set_initiative`).
+#[derive(Default, Debug, Clone)]
+pub struct InitiativeUpdate {
+    pub outcome: Option<String>,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: Option<i64>,
+}
+
 /// Task counts by state and total cost for one project.
 #[derive(Default, Debug, Clone)]
 pub struct ProjectTaskStats {
@@ -2638,6 +2647,20 @@ impl Store {
             ],
         )?;
         Ok(c.last_insert_rowid())
+    }
+
+    /// Change only the fields `d` gives; returns `false` if `id` names no
+    /// initiative.
+    pub fn set_initiative(&self, id: i64, d: &InitiativeUpdate) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE initiatives SET
+                outcome = COALESCE(?2, outcome),
+                budget_usd = COALESCE(?3, budget_usd),
+                stop_after_same_rule = COALESCE(?4, stop_after_same_rule)
+             WHERE id=?1",
+            params![id, d.outcome, d.budget_usd, d.stop_after_same_rule],
+        )?;
+        Ok(n > 0)
     }
 
     pub fn initiative(&self, id: i64) -> Result<Option<Initiative>> {
