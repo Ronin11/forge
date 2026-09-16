@@ -373,9 +373,11 @@ pub(crate) fn resolve_deploy_method(
 /// (uppercased) and its check command becomes `FORGE_CHECK`, both only
 /// ever in this process's environment, never in a prompt and never in a
 /// log (see docs/DEPLOY.md, "Secrets and hosts"). `cwd` is the landed
-/// tree, already checked out by the caller.
+/// tree, already checked out by the caller. Never sandboxed: `forge
+/// deploy` never sandboxes it, and an on-landing deploy triggered from a
+/// sandboxed task run must reach the same hosts and tools that same
+/// method reaches from the CLI.
 pub(crate) async fn run_deploy_method(
-    f: &Forge,
     action: &workflows::ActionDef,
     target: &DeployTarget,
     cwd: &Path,
@@ -391,14 +393,5 @@ pub(crate) async fn run_deploy_method(
         .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
         .collect();
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
-    Ok(checks::run_one(
-        "OP",
-        &action.name,
-        argv,
-        cwd,
-        f.sandbox.as_ref(),
-        timeout,
-        &env,
-    )
-    .await)
+    Ok(checks::run_one("OP", &action.name, argv, cwd, None, timeout, &env).await)
 }
