@@ -124,6 +124,12 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge stats --json`: see [`StatsDoc`].
+    pub fn stats(&self) -> Result<StatsDoc> {
+        let v = self.json(&["stats", "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge events --since <offset> --follow`, as an iterator of typed
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
@@ -693,6 +699,48 @@ pub struct TraceDoc {
     pub resolved: Value,
     #[serde(default)]
     pub diagnosis: Value,
+}
+
+/// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
+/// for one (role, provider, model) combination, role being the attempt's
+/// step (`code`, `review`, and so on). `landed`, `broke_base` and
+/// `broke_base_share` are only ever present for the `code` role.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsRoleRow {
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub attempts: i64,
+    #[serde(default)]
+    pub succeeded: i64,
+    #[serde(default)]
+    pub succeeded_share: Option<f64>,
+    #[serde(default)]
+    pub mean_turns: f64,
+    #[serde(default)]
+    pub mean_cost_usd: f64,
+    #[serde(default)]
+    pub mean_secs: f64,
+    #[serde(default)]
+    pub landed: Option<i64>,
+    #[serde(default)]
+    pub broke_base: Option<i64>,
+    #[serde(default)]
+    pub broke_base_share: Option<f64>,
+}
+
+/// The document `forge stats --json` prints. `docs/CLIENT.md` documents
+/// the full shape (`workflows`, `steps`, `journal`, `no_journal`,
+/// `projects`, `by_role`, `tools`); only `by_role` is modeled here today,
+/// the rest added as a client needs them.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsDoc {
+    #[serde(default)]
+    pub by_role: Vec<StatsRoleRow>,
 }
 
 /// One workflow's declared metadata and measured outcomes, one entry of

@@ -23,10 +23,11 @@
   const post = path => call('POST', path);
 
   // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins, /projects,
-  // /projects/:name, /initiatives/:id, /graph
+  // /projects/:name, /initiatives/:id, /graph, /stats
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
     if (location.pathname === '/projects') return { page: 'projects' };
+    if (location.pathname === '/stats') return { page: 'stats' };
     if (location.pathname === '/graph') return { page: 'graph', repo: new URLSearchParams(location.search).get('repo') || '' };
     let m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
@@ -38,7 +39,7 @@
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
@@ -48,7 +49,7 @@
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
     const projects = r.page === 'projects' || r.page === 'project';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a>`;
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
   }
 
   async function render() {
@@ -60,6 +61,7 @@
       : r.page === 'project' ? projectView(r.name)
       : r.page === 'initiative' ? initiativeView(r.id)
       : r.page === 'graph' ? graphView(r.repo)
+      : r.page === 'stats' ? statsView()
       : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
@@ -303,6 +305,38 @@
           <h2>Projects</h2>
           <table><thead><tr><th>name</th><th>purpose</th><th class="num">queued</th><th class="num">running</th><th class="num">succeeded</th><th class="num">failed</th><th class="num">cost</th></tr></thead><tbody id="project-rows"></tbody></table>`;
         drawRows(await get('/api/projects'));
+      },
+    };
+  }
+
+  // ---- stats view: attempts, outcomes, cost and wall time per (role,
+  // provider, model)
+  function statsView() {
+    const pct = v => v == null ? '-' : (v * 100).toFixed(0) + '%';
+    const num = v => v == null ? '-' : v;
+    function drawRows(rows) {
+      $('#stats-rows').innerHTML = rows.map(r => `
+        <tr>
+          <td>${esc(r.role)}</td>
+          <td>${esc(r.provider)}</td>
+          <td>${esc(r.model)}</td>
+          <td class="num">${r.attempts}</td>
+          <td class="num">${pct(r.succeeded_share)}</td>
+          <td class="num">${r.mean_turns.toFixed(1)}</td>
+          <td class="num">${usd(r.mean_cost_usd)}</td>
+          <td class="num">${r.mean_secs.toFixed(0)}</td>
+          <td class="num">${num(r.landed)}</td>
+          <td class="num">${num(r.broke_base)}</td>
+          <td class="num">${pct(r.broke_base_share)}</td>
+        </tr>`).join('') || '<tr><td colspan="11" class="mute">no data</td></tr>';
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Stats by role</h2>
+          <table><thead><tr><th>role</th><th>provider</th><th>model</th><th class="num">att</th><th class="num">succeed%</th><th class="num">turns</th><th class="num">cost</th><th class="num">secs</th><th class="num">landed</th><th class="num">broke</th><th class="num">broke%</th></tr></thead><tbody id="stats-rows"></tbody></table>`;
+        const d = await get('/api/stats');
+        drawRows(d.by_role || []);
       },
     };
   }

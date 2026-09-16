@@ -263,6 +263,33 @@ fn graph(repo: &str) -> Result<Value> {
     forge_client::spawn_json("forge-repomap", &args)
 }
 
+/// `forge stats --json`, through the client crate's typed `StatsDoc`, for
+/// the `/stats` page's by-role table.
+fn stats_json(forge: &Forge) -> Result<Value> {
+    let doc = forge.stats()?;
+    let by_role: Vec<Value> = doc
+        .by_role
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "role": r.role,
+                "provider": r.provider,
+                "model": r.model,
+                "attempts": r.attempts,
+                "succeeded": r.succeeded,
+                "succeeded_share": r.succeeded_share,
+                "mean_turns": r.mean_turns,
+                "mean_cost_usd": r.mean_cost_usd,
+                "mean_secs": r.mean_secs,
+                "landed": r.landed,
+                "broke_base": r.broke_base,
+                "broke_base_share": r.broke_base_share,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "by_role": by_role }))
+}
+
 /// `forge plugin list --json` and `forge plugin status --json`, through
 /// the client crate's typed rows, merged by name into one document per
 /// plugin for the `/plugins` page.
@@ -340,12 +367,14 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || p == "/projects"
             || p.starts_with("/projects/")
             || p.starts_with("/initiatives/")
-            || p == "/graph" =>
+            || p == "/graph"
+            || p == "/stats" =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
+        "/api/stats" => json_or_error(stats_json(forge)),
         "/api/graph" => match query_param(&query, "repo").map(|v| unescape(&v)) {
             Some(repo) if !repo.is_empty() => json_or_error(graph(&repo)),
             _ => text(400, "repo is required", "text/plain"),

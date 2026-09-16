@@ -36,6 +36,10 @@ case "$1" in
       report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\"}],\"refused\":[],\"rulings\":[],\"questions\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
       *) echo "unexpected initiative: $*" >&2; exit 2 ;;
     esac ;;
+  stats) cat <<'JSON'
+{"workflows":[],"steps":[],"journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"no_journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"by_role":[{"role":"code","provider":"anthropic","model":"claude-sonnet-5","attempts":10,"succeeded":8,"succeeded_share":0.8,"mean_turns":12.5,"mean_cost_usd":1.23,"mean_secs":340.0,"landed":6,"broke_base":1,"broke_base_share":0.16666666666666666},{"role":"review","provider":"anthropic","model":"claude-haiku-4-5","attempts":4,"succeeded":4,"succeeded_share":1.0,"mean_turns":3.0,"mean_cost_usd":0.1,"mean_secs":20.0}]}
+JSON
+  ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -160,6 +164,8 @@ fn without_the_token_nothing_is_served() {
         "/api/initiatives/5",
         "/graph",
         "/api/graph?repo=%2Fsome%2Frepo",
+        "/stats",
+        "/api/stats",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -329,6 +335,29 @@ fn the_projects_and_initiatives_routes_pass_forge_json_through() {
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v[0]["args"], "--json --limit 100 --project demo");
+}
+
+#[test]
+fn the_stats_page_and_route_show_the_by_role_breakdown() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, _, body) = get(&w.addr, "/stats", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+
+    let (status, _, body) = get(&w.addr, "/api/stats", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["by_role"][0]["role"], "code");
+    assert_eq!(v["by_role"][0]["provider"], "anthropic");
+    assert_eq!(v["by_role"][0]["model"], "claude-sonnet-5");
+    assert_eq!(v["by_role"][0]["attempts"], 10);
+    assert_eq!(v["by_role"][0]["landed"], 6);
+    assert_eq!(v["by_role"][0]["broke_base"], 1);
+    assert_eq!(v["by_role"][1]["role"], "review");
+    assert_eq!(v["by_role"][1]["model"], "claude-haiku-4-5");
+    assert!(v["by_role"][1]["landed"].is_null(), "{body}");
 }
 
 #[test]
