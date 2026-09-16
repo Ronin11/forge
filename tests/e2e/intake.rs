@@ -118,6 +118,38 @@ fn a_scripted_person_answers_four_questions_and_confirms_the_brief() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (state, reason, _) = e.task(id);
     assert_eq!(state, "succeeded", "{reason}");
+
+    // The final turn re-emits the same brief, now confirmed, as its own plan.
+    let doc = e.trace_json(id);
+    let plan = doc["task"]["plan"]
+        .as_str()
+        .expect("the final turn recorded a plan");
+    let brief: serde_json::Value =
+        serde_json::from_str(plan).unwrap_or_else(|e| panic!("plan is not JSON: {e}: {plan}"));
+    let workflows = brief["workflows"]
+        .as_array()
+        .expect("brief.workflows is an array");
+    assert!(!workflows.is_empty(), "at least one workflow was named");
+    for w in workflows {
+        for field in [
+            "name",
+            "trigger",
+            "inputs",
+            "outputs",
+            "other_people",
+            "failure_today",
+            "success_signal",
+            "do_not_touch",
+        ] {
+            assert!(
+                w.get(field).is_some_and(|v| v.is_string()),
+                "workflow entry missing `{field}`: {w}"
+            );
+        }
+    }
+    assert!(brief["where_it_runs"].is_string(), "{brief}");
+    assert!(brief["do_not_touch"].is_array(), "{brief}");
+    assert_eq!(brief["confirmed"], true, "{brief}");
 }
 
 #[test]

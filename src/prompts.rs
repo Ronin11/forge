@@ -325,6 +325,10 @@ pub fn interview_prompt(
          and stop with `needs_input` of kind `question`, `to` the contact, asking them to \
          confirm the brief back in plain words (read it back to them; never show them the raw \
          JSON).\n\n\
+         When the person confirms the brief you read back to them, ask nothing else: stop with \
+         `needs_input` null and put the same brief JSON in `summary`, with `confirmed` set to \
+         true and nothing else changed. If they correct it or say \"except when\", update the \
+         brief to match, keep `confirmed` false, and ask again.\n\n\
          The person can stop this conversation at any time by saying so. Recognise it the \
          moment they do: ask nothing else, stop with `needs_input` null and a short \
          plain-sentence summary saying they asked to stop. That ends the interview cleanly; it \

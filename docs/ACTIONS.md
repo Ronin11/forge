@@ -108,8 +108,11 @@ confirmation question, or, if the person asked to stop, a plain sentence
 saying so. None of that is held to `plan-substantive` or
 `plan-names-real-paths`; the kernel verifies `interview` on `untouched`
 and a structured result alone, the same way it holds every other
-contract to only what it can check. `intake` is the workflow that runs
-it after `setup`.
+contract to only what it can check. The brief is carried forward as
+`t.plan` to each next turn of an intake task, and the last turn — once
+the person confirms it — re-emits the same brief with `confirmed:true`
+as that turn's own plan. `intake` is the workflow that runs it after
+`setup`.
 
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a

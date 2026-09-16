@@ -617,8 +617,12 @@ pub async fn answer(
         .map(|&d| map_dep(f, d, &std::collections::HashMap::new()))
         .collect::<Result<Vec<_>>>()?;
     let req = retry_request(&old, &RetryOverrides::none(), true, after, Some(new_text));
-    let n = enqueue(f, &req, Some(id)).await?;
+    let mut n = enqueue(f, &req, Some(id)).await?;
     f.store.set_decision_retry(decision, n.id)?;
+    if old.workflow == "intake" && !old.plan.is_empty() {
+        n.plan = old.plan.clone();
+        f.store.update_task(&n)?;
+    }
     Ok((decision, n))
 }
 

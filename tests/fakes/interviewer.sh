@@ -31,6 +31,13 @@ case "$n" in
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01,"result":"done","structured_output":{"schema_version":1,"summary":"'"$escaped"'","needs_input":{"tried":"asked about every workflow on the checklist","question":"Here is what I have: every time a customer texts a photo of the job, you text back a quote and write it in the book, on your phone. Does that sound right?","options":[],"context":"","checkpoint":null,"to":"nate"},"changes":[],"checks_run":[],"claims":[]}}'
   ;;
 *)
-  result "Confirmed by nate."
+  if ! grep -q "The brief so far" <<<"$prompt"; then
+    echo "expected the confirming turn's brief to be carried forward" >&2
+    exit 1
+  fi
+  brief='{"workflows":[{"name":"quote by photo","trigger":"a customer texts a photo of the job","inputs":"the photo","outputs":"a quote texted back, an entry in the book","other_people":"none","failure_today":"sometimes forgets to write it in the book","success_signal":"never forgets an entry","do_not_touch":"the book stays a physical notebook"}],"where_it_runs":"his phone","do_not_touch":["the book stays a physical notebook"],"confirmed":true}'
+  escaped="${brief//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01,"result":"done","structured_output":{"schema_version":1,"summary":"'"$escaped"'","needs_input":null,"changes":[],"checks_run":[],"claims":[]}}'
   ;;
 esac
