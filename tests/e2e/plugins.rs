@@ -315,6 +315,150 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
     );
 }
 
+/// A fake `rsync` for a `host=local` deploy target: records nothing, just
+/// copies its source into its destination (no `host:` prefix to strip,
+/// unlike the SSH-reaching fakes in tests/e2e/deploy.rs, since a local
+/// target never shells out to `ssh`).
+const FAKE_LOCAL_RSYNC: &str = r#"#!/bin/bash
+args=()
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *) args+=("$a") ;;
+  esac
+done
+src="${args[0]}"
+dest="${args[1]}"
+mkdir -p "$dest"
+cp -a "$src"/. "$dest"/
+"#;
+
+/// notify.sh treats `deploy_finished` as a notification too (docs/DEPLOY.md,
+/// "When a deploy runs"): an on-landing target whose check always fails
+/// gets no previous deploy to roll back to, so it finishes `ok: false`
+/// with no rollback, and the fake `command` sees it — carrying the
+/// project, target and sha — without any config turning failure
+/// notifications on (they are on by default; only a passing deploy is
+/// quiet unless `NOTIFY_DEPLOY_OK=1`).
+#[test]
+fn the_notify_plugin_gets_a_deploy_finished_with_ok_false() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/notify");
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    let hits = e._dir.path().join("hits.txt");
+    std::fs::write(
+        e.home.join("plugins/notify/command"),
+        format!(
+            "#!/bin/sh\ncat >/dev/null\necho \"$1|$2|$3|$4|$5\" >> {}\n",
+            hits.display()
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "notify"])
+            .status
+            .success()
+    );
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "demo",
+                "--purpose",
+                "p",
+                "--repo",
+                e.repo.to_str().unwrap(),
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let remote = e._dir.path().join("remote");
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            e.repo.to_str().unwrap(),
+            "--method",
+            "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            &format!("dest={}", remote.display()),
+            "--arg",
+            "command=true",
+            "--check",
+            "false",
+            "--on-landing",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    let rsync_path = fakebin.join("rsync");
+    std::fs::write(&rsync_path, FAKE_LOCAL_RSYNC).unwrap();
+    std::fs::set_permissions(&rsync_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    e.add(&[]);
+
+    // FAKE_SLEEP gives the plugin time to subscribe from its offset
+    // before the task lands and its on-landing deploy fires, exactly as
+    // `the_reference_plugin_runs_its_command_on_task_done` does.
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("FAKE_SLEEP", "1")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let sha: String = e
+        .db()
+        .query_row(
+            "SELECT sha FROM deploys WHERE project='demo' AND target='prod'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let want = format!("deploy|demo|prod|{sha}|failed");
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&hits)
+                .unwrap_or_default()
+                .lines()
+                .any(|l| l == want),
+            Duration::from_secs(10)
+        ),
+        "expected {want:?} in {}: {:?}",
+        hits.display(),
+        std::fs::read_to_string(&hits)
+    );
+}
+
 /// The github-issues plugin end to end, against a stub `gh`: intake files a
 /// task for the one open issue the stub serves, records the issue as a
 /// `ref`, and the events side comments back on the issue (and applies
