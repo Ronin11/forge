@@ -1155,11 +1155,27 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_error_item_with_no_result_is_a_failure() {
+        let lines = [
+            r#"{"type":"thread.started","thread_id":"codex-sess-2"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"error","message":"stream disconnected"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}"#,
+        ];
+        let out = run_codex_fixture(&lines, thresholds(100, 100, 100, 2));
+        assert!(out.is_error, "no result followed the error item");
+        assert!(!out.got_result);
+    }
+
+    #[test]
     fn codex_events_parse_into_the_outcome() {
         let out = run_codex_fixture(&codex_fixture(), thresholds(100, 100, 100, 2));
         assert_eq!(out.session_id.as_deref(), Some("codex-sess-1"));
         assert_eq!(out.tool_calls, 1);
-        assert!(out.is_error, "the error item marks the outcome an error");
+        assert!(
+            !out.is_error,
+            "an error item before a valid result is a warning, not a failure"
+        );
         assert!(out.got_result);
         assert_eq!(out.result_text, out.structured.clone().unwrap());
         let structured: Value = serde_json::from_str(&out.structured.unwrap()).unwrap();
