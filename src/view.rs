@@ -961,6 +961,7 @@ pub struct DeployTargetRow {
     pub args: std::collections::BTreeMap<String, String>,
     pub check_cmd: String,
     pub on_landing: bool,
+    pub smoke_url: Option<String>,
 }
 
 impl From<&crate::store::DeployTarget> for DeployTargetRow {
@@ -974,6 +975,7 @@ impl From<&crate::store::DeployTarget> for DeployTargetRow {
             args: t.args.clone(),
             check_cmd: t.check_cmd.clone(),
             on_landing: t.on_landing,
+            smoke_url: t.smoke_url.clone(),
         }
     }
 }
@@ -992,6 +994,8 @@ pub struct DeployRow {
     pub check_output: String,
     pub rolled_back_to: Option<String>,
     pub reason: String,
+    pub smoke_ok: Option<bool>,
+    pub smoke_json: Option<String>,
 }
 
 impl From<&crate::store::Deploy> for DeployRow {
@@ -1007,6 +1011,8 @@ impl From<&crate::store::Deploy> for DeployRow {
             check_output: d.check_output.clone(),
             rolled_back_to: d.rolled_back_to.clone(),
             reason: d.reason.clone(),
+            smoke_ok: d.smoke_ok,
+            smoke_json: d.smoke_json.clone(),
         }
     }
 }

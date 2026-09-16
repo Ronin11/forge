@@ -111,6 +111,11 @@ pub async fn run(
         .deploy_target(project, name)?
         .with_context(|| format!("no deploy target {name} in project {project}"))?;
     let action = operation::resolve_deploy_method(f, &target.method)?;
+    let smoke_action = target
+        .smoke_url
+        .is_some()
+        .then(|| operation::resolve_deploy_smoke(f))
+        .transpose()?;
     let repo = PathBuf::from(&target.repo);
     let cfg = config::load_working(&repo).await?;
     let sha = match sha {
@@ -135,7 +140,7 @@ pub async fn run(
         .store
         .start_deploy(project, name, &sha, unix_now(), task_id)?;
 
-    let r = deploy_at(
+    let mut r = deploy_at(
         &action,
         &target,
         &repo,
@@ -145,9 +150,38 @@ pub async fn run(
     )
     .await?;
 
+    // A check that answers is not a site that works (see docs/DEPLOY.md,
+    // "A deterministic smoke step"): open the target's smoke url only once
+    // the check itself has passed, and let it fail the deploy too.
+    let (smoke_ok, smoke_json) = if r.ok {
+        match (&target.smoke_url, &smoke_action) {
+            (Some(url), Some(smoke_action)) => {
+                let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
+                let sr = operation::run_deploy_smoke(smoke_action, url, &out_dir, timeout).await?;
+                let json = std::fs::read_to_string(out_dir.join("smoke.json")).ok();
+                if !sr.ok {
+                    r.ok = false;
+                    r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
+                }
+                (Some(sr.ok), json)
+            }
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
     if r.ok {
-        f.store
-            .finish_deploy(deploy_id, unix_now(), true, &r.tail, None, "")?;
+        f.store.finish_deploy(
+            deploy_id,
+            unix_now(),
+            true,
+            &r.tail,
+            None,
+            "",
+            smoke_ok,
+            smoke_json.as_deref(),
+        )?;
         f.report.emit(
             event_task,
             Event::DeployFinished {
@@ -175,8 +209,16 @@ pub async fn run(
             "the deploy of {} failed its check; there is no previous deploy to roll back to",
             short(&sha)
         );
-        f.store
-            .finish_deploy(deploy_id, unix_now(), false, &r.tail, None, &reason)?;
+        f.store.finish_deploy(
+            deploy_id,
+            unix_now(),
+            false,
+            &r.tail,
+            None,
+            &reason,
+            smoke_ok,
+            smoke_json.as_deref(),
+        )?;
         f.report.emit(
             event_task,
             Event::DeployFinished {
@@ -218,6 +260,8 @@ pub async fn run(
         &r.tail,
         Some(&previous.sha),
         &reason,
+        smoke_ok,
+        smoke_json.as_deref(),
     )?;
     f.report.emit(
         event_task,

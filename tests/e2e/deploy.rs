@@ -398,6 +398,161 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
     assert!(reason.contains("bad"), "{reason}");
 }
 
+/// A minimal local HTTP server for the smoke e2e test below: one page with
+/// a failing subresource (`/missing.png`, 404) and one deliberate console
+/// error, exactly the shape a check's curl of two endpoints cannot see
+/// (see docs/DEPLOY.md, "A deterministic smoke step").
+fn serve_fake_page() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .to_string();
+                let (status, body) = if path.starts_with("/missing.png") {
+                    ("404 Not Found", "nope".to_string())
+                } else {
+                    (
+                        "200 OK",
+                        "<!doctype html><html><head><title>Smoke Test Page</title></head>\
+                         <body><img src=\"/missing.png\">\
+                         <script>console.error(\"deliberate smoke test console error\")</script>\
+                         </body></html>"
+                            .to_string(),
+                    )
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            });
+        }
+    });
+    addr
+}
+
+#[test]
+fn a_deploy_smoke_check_records_a_console_error_and_a_failed_subresource_and_fails_the_deploy() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let addr = serve_fake_page();
+    let url = format!("http://{addr}/index.html");
+    let dest = e._dir.path().join("remote");
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            &format!("dest={}", dest.to_str().unwrap()),
+            "--arg",
+            "command=true",
+            "--check",
+            "true",
+            "--smoke",
+            &url,
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // The target's own check passes (host=local, command and check are
+    // both `true`), but the smoke step finds the console error and the
+    // failed subresource, and fails the deploy.
+    let o = e
+        .cmd("ok.sh")
+        .args(["deploy", "demo", "prod"])
+        .output()
+        .unwrap();
+    assert!(
+        !o.status.success(),
+        "the smoke failure should fail the deploy: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "demo", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["check_ok"], false, "{row:?}");
+    assert_eq!(row["smoke_ok"], false, "{row:?}");
+
+    let smoke: serde_json::Value =
+        serde_json::from_str(row["smoke_json"].as_str().unwrap_or_else(|| {
+            panic!("no smoke_json recorded: {row:?}")
+        }))
+        .unwrap();
+    assert_eq!(smoke["ok"], false, "{smoke:?}");
+    assert_eq!(smoke["title"], "Smoke Test Page", "{smoke:?}");
+    assert!(
+        smoke["console_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("deliberate smoke test console error")),
+        "{smoke:?}"
+    );
+    let failed = smoke["failed_requests"].as_array().unwrap();
+    assert!(
+        failed.iter().any(|f| f["url"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/missing.png")
+            && f["status"].as_u64() == Some(404)
+            && f["origin"] == "own"),
+        "{smoke:?}"
+    );
+
+    // A full-page screenshot lands beside the deploy's record.
+    let id = row["id"].as_i64().unwrap();
+    let screenshot = e
+        .home
+        .join("deploys")
+        .join(id.to_string())
+        .join("screenshot.png");
+    assert!(screenshot.exists(), "{}", screenshot.display());
+    assert!(std::fs::metadata(&screenshot).unwrap().len() > 0);
+}
+
 /// A fake `systemctl`: records every call, and simulates a unit that
 /// takes a couple of polls after `restart` before `is-active` reports
 /// `active`, so the wait loop in deploy-user-service.toml is exercised

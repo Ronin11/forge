@@ -259,7 +259,12 @@ active, before the check; see docs/DEPLOY.md), and `deploy-static`
 (rsyncs a built directory to a target's host and dest, then the check:
 the target's own check command if it declared one, else this method's
 default of fetching a `url` arg over curl, requiring HTTP 200 and, when
-a `marker` arg is given, that string in the body; see docs/DEPLOY.md).
+a `marker` arg is given, that string in the body; see docs/DEPLOY.md),
+and `deploy-smoke` (after a target's check passes, opens its declared
+smoke url in headless Chromium through Playwright, records console
+errors, failed requests, the title and a screenshot, and fails on a
+console error or a failed request to the url's own origin; see
+docs/DEPLOY.md).
 The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code
 visualiser: one JSON document of every source file the extractor table

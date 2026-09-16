@@ -529,6 +529,11 @@ enum ProjectDeployCmd {
         /// which defaults to fetching a url arg and requiring 200
         #[arg(long)]
         check: Option<String>,
+        /// After the check passes, open this url in headless Chromium and
+        /// fail the deploy on a console error or a failed request to its
+        /// own origin (see docs/DEPLOY.md, "A deterministic smoke step")
+        #[arg(long)]
+        smoke: Option<String>,
         /// Run this target automatically after a landing on its repository
         #[arg(long)]
         on_landing: bool,
@@ -774,10 +779,11 @@ pub async fn main() -> Result<()> {
                     method,
                     args,
                     check,
+                    smoke,
                     on_landing,
-                } => {
-                    project_deploy_add(project, name, repo, scope, method, args, check, on_landing)
-                }
+                } => project_deploy_add(
+                    project, name, repo, scope, method, args, check, smoke, on_landing,
+                ),
                 ProjectDeployCmd::List { project, json } => project_deploy_list(project, json),
             },
         },
@@ -1244,6 +1250,7 @@ fn project_deploy_add(
     method: String,
     args: Vec<String>,
     check: Option<String>,
+    smoke: Option<String>,
     on_landing: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
@@ -1277,6 +1284,7 @@ fn project_deploy_add(
         args: arg_map,
         check_cmd: check,
         on_landing,
+        smoke_url: smoke,
     })?;
     out!("added deploy target {name} to project {project}");
     Ok(())
@@ -1295,6 +1303,9 @@ fn print_deploy_target_row(t: &crate::view::DeployTargetRow) {
         t.on_landing
     );
     out!("{:<12} check={}", "", t.check_cmd);
+    if let Some(url) = &t.smoke_url {
+        out!("{:<12} smoke={}", "", url);
+    }
 }
 
 fn project_deploy_list(project: String, json: bool) -> Result<()> {
@@ -1352,6 +1363,13 @@ fn print_deploy_row(r: &crate::view::DeployRow) {
     out!("{:<5} {:<12} {sha} {status}", r.id, r.target);
     if !r.reason.is_empty() {
         out!("{:<19}{}", "", r.reason);
+    }
+    if let Some(ok) = r.smoke_ok {
+        out!(
+            "{:<19}smoke {}",
+            "",
+            if ok { "ok" } else { "FAILED" }
+        );
     }
 }
 

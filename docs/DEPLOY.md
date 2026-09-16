@@ -30,7 +30,7 @@ thing that is *for* someone and a repository can serve several. A target
 names the repository it deploys and, for a monorepo, the scope.
 
 ```
-forge project deploy add <project> <name> --repo <path> --method <action> [--arg k=v]... --check <command> [--on-landing]
+forge project deploy add <project> <name> --repo <path> --method <action> [--arg k=v]... --check <command> [--smoke <url>] [--on-landing]
 forge project deploy list <project>
 forge deploy <project> <name> [--sha <commit>]     run it now
 forge deploy log <project> [<name>]                what was deployed when, and what the check said
@@ -70,6 +70,35 @@ The first four:
 Nothing here is an agent. A method is a script with arguments. An agent
 may be given a task to *write* a deploy script for a project; running
 it is the kernel's, deterministic, with a record.
+
+## A deterministic smoke step
+
+A check command proves a port answers, not that the site works: a map
+provider's "API key required" placeholder is an image served with
+status 200, so a check that fetches two endpoints cannot see it (this
+is what happened to equitizr's map tiles the day it went live).
+
+A target may declare `--smoke <url>`. After its check passes, `forge
+deploy` opens that url in headless Chromium through the `deploy-smoke`
+operation (`src/builtins/operations/deploy-smoke.toml`), launching the
+browser the same way the `playwright` operation does, sandbox flags
+included. It waits for network idle up to twenty seconds and records:
+
+- every request that failed outright or came back with status 400 or
+  above, its url and status, subresources included (a tile, a script,
+  a font);
+- every console error;
+- the page title;
+- a full-page screenshot, saved beside the deploy's record under
+  `FORGE2_HOME/deploys/<id>/`.
+
+A console error or a failed request to the site's own origin fails the
+deploy, exactly like a failed check: rollback and the human rung below
+both apply. A failed request to a third party (an ad network, an
+analytics beacon) is recorded but does not fail the deploy; a target
+cannot promise what it does not control. The result lands on the
+deploy row as `smoke_ok` and `smoke_json`, and `forge deploy log`
+shows it. A target with no `--smoke` url skips the step entirely.
 
 ## When a deploy runs
 

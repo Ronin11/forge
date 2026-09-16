@@ -395,3 +395,43 @@ pub(crate) async fn run_deploy_method(
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
     Ok(checks::run_one("OP", &action.name, argv, cwd, None, timeout, &env).await)
 }
+
+/// The `deploy-smoke` operation, resolved once up front exactly like
+/// `resolve_deploy_method`, so a target that declares a smoke url fails
+/// before its deploy row starts if the operation is somehow missing.
+pub(crate) fn resolve_deploy_smoke(f: &Forge) -> anyhow::Result<workflows::ActionDef> {
+    let actions = workflows::load_actions(&f.paths.home)?;
+    let action = actions
+        .get("deploy-smoke")
+        .context("no deploy-smoke operation registered")?;
+    if action.run.is_none() {
+        anyhow::bail!("deploy-smoke declares no run command");
+    }
+    Ok(action.clone())
+}
+
+/// After a deploy's check passes, open its target's smoke url in headless
+/// Chromium through the `deploy-smoke` operation (see
+/// src/builtins/operations/deploy-smoke.toml) and record what it saw
+/// under `out_dir` (`FORGE2_HOME/deploys/<id>/`; see docs/DEPLOY.md, "A
+/// deterministic smoke step"). Never sandboxed, like `run_deploy_method`.
+pub(crate) async fn run_deploy_smoke(
+    action: &workflows::ActionDef,
+    url: &str,
+    out_dir: &Path,
+    timeout: Duration,
+) -> anyhow::Result<checks::CheckResult> {
+    let argv = action
+        .run
+        .as_ref()
+        .expect("checked by resolve_deploy_smoke");
+    std::fs::create_dir_all(out_dir)?;
+    let env = vec![
+        ("FORGE_ARG_URL".to_string(), url.to_string()),
+        (
+            "FORGE_ARG_OUT_DIR".to_string(),
+            out_dir.display().to_string(),
+        ),
+    ];
+    Ok(checks::run_one("OP", &action.name, argv, out_dir, None, timeout, &env).await)
+}

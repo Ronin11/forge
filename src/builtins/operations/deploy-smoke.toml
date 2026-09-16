@@ -1,0 +1,106 @@
+name = "deploy-smoke"
+kind = "operation"
+description = "after a deploy target's check passes, open its smoke url in headless Chromium through Playwright (the same sandbox flags the playwright operation launches with), wait for network idle up to 20s, and record every request that failed or returned status 400 or above (url and status), every console error, the page title, and a full-page screenshot, written to FORGE_ARG_OUT_DIR as smoke.json and screenshot.png. Exits nonzero when there is any console error or any failed request to the url's own origin; third-party failures are listed in smoke.json without failing the check. Reads FORGE_ARG_URL and FORGE_ARG_OUT_DIR from the environment, injected by `forge deploy` (see docs/DEPLOY.md, 'A deterministic smoke step')."
+run = ["bash", "-c", '''
+set -e
+url="$FORGE_ARG_URL"
+outdir="$FORGE_ARG_OUT_DIR"
+mkdir -p "$outdir"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+npm install --no-save --no-audit --no-fund --prefix "$work" playwright >/dev/null 2>&1
+cat > "$work/smoke.js" <<'NODE'
+const fs = require("fs");
+const { chromium } = require("playwright");
+
+async function main() {
+  const url = process.argv[2];
+  const outdir = process.argv[3];
+  const consoleErrors = [];
+  const failedRequests = [];
+  let ownOrigin = "";
+  try {
+    ownOrigin = new URL(url).origin;
+  } catch {
+    // an unparseable url never matches an origin below; every failure is
+    // reported as third-party rather than crashing the smoke step.
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    // The same sandbox flags the playwright operation launches Chromium
+    // with: a sandboxed or containerized runner has no user namespaces
+    // for Chromium's own sandbox to nest inside.
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+  const page = await browser.newPage();
+  page.on("console", (msg) => {
+    if (msg.type() === "error") {
+      consoleErrors.push({ text: msg.text() });
+    }
+  });
+  page.on("requestfailed", (request) => {
+    const failure = request.failure();
+    failedRequests.push({
+      url: request.url(),
+      status: null,
+      error: failure ? failure.errorText : "failed",
+    });
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) {
+      failedRequests.push({ url: response.url(), status: response.status() });
+    }
+  });
+
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: 20000 });
+  } catch {
+    // A page that never reaches network-idle within 20s still leaves
+    // whatever it loaded (and failed to load) in place to record.
+  }
+  const title = await page.title().catch(() => "");
+  const screenshot = "screenshot.png";
+  await page
+    .screenshot({ path: `${outdir}/${screenshot}`, fullPage: true })
+    .catch(() => {});
+  await browser.close();
+
+  const withOrigin = failedRequests.map((r) => {
+    let origin = "";
+    try {
+      origin = new URL(r.url).origin;
+    } catch {
+      // stays "", so it is never mistaken for the site's own origin below.
+    }
+    return { ...r, origin: origin && origin === ownOrigin ? "own" : "third_party" };
+  });
+  const ownFailures = withOrigin.filter((r) => r.origin === "own");
+  const ok = consoleErrors.length === 0 && ownFailures.length === 0;
+
+  const result = {
+    url,
+    title,
+    ok,
+    console_errors: consoleErrors,
+    failed_requests: withOrigin,
+    screenshot,
+  };
+  fs.writeFileSync(`${outdir}/smoke.json`, JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result));
+  process.exit(ok ? 0 : 1);
+}
+
+main().catch((e) => {
+  try {
+    fs.writeFileSync(
+      `${process.argv[3]}/smoke.json`,
+      JSON.stringify({ url: process.argv[2], ok: false, error: String(e) }, null, 2)
+    );
+  } catch {}
+  console.error(e);
+  process.exit(1);
+});
+NODE
+node "$work/smoke.js" "$url" "$outdir"
+''', "deploy-smoke"]

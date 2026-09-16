@@ -411,6 +411,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         "deploy-static.toml",
         include_str!("builtins/operations/deploy-static.toml"),
     ),
+    (
+        "deploy-smoke.toml",
+        include_str!("builtins/operations/deploy-smoke.toml"),
+    ),
 ];
 
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[

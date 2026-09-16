@@ -568,6 +568,10 @@ pub struct DeployTarget {
     pub args: BTreeMap<String, String>,
     pub check_cmd: String,
     pub on_landing: bool,
+    /// A url the deploy-smoke operation opens in headless Chromium after
+    /// the check passes, `None` to skip the smoke step entirely (see
+    /// docs/DEPLOY.md, "A deterministic smoke step").
+    pub smoke_url: Option<String>,
 }
 
 /// One deploy: a target, the commit deployed, when it started and
@@ -590,6 +594,13 @@ pub struct Deploy {
     /// surfaced to a view once a later step needs it.
     #[allow(dead_code)]
     pub task_id: Option<i64>,
+    /// Whether the deploy-smoke operation passed, `None` when the target
+    /// declares no smoke url or the check never passed for smoke to run.
+    pub smoke_ok: Option<bool>,
+    /// The smoke operation's own record: console errors, failed requests,
+    /// title and screenshot path, as the JSON it wrote (see
+    /// src/builtins/operations/deploy-smoke.toml).
+    pub smoke_json: Option<String>,
 }
 
 /// The unit of operation above a task: one outcome, pursued as a set of
@@ -902,13 +913,18 @@ ALTER TABLE decisions ADD COLUMN answered_for TEXT;
     "
 ALTER TABLE tasks ADD COLUMN explore_json TEXT NOT NULL DEFAULT '{}';
 ",
+    "
+ALTER TABLE deploy_targets ADD COLUMN smoke_url TEXT;
+ALTER TABLE deploys ADD COLUMN smoke_ok INTEGER;
+ALTER TABLE deploys ADD COLUMN smoke_json TEXT;
+",
 ];
 
 /// The version this migration brings the schema to; `migrate` also runs
 /// `seed_projects_from_tasks` in Rust when it applies this entry, since
 /// naming a project after the Forge repository itself needs a filesystem
 /// check no SQL string can express. Keep in sync with its position above.
-const PROJECTS_MIGRATION_VERSION: i64 = 27;
+const PROJECTS_MIGRATION_VERSION: i64 = 28;
 
 const TASK_COLUMNS: &[&str] = &[
     "id",
@@ -2504,8 +2520,8 @@ impl Store {
     pub fn add_deploy_target(&self, t: &DeployTarget) -> Result<()> {
         let args_json = serde_json::to_string(&t.args)?;
         self.lock().execute(
-            "INSERT INTO deploy_targets (project, name, repo, scope_json, method, args_json, check_cmd, on_landing)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO deploy_targets (project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 t.project,
                 t.name,
@@ -2515,6 +2531,7 @@ impl Store {
                 args_json,
                 t.check_cmd,
                 t.on_landing,
+                t.smoke_url,
             ],
         )?;
         Ok(())
@@ -2525,7 +2542,7 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing
+                "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url
                  FROM deploy_targets WHERE project=?1 AND name=?2",
                 params![project, name],
                 deploy_target_from_row,
@@ -2537,7 +2554,7 @@ impl Store {
     pub fn deploy_targets(&self, project: &str) -> Result<Vec<DeployTarget>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing
+            "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url
              FROM deploy_targets WHERE project=?1 ORDER BY name",
         )?;
         let rows = stmt.query_map(params![project], deploy_target_from_row)?;
@@ -2563,7 +2580,9 @@ impl Store {
     }
 
     /// Record a deploy's outcome: the check's verdict and output, what it
-    /// rolled back to (if it did), and why.
+    /// rolled back to (if it did), why, and the smoke operation's verdict
+    /// when the target declared a smoke url and the check passed for it to
+    /// run (`None`, `None` otherwise).
     #[allow(clippy::too_many_arguments)]
     pub fn finish_deploy(
         &self,
@@ -2573,11 +2592,22 @@ impl Store {
         check_output: &str,
         rolled_back_to: Option<&str>,
         reason: &str,
+        smoke_ok: Option<bool>,
+        smoke_json: Option<&str>,
     ) -> Result<()> {
         self.lock().execute(
-            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6
+            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8
              WHERE id=?1",
-            params![id, at, check_ok, check_output, rolled_back_to, reason],
+            params![
+                id,
+                at,
+                check_ok,
+                check_output,
+                rolled_back_to,
+                reason,
+                smoke_ok,
+                smoke_json
+            ],
         )?;
         Ok(())
     }
@@ -2587,7 +2617,7 @@ impl Store {
     pub fn deploys(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json
              FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![project, target], deploy_from_row)?;
@@ -2620,6 +2650,7 @@ fn deploy_target_from_row(r: &Row) -> rusqlite::Result<DeployTarget> {
         args: serde_json::from_str(&args_json).unwrap_or_default(),
         check_cmd: r.get(6)?,
         on_landing: r.get(7)?,
+        smoke_url: r.get(8)?,
     })
 }
 
@@ -2636,6 +2667,8 @@ fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
         rolled_back_to: r.get(8)?,
         reason: r.get(9)?,
         task_id: r.get(10)?,
+        smoke_ok: r.get(11)?,
+        smoke_json: r.get(12)?,
     })
 }
 
@@ -3550,6 +3583,7 @@ mod tests {
             args: args.clone(),
             check_cmd: "systemctl is-active equitizr".into(),
             on_landing: true,
+            smoke_url: Some("https://equitizr.example.com/".into()),
         })
         .unwrap();
         s.add_deploy_target(&DeployTarget {
@@ -3561,6 +3595,7 @@ mod tests {
             args: BTreeMap::new(),
             check_cmd: "curl -f https://staging.example.com/health".into(),
             on_landing: false,
+            smoke_url: None,
         })
         .unwrap();
 
@@ -3571,9 +3606,14 @@ mod tests {
         assert_eq!(targets[0].method, "deploy-user-service");
         assert_eq!(targets[0].args, args);
         assert!(targets[0].on_landing);
+        assert_eq!(
+            targets[0].smoke_url.as_deref(),
+            Some("https://equitizr.example.com/")
+        );
         assert_eq!(targets[1].name, "staging");
         assert_eq!(targets[1].scope.as_deref(), Some(r#"["web/"]"#));
         assert!(!targets[1].on_landing);
+        assert_eq!(targets[1].smoke_url, None);
 
         let one = s.deploy_target("equitizr", "prod").unwrap().unwrap();
         assert_eq!(one.check_cmd, "systemctl is-active equitizr");
@@ -3589,6 +3629,7 @@ mod tests {
                 args: BTreeMap::new(),
                 check_cmd: "true".into(),
                 on_landing: false,
+                smoke_url: None,
             })
             .is_err()
         );
@@ -3607,7 +3648,17 @@ mod tests {
         let b = s
             .start_deploy("equitizr", "staging", "bbbbbbb", 200, None)
             .unwrap();
-        s.finish_deploy(a, 150, true, "active", None, "").unwrap();
+        s.finish_deploy(
+            a,
+            150,
+            true,
+            "active",
+            None,
+            "",
+            Some(true),
+            Some(r#"{"ok":true}"#),
+        )
+        .unwrap();
         s.finish_deploy(
             b,
             250,
@@ -3615,6 +3666,8 @@ mod tests {
             "connection refused",
             Some("aaaaaaa"),
             "the deploy of bbbbbbb failed its check and was rolled back to aaaaaaa",
+            None,
+            None,
         )
         .unwrap();
 
@@ -3625,9 +3678,12 @@ mod tests {
         assert_eq!(all[0].target, "staging");
         assert_eq!(all[0].check_ok, Some(false));
         assert_eq!(all[0].rolled_back_to.as_deref(), Some("aaaaaaa"));
+        assert_eq!(all[0].smoke_ok, None);
         assert_eq!(all[1].id, a);
         assert_eq!(all[1].check_ok, Some(true));
         assert_eq!(all[1].finished_at, Some(150));
+        assert_eq!(all[1].smoke_ok, Some(true));
+        assert_eq!(all[1].smoke_json.as_deref(), Some(r#"{"ok":true}"#));
 
         let prod_only = s.deploys("equitizr", Some("prod")).unwrap();
         assert_eq!(prod_only.len(), 1);
