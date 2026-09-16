@@ -296,6 +296,9 @@ pub struct RequestRow {
     pub id: i64,
     #[serde(default)]
     pub kind: String,
+    /// Who the question is addressed to; `None` means the operator.
+    #[serde(default)]
+    pub to: Option<String>,
     #[serde(default)]
     pub question: String,
     #[serde(default)]
@@ -377,6 +380,9 @@ pub struct DecisionRow {
     pub retry_id: Option<i64>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// Who the question was addressed to; `None` means the operator.
+    #[serde(default)]
+    pub answered_for: Option<String>,
 }
 
 /// One repository listed under a project, and the paths it owns there

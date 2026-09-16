@@ -755,3 +755,203 @@ fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() 
         .unwrap();
     let _ = child.wait();
 }
+
+/// Intake's addressee mechanism (docs/INTAKE.md), end to end against the
+/// same stub `signal-cli`: a fake agent that blocks with
+/// `needs_input.to = "alice"`, a CONTACTS entry mapping that name to her
+/// number, makes the plugin send the question to her number instead of
+/// the operator's SIGNAL_TO, and a reply from her number — not prefixed
+/// `/answer`, since she never names the task herself — re-queues the
+/// task with the answer recorded as `answered_by = "alice"`, and the
+/// decision's `answered_for` names her too.
+#[test]
+fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_her_answer() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/signal");
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    let outgoing = e._dir.path().join("signal-out.txt");
+    let incoming = e._dir.path().join("signal-in.txt");
+    std::fs::write(&outgoing, "").unwrap();
+    std::fs::write(&incoming, "").unwrap();
+
+    let operator_number = "+15555550199";
+    let alice_number = "+15555550111";
+
+    std::fs::write(
+        e.home.join("plugins/signal/config"),
+        format!(
+            "SIGNAL_ACCOUNT=+15555550100\n\
+             SIGNAL_TO={operator_number}\n\
+             SIGNAL_ALLOWED={operator_number}\n\
+             CONTACTS=alice:{alice_number}\n\
+             POLL_SECONDS=1\n\
+             TARGET_REPO={}\n\
+             WORKFLOW=direct\n\
+             NOTIFY_ON=blocked failed\n",
+            e.repo.display()
+        ),
+    )
+    .unwrap();
+
+    // Like the stub in the sibling test, but each outgoing send also
+    // records its destination number ahead of the message, so the test
+    // can tell alice's number apart from the operator's.
+    let stub_dir = e._dir.path().join("stub-bin");
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("signal-cli"),
+        format!(
+            "#!/bin/sh\n\
+             case \"$3\" in\n\
+             send)\n\
+             shift 3\n\
+             msg=\"\"\n\
+             dest=\"\"\n\
+             while [ $# -gt 0 ]; do\n\
+             case \"$1\" in\n\
+             -m) msg=$2; shift 2 ;;\n\
+             -g) dest=$2; shift 2 ;;\n\
+             *) dest=$1; shift ;;\n\
+             esac\n\
+             done\n\
+             printf '%s|%s\\n===\\n' \"$dest\" \"$msg\" >> {out}\n\
+             ;;\n\
+             receive)\n\
+             if [ -s {inc} ]; then\n\
+             cat {inc}\n\
+             : > {inc}\n\
+             fi\n\
+             ;;\n\
+             esac\n",
+            out = outgoing.display(),
+            inc = incoming.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        stub_dir.join("signal-cli"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "signal"])
+            .status
+            .success()
+    );
+
+    let id = e.add(&[]);
+
+    let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = e
+        .cmd("needsinput-to.sh")
+        .env("PATH", path)
+        .args(["work"])
+        .stderr(stderr_file)
+        .spawn()
+        .unwrap();
+
+    assert!(
+        wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
+        "the task never blocked: {:?}",
+        std::fs::read_to_string(&stderr_path)
+    );
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&outgoing)
+                .unwrap_or_default()
+                .contains("Which answer file"),
+            Duration::from_secs(10)
+        ),
+        "expected the question in {}: {:?}",
+        outgoing.display(),
+        std::fs::read_to_string(&outgoing)
+    );
+
+    let sent = std::fs::read_to_string(&outgoing).unwrap();
+    let question_entry = sent
+        .split("===\n")
+        .find(|e| e.contains("Which answer file"))
+        .unwrap_or_else(|| panic!("no entry carried the question: {sent}"));
+    assert!(
+        question_entry.starts_with(&format!("{alice_number}|")),
+        "the question must go to alice's number, not the operator's: {question_entry:?}"
+    );
+
+    // Alice's own reply, at her own number, names no task: the plugin
+    // finds the one open question addressed to her.
+    std::fs::write(
+        &incoming,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "envelope": {
+                    "source": alice_number,
+                    "sourceNumber": alice_number,
+                    "dataMessage": {"message": "Use answer.txt"}
+                }
+            })
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || e.db()
+                .query_row(
+                    "SELECT task, retry_of FROM tasks WHERE retry_of=?1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+                )
+                .optional()
+                .unwrap()
+                .is_some(),
+            Duration::from_secs(10)
+        ),
+        "the answer never re-queued a task"
+    );
+
+    let (task_text, retry_of): (String, Option<i64>) = e
+        .db()
+        .query_row(
+            "SELECT task, retry_of FROM tasks WHERE retry_of=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retry_of, Some(id));
+    assert!(
+        task_text.contains("Use answer.txt"),
+        "expected the answer in the re-queued task's text: {task_text}"
+    );
+    assert!(
+        task_text.contains("alice's answer"),
+        "expected the re-queued task's text to credit alice, not the operator: {task_text}"
+    );
+
+    let (answered_by, answered_for): (String, Option<String>) = e
+        .db()
+        .query_row(
+            "SELECT answered_by, answered_for FROM decisions WHERE task_id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(answered_by, "alice");
+    assert_eq!(answered_for.as_deref(), Some("alice"));
+
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    let _ = child.wait();
+}

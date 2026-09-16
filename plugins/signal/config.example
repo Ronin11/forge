@@ -8,8 +8,17 @@ SIGNAL_ACCOUNT=+15555550100
 SIGNAL_TO=+15555550199
 
 # Senders allowed to drive Forge back over Signal (space-separated phone
-# numbers). A message from anyone else is ignored and logged.
+# numbers). A message from anyone else is ignored and logged, unless it
+# answers an open question addressed to them (see CONTACTS below).
 SIGNAL_ALLOWED=+15555550199
+
+# Intake's addressee mechanism (docs/INTAKE.md): a blocked question can
+# name who it is for. When that name matches one here, the question is
+# sent to their number instead of the operator's SIGNAL_TO, and a reply
+# from that number while their question is open is submitted as their
+# answer (`forge answer ID TEXT --by NAME`), not queued as a new task.
+# Space-separated "name:number" pairs.
+CONTACTS=alice:+15555550111
 
 # How often to poll signal-cli for new messages.
 POLL_SECONDS=30

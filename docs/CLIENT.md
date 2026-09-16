@@ -161,6 +161,7 @@ waiting on.
 |---|---|---|
 | `id` | integer | Task id. |
 | `kind` | string | `dependency`, `workflow`, `suite`, `question`, `review`, or `other` — what sort of thing is blocking it. |
+| `to` | string or null | Who the question is addressed to (e.g. a Signal plugin contact's name, from the agent's `needs_input.to`); null means the operator. |
 | `question` | string | **Preferred.** What the task is waiting on, in words. |
 | `text` | string | Legacy key for `question`; kept for compatibility. |
 | `tried` | string | What the blocking attempt tried before it stopped; empty if unknown. |
@@ -182,10 +183,11 @@ answer to a blocked task's question.
 | `question` | string | The question that was answered. |
 | `answer` | string | The answer's text. |
 | `created_at` | integer | Unix seconds. |
-| `answered_by` | string | `"operator"` or `"supervisor"`. |
+| `answered_by` | string | `"operator"`, `"supervisor"`, or a channel plugin's contact name (see `forge answer --by`). |
 | `citations` | string | Comma-separated: paths, `task N`, or `decision N`. |
 | `retry_id` | integer or null | The task the answer re-queued, once known. |
 | `outcome` | string or null | State of `retry_id`'s task (e.g. `succeeded`), or `null` until it is known to have landed, failed, or otherwise settled. |
+| `answered_for` | string or null | Who the question was addressed to, copied from the task's `question_to` (see `RequestRow.to`) at answer time; null means the operator. |
 
 ### `RefRow`
 

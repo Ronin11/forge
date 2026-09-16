@@ -12,6 +12,14 @@ set -u
 SIGNAL_ACCOUNT=
 SIGNAL_TO=
 SIGNAL_ALLOWED=
+# Intake's addressee mechanism (docs/INTAKE.md): a blocked question can
+# name who it is for (`needs_input.to`, carried as `to` on `forge
+# requests --json` and `question_to` on the task). When that name
+# matches an entry here, the question goes to their number instead of
+# the operator's, and a reply from that number while their question is
+# open is submitted as their answer, not queued as a new task.
+# Space-separated "name:number" pairs.
+CONTACTS=
 POLL_SECONDS=30
 TARGET_REPO=
 WORKFLOW=direct
@@ -33,6 +41,7 @@ if [ -f "$config" ]; then
             SIGNAL_ACCOUNT) SIGNAL_ACCOUNT=$val ;;
             SIGNAL_TO) SIGNAL_TO=$val ;;
             SIGNAL_ALLOWED) SIGNAL_ALLOWED=$val ;;
+            CONTACTS) CONTACTS=$val ;;
             POLL_SECONDS) POLL_SECONDS=$val ;;
             TARGET_REPO) TARGET_REPO=$val ;;
             WORKFLOW) WORKFLOW=$val ;;
@@ -58,15 +67,46 @@ json_str_pretty() {
     sed -n 's/.*"'"$1"'": *"\(\([^"\\]\|\\.\)*\)".*/\1/p'
 }
 
+# The Signal number for a CONTACTS name, or nothing (and a non-zero
+# exit) if it names no contact.
+contact_number() {
+    name=$1
+    for pair in $CONTACTS; do
+        n=${pair%%:*}
+        num=${pair#*:}
+        if [ "$n" = "$name" ]; then
+            printf '%s\n' "$num"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The CONTACTS name for a Signal number, or nothing (and a non-zero
+# exit) if it names no contact.
+contact_name() {
+    number=$1
+    for pair in $CONTACTS; do
+        n=${pair%%:*}
+        num=${pair#*:}
+        if [ "$num" = "$number" ]; then
+            printf '%s\n' "$n"
+            return 0
+        fi
+    done
+    return 1
+}
+
 signal_send() {
-    msg=$1
-    case "$SIGNAL_TO" in
+    dest=$1
+    msg=$2
+    case "$dest" in
         group.*)
-            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" -g "$SIGNAL_TO" >/dev/null 2>&1 \
+            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" -g "$dest" >/dev/null 2>&1 \
                 || log "send failed: $msg"
             ;;
         *)
-            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" "$SIGNAL_TO" >/dev/null 2>&1 \
+            "$SIGNAL_CLI" -a "$SIGNAL_ACCOUNT" send -m "$msg" "$dest" >/dev/null 2>&1 \
                 || log "send failed: $msg"
             ;;
     esac
@@ -80,6 +120,33 @@ question_for() {
         | grep -A6 "\"id\": $1," \
         | json_str_pretty question \
         | head -n1
+}
+
+# Same shape, for the addressee (`to`); empty when the question is for
+# the operator.
+question_to_for() {
+    "$FORGE_BIN" requests --json \
+        | grep -A6 "\"id\": $1," \
+        | json_str_pretty to \
+        | head -n1
+}
+
+# The blocked task id whose question is addressed to CONTACTS name $1,
+# if any: scans every RequestRow for a "to" line matching it, and
+# reports the "id" line that precedes it (a row is flat and prints id
+# first), rather than assuming the -A6 window of `question_for` fits
+# every row of a multi-row document.
+task_for_contact() {
+    name=$1
+    "$FORGE_BIN" requests --json | awk -v want="$name" '
+        /"id":/ { match($0, /[0-9]+/); id = substr($0, RSTART, RLENGTH) }
+        /"to":/ {
+            line = $0
+            sub(/.*"to": *"/, "", line)
+            sub(/".*/, "", line)
+            if (line == want) { print id; exit }
+        }
+    '
 }
 
 outbound() {
@@ -112,7 +179,7 @@ outbound() {
                 else
                     status=failed
                 fi
-                signal_send "deploy $project/$target @ $sha: $status"
+                signal_send "$SIGNAL_TO" "deploy $project/$target @ $sha: $status"
             fi
             continue
         fi
@@ -132,12 +199,20 @@ outbound() {
         reason=$(printf '%s\n' "$line" | json_str reason | sed 's/\\n.*//')
         msg="task $task $state: $reason"
 
+        # A blocked question addressed to a configured contact goes to
+        # them, not the operator's SIGNAL_TO; unaddressed (or addressed
+        # to a name CONTACTS does not know) still reaches the operator.
+        dest="$SIGNAL_TO"
         if [ "$state" = blocked ]; then
             q=$(question_for "$task")
             [ -n "$q" ] && msg=$(printf '%s\nquestion: %s' "$msg" "$q")
+            to_name=$(question_to_for "$task")
+            if [ -n "$to_name" ]; then
+                num=$(contact_number "$to_name") && [ -n "$num" ] && dest="$num"
+            fi
         fi
 
-        signal_send "$msg"
+        signal_send "$dest" "$msg"
     done
 }
 
@@ -163,9 +238,9 @@ handle_message() {
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
             if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
-                signal_send "answered task $id"
+                signal_send "$SIGNAL_TO" "answered task $id"
             else
-                signal_send "could not answer task $id"
+                signal_send "$SIGNAL_TO" "could not answer task $id"
             fi
             ;;
         /status)
@@ -174,18 +249,36 @@ handle_message() {
             running=$(printf '%s\n' "$snap" | grep -c '"state": *"running"')
             blocked=$(printf '%s\n' "$snap" | grep -c '"state": *"blocked"')
             worker=$(printf '%s\n' "$snap" | sed -n 's/.*"running": *\(true\|false\).*/\1/p' | head -n1)
-            signal_send "queued=$queued running=$running blocked=$blocked worker=$worker"
+            signal_send "$SIGNAL_TO" "queued=$queued running=$running blocked=$blocked worker=$worker"
             ;;
         *)
             out=$("$FORGE_BIN" add "$TARGET_REPO" "$body" --workflow "$WORKFLOW" 2>&1)
             id=$(printf '%s\n' "$out" | sed -n 's/.*queued task \([0-9]*\).*/\1/p')
             if [ -n "$id" ]; then
-                signal_send "queued task $id"
+                signal_send "$SIGNAL_TO" "queued task $id"
             else
-                signal_send "could not queue: $out"
+                signal_send "$SIGNAL_TO" "could not queue: $out"
             fi
             ;;
     esac
+}
+
+# A reply from a CONTACTS name ($1) at their own number ($2), while a
+# question addressed to them is open ($3, the task id `task_for_contact`
+# found): submitted as their answer, the same `/answer` path an allowed
+# sender drives by hand, except the contact never names the task
+# themselves — the one open question addressed to them is the only one
+# it can be.
+handle_contact_reply() {
+    name=$1
+    number=$2
+    id=$3
+    body=$4
+    if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null 2>&1; then
+        signal_send "$number" "answered task $id"
+    else
+        signal_send "$number" "could not answer task $id"
+    fi
 }
 
 inbound() {
@@ -198,10 +291,15 @@ inbound() {
             sender=$(printf '%s\n' "$line" | json_str sourceNumber)
             [ -n "$sender" ] || sender=$(printf '%s\n' "$line" | json_str source)
             body=$(printf '%s\n' "$line" | json_str message)
-            if allowed "$sender"; then
+            name=$(contact_name "$sender")
+            id=""
+            [ -n "$name" ] && id=$(task_for_contact "$name")
+            if [ -n "$name" ] && [ -n "$id" ]; then
+                handle_contact_reply "$name" "$sender" "$id" "$body"
+            elif allowed "$sender"; then
                 handle_message "$body"
             else
-                log "ignoring message from ${sender:-an unknown sender}, not in SIGNAL_ALLOWED"
+                log "ignoring message from ${sender:-an unknown sender}, not in SIGNAL_ALLOWED or CONTACTS"
             fi
         done
         sleep "$POLL_SECONDS"
