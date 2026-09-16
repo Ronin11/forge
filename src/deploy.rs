@@ -24,8 +24,10 @@ fn scratch_dir(f: &Forge, deploy_id: i64, suffix: &str) -> PathBuf {
 
 /// Check out `sha` into a scratch directory and run the target's method
 /// there, cleaning the directory up either way.
+#[allow(clippy::too_many_arguments)]
 async fn deploy_at(
     f: &Forge,
+    action: &crate::workflows::ActionDef,
     target: &DeployTarget,
     repo: &Path,
     sha: &str,
@@ -34,7 +36,7 @@ async fn deploy_at(
 ) -> Result<crate::checks::CheckResult> {
     let _ = std::fs::remove_dir_all(scratch);
     git::archive_all(repo, sha, scratch).await?;
-    let r = operation::run_deploy_method(f, target, scratch, timeout).await;
+    let r = operation::run_deploy_method(f, action, target, scratch, timeout).await;
     let _ = std::fs::remove_dir_all(scratch);
     r
 }
@@ -96,6 +98,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
         .store
         .deploy_target(project, name)?
         .with_context(|| format!("no deploy target {name} in project {project}"))?;
+    let action = operation::resolve_deploy_method(f, &target.method)?;
     let repo = PathBuf::from(&target.repo);
     let cfg = config::load_working(&repo).await?;
     let sha = match sha {
@@ -120,6 +123,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
 
     let r = deploy_at(
         f,
+        &action,
         &target,
         &repo,
         &sha,
@@ -181,6 +185,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
 
     let rb = deploy_at(
         f,
+        &action,
         &target,
         &repo,
         &previous.sha,

@@ -350,6 +350,23 @@ pub(crate) async fn run_operation(
     Ok((true, detail))
 }
 
+/// The action a deploy target's `method` names, resolved once up front so
+/// `forge deploy` fails on an unknown method before it ever starts a
+/// deploy row.
+pub(crate) fn resolve_deploy_method(
+    f: &Forge,
+    method: &str,
+) -> anyhow::Result<workflows::ActionDef> {
+    let actions = workflows::load_actions(&f.paths.home)?;
+    let action = actions
+        .get(method)
+        .with_context(|| format!("unknown deploy method {method:?}"))?;
+    if action.run.is_none() {
+        anyhow::bail!("deploy method {method:?} declares no run command");
+    }
+    Ok(action.clone())
+}
+
 /// A deploy target's method, run outside of any task: no worktree, no
 /// commit, no verify. `target`'s own arguments become `FORGE_ARG_<NAME>`
 /// (uppercased) and its check command becomes `FORGE_CHECK`, both only
@@ -358,18 +375,15 @@ pub(crate) async fn run_operation(
 /// tree, already checked out by the caller.
 pub(crate) async fn run_deploy_method(
     f: &Forge,
+    action: &workflows::ActionDef,
     target: &DeployTarget,
     cwd: &Path,
     timeout: Duration,
 ) -> anyhow::Result<checks::CheckResult> {
-    let actions = workflows::load_actions(&f.paths.home)?;
-    let action = actions
-        .get(&target.method)
-        .with_context(|| format!("unknown deploy method {:?}", target.method))?;
     let argv = action
         .run
         .as_ref()
-        .with_context(|| format!("deploy method {:?} declares no run command", target.method))?;
+        .expect("checked by resolve_deploy_method");
     let mut env: Vec<(String, String)> = target
         .args
         .iter()
