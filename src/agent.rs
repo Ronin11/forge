@@ -251,6 +251,28 @@ pub fn command_in(
     }
 }
 
+/// Spawns the command `make` builds, retrying briefly on `ETXTBSY`. A
+/// script just written and chmod'd can still read as busy for a few
+/// milliseconds after the writer closes it — a kernel race distinct from
+/// the bwrap bind-mount one `run_with_relaunch` retries, since this one
+/// never gets as far as a child process; there is nothing to relaunch,
+/// only the spawn to redo. `make` is called again on each attempt because
+/// a `Command` is consumed by `spawn`.
+async fn spawn_retrying_etxtbsy(
+    mut make: impl FnMut() -> tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    const MAX_ATTEMPTS: u32 = 20;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match make().spawn() {
+            Err(e) if attempt < MAX_ATTEMPTS && e.raw_os_error() == Some(libc::ETXTBSY) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
@@ -433,13 +455,16 @@ async fn run_once(
     report: &Reporter,
     log: &mut File,
 ) -> Result<(Outcome, String)> {
-    let mut child = Command::from(command_in(sandbox, worktree, argv, identity))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning {bin}"))?;
+    let mut child = spawn_retrying_etxtbsy(|| {
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    })
+    .await
+    .with_context(|| format!("spawning {bin}"))?;
 
     {
         let mut stdin = child.stdin.take().context("agent stdin")?;
@@ -908,13 +933,16 @@ async fn run_codex_phase(
     out: &mut Outcome,
     watch: &mut Watch,
 ) -> Result<(Option<i32>, bool, String)> {
-    let mut child = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning {}", argv[0]))?;
+    let mut child = spawn_retrying_etxtbsy(|| {
+        let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
+        c.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    })
+    .await
+    .with_context(|| format!("spawning {}", argv[0]))?;
 
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {

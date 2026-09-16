@@ -18,6 +18,7 @@ struct Git {
     dir: PathBuf,
     identity: bool,
     env: Vec<(String, String)>,
+    env_remove: Vec<String>,
 }
 
 impl Git {
@@ -26,6 +27,7 @@ impl Git {
             dir: dir.into(),
             identity: false,
             env: Vec::new(),
+            env_remove: Vec::new(),
         }
     }
 
@@ -39,6 +41,16 @@ impl Git {
         self
     }
 
+    /// Hides `keys` from this spawn alone, via `Command::env_remove` rather
+    /// than a process-wide `std::env::remove_var`: a test isolating itself
+    /// from ambient `GIT_CONFIG_*` must not blind every other git spawn
+    /// racing it in the same test binary in the meantime.
+    #[cfg(test)]
+    fn without_env(mut self, keys: impl IntoIterator<Item = &'static str>) -> Self {
+        self.env_remove.extend(keys.into_iter().map(String::from));
+        self
+    }
+
     /// The raw `Output`, for callers that need the exit status or stdout
     /// bytes directly rather than a `Result<String>`.
     async fn output(&self, args: &[&str]) -> Result<std::process::Output> {
@@ -49,6 +61,9 @@ impl Git {
             cmd.args(["-c", &format!("user.email={}", IDENTITY.1)]);
         }
         cmd.args(args).envs(self.env.iter().map(|(k, v)| (k, v)));
+        for k in &self.env_remove {
+            cmd.env_remove(k);
+        }
         cmd.kill_on_drop(true);
         cmd.output()
             .await
@@ -746,46 +761,25 @@ mod tests {
     async fn identity_falls_back_to_the_constant_when_unset() {
         let dir = init_repo();
         let git_dir = dir.path().join(".git");
-        // Isolate from whatever identity the ambient environment injects
-        // (this harness itself runs git under GIT_CONFIG_COUNT/KEY_n/VALUE_n,
-        // the same mechanism `identity()` produces) and from any
-        // global/system gitconfig, so the repo truly has no identity
-        // configured at any level.
-        // SAFETY: no other test in this binary reads these variables or
-        // spawns git in a way that depends on them.
-        let saved: Vec<(&str, Option<String>)> = [
-            "GIT_CONFIG_COUNT",
-            "GIT_CONFIG_KEY_0",
-            "GIT_CONFIG_VALUE_0",
-            "GIT_CONFIG_KEY_1",
-            "GIT_CONFIG_VALUE_1",
-        ]
-        .into_iter()
-        .map(|k| (k, std::env::var(k).ok()))
-        .collect();
-        unsafe {
-            for (k, _) in &saved {
-                std::env::remove_var(k);
-            }
-            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-            std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
-        }
-        let env = identity(&git_dir).await;
-        unsafe {
-            std::env::remove_var("GIT_CONFIG_GLOBAL");
-            std::env::remove_var("GIT_CONFIG_SYSTEM");
-            for (k, v) in saved {
-                if let Some(v) = v {
-                    std::env::set_var(k, v);
-                }
-            }
-        }
-        let get = |k: &str| {
-            env.iter()
-                .find(|(key, _)| key == k)
-                .map(|(_, v)| v.as_str())
-        };
-        assert_eq!(get("GIT_CONFIG_VALUE_0"), Some(IDENTITY.0));
-        assert_eq!(get("GIT_CONFIG_VALUE_1"), Some(IDENTITY.1));
+        // Isolated per spawn, via `Command::env_remove`/`.env()`, not a
+        // process-wide `std::env::set_var`: this is the same test binary
+        // every other test in it runs in, and a global mutation here would
+        // blind or redirect any git spawn racing it — `agent::run_codex`'s
+        // own dirty/head checks among them, which read the ambient
+        // environment because they carry no identity of their own.
+        let g = Git::new(&git_dir)
+            .without_env([
+                "GIT_CONFIG_COUNT",
+                "GIT_CONFIG_KEY_0",
+                "GIT_CONFIG_VALUE_0",
+                "GIT_CONFIG_KEY_1",
+                "GIT_CONFIG_VALUE_1",
+            ])
+            .with_env([
+                ("GIT_CONFIG_GLOBAL".to_string(), "/dev/null".to_string()),
+                ("GIT_CONFIG_SYSTEM".to_string(), "/dev/null".to_string()),
+            ]);
+        assert_eq!(config_or(&g, "user.name", IDENTITY.0).await, IDENTITY.0);
+        assert_eq!(config_or(&g, "user.email", IDENTITY.1).await, IDENTITY.1);
     }
 }
