@@ -224,6 +224,111 @@ fn same_rule_failures_hold_the_initiative_and_the_report_names_the_rule() {
 }
 
 #[test]
+fn set_with_no_flags_is_refused_and_changes_nothing() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+    let o = e.forge(
+        "ok.sh",
+        &["initiative", "new", "demo", "--outcome", "an outcome"],
+    );
+    let id = created_id(&o);
+
+    let o = e.forge("ok.sh", &["initiative", "set", &id.to_string()]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("nothing to set"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let outcome: String = e
+        .db()
+        .query_row("SELECT outcome FROM initiatives WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(outcome, "an outcome");
+}
+
+#[test]
+fn setting_the_budget_higher_lifts_a_budget_hold_and_the_worker_claims_the_next_task() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    // Two independent tasks (no `after:`): the first lands the answer,
+    // the second is only held back by the budget.
+    std::fs::write(&file, "first task\n\nsecond task").unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "both tasks land within budget",
+            "--from",
+            file.to_str().unwrap(),
+            // `ok.sh` reports total_cost_usd 0.01 per attempt, so the
+            // initiative's cost reaches this budget the moment the first
+            // task finishes.
+            "--budget",
+            "0.01",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = created_id(&o);
+
+    assert!(
+        e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(e.task(2).0, "queued");
+
+    let o = e.forge("ok.sh", &["initiative", "show", &id.to_string(), "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["state"], "held");
+    assert_eq!(row["held_rule"], "budget");
+
+    // Raising the budget lifts the hold; the printed initiative afterward
+    // shows the new budget and is no longer held.
+    let o = e.forge(
+        "ok.sh",
+        &["initiative", "set", &id.to_string(), "--budget", "5"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("$0.01 of $5.00"), "{out}");
+    assert!(!out.contains("held"), "{out}");
+
+    // `answer.txt` already landed with task 1, so the second task (which
+    // only adds `extra.txt`) needs a fake that doesn't rewrite it.
+    assert!(e.forge("addfile.sh", &["work", "--once"]).status.success());
+    assert_eq!(e.task(2).0, "succeeded");
+}
+
+#[test]
 fn a_task_blocked_on_a_question_keeps_the_initiative_open() {
     let e = Env::new();
     let repo = e.repo.to_str().unwrap();

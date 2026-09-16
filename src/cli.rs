@@ -669,6 +669,21 @@ enum InitiativeCmd {
         #[arg(long)]
         outcome: Option<String>,
     },
+    /// Change an existing initiative, replacing only the fields given;
+    /// refused when none are, and prints the initiative afterward
+    Set {
+        id: i64,
+        /// This initiative's own cost cap in USD
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Hold the initiative after this many of its tasks fail in a
+        /// row on the same L0 rule
+        #[arg(long = "stop-after")]
+        stop_after: Option<u32>,
+        /// One sentence saying what is true when the initiative is done
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Every initiative, its state, task counts and cost
     List {
         /// Only this project's
@@ -914,6 +929,12 @@ pub async fn main() -> Result<()> {
                 stop_after,
             } => initiative_new(project, outcome, from, provider, budget, stop_after).await,
             InitiativeCmd::FromPlan { task, outcome } => initiative_from_plan(task, outcome).await,
+            InitiativeCmd::Set {
+                id,
+                budget,
+                stop_after,
+                outcome,
+            } => initiative_set(id, budget, stop_after, outcome),
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),
@@ -2017,6 +2038,37 @@ async fn initiative_from_plan(task: i64, outcome: Option<String>) -> Result<()> 
     for (n, tid) in ids.iter().enumerate() {
         out!("queued task {tid} (plan item {})", n + 1);
     }
+    Ok(())
+}
+
+fn initiative_set(
+    id: i64,
+    budget: Option<f64>,
+    stop_after: Option<u32>,
+    outcome: Option<String>,
+) -> Result<()> {
+    if budget.is_none() && stop_after.is_none() && outcome.is_none() {
+        bail!("nothing to set: pass --budget, --stop-after or --outcome");
+    }
+    if let Some(b) = budget
+        && b <= 0.0
+    {
+        bail!("budget must be positive");
+    }
+    let f = Forge::open(false, false)?;
+    if !f.store.set_initiative(
+        id,
+        &crate::store::InitiativeUpdate {
+            outcome,
+            budget_usd: budget,
+            stop_after_same_rule: stop_after.map(|n| n as i64),
+        },
+    )? {
+        bail!("no initiative {id}");
+    }
+    let ini = f.store.initiative(id)?.context("initiative vanished")?;
+    let row = crate::view::initiative_row(&f, &ini)?;
+    print_initiative_row(&row);
     Ok(())
 }
 
