@@ -561,17 +561,28 @@ pub async fn answer(
         .and_then(|e| e.needs_input)
         .map(|q| q.question)
         .with_context(|| format!("task {id}'s last attempt recorded no question"))?;
-    let decision = f
-        .store
-        .insert_decision_by(id, &old.repo, &question, text, by, citations)?;
+    let decision = f.store.insert_decision_by(
+        id,
+        &old.repo,
+        &question,
+        text,
+        by,
+        citations,
+        old.question_to.as_deref(),
+    )?;
     let new_text = if by == "operator" {
         format!(
             "{}\n\nOperator's answer to a question from an earlier attempt: {text}",
             old.task
         )
-    } else {
+    } else if by == "supervisor" {
         format!(
             "{}\n\nSupervisor's answer to a question from an earlier attempt (citing {citations}): {text}",
+            old.task
+        )
+    } else {
+        format!(
+            "{}\n\n{by}'s answer to a question from an earlier attempt: {text}",
             old.task
         )
     };
@@ -617,9 +628,15 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     } else {
         old.reason.clone()
     };
-    let decision = f
-        .store
-        .insert_decision_by(id, &old.repo, &question, reason, by, "")?;
+    let decision = f.store.insert_decision_by(
+        id,
+        &old.repo,
+        &question,
+        reason,
+        by,
+        "",
+        old.question_to.as_deref(),
+    )?;
     f.store.set_decision_retry(decision, id)?;
     f.report.emit(id, Event::TaskWithdrawn { reason });
     if let Some(iid) = old.initiative {

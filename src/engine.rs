@@ -522,6 +522,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     // How the directive's last attempt ended, for the step's End.
                     let mut last = AttemptState::Running;
                     let mut last_reason = String::new();
+                    // Who a blocking question is addressed to, from the
+                    // envelope's `needs_input.to`; `None` means the operator.
+                    let mut last_to: Option<String> = None;
                     // The last attempt's own rows, so the reason built after
                     // the loop can name the L0 rules that actually failed
                     // rather than rely on `last_reason` alone.
@@ -616,6 +619,12 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         last = a.state;
                         last_reason = a.reason.clone();
                         last_checks = verdict.checks.clone();
+                        last_to = verdict
+                            .envelope
+                            .as_ref()
+                            .and_then(|e| e.needs_input.as_ref())
+                            .and_then(|q| q.to.clone())
+                            .filter(|s| !s.trim().is_empty());
                         // The provider refused the run: not an attempt the agent
                         // spent. The hold at the top of the loop waits for the
                         // window; the same feedback and session go again.
@@ -894,6 +903,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         AttemptState::NeedsInput => End::Blocked {
                             reason: last_reason.clone(),
                             demoted: last_reason.starts_with("review demoted"),
+                            to: last_to.clone(),
                         },
                         AttemptState::Unverified => End::Unverified(last_reason.clone()),
                         _ => End::Failed {
@@ -1097,6 +1107,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     let cost = f.store.task_cost(id).env()?;
     t.state = end.task_state();
     t.reason = end.reason(&t, attempts.len());
+    t.question_to = end.question_to();
     t.finished_at = Some(unix_now());
     t.worker_pid = None;
     f.store.update_task(&t).env()?;
@@ -1180,8 +1191,13 @@ enum End {
     /// finished: pushed, and a human decides.
     Unverified(String),
     /// The agent stopped with a question, or a reviewer demoted the
-    /// task; a demoted branch is pushed so the human can look.
-    Blocked { reason: String, demoted: bool },
+    /// task; a demoted branch is pushed so the human can look. `to` is
+    /// who the question is addressed to (`None` means the operator).
+    Blocked {
+        reason: String,
+        demoted: bool,
+        to: Option<String>,
+    },
     /// The task failed. `counted` appends the attempt count to the
     /// reason; `pushes` keeps a verified branch that could not land.
     Failed {
@@ -1226,6 +1242,15 @@ impl End {
             End::Unverified(_) => TaskState::Unverified,
             End::Blocked { .. } => TaskState::Blocked,
             End::Failed { .. } | End::Budget(_) => TaskState::Failed,
+        }
+    }
+
+    /// Who a blocking question is addressed to; `None` for every other
+    /// end, and for a blocked one with no addressee (the operator).
+    fn question_to(&self) -> Option<String> {
+        match self {
+            End::Blocked { to, .. } => to.clone(),
+            _ => None,
         }
     }
 
@@ -1335,6 +1360,7 @@ mod tests {
                 End::Blocked {
                     reason: "reason".to_string(),
                     demoted: false,
+                    to: None,
                 },
                 TaskState::Blocked,
             ),
@@ -1342,6 +1368,7 @@ mod tests {
                 End::Blocked {
                     reason: "reason".to_string(),
                     demoted: true,
+                    to: None,
                 },
                 TaskState::Blocked,
             ),
@@ -1418,6 +1445,7 @@ mod tests {
                 End::Blocked {
                     reason: "needs input: which one?".to_string(),
                     demoted: false,
+                    to: None,
                 },
                 1,
                 "needs input: which one?",

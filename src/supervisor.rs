@@ -652,6 +652,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 &format!("prerequisite task {}: {}", pre.id, r.answer),
                 "supervisor",
                 &cited,
+                t.question_to.as_deref(),
             )?;
             let text = format!(
                 "{}\n\nSupervisor's note (citing {cited}): this task was re-queued behind prerequisite task {}, which {}",
@@ -715,6 +716,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 &note,
                 "supervisor",
                 &cited,
+                t.question_to.as_deref(),
             )?;
             match crate::cli::land_task(f, id).await {
                 Ok(line) => {
@@ -742,6 +744,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 &format!("superseded by task {by}: {}", r.reason),
                 "supervisor",
                 &cited,
+                t.question_to.as_deref(),
             )?;
             let mut t = t.clone();
             t.state = TaskState::Failed;
@@ -858,6 +861,7 @@ mod tests {
                 "a beta-only answer",
                 "operator",
                 "",
+                None,
             )
             .unwrap();
 
@@ -873,6 +877,7 @@ mod tests {
                 "an alpha-only answer",
                 "operator",
                 "",
+                None,
             )
             .unwrap();
 
@@ -919,6 +924,7 @@ mod tests {
                 "another repo's answer",
                 "operator",
                 "",
+                None,
             )
             .unwrap();
 

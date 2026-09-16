@@ -81,6 +81,9 @@ pub fn request_kind(reason: &str) -> (&'static str, String) {
 pub struct RequestRow {
     pub id: i64,
     pub kind: &'static str,
+    /// Who the question is addressed to (a channel contact's name);
+    /// absent means the operator.
+    pub to: Option<String>,
     pub text: String,
     pub question: String,
     pub tried: String,
@@ -96,6 +99,7 @@ impl From<&Task> for RequestRow {
         RequestRow {
             id: t.id,
             kind,
+            to: t.question_to.clone(),
             text: text.clone(),
             question: text,
             tried: String::new(),
@@ -123,6 +127,8 @@ pub struct DecisionRow {
     pub citations: String,
     pub retry_id: Option<i64>,
     pub outcome: Option<String>,
+    /// Who the question was addressed to; absent means the operator.
+    pub answered_for: Option<String>,
 }
 
 impl DecisionRow {
@@ -138,6 +144,7 @@ impl DecisionRow {
             citations: d.citations.clone(),
             retry_id: d.retry_id,
             outcome: outcome.map(|s| s.as_str().to_string()),
+            answered_for: d.answered_for.clone(),
         }
     }
 }

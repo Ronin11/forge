@@ -174,6 +174,10 @@ enum Cmd {
         id: i64,
         /// The answer, appended to the task's text for the re-queued attempt
         text: String,
+        /// Who the answer came from: the operator, or (from a channel
+        /// plugin) the contact the question was addressed to
+        #[arg(long, default_value = "operator")]
+        by: String,
     },
     /// Withdraw a blocked or queued task the operator has decided not to
     /// do: written against a stale description, superseded, or the
@@ -671,7 +675,7 @@ pub async fn main() -> Result<()> {
             )
             .await
         }
-        Cmd::Answer { id, text } => answer(id, text).await,
+        Cmd::Answer { id, text, by } => answer(id, text, by).await,
         Cmd::Withdraw { id, reason, by } => withdraw(id, reason, by),
         Cmd::Decisions {
             repo,
@@ -838,10 +842,11 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
     crate::queue::enqueue(f, &args.into(), None).await
 }
 
-/// Answer a task blocked on a question, as the operator.
-async fn answer(id: i64, text: String) -> Result<()> {
+/// Answer a task blocked on a question. `by` is "operator" by default, or
+/// who else the answer came from (a channel plugin's contact name).
+async fn answer(id: i64, text: String, by: String) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let (_, n) = crate::queue::answer(&f, id, &text, "operator", "").await?;
+    let (_, n) = crate::queue::answer(&f, id, &text, &by, "").await?;
     out!("answered task {id} as {}", n.id);
     Ok(())
 }

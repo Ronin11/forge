@@ -125,6 +125,11 @@ pub struct Task {
     pub checks: Vec<String>,
     pub state: TaskState,
     pub reason: String,
+    /// Who a blocked question is addressed to (a channel contact's name,
+    /// e.g. from the Signal plugin's `CONTACTS`); `None` means the
+    /// operator. Set from the envelope's `needs_input.to` when the task
+    /// blocks; meaningless outside `TaskState::Blocked`.
+    pub question_to: Option<String>,
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
@@ -407,13 +412,16 @@ pub struct Decision {
     pub question: String,
     pub answer: String,
     pub created_at: i64,
-    /// "operator" or "supervisor".
+    /// "operator", "supervisor", or a channel contact's name.
     pub answered_by: String,
     /// What the answer cited, comma-separated: paths, "task N", "decision N".
     pub citations: String,
     /// The task the answer re-queued, when known: its state is the
     /// answer's outcome.
     pub retry_id: Option<i64>,
+    /// Who the question was addressed to, copied from the task's
+    /// `question_to` at answer time; `None` means the operator.
+    pub answered_for: Option<String>,
 }
 
 /// An external reference a plugin or the operator recorded on a task: the
@@ -880,6 +888,10 @@ CREATE INDEX deploys_project_target ON deploys(project, target, id);
     "
 ALTER TABLE deploys ADD COLUMN task_id INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN question_to TEXT;
+ALTER TABLE decisions ADD COLUMN answered_for TEXT;
+",
 ];
 
 /// The version this migration brings the schema to; `migrate` also runs
@@ -904,6 +916,7 @@ const TASK_COLUMNS: &[&str] = &[
     "checks_json",
     "state",
     "reason",
+    "question_to",
     "created_at",
     "started_at",
     "finished_at",
@@ -969,6 +982,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             TaskState::try_from(r.get::<_, String>("state")?.as_str()),
         )?,
         reason: r.get("reason")?,
+        question_to: r.get("question_to")?,
         created_at: r.get("created_at")?,
         started_at: r.get("started_at")?,
         finished_at: r.get("finished_at")?,
@@ -1172,7 +1186,7 @@ impl Store {
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39, provider=?40 WHERE id=?1",
+             project=?38, initiative=?39, provider=?40, question_to=?41 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1214,6 +1228,7 @@ impl Store {
                 t.project,
                 t.initiative,
                 t.provider,
+                t.question_to,
             ],
         )?;
         Ok(())
@@ -1925,7 +1940,11 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Record the operator's answer to a blocked task's question.
+    /// Record an answer to a blocked task's question. `answered_for` is
+    /// who the question was addressed to (the task's `question_to` at
+    /// answer time), copied here since the task it retries into carries
+    /// no such field forward.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_decision_by(
         &self,
         task_id: i64,
@@ -1934,11 +1953,12 @@ impl Store {
         answer: &str,
         answered_by: &str,
         citations: &str,
+        answered_for: Option<&str>,
     ) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![task_id, repo, question, answer, crate::unix_now(), answered_by, citations],
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![task_id, repo, question, answer, crate::unix_now(), answered_by, citations, answered_for],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -1977,7 +1997,7 @@ impl Store {
         let ids = lineage_ids(&c, id)?;
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let mut stmt = c.prepare(&format!(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
+            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
              FROM decisions d WHERE d.task_id IN ({placeholders})
              ORDER BY d.id"
         ))?;
@@ -1992,6 +2012,7 @@ impl Store {
                 answered_by: r.get(6)?,
                 citations: r.get(7)?,
                 retry_id: r.get(8)?,
+                answered_for: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2024,7 +2045,7 @@ impl Store {
     pub fn decisions(&self, q: &DecisionFilter) -> Result<Vec<Decision>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id
+            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
              FROM decisions d JOIN tasks t ON t.id = d.task_id
              WHERE (?1 IS NULL OR d.repo = ?1)
                AND (?2 IS NULL OR t.project = ?2)
@@ -2042,6 +2063,7 @@ impl Store {
                 answered_by: r.get(6)?,
                 citations: r.get(7)?,
                 retry_id: r.get(8)?,
+                answered_for: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3080,7 +3102,7 @@ mod tests {
         retry.retry_of = Some(root);
         let a = s.insert_task(&retry).unwrap();
         let b = s.insert_task(&retry).unwrap();
-        s.insert_decision_by(a, "r", "q", "a", "supervisor", "")
+        s.insert_decision_by(a, "r", "q", "a", "supervisor", "", None)
             .unwrap();
         assert_eq!(s.supervisor_answers_in_lineage(b).unwrap(), 1);
     }
@@ -3669,6 +3691,7 @@ mod column_tests {
         t.checks = vec!["true".into()];
         t.state = TaskState::Running;
         t.reason = "why".into();
+        t.question_to = Some("alice".into());
         t.started_at = Some(2);
         t.finished_at = Some(3);
         t.pushed = true;
