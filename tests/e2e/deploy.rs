@@ -155,14 +155,31 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
     .unwrap();
     assert_eq!(deploys.as_array().unwrap().len(), 0);
 
-    // Running a deploy target whose method is not built yet (step 3 of
-    // docs/DEPLOY.md) fails naming it, and starts no deploy row.
-    let o = e.forge("ok.sh", &["deploy", "demo", "prod"]);
+    // A target naming an unknown method is refused before any deploy row
+    // starts, naming the method.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "ghost",
+            "--repo",
+            repo,
+            "--method",
+            "deploy-nonexistent",
+            "--check",
+            "true",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.forge("ok.sh", &["deploy", "demo", "ghost"]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr).to_string();
-    assert!(err.contains("deploy-user-service"), "{err}");
+    assert!(err.contains("deploy-nonexistent"), "{err}");
     let deploys: serde_json::Value = serde_json::from_slice(
-        &e.forge("ok.sh", &["deploy", "log", "demo", "prod", "--json"])
+        &e.forge("ok.sh", &["deploy", "log", "demo", "ghost", "--json"])
             .stdout,
     )
     .unwrap();
@@ -341,4 +358,264 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
     assert_eq!(state, "blocked");
     assert!(reason.contains("rolled back to"), "{reason}");
     assert!(reason.contains("bad"), "{reason}");
+}
+
+/// A fake `systemctl`: records every call, and simulates a unit that
+/// takes a couple of polls after `restart` before `is-active` reports
+/// `active`, so the wait loop in deploy-user-service.toml is exercised
+/// for real rather than passing on its first check.
+const FAKE_SYSTEMCTL: &str = r#"#!/bin/bash
+echo "systemctl $*" >> "$HOME/deploy-calls.log"
+count_file="$HOME/systemctl-is-active-count"
+if [ "$1" = "--user" ] && [ "$2" = "restart" ]; then
+  echo 0 > "$count_file"
+  exit 0
+fi
+if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then
+  n=$(cat "$count_file" 2>/dev/null || echo 0)
+  n=$((n + 1))
+  echo "$n" > "$count_file"
+  if [ "$n" -ge 3 ]; then
+    echo "active"
+    exit 0
+  fi
+  echo "activating"
+  exit 3
+fi
+echo "unexpected systemctl invocation: $*" >&2
+exit 1
+"#;
+
+#[test]
+fn deploy_user_service_restarts_the_unit_and_waits_for_it_to_report_active() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "svc", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let remote = e._dir.path().join("remote");
+    let dest = remote.to_str().unwrap().to_string();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "svc",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-user-service",
+            "--arg",
+            "host=remotebox",
+            "--arg",
+            &format!("dest={dest}"),
+            "--arg",
+            "unit=demo.service",
+            "--check",
+            "true",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake(&fakebin.join("ssh"), FAKE_SSH);
+    write_fake(&fakebin.join("systemctl"), FAKE_SYSTEMCTL);
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["deploy", "svc", "prod"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let calls = std::fs::read_to_string(fakehome.join("deploy-calls.log")).unwrap();
+    assert!(
+        calls.contains("systemctl --user restart demo.service"),
+        "{calls}"
+    );
+    let is_active_calls = calls.matches("systemctl --user is-active").count();
+    assert!(
+        is_active_calls >= 3,
+        "expected the wait loop to poll is-active more than once: {calls}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(remote.join("hello.sh")).unwrap(),
+        "#!/bin/bash\necho hello\n"
+    );
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "svc", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(rows.as_array().unwrap()[0]["check_ok"], true);
+}
+
+/// A fake `curl`: records every call and the URL it was given, and
+/// always answers 200 with a canned body containing "MARKER123", so a
+/// deploy-static target's default check can be driven without a network.
+const FAKE_CURL: &str = r#"#!/bin/bash
+echo "curl $*" >> "$HOME/deploy-calls.log"
+out=""
+url=""
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+  case "${args[$i]}" in
+    -o)
+      i=$((i + 1))
+      out="${args[$i]}"
+      ;;
+    -w)
+      i=$((i + 1))
+      ;;
+    -s) ;;
+    *) url="${args[$i]}" ;;
+  esac
+  i=$((i + 1))
+done
+echo "$url" >> "$HOME/deploy-curl-urls.log"
+body="hello world MARKER123 goodbye"
+if [ -n "$out" ]; then
+  printf '%s' "$body" > "$out"
+fi
+printf '200'
+"#;
+
+#[test]
+fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "site", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let remote = e._dir.path().join("remote");
+    let dest = remote.to_str().unwrap().to_string();
+
+    // No --check: deploy-static defaults to fetching `url` and requiring
+    // the `marker` string in the body.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "site",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-static",
+            "--arg",
+            "host=local",
+            "--arg",
+            &format!("dest={dest}"),
+            "--arg",
+            "url=http://static.example.invalid/",
+            "--arg",
+            "marker=MARKER123",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake(&fakebin.join("curl"), FAKE_CURL);
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["deploy", "site", "prod"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let urls = std::fs::read_to_string(fakehome.join("deploy-curl-urls.log")).unwrap();
+    assert!(urls.contains("http://static.example.invalid/"), "{urls}");
+    assert!(remote.join("hello.sh").exists());
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "site", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(rows.as_array().unwrap()[0]["check_ok"], true);
+
+    // A target whose marker never shows up in the body fails the check.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "site",
+            "prod2",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-static",
+            "--arg",
+            "host=local",
+            "--arg",
+            &format!("dest={dest}"),
+            "--arg",
+            "url=http://static.example.invalid/",
+            "--arg",
+            "marker=NOPE",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["deploy", "site", "prod2"])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "site", "prod2", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(rows.as_array().unwrap()[0]["check_ok"], false);
 }

@@ -248,10 +248,19 @@ source file's declared symbols ranked against the task's words and the
 files earlier successful work read most, cut to a budget, by the
 deterministic `forge-repomap` tool; shown to the next directive as
 "where things are", recorded in the attempt's inputs; `--no-context` on
-a task is the control arm), and `deploy-command` (the generic deploy
+a task is the control arm), `deploy-command` (the generic deploy
 method `forge deploy` runs, outside of any task: rsyncs the landed tree
 to a target's host and dest over ssh, runs its command, then its check,
-both over ssh unless the host is `local`; see docs/DEPLOY.md). The same tool's `forge-repomap edges <root>
+both over ssh unless the host is `local`; see docs/DEPLOY.md),
+`deploy-user-service` (`deploy-command` plus restarting a user-level
+systemd unit on the host with `systemctl --user restart <unit>` and
+waiting, bounded, for `systemctl --user is-active <unit>` to report
+active, before the check; see docs/DEPLOY.md), and `deploy-static`
+(rsyncs a built directory to a target's host and dest, then the check:
+the target's own check command if it declared one, else this method's
+default of fetching a `url` arg over curl, requiring HTTP 200 and, when
+a `marker` arg is given, that string in the body; see docs/DEPLOY.md).
+The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code
 visualiser: one JSON document of every source file the extractor table
 handles as a node (`path`, `lang`, `symbols`) and every import that

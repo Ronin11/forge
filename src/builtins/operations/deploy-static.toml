@@ -1,0 +1,42 @@
+name = "deploy-static"
+kind = "operation"
+description = "push a built directory to a static host: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh (a pages branch is a later method). Host 'local' skips ssh and runs everything on this machine. Then runs the check: the target's own check command if it set one, injected from the environment; otherwise this method's default, which fetches a url arg over curl, requires HTTP 200, and, when a marker arg is given, requires that string in the body. Reads its args (host, dest, url, and optionally marker and build_dir) (see docs/DEPLOY.md, 'Secrets and hosts')."
+run = ["bash", "-c", '''
+set -e
+host="$FORGE_ARG_HOST"
+dest="$FORGE_ARG_DEST"
+src="."
+if [ -n "$FORGE_ARG_BUILD_DIR" ]; then
+  src="$FORGE_ARG_BUILD_DIR"
+fi
+if [ "$host" = "local" ]; then
+  mkdir -p "$dest"
+  rsync -a --delete "$src"/ "$dest"/
+  echo "copied $src to $dest (local)"
+else
+  rsync -a --delete "$src"/ "$host:$dest"/
+  echo "copied $src to $host:$dest"
+fi
+if [ -n "$FORGE_CHECK" ]; then
+  bash -c "$FORGE_CHECK"
+else
+  url="$FORGE_ARG_URL"
+  if [ -z "$url" ]; then
+    echo "deploy-static: no check command and no url arg to default to" >&2
+    exit 1
+  fi
+  body="$(mktemp)"
+  trap 'rm -f "$body"' EXIT
+  code="$(curl -s -o "$body" -w '%{http_code}' "$url")"
+  if [ "$code" != "200" ]; then
+    echo "GET $url: $code" >&2
+    cat "$body" >&2
+    exit 1
+  fi
+  if [ -n "$FORGE_ARG_MARKER" ] && ! grep -qF "$FORGE_ARG_MARKER" "$body"; then
+    echo "GET $url: 200 but missing marker $FORGE_ARG_MARKER" >&2
+    exit 1
+  fi
+  echo "GET $url: 200"
+fi
+''', "deploy-static"]

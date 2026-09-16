@@ -521,9 +521,10 @@ enum ProjectDeployCmd {
         #[arg(long = "arg")]
         args: Vec<String>,
         /// A shell command, run where the thing runs, whose exit status
-        /// is the deploy's verdict
+        /// is the deploy's verdict. Required, except for deploy-static,
+        /// which defaults to fetching a url arg and requiring 200
         #[arg(long)]
-        check: String,
+        check: Option<String>,
         /// Run this target automatically after a landing on its repository
         #[arg(long)]
         on_landing: bool,
@@ -1237,7 +1238,7 @@ fn project_deploy_add(
     scope: Option<String>,
     method: String,
     args: Vec<String>,
-    check: String,
+    check: Option<String>,
     on_landing: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
@@ -1257,6 +1258,11 @@ fn project_deploy_add(
             .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
         arg_map.insert(k.to_string(), v.to_string());
     }
+    let check = match check {
+        Some(c) => c,
+        None if method == "deploy-static" => String::new(),
+        None => bail!("--check is required for method {method:?}"),
+    };
     f.store.add_deploy_target(&crate::store::DeployTarget {
         project: project.clone(),
         name: name.clone(),
