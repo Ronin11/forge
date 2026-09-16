@@ -22,7 +22,11 @@ pub fn resolve_provider<'a>(
     task_provider: &str,
     role: &str,
 ) -> Result<&'a agent::Provider> {
-    let name = if !task_provider.is_empty() {
+    // A task's --provider routes the work, never the judge: the supervisor
+    // rules on the record and keeps the operator's or the project's
+    // provider for that role (task 309's supervisor ran on the task's
+    // local model and tried to pull "opus" from ollama).
+    let name = if !task_provider.is_empty() && role != "supervisor" {
         task_provider
     } else if let Some(p) = project_roles.get(role) {
         p.as_str()
@@ -248,6 +252,29 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn a_tasks_provider_never_routes_the_supervisor() {
+        let providers = providers(&["anthropic", "devhome"]);
+        let p = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "devhome",
+            "code",
+        )
+        .unwrap();
+        assert_eq!(p.name, "devhome");
+        let s = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "devhome",
+            "supervisor",
+        )
+        .unwrap();
+        assert_eq!(s.name, "anthropic", "the judge keeps its own provider");
     }
 
     #[test]

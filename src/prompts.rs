@@ -65,6 +65,8 @@ pub fn preamble(t: &Task, cfg: &config::Config, branch: &str, outcome: Option<&s
          you need does not exist. A third: kind `suite` when a test under the verification namespace that is not \
          yours contradicts the task: set `path` to that test file and name the assertion; you may not edit those \
          tests, and a human decides which is right. A visible test is yours to change, never a reason to stop. In every case `tried` must say what you did before stopping and where you stopped. \
+         You already have permission to do this task: never ask whether to proceed and never stop to have a plan \
+         confirmed; the only question worth stopping for is one whose answer changes what to build. \
          Commit nothing half-done.",
         base = t.base_branch,
         wf = t.workflow,
