@@ -134,6 +134,42 @@ fn a_question_ends_the_task_without_retrying() {
 }
 
 #[test]
+fn a_question_after_a_clean_commit_still_runs_l1_and_the_journal_says_so() {
+    // The agent commits a real answer, then asks a question instead of
+    // returning cleanly. The tree is clean and the commit is there, so
+    // L1 must run on it exactly as it would for a succeeded attempt: the
+    // record should be able to say whether the committed fix is any
+    // good, not only that a question was asked.
+    let e = Env::new();
+    assert!(
+        !e.run("commitneedsinput.sh", &["--retries", "2"])
+            .status
+            .success()
+    );
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].1, "needs_input");
+    for (level, name) in [("L0", "has-commits"), ("L1", "answer"), ("L1", "shell")] {
+        assert_eq!(check(&a[0].4, level, name), Some(true), "{level} {name}");
+    }
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(
+        reason.starts_with("needs input: Should ANSWER.txt"),
+        "{reason}"
+    );
+    // The journal, read by the retry, must say the checks passed rather
+    // than stay silent about whether the committed answer was any good.
+    assert!(e.forge("addfile.sh", &["retry", "1"]).status.success());
+    assert!(e.forge("addfile.sh", &["work", "--once"]).status.success());
+    let prompt = e.log_text(2, 1);
+    assert!(
+        prompt.contains("the checks passed; it stopped with: needs input: Should ANSWER.txt"),
+        "{prompt}"
+    );
+}
+
+#[test]
 fn a_workflow_request_blocks_the_task_with_the_request_as_reason() {
     let e = Env::new();
     assert!(

@@ -1011,6 +1011,59 @@ fn a_retry_of_a_verified_task_starts_from_its_branch() {
 }
 
 #[test]
+fn a_retry_of_a_question_whose_checks_already_passed_starts_from_its_branch() {
+    // 1 commits an answer and the repository's checks pass on it, but the
+    // agent asks a question instead of returning cleanly. The retry must
+    // start from 1's branch, the same as a review demotion the operator
+    // set aside, rather than rebuild from main and repeat 1's already
+    // verified commit.
+    let e = Env::new();
+    let o = e.run("commitneedsinput.sh", &["--retries", "0"]);
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(
+        state,
+        "blocked",
+        "{reason}\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        reason.starts_with("needs input: Should ANSWER.txt"),
+        "{reason}"
+    );
+    assert!(!pushed, "a plain question does not push the branch");
+    assert!(e.forge("addfile.sh", &["retry", "1"]).status.success());
+    let o = e.forge("addfile.sh", &["work", "--once"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("start    from task 1's verified branch forge/1-write-42-to-answertxt @"),
+        "{err}"
+    );
+    assert_eq!(e.task(2).0, "succeeded", "{:?}", e.task(2));
+    // The retry's branch carries 1's answer and its own addition.
+    assert_eq!(
+        origin_file(&e, "forge/2-write-42-to-answertxt", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    assert_eq!(
+        origin_file(&e, "forge/2-write-42-to-answertxt", "extra.txt").as_deref(),
+        Some("extra\n")
+    );
+    let (base, start): (String, String) = e
+        .db()
+        .query_row(
+            "SELECT t.base_sha, a.start_sha FROM tasks t JOIN attempts a ON a.task_id = t.id WHERE t.id = 2 AND a.attempt_no = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(
+        base, start,
+        "the first attempt began past the base, on 1's commit"
+    );
+}
+
+#[test]
 fn a_retry_whose_merged_base_does_not_build_feeds_setup_to_the_coder() {
     // Task 1 lands. Something else lands on main afterward that the merge
     // takes in cleanly but that breaks the build: a fake `setup` check

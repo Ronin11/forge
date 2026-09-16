@@ -10,7 +10,9 @@
 //! - marks the task superseded, citing the task that already landed the
 //!   same work, so nobody redoes it;
 //! - accepts a review demotion that names no defect the task requires
-//!   fixing, so the verified branch lands instead of being rebuilt;
+//!   fixing, or a plain question whose attempt's checks already passed
+//!   and that the record settles or that is moot, so the verified
+//!   branch lands instead of being rebuilt;
 //! - escalates, which leaves the question for the human.
 //!
 //! It cannot write code (`untouched`), an answer without a citation that
@@ -706,9 +708,14 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                     r.answer
                 )
             };
-            let decision =
-                f.store
-                    .insert_decision_by(id, &t.repo, &q.question, &note, "supervisor", &cited)?;
+            let decision = f.store.insert_decision_by(
+                id,
+                &t.repo,
+                &q.question,
+                &note,
+                "supervisor",
+                &cited,
+            )?;
             match crate::cli::land_task(f, id).await {
                 Ok(line) => {
                     f.report.emit(
@@ -873,9 +880,16 @@ mod tests {
         blocked.state = TaskState::Blocked;
         let blocked = insert(&f, blocked);
 
-        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question, false)
-            .map_err(anyhow::Error::from)
-            .unwrap();
+        let text = prompt(
+            &f,
+            &blocked,
+            "which file?",
+            "looked around",
+            Kind::Question,
+            false,
+        )
+        .map_err(anyhow::Error::from)
+        .unwrap();
 
         assert!(text.contains("an earlier alpha task that landed"), "{text}");
         assert!(text.contains("an alpha-only question"), "{text}");
@@ -913,9 +927,16 @@ mod tests {
         blocked.state = TaskState::Blocked;
         let blocked = insert(&f, blocked);
 
-        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question, false)
-            .map_err(anyhow::Error::from)
-            .unwrap();
+        let text = prompt(
+            &f,
+            &blocked,
+            "which file?",
+            "looked around",
+            Kind::Question,
+            false,
+        )
+        .map_err(anyhow::Error::from)
+        .unwrap();
         assert!(!text.contains("a task in another repo"), "{text}");
         assert!(!text.contains("another repo's question"), "{text}");
     }

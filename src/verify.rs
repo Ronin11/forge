@@ -1478,8 +1478,14 @@ mod tests {
     fn l1_all_passed_needs_at_least_one_l1_row_and_none_failing() {
         assert!(!l1_all_passed(&[]), "no L1 rows at all is not a pass");
         assert!(!l1_all_passed(&[c("L0", "clean-tree", true)]));
-        assert!(l1_all_passed(&[c("L0", "clean-tree", true), c("L1", "test", true)]));
-        assert!(!l1_all_passed(&[c("L1", "test", true), c("L1", "lint", false)]));
+        assert!(l1_all_passed(&[
+            c("L0", "clean-tree", true),
+            c("L1", "test", true)
+        ]));
+        assert!(!l1_all_passed(&[
+            c("L1", "test", true),
+            c("L1", "lint", false)
+        ]));
     }
 
     #[test]

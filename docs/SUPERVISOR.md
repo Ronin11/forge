@@ -13,11 +13,15 @@ an artifact the kernel checks; none can reach main.
 - **superseded**: the work already landed through another task of the
   repository; cite it as `task N` and the blocked task ends, so nobody
   redoes it.
-- **accept** (review demotions only): the demotion names no defect, or
-  an approval was written into the demotion field, or the finding is
-  not something the task requires. The verified branch lands as it is;
-  nothing is rebuilt. A real defect is an answer telling the next
-  attempt what to fix.
+- **accept**: a review demotion names no defect, or an approval was
+  written into the demotion field, or the finding is not something the
+  task requires — or the task stopped with a plain question, its
+  attempt's checks already ran and passed on the tree it committed, and
+  the question is settled by the record or is moot (the commonest case:
+  the agent asking whether to fix something its own commit already
+  fixes). Either way the verified branch lands as it is; nothing is
+  rebuilt. A real defect, or a question the checks cannot settle, is an
+  answer telling the next attempt what to fix.
 - **escalate**: leave the question for the human, with a reason. The
   request still shows in `forge requests` and the web page, marked
   escalated. The human's own reply is `forge answer` or `forge retry`,
