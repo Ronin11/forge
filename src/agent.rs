@@ -754,10 +754,16 @@ fn apply_codex_event(
             }
         }
         Some("item.completed") => match v["item"]["type"].as_str() {
+            // Codex reports warnings as error items too ("Model metadata for
+            // `qwen3-coder:30b` not found. Defaulting to fallback metadata"),
+            // before it goes on to work. An error item is a failure only if
+            // no result follows; a result clears it (task 288 was failed for
+            // a warning while its structured result was a valid question).
             Some("error") => out.is_error = true,
             Some("agent_message") => {
                 let text = v["item"]["text"].as_str().unwrap_or("").to_string();
                 out.got_result = true;
+                out.is_error = false;
                 out.structured = serde_json::from_str::<Value>(&text)
                     .ok()
                     .map(|_| text.clone());
