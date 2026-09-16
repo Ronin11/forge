@@ -545,6 +545,44 @@ enum ProjectDeployCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Change a deploy target's fields, replacing only the ones given: an
+    /// `--arg` replaces or adds that key, leaving the others; `--check`,
+    /// `--smoke` and `--on-landing`/`--no-on-landing` replace their field
+    /// the same way
+    Set {
+        project: String,
+        name: String,
+        /// The repository this target deploys
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Paths within the repository this target owns, comma-separated
+        #[arg(long)]
+        scope: Option<String>,
+        /// The action file this target runs, e.g. "deploy-command"
+        #[arg(long)]
+        method: Option<String>,
+        /// An argument to the method, as `<key>=<value>` (repeatable);
+        /// replaces or adds that key, leaving the others as they were
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        /// A shell command, run where the thing runs, whose exit status
+        /// is the deploy's verdict
+        #[arg(long)]
+        check: Option<String>,
+        /// After the check passes, open this url in headless Chromium and
+        /// fail the deploy on a console error or a failed request to its
+        /// own origin (see docs/DEPLOY.md, "A deterministic smoke step")
+        #[arg(long)]
+        smoke: Option<String>,
+        /// Run this target automatically after a landing on its repository
+        #[arg(long)]
+        on_landing: bool,
+        /// Stop running this target automatically after a landing
+        #[arg(long, conflicts_with = "on_landing")]
+        no_on_landing: bool,
+    },
+    /// Remove a deploy target; refused while a deploy of it is running
+    Remove { project: String, name: String },
 }
 
 #[derive(Subcommand)]
@@ -788,6 +826,30 @@ pub async fn main() -> Result<()> {
                     project, name, repo, scope, method, args, check, smoke, on_landing,
                 ),
                 ProjectDeployCmd::List { project, json } => project_deploy_list(project, json),
+                ProjectDeployCmd::Set {
+                    project,
+                    name,
+                    repo,
+                    scope,
+                    method,
+                    args,
+                    check,
+                    smoke,
+                    on_landing,
+                    no_on_landing,
+                } => project_deploy_set(
+                    project,
+                    name,
+                    repo,
+                    scope,
+                    method,
+                    args,
+                    check,
+                    smoke,
+                    on_landing,
+                    no_on_landing,
+                ),
+                ProjectDeployCmd::Remove { project, name } => project_deploy_remove(project, name),
             },
         },
         Cmd::Deploy(a) => match a.cmd {
@@ -1290,6 +1352,91 @@ fn project_deploy_add(
         smoke_url: smoke,
     })?;
     out!("added deploy target {name} to project {project}");
+    Ok(())
+}
+
+/// Change a deploy target's fields, replacing only the ones given: the
+/// same shape as `project_deploy_add`, but starting from the stored
+/// target and merging each flag onto it (`--arg` onto the args map,
+/// everything else replacing its field whole).
+#[allow(clippy::too_many_arguments)]
+fn project_deploy_set(
+    project: String,
+    name: String,
+    repo: Option<PathBuf>,
+    scope: Option<String>,
+    method: Option<String>,
+    args: Vec<String>,
+    check: Option<String>,
+    smoke: Option<String>,
+    on_landing: bool,
+    no_on_landing: bool,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let mut t = f
+        .store
+        .deploy_target(&project, &name)?
+        .with_context(|| format!("no deploy target {name} in project {project}"))?;
+
+    if let Some(repo) = repo {
+        let repo = repo
+            .canonicalize()
+            .with_context(|| format!("--repo {}", repo.display()))?;
+        t.repo = repo.display().to_string();
+    }
+    if let Some(scope) = scope {
+        t.scope = Some(serde_json::to_string(
+            &scope.split(',').collect::<Vec<_>>(),
+        )?);
+    }
+    if let Some(method) = method {
+        t.method = method;
+    }
+    for pair in &args {
+        let (k, v) = pair
+            .split_once('=')
+            .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
+        t.args.insert(k.to_string(), v.to_string());
+    }
+    if let Some(check) = check {
+        t.check_cmd = check;
+    }
+    if let Some(smoke) = smoke {
+        t.smoke_url = Some(smoke);
+    }
+    if on_landing {
+        t.on_landing = true;
+    } else if no_on_landing {
+        t.on_landing = false;
+    }
+    if t.check_cmd.is_empty() && t.method != "deploy-static" {
+        bail!("--check is required for method {:?}", t.method);
+    }
+
+    f.store.update_deploy_target(&t)?;
+    out!("updated deploy target {name} in project {project}");
+    Ok(())
+}
+
+/// Remove a deploy target: no more `--on-landing` runs for it, and it
+/// disappears from `forge project deploy list` and `forge deploy`.
+/// Refused while a deploy of it is running (a `deploys` row with no
+/// `finished_at` yet); the deploy history itself is untouched.
+fn project_deploy_remove(project: String, name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .deploy_target(&project, &name)?
+        .with_context(|| format!("no deploy target {name} in project {project}"))?;
+    let running = f
+        .store
+        .deploys(&project, Some(&name))?
+        .iter()
+        .any(|d| d.finished_at.is_none());
+    if running {
+        bail!("deploy target {name} in project {project} has a deploy running");
+    }
+    f.store.remove_deploy_target(&project, &name)?;
+    out!("removed deploy target {name} from project {project}");
     Ok(())
 }
 

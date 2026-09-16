@@ -1160,3 +1160,258 @@ fn an_on_landing_deploy_shows_up_on_forge_show_and_trace_json() {
     assert_eq!(deploys[0]["sha"], sha);
     assert_eq!(deploys[0]["check_ok"], true);
 }
+
+/// `forge project deploy set` changes only the field named, leaving every
+/// other field (including args not named) exactly as `add` left them.
+#[test]
+fn deploy_set_changes_one_arg_and_keeps_the_rest() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            repo,
+            "--method",
+            "deploy-user-service",
+            "--arg",
+            "unit=demo.service",
+            "--arg",
+            "host=box1",
+            "--check",
+            "systemctl --user is-active demo.service",
+            "--smoke",
+            "https://example.com/",
+            "--on-landing",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Change only the `host` arg.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "set",
+            "demo",
+            "prod",
+            "--arg",
+            "host=box2",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let row = &rows.as_array().unwrap()[0];
+    assert_eq!(row["args"]["host"], "box2", "{row:?}");
+    // Every other field, including the other arg, is untouched.
+    assert_eq!(row["args"]["unit"], "demo.service", "{row:?}");
+    assert_eq!(row["method"], "deploy-user-service", "{row:?}");
+    assert_eq!(
+        row["check_cmd"], "systemctl --user is-active demo.service",
+        "{row:?}"
+    );
+    assert_eq!(row["smoke_url"], "https://example.com/", "{row:?}");
+    assert_eq!(row["on_landing"], true, "{row:?}");
+
+    // `--no-on-landing` flips only that field.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "set",
+            "demo",
+            "prod",
+            "--no-on-landing",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let row = &rows.as_array().unwrap()[0];
+    assert_eq!(row["on_landing"], false, "{row:?}");
+    assert_eq!(row["args"]["host"], "box2", "{row:?}");
+
+    // `--check` replaces the check command whole.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project", "deploy", "set", "demo", "prod", "--check", "true",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let row = &rows.as_array().unwrap()[0];
+    assert_eq!(row["check_cmd"], "true", "{row:?}");
+
+    // Setting an unknown target is refused.
+    let bad = e.forge(
+        "ok.sh",
+        &[
+            "project", "deploy", "set", "demo", "nope", "--check", "true",
+        ],
+    );
+    assert!(!bad.status.success());
+}
+
+/// `forge project deploy remove` deletes the target, so a later landing
+/// on its repository no longer deploys it, and refuses while a deploy of
+/// it is still running.
+#[test]
+fn deploy_remove_deletes_the_target_and_its_future_on_landing_runs() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let remote = e._dir.path().join("remote");
+    let dest = remote.to_str().unwrap().to_string();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-command",
+            "--arg",
+            "host=remotebox",
+            "--arg",
+            &format!("dest={dest}"),
+            "--arg",
+            "command=true",
+            "--check",
+            "grep -qx 42 answer.txt",
+            "--on-landing",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake_rsync(&fakebin.join("rsync"));
+    write_fake(&fakebin.join("ssh"), FAKE_SSH);
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    // Land once: the on-landing target deploys.
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["run", repo_s, "write 42", "--retries", "0"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, _, _) = e.task(1);
+    assert_eq!(state, "succeeded");
+    let deploys_before: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "demo", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(deploys_before.as_array().unwrap().len(), 1);
+
+    // A running deploy (no finished_at yet) refuses the remove.
+    e.db()
+        .execute(
+            "INSERT INTO deploys (project, target, sha, started_at) VALUES ('demo', 'prod', 'deadbeef', 1)",
+            [],
+        )
+        .unwrap();
+    let bad = e.forge("ok.sh", &["project", "deploy", "remove", "demo", "prod"]);
+    assert!(!bad.status.success());
+    let err = String::from_utf8_lossy(&bad.stderr).to_string();
+    assert!(err.contains("running"), "{err}");
+
+    // Once that deploy finishes, remove succeeds.
+    e.db()
+        .execute(
+            "UPDATE deploys SET finished_at=2, check_ok=1 WHERE sha='deadbeef'",
+            [],
+        )
+        .unwrap();
+    let o = e.forge("ok.sh", &["project", "deploy", "remove", "demo", "prod"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let targets: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(targets.as_array().unwrap().len(), 0);
+
+    // Removing again (already gone) is refused.
+    let bad = e.forge("ok.sh", &["project", "deploy", "remove", "demo", "prod"]);
+    assert!(!bad.status.success());
+
+    // Landing again (a different fake, so it makes an actual second change
+    // rather than repeating the first task's now-already-landed one) does
+    // not deploy the removed target: no new deploy row.
+    let o = e
+        .cmd("addfile.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["run", repo_s, "add extra", "--retries", "0"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, _, _) = e.task(2);
+    assert_eq!(state, "succeeded");
+
+    let deploys_after: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "demo", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    // Still just the one deploy from before the removal (plus the
+    // manually-inserted one now finished): no new row from landing.
+    assert_eq!(
+        deploys_after.as_array().unwrap().len(),
+        2,
+        "{deploys_after:?}"
+    );
+}
