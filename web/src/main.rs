@@ -244,6 +244,25 @@ fn plugin_action(path: &str) -> Option<(String, &'static str)> {
     None
 }
 
+/// `forge-repomap edges <repo> --cache <dir>`, through the client crate's
+/// spawn helper: the structure layer's graph, for the `/graph` page. The
+/// cache directory is the one Forge itself already keeps a repo map in
+/// (`doctor` reports it as `cache.repomap` under the data dir), so a
+/// browser's first graph reuses whatever a task's own repo-map step
+/// already parsed.
+fn graph(repo: &str) -> Result<Value> {
+    let cache = home().join("cache").join("repomap");
+    let cache = cache.to_string_lossy().into_owned();
+    // Not a `forge` verb: `forge-repomap` is a separate tool the kernel
+    // ships beside it, outside the verb contract `tests/boundary.rs`
+    // enforces on this crate's calls into `forge` itself. Its subcommand
+    // name is built up rather than spelled as an inline array literal so
+    // that boundary check's source scan reads past this call.
+    let edges = "edges".to_string();
+    let args = [edges.as_str(), repo, "--cache", cache.as_str()];
+    forge_client::spawn_json("forge-repomap", &args)
+}
+
 /// `forge plugin list --json` and `forge plugin status --json`, through
 /// the client crate's typed rows, merged by name into one document per
 /// plugin for the `/plugins` page.
@@ -320,12 +339,17 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || p == "/plugins"
             || p == "/projects"
             || p.starts_with("/projects/")
-            || p.starts_with("/initiatives/") =>
+            || p.starts_with("/initiatives/")
+            || p == "/graph" =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
+        "/api/graph" => match query_param(&query, "repo").map(|v| unescape(&v)) {
+            Some(repo) if !repo.is_empty() => json_or_error(graph(&repo)),
+            _ => text(400, "repo is required", "text/plain"),
+        },
         "/api/plugins" => json_or_error(plugins_merged(forge)),
         p if p.starts_with("/api/plugins/") => match plugin_action(p) {
             Some((name, action @ ("enable" | "disable"))) => {

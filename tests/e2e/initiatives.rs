@@ -25,6 +25,14 @@ fn write_filer_workflow(e: &Env) {
     .unwrap();
 }
 
+/// Write the operator config the test needs *before* any `forge` command
+/// runs: `ensure_home_config` only writes the default once, so seeding it
+/// first is how a test gets its own `[providers.*]` table in instead.
+fn write_config(e: &Env, toml: &str) {
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(e.home.join("config.toml"), toml).unwrap();
+}
+
 /// Parse `created initiative N` from `forge initiative new`'s stdout.
 fn created_id(o: &std::process::Output) -> i64 {
     let out = String::from_utf8_lossy(&o.stdout);
@@ -499,6 +507,105 @@ fn file_into_initiative_files_siblings_and_the_origin_task_ends_succeeded() {
         assert_eq!(refs[0]["kind"], "plan");
         assert_eq!(refs[0]["url"], "forge://task/1");
     }
+}
+
+#[test]
+fn from_records_the_from_files_own_provider_and_falls_the_rest_to_the_flags_default() {
+    let e = Env::new();
+    write_config(&e, "[providers.devhome]\nrunner = \"codex-cli\"\n");
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(
+        &file,
+        "provider: devhome\nfirst task on its own provider\n\nsecond task falls to the default",
+    )
+    .unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "both tasks land on the right provider",
+            "--from",
+            file.to_str().unwrap(),
+            "--provider",
+            "anthropic",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (p1, p2): (String, String) = e
+        .db()
+        .query_row(
+            "SELECT (SELECT provider FROM tasks WHERE id=1), (SELECT provider FROM tasks WHERE id=2)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(p1, "devhome");
+    assert_eq!(p2, "anthropic");
+}
+
+#[test]
+fn from_refuses_an_unknown_provider_named_by_a_paragraph_before_queuing_anything() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(
+        &file,
+        "first task is fine\n\nprovider: does-not-exist\nsecond task names a bad provider",
+    )
+    .unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "refused before anything is queued",
+            "--from",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("does-not-exist"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let count: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "no task should be queued when a provider is unknown"
+    );
 }
 
 #[test]

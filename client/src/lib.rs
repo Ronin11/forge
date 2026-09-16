@@ -142,6 +142,34 @@ impl Forge {
     }
 }
 
+/// Runs a tool other than `forge` itself — resolved on `PATH`, exactly as
+/// the shell would — and returns its stdout as text, or an error carrying
+/// stderr on a non-zero exit: the same contract as [`Forge::run`], for the
+/// rest of Forge's own toolchain (`forge-repomap`, today). A client spawns
+/// these directly rather than through a `forge` verb because they aren't
+/// part of the kernel's contract with a client; `docs/CLIENT.md` doesn't
+/// describe them.
+pub fn spawn(bin: &str, args: &[&str]) -> Result<String> {
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {bin} {}", args.join(" ")))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{bin} {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// [`spawn`], then parsed as one JSON value.
+pub fn spawn_json(bin: &str, args: &[&str]) -> Result<Value> {
+    let text = spawn(bin, args)?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {bin} {}", args.join(" ")))
+}
+
 /// The live iterator behind [`Forge::subscribe`]. Yields one [`Event`] per
 /// line of `forge events --follow`; lines that aren't valid JSON are
 /// skipped. Killing its subordinate `forge events` process on drop is what
@@ -455,7 +483,8 @@ pub struct InitiativeRow {
     pub settled_at: Option<i64>,
 }
 
-/// One task in [`InitiativeDoc::tasks`]: its final state and reason.
+/// One lineage in [`InitiativeDoc::tasks`]: its latest task's id, state
+/// and reason, plus how many retries the lineage took to reach it.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct InitiativeTaskRow {
     #[serde(default)]
@@ -464,6 +493,8 @@ pub struct InitiativeTaskRow {
     pub state: String,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub retries: i64,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how

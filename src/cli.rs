@@ -473,10 +473,17 @@ enum InitiativeCmd {
         outcome: String,
         /// A file of task texts, one per paragraph (blank-line
         /// separated); a paragraph may lead with `after: <n>` (an
-        /// earlier paragraph's 1-based number, as a dependency) and
-        /// `repo: <path>` (else the project's first repository)
+        /// earlier paragraph's 1-based number, as a dependency),
+        /// `repo: <path>` (else the project's first repository) and
+        /// `provider: <name>` (else --provider's default)
         #[arg(long)]
         from: Option<PathBuf>,
+        /// The provider every paragraph runs under unless it names its
+        /// own `provider:` (default: "anthropic"); validated against
+        /// `[providers.<name>]` (see `forge providers`) when the file is
+        /// read
+        #[arg(long)]
+        provider: Option<String>,
         /// This initiative's own cost cap in USD (default: the
         /// project's per-initiative-usd)
         #[arg(long)]
@@ -681,9 +688,10 @@ pub async fn main() -> Result<()> {
                 project,
                 outcome,
                 from,
+                provider,
                 budget,
                 stop_after,
-            } => initiative_new(project, outcome, from, budget, stop_after).await,
+            } => initiative_new(project, outcome, from, provider, budget, stop_after).await,
             InitiativeCmd::FromPlan { task, outcome } => initiative_from_plan(task, outcome).await,
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
@@ -1194,6 +1202,7 @@ async fn initiative_new(
     project: String,
     outcome: String,
     from: Option<PathBuf>,
+    provider: Option<String>,
     budget: Option<f64>,
     stop_after: Option<u32>,
 ) -> Result<()> {
@@ -1220,6 +1229,20 @@ async fn initiative_new(
             .with_context(|| format!("reading {}", path.display()))?;
         let default_repo = f.store.first_repo(&project)?;
         let paragraphs = crate::queue::parse_initiative_file(&text)?;
+        let known_provider = |name: &str| -> Result<()> {
+            f.providers.get(name).with_context(|| {
+                format!("unknown provider {name:?}; see `forge providers` for what is configured")
+            })?;
+            Ok(())
+        };
+        if let Some(p) = &provider {
+            known_provider(p)?;
+        }
+        for p in &paragraphs {
+            if let Some(pr) = &p.provider {
+                known_provider(pr)?;
+            }
+        }
         let mut ids: Vec<i64> = Vec::new();
         for p in &paragraphs {
             let repo = match &p.repo {
@@ -1238,6 +1261,7 @@ async fn initiative_new(
             let req = crate::queue::TaskRequest {
                 repo: PathBuf::from(repo),
                 task: p.text.clone(),
+                provider: p.provider.clone().or_else(|| provider.clone()),
                 max_turns: 100,
                 retries: 1,
                 timeout_secs: 1800,
@@ -1355,9 +1379,14 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     out!("tasks");
     for t in &doc.tasks {
         out!(
-            "  {:<5} {:<10}{}",
+            "  {:<5} {:<10}{}{}",
             t.id,
             t.state,
+            match t.retries {
+                0 => String::new(),
+                1 => " (1 retry)".to_string(),
+                n => format!(" ({n} retries)"),
+            },
             if t.reason.is_empty() {
                 String::new()
             } else {

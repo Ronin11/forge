@@ -435,7 +435,7 @@ journal_control = 0.0
 # [providers.devhome]
 # runner = \"codex-cli\"
 # model = \"qwen3-coder:30b\"
-# env = { CODEX_OSS_BASE_URL = \"http://dev.home:11434/v1\" }
+# env = { CODEX_OSS_BASE_URL = \"http://dev.home:11434/v1\", OLLAMA_HOST = \"http://dev.home:11434\" }
 # extra_args = [\"--oss\", \"--local-provider\", \"ollama\"]
 #
 # [providers.openai]

@@ -40,6 +40,16 @@ case "$1" in
 esac
 "#;
 
+const FAKE_REPOMAP: &str = r#"#!/bin/bash
+case "$1" in
+  edges) cat <<'JSON'
+{"nodes":[{"path":"src/a.rs","lang":"rust","symbols":3},{"path":"src/b.rs","lang":"rust","symbols":1},{"path":"web/x.js","lang":"javascript","symbols":0}],"edges":[{"from":"src/a.rs","to":"src/b.rs","kind":"import"}]}
+JSON
+  ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"#;
+
 struct Web {
     child: std::process::Child,
     addr: String,
@@ -58,15 +68,26 @@ fn start() -> Web {
     let home = tempfile::tempdir().unwrap();
     let fake = home.path().join("forge");
     std::fs::write(&fake, FAKE).unwrap();
+    let bin_dir = home.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_repomap = bin_dir.join("forge-repomap");
+    std::fs::write(&fake_repomap, FAKE_REPOMAP).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&fake_repomap, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let mut child = Command::new(env!("CARGO_BIN_EXE_forge-web"))
         .args(["--bind", "127.0.0.1:0"])
         .env("FORGE_BIN", &fake)
         .env("FORGE2_HOME", home.path())
+        .env("PATH", path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -137,6 +158,8 @@ fn without_the_token_nothing_is_served() {
         "/api/projects",
         "/api/projects/demo",
         "/api/initiatives/5",
+        "/graph",
+        "/api/graph?repo=%2Fsome%2Frepo",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -306,6 +329,27 @@ fn the_projects_and_initiatives_routes_pass_forge_json_through() {
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v[0]["args"], "--json --limit 100 --project demo");
+}
+
+#[test]
+fn the_graph_page_and_route_run_forge_repomap_edges_and_pass_its_json_through() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, _, body) = get(&w.addr, "/graph", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+
+    let (status, _, body) = get(&w.addr, "/api/graph?repo=%2Fsome%2Frepo", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["nodes"][0]["path"], "src/a.rs");
+    assert_eq!(v["nodes"][0]["symbols"], 3);
+    assert_eq!(v["edges"][0]["from"], "src/a.rs");
+    assert_eq!(v["edges"][0]["to"], "src/b.rs");
+
+    let (status, _, body) = get(&w.addr, "/api/graph", &cookie);
+    assert_eq!(status, 400, "{body}");
 }
 
 #[test]

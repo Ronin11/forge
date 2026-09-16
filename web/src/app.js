@@ -23,10 +23,11 @@
   const post = path => call('POST', path);
 
   // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins, /projects,
-  // /projects/:name, /initiatives/:id
+  // /projects/:name, /initiatives/:id, /graph
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
     if (location.pathname === '/projects') return { page: 'projects' };
+    if (location.pathname === '/graph') return { page: 'graph', repo: new URLSearchParams(location.search).get('repo') || '' };
     let m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
     m = location.pathname.match(/^\/initiatives\/(\d+)\/?$/);
@@ -37,7 +38,7 @@
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
@@ -58,6 +59,7 @@
       : r.page === 'projects' ? projectsView()
       : r.page === 'project' ? projectView(r.name)
       : r.page === 'initiative' ? initiativeView(r.id)
+      : r.page === 'graph' ? graphView(r.repo)
       : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
@@ -208,7 +210,7 @@
       $('#detail').innerHTML = `
         <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span> <a href="/tasks/${t.id}/run">workflow run →</a> ${retry}</h2>
         <div class="card">
-          <div><span class="k">repo</span>${esc(t.repo)}</div>
+          <div><span class="k">repo</span>${esc(t.repo)} <a href="/graph?repo=${encodeURIComponent(t.repo)}">graph</a></div>
           <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
           <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
           ${(t.project || t.initiative != null) ? `<div><span class="k">project</span>${t.project ? `<a href="/projects/${encodeURIComponent(t.project)}">${esc(t.project)}</a>` : '-'}${t.initiative != null ? ` · <a href="/initiatives/${t.initiative}">initiative ${t.initiative}</a>` : ''}</div>` : ''}
@@ -321,12 +323,15 @@
           <td class="num">${usd(i.cost_usd)}</td></tr>`).join('');
       const backlogRows = backlog.map(b => `
         <div class="card"><span class="mute">#${b.id} · ${b.done_at ? 'done' : 'open'}</span> ${esc(b.text)}</div>`).join('');
+      const repoRows = (p.repos || []).map(r => `
+        <div><span class="k">repo</span>${esc(r.repo)} <a href="/graph?repo=${encodeURIComponent(r.repo)}">graph</a></div>`).join('');
       $('#main').innerHTML = `
         <h2>Project ${esc(p.name)}</h2>
         <div class="card">
           <div>${esc(p.purpose)}</div>
           <div class="mute">workflow ${esc(p.workflow || 'direct')} · per-task ${p.per_task_usd != null ? usd(p.per_task_usd) : 'default'} · per-initiative ${p.per_initiative_usd != null ? usd(p.per_initiative_usd) : 'unlimited'}</div>
           <div class="mute">tasks queued=${p.queued} running=${p.running} succeeded=${p.succeeded} failed=${p.failed} unverified=${p.unverified} blocked=${p.blocked} withdrawn=${p.withdrawn} · ${usd(p.cost_usd)}</div>
+          ${repoRows}
         </div>
         <h2>Initiatives</h2>
         <table><thead><tr><th>id</th><th>state</th><th>outcome</th><th class="num">cost</th></tr></thead><tbody>${iniRows || '<tr><td colspan="4" class="mute">no initiatives</td></tr>'}</tbody></table>
@@ -344,7 +349,7 @@
       const d = await get(`/api/initiatives/${id}`);
       const taskRows = (d.tasks || []).map(t => `
         <tr><td><a href="/tasks/${t.id}">${t.id}</a></td>
-          <td class="state ${esc(t.state)}">${esc(t.state)}</td>
+          <td class="state ${esc(t.state)}">${esc(t.state)}${t.retries ? ` <span class="mute">(${t.retries} ${t.retries === 1 ? 'retry' : 'retries'})</span>` : ''}</td>
           <td>${esc(t.reason)}</td></tr>`).join('');
       const refused = (d.refused || []).map(r => `<div>${esc(r.rule)}: ${r.count}</div>`).join('');
       const rulings = (d.rulings || []).map(r => `
@@ -421,6 +426,106 @@
     return {
       async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await snapshotHead(); await draw(); },
       onEvent(e) { if (e.task === id && INVALIDATES.run.includes(e.type)) draw().catch(() => {}); },
+    };
+  }
+
+  // ---- graph view: the structure layer. Files grouped into columns by
+  // top-level directory, ordered within a column by path; edges from
+  // `forge-repomap edges` as lines between columns. The only overlay is
+  // data the client already has: for each of the repo's last 20 tasks
+  // (the task list), which files its attempts reported changed.
+  function graphView(repo) {
+    let graph = null, touches = new Map(), filter = '', selected = null;
+
+    function neighboursOf(path) {
+      const set = new Set([path]);
+      for (const e of graph.edges) {
+        if (e.from === path) set.add(e.to);
+        if (e.to === path) set.add(e.from);
+      }
+      return set;
+    }
+    function columns() {
+      const byDir = new Map();
+      for (const n of graph.nodes) {
+        const i = n.path.indexOf('/');
+        const dir = i === -1 ? '(root)' : n.path.slice(0, i);
+        if (!byDir.has(dir)) byDir.set(dir, []);
+        byDir.get(dir).push(n);
+      }
+      return [...byDir.keys()].sort().map(dir => ({ dir, nodes: byDir.get(dir).sort((a, b) => a.path.localeCompare(b.path)) }));
+    }
+    function draw() {
+      const svg = $('#graph-svg');
+      if (!svg || !graph) return;
+      const colW = 240, rowH = 20, top = 22, left = 10, nodeW = 210, nodeH = 15;
+      const cols = columns();
+      const pos = new Map();
+      cols.forEach((c, ci) => c.nodes.forEach((n, ri) => pos.set(n.path, { x: left + ci * colW, y: top + ri * rowH })));
+      const rows = Math.max(1, ...cols.map(c => c.nodes.length));
+      const width = left + cols.length * colW + 20;
+      const height = top + rows * rowH + 20;
+      const q = filter.trim().toLowerCase();
+      const shown = new Set(graph.nodes.filter(n => !q || n.path.toLowerCase().includes(q)).map(n => n.path));
+      const active = selected ? neighboursOf(selected) : null;
+      const visible = path => shown.has(path) && (!active || active.has(path));
+      const headers = cols.map((c, ci) => `<text x="${left + ci * colW}" y="14" font-size="11" fill="var(--mute)">${esc(c.dir)}</text>`).join('');
+      const edgesSvg = graph.edges
+        .filter(e => pos.has(e.from) && pos.has(e.to) && visible(e.from) && visible(e.to))
+        .map(e => {
+          const a = pos.get(e.from), b = pos.get(e.to);
+          return `<line x1="${a.x + nodeW}" y1="${a.y + nodeH / 2}" x2="${b.x}" y2="${b.y + nodeH / 2}" stroke="var(--run)" stroke-width="1" opacity="0.35" />`;
+        }).join('');
+      const nodesSvg = graph.nodes.filter(n => visible(n.path)).map(n => {
+        const p = pos.get(n.path);
+        const t = touches.get(n.path) || [];
+        const title = `${n.path} — ${n.symbols} symbol(s)${t.length ? ` — touched by tasks ${t.join(', ')}` : ''}`;
+        return `<g class="gnode" data-path="${esc(n.path)}" transform="translate(${p.x},${p.y})">
+          <rect width="${nodeW}" height="${nodeH}" rx="3" fill="${n.path === selected ? 'var(--sel)' : 'var(--panel)'}" stroke="var(--line)"></rect>
+          <text x="4" y="${nodeH - 4}" font-size="10" fill="var(--fg)">${esc(n.path.split('/').pop())}</text>
+          <title>${esc(title)}</title>
+        </g>`;
+      }).join('');
+      svg.setAttribute('width', width);
+      svg.setAttribute('height', height);
+      svg.innerHTML = headers + edgesSvg + nodesSvg;
+    }
+    async function loadTouches() {
+      let tasks = [];
+      try { tasks = await get('/api/tasks?' + new URLSearchParams({ repo, limit: 20 })); } catch { tasks = []; }
+      const map = new Map();
+      await Promise.all(tasks.map(async t => {
+        let d;
+        try { d = await get(`/api/task/${t.id}`); } catch { return; }
+        const files = new Set();
+        for (const a of d.attempts || []) for (const f of (a.outputs && a.outputs.changed_files) || []) files.add(f);
+        for (const f of files) { if (!map.has(f)) map.set(f, []); map.get(f).push(t.id); }
+      }));
+      return map;
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Graph</h2>
+          <div class="filters">
+            <span class="mute">${esc(repo) || 'no repo given'}</span>
+            <input type="search" id="f-graph" placeholder="filter files" ${repo ? '' : 'disabled'}>
+          </div>
+          <div style="overflow:auto; padding:0 16px 24px"><svg id="graph-svg"></svg></div>`;
+        if (!repo) return;
+        $('#f-graph').addEventListener('input', ev => { filter = ev.target.value; draw(); });
+        $('#graph-svg').addEventListener('click', ev => {
+          const g = ev.target.closest('.gnode');
+          const path = g ? g.dataset.path : null;
+          selected = (path && path !== selected) ? path : null;
+          draw();
+        });
+        try { graph = await get(`/api/graph?repo=${encodeURIComponent(repo)}`); } catch { graph = null; }
+        if (!graph || !Array.isArray(graph.nodes)) graph = { nodes: [], edges: [] };
+        draw();
+        touches = await loadTouches();
+        draw();
+      },
     };
   }
 

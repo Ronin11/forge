@@ -903,7 +903,20 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         .iter()
         .map(ProjectRepoRow::from)
         .collect();
-    let stats = f.store.project_task_stats(&p.name)?;
+    let cost = f.store.project_task_stats(&p.name)?.cost;
+    let tasks = f.store.project_tasks(&p.name)?;
+    let mut stats = crate::store::ProjectTaskStats::default();
+    for (t, _) in latest_per_lineage(f, &tasks)? {
+        match t.state {
+            TaskState::Queued => stats.queued += 1,
+            TaskState::Running => stats.running += 1,
+            TaskState::Succeeded => stats.succeeded += 1,
+            TaskState::Failed => stats.failed += 1,
+            TaskState::Unverified => stats.unverified += 1,
+            TaskState::Blocked => stats.blocked += 1,
+            TaskState::Withdrawn => stats.withdrawn += 1,
+        }
+    }
     Ok(ProjectRow {
         name: p.name.clone(),
         purpose: p.purpose.clone(),
@@ -916,7 +929,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         unverified: stats.unverified,
         blocked: stats.blocked,
         withdrawn: stats.withdrawn,
-        cost_usd: stats.cost,
+        cost_usd: cost,
         workflow: p.workflow.clone(),
         per_task_usd: p.per_task_usd,
         per_initiative_usd: p.per_initiative_usd,
@@ -945,6 +958,29 @@ fn l0_rule_of(reason: &str) -> Option<String> {
     let rest = reason.strip_prefix("L0 failed: ")?;
     let rest = rest.split(" (after").next().unwrap_or(rest).trim();
     (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// `tasks`, collapsed to one entry per lineage: a task and every task
+/// that retries it, directly or through further retries, contribute only
+/// their latest task (the one nothing in the lineage retries), since a
+/// lineage's fate is its latest task's even though every task in it was
+/// worked and paid for. Groups by `Store::root_of`, which walks the same
+/// `retry_of` chain as `lineage_ids`. Paired with each latest task is how
+/// many earlier tasks came before it in the lineage (its retry count).
+fn latest_per_lineage(f: &Forge, tasks: &[Task]) -> Result<Vec<(Task, i64)>> {
+    let mut groups: std::collections::BTreeMap<i64, Vec<Task>> = Default::default();
+    for t in tasks {
+        let root = f.store.root_of(t.id)?;
+        groups.entry(root).or_default().push(t.clone());
+    }
+    Ok(groups
+        .into_values()
+        .map(|mut lineage| {
+            lineage.sort_by_key(|t| t.id);
+            let retries = (lineage.len() - 1) as i64;
+            (lineage.pop().unwrap(), retries)
+        })
+        .collect())
 }
 
 /// One line, exactly as docs/PROJECTS.md, "State" derives it: "open"
@@ -1038,7 +1074,11 @@ pub fn maybe_settle_initiative(f: &Forge, task_id: i64, initiative_id: i64) -> R
         return Ok(());
     }
     let tasks = f.store.initiative_tasks(initiative_id)?;
-    let all_terminal = tasks.iter().all(|t| {
+    let latest: Vec<Task> = latest_per_lineage(f, &tasks)?
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    let all_terminal = latest.iter().all(|t| {
         matches!(
             t.state,
             TaskState::Succeeded | TaskState::Failed | TaskState::Unverified | TaskState::Withdrawn
@@ -1051,7 +1091,7 @@ pub fn maybe_settle_initiative(f: &Forge, task_id: i64, initiative_id: i64) -> R
         .settle_initiative(initiative_id, crate::unix_now())?
     {
         let cost = f.store.initiative_cost(initiative_id)?;
-        let state = initiative_state(&tasks, None).to_string();
+        let state = initiative_state(&latest, None).to_string();
         f.report.emit(
             task_id,
             crate::report::Event::InitiativeSettled {
@@ -1090,10 +1130,14 @@ pub struct InitiativeRow {
 
 pub fn initiative_row(f: &Forge, ini: &crate::store::Initiative) -> Result<InitiativeRow> {
     let tasks = f.store.initiative_tasks(ini.id)?;
+    let latest: Vec<Task> = latest_per_lineage(f, &tasks)?
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
     let hold = initiative_hold(f, ini)?;
-    let state = initiative_state(&tasks, hold.as_deref()).to_string();
+    let state = initiative_state(&latest, hold.as_deref()).to_string();
     let mut stats = crate::store::ProjectTaskStats::default();
-    for t in &tasks {
+    for t in &latest {
         match t.state {
             TaskState::Queued => stats.queued += 1,
             TaskState::Running => stats.running += 1,
@@ -1134,12 +1178,14 @@ pub fn initiative_rows(f: &Forge, project: Option<&str>) -> Result<Vec<Initiativ
         .collect()
 }
 
-/// One task in `InitiativeDoc.tasks`: its final state and reason.
+/// One lineage in `InitiativeDoc.tasks`: its latest task's id, state and
+/// reason, plus how many retries the lineage took to reach it.
 #[derive(Serialize)]
 pub struct InitiativeTaskRow {
     pub id: i64,
     pub state: String,
     pub reason: String,
+    pub retries: i64,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
@@ -1214,8 +1260,10 @@ pub struct InitiativeDoc {
 
 pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<InitiativeDoc> {
     let tasks = f.store.initiative_tasks(ini.id)?;
+    let lineages = latest_per_lineage(f, &tasks)?;
+    let latest: Vec<Task> = lineages.iter().map(|(t, _)| t.clone()).collect();
     let hold = initiative_hold(f, ini)?;
-    let state = initiative_state(&tasks, hold.as_deref()).to_string();
+    let state = initiative_state(&latest, hold.as_deref()).to_string();
     let cost = f.store.initiative_cost(ini.id)?;
     let elapsed = tasks
         .iter()
@@ -1264,12 +1312,13 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         held_rule: hold,
         budget_usd: ini.budget_usd,
         stop_after_same_rule: ini.stop_after_same_rule,
-        tasks: tasks
+        tasks: lineages
             .iter()
-            .map(|t| InitiativeTaskRow {
+            .map(|(t, retries)| InitiativeTaskRow {
                 id: t.id,
                 state: t.state.as_str().to_string(),
                 reason: t.reason.clone(),
+                retries: *retries,
             })
             .collect(),
         refused,
@@ -1411,5 +1460,142 @@ mod stats_tests {
         let v = serde_json::to_value(&empty).unwrap();
         assert!(v["succeeded_share"].is_null());
         assert!(v["mean_first_edit"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod lineage_rollup_tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::{Initiative, Project, Store};
+
+    /// A `Forge` over a fresh, empty store in a throwaway home.
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    fn fixture_task(
+        project: &str,
+        state: TaskState,
+        retry_of: Option<i64>,
+        initiative: i64,
+    ) -> Task {
+        Task {
+            repo: "/repo".into(),
+            task: "do the thing".into(),
+            base_branch: "main".into(),
+            model: "sonnet".into(),
+            max_turns: 10,
+            max_attempts: 1,
+            timeout_secs: 60,
+            state,
+            created_at: crate::unix_now(),
+            workflow: "direct".into(),
+            project: Some(project.into()),
+            initiative: Some(initiative),
+            retry_of,
+            ..Default::default()
+        }
+    }
+
+    fn insert(f: &Forge, mut t: Task) -> Task {
+        t.id = f.store.insert_task(&t).unwrap();
+        f.store.update_task(&t).unwrap();
+        t
+    }
+
+    /// A lineage of three (blocked, then failed, then a retry that
+    /// landed) must count once, as its latest task's state: succeeded,
+    /// not also blocked and failed. The report names the same lineage by
+    /// its latest task and says how many retries it took to land.
+    #[test]
+    fn a_landed_retry_counts_its_lineage_once_as_succeeded() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "demo".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        let ini_id = f
+            .store
+            .create_initiative(&Initiative {
+                project: "demo".into(),
+                outcome: "o".into(),
+                stop_after_same_rule: 3,
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let t1 = insert(&f, fixture_task("demo", TaskState::Blocked, None, ini_id));
+        let t2 = insert(
+            &f,
+            fixture_task("demo", TaskState::Failed, Some(t1.id), ini_id),
+        );
+        let mut t3 = fixture_task("demo", TaskState::Succeeded, Some(t2.id), ini_id);
+        t3.finished_at = Some(crate::unix_now());
+        let t3 = insert(&f, t3);
+
+        let ini = f.store.initiative(ini_id).unwrap().unwrap();
+        let row = initiative_row(&f, &ini).unwrap();
+        assert_eq!(row.succeeded, 1, "the lineage's latest task landed");
+        assert_eq!(row.blocked, 0);
+        assert_eq!(row.failed, 0);
+        assert_eq!(row.state, "done");
+
+        let doc = initiative_doc(&f, &ini).unwrap();
+        assert_eq!(doc.tasks.len(), 1);
+        assert_eq!(doc.tasks[0].id, t3.id);
+        assert_eq!(doc.tasks[0].state, "succeeded");
+        assert_eq!(doc.tasks[0].retries, 2, "it took two retries to land");
+    }
+
+    /// `forge project show`'s task counts collapse the same way: a
+    /// project-scoped task that landed on retry counts once, as succeeded.
+    #[test]
+    fn project_show_counts_the_same_lineage_once() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "demo".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        // No initiative: these are standalone project tasks.
+        let t1 = insert(
+            &f,
+            Task {
+                initiative: None,
+                ..fixture_task("demo", TaskState::Blocked, None, 0)
+            },
+        );
+        insert(
+            &f,
+            Task {
+                initiative: None,
+                ..fixture_task("demo", TaskState::Succeeded, Some(t1.id), 0)
+            },
+        );
+
+        let p = f.store.project("demo").unwrap().unwrap();
+        let row = project_row(&f, &p).unwrap();
+        assert_eq!(row.succeeded, 1);
+        assert_eq!(row.blocked, 0);
     }
 }
