@@ -380,6 +380,10 @@ pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
             "the tests step wrote tests that already pass on the base commit",
             "Either the task is already done on main, or the tests are vacuous. Check the task text; if it is real, give the tests step a clearer description of the new behavior.",
         ),
+        Rule::ChangesFromGit => d(
+            "the report's changes were filled from git, not the model's own list",
+            "Nothing to do; this provider is configured with report_from_git, so a mistake in what the model reported does not fail the attempt.",
+        ),
         Rule::CleanTree
         | Rule::ChangesMatchGit
         | Rule::ClaimsHaveEvidence

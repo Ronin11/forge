@@ -254,6 +254,7 @@ pub async fn integrate(
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
             scratch: None,
+            report_from_git: false,
         })
         .await
         .task()?;

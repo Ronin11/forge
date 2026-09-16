@@ -851,6 +851,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             sandbox: f.sandbox.as_ref(),
                             report: &f.report,
                             scratch: None,
+                            report_from_git: false,
                         })
                         .await
                         .task()?;
