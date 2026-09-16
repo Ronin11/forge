@@ -3024,11 +3024,11 @@ async fn stats(
 
 /// Defect escape, per workflow: of the tasks that landed, how many broke
 /// the next task's base or were later repaired, plus delayed cost
-/// (follow-on cost, true cost per landed piece, and churn).
+/// (repair cost, true cost per landed piece, and churn).
 async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
     let doc = crate::view::stats_doc(f, scope).await?;
     out!(
-        "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>9} {:>10} {:>7}",
+        "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>10} {:>10} {:>7}",
         "WF",
         "HASH",
         "LANDED",
@@ -3036,7 +3036,7 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
         "BROKE%",
         "REPAIRED",
         "REPAIR%",
-        "FOLLOWON",
+        "REPAIRCOST",
         "TRUECOST",
         "CHURN%"
     );
@@ -3047,7 +3047,7 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
     let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for w in &doc.workflows {
         out!(
-            "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>9} {:>10} {:>7}",
+            "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>10} {:>10} {:>7}",
             w.workflow,
             w.hash,
             w.landed,
@@ -3055,7 +3055,7 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
             pct(w.broke_base_share),
             w.repaired,
             pct(w.repaired_share),
-            format!("${:.2}", w.follow_on_cost_usd),
+            format!("${:.2}", w.repair_cost_usd),
             dollar(w.true_cost_per_landed_usd),
             pct(w.churn_share)
         );
@@ -3069,7 +3069,7 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
 async fn by_role_stats(f: &Forge) -> Result<()> {
     let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
     out!(
-        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>9} {:>10} {:>7}",
+        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
         "ROLE",
         "PROVIDER",
         "MODEL",
@@ -3081,7 +3081,7 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
         "LANDED",
         "BROKEBASE",
         "BROKE%",
-        "FOLLOWON",
+        "REPAIRCOST",
         "TRUECOST",
         "CHURN%"
     );
@@ -3093,7 +3093,7 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
     let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for r in &doc.by_role {
         out!(
-            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7} {:>9} {:>10} {:>7}",
+            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
             r.role,
             r.provider,
             r.model,
@@ -3105,7 +3105,7 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
             count(r.landed),
             count(r.broke_base),
             pct(r.broke_base_share),
-            dollar(r.follow_on_cost_usd),
+            dollar(r.repair_cost_usd),
             dollar(r.true_cost_per_landed_usd),
             pct(r.churn_share)
         );

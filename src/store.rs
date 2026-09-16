@@ -329,13 +329,17 @@ pub struct WorkflowStat {
     /// Landed tasks named by another task's `repairs` reference
     /// (`forge://task/<id>`).
     pub repaired: i64,
-    /// Delayed cost, summed across this workflow's landed tasks (see
-    /// `Store::follow_on_cost`): the cost of later tasks on the same
-    /// repository whose attempts changed a path a landed task's own
-    /// landing changed, within `THIRTY_DAYS_SECS` of landing. A later
-    /// task following on from two landed tasks in this workflow has its
-    /// cost counted once for each.
-    pub follow_on_cost: f64,
+    /// Delayed cost, summed across this workflow's landed tasks (the
+    /// `task_repair_cost` cache): for each later landing on the same
+    /// repository within `THIRTY_DAYS_SECS`, the fraction of its cost
+    /// equal to the lines it removed or rewrote that this landed task
+    /// added, divided by all the lines it removed or rewrote. A later
+    /// landing that rewrote none of a task's lines charges it nothing; one
+    /// that rewrote all of it and nothing else charges it in full. A later
+    /// landing following on from two landed tasks in this workflow has its
+    /// cost split between them by how many of each task's lines it
+    /// rewrote.
+    pub repair_cost: f64,
     /// Lines this workflow's landed tasks added, summed from the
     /// `task_churn` cache.
     pub added_lines: i64,
@@ -393,9 +397,9 @@ pub struct RoleStat {
     /// the `code` role, where landing is not meaningful.
     pub landed: Option<i64>,
     pub broke_base: Option<i64>,
-    /// See `WorkflowStat::follow_on_cost`, summed over this group's own
+    /// See `WorkflowStat::repair_cost`, summed over this group's own
     /// landed tasks; `None` outside the `code` role.
-    pub follow_on_cost: Option<f64>,
+    pub repair_cost: Option<f64>,
     /// See `WorkflowStat::added_lines`/`churned_lines`, summed over this
     /// group's own landed tasks; `None` outside the `code` role.
     pub added_lines: Option<i64>,
@@ -958,6 +962,25 @@ CREATE TABLE task_churn (
 UPDATE attempts SET inputs_json = json_set(inputs_json, '$.model', 'opus')
 WHERE step = 'supervisor' AND provider = 'anthropic';
 ",
+    // Replaces the path-overlap follow-on cost: `task_repair_cost` caches,
+    // per landed task, the git-line-overlap attribution total (the
+    // REPAIRCOST column); `line_overlap_cache` caches the per-(T, L) pair
+    // git computation it is built from, keyed by both landed commits so
+    // it is only ever computed once.
+    "
+CREATE TABLE task_repair_cost (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+  repair_cost REAL NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+CREATE TABLE line_overlap_cache (
+  t_sha TEXT NOT NULL,
+  l_sha TEXT NOT NULL,
+  overlap_lines INTEGER NOT NULL,
+  removed_lines INTEGER NOT NULL,
+  PRIMARY KEY (t_sha, l_sha)
+);
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -970,6 +993,15 @@ pub const THIRTY_DAYS_SECS: i64 = 30 * 86400;
 /// naming a project after the Forge repository itself needs a filesystem
 /// check no SQL string can express. Keep in sync with its position above.
 const PROJECTS_MIGRATION_VERSION: i64 = 28;
+
+/// The version this migration brings the schema to (the supervisor-model
+/// backfill, see its comment above): fixed regardless of how many
+/// migrations land after it, unlike "the last one", which is what the
+/// regression test below needs to exclude exactly this migration from a
+/// pre-fix fixture. Keep in sync with its position above. Test-only: no
+/// production code needs to name this migration by version.
+#[cfg(test)]
+const SUPERVISOR_MODEL_BACKFILL_MIGRATION_VERSION: i64 = 36;
 
 const TASK_COLUMNS: &[&str] = &[
     "id",
@@ -1194,44 +1226,73 @@ fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
-/// The cost of later tasks on `task_id`'s repository whose attempts
-/// changed a path `task_id`'s own attempts changed, within
-/// `THIRTY_DAYS_SECS` of `task_id`'s `finished_at` (see docs/LATER.md,
-/// "Defect escape" and the delayed-cost follow-up). A later task's full
-/// cost (every attempt, not just the one that overlapped) counts once it
-/// qualifies at all. Both sides read `changes[].path` out of
-/// `envelope_json` via a CTE that filters to valid, non-empty JSON before
-/// `json_each` ever sees a row, since `envelope_json` (unlike
-/// `inputs_json`/`outputs_json`) defaults to `''`, not `'{}'`.
-fn follow_on_cost_query(c: &Connection, task_id: i64) -> Result<f64> {
+/// `task_repair_cost`'s cached row for `task_id`: `(repair_cost,
+/// computed_at)`, or `None` if it has never been computed. See
+/// `compute_repair_cost` in view.rs for how the git-level number is
+/// derived.
+fn repair_cost_cache_query(c: &Connection, task_id: i64) -> Result<Option<(f64, i64)>> {
     Ok(c.query_row(
-        "WITH valid_attempts AS (
-            SELECT id, task_id, started_at, envelope_json FROM attempts
-            WHERE envelope_json != '' AND json_valid(envelope_json)
-         ),
-         changes AS (
-            SELECT va.task_id AS task_id, va.started_at AS started_at,
-                   json_extract(ce.value, '$.path') AS path
-            FROM valid_attempts va, json_each(va.envelope_json, '$.changes') ce
-         )
-         SELECT COALESCE(SUM(later.cost), 0) FROM (
-            SELECT au.task_id AS task_id, COALESCE(SUM(au.cost_usd), 0) AS cost
-            FROM attempts au
-            JOIN tasks u ON u.id = au.task_id
-            JOIN tasks t ON t.id = ?1
-            WHERE u.repo = t.repo AND u.id != t.id
-            GROUP BY au.task_id
-            HAVING EXISTS (
-                SELECT 1 FROM changes cu
-                WHERE cu.task_id = au.task_id
-                  AND cu.started_at >= t.finished_at
-                  AND cu.started_at <= t.finished_at + 2592000
-                  AND EXISTS (SELECT 1 FROM changes ct WHERE ct.task_id = t.id AND ct.path = cu.path)
-            )
-         ) later",
+        "SELECT repair_cost, computed_at FROM task_repair_cost WHERE task_id = ?1",
         params![task_id],
-        |r| r.get(0),
-    )?)
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()?)
+}
+
+fn set_repair_cost_cache_query(
+    c: &Connection,
+    task_id: i64,
+    repair_cost: f64,
+    computed_at: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO task_repair_cost (task_id, repair_cost, computed_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(task_id) DO UPDATE SET
+           repair_cost = excluded.repair_cost,
+           computed_at = excluded.computed_at",
+        params![task_id, repair_cost, computed_at],
+    )?;
+    Ok(())
+}
+
+/// The cached line-overlap between an earlier landing (`t_sha`, the
+/// landed commit whose lines were added) and a later one (`l_sha`, the
+/// landed commit that removed or rewrote lines): `(overlap_lines,
+/// removed_lines)`, where `overlap_lines` is how many lines `t_sha`'s
+/// landing added that `l_sha`'s landing removed or rewrote, and
+/// `removed_lines` is how many lines `l_sha`'s landing removed or rewrote
+/// in total. Keyed by both landed commits, not task ids, since the
+/// underlying git diffs never change once a task has landed.
+fn line_overlap_cache_query(
+    c: &Connection,
+    t_sha: &str,
+    l_sha: &str,
+) -> Result<Option<(i64, i64)>> {
+    Ok(c.query_row(
+        "SELECT overlap_lines, removed_lines FROM line_overlap_cache WHERE t_sha = ?1 AND l_sha = ?2",
+        params![t_sha, l_sha],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()?)
+}
+
+fn set_line_overlap_cache_query(
+    c: &Connection,
+    t_sha: &str,
+    l_sha: &str,
+    overlap_lines: i64,
+    removed_lines: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO line_overlap_cache (t_sha, l_sha, overlap_lines, removed_lines)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(t_sha, l_sha) DO UPDATE SET
+           overlap_lines = excluded.overlap_lines,
+           removed_lines = excluded.removed_lines",
+        params![t_sha, l_sha, overlap_lines, removed_lines],
+    )?;
+    Ok(())
 }
 
 /// The (provider, model) pairs `task_id` ran a `code` attempt under: which
@@ -1836,8 +1897,8 @@ impl Store {
     }
 
     /// Landed tasks, scoped like every other `forge stats` query: the
-    /// input to both delayed-cost signals (`follow_on_cost`, the
-    /// `task_churn` cache).
+    /// input to both delayed-cost signals (the `task_repair_cost` cache
+    /// and the `task_churn` cache).
     pub fn landed_tasks(&self, scope: &StatsFilter) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
@@ -1894,6 +1955,41 @@ impl Store {
             churned_lines,
             computed_at,
         )
+    }
+
+    /// `task_repair_cost`'s cached row for `task_id`, if it has been
+    /// computed.
+    pub fn repair_cost_cache(&self, task_id: i64) -> Result<Option<(f64, i64)>> {
+        repair_cost_cache_query(&self.lock(), task_id)
+    }
+
+    /// Write (or overwrite) `task_id`'s cached repair cost, as of
+    /// `computed_at`.
+    pub fn set_repair_cost_cache(
+        &self,
+        task_id: i64,
+        repair_cost: f64,
+        computed_at: i64,
+    ) -> Result<()> {
+        set_repair_cost_cache_query(&self.lock(), task_id, repair_cost, computed_at)
+    }
+
+    /// The cached line-overlap between an earlier landing (`t_sha`) and a
+    /// later one (`l_sha`), if it has been computed.
+    pub fn line_overlap_cache(&self, t_sha: &str, l_sha: &str) -> Result<Option<(i64, i64)>> {
+        line_overlap_cache_query(&self.lock(), t_sha, l_sha)
+    }
+
+    /// Write (or overwrite) the cached line-overlap between `t_sha` and
+    /// `l_sha`.
+    pub fn set_line_overlap_cache(
+        &self,
+        t_sha: &str,
+        l_sha: &str,
+        overlap_lines: i64,
+        removed_lines: i64,
+    ) -> Result<()> {
+        set_line_overlap_cache_query(&self.lock(), t_sha, l_sha, overlap_lines, removed_lines)
     }
 
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
@@ -2013,7 +2109,7 @@ impl Store {
                     landed: r.get(9)?,
                     broke_base: r.get(10)?,
                     repaired: r.get(11)?,
-                    follow_on_cost: 0.0,
+                    repair_cost: 0.0,
                     added_lines: 0,
                     churned_lines: 0,
                 })
@@ -2029,7 +2125,9 @@ impl Store {
             else {
                 continue;
             };
-            w.follow_on_cost += follow_on_cost_query(&c, t.id)?;
+            if let Some((cost, _)) = repair_cost_cache_query(&c, t.id)? {
+                w.repair_cost += cost;
+            }
             if let Some((added, churned, _)) = churn_cache_query(&c, t.id)? {
                 w.added_lines += added;
                 w.churned_lines += churned;
@@ -2153,7 +2251,7 @@ impl Store {
                     mean_ms: r.get(7)?,
                     landed: is_code.then_some(landed),
                     broke_base: is_code.then_some(broke_base),
-                    follow_on_cost: is_code.then_some(0.0),
+                    repair_cost: is_code.then_some(0.0),
                     added_lines: is_code.then_some(0),
                     churned_lines: is_code.then_some(0),
                 })
@@ -2167,7 +2265,7 @@ impl Store {
             if groups.is_empty() {
                 continue;
             }
-            let cost = follow_on_cost_query(&c, t.id)?;
+            let cost = repair_cost_cache_query(&c, t.id)?.map(|(cost, _)| cost);
             let churn = churn_cache_query(&c, t.id)?;
             for (provider, model) in groups {
                 let Some(r) = stats
@@ -2176,7 +2274,9 @@ impl Store {
                 else {
                     continue;
                 };
-                r.follow_on_cost = Some(r.follow_on_cost.unwrap_or(0.0) + cost);
+                if let Some(cost) = cost {
+                    r.repair_cost = Some(r.repair_cost.unwrap_or(0.0) + cost);
+                }
                 if let Some((added, churned, _)) = churn {
                     r.added_lines = Some(r.added_lines.unwrap_or(0) + added);
                     r.churned_lines = Some(r.churned_lines.unwrap_or(0) + churned);
@@ -3228,11 +3328,14 @@ mod tests {
         // clobbering a supervisor attempt's own model with the task's.
         {
             let c = Connection::open(&path).unwrap();
-            for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            for sql in &MIGRATIONS[..(SUPERVISOR_MODEL_BACKFILL_MIGRATION_VERSION as usize - 1)] {
                 c.execute_batch(sql).unwrap();
             }
-            c.execute_batch(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 1))
-                .unwrap();
+            c.execute_batch(&format!(
+                "PRAGMA user_version={}",
+                SUPERVISOR_MODEL_BACKFILL_MIGRATION_VERSION - 1
+            ))
+            .unwrap();
             c.execute(
                 "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at)
                  VALUES ('r', 't', 'main', 'qwen3-coder:30b', 10, 1, 60, 'blocked', 1)",
@@ -3645,13 +3748,20 @@ mod tests {
         assert_eq!(w.repaired, 1, "A counts once as repaired by C");
     }
 
+    /// The git-level line-overlap attribution itself (half of a rewritten
+    /// task's cost, none for an untouched one) is exercised on a real
+    /// fixture repository in view.rs's `stats_tests`, next to the churn
+    /// test it shares a fixture style with. This is the SQL half: once
+    /// `task_repair_cost` is populated, `workflow_stats` sums it across
+    /// every landed task in the workflow, the same way it already sums
+    /// `task_churn`.
     #[test]
-    fn follow_on_cost_sums_later_tasks_that_touch_the_landed_paths_within_the_window() {
+    fn workflow_stats_sums_the_repair_cost_cache_over_landed_tasks() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("t.db")).unwrap();
 
-        let task = |repo: &str, finished_at: i64| Task {
-            repo: repo.into(),
+        let landed = |finished_at: i64, landed_sha: &str| Task {
+            repo: "r".into(),
             task: "t".into(),
             base_branch: "main".into(),
             model: "m".into(),
@@ -3663,95 +3773,23 @@ mod tests {
             started_at: Some(finished_at),
             finished_at: Some(finished_at),
             workflow: "direct".into(),
+            landed_sha: landed_sha.into(),
             ..Default::default()
         };
-        let attempt = |task_id, started_at| Attempt {
-            task_id,
-            attempt_no: 1,
-            step: "code".into(),
-            started_at,
-            ..Default::default()
-        };
-        let finish = |id, envelope: &str, cost: f64| {
-            s.finish_attempt(&FinishAttempt {
-                id,
-                state: AttemptState::Succeeded,
-                reason: String::new(),
-                finished_at: Some(1),
-                agent_exit: Some(0),
-                timed_out: false,
-                num_turns: 1,
-                tool_calls: 1,
-                cost_usd: Some(cost),
-                agent_ms: 0,
-                commits: 1,
-                files_changed: 1,
-                dirty: false,
-                verdict_json: "[]".into(),
-                result_text: String::new(),
-                envelope_json: envelope.into(),
-                rl_five_hour: None,
-                rl_seven_day: None,
-                rl_five_hour_resets: None,
-                rl_seven_day_resets: None,
-                end_sha: String::new(),
-                outputs_json: String::new(),
-                session_id: String::new(),
-                first_edit: None,
-                input_tokens: None,
-                output_tokens: None,
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                early_signals: "[]".into(),
-                early_near: "[]".into(),
-            })
-            .unwrap();
-        };
-        let changed = |path: &str| {
-            format!(
-                r#"{{"schema_version":1,"summary":"x","needs_input":null,"changes":[{{"path":"{path}","kind":"modified"}}],"checks_run":[],"claims":[]}}"#
-            )
+        let insert = |mut t: Task| {
+            t.id = s.insert_task(&t).unwrap();
+            s.update_task(&t).unwrap();
+            t
         };
 
-        // T lands at t=1000, its own attempt touching a.txt.
-        let mut t = task("r", 1000);
-        t.id = s.insert_task(&t).unwrap();
-        t.landed_sha = "tsha".into();
-        s.update_task(&t).unwrap();
-        let t_attempt = s.insert_attempt(&attempt(t.id, 900)).unwrap();
-        finish(t_attempt, &changed("a.txt"), 1.0);
+        let a = insert(landed(1000, "asha"));
+        let b = insert(landed(2000, "bsha"));
+        s.set_repair_cost_cache(a.id, 3.5, 9999).unwrap();
+        s.set_repair_cost_cache(b.id, 1.5, 9999).unwrap();
 
-        // U, same repo, touches a.txt within the 30-day window: two
-        // attempts, so its full cost (5 + 2) counts, not just the
-        // matching attempt's.
-        let mut u = task("r", 2000);
-        u.id = s.insert_task(&u).unwrap();
-        let u1 = s.insert_attempt(&attempt(u.id, 1500)).unwrap();
-        finish(u1, &changed("a.txt"), 5.0);
-        let u2 = s.insert_attempt(&attempt(u.id, 1600)).unwrap();
-        finish(u2, "", 2.0);
-
-        // V, same repo, touches a different path: excluded.
-        let mut v = task("r", 2100);
-        v.id = s.insert_task(&v).unwrap();
-        let v1 = s.insert_attempt(&attempt(v.id, 1700)).unwrap();
-        finish(v1, &changed("b.txt"), 9.0);
-
-        // W, same repo, touches a.txt but after the 30-day window: excluded.
-        let mut w = task("r", 5_000_000);
-        w.id = s.insert_task(&w).unwrap();
-        let w1 = s
-            .insert_attempt(&attempt(w.id, 1000 + THIRTY_DAYS_SECS + 1))
-            .unwrap();
-        finish(w1, &changed("a.txt"), 11.0);
-
-        // X, a different repository, touches a.txt: excluded.
-        let mut x = task("other", 2200);
-        x.id = s.insert_task(&x).unwrap();
-        let x1 = s.insert_attempt(&attempt(x.id, 1800)).unwrap();
-        finish(x1, &changed("a.txt"), 13.0);
-
-        assert_eq!(follow_on_cost_query(&s.lock(), t.id).unwrap(), 7.0);
+        let stats = s.workflow_stats(&StatsFilter::default()).unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].repair_cost, 5.0, "3.5 + 1.5, cached per task");
     }
 
     #[test]

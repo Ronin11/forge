@@ -546,13 +546,14 @@ pub struct StatsWorkflowRow {
     pub repaired: i64,
     /// `repaired` divided by `landed`; `None` when nothing landed.
     pub repaired_share: Option<f64>,
-    /// Delayed cost: the cost of later tasks on the same repository whose
-    /// attempts changed a path a landed task's own landing changed,
-    /// within 30 days of landing, summed across this workflow's landed
-    /// tasks (see docs/LATER.md, the delayed-cost follow-up to "Defect
-    /// escape"). `Store::follow_on_cost`.
-    pub follow_on_cost_usd: f64,
-    /// `(mean_cost_usd + follow_on_cost_usd) / landed`: what a piece of
+    /// Delayed cost, line-overlap attribution: for each later landing on
+    /// the same repository within 30 days, the fraction of its cost equal
+    /// to the lines it removed or rewrote that a landed task's own
+    /// landing added, divided by all the lines it removed or rewrote —
+    /// summed across this workflow's landed tasks (see docs/LATER.md, the
+    /// delayed-cost follow-up to "Defect escape"). `Store::WorkflowStat::repair_cost`.
+    pub repair_cost_usd: f64,
+    /// `(mean_cost_usd + repair_cost_usd) / landed`: what a piece of
     /// work in this workflow actually cost once its delayed cost is in,
     /// not only what landing it cost. `None` when nothing landed.
     pub true_cost_per_landed_usd: Option<f64>,
@@ -572,7 +573,7 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
         let broke_base_share = (w.landed > 0).then(|| w.broke_base as f64 / w.landed as f64);
         let repaired_share = (w.landed > 0).then(|| w.repaired as f64 / w.landed as f64);
         let true_cost_per_landed_usd =
-            (w.landed > 0).then(|| (w.cost + w.follow_on_cost) / w.landed as f64);
+            (w.landed > 0).then(|| (w.cost + w.repair_cost) / w.landed as f64);
         let churn_share =
             (w.added_lines > 0).then(|| w.churned_lines as f64 / w.added_lines as f64);
         let mut legacy = serde_json::Map::new();
@@ -605,7 +606,7 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             broke_base_share,
             repaired: w.repaired,
             repaired_share,
-            follow_on_cost_usd: w.follow_on_cost,
+            repair_cost_usd: w.repair_cost,
             true_cost_per_landed_usd,
             churn_share,
             legacy,
@@ -774,10 +775,10 @@ pub struct StatsRoleRow {
     /// `broke_base` divided by `landed`; `None` when `landed` is `None` or 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broke_base_share: Option<f64>,
-    /// See `StatsWorkflowRow::follow_on_cost_usd`, summed over this
+    /// See `StatsWorkflowRow::repair_cost_usd`, summed over this
     /// group's own landed tasks; `None` outside the `code` role.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub follow_on_cost_usd: Option<f64>,
+    pub repair_cost_usd: Option<f64>,
     /// See `StatsWorkflowRow::true_cost_per_landed_usd`; `None` outside
     /// the `code` role or when `landed` is `None` or 0.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -794,9 +795,9 @@ impl From<&crate::store::RoleStat> for StatsRoleRow {
             (Some(landed), Some(broke)) if landed > 0 => Some(broke as f64 / landed as f64),
             _ => None,
         };
-        let true_cost_per_landed_usd = match (r.landed, r.follow_on_cost) {
-            (Some(landed), Some(follow_on)) if landed > 0 => {
-                Some((r.mean_cost_usd * r.attempts as f64 + follow_on) / landed as f64)
+        let true_cost_per_landed_usd = match (r.landed, r.repair_cost) {
+            (Some(landed), Some(repair_cost)) if landed > 0 => {
+                Some((r.mean_cost_usd * r.attempts as f64 + repair_cost) / landed as f64)
             }
             _ => None,
         };
@@ -817,7 +818,7 @@ impl From<&crate::store::RoleStat> for StatsRoleRow {
             landed: r.landed,
             broke_base: r.broke_base,
             broke_base_share,
-            follow_on_cost_usd: r.follow_on_cost,
+            repair_cost_usd: r.repair_cost,
             true_cost_per_landed_usd,
             churn_share,
         }
@@ -907,8 +908,107 @@ async fn compute_churn(f: &Forge, t: &Task, finished_at: i64) -> Result<(i64, i6
     Ok((added.len() as i64, churned))
 }
 
+/// Refresh `task_repair_cost` for every landed task, on the same
+/// stale-until-the-window-closes schedule as `refresh_churn`: the REPAIRCOST
+/// column, replacing task 357's path-overlap follow-on cost (which charged
+/// a landed task the whole cost of any later task that changed any path it
+/// changed) with a line-level attribution — a later landing only charges an
+/// earlier one for the fraction of its own cost spent rewriting that
+/// earlier task's actual lines.
+async fn refresh_repair_cost(f: &Forge) -> Result<()> {
+    let now = crate::unix_now();
+    for t in f
+        .store
+        .landed_tasks(&crate::store::StatsFilter::default())?
+    {
+        let Some(finished_at) = t.finished_at else {
+            continue;
+        };
+        let window_closes = finished_at + crate::store::THIRTY_DAYS_SECS;
+        let stale = match f.store.repair_cost_cache(t.id)? {
+            Some((_, computed_at)) => computed_at < window_closes,
+            None => true,
+        };
+        if !stale {
+            continue;
+        }
+        let repair_cost = compute_repair_cost(f, &t, finished_at).await?;
+        f.store.set_repair_cost_cache(t.id, repair_cost, now)?;
+    }
+    Ok(())
+}
+
+/// Multiset intersection: how many of `b`'s elements (with multiplicity)
+/// also appear in `a`, each element of `a` usable at most once. Order-
+/// independent (`min(count_a[x], count_b[x])` summed over every `x`).
+fn multiset_overlap(a: &[(String, String)], b: &[(String, String)]) -> i64 {
+    let mut counts: std::collections::HashMap<&(String, String), i64> =
+        std::collections::HashMap::new();
+    for x in a {
+        *counts.entry(x).or_insert(0) += 1;
+    }
+    let mut overlap = 0i64;
+    for y in b {
+        if let Some(c) = counts.get_mut(y)
+            && *c > 0
+        {
+            *c -= 1;
+            overlap += 1;
+        }
+    }
+    overlap
+}
+
+/// One landed task T's repair cost: for each later landing L on the same
+/// repository within 30 days, the number of lines T's landing added (`T.
+/// base_sha` to `T.landed_sha`) that L's landing removed or rewrote (`L.
+/// base_sha` to `L.landed_sha`, the removed side — the same line-level
+/// diff `compute_churn` reads), divided by all the lines L's landing
+/// removed or rewrote, times L's total cost; summed over every L. A later
+/// landing that rewrote none of T's lines contributes nothing. The
+/// per-(T, L) git computation is cached in `line_overlap_cache`, keyed by
+/// both landed commits, so it only ever runs once.
+async fn compute_repair_cost(f: &Forge, t: &Task, finished_at: i64) -> Result<f64> {
+    let repo = std::path::Path::new(&t.repo);
+    let (t_added, _) = crate::git::diff_lines(repo, &t.base_sha, &t.landed_sha).await?;
+    if t_added.is_empty() {
+        return Ok(0.0);
+    }
+    let window_end = finished_at + crate::store::THIRTY_DAYS_SECS;
+    let later = f
+        .store
+        .later_landings(&t.repo, t.id, finished_at, window_end)?;
+    let mut total = 0.0;
+    for l in later {
+        let (overlap, removed_lines) =
+            match f.store.line_overlap_cache(&t.landed_sha, &l.landed_sha)? {
+                Some(pair) => pair,
+                None => {
+                    let (_, l_removed) =
+                        crate::git::diff_lines(repo, &l.base_sha, &l.landed_sha).await?;
+                    let overlap = multiset_overlap(&t_added, &l_removed);
+                    let removed_lines = l_removed.len() as i64;
+                    f.store.set_line_overlap_cache(
+                        &t.landed_sha,
+                        &l.landed_sha,
+                        overlap,
+                        removed_lines,
+                    )?;
+                    (overlap, removed_lines)
+                }
+            };
+        if removed_lines == 0 {
+            continue;
+        }
+        let fraction = overlap as f64 / removed_lines as f64;
+        total += fraction * f.store.task_cost(l.id)?;
+    }
+    Ok(total)
+}
+
 pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
     refresh_churn(f).await?;
+    refresh_repair_cost(f).await?;
     let journal_stats = f.store.journal_control_stats()?;
     let journal = journal_stats
         .iter()
@@ -1637,7 +1737,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
 #[cfg(test)]
 mod stats_tests {
     use super::*;
-    use crate::store::{StepStat, WorkflowStat};
+    use crate::store::{Attempt, AttemptState, FinishAttempt, StepStat, WorkflowStat};
 
     #[test]
     fn workflow_row_carries_named_fields_and_the_deprecated_legacy_keys() {
@@ -1654,7 +1754,7 @@ mod stats_tests {
             landed: 0,
             broke_base: 0,
             repaired: 0,
-            follow_on_cost: 0.0,
+            repair_cost: 0.0,
             added_lines: 0,
             churned_lines: 0,
         };
@@ -1693,7 +1793,7 @@ mod stats_tests {
             landed: 4,
             broke_base: 1,
             repaired: 2,
-            follow_on_cost: 2.0,
+            repair_cost: 2.0,
             added_lines: 20,
             churned_lines: 5,
         };
@@ -1703,7 +1803,7 @@ mod stats_tests {
         assert_eq!(v["broke_base_share"], 0.25);
         assert_eq!(v["repaired"], 2);
         assert_eq!(v["repaired_share"], 0.5);
-        assert_eq!(v["follow_on_cost_usd"], 2.0);
+        assert_eq!(v["repair_cost_usd"], 2.0);
         assert_eq!(v["true_cost_per_landed_usd"], 1.5, "(4.0 + 2.0) / 4");
         assert_eq!(v["churn_share"], 0.25, "5 / 20");
     }
@@ -1814,6 +1914,142 @@ mod stats_tests {
             .find(|w| w.workflow == "direct")
             .unwrap();
         assert_eq!(w.churn_share, Some(1.0 / 3.0));
+    }
+
+    /// Task 357's fixture repository, replayed for the replacement metric:
+    /// path overlap over-counted every task, since src/cli.rs-style files
+    /// are touched by nearly every landing. Line overlap does not: a later
+    /// landing that rewrites half of an earlier one's added lines charges
+    /// it half its cost, and one that only touches the same file without
+    /// rewriting any of its lines charges it nothing.
+    #[tokio::test]
+    async fn repair_cost_attributes_a_later_landings_cost_by_the_share_of_lines_it_rewrote() {
+        let (_home, f) = fixture();
+        let repo_dir = init_repo();
+        let repo = repo_dir.path();
+
+        std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let c0 = crate::git::commit_all(repo, "base").await.unwrap().unwrap();
+        // T adds two lines (ALPHA, BETA), removing "two".
+        std::fs::write(repo.join("a.txt"), "one\nALPHA\nBETA\nthree\n").unwrap();
+        let c1 = crate::git::commit_all(repo, "t").await.unwrap().unwrap();
+        // L1 rewrites one of T's two added lines (ALPHA -> GAMMA) and also
+        // drops "three", a line T never touched: of the two lines L1's
+        // landing removed or rewrote, only one was T's.
+        std::fs::write(repo.join("a.txt"), "one\nGAMMA\nBETA\n").unwrap();
+        let c2 = crate::git::commit_all(repo, "l1").await.unwrap().unwrap();
+        // L2 touches a.txt again but only rewrites a line neither T nor L1
+        // added ("one" -> "ONE"): none of T's lines.
+        std::fs::write(repo.join("a.txt"), "ONE\nGAMMA\nBETA\n").unwrap();
+        let c3 = crate::git::commit_all(repo, "l2").await.unwrap().unwrap();
+
+        let repo_s = repo.to_string_lossy().to_string();
+        let landing = |base: &str, landed: &str, finished_at: i64| Task {
+            repo: repo_s.clone(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            base_sha: base.to_string(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: finished_at,
+            started_at: Some(finished_at),
+            finished_at: Some(finished_at),
+            workflow: "direct".into(),
+            landed_sha: landed.to_string(),
+            ..Default::default()
+        };
+        let insert = |mut t: Task| {
+            t.id = f.store.insert_task(&t).unwrap();
+            f.store.update_task(&t).unwrap();
+            t
+        };
+        let cost = |task_id, amount: f64| {
+            let attempt_id = f
+                .store
+                .insert_attempt(&Attempt {
+                    task_id,
+                    attempt_no: 1,
+                    step: "code".into(),
+                    started_at: 0,
+                    ..Default::default()
+                })
+                .unwrap();
+            f.store
+                .finish_attempt(&FinishAttempt {
+                    id: attempt_id,
+                    state: AttemptState::Succeeded,
+                    reason: String::new(),
+                    finished_at: Some(1),
+                    agent_exit: Some(0),
+                    timed_out: false,
+                    num_turns: 1,
+                    tool_calls: 1,
+                    cost_usd: Some(amount),
+                    agent_ms: 0,
+                    commits: 1,
+                    files_changed: 1,
+                    dirty: false,
+                    verdict_json: "[]".into(),
+                    result_text: String::new(),
+                    envelope_json: String::new(),
+                    rl_five_hour: None,
+                    rl_seven_day: None,
+                    rl_five_hour_resets: None,
+                    rl_seven_day_resets: None,
+                    end_sha: String::new(),
+                    outputs_json: String::new(),
+                    session_id: String::new(),
+                    first_edit: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                    early_signals: "[]".into(),
+                    early_near: "[]".into(),
+                })
+                .unwrap();
+        };
+
+        let t = insert(landing(&c0, &c1, 1000));
+        let l1 = insert(landing(&c1, &c2, 2000));
+        let l2 = insert(landing(&c2, &c3, 3000));
+        cost(l1.id, 10.0);
+        cost(l2.id, 7.0);
+
+        refresh_repair_cost(&f).await.unwrap();
+
+        assert_eq!(
+            f.store
+                .line_overlap_cache(&t.landed_sha, &l1.landed_sha)
+                .unwrap(),
+            Some((1, 2)),
+            "L1 removed or rewrote ALPHA and three; only ALPHA was T's"
+        );
+        assert_eq!(
+            f.store
+                .line_overlap_cache(&t.landed_sha, &l2.landed_sha)
+                .unwrap(),
+            Some((0, 1)),
+            "L2 removed \"one\", which was never T's"
+        );
+        assert_eq!(
+            f.store
+                .repair_cost_cache(t.id)
+                .unwrap()
+                .map(|(cost, _)| cost),
+            Some(5.0),
+            "half of L1's $10 (1/2 of its rewritten lines were T's) plus none of L2's $7"
+        );
+
+        let raw = f
+            .store
+            .workflow_stats(&crate::store::StatsFilter::default())
+            .unwrap();
+        let stat = raw.iter().find(|w| w.workflow == "direct").unwrap();
+        assert_eq!(stat.repair_cost, 5.0);
     }
 
     #[test]
