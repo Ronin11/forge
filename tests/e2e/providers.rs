@@ -199,9 +199,12 @@ fn a_projects_role_wins_over_the_operators_and_a_tasks_flag_wins_over_both() {
         .success()
     );
     assert!(
-        e.forge("ok.sh", &["project", "set", "demo", "--role", "code=proj-role"])
-            .status
-            .success()
+        e.forge(
+            "ok.sh",
+            &["project", "set", "demo", "--role", "code=proj-role"]
+        )
+        .status
+        .success()
     );
 
     let mut cmd = e.cmd("ok.sh");
@@ -295,9 +298,13 @@ fn project_set_role_validates_and_persists() {
         "ok.sh",
         &["project", "set", "demo", "--role", "code=devhome"],
     );
-    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
-    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["project", "show", "demo"]).stdout)
-        .to_string();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let show =
+        String::from_utf8_lossy(&e.forge("ok.sh", &["project", "show", "demo"]).stdout).to_string();
     assert!(show.contains("code=devhome"), "{show}");
 }
 

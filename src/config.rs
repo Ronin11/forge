@@ -577,7 +577,10 @@ fn build_providers(
 /// Every role's default provider (see `ROLES`): the operator's `[roles]`
 /// table, "anthropic" where it names none. Each name must be a configured
 /// provider, checked here so a typo fails at startup, not mid-task.
-fn build_roles(raw: RolesRaw, providers: &BTreeMap<String, Provider>) -> Result<BTreeMap<String, String>> {
+fn build_roles(
+    raw: RolesRaw,
+    providers: &BTreeMap<String, Provider>,
+) -> Result<BTreeMap<String, String>> {
     let mut roles = BTreeMap::new();
     for (role, v) in [
         ("code", raw.code),
@@ -588,7 +591,9 @@ fn build_roles(raw: RolesRaw, providers: &BTreeMap<String, Provider>) -> Result<
     ] {
         let name = v.unwrap_or_else(|| "anthropic".to_string());
         if !providers.contains_key(&name) {
-            bail!("roles.{role}: unknown provider {name:?}; see `forge providers` for what is configured");
+            bail!(
+                "roles.{role}: unknown provider {name:?}; see `forge providers` for what is configured"
+            );
         }
         roles.insert(role.to_string(), name);
     }

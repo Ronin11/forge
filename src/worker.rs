@@ -259,7 +259,10 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }
             let held = held_initiatives(&f)?;
-            let Some(t) = f.store.claim_next(pid, &held, |t| provider_is_held(&f, t))? else {
+            let Some(t) = f
+                .store
+                .claim_next(pid, &held, |t| provider_is_held(&f, t))?
+            else {
                 // Nothing claimable: either the queue is empty/blocked, or
                 // every queued candidate's own provider is at its cap.
                 // Only the latter is a hold worth waiting out.

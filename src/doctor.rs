@@ -539,7 +539,12 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
         let sample = match f.store.latest_rate_limit(name) {
             Ok(s) => s,
             Err(e) => {
-                out.push(check("rate_limit", Status::Fail, format!("{name}: {e:#}"), ""));
+                out.push(check(
+                    "rate_limit",
+                    Status::Fail,
+                    format!("{name}: {e:#}"),
+                    "",
+                ));
                 continue;
             }
         };

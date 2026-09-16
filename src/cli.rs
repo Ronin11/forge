@@ -1015,12 +1015,15 @@ fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> 
 
 /// Parse `forge project set --role`'s `<role>=<provider>` pairs: the role
 /// must be one of `config::ROLES`, and the provider must be configured.
-fn parse_role_providers(f: &Forge, role: &[String]) -> Result<std::collections::BTreeMap<String, String>> {
+fn parse_role_providers(
+    f: &Forge,
+    role: &[String],
+) -> Result<std::collections::BTreeMap<String, String>> {
     let mut out = std::collections::BTreeMap::new();
     for pair in role {
-        let (role, provider) = pair.split_once('=').with_context(|| {
-            format!("--role {pair:?}: expected <role>=<provider>")
-        })?;
+        let (role, provider) = pair
+            .split_once('=')
+            .with_context(|| format!("--role {pair:?}: expected <role>=<provider>"))?;
         if !config::ROLES.contains(&role) {
             bail!(
                 "--role {pair:?}: unknown role {role:?}; expected one of {}",

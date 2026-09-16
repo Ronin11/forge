@@ -2771,7 +2771,10 @@ mod tests {
         let att = s.attempts(id).unwrap();
         assert_eq!(att[0].state, AttemptState::AgentFailed);
         assert_eq!(att[0].reason, "worker died");
-        assert_eq!(s.claim_next(3, &[], |_| false).unwrap().map(|t| t.id), Some(id));
+        assert_eq!(
+            s.claim_next(3, &[], |_| false).unwrap().map(|t| t.id),
+            Some(id)
+        );
     }
 
     #[test]

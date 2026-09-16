@@ -158,7 +158,13 @@ impl Forge {
             .task_project(t)
             .map(|p| p.role_providers)
             .unwrap_or_default();
-        resolve_provider(&self.providers, &self.roles, &project_roles, &t.provider, role)
+        resolve_provider(
+            &self.providers,
+            &self.roles,
+            &project_roles,
+            &t.provider,
+            role,
+        )
     }
 
     /// The per-task budget cap that actually applies: the task's own
@@ -247,7 +253,8 @@ mod tests {
     #[test]
     fn resolve_provider_falls_to_anthropic_with_nothing_configured() {
         let providers = providers(&["anthropic"]);
-        let p = resolve_provider(&providers, &BTreeMap::new(), &BTreeMap::new(), "", "code").unwrap();
+        let p =
+            resolve_provider(&providers, &BTreeMap::new(), &BTreeMap::new(), "", "code").unwrap();
         assert_eq!(p.name, "anthropic");
     }
 
@@ -256,10 +263,12 @@ mod tests {
         let providers = providers(&["anthropic", "devhome"]);
         let operator_roles: BTreeMap<String, String> =
             [("code".to_string(), "devhome".to_string())].into();
-        let p = resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "code").unwrap();
+        let p =
+            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "code").unwrap();
         assert_eq!(p.name, "devhome");
         // A role the operator did not name still falls to anthropic.
-        let p = resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "tests").unwrap();
+        let p =
+            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "tests").unwrap();
         assert_eq!(p.name, "anthropic");
     }
 
@@ -282,18 +291,29 @@ mod tests {
         let project_roles: BTreeMap<String, String> =
             [("code".to_string(), "openai".to_string())].into();
         // The task flag sets every role, including one neither layer named.
-        let p =
-            resolve_provider(&providers, &operator_roles, &project_roles, "devhome", "review")
-                .unwrap();
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &project_roles,
+            "devhome",
+            "review",
+        )
+        .unwrap();
         assert_eq!(p.name, "devhome");
     }
 
     #[test]
     fn resolve_provider_an_unknown_name_is_refused_with_the_name_and_role() {
         let providers = providers(&["anthropic"]);
-        let err = resolve_provider(&providers, &BTreeMap::new(), &BTreeMap::new(), "ghost", "plan")
-            .unwrap_err()
-            .to_string();
+        let err = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "ghost",
+            "plan",
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("ghost"), "{err}");
         assert!(err.contains("plan"), "{err}");
     }
