@@ -449,6 +449,8 @@ pub struct TaskSummary {
     pub task: String,
     pub attempts: i64,
     pub cost: f64,
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
 }
 
 /// The unit of ownership above a task: what is being built, and for whom.
@@ -1696,7 +1698,7 @@ impl Store {
             "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
-                    t.workflow, t.created_at, t.finished_at
+                    t.workflow, t.created_at, t.finished_at, t.project, t.initiative
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
@@ -1728,6 +1730,8 @@ impl Store {
                     workflow: r.get(7)?,
                     created_at: r.get(8)?,
                     finished_at: r.get(9)?,
+                    project: r.get(10)?,
+                    initiative: r.get(11)?,
                 })
             },
         )?;

@@ -79,6 +79,51 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge project list --json`: every project, alphabetically.
+    pub fn project_list(&self) -> Result<Vec<ProjectRow>> {
+        let v = self.json(&["project", "list", "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge project show NAME --json`: one project.
+    pub fn project_show(&self, name: &str) -> Result<ProjectRow> {
+        let v = self.json(&["project", "show", name, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge project backlog NAME --json`: one project's backlog, oldest
+    /// first.
+    pub fn project_backlog(&self, name: &str) -> Result<Vec<BacklogRow>> {
+        let v = self.json(&["project", "backlog", name, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge initiative list [<project>] --json`: every initiative, or
+    /// only `project`'s.
+    pub fn initiative_list(&self, project: Option<&str>) -> Result<Vec<InitiativeRow>> {
+        let mut args = vec!["initiative", "list"];
+        if let Some(p) = project {
+            args.push(p);
+        }
+        args.push("--json");
+        let v = self.json(&args)?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge initiative show ID --json`: one initiative.
+    pub fn initiative_show(&self, id: i64) -> Result<InitiativeRow> {
+        let id = id.to_string();
+        let v = self.json(&["initiative", "show", &id, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge initiative report ID --json`: the generated report.
+    pub fn initiative_report(&self, id: i64) -> Result<InitiativeDoc> {
+        let id = id.to_string();
+        let v = self.json(&["initiative", "report", &id, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge events --since <offset> --follow`, as an iterator of typed
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
@@ -203,6 +248,10 @@ pub struct TaskRow {
     pub created: String,
     #[serde(default)]
     pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub initiative: Option<i64>,
 }
 
 /// One row of `forge requests --json`: a blocked task and what it is
@@ -294,6 +343,200 @@ pub struct DecisionRow {
     pub retry_id: Option<i64>,
     #[serde(default)]
     pub outcome: Option<String>,
+}
+
+/// One repository listed under a project, and the paths it owns there
+/// (`None` scope means the whole repository), nested in [`ProjectRow`].
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProjectRepoRow {
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// One row of `forge project list --json` / `forge project show --json`:
+/// a project, the repositories it works in, task counts by state, cost,
+/// and its own defaults.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProjectRow {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub repos: Vec<ProjectRepoRow>,
+    #[serde(default)]
+    pub queued: i64,
+    #[serde(default)]
+    pub running: i64,
+    #[serde(default)]
+    pub succeeded: i64,
+    #[serde(default)]
+    pub failed: i64,
+    #[serde(default)]
+    pub unverified: i64,
+    #[serde(default)]
+    pub blocked: i64,
+    #[serde(default)]
+    pub withdrawn: i64,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub workflow: Option<String>,
+    #[serde(default)]
+    pub per_task_usd: Option<f64>,
+    #[serde(default)]
+    pub per_initiative_usd: Option<f64>,
+    #[serde(default)]
+    pub supervisor_model: Option<String>,
+    #[serde(default)]
+    pub supervisor_per_lineage: Option<i64>,
+    #[serde(default)]
+    pub protected: Vec<String>,
+}
+
+/// One row of `forge project backlog NAME --json`: a thing worth doing
+/// that is not yet queued.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BacklogRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub done_at: Option<i64>,
+}
+
+/// One row of `forge initiative list --json` / `forge initiative show
+/// --json`: an initiative, its derived state, task counts by state, cost
+/// and its own settings.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub held_rule: Option<String>,
+    #[serde(default)]
+    pub queued: i64,
+    #[serde(default)]
+    pub running: i64,
+    #[serde(default)]
+    pub succeeded: i64,
+    #[serde(default)]
+    pub failed: i64,
+    #[serde(default)]
+    pub unverified: i64,
+    #[serde(default)]
+    pub blocked: i64,
+    #[serde(default)]
+    pub withdrawn: i64,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub budget_usd: Option<f64>,
+    #[serde(default)]
+    pub stop_after_same_rule: i64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub settled_at: Option<i64>,
+}
+
+/// One task in [`InitiativeDoc::tasks`]: its final state and reason.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeTaskRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// One row of `InitiativeDoc.refused`: a verification rule name and how
+/// many attempts of the initiative's tasks it refused.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RefusedRow {
+    #[serde(default)]
+    pub rule: String,
+    #[serde(default)]
+    pub count: i64,
+}
+
+/// One row of `InitiativeDoc.rulings`: a decision the supervisor made on
+/// one of the initiative's tasks.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeRulingRow {
+    #[serde(default)]
+    pub task_id: i64,
+    #[serde(default)]
+    pub question: String,
+    #[serde(default)]
+    pub answer: String,
+    #[serde(default)]
+    pub citations: String,
+}
+
+/// One row of `InitiativeDoc.questions`: a question that reached the
+/// operator, answered or (while the task is still blocked) not yet.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeQuestionRow {
+    #[serde(default)]
+    pub task_id: i64,
+    #[serde(default)]
+    pub question: String,
+    #[serde(default)]
+    pub answer: Option<String>,
+}
+
+/// The document `forge initiative report ID --json` prints: the outcome,
+/// each task and how it ended, what verification refused, what the
+/// supervisor ruled, what reached the operator, cost and elapsed time.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeDoc {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub held_rule: Option<String>,
+    #[serde(default)]
+    pub budget_usd: Option<f64>,
+    #[serde(default)]
+    pub stop_after_same_rule: i64,
+    #[serde(default)]
+    pub tasks: Vec<InitiativeTaskRow>,
+    #[serde(default)]
+    pub refused: Vec<RefusedRow>,
+    #[serde(default)]
+    pub rulings: Vec<InitiativeRulingRow>,
+    #[serde(default)]
+    pub questions: Vec<InitiativeQuestionRow>,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub elapsed_secs: Option<i64>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub settled_at: Option<i64>,
 }
 
 /// Token counts from an attempt's result frame, as `TraceDoc` nests them.

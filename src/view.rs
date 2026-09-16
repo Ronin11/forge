@@ -31,6 +31,8 @@ pub struct TaskRow {
     pub text: String,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
 }
 
 impl From<&TaskSummary> for TaskRow {
@@ -47,6 +49,8 @@ impl From<&TaskSummary> for TaskRow {
             text: s.task.clone(),
             created_at: s.created_at,
             finished_at: s.finished_at,
+            project: s.project.clone(),
+            initiative: s.initiative,
         }
     }
 }
@@ -226,6 +230,8 @@ pub struct TraceTask {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    pub project: Option<String>,
+    pub initiative: Option<i64>,
     #[serde(skip)]
     pub worktree_removed_at: Option<i64>,
     #[serde(skip)]
@@ -384,6 +390,8 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         created_at: t.created_at,
         started_at: t.started_at,
         finished_at: t.finished_at,
+        project: t.project.clone(),
+        initiative: t.initiative,
         worktree_removed_at: t.worktree_removed_at,
         decisions: f.store.decisions_in_lineage(t.id)?,
     };
