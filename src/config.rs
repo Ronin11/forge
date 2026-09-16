@@ -225,6 +225,9 @@ struct ProviderRaw {
     /// absent (see `build_providers`).
     five_hour_max: Option<f64>,
     seven_day_max: Option<f64>,
+    /// How many times `run_codex` may nudge a phase one that made no
+    /// progress before it runs phase two; default 0 (see `agent::Provider`).
+    nudges: Option<u32>,
 }
 
 /// The five roles a provider is chosen for: the four contracts, and the
@@ -439,6 +442,11 @@ journal_control = 0.0
 # extra_args = [\"--oss\", \"--local-provider\", \"ollama\", \"-c\", \"include_apply_patch_tool=true\"]
 # (the apply_patch tool is off for models codex does not know; without it a
 # local model can read but not edit)
+# nudges = 3
+# (a weak model often ends codex's phase one having only read files, or
+# having edited without committing; up to this many times, run_codex
+# resumes the same thread with a fixed prompt to do the work and commit
+# before phase two ever asks for the structured report)
 #
 # [providers.openai]
 # runner = \"codex-cli\"
@@ -570,6 +578,7 @@ fn build_providers(
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
                 five_hour_max: p.five_hour_max.unwrap_or(budget.five_hour_max),
                 seven_day_max: p.seven_day_max.unwrap_or(budget.seven_day_max),
+                nudges: p.nudges.unwrap_or(0),
             },
         );
     }
