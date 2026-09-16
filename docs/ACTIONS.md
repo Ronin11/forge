@@ -243,12 +243,15 @@ assertions), `playwright` (the hidden e2e suite from `forge-verify`, run
 with the namespace overlaid; verifies), `comments-only` (fails when the
 preceding step changed anything but comments and docs; verifies), and
 `graph-check` (docs/SYSTEM.md exists, holds a Mermaid block, and names
-only real paths; verifies), and `repo-map` (produces `context`: every
+only real paths; verifies), `repo-map` (produces `context`: every
 source file's declared symbols ranked against the task's words and the
 files earlier successful work read most, cut to a budget, by the
 deterministic `forge-repomap` tool; shown to the next directive as
 "where things are", recorded in the attempt's inputs; `--no-context` on
-a task is the control arm). The same tool's `forge-repomap edges <root>
+a task is the control arm), and `deploy-command` (the generic deploy
+method `forge deploy` runs, outside of any task: rsyncs the landed tree
+to a target's host and dest over ssh, runs its command, then its check,
+both over ssh unless the host is `local`; see docs/DEPLOY.md). The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code
 visualiser: one JSON document of every source file the extractor table
 handles as a node (`path`, `lang`, `symbols`) and every import that

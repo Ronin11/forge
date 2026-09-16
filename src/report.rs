@@ -104,9 +104,7 @@ pub enum Event<'a> {
         #[serde(rename = "cost_usd")]
         cost: f64,
     },
-    /// A deploy began (see docs/DEPLOY.md, "When a deploy runs"). Not yet
-    /// emitted: no deploy runs until docs/DEPLOY.md's build order step 2.
-    #[allow(dead_code)]
+    /// A deploy began (see docs/DEPLOY.md, "When a deploy runs").
     DeployStarted {
         project: &'a str,
         target: &'a str,
@@ -115,8 +113,7 @@ pub enum Event<'a> {
     /// A deploy reached a verdict: `ok` is the check's result, and
     /// `rolled_back_to` is the previous passing commit it fell back to
     /// when the check failed (`None` if it passed, or if there was
-    /// nothing to roll back to). Not yet emitted, like `DeployStarted`.
-    #[allow(dead_code)]
+    /// nothing to roll back to).
     DeployFinished {
         project: &'a str,
         target: &'a str,

@@ -399,6 +399,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         "interface.toml",
         include_str!("builtins/operations/interface.toml"),
     ),
+    (
+        "deploy-command.toml",
+        include_str!("builtins/operations/deploy-command.toml"),
+    ),
 ];
 
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[

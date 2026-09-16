@@ -782,7 +782,7 @@ pub async fn main() -> Result<()> {
                 name,
                 json,
             }) => deploy_log(project, name, json),
-            None => deploy_run(a.project, a.name, a.sha),
+            None => deploy_run(a.project, a.name, a.sha).await,
         },
         Cmd::Initiative { cmd } => match cmd {
             InitiativeCmd::New {
@@ -1311,23 +1311,18 @@ fn project_deploy_list(project: String, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Run a deploy target now. No method runs yet (see docs/DEPLOY.md,
-/// "Build order"); this only checks the target exists and says so.
-fn deploy_run(project: Option<String>, name: Option<String>, _sha: Option<String>) -> Result<()> {
+/// Run a deploy target now (see docs/DEPLOY.md, "When a deploy runs").
+async fn deploy_run(
+    project: Option<String>,
+    name: Option<String>,
+    sha: Option<String>,
+) -> Result<()> {
     let (project, name) = match (project, name) {
         (Some(p), Some(n)) => (p, n),
         _ => bail!("usage: forge deploy <project> <name> [--sha <commit>]"),
     };
     let f = Forge::open(false, false)?;
-    let target = f
-        .store
-        .deploy_target(&project, &name)?
-        .with_context(|| format!("no deploy target {name} in project {project}"))?;
-    out!(
-        "deploy method {:?} is not yet available; see docs/DEPLOY.md",
-        target.method
-    );
-    Ok(())
+    crate::deploy::run(&f, &project, &name, sha).await
 }
 
 fn print_deploy_row(r: &crate::view::DeployRow) {

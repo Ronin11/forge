@@ -11,6 +11,7 @@ mod checks;
 mod cli;
 mod config;
 mod ctx;
+mod deploy;
 mod doctor;
 mod engine;
 mod envelope;

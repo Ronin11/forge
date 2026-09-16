@@ -8,10 +8,11 @@ use crate::ctx::Forge;
 use crate::engine::{Classify, Fault, OpRow, Timer, op};
 use crate::landing::overlay_refs;
 use crate::report::Event;
-use crate::store::{AttemptState, Task};
+use crate::store::{AttemptState, DeployTarget, Task};
 use crate::verify::{self, Subject};
-use crate::workflows::ResolvedStep;
+use crate::workflows::{self, ResolvedStep};
 use crate::{checks, config, git};
+use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -347,4 +348,42 @@ pub(crate) async fn run_operation(
         }
     }
     Ok((true, detail))
+}
+
+/// A deploy target's method, run outside of any task: no worktree, no
+/// commit, no verify. `target`'s own arguments become `FORGE_ARG_<NAME>`
+/// (uppercased) and its check command becomes `FORGE_CHECK`, both only
+/// ever in this process's environment, never in a prompt and never in a
+/// log (see docs/DEPLOY.md, "Secrets and hosts"). `cwd` is the landed
+/// tree, already checked out by the caller.
+pub(crate) async fn run_deploy_method(
+    f: &Forge,
+    target: &DeployTarget,
+    cwd: &Path,
+    timeout: Duration,
+) -> anyhow::Result<checks::CheckResult> {
+    let actions = workflows::load_actions(&f.paths.home)?;
+    let action = actions
+        .get(&target.method)
+        .with_context(|| format!("unknown deploy method {:?}", target.method))?;
+    let argv = action
+        .run
+        .as_ref()
+        .with_context(|| format!("deploy method {:?} declares no run command", target.method))?;
+    let mut env: Vec<(String, String)> = target
+        .args
+        .iter()
+        .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
+        .collect();
+    env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
+    Ok(checks::run_one(
+        "OP",
+        &action.name,
+        argv,
+        cwd,
+        f.sandbox.as_ref(),
+        timeout,
+        &env,
+    )
+    .await)
 }

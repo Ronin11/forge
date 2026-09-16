@@ -2496,10 +2496,7 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Record a deploy starting. Returns its id; `finish_deploy` completes
-    /// it. Not yet called: no deploy runs until docs/DEPLOY.md's build
-    /// order step 2.
-    #[allow(dead_code)]
+    /// Record a deploy starting. Returns its id; `finish_deploy` completes it.
     pub fn start_deploy(&self, project: &str, target: &str, sha: &str, at: i64) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -2510,8 +2507,8 @@ impl Store {
     }
 
     /// Record a deploy's outcome: the check's verdict and output, what it
-    /// rolled back to (if it did), and why. Not yet called, like `start_deploy`.
-    #[allow(clippy::too_many_arguments, dead_code)]
+    /// rolled back to (if it did), and why.
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_deploy(
         &self,
         id: i64,
