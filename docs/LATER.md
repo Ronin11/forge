@@ -402,3 +402,39 @@ approach, just not finely.
 
 The cap is back at 95% and the config matches the copy taken before the
 experiment.
+
+## The code visualiser, and the inspector inside it (2026-09-15)
+
+Three layers, in order, each on something that exists.
+
+**Structure, deterministic.** Modules, files and symbols as nodes;
+imports and calls as edges. `forge-repomap` already extracts symbols per
+file with a content-addressed cache; adding import edges (Rust `use`,
+TypeScript `import`, Go imports, Python imports) is an extension of the
+same extractor table, and the output is a graph file regenerated on
+every landing in milliseconds. This replaces the model-written system
+map for everything an extractor can see; the model's remaining job is
+annotating data flows on the deterministic graph. No model draws the
+graph.
+
+**The overlay, from the record.** Every attempt records the files it
+changed and its cost, so each node carries: tasks that touched it and
+when, cost sunk into it, review demotions on changes there, and defect
+escape by path once delayed cost is attributed to paths. The live part
+is the running attempt's tool calls, which the early-ending watch
+already sees: where the agent is right now. This is the layer nobody
+else has: where the factory's money and mistakes go, per module.
+
+**The inspector.** A task's run as a scrubbable timeline: steps,
+attempts, every tool call from the log, the graph highlighting what
+each call read or changed. Replay for finished tasks, tail for running
+ones; all already recorded. A real debugger follows: the claude CLI's
+tool-call hooks can block, so a pre-tool hook that waits for Forge's
+say-so gives breakpoints on a tool name or a path and single-stepping,
+in the runner, with no model involved. (This folds in the earlier
+"inspector" note.)
+
+Lives in the web client as a graph page (SVG layout, the existing event
+stream). Kernel changes: the extractor edges; later the pause hook.
+Sizing: extractor plus page, three or four tasks; overlay, two more
+after delayed cost; the stepping debugger, its own initiative.
