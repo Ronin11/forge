@@ -1687,7 +1687,11 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
             },
             None => "running".to_string(),
         };
-        out!("deployed   task {} {} @ {sha} {status}", d.task_id, d.target);
+        out!(
+            "deployed   task {} {} @ {sha} {status}",
+            d.task_id,
+            d.target
+        );
     }
     Ok(())
 }
