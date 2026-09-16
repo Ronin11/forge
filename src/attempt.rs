@@ -14,6 +14,7 @@ use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
 use crate::verify::{self, Subject, Verdict};
 use crate::workflows::{Contract, ResolvedStep};
 use crate::{agent, config, git, unix_now};
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -176,6 +177,11 @@ pub async fn run_attempt(
     };
     let mut inputs = spec.inputs;
     inputs.prompt_chars = spec.prompt.chars().count();
+    let provider = f
+        .providers
+        .get(&t.provider)
+        .with_context(|| format!("task {}: unknown provider {:?}", t.id, t.provider))
+        .env()?;
     let (mut a, log_path) = new_attempt(
         f,
         t,
@@ -185,6 +191,7 @@ pub async fn run_attempt(
         attempt_no,
         inputs,
         resume,
+        provider,
     )
     .await?;
     let outcome = launch(
@@ -196,6 +203,7 @@ pub async fn run_attempt(
         &log_path,
         resume.map(|r| r.session.as_str()),
         contract.writes(),
+        provider,
     )
     .await?;
     // A branch that merged the moved base is measured from there.
@@ -298,6 +306,7 @@ pub async fn new_attempt(
     attempt_no: i64,
     mut inputs: Inputs,
     resume: Option<&Resume>,
+    provider: &agent::Provider,
 ) -> Result<(Attempt, PathBuf), Fault> {
     let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
     // A resumed attempt is measured from where the capped one began: the
@@ -324,6 +333,8 @@ pub async fn new_attempt(
         state: AttemptState::Running,
         started_at: unix_now(),
         log_path: log_path.display().to_string(),
+        runner: provider.runner.as_str().to_string(),
+        provider: provider.name.clone(),
         ..Default::default()
     };
     a.id = f.store.insert_attempt(&a).env()?;
@@ -340,6 +351,7 @@ async fn launch(
     log_path: &Path,
     resume: Option<&str>,
     writes: bool,
+    provider: &agent::Provider,
 ) -> Result<agent::Outcome, Fault> {
     let outcome = agent::run(agent::Launch {
         task_id: t.id,
@@ -352,6 +364,7 @@ async fn launch(
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
         step,
+        provider,
         resume,
         writes,
         schema: crate::envelope::SCHEMA,

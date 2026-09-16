@@ -33,8 +33,14 @@ pub struct TaskArgs {
     repo: PathBuf,
     /// What to do, in plain language
     task: String,
-    #[arg(long, default_value = "sonnet")]
-    model: String,
+    /// Model for every step (default: the provider's own default model)
+    #[arg(long)]
+    model: Option<String>,
+    /// Agent backend every step of this task runs under, from
+    /// [providers.<name>] in the operator config (default: "anthropic");
+    /// the supervisor keeps its own
+    #[arg(long)]
+    provider: Option<String>,
     /// Turns per attempt, a runaway guard; cost, wall time and the rate windows bound the work
     #[arg(long, default_value_t = 100)]
     max_turns: u32,
@@ -211,6 +217,12 @@ enum Cmd {
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {
         /// Machine-readable, for an agent choosing a workflow
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the configured agent backends (`[providers.<name>]`), with their runner and model
+    Providers {
+        /// Machine-readable
         #[arg(long)]
         json: bool,
     },
@@ -593,6 +605,7 @@ pub async fn main() -> Result<()> {
         Cmd::Land { id } => land(id).await,
         Cmd::Journal { id, json } => journal(id, json),
         Cmd::Workflows { json } => list_workflows(json),
+        Cmd::Providers { json } => list_providers(json),
         Cmd::Plugin { cmd } => match cmd {
             PluginCmd::List { json } => plugin_list(json),
             PluginCmd::Status { name, json } => plugin_status(name, json),
@@ -665,6 +678,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             repo: a.repo.clone(),
             task: a.task.clone(),
             model: a.model.clone(),
+            provider: a.provider.clone(),
             max_turns: a.max_turns,
             retries: a.retries,
             timeout_secs: a.timeout_secs,
@@ -1166,7 +1180,6 @@ async fn initiative_new(
             let req = crate::queue::TaskRequest {
                 repo: PathBuf::from(repo),
                 task: p.text.clone(),
-                model: "sonnet".to_string(),
                 max_turns: 100,
                 retries: 1,
                 timeout_secs: 1800,
@@ -1497,6 +1510,41 @@ fn list_workflows(json: bool) -> Result<()> {
         );
         if let Some(c) = workflows::commit_for(&f.paths.home, &a.hash) {
             out!("             since      {c}");
+        }
+    }
+    Ok(())
+}
+
+fn list_providers(json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if json {
+        let docs: Vec<serde_json::Value> = f
+            .providers
+            .values()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "runner": p.runner.as_str(),
+                    "model": p.model,
+                    "base_url": p.base_url,
+                    "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+                    "extra_args": p.extra_args,
+                    "notes": p.notes,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&docs)?);
+        return Ok(());
+    }
+    for p in f.providers.values() {
+        out!(
+            "{:<12} {:<10} {}",
+            p.name,
+            p.runner.as_str(),
+            p.model.as_deref().unwrap_or("(runner default)"),
+        );
+        if let Some(n) = &p.notes {
+            out!("             {n}");
         }
     }
     Ok(())

@@ -65,8 +65,96 @@ pub struct RateLimits {
     pub seven_day: Option<(f64, i64)>,
 }
 
+/// Which agent CLI backs a provider: the two ways Forge knows to build a
+/// launch's argv and env and to parse its event stream.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Runner {
+    #[default]
+    ClaudeCli,
+    CodexCli,
+}
+
+impl Runner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Runner::ClaudeCli => "claude-cli",
+            Runner::CodexCli => "codex-cli",
+        }
+    }
+}
+
+impl std::str::FromStr for Runner {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "claude-cli" => Ok(Runner::ClaudeCli),
+            "codex-cli" => Ok(Runner::CodexCli),
+            other => Err(format!(
+                "unknown runner {other:?}; expected \"claude-cli\" or \"codex-cli\""
+            )),
+        }
+    }
+}
+
+/// An agent backend as the operator's config names it under
+/// `[providers.<name>]` (see `config::load_home`). The built-in "anthropic"
+/// provider (`Provider::default`) needs no entry in the config to keep
+/// today's behavior unchanged.
+#[derive(Clone, Debug)]
+pub struct Provider {
+    pub name: String,
+    pub runner: Runner,
+    /// The model a task gets when neither it nor its workflow step says
+    /// one; `None` leaves it to the CLI's own default (codex, signed into
+    /// a plan rather than billed per token).
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub env: Vec<(String, String)>,
+    /// Extra argv this provider always adds, after the launcher's own
+    /// flags and before the prompt (e.g. codex's `--oss --local-provider
+    /// ollama` for a local model).
+    pub extra_args: Vec<String>,
+    pub notes: Option<String>,
+    /// USD per million tokens, for a runner whose CLI reports no cost of
+    /// its own (codex): 0 for a local model.
+    pub price_input_per_million: f64,
+    pub price_output_per_million: f64,
+}
+
+impl Default for Provider {
+    fn default() -> Self {
+        Provider {
+            name: "anthropic".into(),
+            runner: Runner::ClaudeCli,
+            model: Some("sonnet".into()),
+            base_url: None,
+            env: Vec::new(),
+            extra_args: Vec::new(),
+            notes: None,
+            price_input_per_million: 0.0,
+            price_output_per_million: 0.0,
+        }
+    }
+}
+
 pub fn agent_bin() -> String {
     std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
+}
+
+/// The codex CLI, `FORGE2_CODEX_BIN` overridden (the codex-cli fake in
+/// tests, an alternate build on an operator's machine).
+pub fn codex_bin() -> String {
+    std::env::var("FORGE2_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
+}
+
+/// `codex_bin`'s per-step override, `FORGE2_CODEX_BIN_<STEP>`; see
+/// `agent_bin_for`, which does the same for the claude CLI.
+pub fn codex_bin_for(step: &str) -> String {
+    let key = format!(
+        "FORGE2_CODEX_BIN_{}",
+        step.to_ascii_uppercase().replace('-', "_")
+    );
+    std::env::var(key).unwrap_or_else(|_| codex_bin())
 }
 
 /// The binary behind a bare name, past any version-manager shim or wrapper:
@@ -109,8 +197,16 @@ pub fn agent_env() -> Vec<(String, String)> {
         .filter(|(k, _)| {
             matches!(
                 k.as_str(),
-                "PATH" | "HOME" | "LANG" | "TERM" | "CLAUDE_CONFIG_DIR" | "FAKE_SLEEP"
-            ) || ["LC_", "ANTHROPIC_"].iter().any(|p| k.starts_with(p))
+                "PATH"
+                    | "HOME"
+                    | "LANG"
+                    | "TERM"
+                    | "CLAUDE_CONFIG_DIR"
+                    | "CODEX_HOME"
+                    | "FAKE_SLEEP"
+            ) || ["LC_", "ANTHROPIC_", "CODEX_"]
+                .iter()
+                .any(|p| k.starts_with(p))
         })
         .collect()
 }
@@ -149,6 +245,9 @@ pub struct Launch<'a> {
     pub sandbox: Option<&'a Sandbox>,
     pub report: &'a Reporter,
     pub step: &'a str,
+    /// The provider this step runs under: which CLI, and what it adds to
+    /// the launch's argv and env.
+    pub provider: &'a Provider,
     /// A CLI session to continue instead of starting fresh.
     pub resume: Option<&'a str>,
     /// Whether this step is expected to change files (code, tests). A
@@ -550,6 +649,13 @@ async fn run_with_relaunch(
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
+    match l.provider.runner {
+        Runner::ClaudeCli => run_claude(l).await,
+        Runner::CodexCli => run_codex(l).await,
+    }
+}
+
+async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // The binary itself, never a version-manager shim: a shim inside the
     // sandbox reaches for state the sandbox does not have (a global tool
     // config, a registry cache, a writable shims directory) and dies
@@ -572,11 +678,13 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    argv.extend(l.provider.extra_args.iter().cloned());
     if let Some(id) = l.resume {
         argv.push("--resume".into());
         argv.push(id.to_string());
     }
-    let identity = crate::git::identity(&l.worktree.join(".git")).await;
+    let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
+    identity.extend(l.provider.env.iter().cloned());
     let mut log =
         File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
     writeln!(
@@ -601,6 +709,223 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     )
     .await?;
 
+    if !stderr_text.trim().is_empty() {
+        writeln!(
+            log,
+            "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+            serde_json::to_string(&stderr_text)?
+        )?;
+    }
+    Ok(out)
+}
+
+/// Applies one parsed line of codex's `--json` event stream to `out` and
+/// `watch`; the side effects that need the log file or the reporter (every
+/// line gets written verbatim, a command execution is reported as a tool
+/// call) are the caller's, in `run_codex`, so this stays pure enough to
+/// unit-test against captured lines. Returns the early-ending signals'
+/// text when `Watch` says enough of them tripped to stop the run.
+fn apply_codex_event(v: &Value, out: &mut Outcome, watch: &mut Watch, writes: bool) -> Option<String> {
+    match v["type"].as_str() {
+        Some("thread.started") => {
+            if let Some(id) = v["thread_id"].as_str() {
+                out.session_id = Some(id.to_string());
+            }
+        }
+        Some("item.started") => {
+            if v["item"]["type"] == "command_execution" {
+                out.tool_calls += 1;
+                let cmd = v["item"]["command"].as_str().unwrap_or("").to_string();
+                watch.saw("Bash", &Value::from(serde_json::json!({ "command": cmd })));
+                if let Some(tripped) = watch.should_end(writes) {
+                    let text = tripped
+                        .iter()
+                        .map(|(_, w)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    out.ended_early = Some(text.clone());
+                    return Some(text);
+                }
+            }
+        }
+        Some("item.completed") => match v["item"]["type"].as_str() {
+            Some("error") => out.is_error = true,
+            Some("agent_message") => {
+                let text = v["item"]["text"].as_str().unwrap_or("").to_string();
+                out.got_result = true;
+                out.structured = serde_json::from_str::<Value>(&text).ok().map(|_| text.clone());
+                out.result_text = text;
+            }
+            _ => {}
+        },
+        Some("turn.completed") => {
+            out.num_turns += 1;
+            let u = &v["usage"];
+            let input = u["input_tokens"].as_i64().unwrap_or(0);
+            let cached = u["cached_input_tokens"].as_i64().unwrap_or(0);
+            let output = u["output_tokens"].as_i64().unwrap_or(0)
+                + u["reasoning_output_tokens"].as_i64().unwrap_or(0);
+            out.input_tokens = Some(out.input_tokens.unwrap_or(0) + input);
+            out.cache_read_input_tokens = Some(out.cache_read_input_tokens.unwrap_or(0) + cached);
+            out.output_tokens = Some(out.output_tokens.unwrap_or(0) + output);
+        }
+        _ => {}
+    }
+    None
+}
+
+/// The codex-cli backend: `codex exec --skip-git-repo-check --json -C
+/// <worktree> [-m <model>] --output-schema <file> <prompt>`, sandboxed with
+/// `-s workspace-write` when Forge's own sandbox is off, or
+/// `--dangerously-bypass-approvals-and-sandbox` when the attempt already
+/// runs inside one (bubblewrap) and codex's own would only be redundant.
+/// Resuming swaps in `resume <thread_id>` after `exec`. Stdin is always
+/// closed: codex blocks forever reading it otherwise, unlike the claude CLI,
+/// which takes the prompt on stdin.
+async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
+    let bin = real_bin(&codex_bin_for(l.step));
+    // The schema is text (`envelope::SCHEMA`), but codex takes a file.
+    let schema_path = l.log_path.with_extension("schema.json");
+    std::fs::write(&schema_path, l.schema)
+        .with_context(|| format!("writing {}", schema_path.display()))?;
+
+    let mut argv: Vec<String> = vec![bin.clone(), "exec".to_string()];
+    if let Some(id) = l.resume {
+        argv.push("resume".into());
+        argv.push(id.to_string());
+    }
+    argv.push("--skip-git-repo-check".into());
+    argv.push("--json".into());
+    argv.push("-C".into());
+    argv.push(l.worktree.display().to_string());
+    if l.sandbox.is_some() {
+        argv.push("--dangerously-bypass-approvals-and-sandbox".into());
+    } else {
+        argv.push("-s".into());
+        argv.push("workspace-write".into());
+    }
+    if !l.model.is_empty() {
+        argv.push("-m".into());
+        argv.push(l.model.to_string());
+    }
+    argv.push("--output-schema".into());
+    argv.push(schema_path.display().to_string());
+    argv.extend(l.provider.extra_args.iter().cloned());
+    argv.push(l.prompt.to_string());
+
+    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+    extra_env.extend(l.provider.env.iter().cloned());
+
+    let mut log =
+        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+        serde_json::to_string(l.prompt)?
+    )?;
+
+    let mut child = Command::from(command_in(l.sandbox, l.worktree, &argv, &extra_env))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawning {bin}"))?;
+
+    let stderr = child.stderr.take().context("agent stderr")?;
+    let stderr_task = tokio::spawn(async move {
+        let mut s = String::new();
+        BufReader::new(stderr).read_to_string(&mut s).await.ok();
+        s
+    });
+
+    let start = Instant::now();
+    let deadline = tokio::time::Instant::now() + l.timeout;
+    let mut out = Outcome {
+        session_id: l.resume.map(|s| s.to_string()),
+        ..Outcome::default()
+    };
+    let mut watch = Watch::new(l.early_ending);
+    let stdout = child.stdout.take().context("agent stdout")?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let read = async {
+        while let Some(line) = lines.next_line().await? {
+            let Ok(mut v) = serde_json::from_str::<Value>(&line) else {
+                writeln!(log, "{line}")?;
+                continue;
+            };
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "forge_ms".into(),
+                    Value::from(start.elapsed().as_millis() as u64),
+                );
+            }
+            writeln!(log, "{v}")?;
+            if v["type"] == "item.started" && v["item"]["type"] == "command_execution" {
+                let name = v["item"]["command"].as_str().unwrap_or("command_execution");
+                l.report.emit(l.task_id, Event::ToolCall { name });
+            }
+            if let Some(text) = apply_codex_event(&v, &mut out, &mut watch, l.writes) {
+                writeln!(
+                    log,
+                    "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
+                    start.elapsed().as_millis(),
+                    serde_json::to_string(&text)?
+                )?;
+                l.report.emit(
+                    l.task_id,
+                    Event::Note {
+                        text: &format!("early    stopped: {text}"),
+                    },
+                );
+                break;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    match tokio::time::timeout_at(deadline, read).await {
+        Ok(r) => {
+            r?;
+            if out.ended_early.is_some() {
+                child.kill().await.ok();
+                child.wait().await.ok();
+            } else {
+                match tokio::time::timeout_at(deadline, child.wait()).await {
+                    Ok(status) => out.exit_code = status?.code(),
+                    Err(_) => out.timed_out = true,
+                }
+            }
+        }
+        Err(_) => out.timed_out = true,
+    }
+    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
+    out.early_near = watch.near(l.writes);
+    if out.timed_out {
+        child.kill().await.ok();
+        child.wait().await.ok();
+        writeln!(
+            log,
+            "{{\"type\":\"forge_timeout\",\"after_secs\":{}}}",
+            l.timeout.as_secs()
+        )?;
+    }
+    if !out.is_error {
+        out.is_error = out.exit_code.is_some_and(|c| c != 0);
+    }
+    out.wall_ms = start.elapsed().as_millis();
+
+    // Codex reports no cost of its own; the operator's per-provider price
+    // table (0 for a local model) turns its token counts into one.
+    if let (Some(input), Some(output)) = (out.input_tokens, out.output_tokens) {
+        out.cost_usd = Some(
+            input as f64 * l.provider.price_input_per_million / 1_000_000.0
+                + output as f64 * l.provider.price_output_per_million / 1_000_000.0,
+        );
+    }
+
+    let stderr_text = stderr_task.await.unwrap_or_default();
     if !stderr_text.trim().is_empty() {
         writeln!(
             log,
@@ -779,5 +1104,66 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(launches, 1, "an unrelated failure is never relaunched");
+    }
+
+    /// Captured lines from a codex `exec --json` run: a thread starting, one
+    /// command execution, an error item, a final assistant message carrying
+    /// the envelope as its text, and the turn's usage.
+    fn codex_fixture() -> Vec<&'static str> {
+        vec![
+            r#"{"type":"thread.started","thread_id":"codex-sess-1"}"#,
+            r#"{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"echo 42 > answer.txt"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"echo 42 > answer.txt","exit_code":0}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"error","message":"a tool call failed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"{\"schema_version\":1,\"summary\":\"wrote 42\",\"needs_input\":null,\"changes\":[{\"path\":\"answer.txt\",\"kind\":\"added\"}],\"checks_run\":[],\"claims\":[]}"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"reasoning_output_tokens":5}}"#,
+        ]
+    }
+
+    fn run_codex_fixture(lines: &[&str], thresholds: EarlyEnding) -> Outcome {
+        let mut out = Outcome::default();
+        let mut watch = Watch::new(thresholds);
+        for line in lines {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if let Some(text) = apply_codex_event(&v, &mut out, &mut watch, true) {
+                out.ended_early = Some(text);
+                break;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn codex_events_parse_into_the_outcome() {
+        let out = run_codex_fixture(&codex_fixture(), thresholds(100, 100, 100, 2));
+        assert_eq!(out.session_id.as_deref(), Some("codex-sess-1"));
+        assert_eq!(out.tool_calls, 1);
+        assert!(out.is_error, "the error item marks the outcome an error");
+        assert!(out.got_result);
+        assert_eq!(out.result_text, out.structured.clone().unwrap());
+        let structured: Value = serde_json::from_str(&out.structured.unwrap()).unwrap();
+        assert_eq!(structured["summary"], "wrote 42");
+        assert_eq!(out.num_turns, 1);
+        assert_eq!(out.input_tokens, Some(100));
+        assert_eq!(out.cache_read_input_tokens, Some(10));
+        // Reasoning tokens sum into the output count alongside the plain ones.
+        assert_eq!(out.output_tokens, Some(55));
+    }
+
+    #[test]
+    fn codex_command_executions_feed_the_early_ending_watch() {
+        let lines = vec![
+            r#"{"type":"thread.started","thread_id":"s"}"#,
+            r#"{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"grep foo"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"grep foo","exit_code":0}}"#,
+            r#"{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"grep foo"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"grep foo","exit_code":0}}"#,
+        ];
+        let out = run_codex_fixture(&lines, thresholds(100, 100, 2, 1));
+        assert_eq!(
+            out.ended_early.as_deref(),
+            Some("`grep foo` run 2 times"),
+            "the repeated command trips the same Watch the claude runner uses"
+        );
     }
 }

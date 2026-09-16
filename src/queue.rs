@@ -19,7 +19,12 @@ use std::path::PathBuf;
 pub struct TaskRequest {
     pub repo: PathBuf,
     pub task: String,
-    pub model: String,
+    /// `None` takes the model from the selected provider's own default
+    /// (`--model` always wins when given).
+    pub model: Option<String>,
+    /// The provider every agent step of the task runs under (the
+    /// supervisor keeps its own); `None` is the built-in "anthropic".
+    pub provider: Option<String>,
     pub max_turns: u32,
     pub retries: u32,
     pub timeout_secs: u32,
@@ -194,11 +199,20 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
             cfg.config_path
         );
     }
+    let provider_name = args.provider.clone().unwrap_or_else(|| "anthropic".to_string());
+    let provider = f.providers.get(&provider_name).with_context(|| {
+        format!("unknown provider {provider_name:?}; see `forge providers` for what is configured")
+    })?;
+    let model = args
+        .model
+        .clone()
+        .unwrap_or_else(|| provider.model.clone().unwrap_or_default());
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
         base_branch: cfg.base_branch.clone(),
-        model: args.model.clone(),
+        model,
+        provider: provider_name,
         max_turns: args.max_turns as i64,
         max_attempts: args.retries as i64 + 1,
         timeout_secs: args.timeout_secs as i64,
@@ -389,7 +403,8 @@ pub fn retry_request(
     TaskRequest {
         repo: PathBuf::from(&t.repo),
         task: task.unwrap_or_else(|| t.task.clone()),
-        model: t.model.clone(),
+        model: Some(t.model.clone()),
+        provider: Some(t.provider.clone()),
         max_turns: if first {
             o.max_turns.unwrap_or(t.max_turns as u32)
         } else {

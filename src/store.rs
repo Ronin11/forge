@@ -113,6 +113,10 @@ pub struct Task {
     pub branch: String,
     pub worktree: String,
     pub model: String,
+    /// The provider name every agent step of this task runs under (see
+    /// `agent::Provider`); the supervisor keeps its own model setting and
+    /// is unaffected by this.
+    pub provider: String,
     pub max_turns: i64,
     pub max_attempts: i64,
     pub timeout_secs: i64,
@@ -196,6 +200,10 @@ pub struct Attempt {
     /// HEAD when the attempt started: "what you changed" means since here.
     pub start_sha: String,
     pub end_sha: String,
+    /// The runner and provider this attempt ran under (see
+    /// `agent::Runner`/`agent::Provider`); the model is on `inputs_json`.
+    pub runner: String,
+    pub provider: String,
     /// audit::Inputs as JSON: everything the step was given.
     pub inputs_json: String,
     /// audit::Outputs as JSON: everything the step produced beyond the verdict.
@@ -766,6 +774,11 @@ CREATE TABLE backlog (
 ALTER TABLE tasks ADD COLUMN project TEXT;
 ALTER TABLE tasks ADD COLUMN initiative INTEGER;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+ALTER TABLE attempts ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude-cli';
+ALTER TABLE attempts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+",
 ];
 
 /// The version this migration brings the schema to; `migrate` also runs
@@ -783,6 +796,7 @@ const TASK_COLUMNS: &[&str] = &[
     "branch",
     "worktree",
     "model",
+    "provider",
     "max_turns",
     "max_attempts",
     "timeout_secs",
@@ -839,6 +853,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         branch: r.get("branch")?,
         worktree: r.get("worktree")?,
         model: r.get("model")?,
+        provider: r.get("provider")?,
         max_turns: r.get("max_turns")?,
         max_attempts: r.get("max_attempts")?,
         timeout_secs: r.get("timeout_secs")?,
@@ -922,6 +937,8 @@ const ATTEMPT_COLUMNS: &[&str] = &[
     "cache_creation_input_tokens",
     "early_signals",
     "early_near",
+    "runner",
+    "provider",
 ];
 
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
@@ -968,6 +985,8 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
         cache_creation_input_tokens: r.get("cache_creation_input_tokens")?,
         early_signals: r.get("early_signals")?,
         early_near: r.get("early_near")?,
+        runner: r.get("runner")?,
+        provider: r.get("provider")?,
     })
 }
 
@@ -1008,14 +1027,15 @@ impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, checks_json,
+            "INSERT INTO tasks (repo, task, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                                 state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 t.repo,
                 t.task,
                 t.base_branch,
                 t.model,
+                t.provider,
                 t.max_turns,
                 t.max_attempts,
                 t.timeout_secs,
@@ -1051,7 +1071,7 @@ impl Store {
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39 WHERE id=?1",
+             project=?38, initiative=?39, provider=?40 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1091,7 +1111,8 @@ impl Store {
                 t.landed_sha,
                 t.journal_arm,
                 t.project,
-                t.initiative
+                t.initiative,
+                t.provider,
             ],
         )?;
         Ok(())
@@ -1314,9 +1335,9 @@ impl Store {
     pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq],
+            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq, runner, provider)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq, a.runner, a.provider],
         )?;
         Ok(c.last_insert_rowid())
     }

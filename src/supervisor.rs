@@ -382,8 +382,13 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     // The clone may already be dirty from the attempt that asked; the
     // supervisor is held to what it adds, not to what it found.
     let dirty_before = crate::git::dirty_paths(wt).await.unwrap_or_default();
-    let (mut a, log_path) =
-        crate::attempt::new_attempt(f, &t, "supervisor", seq, wt, attempt_no, inputs, None).await?;
+    // The supervisor always runs the built-in anthropic provider on its own
+    // model, regardless of which provider the task's own steps selected.
+    let provider = agent::Provider::default();
+    let (mut a, log_path) = crate::attempt::new_attempt(
+        f, &t, "supervisor", seq, wt, attempt_no, inputs, None, &provider,
+    )
+    .await?;
     let outcome = agent::run(agent::Launch {
         task_id: id,
         worktree: wt,
@@ -395,6 +400,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
         step: "supervisor",
+        provider: &provider,
         resume: None,
         writes: false,
         schema: SCHEMA,

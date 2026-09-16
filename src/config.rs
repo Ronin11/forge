@@ -3,6 +3,7 @@
 //! the trusted base commit so the branch under test cannot change what it
 //! is verified against. `<FORGE2_HOME>/config.toml` is the operator's.
 
+use crate::agent::{Provider, Runner};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -198,6 +199,24 @@ struct HomeRaw {
     plugin_dirs: Vec<String>,
     #[serde(default)]
     measure: MeasureRaw,
+    /// Agent backends beyond the built-in "anthropic" default; see
+    /// `agent::Provider`.
+    #[serde(default)]
+    providers: BTreeMap<String, ProviderRaw>,
+}
+
+#[derive(Deserialize, Default)]
+struct ProviderRaw {
+    runner: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    extra_args: Vec<String>,
+    notes: Option<String>,
+    price_usd_per_million_input: Option<f64>,
+    price_usd_per_million_output: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -265,6 +284,10 @@ pub struct HomeConfig {
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
+    /// Agent backends by name, the built-in "anthropic" always present
+    /// (overridable, but never absent) so a task naming no `--provider`
+    /// always resolves to one.
+    pub providers: BTreeMap<String, Provider>,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -377,6 +400,23 @@ signals_to_end = 2
 # own request does not say --journal or --no-journal. 0.0 assigns none;
 # see docs/LATER.md, \"The journal measurement was ill-posed three times\".
 journal_control = 0.0
+
+# Agent backends beyond the built-in \"anthropic\" provider (runner
+# claude-cli, today's models; no entry needed to keep today's behavior). A
+# task picks one with `forge add --provider <name>`; `forge providers`
+# lists what is configured. `env` and `extra_args` are the runner's own
+# process env and argv; `price_usd_per_million_input/output` price a
+# runner that reports no cost itself (codex), 0 for a local model.
+#
+# [providers.devhome]
+# runner = \"codex-cli\"
+# model = \"qwen3-coder:30b\"
+# env = { CODEX_OSS_BASE_URL = \"http://dev.home:11434/v1\" }
+# extra_args = [\"--oss\", \"--local-provider\", \"ollama\"]
+#
+# [providers.openai]
+# runner = \"codex-cli\"
+# notes = \"signed in with codex login\"
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -447,7 +487,42 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         measure: Measure {
             journal_control: raw.measure.journal_control.unwrap_or(0.0),
         },
+        providers: build_providers(raw.providers)?,
     })
+}
+
+/// The built-in "anthropic" provider, plus every `[providers.<name>]` table
+/// the operator declared; a table named "anthropic" overrides the built-in
+/// rather than duplicating it, so an operator can, say, give it its own
+/// price table without losing the runner and model every existing config
+/// already relies on.
+fn build_providers(raw: BTreeMap<String, ProviderRaw>) -> Result<BTreeMap<String, Provider>> {
+    let mut providers = BTreeMap::new();
+    providers.insert("anthropic".to_string(), Provider::default());
+    for (name, p) in raw {
+        let runner = match &p.runner {
+            Some(r) => r
+                .parse::<Runner>()
+                .map_err(|e| anyhow::anyhow!("providers.{name}: {e}"))?,
+            None if name == "anthropic" => Runner::ClaudeCli,
+            None => bail!("providers.{name}: needs a `runner`"),
+        };
+        providers.insert(
+            name.clone(),
+            Provider {
+                name,
+                runner,
+                model: p.model,
+                base_url: p.base_url,
+                env: p.env.into_iter().collect(),
+                extra_args: p.extra_args,
+                notes: p.notes,
+                price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
+                price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
+            },
+        );
+    }
+    Ok(providers)
 }
 
 #[cfg(test)]
@@ -640,5 +715,71 @@ mod tests {
         assert_eq!(c.early_ending.edits_without_commit, 4);
         assert_eq!(c.early_ending.repeats, 3);
         assert_eq!(c.early_ending.signals_to_end, 0);
+    }
+
+    #[test]
+    fn the_anthropic_provider_is_built_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = load_home(dir.path()).unwrap();
+        let p = &c.providers["anthropic"];
+        assert_eq!(p.runner, crate::agent::Runner::ClaudeCli);
+        assert_eq!(p.model.as_deref(), Some("sonnet"));
+    }
+
+    /// The two commented examples in `DEFAULT_HOME_CONFIG`, uncommented:
+    /// they must parse into the fields the task said they carry.
+    #[test]
+    fn provider_tables_parse_runner_model_env_and_extra_args() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[providers.devhome]\n\
+             runner = \"codex-cli\"\n\
+             model = \"qwen3-coder:30b\"\n\
+             env = { CODEX_OSS_BASE_URL = \"http://dev.home:11434/v1\" }\n\
+             extra_args = [\"--oss\", \"--local-provider\", \"ollama\"]\n\
+             \n\
+             [providers.openai]\n\
+             runner = \"codex-cli\"\n\
+             notes = \"signed in with codex login\"\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        let devhome = &c.providers["devhome"];
+        assert_eq!(devhome.runner, crate::agent::Runner::CodexCli);
+        assert_eq!(devhome.model.as_deref(), Some("qwen3-coder:30b"));
+        assert_eq!(
+            devhome.env,
+            vec![(
+                "CODEX_OSS_BASE_URL".to_string(),
+                "http://dev.home:11434/v1".to_string()
+            )]
+        );
+        assert_eq!(devhome.extra_args, vec!["--oss", "--local-provider", "ollama"]);
+        assert_eq!(devhome.price_input_per_million, 0.0);
+
+        let openai = &c.providers["openai"];
+        assert_eq!(openai.runner, crate::agent::Runner::CodexCli);
+        assert_eq!(openai.model, None);
+        assert!(openai.env.is_empty());
+        assert_eq!(openai.notes.as_deref(), Some("signed in with codex login"));
+
+        // The built-in default is still there alongside the operator's own.
+        assert_eq!(c.providers["anthropic"].runner, crate::agent::Runner::ClaudeCli);
+    }
+
+    #[test]
+    fn an_unknown_runner_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[providers.bogus]\nrunner = \"not-a-runner\"\n",
+        )
+        .unwrap();
+        let err = match load_home(dir.path()) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not-a-runner"), "{err}");
     }
 }
