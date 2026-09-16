@@ -199,17 +199,35 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
             cfg.config_path
         );
     }
-    let provider_name = args
-        .provider
-        .clone()
-        .unwrap_or_else(|| "anthropic".to_string());
-    let provider = f.providers.get(&provider_name).with_context(|| {
-        format!("unknown provider {provider_name:?}; see `forge providers` for what is configured")
-    })?;
+    // `provider` is the task's own flag: every role runs under it when
+    // set (validated here so a typo fails at creation, not mid-task).
+    // Unset (""), each step's role resolves through its project and the
+    // operator's [roles] table instead (see `ctx::resolve_provider`).
+    // The default model, when `--model` says nothing either, comes from
+    // "code"'s resolved provider: the role that would run first for
+    // almost every workflow, and the one every existing config already
+    // names when nothing overrides it.
+    let provider_name = args.provider.clone().unwrap_or_default();
+    if let Some(p) = &args.provider {
+        f.providers.get(p).with_context(|| {
+            format!("unknown provider {p:?}; see `forge providers` for what is configured")
+        })?;
+    }
+    let project_roles = project
+        .as_ref()
+        .map(|p| p.role_providers.clone())
+        .unwrap_or_default();
+    let code_provider = crate::ctx::resolve_provider(
+        &f.providers,
+        &f.roles,
+        &project_roles,
+        &provider_name,
+        "code",
+    )?;
     let model = args
         .model
         .clone()
-        .unwrap_or_else(|| provider.model.clone().unwrap_or_default());
+        .unwrap_or_else(|| code_provider.model.clone().unwrap_or_default());
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -463,7 +481,10 @@ pub fn retry_request(
         repo: PathBuf::from(&t.repo),
         task: task.unwrap_or_else(|| t.task.clone()),
         model: Some(t.model.clone()),
-        provider: Some(t.provider.clone()),
+        // Empty means the original task named no `--provider` and
+        // resolved per role; a retry should resolve the same way, not
+        // pin whatever "code" happened to pick at the time.
+        provider: (!t.provider.is_empty()).then(|| t.provider.clone()),
         max_turns: if first {
             o.max_turns.unwrap_or(t.max_turns as u32)
         } else {

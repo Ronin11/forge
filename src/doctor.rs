@@ -530,47 +530,61 @@ fn check_spend(f: &Forge) -> Vec<Check> {
     }]
 }
 
+/// One row per provider that has recorded a rate-limit sample: each has
+/// its own window and its own cap, so a full Anthropic window says
+/// nothing about a provider that has never been used near its own.
 fn check_rate_limit(f: &Forge) -> Vec<Check> {
-    let sample = match f.store.latest_rate_limit() {
-        Ok(s) => s,
-        Err(e) => return vec![check("rate_limit", Status::Fail, format!("{e:#}"), "")],
-    };
-    vec![match sample {
-        None => check(
+    let mut out = Vec::new();
+    for name in f.providers.keys() {
+        let sample = match f.store.latest_rate_limit(name) {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(check(
+                    "rate_limit",
+                    Status::Fail,
+                    format!("{name}: {e:#}"),
+                    "",
+                ));
+                continue;
+            }
+        };
+        let Some(s) = sample else { continue };
+        let age = unix_now() - s.seen_at;
+        let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
+        let detail = format!(
+            "{name}: 5h {}, 7d {} ({}m ago)",
+            s.five_hour
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+            s.seven_day
+                .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+            age / 60
+        );
+        out.push(match crate::worker::window_hold(f, name) {
+            Ok(Some((msg, _))) => check(
+                "rate_limit",
+                Status::Warn,
+                format!("{detail}; {msg}"),
+                "the worker holds until the reset, then continues",
+            ),
+            Ok(None) if worst >= 0.8 => check(
+                "rate_limit",
+                Status::Warn,
+                detail,
+                "a window is nearly at its cap; the worker will hold when it reaches it",
+            ),
+            Ok(None) => check("rate_limit", Status::Ok, detail, ""),
+            Err(e) => check("rate_limit", Status::Fail, format!("{e:#}"), ""),
+        });
+    }
+    if out.is_empty() {
+        out.push(check(
             "rate_limit",
             Status::Warn,
             "no samples yet",
             "samples arrive with the first real attempt",
-        ),
-        Some(s) => {
-            let age = unix_now() - s.seen_at;
-            let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
-            let detail = format!(
-                "5h {}, 7d {} ({}m ago)",
-                s.five_hour
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                s.seven_day
-                    .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
-                age / 60
-            );
-            match crate::worker::window_hold(f) {
-                Ok(Some((msg, _))) => check(
-                    "rate_limit",
-                    Status::Warn,
-                    format!("{detail}; {msg}"),
-                    "the worker holds until the reset, then continues",
-                ),
-                Ok(None) if worst >= 0.8 => check(
-                    "rate_limit",
-                    Status::Warn,
-                    detail,
-                    "a window is nearly at its cap; the worker will hold when it reaches it",
-                ),
-                Ok(None) => check("rate_limit", Status::Ok, detail, ""),
-                Err(e) => check("rate_limit", Status::Fail, format!("{e:#}"), ""),
-            }
-        }
-    }]
+        ));
+    }
+    out
 }
 
 pub fn run() -> Result<Vec<Check>> {

@@ -36,9 +36,10 @@ pub struct TaskArgs {
     /// Model for every step (default: the provider's own default model)
     #[arg(long)]
     model: Option<String>,
-    /// Agent backend every step of this task runs under, from
-    /// [providers.<name>] in the operator config (default: "anthropic");
-    /// the supervisor keeps its own
+    /// Agent backend every role of this task runs under (code, tests,
+    /// review, plan, and the supervisor), overriding the project's and
+    /// the operator's [roles] table; from [providers.<name>] in the
+    /// operator config
     #[arg(long)]
     provider: Option<String>,
     /// Turns per attempt, a runaway guard; cost, wall time and the rate windows bound the work
@@ -439,6 +440,12 @@ enum ProjectCmd {
         /// Extra protected paths, on top of each repository's own forge.toml (repeatable)
         #[arg(long = "protected")]
         protected: Vec<String>,
+        /// Which provider a role runs under in this project, as
+        /// `<role>=<provider>` (role: code, tests, review, plan,
+        /// supervisor; repeatable). Overrides the operator's [roles]
+        /// table; a task's own --provider overrides this.
+        #[arg(long = "role")]
+        role: Vec<String>,
     },
     /// This project's backlog: things worth doing that are not yet queued
     Backlog {
@@ -658,6 +665,7 @@ pub async fn main() -> Result<()> {
                 supervisor_model,
                 supervisor_per_lineage,
                 protected,
+                role,
             } => project_set(
                 name,
                 workflow,
@@ -666,6 +674,7 @@ pub async fn main() -> Result<()> {
                 supervisor_model,
                 supervisor_per_lineage,
                 protected,
+                role,
             ),
             ProjectCmd::Backlog {
                 name,
@@ -971,6 +980,16 @@ fn print_project_row(r: &crate::view::ProjectRow) {
             r.protected.join(", ")
         }
     );
+    if !r.role_providers.is_empty() {
+        out!(
+            "roles      {}",
+            r.role_providers
+                .iter()
+                .map(|(role, provider)| format!("{role}={provider}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 }
 
 fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> {
@@ -1002,6 +1021,31 @@ fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> 
     Ok(())
 }
 
+/// Parse `forge project set --role`'s `<role>=<provider>` pairs: the role
+/// must be one of `config::ROLES`, and the provider must be configured.
+fn parse_role_providers(
+    f: &Forge,
+    role: &[String],
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut out = std::collections::BTreeMap::new();
+    for pair in role {
+        let (role, provider) = pair
+            .split_once('=')
+            .with_context(|| format!("--role {pair:?}: expected <role>=<provider>"))?;
+        if !config::ROLES.contains(&role) {
+            bail!(
+                "--role {pair:?}: unknown role {role:?}; expected one of {}",
+                config::ROLES.join(", ")
+            );
+        }
+        if !f.providers.contains_key(provider) {
+            bail!("--role {pair:?}: unknown provider {provider:?}; see `forge providers`");
+        }
+        out.insert(role.to_string(), provider.to_string());
+    }
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn project_set(
     name: String,
@@ -1011,8 +1055,10 @@ fn project_set(
     supervisor_model: Option<String>,
     supervisor_per_lineage: Option<u32>,
     protected: Vec<String>,
+    role: Vec<String>,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
+    let role_providers = parse_role_providers(&f, &role)?;
     let d = crate::store::ProjectDefaults {
         workflow,
         per_task_usd,
@@ -1020,6 +1066,7 @@ fn project_set(
         supervisor_model,
         supervisor_per_lineage: supervisor_per_lineage.map(|v| v as i64),
         protected: (!protected.is_empty()).then_some(protected),
+        role_providers,
     };
     if !f.store.set_project_defaults(&name, &d)? {
         bail!("no project {name}");
@@ -2860,7 +2907,14 @@ fn show(id: i64) -> Result<()> {
         task.max_attempts,
         task.timeout_secs
     );
-    out!("provider   {}", task.provider);
+    out!(
+        "provider   {}",
+        if task.provider.is_empty() {
+            "(per-role; see forge providers)"
+        } else {
+            &task.provider
+        }
+    );
     out!(
         "cost       ${cost:.4} over {} attempt(s){}",
         doc.attempts.len(),

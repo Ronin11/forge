@@ -506,6 +506,16 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     if let Some(n) = step.timeout_secs {
                         ts.timeout_secs = n as i64;
                     }
+                    // The provider this step's role runs under: the task's
+                    // own flag, else its project's [roles], else the
+                    // operator's, else "anthropic" (see
+                    // `ctx::resolve_provider`). Recorded on `ts.provider` so
+                    // `attempt::run_attempt`'s existing lookup picks it up.
+                    ts.provider = f
+                        .effective_provider(&ts, step.action.contract.as_str())
+                        .env()?
+                        .name
+                        .clone();
                     let mut feedback: Option<String> = run.owed.remove(&seq);
                     let mut resume: Option<Resume> = None;
                     let mut step_ok = false;
@@ -522,7 +532,9 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                     while run.used_at(seq) < t.max_attempts {
                         // A subscription window at its cap: wait for the reset
                         // rather than start an attempt that would be rate limited.
-                        while let Some((msg, until)) = crate::worker::window_hold(&f).env()? {
+                        while let Some((msg, until)) =
+                            crate::worker::window_hold(&f, &ts.provider).env()?
+                        {
                             f.report.emit(
                                 id,
                                 Event::Note {

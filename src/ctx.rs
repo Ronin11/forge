@@ -5,9 +5,36 @@ use crate::agent;
 use crate::config::{self, Budget};
 use crate::report::Reporter;
 use crate::sandbox::Sandbox;
-use crate::store::Store;
+use crate::store::{Store, Task};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+/// The provider a step under `role` actually runs (see `config::ROLES`):
+/// the task's own `--provider` (set, so every role for that task wins),
+/// else the project's `[roles]` override for `role`, else the operator's
+/// `[roles]` table, else the built-in "anthropic". `task_provider` is `""`
+/// when the task named no `--provider`.
+pub fn resolve_provider<'a>(
+    providers: &'a BTreeMap<String, agent::Provider>,
+    operator_roles: &BTreeMap<String, String>,
+    project_roles: &BTreeMap<String, String>,
+    task_provider: &str,
+    role: &str,
+) -> Result<&'a agent::Provider> {
+    let name = if !task_provider.is_empty() {
+        task_provider
+    } else if let Some(p) = project_roles.get(role) {
+        p.as_str()
+    } else if let Some(p) = operator_roles.get(role) {
+        p.as_str()
+    } else {
+        "anthropic"
+    };
+    providers.get(name).with_context(|| {
+        format!("unknown provider {name:?} for role {role:?}; see `forge providers` for what is configured")
+    })
+}
 
 pub struct Paths {
     pub home: PathBuf,
@@ -48,6 +75,8 @@ pub struct Forge {
     /// Agent backends by name, the built-in "anthropic" always present
     /// (see `config::load_home`).
     pub providers: std::collections::BTreeMap<String, agent::Provider>,
+    /// Every role's default provider name (see `config::ROLES`).
+    pub roles: std::collections::BTreeMap<String, String>,
     pub sandbox: Option<Sandbox>,
     pub report: Reporter,
 }
@@ -85,6 +114,7 @@ impl Forge {
             early_ending: home.early_ending,
             measure: home.measure,
             providers: home.providers,
+            roles: home.roles,
             sandbox,
             report,
         })
@@ -102,6 +132,7 @@ impl Forge {
             early_ending: home.early_ending,
             measure: home.measure,
             providers: home.providers,
+            roles: home.roles,
             sandbox: None,
             report,
         })
@@ -118,6 +149,22 @@ impl Forge {
         t.project
             .as_ref()
             .and_then(|p| self.store.project(p).ok().flatten())
+    }
+
+    /// The provider `t`'s step under `role` actually runs: see
+    /// `resolve_provider`.
+    pub fn effective_provider(&self, t: &Task, role: &str) -> Result<&agent::Provider> {
+        let project_roles = self
+            .task_project(t)
+            .map(|p| p.role_providers)
+            .unwrap_or_default();
+        resolve_provider(
+            &self.providers,
+            &self.roles,
+            &project_roles,
+            &t.provider,
+            role,
+        )
     }
 
     /// The per-task budget cap that actually applies: the task's own
@@ -181,5 +228,93 @@ impl Forge {
             return Vec::new();
         };
         serde_json::from_str(&scope_json).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn providers(names: &[&str]) -> BTreeMap<String, agent::Provider> {
+        names
+            .iter()
+            .map(|n| {
+                (
+                    n.to_string(),
+                    agent::Provider {
+                        name: n.to_string(),
+                        ..agent::Provider::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resolve_provider_falls_to_anthropic_with_nothing_configured() {
+        let providers = providers(&["anthropic"]);
+        let p =
+            resolve_provider(&providers, &BTreeMap::new(), &BTreeMap::new(), "", "code").unwrap();
+        assert_eq!(p.name, "anthropic");
+    }
+
+    #[test]
+    fn resolve_provider_uses_the_operators_role_table() {
+        let providers = providers(&["anthropic", "devhome"]);
+        let operator_roles: BTreeMap<String, String> =
+            [("code".to_string(), "devhome".to_string())].into();
+        let p =
+            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "code").unwrap();
+        assert_eq!(p.name, "devhome");
+        // A role the operator did not name still falls to anthropic.
+        let p =
+            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "tests").unwrap();
+        assert_eq!(p.name, "anthropic");
+    }
+
+    #[test]
+    fn resolve_provider_the_projects_role_wins_over_the_operators() {
+        let providers = providers(&["anthropic", "devhome", "openai"]);
+        let operator_roles: BTreeMap<String, String> =
+            [("code".to_string(), "devhome".to_string())].into();
+        let project_roles: BTreeMap<String, String> =
+            [("code".to_string(), "openai".to_string())].into();
+        let p = resolve_provider(&providers, &operator_roles, &project_roles, "", "code").unwrap();
+        assert_eq!(p.name, "openai");
+    }
+
+    #[test]
+    fn resolve_provider_the_tasks_own_flag_wins_over_every_role() {
+        let providers = providers(&["anthropic", "devhome", "openai"]);
+        let operator_roles: BTreeMap<String, String> =
+            [("code".to_string(), "devhome".to_string())].into();
+        let project_roles: BTreeMap<String, String> =
+            [("code".to_string(), "openai".to_string())].into();
+        // The task flag sets every role, including one neither layer named.
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &project_roles,
+            "devhome",
+            "review",
+        )
+        .unwrap();
+        assert_eq!(p.name, "devhome");
+    }
+
+    #[test]
+    fn resolve_provider_an_unknown_name_is_refused_with_the_name_and_role() {
+        let providers = providers(&["anthropic"]);
+        let err = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "ghost",
+            "plan",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("ghost"), "{err}");
+        assert!(err.contains("plan"), "{err}");
     }
 }

@@ -893,6 +893,7 @@ pub struct ProjectRow {
     pub supervisor_model: Option<String>,
     pub supervisor_per_lineage: Option<i64>,
     pub protected: Vec<String>,
+    pub role_providers: std::collections::BTreeMap<String, String>,
 }
 
 pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
@@ -935,6 +936,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         supervisor_model: p.supervisor_model.clone(),
         supervisor_per_lineage: p.supervisor_per_lineage,
         protected: p.protected.clone().unwrap_or_default(),
+        role_providers: p.role_providers.clone(),
     })
 }
 
