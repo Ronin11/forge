@@ -5,6 +5,7 @@
 mod support;
 
 mod contracts;
+mod deploy;
 mod initiatives;
 mod landing;
 mod listing;

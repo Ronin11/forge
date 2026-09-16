@@ -925,6 +925,68 @@ impl From<&crate::store::ProjectRepo> for ProjectRepoRow {
     }
 }
 
+/// One row of `forge project deploy list --json`: a deploy target, mirrors
+/// `store::DeployTarget` (see docs/DEPLOY.md, "A target").
+#[derive(Serialize)]
+pub struct DeployTargetRow {
+    pub project: String,
+    pub name: String,
+    pub repo: String,
+    pub scope: Option<String>,
+    pub method: String,
+    pub args: std::collections::BTreeMap<String, String>,
+    pub check_cmd: String,
+    pub on_landing: bool,
+}
+
+impl From<&crate::store::DeployTarget> for DeployTargetRow {
+    fn from(t: &crate::store::DeployTarget) -> Self {
+        DeployTargetRow {
+            project: t.project.clone(),
+            name: t.name.clone(),
+            repo: t.repo.clone(),
+            scope: t.scope.clone(),
+            method: t.method.clone(),
+            args: t.args.clone(),
+            check_cmd: t.check_cmd.clone(),
+            on_landing: t.on_landing,
+        }
+    }
+}
+
+/// One row of `forge deploy log --json`: one deploy, mirrors
+/// `store::Deploy` (see docs/DEPLOY.md, "the record").
+#[derive(Serialize)]
+pub struct DeployRow {
+    pub id: i64,
+    pub project: String,
+    pub target: String,
+    pub sha: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub check_ok: Option<bool>,
+    pub check_output: String,
+    pub rolled_back_to: Option<String>,
+    pub reason: String,
+}
+
+impl From<&crate::store::Deploy> for DeployRow {
+    fn from(d: &crate::store::Deploy) -> Self {
+        DeployRow {
+            id: d.id,
+            project: d.project.clone(),
+            target: d.target.clone(),
+            sha: d.sha.clone(),
+            started_at: d.started_at,
+            finished_at: d.finished_at,
+            check_ok: d.check_ok,
+            check_output: d.check_output.clone(),
+            rolled_back_to: d.rolled_back_to.clone(),
+            reason: d.reason.clone(),
+        }
+    }
+}
+
 /// One row of `forge project list --json` / `forge project show --json`:
 /// a project, its repositories and their scopes, task counts by state,
 /// cost, and its own defaults (see docs/PROJECTS.md, "Defaults").

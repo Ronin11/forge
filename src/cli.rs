@@ -330,6 +330,35 @@ enum Cmd {
         #[command(subcommand)]
         cmd: InitiativeCmd,
     },
+    /// Run a deploy target now, or (with `log`) show what was deployed
+    /// when (see docs/DEPLOY.md)
+    Deploy(DeployArgs),
+}
+
+#[derive(Args)]
+pub struct DeployArgs {
+    #[command(subcommand)]
+    cmd: Option<DeploySub>,
+    /// The project the target belongs to (omit only with `log`)
+    project: Option<String>,
+    /// The target to deploy (omit only with `log`)
+    name: Option<String>,
+    /// The commit to deploy (default: the project repository's current HEAD)
+    #[arg(long)]
+    sha: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum DeploySub {
+    /// What was deployed when, and what the check said
+    Log {
+        project: String,
+        /// Only this target's deploys
+        name: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -460,6 +489,48 @@ enum ProjectCmd {
         /// Mark a backlog item done, by id
         #[arg(long)]
         done: Option<i64>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deploy targets: where this project's landed code runs (see docs/DEPLOY.md)
+    Deploy {
+        #[command(subcommand)]
+        cmd: ProjectDeployCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectDeployCmd {
+    /// Declare a deploy target: where landed code runs, how it gets
+    /// there, and what proves it is up
+    Add {
+        project: String,
+        name: String,
+        /// The repository this target deploys
+        #[arg(long)]
+        repo: PathBuf,
+        /// Paths within the repository this target owns, comma-separated
+        /// (default: the whole repository)
+        #[arg(long)]
+        scope: Option<String>,
+        /// The action file this target runs, e.g. "deploy-command"
+        #[arg(long)]
+        method: String,
+        /// An argument to the method, as `<key>=<value>` (repeatable)
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        /// A shell command, run where the thing runs, whose exit status
+        /// is the deploy's verdict
+        #[arg(long)]
+        check: String,
+        /// Run this target automatically after a landing on its repository
+        #[arg(long)]
+        on_landing: bool,
+    },
+    /// A project's deploy targets
+    List {
+        project: String,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -689,6 +760,29 @@ pub async fn main() -> Result<()> {
                 done,
                 json,
             } => project_backlog(name, add, done, json),
+            ProjectCmd::Deploy { cmd } => match cmd {
+                ProjectDeployCmd::Add {
+                    project,
+                    name,
+                    repo,
+                    scope,
+                    method,
+                    args,
+                    check,
+                    on_landing,
+                } => {
+                    project_deploy_add(project, name, repo, scope, method, args, check, on_landing)
+                }
+                ProjectDeployCmd::List { project, json } => project_deploy_list(project, json),
+            },
+        },
+        Cmd::Deploy(a) => match a.cmd {
+            Some(DeploySub::Log {
+                project,
+                name,
+                json,
+            }) => deploy_log(project, name, json),
+            None => deploy_run(a.project, a.name, a.sha),
         },
         Cmd::Initiative { cmd } => match cmd {
             InitiativeCmd::New {
@@ -1131,6 +1225,148 @@ fn project_backlog(name: String, add: Option<String>, done: Option<i64>, json: b
     }
     for it in &items {
         print_backlog_item(it);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_deploy_add(
+    project: String,
+    name: String,
+    repo: PathBuf,
+    scope: Option<String>,
+    method: String,
+    args: Vec<String>,
+    check: String,
+    on_landing: bool,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let repo = repo
+        .canonicalize()
+        .with_context(|| format!("--repo {}", repo.display()))?;
+    let scope_json = scope
+        .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
+        .transpose()?;
+    let mut arg_map = std::collections::BTreeMap::new();
+    for pair in &args {
+        let (k, v) = pair
+            .split_once('=')
+            .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
+        arg_map.insert(k.to_string(), v.to_string());
+    }
+    f.store.add_deploy_target(&crate::store::DeployTarget {
+        project: project.clone(),
+        name: name.clone(),
+        repo: repo.display().to_string(),
+        scope: scope_json,
+        method,
+        args: arg_map,
+        check_cmd: check,
+        on_landing,
+    })?;
+    out!("added deploy target {name} to project {project}");
+    Ok(())
+}
+
+fn print_deploy_target_row(t: &crate::view::DeployTargetRow) {
+    out!(
+        "{:<12} repo={} method={}{} on_landing={}",
+        t.name,
+        t.repo,
+        t.method,
+        t.scope
+            .as_ref()
+            .map(|s| format!(" scope={s}"))
+            .unwrap_or_default(),
+        t.on_landing
+    );
+    out!("{:<12} check={}", "", t.check_cmd);
+}
+
+fn project_deploy_list(project: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let rows: Vec<crate::view::DeployTargetRow> = f
+        .store
+        .deploy_targets(&project)?
+        .iter()
+        .map(crate::view::DeployTargetRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no deploy targets");
+        return Ok(());
+    }
+    for r in &rows {
+        print_deploy_target_row(r);
+    }
+    Ok(())
+}
+
+/// Run a deploy target now. No method runs yet (see docs/DEPLOY.md,
+/// "Build order"); this only checks the target exists and says so.
+fn deploy_run(project: Option<String>, name: Option<String>, _sha: Option<String>) -> Result<()> {
+    let (project, name) = match (project, name) {
+        (Some(p), Some(n)) => (p, n),
+        _ => bail!("usage: forge deploy <project> <name> [--sha <commit>]"),
+    };
+    let f = Forge::open(false, false)?;
+    let target = f
+        .store
+        .deploy_target(&project, &name)?
+        .with_context(|| format!("no deploy target {name} in project {project}"))?;
+    out!(
+        "deploy method {:?} is not yet available; see docs/DEPLOY.md",
+        target.method
+    );
+    Ok(())
+}
+
+fn print_deploy_row(r: &crate::view::DeployRow) {
+    let sha = &r.sha[..r.sha.len().min(8)];
+    let status = match r.check_ok {
+        Some(true) => "ok".to_string(),
+        Some(false) => match &r.rolled_back_to {
+            Some(to) => format!("FAILED, rolled back to {}", &to[..to.len().min(8)]),
+            None => "FAILED".to_string(),
+        },
+        None => "running".to_string(),
+    };
+    out!("{:<5} {:<12} {sha} {status}", r.id, r.target);
+    if !r.reason.is_empty() {
+        out!("{:<19}{}", "", r.reason);
+    }
+}
+
+fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let rows: Vec<crate::view::DeployRow> = f
+        .store
+        .deploys(&project, name.as_deref())?
+        .iter()
+        .map(crate::view::DeployRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no deploys");
+        return Ok(());
+    }
+    for r in &rows {
+        print_deploy_row(r);
     }
     Ok(())
 }
