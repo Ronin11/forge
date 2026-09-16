@@ -22,16 +22,22 @@
   const get = path => call('GET', path);
   const post = path => call('POST', path);
 
-  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins
+  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins, /projects,
+  // /projects/:name, /initiatives/:id
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
-    const m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
+    if (location.pathname === '/projects') return { page: 'projects' };
+    let m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
+    if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
+    m = location.pathname.match(/^\/initiatives\/(\d+)\/?$/);
+    if (m) return { page: 'initiative', id: Number(m[1]) };
+    m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
     return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
@@ -40,14 +46,19 @@
     const taskLinks = r.page === 'tasks' && r.id !== null
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a>`;
+    const projects = r.page === 'projects' || r.page === 'project';
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a>`;
   }
 
   async function render() {
     const r = route();
     nav(r);
     if (view && view.teardown) view.teardown();
-    view = r.page === 'plugins' ? pluginsView() : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
+    view = r.page === 'plugins' ? pluginsView()
+      : r.page === 'projects' ? projectsView()
+      : r.page === 'project' ? projectView(r.name)
+      : r.page === 'initiative' ? initiativeView(r.id)
+      : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
 
@@ -75,7 +86,7 @@
 
   // ---- list view
   function listView() {
-    let rows = [], done = false, loading = false, filters = { q: '', state: '', workflow: '' };
+    let rows = [], done = false, loading = false, filters = { q: '', state: '', workflow: '', project: '' };
     let observer = null, debounce = null;
     const qs = before => {
       const p = new URLSearchParams({ limit: PAGE });
@@ -116,6 +127,7 @@
           <td>${esc(t.workflow)}</td>
           <td class="num">${t.attempts}</td>
           <td class="num">${usd(t.cost_usd)}</td>
+          <td class="num">${t.initiative != null ? `<a href="/initiatives/${t.initiative}">${t.initiative}</a>` : ''}</td>
           <td class="mute" style="white-space:nowrap">${esc((t.created || '').slice(5, 16))}</td>
           <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
         </tr>`).join('');
@@ -138,13 +150,22 @@
             <input type="search" id="f-q" placeholder="search text or id" value="${esc(filters.q)}">
             <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified','withdrawn'].map(s => `<option>${s}</option>`).join('')}</select>
             <select id="f-workflow"><option value="">any workflow</option></select>
+            <select id="f-project"><option value="">any project</option></select>
           </div>
-          <table><thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>created</th><th>task</th></tr></thead><tbody id="tasks"></tbody></table>
+          <table><thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>init</th><th>created</th><th>task</th></tr></thead><tbody id="tasks"></tbody></table>
           <div id="sentinel" class="sentinel">loading…</div>`;
         $('#f-q').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.q = ev.target.value.trim(); page(true); }, 250); });
         $('#f-state').addEventListener('change', ev => { filters.state = ev.target.value; page(true); });
         $('#f-workflow').addEventListener('change', ev => { filters.workflow = ev.target.value; page(true); });
-        $('#tasks').addEventListener('click', ev => { const tr = ev.target.closest('tr.task'); if (tr) go(`/tasks/${tr.dataset.id}`); });
+        $('#f-project').addEventListener('change', ev => { filters.project = ev.target.value; page(true); });
+        get('/api/projects').then(rows => {
+          $('#f-project').innerHTML = '<option value="">any project</option>' + rows.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+        }).catch(() => {});
+        $('#tasks').addEventListener('click', ev => {
+          if (ev.target.closest('a')) return;
+          const tr = ev.target.closest('tr.task');
+          if (tr) go(`/tasks/${tr.dataset.id}`);
+        });
         observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) page(false); }, { rootMargin: '400px' });
         observer.observe($('#sentinel'));
         const s = await snapshotHead();
@@ -190,6 +211,7 @@
           <div><span class="k">repo</span>${esc(t.repo)}</div>
           <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
           <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
+          ${(t.project || t.initiative != null) ? `<div><span class="k">project</span>${t.project ? `<a href="/projects/${encodeURIComponent(t.project)}">${esc(t.project)}</a>` : '-'}${t.initiative != null ? ` · <a href="/initiatives/${t.initiative}">initiative ${t.initiative}</a>` : ''}</div>` : ''}
           ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
           ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
           ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
@@ -256,6 +278,93 @@
         });
         await refresh();
       },
+    };
+  }
+
+  // ---- projects view
+  function projectsView() {
+    function drawRows(rows) {
+      $('#project-rows').innerHTML = rows.map(p => `
+        <tr data-name="${esc(p.name)}">
+          <td><a href="/projects/${encodeURIComponent(p.name)}">${esc(p.name)}</a></td>
+          <td class="mute">${esc(p.purpose)}</td>
+          <td class="num">${p.queued}</td>
+          <td class="num">${p.running}</td>
+          <td class="num">${p.succeeded}</td>
+          <td class="num">${p.failed}</td>
+          <td class="num">${usd(p.cost_usd)}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="mute">no projects</td></tr>';
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Projects</h2>
+          <table><thead><tr><th>name</th><th>purpose</th><th class="num">queued</th><th class="num">running</th><th class="num">succeeded</th><th class="num">failed</th><th class="num">cost</th></tr></thead><tbody id="project-rows"></tbody></table>`;
+        drawRows(await get('/api/projects'));
+      },
+    };
+  }
+
+  // ---- one project: its initiatives and backlog
+  function projectView(name) {
+    async function draw() {
+      const enc = encodeURIComponent(name);
+      const [p, initiatives, backlog] = await Promise.all([
+        get(`/api/projects/${enc}`),
+        get(`/api/projects/${enc}/initiatives`),
+        get(`/api/projects/${enc}/backlog`),
+      ]);
+      const iniRows = initiatives.map(i => `
+        <tr><td><a href="/initiatives/${i.id}">${i.id}</a></td>
+          <td>${esc(i.state)}${i.held_rule ? ' (' + esc(i.held_rule) + ')' : ''}</td>
+          <td>${esc(i.outcome)}</td>
+          <td class="num">${usd(i.cost_usd)}</td></tr>`).join('');
+      const backlogRows = backlog.map(b => `
+        <div class="card"><span class="mute">#${b.id} · ${b.done_at ? 'done' : 'open'}</span> ${esc(b.text)}</div>`).join('');
+      $('#main').innerHTML = `
+        <h2>Project ${esc(p.name)}</h2>
+        <div class="card">
+          <div>${esc(p.purpose)}</div>
+          <div class="mute">workflow ${esc(p.workflow || 'direct')} · per-task ${p.per_task_usd != null ? usd(p.per_task_usd) : 'default'} · per-initiative ${p.per_initiative_usd != null ? usd(p.per_initiative_usd) : 'unlimited'}</div>
+          <div class="mute">tasks queued=${p.queued} running=${p.running} succeeded=${p.succeeded} failed=${p.failed} unverified=${p.unverified} blocked=${p.blocked} withdrawn=${p.withdrawn} · ${usd(p.cost_usd)}</div>
+        </div>
+        <h2>Initiatives</h2>
+        <table><thead><tr><th>id</th><th>state</th><th>outcome</th><th class="num">cost</th></tr></thead><tbody>${iniRows || '<tr><td colspan="4" class="mute">no initiatives</td></tr>'}</tbody></table>
+        <h2>Backlog</h2>
+        ${backlogRows || '<div class="card mute">no backlog items</div>'}`;
+    }
+    return {
+      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await draw(); },
+    };
+  }
+
+  // ---- one initiative: the outcome, its tasks, and the generated report
+  function initiativeView(id) {
+    async function draw() {
+      const d = await get(`/api/initiatives/${id}`);
+      const taskRows = (d.tasks || []).map(t => `
+        <tr><td><a href="/tasks/${t.id}">${t.id}</a></td>
+          <td class="state ${esc(t.state)}">${esc(t.state)}</td>
+          <td>${esc(t.reason)}</td></tr>`).join('');
+      const refused = (d.refused || []).map(r => `<div>${esc(r.rule)}: ${r.count}</div>`).join('');
+      const rulings = (d.rulings || []).map(r => `
+        <div class="card"><b>task ${r.task_id}</b> ${esc(r.question)}<div class="mute">${esc(r.answer)}</div></div>`).join('');
+      const questions = (d.questions || []).map(q => `
+        <div class="card"><b>task ${q.task_id}</b> ${esc(q.question)}<div class="mute">${q.answer ? esc(q.answer) : 'unanswered'}</div></div>`).join('');
+      $('#main').innerHTML = `
+        <h2>Initiative ${d.id} <span class="mute">· <a href="/projects/${encodeURIComponent(d.project)}">${esc(d.project)}</a></span></h2>
+        <div class="card">
+          <div><b>${esc(d.outcome)}</b></div>
+          <div class="mute">state ${esc(d.state)}${d.held_rule ? ' (' + esc(d.held_rule) + ')' : ''} · ${usd(d.cost_usd)}${d.budget_usd != null ? ' of ' + usd(d.budget_usd) : ''}${d.elapsed_secs != null ? ' · ' + secs(d.elapsed_secs * 1000) + ' elapsed' : ''}</div>
+        </div>
+        <h2>Tasks</h2>
+        <table><thead><tr><th>id</th><th>state</th><th>reason</th></tr></thead><tbody>${taskRows || '<tr><td colspan="3" class="mute">no tasks</td></tr>'}</tbody></table>
+        ${refused ? `<h2>Refused</h2><div class="card">${refused}</div>` : ''}
+        ${rulings ? `<h2>Rulings</h2>${rulings}` : ''}
+        ${questions ? `<h2>Questions</h2>${questions}` : ''}`;
+    }
+    return {
+      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await draw(); },
     };
   }
 
