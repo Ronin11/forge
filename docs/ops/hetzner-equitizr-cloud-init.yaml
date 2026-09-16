@@ -1,0 +1,49 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages: [caddy, rsync, git, curl, ca-certificates, build-essential, python3, unattended-upgrades]
+users:
+  - name: equitizr
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "<the forge-deploy public key>"
+      - "<the operator public key>"
+write_files:
+  - path: /etc/caddy/Caddyfile
+    permissions: "0644"
+    content: |
+      {
+        acme_ca https://acme-v02.api.letsencrypt.org/directory
+      }
+      equitizr.com, www.equitizr.com {
+        encode zstd gzip
+        reverse_proxy 127.0.0.1:3000
+      }
+  - path: /home/equitizr/.config/systemd/user/equitizr.service
+    permissions: "0644"
+    defer: true
+    content: |
+      [Unit]
+      Description=Equitizr (Next.js)
+      After=network.target
+      [Service]
+      WorkingDirectory=%h/app
+      Environment=NODE_ENV=production
+      Environment=PORT=3000
+      Environment=EQUITIZR_READONLY=1
+      Environment=EQUITIZR_DB=%h/data/equitizr.db
+      Environment=NEXT_PUBLIC_SITE_URL=https://equitizr.com
+      ExecStart=%h/.local/bin/mise exec -- npm run start
+      Restart=on-failure
+      RestartSec=3
+      [Install]
+      WantedBy=default.target
+runcmd:
+  - loginctl enable-linger equitizr
+  - mkdir -p /home/equitizr/app /home/equitizr/data /home/equitizr/.config/systemd/user
+  - chown -R equitizr:equitizr /home/equitizr
+  - sudo -u equitizr -H bash -lc 'curl -fsSL https://mise.run | sh && ~/.local/bin/mise use -g node@22 >/dev/null 2>&1 && ~/.local/bin/mise exec -- node --version > ~/node-version.txt'
+  - systemctl enable --now caddy
+  - systemctl restart caddy
+  - touch /home/equitizr/.provisioned
