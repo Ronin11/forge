@@ -126,6 +126,13 @@ pub struct Provider {
     /// reaches its own cap (see `worker::window_hold`).
     pub five_hour_max: f64,
     pub seven_day_max: f64,
+    /// How many times `run_codex` may nudge a phase one that made no
+    /// progress (no edit, or an edit left uncommitted) before it runs phase
+    /// two: a fixed, schema-free prompt resuming the same thread, told to
+    /// do the work and commit rather than describe it (dev.home's
+    /// qwen3-coder:30b, tasks 309/310/313). 0 (the default) leaves today's
+    /// behavior unchanged; never consulted for `Runner::ClaudeCli`.
+    pub nudges: u32,
 }
 
 impl Default for Provider {
@@ -142,6 +149,7 @@ impl Default for Provider {
             price_output_per_million: 0.0,
             five_hour_max: 0.9,
             seven_day_max: 0.95,
+            nudges: 0,
         }
     }
 }
@@ -243,6 +251,28 @@ pub fn command_in(
     }
 }
 
+/// Spawns the command `make` builds, retrying briefly on `ETXTBSY`. A
+/// script just written and chmod'd can still read as busy for a few
+/// milliseconds after the writer closes it — a kernel race distinct from
+/// the bwrap bind-mount one `run_with_relaunch` retries, since this one
+/// never gets as far as a child process; there is nothing to relaunch,
+/// only the spawn to redo. `make` is called again on each attempt because
+/// a `Command` is consumed by `spawn`.
+async fn spawn_retrying_etxtbsy(
+    mut make: impl FnMut() -> tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    const MAX_ATTEMPTS: u32 = 20;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match make().spawn() {
+            Err(e) if attempt < MAX_ATTEMPTS && e.raw_os_error() == Some(libc::ETXTBSY) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 pub struct Launch<'a> {
     pub task_id: i64,
     pub worktree: &'a Path,
@@ -259,6 +289,12 @@ pub struct Launch<'a> {
     pub provider: &'a Provider,
     /// A CLI session to continue instead of starting fresh.
     pub resume: Option<&'a str>,
+    /// The attempt's own starting commit — the original attempt's, across a
+    /// resume, since the agent's report covers the whole session (see
+    /// `attempt::new_attempt`). `run_codex`'s nudge loop compares the
+    /// worktree against this to tell "no edit at all" from "edited, not
+    /// committed".
+    pub start_sha: &'a str,
     /// Whether this step is expected to change files (code, tests). A
     /// read-only step (review, plan) is never faulted for not editing.
     pub writes: bool,
@@ -419,13 +455,16 @@ async fn run_once(
     report: &Reporter,
     log: &mut File,
 ) -> Result<(Outcome, String)> {
-    let mut child = Command::from(command_in(sandbox, worktree, argv, identity))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning {bin}"))?;
+    let mut child = spawn_retrying_etxtbsy(|| {
+        let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    })
+    .await
+    .with_context(|| format!("spawning {bin}"))?;
 
     {
         let mut stdin = child.stdin.take().context("agent stdin")?;
@@ -822,6 +861,54 @@ fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
     argv
 }
 
+/// A nudge's fixed prompt for a phase one that made no edit at all: told
+/// once, plainly, to do the work rather than end the turn with only a
+/// description of it.
+const CODEX_NUDGE_IMPLEMENT_PROMPT: &str = "You have not made any changes yet. \
+Implement the task now: make the change in the worktree, then commit it. Do \
+not just describe what you would do — do it, then stop.";
+
+/// A nudge's fixed prompt for a phase one that edited but left the tree
+/// dirty.
+const CODEX_NUDGE_COMMIT_PROMPT: &str =
+    "You have uncommitted changes in the worktree. Commit them now, then stop.";
+
+/// Whether phase one's own result already carries a `needs_input` worth
+/// stopping for. No schema was ever put in front of phase one, so this only
+/// fires when the model happened to answer in the envelope's shape
+/// unprompted; its `question` must be long enough to carry real content
+/// (over 60 characters) and not merely ask whether it may proceed — every
+/// task's preamble already says it may.
+fn phase_one_needs_real_input(out: &Outcome) -> bool {
+    let Some(structured) = &out.structured else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(structured) else {
+        return false;
+    };
+    let Some(question) = v["needs_input"]["question"].as_str() else {
+        return false;
+    };
+    let q = question.trim();
+    if q.chars().count() <= 60 {
+        return false;
+    }
+    let lower = q.to_ascii_lowercase();
+    let asks_to_proceed = [
+        "may i proceed",
+        "should i proceed",
+        "ok to proceed",
+        "okay to proceed",
+        "want me to proceed",
+        "shall i continue",
+        "should i continue",
+        "may i continue",
+    ]
+    .iter()
+    .any(|p| lower.contains(p));
+    !asks_to_proceed
+}
+
 /// Phase two's fixed prompt: no schema was ever put in front of the model
 /// while it worked, so this is the first it hears of the shape its answer
 /// must take. Named fields match `envelope::SCHEMA` so the model has enough
@@ -846,13 +933,16 @@ async fn run_codex_phase(
     out: &mut Outcome,
     watch: &mut Watch,
 ) -> Result<(Option<i32>, bool, String)> {
-    let mut child = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning {}", argv[0]))?;
+    let mut child = spawn_retrying_etxtbsy(|| {
+        let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
+        c.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    })
+    .await
+    .with_context(|| format!("spawning {}", argv[0]))?;
 
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {
@@ -998,7 +1088,74 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     out.exit_code = exit1;
     out.timed_out = timed_out1;
 
-    // Whatever phase one ended with, ask the same thread to report itself
+    // A weak model's phase one that made no real progress (dev.home's
+    // qwen3-coder:30b, tasks 309/313: three or four files read, then a
+    // closing message saying the code was analysed; task 310: edits left
+    // uncommitted) gets nudged, resuming the same thread with no schema and
+    // a fixed prompt to do the work and commit — up to `nudges` times, each
+    // one fed through the same early-ending `Watch` phase one used. Gated
+    // on `writes`: a read-only step (review, plan) is never told to
+    // "implement the task now". A substantive `needs_input` already in
+    // phase one's own result means the run is genuinely blocked, not just
+    // quiet, so it is never nudged past.
+    if l.writes && l.provider.nudges > 0 && !phase_one_needs_real_input(&out) {
+        let mut n = 0u32;
+        while n < l.provider.nudges {
+            let Some(thread_id) = out.session_id.clone() else {
+                break;
+            };
+            let dirty = !crate::git::dirty_paths(l.worktree)
+                .await
+                .unwrap_or_default()
+                .is_empty();
+            let head = crate::git::head(l.worktree).await.ok();
+            let (reason, prompt) = if !dirty && head.as_deref() == Some(l.start_sha) {
+                ("no-edit", CODEX_NUDGE_IMPLEMENT_PROMPT)
+            } else if dirty {
+                ("uncommitted", CODEX_NUDGE_COMMIT_PROMPT)
+            } else {
+                // Edited and committed: nothing left to nudge.
+                break;
+            };
+            n += 1;
+            writeln!(
+                log,
+                "{{\"type\":\"forge_nudge\",\"forge_ms\":{},\"n\":{n},\"reason\":{}}}",
+                start.elapsed().as_millis(),
+                serde_json::to_string(reason)?
+            )?;
+            l.report.emit(
+                l.task_id,
+                Event::Note {
+                    text: &format!(
+                        "nudge    {reason} ({n}/{}); resuming with a fixed prompt",
+                        l.provider.nudges
+                    ),
+                },
+            );
+
+            let mut argv_n: Vec<String> = vec![bin.clone(), "exec".to_string()];
+            argv_n.extend(codex_common_argv(&l));
+            argv_n.extend(l.provider.extra_args.iter().cloned());
+            argv_n.push("resume".into());
+            argv_n.push(thread_id);
+            argv_n.push(prompt.to_string());
+
+            let (exit_n, timed_out_n, stderr_n) = run_codex_phase(
+                &l, &argv_n, &extra_env, &start, &mut log, &mut out, &mut watch,
+            )
+            .await?;
+            out.exit_code = exit_n;
+            out.timed_out = out.timed_out || timed_out_n;
+            stderr_text.push_str(&stderr_n);
+            if out.ended_early.is_some() {
+                break;
+            }
+        }
+    }
+
+    // Whatever phase one (or the last nudge) ended with, ask the same
+    // thread to report itself
     // structurally now — but only when there is a thread to resume; a run
     // that never got as far as `thread.started` has nothing for phase two
     // to continue.
@@ -1065,6 +1222,7 @@ mod tests {
     use super::*;
     use crate::config::EarlyEnding;
     use serde_json::json;
+    use std::path::PathBuf;
 
     fn thresholds(
         no_edit_calls: u32,
@@ -1336,5 +1494,255 @@ mod tests {
             Some("`grep foo` run 2 times"),
             "the repeated command trips the same Watch the claude runner uses"
         );
+    }
+
+    /// A codex fake told apart, like `codex-ok.sh`, by whether its argv
+    /// carries `--output-schema` (phase two) or `resume` with no schema (a
+    /// nudge): with neither, it plays phase one.
+    fn write_fake(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("codex-fake.sh");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?} in {}",
+            dir.display()
+        );
+    }
+
+    fn init_repo_with_commit() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "--quiet"]);
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "base",
+            ],
+        );
+        dir
+    }
+
+    fn nudge_provider(nudges: u32) -> Provider {
+        Provider {
+            runner: Runner::CodexCli,
+            nudges,
+            ..Provider::default()
+        }
+    }
+
+    async fn run_codex_with_fake(
+        dir: &Path,
+        step: &str,
+        script: &str,
+        nudges: u32,
+        start_sha: &str,
+    ) -> (Outcome, String) {
+        // The fake script itself lives outside the worktree Forge checks
+        // `git status` against; the previous version of this helper put it
+        // (and the log) inside the worktree, which made every dirty check
+        // see it as an untracked file and nudge on every turn.
+        let scratch = tempfile::tempdir().unwrap();
+        let fake = write_fake(scratch.path(), script);
+        let key = format!(
+            "FORGE2_CODEX_BIN_{}",
+            step.to_ascii_uppercase().replace('-', "_")
+        );
+        // SAFETY: `step` (and so `key`) is unique to each test in this file,
+        // so setting it process-wide races with nothing else that reads it.
+        unsafe { std::env::set_var(&key, fake.to_string_lossy().to_string()) };
+        let log_path = scratch.path().join("log.jsonl");
+        let report = crate::report::Reporter::new(false, None);
+        let provider = nudge_provider(nudges);
+        let out = run_codex(Launch {
+            task_id: 1,
+            worktree: dir,
+            prompt: "do the task",
+            model: "fake-model",
+            max_turns: 30,
+            timeout: Duration::from_secs(5),
+            log_path: &log_path,
+            sandbox: None,
+            report: &report,
+            step,
+            provider: &provider,
+            resume: None,
+            writes: true,
+            start_sha,
+            schema: crate::envelope::SCHEMA,
+            early_ending: thresholds(100, 100, 100, 2),
+        })
+        .await
+        .unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        (out, log)
+    }
+
+    /// A phase one told apart by argv alone: `--output-schema` is phase
+    /// two, a bare `resume` with no schema is a nudge, and neither is
+    /// phase one itself.
+    const NUDGE_FAKE_PHASE_TWO: &str = "\
+if [ \"$has_schema\" = \"1\" ]; then\n\
+  echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"r\",\"type\":\"agent_message\",\"text\":\"{\\\"schema_version\\\":1,\\\"summary\\\":\\\"done\\\",\\\"needs_input\\\":null,\\\"changes\\\":[{\\\"path\\\":\\\"answer.txt\\\",\\\"kind\\\":\\\"added\\\"}],\\\"checks_run\\\":[],\\\"claims\\\":[]}\"}}'\n\
+  echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}'\n";
+
+    const NUDGE_FAKE_HEADER: &str = "#!/bin/sh\n\
+has_schema=0\n\
+has_resume=0\n\
+for a in \"$@\"; do\n\
+  case \"$a\" in\n\
+    --output-schema) has_schema=1 ;;\n\
+    resume) has_resume=1 ;;\n\
+  esac\n\
+done\n";
+
+    #[tokio::test]
+    async fn a_phase_one_with_only_reads_triggers_one_nudge_that_edits_and_commits() {
+        let dir = init_repo_with_commit();
+        let base = crate::git::head(dir.path()).await.unwrap();
+        let script = format!(
+            "{NUDGE_FAKE_HEADER}{NUDGE_FAKE_PHASE_TWO}\
+elif [ \"$has_resume\" = \"1\" ]; then\n\
+  echo '{{\"type\":\"item.started\",\"item\":{{\"id\":\"n0\",\"type\":\"command_execution\",\"command\":\"write and commit\"}}}}'\n\
+  echo 42 > answer.txt\n\
+  git add -A\n\
+  git commit -q -m nudge\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"n0\",\"type\":\"command_execution\",\"command\":\"write and commit\",\"exit_code\":0}}}}'\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"n1\",\"type\":\"agent_message\",\"text\":\"done\"}}}}'\n\
+  echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}'\n\
+else\n\
+  echo '{{\"type\":\"thread.started\",\"thread_id\":\"nudge-sess-1\"}}'\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i0\",\"type\":\"agent_message\",\"text\":\"I have analysed the code.\"}}}}'\n\
+  echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}'\n\
+fi\n"
+        );
+        let (out, log) =
+            run_codex_with_fake(dir.path(), "nudge-test-noedit", &script, 3, &base).await;
+
+        let nudges: Vec<&str> = log.lines().filter(|l| l.contains("forge_nudge")).collect();
+        assert_eq!(
+            nudges.len(),
+            1,
+            "one nudge makes the edit and commits it, so no more are needed: {log}"
+        );
+        assert!(
+            nudges[0].contains("\"reason\":\"no-edit\""),
+            "{}",
+            nudges[0]
+        );
+        let head = crate::git::head(dir.path()).await.unwrap();
+        assert_ne!(head, base, "the nudged turn committed");
+        assert!(
+            crate::git::dirty_paths(dir.path())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let structured: Value =
+            serde_json::from_str(&out.structured.expect("phase two ran")).unwrap();
+        assert_eq!(structured["summary"], "done");
+    }
+
+    #[tokio::test]
+    async fn a_dirty_tree_triggers_the_commit_nudge() {
+        let dir = init_repo_with_commit();
+        let base = crate::git::head(dir.path()).await.unwrap();
+        let script = format!(
+            "{NUDGE_FAKE_HEADER}{NUDGE_FAKE_PHASE_TWO}\
+elif [ \"$has_resume\" = \"1\" ]; then\n\
+  echo '{{\"type\":\"item.started\",\"item\":{{\"id\":\"n0\",\"type\":\"command_execution\",\"command\":\"git commit\"}}}}'\n\
+  git add -A\n\
+  git commit -q -m nudge\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"n0\",\"type\":\"command_execution\",\"command\":\"git commit\",\"exit_code\":0}}}}'\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"n1\",\"type\":\"agent_message\",\"text\":\"done\"}}}}'\n\
+  echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}'\n\
+else\n\
+  echo '{{\"type\":\"thread.started\",\"thread_id\":\"nudge-sess-2\"}}'\n\
+  echo '{{\"type\":\"item.started\",\"item\":{{\"id\":\"i0\",\"type\":\"command_execution\",\"command\":\"echo 42 > answer.txt\"}}}}'\n\
+  echo 42 > answer.txt\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i0\",\"type\":\"command_execution\",\"command\":\"echo 42 > answer.txt\",\"exit_code\":0}}}}'\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i1\",\"type\":\"agent_message\",\"text\":\"wrote the file\"}}}}'\n\
+  echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}'\n\
+fi\n"
+        );
+        let (out, log) =
+            run_codex_with_fake(dir.path(), "nudge-test-dirty", &script, 3, &base).await;
+
+        let nudges: Vec<&str> = log.lines().filter(|l| l.contains("forge_nudge")).collect();
+        assert_eq!(
+            nudges.len(),
+            1,
+            "the tree is clean and committed after one: {log}"
+        );
+        assert!(
+            nudges[0].contains("\"reason\":\"uncommitted\""),
+            "{}",
+            nudges[0]
+        );
+        let head = crate::git::head(dir.path()).await.unwrap();
+        assert_ne!(head, base, "the nudged turn committed the pending edit");
+        assert!(
+            crate::git::dirty_paths(dir.path())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let structured: Value =
+            serde_json::from_str(&out.structured.expect("phase two ran")).unwrap();
+        assert_eq!(structured["summary"], "done");
+    }
+
+    #[tokio::test]
+    async fn nudges_zero_leaves_behavior_unchanged() {
+        let dir = init_repo_with_commit();
+        let base = crate::git::head(dir.path()).await.unwrap();
+        // The same read-only phase one as the no-edit nudge test, but with
+        // nudges = 0 no resume-without-schema call should ever be made; the
+        // `elif` branch below is dead code, proof that reaching it would be
+        // the bug.
+        let script = format!(
+            "{NUDGE_FAKE_HEADER}{NUDGE_FAKE_PHASE_TWO}\
+elif [ \"$has_resume\" = \"1\" ]; then\n\
+  echo 'should never run' >&2\n\
+  exit 1\n\
+else\n\
+  echo '{{\"type\":\"thread.started\",\"thread_id\":\"nudge-sess-3\"}}'\n\
+  echo '{{\"type\":\"item.completed\",\"item\":{{\"id\":\"i0\",\"type\":\"agent_message\",\"text\":\"I have analysed the code.\"}}}}'\n\
+  echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}'\n\
+fi\n"
+        );
+        let (out, log) =
+            run_codex_with_fake(dir.path(), "nudge-test-zero", &script, 0, &base).await;
+
+        assert!(
+            !log.contains("forge_nudge"),
+            "nudges = 0 never resumes without a schema: {log}"
+        );
+        let head = crate::git::head(dir.path()).await.unwrap();
+        assert_eq!(
+            head, base,
+            "phase one made no commit and nothing nudged it to"
+        );
+        let structured: Value =
+            serde_json::from_str(&out.structured.expect("phase two still runs as today")).unwrap();
+        assert_eq!(structured["summary"], "done");
     }
 }

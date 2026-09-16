@@ -203,6 +203,7 @@ pub async fn run_attempt(
         &log_path,
         resume.map(|r| r.session.as_str()),
         contract.writes(),
+        &a.start_sha,
         provider,
     )
     .await?;
@@ -351,6 +352,7 @@ async fn launch(
     log_path: &Path,
     resume: Option<&str>,
     writes: bool,
+    start_sha: &str,
     provider: &agent::Provider,
 ) -> Result<agent::Outcome, Fault> {
     let outcome = agent::run(agent::Launch {
@@ -367,6 +369,7 @@ async fn launch(
         provider,
         resume,
         writes,
+        start_sha,
         schema: crate::envelope::SCHEMA,
         early_ending: f.early_ending,
     })

@@ -423,6 +423,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         provider,
         resume: None,
         writes: false,
+        start_sha: &a.start_sha,
         schema: SCHEMA,
         early_ending: f.early_ending,
     })
