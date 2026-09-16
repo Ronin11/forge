@@ -96,9 +96,14 @@ A console error or a failed request to the site's own origin fails the
 deploy, exactly like a failed check: rollback and the human rung below
 both apply. A failed request to a third party (an ad network, an
 analytics beacon) is recorded but does not fail the deploy; a target
-cannot promise what it does not control. The result lands on the
-deploy row as `smoke_ok` and `smoke_json`, and `forge deploy log`
-shows it. A target with no `--smoke` url skips the step entirely.
+cannot promise what it does not control. Chromium writes its own
+"Failed to load resource" console message for every failed request,
+including third-party ones already listed among the failed requests;
+that boilerplate is recorded but does not fail the deploy either, so a
+target is never failed purely for a third party's outage. The result
+lands on the deploy row as `smoke_ok` and `smoke_json`, and `forge
+deploy log` shows it. A target with no `--smoke` url skips the step
+entirely.
 
 ## When a deploy runs
 

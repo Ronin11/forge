@@ -1,6 +1,6 @@
 name = "deploy-smoke"
 kind = "operation"
-description = "after a deploy target's check passes, open its smoke url in headless Chromium through Playwright (the same sandbox flags the playwright operation launches with), wait for network idle up to 20s, and record every request that failed or returned status 400 or above (url and status), every console error, the page title, and a full-page screenshot, written to FORGE_ARG_OUT_DIR as smoke.json and screenshot.png. Exits nonzero when there is any console error or any failed request to the url's own origin; third-party failures are listed in smoke.json without failing the check. Reads FORGE_ARG_URL and FORGE_ARG_OUT_DIR from the environment, injected by `forge deploy` (see docs/DEPLOY.md, 'A deterministic smoke step')."
+description = "after a deploy target's check passes, open its smoke url in headless Chromium through Playwright (the same sandbox flags the playwright operation launches with), wait for network idle up to 20s, and record every request that failed or returned status 400 or above (url and status), every console error, the page title, and a full-page screenshot, written to FORGE_ARG_OUT_DIR as smoke.json and screenshot.png. Exits nonzero when there is any console error or any failed request to the url's own origin; third-party failures, including the browser's own 'Failed to load resource' console messages for third-party requests, are listed in smoke.json without failing the check. Reads FORGE_ARG_URL and FORGE_ARG_OUT_DIR from the environment, injected by `forge deploy` (see docs/DEPLOY.md, 'A deterministic smoke step')."
 run = ["bash", "-c", '''
 set -e
 url="$FORGE_ARG_URL"
@@ -36,7 +36,8 @@ async function main() {
   const page = await browser.newPage();
   page.on("console", (msg) => {
     if (msg.type() === "error") {
-      consoleErrors.push({ text: msg.text() });
+      const loc = msg.location();
+      consoleErrors.push({ text: msg.text(), url: loc && loc.url ? loc.url : "" });
     }
   });
   page.on("requestfailed", (request) => {
@@ -66,23 +67,42 @@ async function main() {
     .catch(() => {});
   await browser.close();
 
-  const withOrigin = failedRequests.map((r) => {
-    let origin = "";
+  const originOf = (u) => {
     try {
-      origin = new URL(r.url).origin;
+      return new URL(u).origin;
     } catch {
       // stays "", so it is never mistaken for the site's own origin below.
+      return "";
     }
+  };
+  const withOrigin = failedRequests.map((r) => {
+    const origin = originOf(r.url);
     return { ...r, origin: origin && origin === ownOrigin ? "own" : "third_party" };
   });
   const ownFailures = withOrigin.filter((r) => r.origin === "own");
-  const ok = consoleErrors.length === 0 && ownFailures.length === 0;
+
+  const consoleWithOrigin = consoleErrors.map((c) => {
+    const origin = originOf(c.url);
+    return {
+      ...c,
+      origin: origin && origin === ownOrigin ? "own" : "third_party",
+      resource_load: c.text.startsWith("Failed to load resource"),
+    };
+  });
+  // Chromium itself writes a "Failed to load resource" console error for
+  // every failed request, including third-party ones already listed in
+  // failed_requests; only the page's own script output, or a resource-load
+  // message for the site's own origin, should fail the deploy.
+  const failingConsole = consoleWithOrigin.filter(
+    (c) => !(c.resource_load && c.origin === "third_party")
+  );
+  const ok = failingConsole.length === 0 && ownFailures.length === 0;
 
   const result = {
     url,
     title,
     ok,
-    console_errors: consoleErrors,
+    console_errors: consoleWithOrigin,
     failed_requests: withOrigin,
     screenshot,
   };

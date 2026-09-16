@@ -2631,7 +2631,7 @@ impl Store {
     pub fn deploys_for_task(&self, task_id: i64) -> Result<Vec<Deploy>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json
              FROM deploys WHERE task_id=?1 ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![task_id], deploy_from_row)?;
