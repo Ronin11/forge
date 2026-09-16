@@ -71,6 +71,11 @@ pub struct Subject<'a> {
     /// The tests contract's scratch directory for the red-on-base run;
     /// created and removed by the verdict. Other contracts leave it None.
     pub scratch: Option<&'a Path>,
+    /// This attempt's provider set `report_from_git` (see
+    /// `agent::Provider::report_from_git`): the kernel fills the result's
+    /// `changes[]` from git before the L0 rules run, instead of holding
+    /// the model to its own list.
+    pub report_from_git: bool,
 }
 
 /// What git says about the branch at verdict time.
@@ -97,6 +102,9 @@ pub struct Verdict {
     pub files_changed: i64,
     pub dirty: bool,
     pub envelope: Option<Envelope>,
+    /// Whether `envelope`'s `changes[]` was filled from git rather than
+    /// reported by the agent (see `Rule::ChangesFromGit`).
+    pub changes_from_git: bool,
     pub checks: Vec<CheckResult>,
     pub state: AttemptState,
     pub reason: String,
@@ -111,6 +119,7 @@ impl Verdict {
             files_changed: facts.changed.len() as i64,
             dirty: !facts.dirty.is_empty(),
             envelope: None,
+            changes_from_git: false,
             checks: Vec::new(),
             state: AttemptState::Running,
             reason: String::new(),
@@ -144,6 +153,7 @@ pub enum Rule {
     ConfigUntouched,
     HasCommits,
     ChangesMatchGit,
+    ChangesFromGit,
     ClaimsHaveEvidence,
     ProtectedPaths,
     PathsInScope,
@@ -162,13 +172,14 @@ pub enum Rule {
 }
 
 impl Rule {
-    pub const ALL: [Rule; 21] = [
+    pub const ALL: [Rule; 22] = [
         Rule::ResultStructured,
         Rule::SuiteNamesAHiddenTest,
         Rule::CleanTree,
         Rule::ConfigUntouched,
         Rule::HasCommits,
         Rule::ChangesMatchGit,
+        Rule::ChangesFromGit,
         Rule::ClaimsHaveEvidence,
         Rule::ProtectedPaths,
         Rule::PathsInScope,
@@ -194,6 +205,7 @@ impl Rule {
             Rule::ConfigUntouched => "forge.toml-untouched",
             Rule::HasCommits => "has-commits",
             Rule::ChangesMatchGit => "changes-match-git",
+            Rule::ChangesFromGit => "changes-from-git",
             Rule::ClaimsHaveEvidence => "claims-have-evidence",
             Rule::ProtectedPaths => "protected-paths",
             Rule::PathsInScope => "paths-in-scope",
@@ -213,11 +225,12 @@ impl Rule {
     }
 
     /// Which level the row is reported at: `red-on-base` runs the suite,
-    /// so it is L1; `executed-something` is a note that never decides.
+    /// so it is L1; `executed-something` and `changes-from-git` are notes
+    /// that never decide.
     pub fn level(self) -> &'static str {
         match self {
             Rule::RedOnBase => "L1",
-            Rule::ExecutedSomething => "note",
+            Rule::ExecutedSomething | Rule::ChangesFromGit => "note",
             _ => "L0",
         }
     }
@@ -310,6 +323,47 @@ pub(crate) fn changes_match_git(
     (unreported, phantom)
 }
 
+/// The report's `changes[]`, filled from git instead of the model: every
+/// path this attempt added, modified, deleted or renamed since it started,
+/// read the same way `changes_match_git` reconciles a report against git.
+/// A rename is split into its two endpoints, so it reads like any other
+/// add and delete a model would have written by hand.
+async fn derive_changes(wt: &Path, start_sha: &str) -> Result<Vec<Change>> {
+    let mut changes = Vec::new();
+    for gc in crate::git::changed_with_status(wt, start_sha, "HEAD").await? {
+        match gc {
+            crate::git::GitChange::Added(path) => changes.push(Change {
+                path,
+                kind: "added".into(),
+                summary: String::new(),
+            }),
+            crate::git::GitChange::Modified(path) => changes.push(Change {
+                path,
+                kind: "modified".into(),
+                summary: String::new(),
+            }),
+            crate::git::GitChange::Deleted(path) => changes.push(Change {
+                path,
+                kind: "deleted".into(),
+                summary: String::new(),
+            }),
+            crate::git::GitChange::Renamed { from, to } => {
+                changes.push(Change {
+                    path: to.clone(),
+                    kind: "modified".into(),
+                    summary: format!("moved from {from}"),
+                });
+                changes.push(Change {
+                    path: from,
+                    kind: "deleted".into(),
+                    summary: format!("moved to {to}"),
+                });
+            }
+        }
+    }
+    Ok(changes)
+}
+
 /// What every step's L0 shares: git facts, the envelope, the rows that do
 /// not depend on the step, and the question if the agent stopped.
 pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
@@ -355,7 +409,7 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
     );
     let mut rows = Vec::new();
     let parsed = envelope::parse(agent.structured.as_deref(), &agent.result_text);
-    let env = match &parsed {
+    let mut env = match &parsed {
         Ok(Some(e)) => Some(e.clone()),
         _ => None,
     };
@@ -422,31 +476,36 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
         commits > 0,
         "no commits on the branch".into(),
     ));
-    if let Some(e) = &env {
-        let (unreported, phantom) = changes_match_git(
-            &changed_this_attempt,
-            &renamed_this_attempt,
-            &dirty,
-            &e.changes,
-        );
-        let mut detail = String::new();
-        if !unreported.is_empty() {
-            detail.push_str(&format!(
-                "changed in git during this attempt but not reported (lockfiles count): {}\n",
-                unreported.join(", ")
+    if let Some(e) = &mut env {
+        if s.report_from_git {
+            e.changes = derive_changes(worktree, start_sha).await?;
+            rows.push(l0(Rule::ChangesFromGit, true, String::new()));
+        } else {
+            let (unreported, phantom) = changes_match_git(
+                &changed_this_attempt,
+                &renamed_this_attempt,
+                &dirty,
+                &e.changes,
+            );
+            let mut detail = String::new();
+            if !unreported.is_empty() {
+                detail.push_str(&format!(
+                    "changed in git during this attempt but not reported (lockfiles count): {}\n",
+                    unreported.join(", ")
+                ));
+            }
+            if !phantom.is_empty() {
+                detail.push_str(&format!(
+                    "reported but unchanged during this attempt: {} (an earlier attempt's changes are already on the record; list only what this attempt added, modified or deleted)",
+                    phantom.join(", ")
+                ));
+            }
+            rows.push(l0(
+                Rule::ChangesMatchGit,
+                unreported.is_empty() && phantom.is_empty(),
+                detail.trim().to_string(),
             ));
         }
-        if !phantom.is_empty() {
-            detail.push_str(&format!(
-                "reported but unchanged during this attempt: {} (an earlier attempt's changes are already on the record; list only what this attempt added, modified or deleted)",
-                phantom.join(", ")
-            ));
-        }
-        rows.push(l0(
-            Rule::ChangesMatchGit,
-            unreported.is_empty() && phantom.is_empty(),
-            detail.trim().to_string(),
-        ));
         let bare: Vec<&str> = e
             .claims
             .iter()
@@ -899,6 +958,7 @@ pub async fn verify_directive(
                 emit_rows(s.report, s.task_id, &v.checks);
             }
         }
+        v.changes_from_git = s.report_from_git && common.envelope.is_some();
         v.envelope = common.envelope;
     }
     v.settle(
@@ -915,7 +975,10 @@ pub async fn verify_directive(
 fn contract_keeps(contract: Contract, rule: Rule) -> bool {
     match contract {
         Contract::Code | Contract::Tests => true,
-        Contract::Review => !matches!(rule, Rule::HasCommits | Rule::ChangesMatchGit),
+        Contract::Review => !matches!(
+            rule,
+            Rule::HasCommits | Rule::ChangesMatchGit | Rule::ChangesFromGit
+        ),
         Contract::Plan => matches!(rule, Rule::ResultStructured | Rule::CleanTree),
     }
 }
@@ -1474,6 +1537,142 @@ mod tests {
         assert!(phantom.is_empty());
     }
 
+    /// A tempdir with a base commit and a second commit that adds
+    /// `real.txt`, as an attempt's own work. Returns the directory and the
+    /// base sha, the attempt's `start_sha`.
+    async fn commit_fixture() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.path())
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet"]);
+        run(&["config", "user.email", "a@a.com"]);
+        run(&["config", "user.name", "a"]);
+        std::fs::write(dir.path().join("base.txt"), "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--quiet", "-m", "base"]);
+        let base = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(dir.path().join("real.txt"), "two\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--quiet", "-m", "attempt"]);
+        (dir, base)
+    }
+
+    fn test_cfg() -> Config {
+        Config {
+            checks: std::collections::BTreeMap::new(),
+            base_branch: "main".into(),
+            push_remote: None,
+            check_timeout_secs: 60,
+            protected: vec![],
+            namespace: vec![],
+            config_path: "forge.toml".into(),
+        }
+    }
+
+    /// A structured result naming a file the attempt never touched
+    /// instead of the one it actually committed: `changes-match-git`
+    /// would fail this, exactly the false-claim-about-the-report shape
+    /// dev.home's qwen3-coder:30b hit on task 324.
+    fn wrong_changes_outcome() -> Outcome {
+        Outcome {
+            structured: Some(
+                r#"{"schema_version":1,"summary":"did it","needs_input":null,"changes":[{"path":"wrong.txt","kind":"added"}],"checks_run":[],"claims":[]}"#
+                    .into(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn report_from_git_replaces_a_wrong_changes_list_and_notes_it() {
+        let (dir, base) = commit_fixture().await;
+        let cfg = test_cfg();
+        let report = Reporter::new(false, None);
+        let outcome = wrong_changes_outcome();
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: &base,
+            start_sha: &base,
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: true,
+        };
+        let common = common_l0(&s, &outcome).await.unwrap();
+        let note = common
+            .rows
+            .iter()
+            .find(|r| r.name == "changes-from-git")
+            .expect("a changes-from-git note row");
+        assert!(note.ok);
+        assert!(common.rows.iter().all(|r| r.name != "changes-match-git"));
+        let changes = common.envelope.unwrap().changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "real.txt");
+        assert_eq!(changes[0].kind, "added");
+    }
+
+    #[tokio::test]
+    async fn without_report_from_git_the_same_wrong_list_still_fails_changes_match_git() {
+        let (dir, base) = commit_fixture().await;
+        let cfg = test_cfg();
+        let report = Reporter::new(false, None);
+        let outcome = wrong_changes_outcome();
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: &base,
+            start_sha: &base,
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: false,
+        };
+        let common = common_l0(&s, &outcome).await.unwrap();
+        assert!(common.rows.iter().all(|r| r.name != "changes-from-git"));
+        let row = common
+            .rows
+            .iter()
+            .find(|r| r.name == "changes-match-git")
+            .expect("a changes-match-git row");
+        assert!(!row.ok);
+    }
+
     #[test]
     fn l1_all_passed_needs_at_least_one_l1_row_and_none_failing() {
         assert!(!l1_all_passed(&[]), "no L1 rows at all is not a pass");
@@ -1541,6 +1740,7 @@ mod tests {
             files_changed: 1,
             dirty: false,
             envelope: None,
+            changes_from_git: false,
             checks: vec![CheckResult {
                 level: "L1".into(),
                 name: "test".into(),

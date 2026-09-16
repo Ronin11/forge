@@ -133,6 +133,13 @@ pub struct Provider {
     /// qwen3-coder:30b, tasks 309/310/313). 0 (the default) leaves today's
     /// behavior unchanged; never consulted for `Runner::ClaudeCli`.
     pub nudges: u32,
+    /// Whether the kernel fills the result's `changes[]` from git rather
+    /// than holding the model to its own list (see `verify::common_l0`,
+    /// `Rule::ChangesFromGit`). A weak model can commit real work and still
+    /// misreport what it touched; `changes-match-git` would fail the
+    /// attempt for a mistake in the report, not the work (dev.home's
+    /// qwen3-coder:30b, task 324). Off by default.
+    pub report_from_git: bool,
 }
 
 impl Default for Provider {
@@ -150,6 +157,7 @@ impl Default for Provider {
             five_hour_max: 0.9,
             seven_day_max: 0.95,
             nudges: 0,
+            report_from_git: false,
         }
     }
 }

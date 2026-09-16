@@ -2956,6 +2956,7 @@ async fn integrate(ids: Vec<i64>) -> Result<()> {
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
             scratch: None,
+            report_from_git: false,
         })
         .await?;
         if v.state != crate::store::AttemptState::Succeeded {
