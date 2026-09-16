@@ -1759,8 +1759,10 @@ fn trace(id: i64, json: bool) -> Result<()> {
         );
         let inputs: audit::Inputs = serde_json::from_value(a.inputs.clone()).unwrap_or_default();
         out!(
-            "inputs     model={} max_turns={} timeout={}s base={} start={}",
+            "inputs     model={} runner={} provider={} max_turns={} timeout={}s base={} start={}",
             inputs.model,
+            a.runner,
+            a.provider,
             inputs.max_turns,
             inputs.timeout_secs,
             &inputs.base_sha[..inputs.base_sha.len().min(8)],
@@ -2788,6 +2790,7 @@ fn show(id: i64) -> Result<()> {
         task.max_attempts,
         task.timeout_secs
     );
+    out!("provider   {}", task.provider);
     out!(
         "cost       ${cost:.4} over {} attempt(s){}",
         doc.attempts.len(),
@@ -2889,6 +2892,7 @@ fn show(id: i64) -> Result<()> {
             if a.dirty { "  DIRTY" } else { "" }
         );
         out!("  log     {}", a.log_path);
+        out!("  agent   runner={} provider={}", a.runner, a.provider);
         if let Ok(o) = serde_json::from_value::<audit::Outputs>(a.outputs.clone())
             && let Some(t) = o.tools
         {
