@@ -51,6 +51,10 @@
   .kv .k { color:var(--mute) }
   .rows div { font: 12px/1.5 ui-monospace, Menlo, monospace }
   .arrow { align-self:center; color:var(--mute); font-size:20px }
+  /* graph view */
+  #graph-svg { background:var(--panel); border:1px solid var(--line); border-radius:6px }
+  #graph-svg .gnode { cursor:pointer }
+  #graph-svg .gnode rect:hover { stroke:var(--run) }
 </style>
 </head>
 <body>

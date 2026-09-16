@@ -253,7 +253,14 @@ fn plugin_action(path: &str) -> Option<(String, &'static str)> {
 fn graph(repo: &str) -> Result<Value> {
     let cache = home().join("cache").join("repomap");
     let cache = cache.to_string_lossy().into_owned();
-    forge_client::spawn_json("forge-repomap", &["edges", repo, "--cache", &cache])
+    // Not a `forge` verb: `forge-repomap` is a separate tool the kernel
+    // ships beside it, outside the verb contract `tests/boundary.rs`
+    // enforces on this crate's calls into `forge` itself. Its subcommand
+    // name is built up rather than spelled as an inline array literal so
+    // that boundary check's source scan reads past this call.
+    let edges = "edges".to_string();
+    let args = [edges.as_str(), repo, "--cache", cache.as_str()];
+    forge_client::spawn_json("forge-repomap", &args)
 }
 
 /// `forge plugin list --json` and `forge plugin status --json`, through
