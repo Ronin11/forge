@@ -1831,7 +1831,13 @@ impl Store {
     /// `(from, to]`: the later landings a churn computation diffs `added`
     /// against (see docs/LATER.md, the delayed-cost follow-up to "Defect
     /// escape").
-    pub fn later_landings(&self, repo: &str, exclude: i64, from: i64, to: i64) -> Result<Vec<Task>> {
+    pub fn later_landings(
+        &self,
+        repo: &str,
+        exclude: i64,
+        from: i64,
+        to: i64,
+    ) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
             "SELECT {} FROM tasks WHERE repo = ?1 AND id != ?2 AND landed_sha != ''
@@ -1841,13 +1847,6 @@ impl Store {
         ))?;
         let rows = stmt.query_map(params![repo, exclude, from, to], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// See the free function of the same name: the cost of later tasks on
-    /// this repository whose attempts overlapped `task_id`'s own changed
-    /// paths, within 30 days of landing.
-    pub fn follow_on_cost(&self, task_id: i64) -> Result<f64> {
-        follow_on_cost_query(&self.lock(), task_id)
     }
 
     /// `task_churn`'s cached row for `task_id`, if it has been computed.
@@ -1865,7 +1864,13 @@ impl Store {
         churned_lines: i64,
         computed_at: i64,
     ) -> Result<()> {
-        set_churn_cache_query(&self.lock(), task_id, added_lines, churned_lines, computed_at)
+        set_churn_cache_query(
+            &self.lock(),
+            task_id,
+            added_lines,
+            churned_lines,
+            computed_at,
+        )
     }
 
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
@@ -3474,6 +3479,115 @@ mod tests {
         assert_eq!(w.landed, 1, "only A landed");
         assert_eq!(w.broke_base, 1, "A counts once for breaking B's base");
         assert_eq!(w.repaired, 1, "A counts once as repaired by C");
+    }
+
+    #[test]
+    fn follow_on_cost_sums_later_tasks_that_touch_the_landed_paths_within_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+        let task = |repo: &str, finished_at: i64| Task {
+            repo: repo.into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: finished_at,
+            started_at: Some(finished_at),
+            finished_at: Some(finished_at),
+            workflow: "direct".into(),
+            ..Default::default()
+        };
+        let attempt = |task_id, started_at| Attempt {
+            task_id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at,
+            ..Default::default()
+        };
+        let finish = |id, envelope: &str, cost: f64| {
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state: AttemptState::Succeeded,
+                reason: String::new(),
+                finished_at: Some(1),
+                agent_exit: Some(0),
+                timed_out: false,
+                num_turns: 1,
+                tool_calls: 1,
+                cost_usd: Some(cost),
+                agent_ms: 0,
+                commits: 1,
+                files_changed: 1,
+                dirty: false,
+                verdict_json: "[]".into(),
+                result_text: String::new(),
+                envelope_json: envelope.into(),
+                rl_five_hour: None,
+                rl_seven_day: None,
+                rl_five_hour_resets: None,
+                rl_seven_day_resets: None,
+                end_sha: String::new(),
+                outputs_json: String::new(),
+                session_id: String::new(),
+                first_edit: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                early_signals: "[]".into(),
+                early_near: "[]".into(),
+            })
+            .unwrap();
+        };
+        let changed = |path: &str| {
+            format!(
+                r#"{{"schema_version":1,"summary":"x","needs_input":null,"changes":[{{"path":"{path}","kind":"modified"}}],"checks_run":[],"claims":[]}}"#
+            )
+        };
+
+        // T lands at t=1000, its own attempt touching a.txt.
+        let mut t = task("r", 1000);
+        t.id = s.insert_task(&t).unwrap();
+        t.landed_sha = "tsha".into();
+        s.update_task(&t).unwrap();
+        let t_attempt = s.insert_attempt(&attempt(t.id, 900)).unwrap();
+        finish(t_attempt, &changed("a.txt"), 1.0);
+
+        // U, same repo, touches a.txt within the 30-day window: two
+        // attempts, so its full cost (5 + 2) counts, not just the
+        // matching attempt's.
+        let mut u = task("r", 2000);
+        u.id = s.insert_task(&u).unwrap();
+        let u1 = s.insert_attempt(&attempt(u.id, 1500)).unwrap();
+        finish(u1, &changed("a.txt"), 5.0);
+        let u2 = s.insert_attempt(&attempt(u.id, 1600)).unwrap();
+        finish(u2, "", 2.0);
+
+        // V, same repo, touches a different path: excluded.
+        let mut v = task("r", 2100);
+        v.id = s.insert_task(&v).unwrap();
+        let v1 = s.insert_attempt(&attempt(v.id, 1700)).unwrap();
+        finish(v1, &changed("b.txt"), 9.0);
+
+        // W, same repo, touches a.txt but after the 30-day window: excluded.
+        let mut w = task("r", 5_000_000);
+        w.id = s.insert_task(&w).unwrap();
+        let w1 = s
+            .insert_attempt(&attempt(w.id, 1000 + THIRTY_DAYS_SECS + 1))
+            .unwrap();
+        finish(w1, &changed("a.txt"), 11.0);
+
+        // X, a different repository, touches a.txt: excluded.
+        let mut x = task("other", 2200);
+        x.id = s.insert_task(&x).unwrap();
+        let x1 = s.insert_attempt(&attempt(x.id, 1800)).unwrap();
+        finish(x1, &changed("a.txt"), 13.0);
+
+        assert_eq!(follow_on_cost_query(&s.lock(), t.id).unwrap(), 7.0);
     }
 
     #[test]

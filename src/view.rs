@@ -573,7 +573,8 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
         let repaired_share = (w.landed > 0).then(|| w.repaired as f64 / w.landed as f64);
         let true_cost_per_landed_usd =
             (w.landed > 0).then(|| (w.cost + w.follow_on_cost) / w.landed as f64);
-        let churn_share = (w.added_lines > 0).then(|| w.churned_lines as f64 / w.added_lines as f64);
+        let churn_share =
+            (w.added_lines > 0).then(|| w.churned_lines as f64 / w.added_lines as f64);
         let mut legacy = serde_json::Map::new();
         legacy.insert("WF".into(), Value::from(w.workflow.clone()));
         legacy.insert("HASH".into(), Value::from(w.hash.clone()));
@@ -858,7 +859,10 @@ pub struct StatsDoc {
 /// has closed, its cache is never touched again.
 async fn refresh_churn(f: &Forge) -> Result<()> {
     let now = crate::unix_now();
-    for t in f.store.landed_tasks(&crate::store::StatsFilter::default())? {
+    for t in f
+        .store
+        .landed_tasks(&crate::store::StatsFilter::default())?
+    {
         let Some(finished_at) = t.finished_at else {
             continue;
         };
@@ -896,7 +900,10 @@ async fn compute_churn(f: &Forge, t: &Task, finished_at: i64) -> Result<(i64, i6
         let (_, removed) = crate::git::diff_lines(repo, &u.base_sha, &u.landed_sha).await?;
         removed_set.extend(removed);
     }
-    let churned = added.iter().filter(|line| removed_set.contains(*line)).count() as i64;
+    let churned = added
+        .iter()
+        .filter(|line| removed_set.contains(*line))
+        .count() as i64;
     Ok((added.len() as i64, churned))
 }
 
@@ -1662,10 +1669,7 @@ mod stats_tests {
         assert!(v["broke_base_share"].is_null(), "nothing landed");
         assert_eq!(v["repaired"], 0);
         assert!(v["repaired_share"].is_null(), "nothing landed");
-        assert!(
-            v["true_cost_per_landed_usd"].is_null(),
-            "nothing landed"
-        );
+        assert!(v["true_cost_per_landed_usd"].is_null(), "nothing landed");
         assert!(v["churn_share"].is_null(), "nothing added yet");
         // Deprecated header-named keys stay present, flattened alongside.
         assert_eq!(v["WF"], "direct");
@@ -1702,6 +1706,114 @@ mod stats_tests {
         assert_eq!(v["follow_on_cost_usd"], 2.0);
         assert_eq!(v["true_cost_per_landed_usd"], 1.5, "(4.0 + 2.0) / 4");
         assert_eq!(v["churn_share"], 0.25, "5 / 20");
+    }
+
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = crate::ctx::Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = crate::store::Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(dir.path())
+            .status()
+            .unwrap();
+        dir
+    }
+
+    /// Three landings on the same fixture repository, the second rewriting
+    /// the only line the first added: `task_churn`'s worked example (see
+    /// docs/LATER.md, the delayed-cost follow-up to "Defect escape").
+    #[tokio::test]
+    async fn churn_measures_lines_a_later_landing_on_the_same_repo_rewrites() {
+        let (_home, f) = fixture();
+        let repo_dir = init_repo();
+        let repo = repo_dir.path();
+
+        std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let c0 = crate::git::commit_all(repo, "base").await.unwrap().unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nALPHA\nthree\n").unwrap();
+        let c1 = crate::git::commit_all(repo, "t1").await.unwrap().unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nBETA\nthree\n").unwrap();
+        let c2 = crate::git::commit_all(repo, "t2").await.unwrap().unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nBETA\nthree\nfour\n").unwrap();
+        let c3 = crate::git::commit_all(repo, "t3").await.unwrap().unwrap();
+
+        let repo_s = repo.to_string_lossy().to_string();
+        let landing = |base: &str, landed: &str, finished_at: i64| Task {
+            repo: repo_s.clone(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            base_sha: base.to_string(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: finished_at,
+            started_at: Some(finished_at),
+            finished_at: Some(finished_at),
+            workflow: "direct".into(),
+            landed_sha: landed.to_string(),
+            ..Default::default()
+        };
+        let insert = |mut t: Task| {
+            t.id = f.store.insert_task(&t).unwrap();
+            f.store.update_task(&t).unwrap();
+            t
+        };
+
+        let t1 = insert(landing(&c0, &c1, 1000));
+        let t2 = insert(landing(&c1, &c2, 2000));
+        let t3 = insert(landing(&c2, &c3, 3000));
+
+        refresh_churn(&f).await.unwrap();
+
+        assert_eq!(
+            f.store.churn_cache(t1.id).unwrap().map(|(a, c, _)| (a, c)),
+            Some((1, 1)),
+            "T2 rewrote the only line T1 added"
+        );
+        assert_eq!(
+            f.store.churn_cache(t2.id).unwrap().map(|(a, c, _)| (a, c)),
+            Some((1, 0)),
+            "T3 left BETA alone"
+        );
+        assert_eq!(
+            f.store.churn_cache(t3.id).unwrap().map(|(a, c, _)| (a, c)),
+            Some((1, 0)),
+            "nothing has landed after T3 yet"
+        );
+
+        let raw = f
+            .store
+            .workflow_stats(&crate::store::StatsFilter::default())
+            .unwrap();
+        let stat = raw.iter().find(|w| w.workflow == "direct").unwrap();
+        assert_eq!(stat.added_lines, 3);
+        assert_eq!(stat.churned_lines, 1);
+
+        let doc = stats_doc(&f, &crate::store::StatsFilter::default())
+            .await
+            .unwrap();
+        let w = doc
+            .workflows
+            .iter()
+            .find(|w| w.workflow == "direct")
+            .unwrap();
+        assert_eq!(w.churn_share, Some(1.0 / 3.0));
     }
 
     #[test]
