@@ -202,10 +202,10 @@ pub(crate) async fn run_operation(
         format!(
             "timed out after {}s\n{}",
             timeout.as_secs(),
-            checks::last_lines(&r.tail, 20)
+            checks::last_lines(&r.tail, 30)
         )
     } else {
-        let tail = checks::last_lines(&r.tail, 20);
+        let tail = checks::last_lines(&r.tail, 30);
         let first = tail.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
         let head = if first.is_empty() {
             format!("exit {}", r.exit.map_or("signal".into(), |c| c.to_string()))

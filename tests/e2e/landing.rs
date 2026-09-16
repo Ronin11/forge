@@ -1009,3 +1009,94 @@ fn a_retry_of_a_verified_task_starts_from_its_branch() {
         "{prompt}"
     );
 }
+
+#[test]
+fn a_retry_whose_merged_base_does_not_build_feeds_setup_to_the_coder() {
+    // Task 1 lands. Something else lands on main afterward that the merge
+    // takes in cleanly but that breaks the build: a fake `setup` check
+    // fails only once that file is present. The retry of task 1 starts
+    // from its verified branch, merges the new main in, and setup fails
+    // before any attempt. That must not fail the task with nothing to
+    // show for it: the coder sees the error and fixes it on the branch.
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\n\
+         shell = [\"bash\", \"-n\", \"hello.sh\"]\n\
+         setup = [\"bash\", \"-c\", \"if [ -f broken.txt ]; then echo 'broken.txt is present'; exit 1; fi; echo ok\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "add a setup check"]);
+
+    let o = e.forge(
+        "mergefix.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+
+    // Something else lands on main: a file that setup, unchanged, now rejects.
+    git(&e.repo, &["fetch", "-q", "origin", "main"]);
+    git(&e.repo, &["checkout", "-q", "-B", "advance", "origin/main"]);
+    std::fs::write(e.repo.join("broken.txt"), "boom\n").unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &[
+            "commit",
+            "-qm",
+            "advance main with a change that breaks the build",
+        ],
+    );
+    git(&e.repo, &["push", "-q", "origin", "advance:main"]);
+    git(&e.repo, &["checkout", "-q", "main"]);
+    git(&e.repo, &["branch", "-D", "advance"]);
+
+    assert!(e.forge("mergefix.sh", &["retry", "1"]).status.success());
+    let o = e.forge("mergefix.sh", &["work", "--once"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("start    from task 1's verified branch forge/1-write-42 @"),
+        "{err}"
+    );
+    assert!(err.contains("with the current base merged in"), "{err}");
+    assert!(
+        err.contains("the merged base does not build; code will see the error"),
+        "{err}"
+    );
+
+    let (state, reason, pushed) = e.task(2);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+    assert_eq!(
+        op_names(&e, 2),
+        vec![
+            ("clone".into(), true),
+            ("setup".into(), false),
+            ("repo-map".into(), true),
+            ("verify".into(), true),
+            ("integrate".into(), true),
+            ("push".into(), true),
+            ("land".into(), true)
+        ]
+    );
+    // The coder saw the setup failure and fixed it, on top of task 1's answer.
+    let prompt = e.log_text(2, 1);
+    assert!(prompt.contains("does not build"), "{prompt}");
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    assert_eq!(origin_file(&e, "main", "broken.txt"), None);
+}
