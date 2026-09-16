@@ -3,15 +3,30 @@
 # runs whatever is there, and any command works, not just this one.
 cat >/dev/null
 
-task="$1"
-state="$2"
-reason="$3"
+case "$1" in
+deploy)
+    project="$2"
+    target="$3"
+    sha="$4"
+    status="$5"
+    case "$status" in
+    ok) urgency=low ;;
+    *) urgency=critical ;;
+    esac
+    notify-send --urgency="$urgency" "forge deploy $project/$target" "$sha: $status"
+    ;;
+*)
+    task="$1"
+    state="$2"
+    reason="$3"
 
-case "$state" in
-blocked) urgency=critical ;;
-failed) urgency=normal ;;
-succeeded) urgency=low ;;
-*) urgency=normal ;;
+    case "$state" in
+    blocked) urgency=critical ;;
+    failed) urgency=normal ;;
+    succeeded) urgency=low ;;
+    *) urgency=normal ;;
+    esac
+
+    notify-send --urgency="$urgency" "forge task $task: $state" "$reason"
+    ;;
 esac
-
-notify-send --urgency="$urgency" "forge task $task: $state" "$reason"

@@ -16,6 +16,10 @@ POLL_SECONDS=30
 TARGET_REPO=
 WORKFLOW=direct
 NOTIFY_ON="blocked failed"
+# A deploy that passes its check is quiet by default: a failed or
+# rolled-back deploy always sends a message (see docs/DEPLOY.md, "When a
+# deploy runs"). Set to 1 to also message on a deploy that simply passed.
+NOTIFY_DEPLOY_OK=0
 
 config="$FORGE_PLUGIN_DIR/config"
 if [ -f "$config" ]; then
@@ -33,6 +37,7 @@ if [ -f "$config" ]; then
             TARGET_REPO) TARGET_REPO=$val ;;
             WORKFLOW) WORKFLOW=$val ;;
             NOTIFY_ON) NOTIFY_ON=$val ;;
+            NOTIFY_DEPLOY_OK) NOTIFY_DEPLOY_OK=$val ;;
         esac
     done <"$config"
 fi
@@ -91,7 +96,28 @@ outbound() {
         offset=$((offset + $(printf '%s' "$line" | wc -c) + 1))
         printf '%s\n' "$offset" >"$cursor"
 
-        [ "$(printf '%s\n' "$line" | json_str type)" = task_done ] || continue
+        type=$(printf '%s\n' "$line" | json_str type)
+
+        if [ "$type" = deploy_finished ]; then
+            ok=$(printf '%s\n' "$line" | sed -n 's/.*"ok":\(true\|false\).*/\1/p')
+            if [ "$ok" = false ] || [ "$NOTIFY_DEPLOY_OK" = 1 ]; then
+                project=$(printf '%s\n' "$line" | json_str project)
+                target=$(printf '%s\n' "$line" | json_str target)
+                sha=$(printf '%s\n' "$line" | json_str sha)
+                rolled_back_to=$(printf '%s\n' "$line" | json_str rolled_back_to)
+                if [ "$ok" = true ]; then
+                    status=ok
+                elif [ -n "$rolled_back_to" ]; then
+                    status="rolled back to $rolled_back_to"
+                else
+                    status=failed
+                fi
+                signal_send "deploy $project/$target @ $sha: $status"
+            fi
+            continue
+        fi
+
+        [ "$type" = task_done ] || continue
 
         task=$(printf '%s\n' "$line" | sed -n 's/.*"task":\([0-9]*\).*/\1/p')
         state=$(printf '%s\n' "$line" | json_str state)

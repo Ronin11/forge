@@ -1,0 +1,7 @@
+# Copy to $FORGE_PLUGIN_DIR/config (KEY=value, one per line, '#' comments
+# and blank lines ignored). Nothing here is parsed as shell.
+
+# A deploy that passes its check is quiet by default: a failed or
+# rolled-back deploy always runs `command` (see docs/DEPLOY.md, "When a
+# deploy runs"). Set to 1 to also notify on a deploy that simply passed.
+NOTIFY_DEPLOY_OK=0

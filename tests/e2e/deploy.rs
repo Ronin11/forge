@@ -735,3 +735,95 @@ fn a_task_landing_on_a_repository_deploys_its_on_landing_targets_tied_to_the_tas
     assert_eq!(finished["task"], 1, "{finished}");
     assert_eq!(finished["ok"], true, "{finished}");
 }
+
+/// An on-landing deploy's row shows up where people look at the task: a
+/// `forge show` line starting with "deploy" (target, sha, ok or rolled
+/// back, when), and `forge trace --json`'s `deploys` array.
+#[test]
+fn an_on_landing_deploy_shows_up_on_forge_show_and_trace_json() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let remote = e._dir.path().join("remote");
+    let dest = remote.to_str().unwrap().to_string();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-command",
+            "--arg",
+            "host=remotebox",
+            "--arg",
+            &format!("dest={dest}"),
+            "--arg",
+            "command=true",
+            "--check",
+            "grep -qx 42 answer.txt",
+            "--on-landing",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake(&fakebin.join("ssh"), FAKE_SSH);
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args(["run", repo_s, "write 42", "--retries", "0"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let sha: String = e
+        .db()
+        .query_row(
+            "SELECT sha FROM deploys WHERE project='demo' AND target='prod'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    let deploy_line = show
+        .lines()
+        .find(|l| l.trim_start().starts_with("deploy"))
+        .unwrap_or_else(|| panic!("no deploy line in forge show:\n{show}"));
+    assert!(deploy_line.contains("prod"), "{deploy_line}");
+    assert!(deploy_line.contains(&sha[..8]), "{deploy_line}");
+    assert!(deploy_line.contains("ok"), "{deploy_line}");
+
+    let doc = e.trace_json(1);
+    let deploys = doc["deploys"].as_array().unwrap();
+    assert_eq!(deploys.len(), 1, "{deploys:?}");
+    assert_eq!(deploys[0]["target"], "prod");
+    assert_eq!(deploys[0]["sha"], sha);
+    assert_eq!(deploys[0]["check_ok"], true);
+}

@@ -2553,6 +2553,20 @@ impl Store {
         let rows = stmt.query_map(params![project, target], deploy_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// A task's deploys, newest first: the on-landing targets it triggered
+    /// when it landed (see docs/DEPLOY.md, "When a deploy runs"). What
+    /// `forge show`, `forge trace --json`, and the web task view list
+    /// under the task.
+    pub fn deploys_for_task(&self, task_id: i64) -> Result<Vec<Deploy>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id
+             FROM deploys WHERE task_id=?1 ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![task_id], deploy_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }
 
 fn deploy_target_from_row(r: &Row) -> rusqlite::Result<DeployTarget> {

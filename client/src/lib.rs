@@ -539,6 +539,22 @@ pub struct InitiativeQuestionRow {
     pub answer: Option<String>,
 }
 
+/// One row of `InitiativeDoc.deployed`: a deploy one of the initiative's
+/// tasks triggered on landing.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitiativeDeployRow {
+    #[serde(default)]
+    pub task_id: i64,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub check_ok: Option<bool>,
+    #[serde(default)]
+    pub rolled_back_to: Option<String>,
+}
+
 /// The document `forge initiative report ID --json` prints: the outcome,
 /// each task and how it ended, what verification refused, what the
 /// supervisor ruled, what reached the operator, cost and elapsed time.
@@ -566,6 +582,8 @@ pub struct InitiativeDoc {
     pub rulings: Vec<InitiativeRulingRow>,
     #[serde(default)]
     pub questions: Vec<InitiativeQuestionRow>,
+    #[serde(default)]
+    pub deployed: Vec<InitiativeDeployRow>,
     #[serde(default)]
     pub cost_usd: f64,
     #[serde(default)]
@@ -653,6 +671,32 @@ pub struct Attempt {
     pub envelope: Value,
 }
 
+/// One entry of `TraceDoc.deploys`: one deploy the task triggered on
+/// landing.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Deploy {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub check_ok: Option<bool>,
+    #[serde(default)]
+    pub check_output: String,
+    #[serde(default)]
+    pub rolled_back_to: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// One entry of `TraceDoc.ops`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Op {
@@ -699,6 +743,8 @@ pub struct TraceDoc {
     pub resolved: Value,
     #[serde(default)]
     pub diagnosis: Value,
+    #[serde(default)]
+    pub deploys: Vec<Deploy>,
 }
 
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time

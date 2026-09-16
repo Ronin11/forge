@@ -274,6 +274,7 @@ report (see docs/PROJECTS.md, "One notification and one report").
 | `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
 | `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
 | `questions` | array of `{task_id, question, answer}` | Questions that reached the operator; `answer` is `null` while the task is still blocked. |
+| `deployed` | array of `{task_id, target, sha, check_ok, rolled_back_to}` | Deploys the initiative's tasks triggered on landing (see docs/DEPLOY.md, "When a deploy runs"). `check_ok` is `null` while the deploy is still running; `rolled_back_to` is the previous passing commit, or `null`. |
 | `elapsed_secs` | integer or null | Seconds from creation to the last task's `finished_at`; `null` if nothing has finished yet. |
 
 ### `TraceDoc`
@@ -282,7 +283,7 @@ The document `forge trace ID --json` prints: everything about one task,
 built once and shared by `forge trace`, `forge show`, and the `--json`
 form so all three agree.
 
-Top level: `{task, attempts, ops, resolved, diagnosis}`.
+Top level: `{task, attempts, ops, resolved, diagnosis, deploys}`.
 
 **`task`** — the task's full record. Selected fields (most are exactly
 the store's column names):
@@ -340,6 +341,14 @@ landing), `output`.
 
 **`diagnosis`** — array of `{what, action}`: the kernel's own read of
 why the task ended as it did, and what a human or a retry could try.
+
+**`deploys`** — array of `Deploy`, this task's deploys newest first: the
+on-landing targets it triggered when it landed (see docs/DEPLOY.md, "When
+a deploy runs"), empty for a task that never landed one. Same shape as
+`forge deploy log --json`'s rows: `id`, `project`, `target`, `sha`,
+`started_at`, `finished_at`, `check_ok` (null while running),
+`check_output`, `rolled_back_to` (the previous passing commit, or null),
+`reason`.
 
 ### `StatsDoc`
 
@@ -503,8 +512,9 @@ client re-reads the affected document with the verb above.
   necessary. The minimum a client must handle is the five types above,
   matched by the web UI's list view.)
 - **A task's detail** (`forge trace ID --json`, and `forge journal ID
-  --json` if shown): re-read on `task_done` or `attempt_done`, and only
-  when the event's `task` field matches the task currently open.
+  --json` if shown): re-read on `task_done`, `attempt_done`, or
+  `deploy_finished`, and only when the event's `task` field matches the
+  task currently open.
 - **The run view** (the task inside its workflow — `forge trace ID
   --json`'s `ops` and `attempts`): re-read on `task_done`,
   `attempt_done`, or `op`, again only for the task currently open.

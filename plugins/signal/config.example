@@ -20,3 +20,8 @@ WORKFLOW=direct
 
 # Task states worth a Signal message, space-separated.
 NOTIFY_ON=blocked failed
+
+# A deploy that passes its check is quiet by default: a failed or
+# rolled-back deploy always sends a message. Set to 1 to also message on
+# a deploy that simply passed.
+NOTIFY_DEPLOY_OK=0

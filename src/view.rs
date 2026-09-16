@@ -331,6 +331,11 @@ pub struct TraceDoc {
     pub ops: Vec<TraceOp>,
     pub resolved: Value,
     pub diagnosis: Vec<TraceDiagnosis>,
+    /// This task's deploys, newest first: the on-landing targets it
+    /// triggered when it landed (see docs/DEPLOY.md, "When a deploy
+    /// runs"). Empty for a task that never landed or landed nothing
+    /// on-landing.
+    pub deploys: Vec<DeployRow>,
 }
 
 pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
@@ -338,6 +343,12 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
     let ops = f.store.ops(t.id)?;
     let diagnosis = crate::audit::diagnose(t, &attempts);
     let lineage = f.store.lineage(t.id)?;
+    let deploys = f
+        .store
+        .deploys_for_task(t.id)?
+        .iter()
+        .map(DeployRow::from)
+        .collect();
 
     let task = TraceTask {
         id: t.id,
@@ -475,6 +486,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         ops,
         resolved,
         diagnosis,
+        deploys,
     })
 }
 
@@ -1357,6 +1369,17 @@ pub struct InitiativeQuestionRow {
     pub answer: Option<String>,
 }
 
+/// One row of `InitiativeDoc.deployed`: a deploy one of the initiative's
+/// tasks triggered on landing (see docs/DEPLOY.md, "When a deploy runs").
+#[derive(Serialize)]
+pub struct InitiativeDeployRow {
+    pub task_id: i64,
+    pub target: String,
+    pub sha: String,
+    pub check_ok: Option<bool>,
+    pub rolled_back_to: Option<String>,
+}
+
 /// How many attempts of `tasks` each verification rule refused, by name,
 /// ordered by name.
 fn refused_counts(f: &Forge, tasks: &[Task]) -> Result<Vec<RefusedRow>> {
@@ -1394,6 +1417,7 @@ pub struct InitiativeDoc {
     pub refused: Vec<RefusedRow>,
     pub rulings: Vec<InitiativeRulingRow>,
     pub questions: Vec<InitiativeQuestionRow>,
+    pub deployed: Vec<InitiativeDeployRow>,
     pub cost_usd: f64,
     pub elapsed_secs: Option<i64>,
     pub created_at: i64,
@@ -1446,6 +1470,18 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         }
     }
     let refused = refused_counts(f, &tasks)?;
+    let mut deployed = Vec::new();
+    for t in &tasks {
+        for d in f.store.deploys_for_task(t.id)? {
+            deployed.push(InitiativeDeployRow {
+                task_id: t.id,
+                target: d.target,
+                sha: d.sha,
+                check_ok: d.check_ok,
+                rolled_back_to: d.rolled_back_to,
+            });
+        }
+    }
     Ok(InitiativeDoc {
         id: ini.id,
         project: ini.project.clone(),
@@ -1466,6 +1502,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         refused,
         rulings,
         questions,
+        deployed,
         cost_usd: cost,
         elapsed_secs: elapsed,
         created_at: ini.created_at,

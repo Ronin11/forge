@@ -10,7 +10,7 @@
   // to re-read on which event".
   const INVALIDATES = {
     list: ['task_queued', 'task_started', 'task_done', 'attempt_done', 'pushed'],
-    detail: ['task_done', 'attempt_done'],
+    detail: ['task_done', 'attempt_done', 'deploy_finished'],
     run: ['task_done', 'attempt_done', 'op'],
   };
 
@@ -207,6 +207,10 @@
         </div>`).join('');
       const lineage = (t.lineage || []).map(l => l.id === t.id ? `<b>${l.id} ${esc(l.state)}</b>` : `<a href="/tasks/${l.id}">${l.id}</a> ${esc(l.state)}`).join(' → ');
       const refs = (t.refs || []).map(r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.kind)}${r.label ? ': ' + esc(r.label) : ''}</a>`).join(' · ');
+      const deploys = (d.deploys || []).map(dep => {
+        const status = dep.check_ok === true ? 'ok' : dep.check_ok === false ? (dep.rolled_back_to ? `rolled back to ${esc(dep.rolled_back_to.slice(0, 8))}` : 'failed') : 'running';
+        return `<div>${esc(dep.target)} ${esc((dep.sha || '').slice(0, 8))} ${status}</div>`;
+      }).join('');
       const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
       const retry = (t.state === 'failed' || t.state === 'blocked') ? `<button id="retry">retry</button>` : '';
       $('#detail').innerHTML = `
@@ -219,6 +223,7 @@
           ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
           ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
           ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
+          ${deploys ? `<div><span class="k">deploys</span>${deploys}</div>` : ''}
         </div>
         <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>
         ${t.plan ? `<h2>Plan</h2><div class="card"><pre style="margin:0">${esc(t.plan)}</pre></div>` : ''}

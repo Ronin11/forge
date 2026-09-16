@@ -1677,6 +1677,18 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
             );
         }
     }
+    for d in &doc.deployed {
+        let sha = &d.sha[..d.sha.len().min(8)];
+        let status = match d.check_ok {
+            Some(true) => "ok".to_string(),
+            Some(false) => match &d.rolled_back_to {
+                Some(to) => format!("rolled back to {}", &to[..to.len().min(8)]),
+                None => "failed".to_string(),
+            },
+            None => "running".to_string(),
+        };
+        out!("deployed   task {} {} @ {sha} {status}", d.task_id, d.target);
+    }
     Ok(())
 }
 
@@ -3265,6 +3277,23 @@ fn show(id: i64) -> Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .join(" → ")
+        );
+    }
+    for d in &doc.deploys {
+        let sha = &d.sha[..d.sha.len().min(8)];
+        let status = match d.check_ok {
+            Some(true) => "ok".to_string(),
+            Some(false) => match &d.rolled_back_to {
+                Some(to) => format!("rolled back to {}", &to[..to.len().min(8)]),
+                None => "failed".to_string(),
+            },
+            None => "running".to_string(),
+        };
+        out!(
+            "{:<11}{} {sha} {status} {}",
+            "deploy",
+            d.target,
+            d.finished_at.unwrap_or(d.started_at)
         );
     }
     for r in &task.refs {

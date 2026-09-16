@@ -5,6 +5,25 @@
 # language runtime Forge had to build.
 set -u
 
+# A deploy that lands ok is quiet by default: docs/DEPLOY.md's failures
+# and rollbacks are the ones worth a notification on their own.
+# NOTIFY_DEPLOY_OK=1 in `plugins/notify/config` turns successes on too.
+NOTIFY_DEPLOY_OK=0
+
+config="$FORGE_PLUGIN_DIR/config"
+if [ -f "$config" ]; then
+    while IFS= read -r cfgline || [ -n "$cfgline" ]; do
+        case "$cfgline" in
+            '' | '#'*) continue ;;
+        esac
+        key=${cfgline%%=*}
+        val=${cfgline#*=}
+        case "$key" in
+            NOTIFY_DEPLOY_OK) NOTIFY_DEPLOY_OK=$val ;;
+        esac
+    done <"$config"
+fi
+
 cursor="$FORGE_PLUGIN_STATE/cursor"
 if [ -f "$cursor" ]; then
     offset=$(cat "$cursor")
@@ -13,6 +32,12 @@ else
     # first run never replays history.
     offset=$("$FORGE_BIN" snapshot | sed -n 's/.*"events_offset": *\([0-9]*\).*/\1/p')
 fi
+
+# A JSON string field's value, escapes and all, from a compact
+# single-line document (an events.jsonl line) on stdin.
+json_str() {
+    sed -n 's/.*"'"$1"'":"\(\([^"\\]\|\\.\)*\)".*/\1/p'
+}
 
 "$FORGE_BIN" events --since "$offset" --follow | while IFS= read -r line; do
     # `forge events` prints each events.jsonl line verbatim (minus its
@@ -30,6 +55,23 @@ fi
             sed -n 's/.*"reason":"\(.*\)","state":.*/\1/p' | sed 's/\\n.*//')
         printf '%s' "$line" |
             sh "$FORGE_PLUGIN_DIR/command" "$task" "$state" "$reason" || true
+    elif [ "$type" = deploy_finished ]; then
+        ok=$(printf '%s\n' "$line" | sed -n 's/.*"ok":\(true\|false\).*/\1/p')
+        if [ "$ok" = false ] || [ "$NOTIFY_DEPLOY_OK" = 1 ]; then
+            project=$(printf '%s\n' "$line" | json_str project)
+            target=$(printf '%s\n' "$line" | json_str target)
+            sha=$(printf '%s\n' "$line" | json_str sha)
+            rolled_back_to=$(printf '%s\n' "$line" | json_str rolled_back_to)
+            if [ "$ok" = true ]; then
+                status=ok
+            elif [ -n "$rolled_back_to" ]; then
+                status="rolled back to $rolled_back_to"
+            else
+                status=failed
+            fi
+            printf '%s' "$line" |
+                sh "$FORGE_PLUGIN_DIR/command" deploy "$project" "$target" "$sha" "$status" || true
+        fi
     fi
     printf '%s\n' "$offset" >"$cursor"
 done

@@ -164,13 +164,19 @@ checkout, and each a different shape a plugin can take.
 **notify** (`events`) is the reference plugin, and the one to copy. It is
 a shell script: it takes a snapshot, subscribes from its offset, and
 runs a command of the operator's choosing when a task blocks on a
-question, fails, or lands. It keeps its cursor in `FORGE_PLUGIN_STATE`,
-so a restart resumes where it stopped. Its configuration is
-`plugins/notify/command`, a script `notify.sh` runs with the task, its
-state and its reason as arguments; `command.example` ships a working
-example that shells out to `notify-send` for a desktop notification. It
-is a plugin in thirty lines and it imports nothing. Install with `forge
-plugin install plugins/notify`.
+question, fails, or lands, and when a deploy finishes (see
+docs/DEPLOY.md, "When a deploy runs"). It keeps its cursor in
+`FORGE_PLUGIN_STATE`, so a restart resumes where it stopped. Its
+configuration is `plugins/notify/command`, a script `notify.sh` runs
+with the task, its state and its reason as arguments for a `task_done`
+event, or `deploy`, the project, target, sha and status for a
+`deploy_finished` one; `command.example` ships a working example that
+shells out to `notify-send` for a desktop notification, for both
+shapes. A deploy that passes its check is quiet by default; a failed or
+rolled-back one always runs the command. `NOTIFY_DEPLOY_OK=1` in
+`plugins/notify/config` (see `config.example`) turns a passing deploy's
+notification on too. It is a plugin in under a hundred lines and it
+imports nothing. Install with `forge plugin install plugins/notify`.
 
 **github-issues** (`intake`, `events`) files a task for every open issue
 on a GitHub repository that carries a chosen label, quoting the issue
@@ -189,14 +195,16 @@ credential. Install with `forge plugin install plugins/github-issues`.
 process with two loops so either exiting stops both. Outbound follows
 `forge events` the way notify does and messages a configured Signal
 number or group when a task reaches a state on its watch list (blocked,
-by default, or failed), including the blocked question if there is one.
-Inbound polls `signal-cli receive` and, for a message from an allowed
-sender, either answers a task (`/answer <id> <text>`), reports queue
-status (`/status`), or files new work via `forge add`; anyone else's
-message is logged and dropped. Its configuration is
-`plugins/signal/config` (see `config.example`): the bot's Signal
-account, who to notify, the allowed senders, the target repo and
-workflow, and which states to notify on. Install with `forge plugin
+by default, or failed), including the blocked question if there is one,
+and when a deploy finishes: a failed or rolled-back deploy always
+messages, a passing one only when `NOTIFY_DEPLOY_OK=1` is set. Inbound
+polls `signal-cli receive` and, for a message from an allowed sender,
+either answers a task (`/answer <id> <text>`), reports queue status
+(`/status`), or files new work via `forge add`; anyone else's message is
+logged and dropped. Its configuration is `plugins/signal/config` (see
+`config.example`): the bot's Signal account, who to notify, the allowed
+senders, the target repo and workflow, which states to notify on, and
+whether a passing deploy is worth a message. Install with `forge plugin
 install plugins/signal`.
 
 **statusline** (`events`) maintains a status document, not a bar itself:
