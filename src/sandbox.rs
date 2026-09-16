@@ -85,9 +85,17 @@ impl Sandbox {
         let mut agent_dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut bins = vec![agent_bin.to_string()];
         for (k, v) in std::env::vars() {
-            if k.starts_with("FORGE2_CLAUDE_BIN_") {
+            if k.starts_with("FORGE2_CLAUDE_BIN_") || k.starts_with("FORGE2_CODEX_BIN") {
                 bins.push(v);
             }
+        }
+        // The codex CLI as well, when it is installed: a second runner's
+        // binary has to be reachable inside the tmpfs home the same way the
+        // claude CLI's is (tasks 274 to 278 exited at launch without it).
+        // Optional, so a host without codex still sandboxes claude.
+        let codex = crate::agent::codex_bin();
+        if !bins.contains(&codex) && resolve_binary(&codex).is_ok() {
+            bins.push(codex);
         }
         for b in &bins {
             let (named, canonical) = resolve_binary(b)?;
@@ -102,7 +110,10 @@ impl Sandbox {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".claude"));
         let claude_json_seed = home.join(".claude.json");
-        let write_paths = vec![config_dir];
+        // The claude config directory holds its credentials; ~/.codex holds
+        // codex's login and its per-thread state. Both are bound with
+        // --bind-try, so a host without one of them is unaffected.
+        let write_paths = vec![config_dir, home.join(".codex")];
         Ok(Some(Sandbox {
             bwrap,
             home,
