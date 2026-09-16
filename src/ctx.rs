@@ -12,22 +12,30 @@ use std::path::PathBuf;
 
 /// The provider a step under `role` actually runs (see `config::ROLES`):
 /// the task's own `--provider` (set, so every role for that task wins),
-/// else the project's `[roles]` override for `role`, else the operator's
-/// `[roles]` table, else the built-in "anthropic". `task_provider` is `""`
-/// when the task named no `--provider`.
+/// else this task's `[measure] explore` draw for `role` (see
+/// `queue::assign_explore`), else the project's `[roles]` override for
+/// `role`, else the operator's `[roles]` table, else the built-in
+/// "anthropic". `task_provider` is `""` when the task named no
+/// `--provider`.
 pub fn resolve_provider<'a>(
     providers: &'a BTreeMap<String, agent::Provider>,
     operator_roles: &BTreeMap<String, String>,
     project_roles: &BTreeMap<String, String>,
+    explore: &BTreeMap<String, String>,
     task_provider: &str,
     role: &str,
 ) -> Result<&'a agent::Provider> {
-    // A task's --provider routes the work, never the judge: the supervisor
-    // rules on the record and keeps the operator's or the project's
-    // provider for that role (task 309's supervisor ran on the task's
-    // local model and tried to pull "opus" from ollama).
+    // A task's --provider (explicit or drawn by explore) routes the work,
+    // never the judge: the supervisor rules on the record and keeps the
+    // operator's or the project's provider for that role (task 309's
+    // supervisor ran on the task's local model and tried to pull "opus"
+    // from ollama).
     let name = if !task_provider.is_empty() && role != "supervisor" {
         task_provider
+    } else if role != "supervisor"
+        && let Some(p) = explore.get(role)
+    {
+        p.as_str()
     } else if let Some(p) = project_roles.get(role) {
         p.as_str()
     } else if let Some(p) = operator_roles.get(role) {
@@ -166,6 +174,7 @@ impl Forge {
             &self.providers,
             &self.roles,
             &project_roles,
+            &t.explore,
             &t.provider,
             role,
         )
@@ -261,6 +270,7 @@ mod tests {
             &providers,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             "devhome",
             "code",
         )
@@ -268,6 +278,7 @@ mod tests {
         assert_eq!(p.name, "devhome");
         let s = resolve_provider(
             &providers,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
             "devhome",
@@ -280,8 +291,15 @@ mod tests {
     #[test]
     fn resolve_provider_falls_to_anthropic_with_nothing_configured() {
         let providers = providers(&["anthropic"]);
-        let p =
-            resolve_provider(&providers, &BTreeMap::new(), &BTreeMap::new(), "", "code").unwrap();
+        let p = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "",
+            "code",
+        )
+        .unwrap();
         assert_eq!(p.name, "anthropic");
     }
 
@@ -290,12 +308,26 @@ mod tests {
         let providers = providers(&["anthropic", "devhome"]);
         let operator_roles: BTreeMap<String, String> =
             [("code".to_string(), "devhome".to_string())].into();
-        let p =
-            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "code").unwrap();
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "",
+            "code",
+        )
+        .unwrap();
         assert_eq!(p.name, "devhome");
         // A role the operator did not name still falls to anthropic.
-        let p =
-            resolve_provider(&providers, &operator_roles, &BTreeMap::new(), "", "tests").unwrap();
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            "",
+            "tests",
+        )
+        .unwrap();
         assert_eq!(p.name, "anthropic");
     }
 
@@ -306,8 +338,64 @@ mod tests {
             [("code".to_string(), "devhome".to_string())].into();
         let project_roles: BTreeMap<String, String> =
             [("code".to_string(), "openai".to_string())].into();
-        let p = resolve_provider(&providers, &operator_roles, &project_roles, "", "code").unwrap();
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &project_roles,
+            &BTreeMap::new(),
+            "",
+            "code",
+        )
+        .unwrap();
         assert_eq!(p.name, "openai");
+    }
+
+    #[test]
+    fn resolve_provider_explore_wins_over_the_project_and_operator_but_not_the_tasks_own_flag() {
+        let providers = providers(&["anthropic", "devhome", "openai"]);
+        let operator_roles: BTreeMap<String, String> =
+            [("code".to_string(), "devhome".to_string())].into();
+        let project_roles: BTreeMap<String, String> =
+            [("code".to_string(), "openai".to_string())].into();
+        let explore: BTreeMap<String, String> =
+            [("code".to_string(), "anthropic".to_string())].into();
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &project_roles,
+            &explore,
+            "",
+            "code",
+        )
+        .unwrap();
+        assert_eq!(
+            p.name, "anthropic",
+            "explore wins over project and operator"
+        );
+        // An explicit task provider still wins over an explore draw.
+        let p = resolve_provider(
+            &providers,
+            &operator_roles,
+            &project_roles,
+            &explore,
+            "devhome",
+            "code",
+        )
+        .unwrap();
+        assert_eq!(p.name, "devhome");
+        // Explore never routes the supervisor either.
+        let explore_supervisor: BTreeMap<String, String> =
+            [("supervisor".to_string(), "devhome".to_string())].into();
+        let s = resolve_provider(
+            &providers,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &explore_supervisor,
+            "",
+            "supervisor",
+        )
+        .unwrap();
+        assert_eq!(s.name, "anthropic");
     }
 
     #[test]
@@ -322,6 +410,7 @@ mod tests {
             &providers,
             &operator_roles,
             &project_roles,
+            &BTreeMap::new(),
             "devhome",
             "review",
         )
@@ -334,6 +423,7 @@ mod tests {
         let providers = providers(&["anthropic"]);
         let err = resolve_provider(
             &providers,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
             "ghost",

@@ -222,6 +222,10 @@ pub struct TraceTask {
     /// How `journal_enabled` got its value: "explicit", "control", or
     /// "treatment" (see `queue::assign_journal_arm`).
     pub journal_arm: String,
+    /// Which provider each role drew from `[measure] explore`, keyed by
+    /// role name; empty when the task named an explicit `--provider` or no
+    /// role explored (see `queue::assign_explore`).
+    pub explore: std::collections::BTreeMap<String, String>,
     pub context_enabled: bool,
     pub context: String,
     pub resume_on_failure: bool,
@@ -384,6 +388,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         retry_of: t.retry_of,
         journal_enabled: t.journal,
         journal_arm: t.journal_arm.clone(),
+        explore: t.explore.clone(),
         context_enabled: t.context_enabled,
         context: t.context.clone(),
         resume_on_failure: t.resume_on_failure,

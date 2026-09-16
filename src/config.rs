@@ -367,6 +367,16 @@ pub struct Budget {
 #[derive(Deserialize, Default)]
 struct MeasureRaw {
     journal_control: Option<f64>,
+    /// `[measure] explore = { <role> = { provider = <name>, fraction =
+    /// <0..1> } }`: see `Measure::explore`.
+    #[serde(default)]
+    explore: BTreeMap<String, ExploreRoleRaw>,
+}
+
+#[derive(Deserialize)]
+struct ExploreRoleRaw {
+    provider: String,
+    fraction: f64,
 }
 
 /// Fixed fractions of tasks the operator assigns to a control arm so a
@@ -378,6 +388,19 @@ pub struct Measure {
     /// run with the journal off when the request itself does not say
     /// `--journal` or `--no-journal`. `0.0` (the default) assigns none.
     pub journal_control: f64,
+    /// Per-role exploration: each named role draws, independently and
+    /// deterministically from the task id (see
+    /// `queue::journal_control_draw`), into `provider` with probability
+    /// `fraction`, when the task itself names no `--provider`. Generalises
+    /// `journal_control`'s single fixed arm to an arbitrary provider per
+    /// role, so `forge stats --by-role` accumulates real head-to-head data
+    /// without an operator routing tasks to it by hand.
+    pub explore: BTreeMap<String, ExploreRole>,
+}
+
+pub struct ExploreRole {
+    pub provider: String,
+    pub fraction: f64,
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
@@ -431,6 +454,17 @@ signals_to_end = 2
 # own request does not say --journal or --no-journal. 0.0 assigns none;
 # see docs/LATER.md, \"The journal measurement was ill-posed three times\".
 journal_control = 0.0
+
+# Per-role exploration: send a fixed fraction of a role's steps to a named
+# provider instead of its usual one, chosen deterministically from the task
+# id, when the task itself names no --provider (an explicit --provider is
+# never overridden). `forge stats --by-role` already splits by provider, so
+# this is how head-to-head data on a role accumulates without routing tasks
+# to it by hand.
+#
+# [measure.explore.code]
+# provider = \"devhome\"
+# fraction = 0.1
 
 # Agent backends beyond the built-in \"anthropic\" provider (runner
 # claude-cli, today's models; no entry needed to keep today's behavior). A
@@ -510,6 +544,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
     };
     let providers = build_providers(raw.providers, &budget)?;
     let roles = build_roles(raw.roles, &providers)?;
+    let explore = build_explore(raw.measure.explore, &providers)?;
     Ok(HomeConfig {
         budget,
         sandbox: SandboxPaths {
@@ -541,6 +576,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .collect(),
         measure: Measure {
             journal_control: raw.measure.journal_control.unwrap_or(0.0),
+            explore,
         },
         providers,
         roles,
@@ -619,6 +655,37 @@ fn build_roles(
         roles.insert(role.to_string(), name);
     }
     Ok(roles)
+}
+
+/// `[measure] explore`'s per-role provider and fraction, validated the same
+/// way `[roles]` is: an unknown provider fails at startup, not mid-task.
+fn build_explore(
+    raw: BTreeMap<String, ExploreRoleRaw>,
+    providers: &BTreeMap<String, Provider>,
+) -> Result<BTreeMap<String, ExploreRole>> {
+    let mut explore = BTreeMap::new();
+    for (role, e) in raw {
+        if !providers.contains_key(&e.provider) {
+            bail!(
+                "measure.explore.{role}: unknown provider {:?}; see `forge providers` for what is configured",
+                e.provider
+            );
+        }
+        if !(0.0..=1.0).contains(&e.fraction) {
+            bail!(
+                "measure.explore.{role}: fraction must be between 0 and 1, got {}",
+                e.fraction
+            );
+        }
+        explore.insert(
+            role,
+            ExploreRole {
+                provider: e.provider,
+                fraction: e.fraction,
+            },
+        );
+    }
+    Ok(explore)
 }
 
 #[cfg(test)]

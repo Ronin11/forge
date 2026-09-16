@@ -10,6 +10,7 @@ use crate::report::Event;
 use crate::store::{Task, TaskState};
 use crate::{config, git, unix_now, workflows};
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// What a new task is made from. Field names follow the CLI flags; the
@@ -84,6 +85,28 @@ fn journal_control_draw(id: i64, fraction: f64) -> bool {
     x ^= x >> 33;
     let draw = (x % 1_000_000) as f64 / 1_000_000.0;
     draw < fraction
+}
+
+/// Which provider each of the operator's `[measure] explore` roles is
+/// routed to for this task: each role draws independently, at its own
+/// fraction, the same deterministic way as the journal control arm (see
+/// `journal_control_draw`); recorded on `Task::explore` so
+/// `ctx::resolve_provider` can look it up at every step without redoing
+/// the draw. An explicit `--provider` on the request routes every role
+/// itself and is never overridden, so it draws nothing at all.
+fn assign_explore(
+    id: i64,
+    explicit_provider: bool,
+    explore: &BTreeMap<String, config::ExploreRole>,
+) -> BTreeMap<String, String> {
+    if explicit_provider {
+        return BTreeMap::new();
+    }
+    explore
+        .iter()
+        .filter(|(_, e)| journal_control_draw(id, e.fraction))
+        .map(|(role, e)| (role.clone(), e.provider.clone()))
+        .collect()
 }
 
 pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
@@ -221,6 +244,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         &f.providers,
         &f.roles,
         &project_roles,
+        &BTreeMap::new(),
         &provider_name,
         "code",
     )?;
@@ -278,6 +302,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     let (journal, arm) = assign_journal_arm(t.id, args.journal_choice, f.measure.journal_control);
     t.journal = journal;
     t.journal_arm = arm.to_string();
+    t.explore = assign_explore(t.id, args.provider.is_some(), &f.measure.explore);
     f.store.update_task(&t)?;
     f.report.emit(
         t.id,
@@ -727,5 +752,74 @@ mod tests {
                 "id {id} drew control at fraction 0.0"
             );
         }
+    }
+
+    fn explore_of(
+        role: &str,
+        provider: &str,
+        fraction: f64,
+    ) -> BTreeMap<String, config::ExploreRole> {
+        [(
+            role.to_string(),
+            config::ExploreRole {
+                provider: provider.to_string(),
+                fraction,
+            },
+        )]
+        .into()
+    }
+
+    #[test]
+    fn assign_explore_is_a_pure_function_of_id_and_fraction() {
+        let explore = explore_of("code", "devhome", 0.4);
+        for id in [1, 2, 3, 42, 1_000, 1_000_000] {
+            let a = assign_explore(id, false, &explore);
+            let b = assign_explore(id, false, &explore);
+            assert_eq!(a, b, "id {id} disagreed with itself");
+        }
+    }
+
+    #[test]
+    fn assign_explore_at_fraction_zero_never_assigns() {
+        let explore = explore_of("code", "devhome", 0.0);
+        for id in 1..10_000 {
+            assert!(
+                assign_explore(id, false, &explore).is_empty(),
+                "id {id} drew a provider at fraction 0.0"
+            );
+        }
+    }
+
+    #[test]
+    fn assign_explore_never_overrides_an_explicit_provider() {
+        let explore = explore_of("code", "devhome", 1.0);
+        for id in 1..1_000 {
+            assert!(
+                assign_explore(id, true, &explore).is_empty(),
+                "id {id} drew a provider despite an explicit --provider"
+            );
+        }
+    }
+
+    #[test]
+    fn assign_explore_draws_each_role_independently() {
+        let mut explore = BTreeMap::new();
+        explore.insert(
+            "code".to_string(),
+            config::ExploreRole {
+                provider: "devhome".to_string(),
+                fraction: 1.0,
+            },
+        );
+        explore.insert(
+            "tests".to_string(),
+            config::ExploreRole {
+                provider: "openai".to_string(),
+                fraction: 0.0,
+            },
+        );
+        let drawn = assign_explore(7, false, &explore);
+        assert_eq!(drawn.get("code").map(String::as_str), Some("devhome"));
+        assert_eq!(drawn.get("tests"), None);
     }
 }

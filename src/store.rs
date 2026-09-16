@@ -193,6 +193,13 @@ pub struct Task {
     pub project: Option<String>,
     /// The initiative this task belongs to, if any.
     pub initiative: Option<i64>,
+    /// Which provider each role drew from the operator's `[measure]
+    /// explore` fractions, keyed by role name; empty when the task named
+    /// an explicit `--provider` (which routes every role itself) or no
+    /// role was configured to explore. Drawn once at creation, the same
+    /// deterministic way as `journal_arm` (see `queue::assign_explore`),
+    /// and consulted by `ctx::resolve_provider` at every step.
+    pub explore: BTreeMap<String, String>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -892,6 +899,9 @@ ALTER TABLE deploys ADD COLUMN task_id INTEGER;
 ALTER TABLE tasks ADD COLUMN question_to TEXT;
 ALTER TABLE decisions ADD COLUMN answered_for TEXT;
 ",
+    "
+ALTER TABLE tasks ADD COLUMN explore_json TEXT NOT NULL DEFAULT '{}';
+",
 ];
 
 /// The version this migration brings the schema to; `migrate` also runs
@@ -944,6 +954,7 @@ const TASK_COLUMNS: &[&str] = &[
     "journal_arm",
     "project",
     "initiative",
+    "explore_json",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -1010,6 +1021,11 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         landed_sha: r.get("landed_sha")?,
         project: r.get("project")?,
         initiative: r.get("initiative")?,
+        explore: conv(
+            r,
+            "explore_json",
+            serde_json::from_str(&r.get::<_, String>("explore_json")?),
+        )?,
     })
 }
 
@@ -1143,8 +1159,8 @@ impl Store {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             params![
                 t.repo,
                 t.task,
@@ -1169,7 +1185,8 @@ impl Store {
                 t.journal as i64,
                 t.context_enabled as i64,
                 t.resume_on_failure as i64,
-                t.journal_arm
+                t.journal_arm,
+                serde_json::to_string(&t.explore)?,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -1186,7 +1203,7 @@ impl Store {
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39, provider=?40, question_to=?41 WHERE id=?1",
+             project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1229,6 +1246,7 @@ impl Store {
                 t.initiative,
                 t.provider,
                 t.question_to,
+                serde_json::to_string(&t.explore)?,
             ],
         )?;
         Ok(())

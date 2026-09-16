@@ -3261,6 +3261,16 @@ fn show(id: i64) -> Result<()> {
         if task.journal_enabled { "on" } else { "off" },
         task.journal_arm
     );
+    if !task.explore.is_empty() {
+        out!(
+            "explore    {}",
+            task.explore
+                .iter()
+                .map(|(role, provider)| format!("{role}={provider}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if !task.after.is_empty() {
         out!(
             "after      {}",
