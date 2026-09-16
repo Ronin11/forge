@@ -13,6 +13,7 @@ use crate::engine::{self, Fault};
 use crate::report::Event;
 use crate::store::{Task, TaskState};
 use crate::unix_now;
+use crate::workflows;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
@@ -148,25 +149,51 @@ pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
     Ok(hold)
 }
 
-/// Whether `t`'s "code" role (the representative provider for a queued,
-/// not-yet-started task; see `ctx::resolve_provider`) is currently held.
-/// A provider that fails to resolve is never held here: the real error
-/// surfaces when the task actually runs.
+/// The role the task's *next agent step* will actually run under: the
+/// contract of the first directive step of its resolved workflow (see
+/// `engine::run_task`, which resolves the same way at start). Falls back
+/// to "code" on any failure to resolve (unknown/broken workflow, no
+/// directive step): a provider that fails to resolve is never held here,
+/// the real error surfaces when the task actually runs.
+fn first_role(f: &Forge, t: &Task) -> String {
+    let resolved: workflows::Resolved = if !t.actions_json.is_empty() {
+        match serde_json::from_str(&t.actions_json) {
+            Ok(r) => r,
+            Err(_) => return "code".into(),
+        }
+    } else {
+        match workflows::resolve(&f.paths.home, &t.workflow) {
+            Ok(r) => r,
+            Err(_) => return "code".into(),
+        }
+    };
+    resolved
+        .steps
+        .into_iter()
+        .find(|s| s.action.kind == workflows::Kind::Directive)
+        .map(|s| s.action.contract.as_str().to_string())
+        .unwrap_or_else(|| "code".into())
+}
+
+/// Whether the provider that `t`'s next agent step will actually run
+/// under (see `first_role`) is currently held.
 fn provider_is_held(f: &Forge, t: &Task) -> bool {
-    f.effective_provider(t, "code")
+    f.effective_provider(t, &first_role(f, t))
         .ok()
         .and_then(|p| window_hold(f, &p.name).ok().flatten())
         .is_some()
 }
 
 /// The tightest (soonest-resetting) hold among every queued, unblocked
-/// task's own provider, when *none* of them can be claimed right now;
+/// task's own provider (the one `first_role` says its next agent step
+/// will run under), when *none* of them can be claimed right now;
 /// `None` as soon as one candidate's provider is not held, since the
 /// caller can claim it instead of waiting.
 fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
     let mut tightest: Option<(String, i64)> = None;
     for t in f.store.queued_unblocked(held_initiatives)? {
-        let Ok(provider) = f.effective_provider(&t, "code") else {
+        let role = first_role(f, &t);
+        let Ok(provider) = f.effective_provider(&t, &role) else {
             return Ok(None);
         };
         match window_hold(f, &provider.name)? {
@@ -361,5 +388,60 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     match env_error {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+
+    /// A `Forge` over a fresh, empty store in a throwaway home: enough to
+    /// resolve the builtin workflows `first_role` reads.
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    fn task_on(workflow: &str) -> Task {
+        Task {
+            repo: "repo".into(),
+            task: "do a thing".into(),
+            base_branch: "main".into(),
+            model: "sonnet".into(),
+            max_turns: 10,
+            max_attempts: 1,
+            timeout_secs: 60,
+            state: TaskState::Queued,
+            created_at: crate::unix_now(),
+            workflow: workflow.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn first_role_is_the_first_directive_steps_contract() {
+        let (_dir, f) = fixture();
+        assert_eq!(first_role(&f, &task_on("direct")), "code");
+        assert_eq!(first_role(&f, &task_on("planned")), "plan");
+    }
+
+    #[test]
+    fn first_role_falls_back_to_code_when_the_workflow_does_not_resolve() {
+        let (_dir, f) = fixture();
+        assert_eq!(first_role(&f, &task_on("no-such-workflow")), "code");
+        let mut t = task_on("direct");
+        t.actions_json = "not json".into();
+        assert_eq!(first_role(&f, &t), "code");
     }
 }

@@ -366,3 +366,78 @@ fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap(
          (started {started}, anthropic resets {resets})"
     );
 }
+
+/// The queue-claim hold gates on the provider the task's *next agent step*
+/// will actually run under, not always "code". A task on the `planned`
+/// workflow's first directive is `investigate` (contract "plan"); routed
+/// via `[roles]` to a provider with no samples of its own, it must be
+/// claimed at once even while anthropic's window sits at its cap from an
+/// earlier attempt. Its own later `code` step still resolves to anthropic
+/// (no `[roles]` entry for "code"), so that step waits inside the engine
+/// once anthropic is held — the bug this covers left the task unclaimable
+/// at the queue instead.
+#[test]
+fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
+    let e = Env::new();
+    write_config(
+        &e,
+        "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\n\
+         [roles]\nplan = \"fake-codex\"\n",
+    );
+    let anthropic_task = e.add(&["--no-land"]);
+    let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
+
+    let mut cmd = e.cmd("ratelimited.sh");
+    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
+    cmd.args(["work", "--once"]);
+    let o = cmd.output().expect("forge work");
+    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+    eprintln!("--- forge work --once (role-routed plan step) ---\n{stdout}{stderr}");
+    assert!(o.status.success(), "{stderr}");
+
+    assert_eq!(e.task(anthropic_task).0, "succeeded");
+    assert_eq!(
+        e.task(planned_task).0,
+        "succeeded",
+        "its first step is routed by role to a provider with no samples of its own"
+    );
+
+    // The worker's queue-level hold line (src/worker.rs) never fires for
+    // the planned task: with the bug, its role always resolved to "code"
+    // (-> anthropic), so it sat unclaimable behind anthropic's held window
+    // and this line would appear.
+    assert!(
+        !stderr.contains("; holding,"),
+        "the planned task should be claimed at once, never held at the queue: {stderr}"
+    );
+    // Its own code step (role "code" -> anthropic, no [roles] entry) still
+    // waits inside the engine once anthropic's window is at its cap.
+    assert!(
+        stderr.contains("rate     ") && stderr.contains("; waiting"),
+        "the planned task's code step should still wait inside the engine: {stderr}"
+    );
+
+    let started: i64 = e
+        .db()
+        .query_row(
+            "SELECT started_at FROM attempts WHERE task_id=?1 ORDER BY id LIMIT 1",
+            [planned_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let resets: i64 = e
+        .db()
+        .query_row(
+            "SELECT rl_five_hour_resets FROM attempts WHERE task_id=?1 AND provider='anthropic' ORDER BY id LIMIT 1",
+            [anthropic_task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        started < resets,
+        "the planned task's first (plan) attempt started before anthropic's \
+         recorded reset, so the unrelated anthropic window never held it \
+         (started {started}, anthropic resets {resets})"
+    );
+}
