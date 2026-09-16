@@ -178,6 +178,12 @@ struct ActionRaw {
     /// Directive: text appended verbatim as a final "This step:" section
     /// of the role prompt the agent receives.
     prompt: Option<String>,
+    /// Directive (plan contract): when true and the task has an
+    /// initiative id, file the plan's items as sibling tasks in that
+    /// initiative after this step, instead of running the code step in
+    /// the same task.
+    #[serde(default)]
+    file_into_initiative: bool,
     /// Operation: run with the verification namespace overlaid from the
     /// trusted refs (a hidden suite the coder never sees).
     #[serde(default)]
@@ -208,6 +214,7 @@ pub struct ActionDef {
     pub paths: Vec<String>,
     pub brief: String,
     pub prompt: Option<String>,
+    pub file_into_initiative: bool,
     pub overlay: bool,
     pub verifies: bool,
     pub output: Output,
@@ -543,16 +550,23 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
                     path.display()
                 );
             }
+            if raw.file_into_initiative && contract != Contract::Plan {
+                bail!(
+                    "{}: `file_into_initiative` applies to the plan contract only",
+                    path.display()
+                );
+            }
         }
     }
     if raw.kind == Kind::Operation
         && (raw.contract.is_some()
             || !raw.paths.is_empty()
             || !raw.brief.is_empty()
-            || raw.prompt.is_some())
+            || raw.prompt.is_some()
+            || raw.file_into_initiative)
     {
         bail!(
-            "{}: contract, paths, brief, and prompt apply to directives only",
+            "{}: contract, paths, brief, prompt, and file_into_initiative apply to directives only",
             path.display()
         );
     }
@@ -623,6 +637,7 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         paths: raw.paths,
         brief: raw.brief,
         prompt: raw.prompt,
+        file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
         verifies: raw.verifies,
         output: raw.output,

@@ -98,6 +98,25 @@ impossible as stated costs one read of the tree rather than several
 attempts at writing. `investigate` is the built-in directive on this
 contract; `planned` is the workflow that runs it before `code`.
 
+A plan can also become an initiative's tasks instead of one task's code.
+`forge initiative from-plan <task id> [--outcome <text>]` reads a
+finished task's recorded plan (`t.plan`), creates an initiative in the
+task's project (outcome defaulting to the task's own text when
+`--outcome` is not given), and files one task per plan item — the plan's
+paragraphs, blank-line separated, in order — each depending on the one
+before it, against the task's repository, with the plan item as the new
+task's text and the originating task recorded as a reference of kind
+`plan` on each. Refused when the task has no plan.
+
+The plan contract's action can do this itself, mid-run: a directive
+naming it may set `file_into_initiative = true`. When the task has an
+initiative id, the engine files the plan's items as sibling tasks in
+that same initiative right after this step, exactly as `from-plan`
+would, instead of continuing to the `code` step in this task; the task
+then ends succeeded, with a reason naming how many it filed. Without an
+initiative id the flag does nothing and the workflow continues as
+written, since there is nothing to file into.
+
 ## Operations
 
 An operation is a command with a timeout, run in the sandbox against the
