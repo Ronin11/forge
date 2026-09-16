@@ -1,8 +1,8 @@
 name = "fix"
 kind = "directive"
 contract = "code"
-description = "the code contract on a small, fast model with few turns, for tasks that are precisely specified and small"
+description = "the code contract with few turns, for tasks that are precisely specified and small; on the standard model, since the small one succeeded 4 times in 38 (forge stats --by-role, 2026-09-16)"
 consumes = ["branch"]
 produces = ["branch"]
-model = "haiku"
-max_turns = 15
+model = "sonnet"
+max_turns = 25

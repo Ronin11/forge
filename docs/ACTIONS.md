@@ -293,7 +293,7 @@ forms, one now and one later.
 | `direct` | setup → repo-map → code |
 | `tdd` | tests → setup → repo-map → code |
 | `docs` | setup → docs |
-| `cheap` | setup → repo-map → fix (haiku, 15 turns) → fmt |
+| `cheap` | setup → repo-map → fix (sonnet, 25 turns) → fmt |
 | `polish` | setup → repo-map → code → polish |
 | `reviewed` | setup → repo-map → code → review |
 | `tdd-reviewed` | tests → setup → repo-map → code → review |

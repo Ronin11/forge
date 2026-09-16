@@ -119,8 +119,8 @@ fn the_docs_directive_is_scoped_and_cheap_uses_its_model() {
             .success()
     );
     let doc: serde_json::Value = e.trace_json("3");
-    assert_eq!(doc["attempts"][0]["inputs"]["model"], "haiku");
-    assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 15);
+    assert_eq!(doc["attempts"][0]["inputs"]["model"], "sonnet");
+    assert_eq!(doc["attempts"][0]["inputs"]["max_turns"], 25);
     assert_eq!(doc["attempts"][0]["step"], "fix");
 }
 

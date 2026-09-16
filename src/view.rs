@@ -1009,10 +1009,47 @@ pub fn project_rows(f: &Forge) -> Result<Vec<ProjectRow>> {
 /// optionally followed by " (after N attempt(s))"). `None` for any other
 /// kind of failure: an agent failure, a budget cap, or a failing L1/L2
 /// check never sets this prefix.
-fn l0_rule_of(reason: &str) -> Option<String> {
-    let rest = reason.strip_prefix("L0 failed: ")?;
+/// The L0 rules a failed task's reason names: "L0 failed: has-commits,
+/// changes-match-git (after 2 attempt(s))" names two. A task can fail
+/// several at once, and a streak on one of them must not be broken by a
+/// failure that names it among others (initiative 2's third has-commits
+/// failure also named changes-match-git and reset the count).
+fn l0_rules_of(reason: &str) -> Vec<String> {
+    let Some(rest) = reason.strip_prefix("L0 failed: ") else {
+        return Vec::new();
+    };
     let rest = rest.split(" (after").next().unwrap_or(rest).trim();
-    (!rest.is_empty()).then(|| rest.to_string())
+    rest.split(',')
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
+/// The trailing run of failed tasks that all name one L0 rule, over
+/// terminal tasks in the order they finished: the rule and the run's
+/// length. Any terminal task that did not fail on an L0 rule ends the run.
+pub(crate) fn same_rule_streak(terminal: &[(TaskState, &str)]) -> Option<(String, i64)> {
+    let mut rule: Option<String> = None;
+    let mut len = 0i64;
+    for (state, reason) in terminal {
+        let rules = if *state == TaskState::Failed {
+            l0_rules_of(reason)
+        } else {
+            Vec::new()
+        };
+        if rules.is_empty() {
+            rule = None;
+            len = 0;
+        } else if let Some(r) = &rule
+            && rules.iter().any(|x| x == r)
+        {
+            len += 1;
+        } else {
+            rule = Some(rules[0].clone());
+            len = 1;
+        }
+    }
+    rule.map(|r| (r, len))
 }
 
 /// `tasks`, collapsed to one entry per lineage: a task and every task
@@ -1094,25 +1131,13 @@ pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Opti
         })
         .collect();
     terminal.sort_by_key(|t| t.finished_at.unwrap_or(0));
-    let mut rule: Option<String> = None;
-    let mut len = 0i64;
-    for t in terminal {
-        match (t.state, l0_rule_of(&t.reason)) {
-            (TaskState::Failed, Some(r)) => {
-                if rule.as_deref() == Some(r.as_str()) {
-                    len += 1;
-                } else {
-                    len = 1;
-                    rule = Some(r);
-                }
-            }
-            _ => {
-                len = 0;
-                rule = None;
-            }
-        }
-    }
-    Ok((len >= ini.stop_after_same_rule).then_some(rule).flatten())
+    let seq: Vec<(TaskState, &str)> = terminal
+        .iter()
+        .map(|t| (t.state, t.reason.as_str()))
+        .collect();
+    Ok(same_rule_streak(&seq)
+        .filter(|(_, len)| *len >= ini.stop_after_same_rule)
+        .map(|(rule, _)| rule))
 }
 
 /// Settle an initiative once every one of its tasks has reached a
@@ -1653,5 +1678,47 @@ mod lineage_rollup_tests {
         let row = project_row(&f, &p).unwrap();
         assert_eq!(row.succeeded, 1);
         assert_eq!(row.blocked, 0);
+    }
+}
+
+#[cfg(test)]
+mod stop_rule_tests {
+    use crate::store::TaskState::{Failed, Succeeded};
+
+    #[test]
+    fn a_streak_survives_a_failure_that_names_the_rule_among_others() {
+        let seq = [
+            (Failed, "L0 failed: has-commits (after 2 attempt(s))"),
+            (Failed, "L0 failed: has-commits (after 2 attempt(s))"),
+            (
+                Failed,
+                "L0 failed: has-commits, changes-match-git (after 2 attempt(s))",
+            ),
+        ];
+        assert_eq!(
+            super::same_rule_streak(&seq),
+            Some(("has-commits".to_string(), 3))
+        );
+    }
+
+    #[test]
+    fn a_landing_or_a_different_rule_ends_the_streak() {
+        let broken = [
+            (Failed, "L0 failed: has-commits (after 2 attempt(s))"),
+            (Succeeded, "landed main @ abc"),
+            (Failed, "L0 failed: has-commits (after 2 attempt(s))"),
+        ];
+        assert_eq!(
+            super::same_rule_streak(&broken),
+            Some(("has-commits".to_string(), 1))
+        );
+        let other = [
+            (Failed, "L0 failed: clean-tree (after 1 attempt(s))"),
+            (Failed, "L0 failed: has-commits (after 1 attempt(s))"),
+        ];
+        assert_eq!(
+            super::same_rule_streak(&other),
+            Some(("has-commits".to_string(), 1))
+        );
     }
 }
