@@ -153,6 +153,81 @@ fn a_scripted_person_answers_four_questions_and_confirms_the_brief() {
 }
 
 #[test]
+fn accepting_a_confirmed_brief_yields_a_project_with_two_backlog_entries_and_the_draft_target() {
+    let e = Env::new();
+    let mut id = add_intake(&e, "Nate runs a shop. Contact: nate.");
+
+    let o = e.forge("interviewer-confirmed.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(id);
+    assert_eq!(state, "blocked", "{reason}");
+    id = answer(&e, id, "Yes, that's right.", "nate");
+
+    let o = e.forge("interviewer-confirmed.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(id);
+    assert_eq!(state, "succeeded", "{reason}");
+
+    // Not yet confirmed refuses.
+    let unconfirmed = add_intake(&e, "Someone else, contact: someone.");
+    let o = e.forge("ok.sh", &["intake", "accept", &unconfirmed.to_string()]);
+    assert!(
+        !o.status.success(),
+        "accept should refuse a task with no confirmed brief"
+    );
+
+    let o = e.forge("ok.sh", &["intake", "accept", &id.to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // The project's name defaults to the interviewed person's name, slugged.
+    let show = e.forge("ok.sh", &["project", "show", "nate", "--json"]);
+    assert!(
+        show.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+
+    let backlog: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "backlog", "nate", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let items = backlog.as_array().expect("backlog is an array");
+    assert_eq!(items.len(), 2, "one backlog entry per workflow: {items:?}");
+    assert!(
+        items[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("quote by photo:"),
+        "{items:?}"
+    );
+    assert!(
+        items[1]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("weekly invoice:"),
+        "{items:?}"
+    );
+
+    let targets: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "deploy", "list", "nate", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let targets = targets.as_array().expect("targets is an array");
+    assert_eq!(targets.len(), 1, "the draft deploy target: {targets:?}");
+    assert_eq!(targets[0]["name"], "draft");
+    assert_eq!(targets[0]["method"], "deploy-command");
+    assert_eq!(targets[0]["args"]["host"], "local");
+
+    // `forge show` displays the brief on an intake task.
+    let show = e.forge("ok.sh", &["show", &id.to_string()]);
+    let stdout = String::from_utf8_lossy(&show.stdout);
+    assert!(stdout.contains("brief"), "{stdout}");
+    assert!(stdout.contains("quote by photo"), "{stdout}");
+}
+
+#[test]
 fn a_person_saying_stop_ends_the_interview_without_a_plan_substantive_failure() {
     let e = Env::new();
     let id = add_intake(&e, "Nate runs a shop. Contact: nate.");

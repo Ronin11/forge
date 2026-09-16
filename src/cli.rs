@@ -343,6 +343,31 @@ enum Cmd {
     /// recording its ipv4 as the target's host arg (see docs/DEPLOY.md,
     /// "Provisioning")
     Provision(ProvisionArgs),
+    /// Intake: turning a confirmed interview brief into a project (see docs/INTAKE.md)
+    Intake {
+        #[command(subcommand)]
+        cmd: IntakeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum IntakeCmd {
+    /// Accept a confirmed intake task's brief: create (or reuse) the
+    /// project, fill its backlog with one entry per workflow the brief
+    /// named, and record a draft deploy target from "where it runs" when
+    /// it names a host and method Forge already supports (else a backlog
+    /// entry saying what the target would be). Refused unless the task's
+    /// brief says `confirmed`.
+    Accept {
+        task: i64,
+        /// The project's name (default: the interviewed person's name, slugged)
+        #[arg(long)]
+        project: Option<String>,
+        /// Register this repository to the project, and use it for the
+        /// draft deploy target (default: the intake task's own repository)
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
@@ -892,6 +917,13 @@ pub async fn main() -> Result<()> {
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),
+        },
+        Cmd::Intake { cmd } => match cmd {
+            IntakeCmd::Accept {
+                task,
+                project,
+                repo,
+            } => intake_accept(task, project, repo),
         },
     }
 }
@@ -1460,6 +1492,172 @@ fn project_deploy_remove(project: String, name: String) -> Result<()> {
     }
     f.store.remove_deploy_target(&project, &name)?;
     out!("removed deploy target {name} from project {project}");
+    Ok(())
+}
+
+/// The brief an `intake` task's `interview` directive writes to `t.plan`
+/// once its checklist is satisfied (see docs/INTAKE.md, "Mechanics").
+#[derive(serde::Deserialize)]
+struct Brief {
+    workflows: Vec<BriefWorkflow>,
+    where_it_runs: String,
+    #[serde(default)]
+    confirmed: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct BriefWorkflow {
+    name: String,
+    trigger: String,
+    inputs: String,
+    outputs: String,
+    other_people: String,
+    failure_today: String,
+    success_signal: String,
+    do_not_touch: String,
+}
+
+/// One workflow's fields, in the person's own words, as a paragraph: the
+/// backlog entry `intake accept` files for it, and (for the first
+/// workflow named) the project's purpose.
+fn workflow_paragraph(w: &BriefWorkflow) -> String {
+    format!(
+        "{}: starts when {}. Takes in {} and produces {}. Involves {}. Today, {}. Working would look like: {}. Must not change: {}.",
+        w.name,
+        w.trigger,
+        w.inputs,
+        w.outputs,
+        w.other_people,
+        w.failure_today,
+        w.success_signal,
+        w.do_not_touch,
+    )
+}
+
+/// Deploy methods `intake accept` can draft a target for without operator
+/// help: the built-in action files under `src/builtins/operations/deploy-*.toml`.
+const SUPPORTED_DEPLOY_METHODS: [&str; 4] = [
+    "deploy-command",
+    "deploy-user-service",
+    "deploy-static",
+    "deploy-pipeline",
+];
+
+/// A `(host, method)` pair to draft a deploy target from "where it runs",
+/// only when that text names both a host Forge can already reach without
+/// more setup (today, just `local`) and one of the built-in methods by
+/// name; otherwise `None`, and the caller files a backlog entry instead
+/// (see docs/DEPLOY.md, "A target").
+fn resolve_draft_deploy(where_it_runs: &str) -> Option<(String, String)> {
+    let lower = where_it_runs.to_lowercase();
+    let method = SUPPORTED_DEPLOY_METHODS
+        .iter()
+        .find(|m| lower.contains(*m))?;
+    let names_local = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w == "local");
+    names_local.then(|| ("local".to_string(), method.to_string()))
+}
+
+fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let t = f
+        .store
+        .task(task)?
+        .with_context(|| format!("no task {task}"))?;
+    if t.workflow != "intake" {
+        bail!("task {task} did not run the intake workflow");
+    }
+    if t.plan.is_empty() {
+        bail!("task {task} has no recorded brief (the interview has not written one yet)");
+    }
+    let brief: Brief = serde_json::from_str(&t.plan)
+        .with_context(|| format!("task {task}'s plan is not a brief: {}", t.plan))?;
+    if !brief.confirmed {
+        bail!("task {task}'s brief has not been confirmed yet");
+    }
+    if brief.workflows.is_empty() {
+        bail!("task {task}'s brief names no workflows");
+    }
+
+    let repo = repo
+        .map(|r| {
+            r.canonicalize()
+                .with_context(|| format!("--repo {}", r.display()))
+        })
+        .transpose()?
+        .map(|r| r.display().to_string());
+
+    let person = f
+        .store
+        .decisions_in_lineage(task)?
+        .into_iter()
+        .rev()
+        .map(|d| d.answered_for.unwrap_or(d.answered_by))
+        .next()
+        .unwrap_or_else(|| "person".to_string());
+    let project_name = project.unwrap_or_else(|| crate::engine::slug(&person));
+
+    if f.store.project(&project_name)?.is_none() {
+        f.store.create_project(&crate::store::Project {
+            name: project_name.clone(),
+            purpose: workflow_paragraph(&brief.workflows[0]),
+            created_at: unix_now(),
+            ..Default::default()
+        })?;
+        out!("created project {project_name}");
+    } else {
+        out!("project {project_name} already exists");
+    }
+
+    if let Some(repo) = &repo {
+        f.store.register_repo(&project_name, repo, None)?;
+        out!("registered repository {repo} to project {project_name}");
+    }
+
+    for w in &brief.workflows {
+        let id = f.store.add_backlog(&project_name, &workflow_paragraph(w))?;
+        out!("added backlog item {id}: {}", w.name);
+    }
+
+    match resolve_draft_deploy(&brief.where_it_runs) {
+        Some((host, method)) => {
+            if f.store.deploy_target(&project_name, "draft")?.is_some() {
+                out!("draft deploy target already exists for project {project_name}");
+            } else {
+                let mut args = BTreeMap::new();
+                args.insert("host".to_string(), host);
+                f.store.add_deploy_target(&crate::store::DeployTarget {
+                    project: project_name.clone(),
+                    name: "draft".to_string(),
+                    repo: repo.clone().unwrap_or_else(|| t.repo.clone()),
+                    scope: None,
+                    method,
+                    args,
+                    check_cmd: String::new(),
+                    on_landing: false,
+                    smoke_url: None,
+                })?;
+                out!(
+                    "added draft deploy target draft to project {project_name} (finish it with `forge project deploy set`)"
+                );
+            }
+        }
+        None => {
+            let id = f.store.add_backlog(
+                &project_name,
+                &format!(
+                    "deploy target: {} (names no host and method Forge already supports; complete with `forge project deploy add`)",
+                    brief.where_it_runs
+                ),
+            )?;
+            out!(
+                "added backlog item {id}: deploy target ({})",
+                brief.where_it_runs
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -3607,8 +3805,14 @@ fn show(id: i64) -> Result<()> {
         );
     }
     if !task.plan.is_empty() {
+        let label = if task.workflow == "intake" {
+            "brief"
+        } else {
+            "plan"
+        };
         out!(
-            "plan       {}",
+            "{:<11}{}",
+            label,
             task.plan.lines().collect::<Vec<_>>().join(" / ")
         );
     }
