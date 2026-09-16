@@ -496,13 +496,17 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
             }
             if !phantom.is_empty() {
                 detail.push_str(&format!(
-                    "reported but unchanged during this attempt: {} (an earlier attempt's changes are already on the record; list only what this attempt added, modified or deleted)",
+                    "also reported, but unchanged during this attempt (noted, not a failure): {}",
                     phantom.join(", ")
                 ));
             }
+            // Under-reporting hides work and fails. Over-reporting hides
+            // nothing: after an integrate rewind the coder merges main and
+            // tends to list main's files as its own (tasks 180 and 354 each
+            // lost attempts to that), so it is noted and passes.
             rows.push(l0(
                 Rule::ChangesMatchGit,
-                unreported.is_empty() && phantom.is_empty(),
+                unreported.is_empty(),
                 detail.trim().to_string(),
             ));
         }
