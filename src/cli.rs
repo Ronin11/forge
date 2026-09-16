@@ -4,12 +4,14 @@ use crate::audit;
 use crate::ctx::Forge;
 use crate::profile::{self, LOOKBACK};
 use crate::store::{Task, TaskState};
-use crate::{config, doctor, git, unix_now, worker, workflows};
+use crate::{config, doctor, git, operation, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Print to stdout without panicking when the reader has gone away, so
 /// `forge log | head` is quiet.
@@ -337,6 +339,22 @@ enum Cmd {
     /// Run a deploy target now, or (with `log`) show what was deployed
     /// when (see docs/DEPLOY.md)
     Deploy(DeployArgs),
+    /// Provision a Hetzner Cloud box for a project's deploy target,
+    /// recording its ipv4 as the target's host arg (see docs/DEPLOY.md,
+    /// "Provisioning")
+    Provision(ProvisionArgs),
+}
+
+#[derive(Args)]
+pub struct ProvisionArgs {
+    /// The project the deploy target belongs to
+    project: String,
+    /// The deploy target to provision a box for
+    name: String,
+    /// An argument to the provision-hetzner operation, as `<key>=<value>`
+    /// (repeatable): type, location, image, cloud_init, ssh_keys
+    #[arg(long = "arg")]
+    args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -860,6 +878,7 @@ pub async fn main() -> Result<()> {
             }) => deploy_log(project, name, json),
             None => deploy_run(a.project, a.name, a.sha).await,
         },
+        Cmd::Provision(a) => provision_run(a.project, a.name, a.args).await,
         Cmd::Initiative { cmd } => match cmd {
             InitiativeCmd::New {
                 project,
@@ -1306,6 +1325,19 @@ fn project_backlog(name: String, add: Option<String>, done: Option<i64>, json: b
     Ok(())
 }
 
+/// Parse repeated `--arg <key>=<value>` flags into a map, in the order
+/// clap collected them (last write wins on a repeated key).
+fn parse_args(pairs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for pair in pairs {
+        let (k, v) = pair
+            .split_once('=')
+            .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
+        map.insert(k.to_string(), v.to_string());
+    }
+    Ok(map)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn project_deploy_add(
     project: String,
@@ -1328,13 +1360,7 @@ fn project_deploy_add(
     let scope_json = scope
         .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
         .transpose()?;
-    let mut arg_map = std::collections::BTreeMap::new();
-    for pair in &args {
-        let (k, v) = pair
-            .split_once('=')
-            .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
-        arg_map.insert(k.to_string(), v.to_string());
-    }
+    let arg_map = parse_args(&args)?;
     let check = match check {
         Some(c) => c,
         None if method == "deploy-static" => String::new(),
@@ -1392,11 +1418,8 @@ fn project_deploy_set(
     if let Some(method) = method {
         t.method = method;
     }
-    for pair in &args {
-        let (k, v) = pair
-            .split_once('=')
-            .with_context(|| format!("--arg {pair:?}: expected <key>=<value>"))?;
-        t.args.insert(k.to_string(), v.to_string());
+    for (k, v) in parse_args(&args)? {
+        t.args.insert(k, v);
     }
     if let Some(check) = check {
         t.check_cmd = check;
@@ -1541,6 +1564,67 @@ fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
     for r in &rows {
         print_deploy_row(r);
     }
+    Ok(())
+}
+
+/// `forge provision <project> <name> [--arg k=v]...`: run
+/// `provision-hetzner` for the deploy target already declared as `name` in
+/// `project` (see docs/DEPLOY.md, "Provisioning"), and record its ipv4 as
+/// that target's `host` arg. `type`, `location` and `image` default as the
+/// operation itself does when not given here; `cloud_init` and `ssh_keys`
+/// have no default and must be given.
+const PROVISION_TIMEOUT: Duration = Duration::from_secs(900);
+
+async fn provision_run(project: String, name: String, args: Vec<String>) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let mut target = f
+        .store
+        .deploy_target(&project, &name)?
+        .with_context(|| format!("no deploy target {name} in project {project}"))?;
+    let action = operation::resolve_provision(&f)?;
+
+    let mut arg_map = parse_args(&args)?;
+    arg_map
+        .entry("type".to_string())
+        .or_insert_with(|| "cpx21".to_string());
+    arg_map
+        .entry("location".to_string())
+        .or_insert_with(|| "ash".to_string());
+    arg_map
+        .entry("image".to_string())
+        .or_insert_with(|| "debian-12".to_string());
+    if !arg_map.contains_key("cloud_init") {
+        bail!("--arg cloud_init=<path> is required");
+    }
+    arg_map.insert("name".to_string(), name.clone());
+
+    let out_dir = f.paths.home.join("provision").join(&project).join(&name);
+    let r = operation::run_provision(&action, &arg_map, &out_dir, PROVISION_TIMEOUT).await?;
+    if !r.ok {
+        out!("{}", r.tail);
+        bail!("provision-hetzner failed for {name} in project {project}");
+    }
+    let ipv4 = r
+        .stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .with_context(|| "provision-hetzner printed no ipv4 address")?
+        .trim()
+        .to_string();
+
+    target.args.insert("host".to_string(), ipv4.clone());
+    f.store.update_deploy_target(&target)?;
+
+    let ssh_config = out_dir.join("ssh-config");
+    out!("provisioned {name} in project {project}: {ipv4}");
+    out!(
+        "updated deploy target {name}'s host arg to {ipv4}; ssh config fragment written to {} (append it to ~/.ssh/config)",
+        ssh_config.display()
+    );
     Ok(())
 }
 
@@ -2812,6 +2896,15 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
             dollar(r.follow_on_cost_usd),
             dollar(r.true_cost_per_landed_usd),
             pct(r.churn_share)
+        );
+    }
+    if doc
+        .by_role
+        .iter()
+        .any(|r| r.role == "investigate" || r.role == "interview")
+    {
+        out!(
+            "* investigate/interview: an attempt that ended needs_input with a question counts as a success"
         );
     }
     Ok(())

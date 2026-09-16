@@ -946,6 +946,18 @@ CREATE TABLE task_churn (
   computed_at INTEGER NOT NULL
 );
 ",
+    // Before ctx::resolve_provider stopped the supervisor from inheriting
+    // a task's provider (task 309), a supervisor attempt still recorded
+    // the task's model in `inputs_json`, not its own; the provider column
+    // is already right (the built-in default, "anthropic"), so these rows
+    // read "supervisor anthropic qwen3-coder:30b" instead of the
+    // supervisor's own model. Backfill it to the supervisor's default,
+    // "opus" (`config::Supervisor::model`'s default) — the only value a
+    // migration with no access to the operator's config can give.
+    "
+UPDATE attempts SET inputs_json = json_set(inputs_json, '$.model', 'opus')
+WHERE step = 'supervisor' AND provider = 'anthropic';
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -2089,13 +2101,25 @@ impl Store {
     /// (role, provider, model), role being the attempt's step. For the
     /// `code` role only, also the landed count and the broke-base count
     /// (see `WorkflowStat::broke_base`) for tasks with an attempt in the
-    /// group.
+    /// group. `investigate` and `interview` are read-only directives whose
+    /// job is to ask when the record does not settle it; an attempt of
+    /// either that ended `needs_input` with a plain question counts as a
+    /// success here (see `forge stats --by-role`'s footnote).
     pub fn role_stats(&self) -> Result<Vec<RoleStat>> {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
                 "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
-                    COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
+                    COUNT(*),
+                    SUM(CASE
+                        WHEN a.state='succeeded' THEN 1
+                        WHEN a.step IN ('investigate', 'interview') AND a.state='needs_input'
+                            AND a.envelope_json != '' AND json_valid(a.envelope_json)
+                            AND COALESCE(json_extract(a.envelope_json, '$.needs_input.kind'), 'question') = 'question'
+                        THEN 1
+                        ELSE 0
+                    END),
+                    AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END),
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a2
@@ -3194,6 +3218,95 @@ mod tests {
     }
 
     #[test]
+    fn migration_backfills_the_supervisors_model_where_it_inherited_the_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+
+        // Build a pre-fix fixture by hand: every migration but this one,
+        // with a task and three attempts already in the table, as they'd
+        // have been written before `attempt::new_attempt` stopped
+        // clobbering a supervisor attempt's own model with the task's.
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(&format!("PRAGMA user_version={}", MIGRATIONS.len() - 1))
+                .unwrap();
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at)
+                 VALUES ('r', 't', 'main', 'qwen3-coder:30b', 10, 1, 60, 'blocked', 1)",
+                [],
+            )
+            .unwrap();
+            // The bug: a supervisor attempt on the "anthropic" default,
+            // recorded with the task's model instead of its own.
+            c.execute(
+                "INSERT INTO attempts (task_id, attempt_no, state, started_at, step, provider, inputs_json)
+                 VALUES (1, 1, 'needs_input', 1, 'supervisor', 'anthropic', '{\"model\":\"qwen3-coder:30b\"}')",
+                [],
+            )
+            .unwrap();
+            // A supervisor attempt on a non-anthropic provider: an
+            // explicit choice, not the inherited-default bug; untouched.
+            c.execute(
+                "INSERT INTO attempts (task_id, attempt_no, state, started_at, step, provider, inputs_json)
+                 VALUES (1, 2, 'needs_input', 1, 'supervisor', 'openai', '{\"model\":\"qwen3-coder:30b\"}')",
+                [],
+            )
+            .unwrap();
+            // An ordinary code attempt on anthropic: not a supervisor row,
+            // untouched even though it shares the provider.
+            c.execute(
+                "INSERT INTO attempts (task_id, attempt_no, state, started_at, step, provider, inputs_json)
+                 VALUES (1, 3, 'succeeded', 1, 'code', 'anthropic', '{\"model\":\"qwen3-coder:30b\"}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+
+        let model_of = |a: &Attempt| {
+            serde_json::from_str::<serde_json::Value>(&a.inputs_json).unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let attempts = s.attempts(1).unwrap();
+        let fixed = attempts
+            .iter()
+            .find(|a| a.attempt_no == 1)
+            .expect("the anthropic supervisor row");
+        assert_eq!(
+            model_of(fixed),
+            "opus",
+            "backfilled to the supervisor's own default model"
+        );
+
+        let other_provider = attempts
+            .iter()
+            .find(|a| a.attempt_no == 2)
+            .expect("the openai supervisor row");
+        assert_eq!(
+            model_of(other_provider),
+            "qwen3-coder:30b",
+            "not anthropic, left alone"
+        );
+
+        let code = attempts
+            .iter()
+            .find(|a| a.attempt_no == 3)
+            .expect("the code row");
+        assert_eq!(
+            model_of(code),
+            "qwen3-coder:30b",
+            "not a supervisor row, left alone"
+        );
+    }
+
+    #[test]
     fn default_project_for_repo_is_none_unless_exactly_one_project_lists_it() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("t.db")).unwrap();
@@ -3923,6 +4036,116 @@ mod tests {
         assert_eq!(review.succeeded, 1);
         assert_eq!(review.landed, None, "landed is code-only");
         assert_eq!(review.broke_base, None, "broke-base is code-only");
+    }
+
+    #[test]
+    fn role_stats_counts_an_investigate_or_interview_question_as_a_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+        let mut t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Blocked,
+            created_at: 1,
+            workflow: "direct".into(),
+            ..Default::default()
+        };
+        t.id = s.insert_task(&t).unwrap();
+
+        let attempt = |step: &str| Attempt {
+            task_id: t.id,
+            attempt_no: 1,
+            step: step.into(),
+            provider: "anthropic".into(),
+            started_at: 0,
+            inputs_json: r#"{"model":"m"}"#.into(),
+            ..Default::default()
+        };
+        let question = |kind: &str| {
+            format!(
+                r#"{{"schema_version":1,"summary":"s","needs_input":{{"question":"q","tried":"t","kind":"{kind}"}},"changes":[],"checks_run":[],"claims":[]}}"#
+            )
+        };
+        let finish = |id, state, envelope_json: &str| {
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state,
+                reason: String::new(),
+                finished_at: Some(1),
+                agent_exit: Some(0),
+                timed_out: false,
+                num_turns: 1,
+                tool_calls: 1,
+                cost_usd: Some(0.0),
+                agent_ms: 0,
+                commits: 0,
+                files_changed: 0,
+                dirty: false,
+                verdict_json: "[]".into(),
+                result_text: String::new(),
+                envelope_json: envelope_json.into(),
+                rl_five_hour: None,
+                rl_seven_day: None,
+                rl_five_hour_resets: None,
+                rl_seven_day_resets: None,
+                end_sha: String::new(),
+                outputs_json: String::new(),
+                session_id: String::new(),
+                first_edit: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                early_signals: "[]".into(),
+                early_near: "[]".into(),
+            })
+            .unwrap();
+        };
+
+        // investigate: asked a plain question, no changes: a success.
+        let a1 = s.insert_attempt(&attempt("investigate")).unwrap();
+        finish(a1, AttemptState::NeedsInput, &question("question"));
+
+        // interview: the same.
+        let a2 = s.insert_attempt(&attempt("interview")).unwrap();
+        finish(a2, AttemptState::NeedsInput, &question("question"));
+
+        // investigate that needed a different workflow, not a question it
+        // asked: not what this counts.
+        let a3 = s.insert_attempt(&attempt("investigate")).unwrap();
+        finish(a3, AttemptState::NeedsInput, &question("workflow"));
+
+        // code ending needs_input with a question: not an investigate or
+        // interview role, so not counted as a success here.
+        let a4 = s.insert_attempt(&attempt("code")).unwrap();
+        finish(a4, AttemptState::NeedsInput, &question("question"));
+
+        let stats = s.role_stats().unwrap();
+        let find = |role: &str| stats.iter().find(|r| r.role == role).unwrap();
+
+        let investigate = find("investigate");
+        assert_eq!(investigate.attempts, 2);
+        assert_eq!(
+            investigate.succeeded, 1,
+            "the plain question counts; the workflow one does not"
+        );
+
+        let interview = find("interview");
+        assert_eq!(interview.attempts, 1);
+        assert_eq!(interview.succeeded, 1);
+
+        let code = find("code");
+        assert_eq!(code.attempts, 1);
+        assert_eq!(
+            code.succeeded, 0,
+            "needs_input on a role that is not investigate/interview is not a success"
+        );
     }
 
     #[test]
