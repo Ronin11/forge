@@ -467,9 +467,31 @@ pub async fn integrate(
                 text: &format!("landed   {} @ {}{folded}", t.base_branch, &sha[..8]),
             },
         );
+        deploy_on_landing(f, t, &sha).await;
         return Ok(Integrate::Landed(sha));
     }
     unreachable!("the landing loop returns")
+}
+
+/// After landing, run every on-landing deploy target of the task's project
+/// on this repository, through the same path `forge deploy` uses
+/// (`deploy::run`), tied to this task. A deploy's own failure never
+/// changes the task's landed state: `deploy::run` already emits its
+/// events and, on a failed check, follows the rollback-and-question path.
+async fn deploy_on_landing(f: &Forge, t: &Task, sha: &str) {
+    let Some(project) = t.project.clone() else {
+        return;
+    };
+    let Ok(targets) = f.store.deploy_targets(&project) else {
+        return;
+    };
+    for target in targets
+        .into_iter()
+        .filter(|d| d.on_landing && d.repo == t.repo)
+    {
+        let _ =
+            crate::deploy::run(f, &project, &target.name, Some(sha.to_string()), Some(t.id)).await;
+    }
 }
 
 /// The refs whose namespace files verify a task: the standing suite and

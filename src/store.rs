@@ -570,6 +570,11 @@ pub struct Deploy {
     pub check_output: String,
     pub rolled_back_to: Option<String>,
     pub reason: String,
+    /// The task this deploy ran on behalf of, when it was an on-landing
+    /// target rather than an operator-invoked `forge deploy`. Recorded now;
+    /// surfaced to a view once a later step needs it.
+    #[allow(dead_code)]
+    pub task_id: Option<i64>,
 }
 
 /// The unit of operation above a task: one outcome, pursued as a set of
@@ -871,6 +876,9 @@ CREATE TABLE deploys (
   reason TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX deploys_project_target ON deploys(project, target, id);
+",
+    "
+ALTER TABLE deploys ADD COLUMN task_id INTEGER;
 ",
 ];
 
@@ -2496,12 +2504,20 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Record a deploy starting. Returns its id; `finish_deploy` completes it.
-    pub fn start_deploy(&self, project: &str, target: &str, sha: &str, at: i64) -> Result<i64> {
+    /// Record a deploy starting, optionally tied to the task that landed
+    /// and triggered it. Returns its id; `finish_deploy` completes it.
+    pub fn start_deploy(
+        &self,
+        project: &str,
+        target: &str,
+        sha: &str,
+        at: i64,
+        task_id: Option<i64>,
+    ) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO deploys (project, target, sha, started_at) VALUES (?1, ?2, ?3, ?4)",
-            params![project, target, sha, at],
+            "INSERT INTO deploys (project, target, sha, started_at, task_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project, target, sha, at, task_id],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -2531,7 +2547,7 @@ impl Store {
     pub fn deploys(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id
              FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![project, target], deploy_from_row)?;
@@ -2565,6 +2581,7 @@ fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
         check_output: r.get(7)?,
         rolled_back_to: r.get(8)?,
         reason: r.get(9)?,
+        task_id: r.get(10)?,
     })
 }
 
@@ -3530,9 +3547,11 @@ mod tests {
         mk_project(&s, "equitizr");
         assert!(s.deploys("equitizr", None).unwrap().is_empty());
 
-        let a = s.start_deploy("equitizr", "prod", "aaaaaaa", 100).unwrap();
+        let a = s
+            .start_deploy("equitizr", "prod", "aaaaaaa", 100, None)
+            .unwrap();
         let b = s
-            .start_deploy("equitizr", "staging", "bbbbbbb", 200)
+            .start_deploy("equitizr", "staging", "bbbbbbb", 200, None)
             .unwrap();
         s.finish_deploy(a, 150, true, "active", None, "").unwrap();
         s.finish_deploy(

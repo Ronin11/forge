@@ -93,11 +93,21 @@ fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
 /// and record what happened. On a failed check, redeploy the last passing
 /// commit for the same target and ask a human about it (see
 /// docs/DEPLOY.md, "When a deploy runs" and "Rollback and the human rung").
+/// `task_id` ties the deploy row and its events to the task that landed
+/// and triggered it (an on-landing target); `None` for an operator-invoked
+/// `forge deploy`.
 ///
 /// Returns whether the deploy's own check passed: `false` covers both
 /// failure branches (rolled back, or nothing to roll back to), which is
 /// all the exit code the CLI needs.
-pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> Result<bool> {
+pub async fn run(
+    f: &Forge,
+    project: &str,
+    name: &str,
+    sha: Option<String>,
+    task_id: Option<i64>,
+) -> Result<bool> {
+    let event_task = task_id.unwrap_or(0);
     let target = f
         .store
         .deploy_target(project, name)?
@@ -116,14 +126,16 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
     let timeout = Duration::from_secs(cfg.check_timeout_secs);
 
     f.report.emit(
-        0,
+        event_task,
         Event::DeployStarted {
             project,
             target: name,
             sha: &sha,
         },
     );
-    let deploy_id = f.store.start_deploy(project, name, &sha, unix_now())?;
+    let deploy_id = f
+        .store
+        .start_deploy(project, name, &sha, unix_now(), task_id)?;
 
     let r = deploy_at(
         f,
@@ -140,7 +152,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
         f.store
             .finish_deploy(deploy_id, unix_now(), true, &r.tail, None, "")?;
         f.report.emit(
-            0,
+            event_task,
             Event::DeployFinished {
                 project,
                 target: name,
@@ -169,7 +181,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
         f.store
             .finish_deploy(deploy_id, unix_now(), false, &r.tail, None, &reason)?;
         f.report.emit(
-            0,
+            event_task,
             Event::DeployFinished {
                 project,
                 target: name,
@@ -212,7 +224,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
         &reason,
     )?;
     f.report.emit(
-        0,
+        event_task,
         Event::DeployFinished {
             project,
             target: name,

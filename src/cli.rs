@@ -1328,7 +1328,7 @@ async fn deploy_run(
         _ => bail!("usage: forge deploy <project> <name> [--sha <commit>]"),
     };
     let f = Forge::open(false, false)?;
-    if !crate::deploy::run(&f, &project, &name, sha).await? {
+    if !crate::deploy::run(&f, &project, &name, sha, None).await? {
         std::process::exit(1);
     }
     Ok(())
