@@ -190,23 +190,43 @@ fn deploy_targets_are_added_listed_and_forge_deploy_log_starts_empty() {
     assert!(!bad.status.success());
 }
 
-/// A fake `rsync`: records the call, then copies its source into its
-/// destination, understood either as a plain local path or `host:path`
-/// (the host is only ever a label here, never dialled).
-const FAKE_RSYNC: &str = r#"#!/bin/bash
+/// A fake `rsync`: records the call, then hands it to the real `rsync`
+/// with the destination's `host:` label stripped off (the host is only
+/// ever a label here, never dialled), so flags like `--delete` and
+/// `--exclude` behave exactly as they do against a real target.
+/// `{REAL_RSYNC}` is filled in by `write_fake_rsync` with the system
+/// `rsync`'s own path, resolved before PATH is overridden with this
+/// fake's directory (so the fake does not just call itself).
+const FAKE_RSYNC_TEMPLATE: &str = r#"#!/bin/bash
 echo "rsync $*" >> "$HOME/deploy-calls.log"
-args=()
+argv=()
 for a in "$@"; do
   case "$a" in
-    -*) ;;
-    *) args+=("$a") ;;
+    -*) argv+=("$a") ;;
+    *:*) argv+=("${a#*:}") ;;
+    *) argv+=("$a") ;;
   esac
 done
-src="${args[0]}"
-dest="${args[1]#*:}"
+dest="${argv[@]: -1}"
 mkdir -p "$dest"
-cp -a "$src"/. "$dest"/
+"{REAL_RSYNC}" "${argv[@]}"
 "#;
+
+/// Write the fake `rsync` to `path`, resolved against the real system
+/// `rsync` found on the current `PATH`.
+fn write_fake_rsync(path: &Path) {
+    let real = String::from_utf8(
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("command -v rsync")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let script = FAKE_RSYNC_TEMPLATE.replace("{REAL_RSYNC}", real.trim());
+    write_fake(path, &script);
+}
 
 /// A fake `ssh`: records the call, then runs the remote command locally,
 /// ignoring the host, exactly as docs/DEPLOY.md's build order describes
@@ -261,6 +281,8 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
             &format!("dest={dest}"),
             "--arg",
             "command=true",
+            "--arg",
+            "exclude=node_modules",
             "--check",
             "cat flag.txt; grep -qx good flag.txt",
         ],
@@ -280,7 +302,7 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
-    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake_rsync(&fakebin.join("rsync"));
     write_fake(&fakebin.join("ssh"), FAKE_SSH);
     let path = format!(
         "{}:{}",
@@ -289,6 +311,14 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
     );
     let fakehome = e._dir.path().join("fakehome");
     std::fs::create_dir_all(&fakehome).unwrap();
+
+    // A path already on the host that matches the exclude arg (e.g.
+    // node_modules, rebuilt once and kept between deploys) must survive
+    // rsync's --delete; a stray path that is not excluded must still be
+    // swept away.
+    std::fs::create_dir_all(remote.join("node_modules")).unwrap();
+    std::fs::write(remote.join("node_modules/keep.txt"), "keep\n").unwrap();
+    std::fs::write(remote.join("stray.txt"), "stray\n").unwrap();
 
     let run_deploy = |sha: &str| -> std::process::Output {
         e.cmd("ok.sh")
@@ -320,6 +350,14 @@ fn a_deploy_that_passes_records_ok_and_a_failing_one_rolls_back_and_blocks_a_que
         std::fs::read_to_string(remote.join("flag.txt")).unwrap(),
         "good\n"
     );
+
+    // The excluded directory survived rsync's --delete; the stray file
+    // that was not excluded did not.
+    assert_eq!(
+        std::fs::read_to_string(remote.join("node_modules/keep.txt")).unwrap(),
+        "keep\n"
+    );
+    assert!(!remote.join("stray.txt").exists());
 
     // A deploy whose check fails rolls back to the last deploy that
     // passed, and blocks a question naming the check's output.
@@ -429,7 +467,7 @@ fn deploy_user_service_restarts_the_unit_and_waits_for_it_to_report_active() {
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
-    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake_rsync(&fakebin.join("rsync"));
     write_fake(&fakebin.join("ssh"), FAKE_SSH);
     write_fake(&fakebin.join("systemctl"), FAKE_SYSTEMCTL);
     let path = format!(
@@ -548,7 +586,7 @@ fn deploy_static_rsyncs_and_defaults_the_check_to_a_url_fetch_with_a_marker() {
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
-    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake_rsync(&fakebin.join("rsync"));
     write_fake(&fakebin.join("curl"), FAKE_CURL);
     let path = format!(
         "{}:{}",
@@ -667,7 +705,7 @@ fn a_task_landing_on_a_repository_deploys_its_on_landing_targets_tied_to_the_tas
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
-    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake_rsync(&fakebin.join("rsync"));
     write_fake(&fakebin.join("ssh"), FAKE_SSH);
     let path = format!(
         "{}:{}",
@@ -783,7 +821,7 @@ fn an_on_landing_deploy_shows_up_on_forge_show_and_trace_json() {
 
     let fakebin = e._dir.path().join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
-    write_fake(&fakebin.join("rsync"), FAKE_RSYNC);
+    write_fake_rsync(&fakebin.join("rsync"));
     write_fake(&fakebin.join("ssh"), FAKE_SSH);
     let path = format!(
         "{}:{}",

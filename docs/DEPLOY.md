@@ -47,11 +47,16 @@ The first four:
   build output the repository's `build` check produces) to the host with
   rsync over SSH, then run a command there. The check runs there too.
   This covers a laptop in the house, a server, and most things between.
+  An optional `exclude` arg, a comma-separated list of rsync exclude
+  patterns, keeps paths like `node_modules` or `.next` on the host
+  between deploys instead of rsync's `--delete` clearing them for the
+  command to rebuild from scratch every time.
 - **`deploy-user-service`**: `deploy-command` plus restarting a user-level
   systemd unit on the host and waiting for it to report active. The
   shape for "an automation that runs on her machine": the unit is a
   timer or a service, Forge replaces its files and restarts it, the
-  check asks the service whether it is healthy.
+  check asks the service whether it is healthy. The same `exclude` arg
+  applies.
 - **`deploy-static`**: push a built directory to a static host: a
   branch a pages service serves, or a bucket. The check fetches the
   published URL and looks for a marker the build writes (the commit

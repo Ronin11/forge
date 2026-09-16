@@ -1,6 +1,6 @@
 name = "deploy-user-service"
 kind = "operation"
-description = "deploy-command plus a user-level systemd unit: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh, runs the optional command there, restarts the unit with `systemctl --user restart <unit>`, waits (bounded) until `systemctl --user is-active <unit>` reports active, then runs the target's check there and reports its exit status. Host 'local' skips ssh and runs everything on this machine. Reads its args (host, dest, unit, and optionally command and build_dir) and the check command from the environment, injected there by `forge deploy` from the target's own record (see docs/DEPLOY.md, 'Secrets and hosts')."
+description = "deploy-command plus a user-level systemd unit: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh, runs the optional command there, restarts the unit with `systemctl --user restart <unit>`, waits (bounded) until `systemctl --user is-active <unit>` reports active, then runs the target's check there and reports its exit status. Host 'local' skips ssh and runs everything on this machine. Reads its args (host, dest, unit, and optionally command, build_dir, and exclude, a comma-separated list of rsync exclude patterns) and the check command from the environment, injected there by `forge deploy` from the target's own record (see docs/DEPLOY.md, 'Secrets and hosts')."
 run = ["bash", "-c", '''
 set -e
 host="$FORGE_ARG_HOST"
@@ -10,6 +10,13 @@ unit="$FORGE_ARG_UNIT"
 src="."
 if [ -n "$FORGE_ARG_BUILD_DIR" ]; then
   src="$FORGE_ARG_BUILD_DIR"
+fi
+exclude_args=()
+if [ -n "$FORGE_ARG_EXCLUDE" ]; then
+  IFS=',' read -ra patterns <<< "$FORGE_ARG_EXCLUDE"
+  for p in "${patterns[@]}"; do
+    exclude_args+=(--exclude "$p")
+  done
 fi
 if [ -z "$unit" ]; then
   echo "deploy-user-service: no unit arg" >&2
@@ -24,10 +31,10 @@ run_remote() {
 }
 if [ "$host" = "local" ]; then
   mkdir -p "$dest"
-  rsync -a --delete "$src"/ "$dest"/
+  rsync -a --delete "${exclude_args[@]}" "$src"/ "$dest"/
   echo "copied $src to $dest (local)"
 else
-  rsync -a --delete "$src"/ "$host:$dest"/
+  rsync -a --delete "${exclude_args[@]}" "$src"/ "$host:$dest"/
   echo "copied $src to $host:$dest"
 fi
 if [ -n "$cmd" ]; then

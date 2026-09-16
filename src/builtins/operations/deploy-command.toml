@@ -1,6 +1,6 @@
 name = "deploy-command"
 kind = "operation"
-description = "the generic deploy method: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh, runs the target's command there, then runs the target's check there and reports its exit status. Host 'local' skips ssh and runs everything on this machine. Reads its args (host, dest, command, and optionally build_dir) and the check command from the environment, injected there by `forge deploy` from the target's own record (see docs/DEPLOY.md, 'Secrets and hosts')."
+description = "the generic deploy method: rsync's the landed tree (or an optional build_dir within it) to host:dest over ssh, runs the target's command there, then runs the target's check there and reports its exit status. Host 'local' skips ssh and runs everything on this machine. Reads its args (host, dest, command, and optionally build_dir and exclude, a comma-separated list of rsync exclude patterns) and the check command from the environment, injected there by `forge deploy` from the target's own record (see docs/DEPLOY.md, 'Secrets and hosts')."
 run = ["bash", "-c", '''
 set -e
 host="$FORGE_ARG_HOST"
@@ -10,14 +10,21 @@ src="."
 if [ -n "$FORGE_ARG_BUILD_DIR" ]; then
   src="$FORGE_ARG_BUILD_DIR"
 fi
+exclude_args=()
+if [ -n "$FORGE_ARG_EXCLUDE" ]; then
+  IFS=',' read -ra patterns <<< "$FORGE_ARG_EXCLUDE"
+  for p in "${patterns[@]}"; do
+    exclude_args+=(--exclude "$p")
+  done
+fi
 if [ "$host" = "local" ]; then
   mkdir -p "$dest"
-  rsync -a --delete "$src"/ "$dest"/
+  rsync -a --delete "${exclude_args[@]}" "$src"/ "$dest"/
   echo "copied $src to $dest (local)"
   bash -c "cd \"$dest\" && $cmd"
   bash -c "cd \"$dest\" && $FORGE_CHECK"
 else
-  rsync -a --delete "$src"/ "$host:$dest"/
+  rsync -a --delete "${exclude_args[@]}" "$src"/ "$host:$dest"/
   echo "copied $src to $host:$dest"
   ssh "$host" "cd \"$dest\" && $cmd"
   ssh "$host" "cd \"$dest\" && $FORGE_CHECK"
