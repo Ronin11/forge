@@ -248,8 +248,18 @@ source file's declared symbols ranked against the task's words and the
 files earlier successful work read most, cut to a budget, by the
 deterministic `forge-repomap` tool; shown to the next directive as
 "where things are", recorded in the attempt's inputs; `--no-context` on
-a task is the control arm). Each is a starting point the operator edits,
-and every edit is a new hash with its own numbers.
+a task is the control arm). The same tool's `forge-repomap edges <root>
+[--cache DIR]` subcommand prints the structure layer of the code
+visualiser: one JSON document of every source file the extractor table
+handles as a node (`path`, `lang`, `symbols`) and every import that
+resolves to another file in the tree as an edge (Rust `use crate::...`
+and `mod x;`, TypeScript/JavaScript relative imports and requires,
+Python `import`/`from ... import`, and Go imports within the module
+path from `go.mod`); imports that don't resolve inside the repository
+are dropped. It reuses the same per-language extractor table and
+content-addressed cache as symbols, keyed by blob hash, so an unchanged
+file costs nothing on the next run. Each is a starting point the
+operator edits, and every edit is a new hash with its own numbers.
 
 ## Data flow
 
