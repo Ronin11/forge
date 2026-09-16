@@ -2814,6 +2814,15 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
             pct(r.churn_share)
         );
     }
+    if doc
+        .by_role
+        .iter()
+        .any(|r| r.role == "investigate" || r.role == "interview")
+    {
+        out!(
+            "* investigate/interview: an attempt that ended needs_input with a question counts as a success"
+        );
+    }
     Ok(())
 }
 

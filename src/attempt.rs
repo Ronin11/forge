@@ -266,6 +266,19 @@ fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 
+/// The model an attempt's `inputs_json` records. Every step runs the
+/// task's model; the supervisor is the one judge, never the routed work
+/// (see `ctx::resolve_provider`), so it keeps its own configured model —
+/// already on `requested` from `supervisor::supervise` — rather than the
+/// task's.
+fn attempt_model(step: &str, task_model: &str, requested: &str) -> String {
+    if step == "supervisor" {
+        requested.to_string()
+    } else {
+        task_model.to_string()
+    }
+}
+
 /// Tool calls before the first edit in an attempt's stream: exploration.
 fn first_edit_call(log_path: &Path) -> Option<i64> {
     let text = std::fs::read_to_string(log_path).ok()?;
@@ -320,7 +333,7 @@ pub async fn new_attempt(
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();
-    inputs.model = t.model.clone();
+    inputs.model = attempt_model(step, &t.model, &inputs.model);
     inputs.max_turns = t.max_turns;
     inputs.timeout_secs = t.timeout_secs;
     inputs.base_sha = t.base_sha.clone();
@@ -498,4 +511,26 @@ pub async fn record(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attempt_model_keeps_the_supervisors_own_model() {
+        assert_eq!(attempt_model("supervisor", "task-model", "opus"), "opus");
+    }
+
+    #[test]
+    fn attempt_model_uses_the_tasks_model_for_every_other_step() {
+        assert_eq!(
+            attempt_model("code", "task-model", "whatever"),
+            "task-model"
+        );
+        assert_eq!(
+            attempt_model("investigate", "task-model", "whatever"),
+            "task-model"
+        );
+    }
 }
