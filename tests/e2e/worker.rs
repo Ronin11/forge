@@ -333,8 +333,11 @@ fn gc_treats_a_blocked_task_superseded_by_a_later_success_like_a_failed_one() {
     assert_eq!(state, "blocked");
     assert!(!pushed);
     // Task 2 retries and succeeds, superseding task 1's unpublished commit.
+    // Task 1's checks already passed, so task 2 starts from its branch
+    // (verified_branch_of): the coder here must add something of its own
+    // rather than repeat task 1's now-already-committed write.
     assert!(e.forge("ok.sh", &["retry", "1"]).status.success());
-    assert!(e.forge("ok.sh", &["work", "--once"]).status.success());
+    assert!(e.forge("addfile.sh", &["work", "--once"]).status.success());
     assert_eq!(e.task(2).0, "succeeded");
     let gc = String::from_utf8_lossy(&e.forge("ok.sh", &["gc"]).stdout).to_string();
     assert!(

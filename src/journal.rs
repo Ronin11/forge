@@ -21,6 +21,9 @@ pub struct JournalEntry {
     pub said: Option<String>,
     /// The failed checks, one line each: level, name, what went wrong.
     pub found: Vec<String>,
+    /// The failed checks' bare names, for a short parenthetical (e.g. a
+    /// needs-input attempt whose L1 still ran and found `lint` broken).
+    pub failed_names: Vec<String>,
     /// The attempt's reason as recorded: why it ended without a result,
     /// or the question it stopped with.
     pub reason: String,
@@ -56,25 +59,29 @@ pub fn entries_for(f: &Forge, t: &Task) -> Result<Vec<JournalEntry>, Fault> {
                     .map(|e| e.summary)
                     .filter(|s| !s.trim().is_empty())
             };
-            let found: Vec<String> =
+            let failed: Vec<crate::checks::CheckResult> =
                 serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
                     .unwrap_or_default()
-                    .iter()
+                    .into_iter()
                     .filter(|c| !c.ok)
-                    .map(|c| {
-                        let what = if c.failing_tests.is_empty() {
-                            salient_line(&c.tail)
-                        } else {
-                            c.failing_tests
-                                .iter()
-                                .take(3)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        };
-                        format!("{} {}: {}", c.level, c.name, what)
-                    })
                     .collect();
+            let found: Vec<String> = failed
+                .iter()
+                .map(|c| {
+                    let what = if c.failing_tests.is_empty() {
+                        salient_line(&c.tail)
+                    } else {
+                        c.failing_tests
+                            .iter()
+                            .take(3)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    };
+                    format!("{} {}: {}", c.level, c.name, what)
+                })
+                .collect();
+            let failed_names: Vec<String> = failed.iter().map(|c| c.name.clone()).collect();
             entries.push(JournalEntry {
                 task: l.id,
                 attempt: a.attempt_no,
@@ -82,6 +89,7 @@ pub fn entries_for(f: &Forge, t: &Task) -> Result<Vec<JournalEntry>, Fault> {
                 state: a.state.as_str().to_string(),
                 said,
                 found,
+                failed_names,
                 reason: a.reason.clone(),
             });
         }
@@ -127,18 +135,26 @@ pub fn journal_for(f: &Forge, t: &Task) -> Result<String, Fault> {
             let short = format!("  {} {:<7} {}", e.attempt, e.step, e.verdict());
             let mut long = short.clone();
             let state = AttemptState::try_from(e.state.as_str()).ok();
-            if !e.found.is_empty() {
+            if state == Some(AttemptState::NeedsInput) {
+                // A question does not tell you whether the commit it stands
+                // on is any good; say so plainly, naming what failed when
+                // the checks did run and found something.
+                let checks = if e.failed_names.is_empty() {
+                    "the checks passed".to_string()
+                } else {
+                    format!("the checks failed ({})", e.failed_names.join(", "))
+                };
+                long.push_str(&format!(
+                    "\n    found:   {checks}; it stopped with: {}",
+                    clip(&first_line(&e.reason), 400)
+                ));
+            } else if !e.found.is_empty() {
                 long.push_str(&format!(
                     "\n    found:   {}",
                     clip(&e.found.join("; "), 400)
                 ));
             } else if state == Some(AttemptState::AgentFailed) {
                 long.push_str(&format!("\n    found:   {}", first_line(&e.reason)));
-            } else if state == Some(AttemptState::NeedsInput) {
-                long.push_str(&format!(
-                    "\n    found:   the checks passed; it stopped with: {}",
-                    clip(&first_line(&e.reason), 400)
-                ));
             } else if state == Some(AttemptState::Succeeded) {
                 long.push_str("\n    found:   every check passed");
             }

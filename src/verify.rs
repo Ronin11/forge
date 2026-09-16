@@ -798,7 +798,14 @@ pub async fn verify_directive(
                     &facts.dirty,
                 ));
                 emit_rows(s.report, s.task_id, &v.checks);
-                if v.checks.iter().all(|c| c.ok) && question.is_none() {
+                // A question does not excuse the checks: when the tree is
+                // clean and the attempt committed (every L0 row above
+                // passed), L1 runs exactly as it would for a succeeded
+                // attempt, so the verdict says whether the committed work
+                // is any good, not only that a question was asked. The
+                // attempt still ends needs_input; `decide` gives the
+                // question priority over these rows.
+                if v.checks.iter().all(|c| c.ok) {
                     l1_l2(s, common.envelope.as_ref(), &mut v.checks).await?;
                 }
             }
@@ -1058,6 +1065,17 @@ pub fn agent_failure(a: &Outcome) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Whether an attempt's recorded rows include at least one L1 check and
+/// every L1 row passed: the repository's checks vouch for the tree, even
+/// when the attempt itself did not settle (a question, a review
+/// demotion). Used to let a retry start from a needs-input attempt's
+/// branch, and to let the supervisor land one, instead of treating every
+/// question as unverified.
+pub fn l1_all_passed(checks: &[CheckResult]) -> bool {
+    let l1: Vec<&CheckResult> = checks.iter().filter(|c| c.level == "L1").collect();
+    !l1.is_empty() && l1.iter().all(|c| c.ok)
 }
 
 /// The verdict table. Pure: the same rows always give the same answer.
@@ -1454,6 +1472,14 @@ mod tests {
             vec!["new.txt".to_string(), "old.txt".to_string()]
         );
         assert!(phantom.is_empty());
+    }
+
+    #[test]
+    fn l1_all_passed_needs_at_least_one_l1_row_and_none_failing() {
+        assert!(!l1_all_passed(&[]), "no L1 rows at all is not a pass");
+        assert!(!l1_all_passed(&[c("L0", "clean-tree", true)]));
+        assert!(l1_all_passed(&[c("L0", "clean-tree", true), c("L1", "test", true)]));
+        assert!(!l1_all_passed(&[c("L1", "test", true), c("L1", "lint", false)]));
     }
 
     #[test]

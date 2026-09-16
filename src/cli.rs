@@ -2486,9 +2486,13 @@ async fn land(id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Whether a blocked task is one a reviewer demoted: its branch passed
-/// the checks before the review ran, so it may still land.
-pub(crate) fn review_demoted(f: &Forge, t: &Task) -> Result<bool> {
+/// Whether a blocked task's last attempt, though it did not settle,
+/// still leaves a branch worth landing: a review demotion the operator
+/// or the supervisor set aside, naming no defect the task requires
+/// fixing, or a question whose L1 checks already ran on a clean,
+/// committed tree and all passed. The question or the demotion stands
+/// either way; neither says the commit itself is bad.
+pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
     if t.state != TaskState::Blocked {
         return Ok(false);
     }
@@ -2499,18 +2503,23 @@ pub(crate) fn review_demoted(f: &Forge, t: &Task) -> Result<bool> {
         .find(|a| a.is_agent())
         .is_some_and(|a| {
             a.state == crate::store::AttemptState::NeedsInput
-                && a.reason.starts_with("review demoted")
+                && (a.reason.starts_with("review demoted")
+                    || crate::verify::l1_all_passed(
+                        &serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
+                            .unwrap_or_default(),
+                    ))
         }))
 }
 
-/// Land a task's verified branch on the base: a verified task, or one a
-/// reviewer demoted whose demotion the operator or the supervisor set
-/// aside. Returns the line to print.
+/// Land a task's verified branch on the base: a verified task, or one
+/// blocked on a review demotion or a question that a human or the
+/// supervisor set aside (see `landable_needs_input`). Returns the line
+/// to print.
 pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
     let Some(mut t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
-    let demoted = review_demoted(f, &t)?;
+    let demoted = landable_needs_input(f, &t)?;
     if t.state != TaskState::Succeeded && t.state != TaskState::Unverified && !demoted {
         bail!(
             "task {id} is {}; only a verified task lands",

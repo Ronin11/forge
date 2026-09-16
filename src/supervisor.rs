@@ -174,7 +174,14 @@ fn resolves(f: &Forge, t: &Task, worktree: &Path, c: &str) -> bool {
 /// landed and failed lately in its project (or, absent one, its
 /// repository), the decisions so far in that same scope, and its
 /// project's backlog (see docs/PROJECTS.md, "The record, scoped").
-fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: Kind) -> Result<String, Fault> {
+fn prompt(
+    f: &Forge,
+    t: &Task,
+    question: &str,
+    tried: &str,
+    kind: Kind,
+    checks_passed: bool,
+) -> Result<String, Fault> {
     let scope = Scope::of(t);
     let label = scope.label();
     let mut p = String::from(
@@ -199,14 +206,24 @@ fn prompt(f: &Forge, t: &Task, question: &str, tried: &str, kind: Kind) -> Resul
          - `superseded`: when the work this task asks for has already landed through another task of this {label} \
          (a later task with the same text that succeeded, listed below): cite that task as `task N` and nothing \
          will be redone.\n\
-         - `accept` (only when the task was demoted by a reviewer): when the demotion names no defect, or an approval \
-         was written into the demotion field, or the finding is not something the task requires: cite what shows it \
+         - `accept`: when the task was demoted by a reviewer and the demotion names no defect, or an approval was \
+         written into the demotion field, or the finding is not something the task requires, cite what shows it \
          (the reviewer's own text is in the record; paths in the tree that prove the point) and the verified branch \
-         lands as it is. A real defect the task requires fixing is an `answer` that tells the next attempt what to fix.\n\
+         lands as it is.{}\n\
          - `escalate`: when the question is about intent, preference, or something only the operator knows, or when the \
          record does not settle it. Say why in `reason`. This is a good outcome, not a failure.\n\n\
          Do not guess at intent. Do not plan around a contradiction. Prefer a short answer that cites over a long one \
-         that reasons."
+         that reasons.",
+        if checks_passed && kind == Kind::Question {
+            " The same action applies here: this task's own checks already passed on the committed tree \
+             (below), so if the question is already answered by the record, or is moot — for instance the \
+             agent asking whether to fix errors its own commit already fixes — accept and cite what settles \
+             it, and the branch lands without another attempt. A question that is not yet settled, or asks \
+             for something the checks cannot tell you, is an `answer` (if the record settles it) or an \
+             `escalate` (if it does not); do not accept a question you have not actually resolved."
+        } else {
+            " A real defect the task requires fixing is an `answer` that tells the next attempt what to fix."
+        }
     ));
     p.push_str(&format!(
         "\n\nThe task (workflow {}):\n{}\n\nIt stopped with a {kind}:\n{question}\n\nWhat it tried before stopping:\n{tried}",
@@ -358,7 +375,11 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if !wt.join(".git").exists() {
         return Ok(Ruled::Skipped("the task's clone is gone".into()));
     }
-    let prompt_text = prompt(f, &t, &q.question, &q.tried, kind)?;
+    let checks_passed = crate::verify::l1_all_passed(
+        &serde_json::from_str::<Vec<crate::checks::CheckResult>>(&last.verdict_json)
+            .unwrap_or_default(),
+    );
+    let prompt_text = prompt(f, &t, &q.question, &q.tried, kind, checks_passed)?;
     f.report.emit(
         id,
         Event::Note {
@@ -666,19 +687,28 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             })
         }
         "accept" => {
-            if kind != Kind::Review {
+            if !(kind == Kind::Review || (kind == Kind::Question && checks_passed)) {
                 return escalate(format!(
-                    "accept applies to a review demotion; this is a {kind}"
+                    "accept applies to a review demotion, or a question whose attempt's checks already \
+                     passed; this is a {kind}{}",
+                    if kind == Kind::Question {
+                        " and the checks did not all pass"
+                    } else {
+                        ""
+                    }
                 ));
             }
-            let decision = f.store.insert_decision_by(
-                id,
-                &t.repo,
-                &q.question,
-                &format!("accepted the branch despite the demotion: {}", r.answer),
-                "supervisor",
-                &cited,
-            )?;
+            let note = if kind == Kind::Review {
+                format!("accepted the branch despite the demotion: {}", r.answer)
+            } else {
+                format!(
+                    "accepted the branch; the checks passed and the question is settled: {}",
+                    r.answer
+                )
+            };
+            let decision =
+                f.store
+                    .insert_decision_by(id, &t.repo, &q.question, &note, "supervisor", &cited)?;
             match crate::cli::land_task(f, id).await {
                 Ok(line) => {
                     f.report.emit(
@@ -843,7 +873,7 @@ mod tests {
         blocked.state = TaskState::Blocked;
         let blocked = insert(&f, blocked);
 
-        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question)
+        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question, false)
             .map_err(anyhow::Error::from)
             .unwrap();
 
@@ -883,7 +913,7 @@ mod tests {
         blocked.state = TaskState::Blocked;
         let blocked = insert(&f, blocked);
 
-        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question)
+        let text = prompt(&f, &blocked, "which file?", "looked around", Kind::Question, false)
             .map_err(anyhow::Error::from)
             .unwrap();
         assert!(!text.contains("a task in another repo"), "{text}");

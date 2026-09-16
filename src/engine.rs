@@ -1275,7 +1275,18 @@ async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
                 .is_some_and(|last| {
                     let ok = match last.state {
                         AttemptState::Succeeded => true,
-                        AttemptState::NeedsInput => last.reason.starts_with("review demoted"),
+                        // A demotion the operator or the supervisor set
+                        // aside, or a question the repository's checks
+                        // already ran and passed on: neither settled the
+                        // attempt, but both leave a branch worth resuming
+                        // from rather than rebuilding.
+                        AttemptState::NeedsInput => {
+                            last.reason.starts_with("review demoted")
+                                || verify::l1_all_passed(
+                                    &serde_json::from_str::<Vec<CheckResult>>(&last.verdict_json)
+                                        .unwrap_or_default(),
+                                )
+                        }
                         _ => false,
                     };
                     ok && (last.commits > 0 || attempts.iter().any(|a| a.commits > 0))
