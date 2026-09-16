@@ -344,7 +344,7 @@
       const d = await get(`/api/initiatives/${id}`);
       const taskRows = (d.tasks || []).map(t => `
         <tr><td><a href="/tasks/${t.id}">${t.id}</a></td>
-          <td class="state ${esc(t.state)}">${esc(t.state)}</td>
+          <td class="state ${esc(t.state)}">${esc(t.state)}${t.retries ? ` <span class="mute">(${t.retries} ${t.retries === 1 ? 'retry' : 'retries'})</span>` : ''}</td>
           <td>${esc(t.reason)}</td></tr>`).join('');
       const refused = (d.refused || []).map(r => `<div>${esc(r.rule)}: ${r.count}</div>`).join('');
       const rulings = (d.rulings || []).map(r => `

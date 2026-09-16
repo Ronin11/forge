@@ -2169,6 +2169,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// A project's tasks, oldest first.
+    pub fn project_tasks(&self, project: &str) -> Result<Vec<Task>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM tasks WHERE project=?1 ORDER BY id",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![project], task_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The summed cost of every attempt of every one of an initiative's tasks.
     pub fn initiative_cost(&self, id: i64) -> Result<f64> {
         Ok(self.lock().query_row(

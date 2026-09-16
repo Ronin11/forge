@@ -455,7 +455,8 @@ pub struct InitiativeRow {
     pub settled_at: Option<i64>,
 }
 
-/// One task in [`InitiativeDoc::tasks`]: its final state and reason.
+/// One lineage in [`InitiativeDoc::tasks`]: its latest task's id, state
+/// and reason, plus how many retries the lineage took to reach it.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct InitiativeTaskRow {
     #[serde(default)]
@@ -464,6 +465,8 @@ pub struct InitiativeTaskRow {
     pub state: String,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub retries: i64,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
