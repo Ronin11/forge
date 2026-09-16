@@ -119,6 +119,13 @@ pub struct Provider {
     /// its own (codex): 0 for a local model.
     pub price_input_per_million: f64,
     pub price_output_per_million: f64,
+    /// This provider's own rate-window caps (fractions of the window), as
+    /// `[providers.<name>]` may override; default to the operator's
+    /// `[budget]` caps when it does not (see `config::build_providers`).
+    /// The worker holds this provider alone once its own latest sample
+    /// reaches its own cap (see `worker::window_hold`).
+    pub five_hour_max: f64,
+    pub seven_day_max: f64,
 }
 
 impl Default for Provider {
@@ -133,6 +140,8 @@ impl Default for Provider {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            five_hour_max: 0.9,
+            seven_day_max: 0.95,
         }
     }
 }

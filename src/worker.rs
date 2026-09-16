@@ -11,7 +11,7 @@
 use crate::ctx::{Forge, Paths};
 use crate::engine::{self, Fault};
 use crate::report::Event;
-use crate::store::TaskState;
+use crate::store::{Task, TaskState};
 use crate::unix_now;
 use anyhow::Result;
 use std::path::Path;
@@ -109,28 +109,26 @@ pub fn day_budget_reached(f: &Forge) -> Result<Option<String>> {
     }))
 }
 
-/// A subscription window at or over its cap, by the latest sample any
-/// attempt recorded: the message and the unix second the hold ends. A
-/// window whose reset time has passed no longer holds anything.
-pub fn window_hold(f: &Forge) -> Result<Option<(String, i64)>> {
-    let Some(s) = f.store.latest_rate_limit()? else {
+/// `provider`'s subscription window at or over its own cap, by the latest
+/// sample any attempt on it recorded: the message and the unix second the
+/// hold ends. A window whose reset time has passed no longer holds
+/// anything. Each provider has its own samples and its own caps (see
+/// `agent::Provider::five_hour_max`/`seven_day_max`), so a provider with no
+/// samples of its own is never held by another's.
+pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
+    let Some(s) = f.store.latest_rate_limit(provider)? else {
         return Ok(None);
     };
+    let (five_hour_max, seven_day_max) = f
+        .providers
+        .get(provider)
+        .map(|p| (p.five_hour_max, p.seven_day_max))
+        .unwrap_or((f.budget.five_hour_max, f.budget.seven_day_max));
     let now = unix_now();
     let mut hold: Option<(String, i64)> = None;
     for (name, util, resets, cap) in [
-        (
-            "5h",
-            s.five_hour,
-            s.five_hour_resets,
-            f.budget.five_hour_max,
-        ),
-        (
-            "7d",
-            s.seven_day,
-            s.seven_day_resets,
-            f.budget.seven_day_max,
-        ),
+        ("5h", s.five_hour, s.five_hour_resets, five_hour_max),
+        ("7d", s.seven_day, s.seven_day_resets, seven_day_max),
     ] {
         let (Some(u), Some(r)) = (util, resets) else {
             continue;
@@ -148,6 +146,39 @@ pub fn window_hold(f: &Forge) -> Result<Option<(String, i64)>> {
         }
     }
     Ok(hold)
+}
+
+/// Whether `t`'s "code" role (the representative provider for a queued,
+/// not-yet-started task; see `ctx::resolve_provider`) is currently held.
+/// A provider that fails to resolve is never held here: the real error
+/// surfaces when the task actually runs.
+fn provider_is_held(f: &Forge, t: &Task) -> bool {
+    f.effective_provider(t, "code")
+        .ok()
+        .and_then(|p| window_hold(f, &p.name).ok().flatten())
+        .is_some()
+}
+
+/// The tightest (soonest-resetting) hold among every queued, unblocked
+/// task's own provider, when *none* of them can be claimed right now;
+/// `None` as soon as one candidate's provider is not held, since the
+/// caller can claim it instead of waiting.
+fn tightest_provider_hold(f: &Forge, held_initiatives: &[i64]) -> Result<Option<(String, i64)>> {
+    let mut tightest: Option<(String, i64)> = None;
+    for t in f.store.queued_unblocked(held_initiatives)? {
+        let Ok(provider) = f.effective_provider(&t, "code") else {
+            return Ok(None);
+        };
+        match window_hold(f, &provider.name)? {
+            None => return Ok(None),
+            Some((msg, until)) => {
+                if tightest.as_ref().is_none_or(|(_, u)| until < *u) {
+                    tightest = Some((msg, until));
+                }
+            }
+        }
+    }
+    Ok(tightest)
 }
 
 fn p_config(f: &Forge) -> String {
@@ -227,18 +258,22 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             for (t, d, why) in f.store.block_dependents()? {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }
-            if let Some((msg, until)) = window_hold(&f)? {
-                if f.store.queued_count()? > 0 && hold_until != Some(until) {
-                    eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
-                }
-                hold_until = Some(until);
-                break;
-            }
-            hold_until = None;
             let held = held_initiatives(&f)?;
-            let Some(t) = f.store.claim_next(pid, &held)? else {
+            let Some(t) = f.store.claim_next(pid, &held, |t| provider_is_held(&f, t))? else {
+                // Nothing claimable: either the queue is empty/blocked, or
+                // every queued candidate's own provider is at its cap.
+                // Only the latter is a hold worth waiting out.
+                if let Some((msg, until)) = tightest_provider_hold(&f, &held)? {
+                    if f.store.queued_count()? > 0 && hold_until != Some(until) {
+                        eprintln!("{msg}; holding, {} task(s) queued", f.store.queued_count()?);
+                    }
+                    hold_until = Some(until);
+                } else {
+                    hold_until = None;
+                }
                 break;
             };
+            hold_until = None;
             claimed += 1;
             eprintln!(
                 "======== task {} starting ({} queued, {} running)",

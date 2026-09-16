@@ -203,6 +203,10 @@ struct HomeRaw {
     /// `agent::Provider`.
     #[serde(default)]
     providers: BTreeMap<String, ProviderRaw>,
+    /// Which provider each role runs under by default, overridable per
+    /// project and per task (see `build_roles`).
+    #[serde(default)]
+    roles: RolesRaw,
 }
 
 #[derive(Deserialize, Default)]
@@ -217,6 +221,23 @@ struct ProviderRaw {
     notes: Option<String>,
     price_usd_per_million_input: Option<f64>,
     price_usd_per_million_output: Option<f64>,
+    /// This provider's own rate-window caps; default to `[budget]`'s when
+    /// absent (see `build_providers`).
+    five_hour_max: Option<f64>,
+    seven_day_max: Option<f64>,
+}
+
+/// The five roles a provider is chosen for: the four contracts, and the
+/// supervisor (which is not a contract but picks a provider the same way).
+pub const ROLES: [&str; 5] = ["code", "tests", "review", "plan", "supervisor"];
+
+#[derive(Deserialize, Default)]
+struct RolesRaw {
+    code: Option<String>,
+    tests: Option<String>,
+    review: Option<String>,
+    plan: Option<String>,
+    supervisor: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -288,6 +309,9 @@ pub struct HomeConfig {
     /// (overridable, but never absent) so a task naming no `--provider`
     /// always resolves to one.
     pub providers: BTreeMap<String, Provider>,
+    /// Every role's default provider name (see `ROLES`); always has all
+    /// five keys, "anthropic" where the operator named none.
+    pub roles: BTreeMap<String, String>,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -417,6 +441,15 @@ journal_control = 0.0
 # [providers.openai]
 # runner = \"codex-cli\"
 # notes = \"signed in with codex login\"
+
+# Which provider each role runs under by default: the four contracts
+# (code, tests, review, plan) and the supervisor. \"anthropic\" where a
+# role names none. A project can override a role with `forge project set
+# --role <role>=<provider>`; a task's own `--provider` wins over both and
+# sets every role for that task.
+#
+# [roles]
+# review = \"devhome\"
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -450,13 +483,16 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             "~/.cargo/git".into(),
         ]
     });
+    let budget = Budget {
+        per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
+        per_day_usd: raw.budget.per_day_usd,
+        five_hour_max: raw.budget.five_hour_max.unwrap_or(0.9),
+        seven_day_max: raw.budget.seven_day_max.unwrap_or(0.95),
+    };
+    let providers = build_providers(raw.providers, &budget)?;
+    let roles = build_roles(raw.roles, &providers)?;
     Ok(HomeConfig {
-        budget: Budget {
-            per_task_usd: raw.budget.per_task_usd.unwrap_or(2.0),
-            per_day_usd: raw.budget.per_day_usd,
-            five_hour_max: raw.budget.five_hour_max.unwrap_or(0.9),
-            seven_day_max: raw.budget.seven_day_max.unwrap_or(0.95),
-        },
+        budget,
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
             rw: rw.iter().map(|p| expand(p)).collect(),
@@ -487,7 +523,8 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         measure: Measure {
             journal_control: raw.measure.journal_control.unwrap_or(0.0),
         },
-        providers: build_providers(raw.providers)?,
+        providers,
+        roles,
     })
 }
 
@@ -496,9 +533,19 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
 /// rather than duplicating it, so an operator can, say, give it its own
 /// price table without losing the runner and model every existing config
 /// already relies on.
-fn build_providers(raw: BTreeMap<String, ProviderRaw>) -> Result<BTreeMap<String, Provider>> {
+fn build_providers(
+    raw: BTreeMap<String, ProviderRaw>,
+    budget: &Budget,
+) -> Result<BTreeMap<String, Provider>> {
     let mut providers = BTreeMap::new();
-    providers.insert("anthropic".to_string(), Provider::default());
+    providers.insert(
+        "anthropic".to_string(),
+        Provider {
+            five_hour_max: budget.five_hour_max,
+            seven_day_max: budget.seven_day_max,
+            ..Provider::default()
+        },
+    );
     for (name, p) in raw {
         let runner = match &p.runner {
             Some(r) => r
@@ -519,10 +566,33 @@ fn build_providers(raw: BTreeMap<String, ProviderRaw>) -> Result<BTreeMap<String
                 notes: p.notes,
                 price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
+                five_hour_max: p.five_hour_max.unwrap_or(budget.five_hour_max),
+                seven_day_max: p.seven_day_max.unwrap_or(budget.seven_day_max),
             },
         );
     }
     Ok(providers)
+}
+
+/// Every role's default provider (see `ROLES`): the operator's `[roles]`
+/// table, "anthropic" where it names none. Each name must be a configured
+/// provider, checked here so a typo fails at startup, not mid-task.
+fn build_roles(raw: RolesRaw, providers: &BTreeMap<String, Provider>) -> Result<BTreeMap<String, String>> {
+    let mut roles = BTreeMap::new();
+    for (role, v) in [
+        ("code", raw.code),
+        ("tests", raw.tests),
+        ("review", raw.review),
+        ("plan", raw.plan),
+        ("supervisor", raw.supervisor),
+    ] {
+        let name = v.unwrap_or_else(|| "anthropic".to_string());
+        if !providers.contains_key(&name) {
+            bail!("roles.{role}: unknown provider {name:?}; see `forge providers` for what is configured");
+        }
+        roles.insert(role.to_string(), name);
+    }
+    Ok(roles)
 }
 
 #[cfg(test)]
@@ -772,6 +842,60 @@ mod tests {
             c.providers["anthropic"].runner,
             crate::agent::Runner::ClaudeCli
         );
+    }
+
+    #[test]
+    fn roles_default_to_anthropic_and_provider_caps_default_to_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = load_home(dir.path()).unwrap();
+        for role in ROLES {
+            assert_eq!(c.roles[role], "anthropic", "role {role}");
+        }
+        assert_eq!(c.providers["anthropic"].five_hour_max, 0.9);
+        assert_eq!(c.providers["anthropic"].seven_day_max, 0.95);
+    }
+
+    #[test]
+    fn roles_can_be_overridden_per_role_and_providers_can_override_their_own_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[budget]\nfive_hour_max = 0.8\n\
+             [providers.devhome]\n\
+             runner = \"codex-cli\"\n\
+             five_hour_max = 0.5\n\
+             \n\
+             [roles]\n\
+             code = \"devhome\"\n\
+             review = \"devhome\"\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.roles["code"], "devhome");
+        assert_eq!(c.roles["review"], "devhome");
+        assert_eq!(c.roles["tests"], "anthropic");
+        assert_eq!(c.roles["plan"], "anthropic");
+        assert_eq!(c.roles["supervisor"], "anthropic");
+        // Overridden explicitly.
+        assert_eq!(c.providers["devhome"].five_hour_max, 0.5);
+        // Not overridden: falls to the operator's own budget cap.
+        assert_eq!(c.providers["devhome"].seven_day_max, 0.95);
+        assert_eq!(c.providers["anthropic"].five_hour_max, 0.8);
+    }
+
+    #[test]
+    fn a_role_naming_an_unconfigured_provider_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[roles]\ncode = \"does-not-exist\"\n",
+        )
+        .unwrap();
+        let err = match load_home(dir.path()) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("does-not-exist"), "{err}");
     }
 
     #[test]

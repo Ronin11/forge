@@ -6,6 +6,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -477,6 +478,10 @@ pub struct Project {
     pub supervisor_per_lineage: Option<i64>,
     /// Extra protected paths, on top of the repository's own `forge.toml`.
     pub protected: Option<Vec<String>>,
+    /// Which provider a role runs under, for roles this project overrides
+    /// (see `config::ROLES`); a role missing here falls to the operator's
+    /// `[roles]` table. Set with `forge project set --role <role>=<provider>`.
+    pub role_providers: BTreeMap<String, String>,
 }
 
 /// What `forge project set` changes; a field left `None` keeps the
@@ -490,6 +495,10 @@ pub struct ProjectDefaults {
     pub supervisor_model: Option<String>,
     pub supervisor_per_lineage: Option<i64>,
     pub protected: Option<Vec<String>>,
+    /// Role/provider pairs to merge into the project's existing
+    /// `role_providers`; a role already set keeps its old value unless
+    /// named again here. Empty changes nothing.
+    pub role_providers: BTreeMap<String, String>,
 }
 
 /// One repository a project works in, and the paths it owns there;
@@ -780,6 +789,9 @@ ALTER TABLE tasks ADD COLUMN initiative INTEGER;
 ALTER TABLE tasks ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
 ALTER TABLE attempts ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude-cli';
 ALTER TABLE attempts ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+",
+    "
+ALTER TABLE projects ADD COLUMN role_providers_json TEXT;
 ",
 ];
 
@@ -1131,15 +1143,11 @@ impl Store {
             .optional()?)
     }
 
-    /// Atomically take the oldest queued task for this worker, skipping
-    /// any whose initiative is in `held`: the caller has already found
-    /// those initiatives are holding new claims (see
-    /// `view::initiative_hold`), so the worker leaves their tasks queued
-    /// rather than running them. The oldest queued, unheld task whose
-    /// dependencies have all landed (or succeeded without landing, when
-    /// they were told not to).
-    pub fn claim_next(&self, pid: i64, held: &[i64]) -> Result<Option<Task>> {
-        let candidates: Vec<i64> = {
+    /// Queued tasks whose dependencies have all landed (or succeeded
+    /// without landing, when they were told not to) and whose initiative
+    /// is not in `held`, oldest first: what `claim_next` considers.
+    pub fn queued_unblocked(&self, held: &[i64]) -> Result<Vec<Task>> {
+        let ids: Vec<i64> = {
             let c = self.lock();
             let mut stmt = c.prepare(
                 "SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
@@ -1150,13 +1158,34 @@ impl Store {
             stmt.query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        for id in candidates {
+        let mut out = Vec::new();
+        for id in ids {
             let Some(t) = self.task(id)? else { continue };
-            if t.initiative.is_some_and(|i| held.contains(&i)) {
+            if !t.initiative.is_some_and(|i| held.contains(&i)) {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Atomically take the oldest queued task for this worker, skipping
+    /// any whose initiative is in `held` (the caller has already found
+    /// those initiatives are holding new claims, see
+    /// `view::initiative_hold`) or for which `provider_held` says the
+    /// provider it would run under is at its rate-window cap: the oldest
+    /// queued, unheld task whose dependencies have all landed.
+    pub fn claim_next(
+        &self,
+        pid: i64,
+        held: &[i64],
+        provider_held: impl Fn(&Task) -> bool,
+    ) -> Result<Option<Task>> {
+        for t in self.queued_unblocked(held)? {
+            if provider_held(&t) {
                 continue;
             }
-            if self.claim(id, pid)? {
-                return self.task(id);
+            if self.claim(t.id, pid)? {
+                return self.task(t.id);
             }
         }
         Ok(None)
@@ -1395,14 +1424,16 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// The most recent rate-limit sample any attempt recorded.
-    pub fn latest_rate_limit(&self) -> Result<Option<RateLimitSample>> {
+    /// The most recent rate-limit sample any attempt on `provider` recorded:
+    /// the window hold is per provider, since each has its own subscription
+    /// (or none at all).
+    pub fn latest_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
         Ok(self
             .lock()
             .query_row(
                 "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
-                 WHERE rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL ORDER BY id DESC LIMIT 1",
-                [],
+                 WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
+                params![provider],
                 |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)?, five_hour_resets: r.get(3)?, seven_day_resets: r.get(4)? }),
             )
             .optional()?)
@@ -1933,7 +1964,7 @@ impl Store {
             .lock()
             .query_row(
                 "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
-                        supervisor_model, supervisor_per_lineage, protected_json
+                        supervisor_model, supervisor_per_lineage, protected_json, role_providers_json
                  FROM projects WHERE name=?1",
                 params![name],
                 project_from_row,
@@ -1946,7 +1977,7 @@ impl Store {
         let c = self.lock();
         let mut stmt = c.prepare(
             "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
-                    supervisor_model, supervisor_per_lineage, protected_json
+                    supervisor_model, supervisor_per_lineage, protected_json, role_providers_json
              FROM projects ORDER BY name",
         )?;
         let rows = stmt.query_map([], project_from_row)?;
@@ -1954,13 +1985,34 @@ impl Store {
     }
 
     /// Apply `forge project set`'s changes: only the columns given (not
-    /// `None`) change. Returns `false` if no project has this name.
+    /// `None`) change; `role_providers` merges into the existing map
+    /// instead of replacing it, so setting one role leaves the others
+    /// alone. Returns `false` if no project has this name.
     pub fn set_project_defaults(&self, name: &str, d: &ProjectDefaults) -> Result<bool> {
         let protected = d
             .protected
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let role_providers = if d.role_providers.is_empty() {
+            None
+        } else {
+            let current: Option<String> = self
+                .lock()
+                .query_row(
+                    "SELECT role_providers_json FROM projects WHERE name=?1",
+                    params![name],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            let mut merged: BTreeMap<String, String> = current
+                .as_deref()
+                .map(|j| serde_json::from_str(j).unwrap_or_default())
+                .unwrap_or_default();
+            merged.extend(d.role_providers.clone());
+            Some(serde_json::to_string(&merged)?)
+        };
         let n = self.lock().execute(
             "UPDATE projects SET
                 workflow = COALESCE(?2, workflow),
@@ -1968,7 +2020,8 @@ impl Store {
                 per_initiative_usd = COALESCE(?4, per_initiative_usd),
                 supervisor_model = COALESCE(?5, supervisor_model),
                 supervisor_per_lineage = COALESCE(?6, supervisor_per_lineage),
-                protected_json = COALESCE(?7, protected_json)
+                protected_json = COALESCE(?7, protected_json),
+                role_providers_json = COALESCE(?8, role_providers_json)
              WHERE name=?1",
             params![
                 name,
@@ -1978,6 +2031,7 @@ impl Store {
                 d.supervisor_model,
                 d.supervisor_per_lineage,
                 protected,
+                role_providers,
             ],
         )?;
         Ok(n > 0)
@@ -2263,6 +2317,7 @@ impl Store {
 
 fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
     let protected_json: Option<String> = r.get(8)?;
+    let role_providers_json: Option<String> = r.get(9)?;
     Ok(Project {
         name: r.get(0)?,
         purpose: r.get(1)?,
@@ -2273,6 +2328,9 @@ fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
         supervisor_model: r.get(6)?,
         supervisor_per_lineage: r.get(7)?,
         protected: protected_json.map(|j| serde_json::from_str(&j).unwrap_or_default()),
+        role_providers: role_providers_json
+            .map(|j| serde_json::from_str(&j).unwrap_or_default())
+            .unwrap_or_default(),
     })
 }
 
@@ -2589,7 +2647,7 @@ mod tests {
         let att = s.attempts(id).unwrap();
         assert_eq!(att[0].state, AttemptState::AgentFailed);
         assert_eq!(att[0].reason, "worker died");
-        assert_eq!(s.claim_next(3, &[]).unwrap().map(|t| t.id), Some(id));
+        assert_eq!(s.claim_next(3, &[], |_| false).unwrap().map(|t| t.id), Some(id));
     }
 
     #[test]
