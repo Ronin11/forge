@@ -513,11 +513,12 @@ fn a_deploy_smoke_check_records_a_console_error_and_a_failed_subresource_and_fai
     assert_eq!(row["check_ok"], false, "{row:?}");
     assert_eq!(row["smoke_ok"], false, "{row:?}");
 
-    let smoke: serde_json::Value =
-        serde_json::from_str(row["smoke_json"].as_str().unwrap_or_else(|| {
-            panic!("no smoke_json recorded: {row:?}")
-        }))
-        .unwrap();
+    let smoke: serde_json::Value = serde_json::from_str(
+        row["smoke_json"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no smoke_json recorded: {row:?}")),
+    )
+    .unwrap();
     assert_eq!(smoke["ok"], false, "{smoke:?}");
     assert_eq!(smoke["title"], "Smoke Test Page", "{smoke:?}");
     assert!(

@@ -1365,11 +1365,7 @@ fn print_deploy_row(r: &crate::view::DeployRow) {
         out!("{:<19}{}", "", r.reason);
     }
     if let Some(ok) = r.smoke_ok {
-        out!(
-            "{:<19}smoke {}",
-            "",
-            if ok { "ok" } else { "FAILED" }
-        );
+        out!("{:<19}smoke {}", "", if ok { "ok" } else { "FAILED" });
     }
 }
 
