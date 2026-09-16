@@ -436,7 +436,9 @@ journal_control = 0.0
 # runner = \"codex-cli\"
 # model = \"qwen3-coder:30b\"
 # env = { CODEX_OSS_BASE_URL = \"http://dev.home:11434/v1\", OLLAMA_HOST = \"http://dev.home:11434\" }
-# extra_args = [\"--oss\", \"--local-provider\", \"ollama\"]
+# extra_args = [\"--oss\", \"--local-provider\", \"ollama\", \"-c\", \"include_apply_patch_tool=true\"]
+# (the apply_patch tool is off for models codex does not know; without it a
+# local model can read but not edit)
 #
 # [providers.openai]
 # runner = \"codex-cli\"

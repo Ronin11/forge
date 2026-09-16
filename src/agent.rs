@@ -979,13 +979,16 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     };
     let mut watch = Watch::new(l.early_ending);
 
+    // Every `exec` option (--json, -C, the sandbox flag, -m, the provider's
+    // own args) goes before the `resume` subcommand: codex rejects them
+    // after it ("error: unexpected argument '-C' found", task 305).
     let mut argv1: Vec<String> = vec![bin.clone(), "exec".to_string()];
+    argv1.extend(codex_common_argv(&l));
+    argv1.extend(l.provider.extra_args.iter().cloned());
     if let Some(id) = l.resume {
         argv1.push("resume".into());
         argv1.push(id.to_string());
     }
-    argv1.extend(codex_common_argv(&l));
-    argv1.extend(l.provider.extra_args.iter().cloned());
     argv1.push(l.prompt.to_string());
 
     let (exit1, timed_out1, mut stderr_text) = run_codex_phase(
@@ -1013,16 +1016,13 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             },
         );
 
-        let mut argv2: Vec<String> = vec![
-            bin.clone(),
-            "exec".to_string(),
-            "resume".to_string(),
-            thread_id,
-        ];
+        let mut argv2: Vec<String> = vec![bin.clone(), "exec".to_string()];
         argv2.extend(codex_common_argv(&l));
+        argv2.extend(l.provider.extra_args.iter().cloned());
+        argv2.push("resume".into());
+        argv2.push(thread_id);
         argv2.push("--output-schema".into());
         argv2.push(schema_path.display().to_string());
-        argv2.extend(l.provider.extra_args.iter().cloned());
         argv2.push(CODEX_REPORT_PROMPT.to_string());
 
         let (exit2, timed_out2, stderr2) = run_codex_phase(
