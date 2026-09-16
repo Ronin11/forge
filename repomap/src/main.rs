@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod edges;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Symbol {
     pub name: String,
@@ -22,6 +24,10 @@ pub struct Symbol {
 pub struct Index {
     /// blob sha -> symbols, the cache; paths map onto blobs per tree.
     pub blobs: HashMap<String, Vec<Symbol>>,
+    /// blob sha -> raw import specifiers, cached the same way; resolving
+    /// them to real paths happens fresh every run against the file set.
+    #[serde(default)]
+    pub edges: HashMap<String, Vec<edges::RawImport>>,
 }
 
 /// A shared, content-addressed cache: one small file per blob, written
@@ -38,6 +44,14 @@ impl BlobCache {
         BlobCache {
             dir: dir.to_path_buf(),
         }
+    }
+
+    /// A blob's cache file for one kind of cached data (`"sym"`, `"edges"`),
+    /// sharded two hex characters deep so no directory holds every blob.
+    fn path_for(&self, kind: &str, blob: &str) -> PathBuf {
+        self.dir
+            .join(&blob[..2.min(blob.len())])
+            .join(format!("{blob}.{kind}.json"))
     }
 
     fn path(&self, blob: &str) -> PathBuf {
@@ -477,7 +491,7 @@ pub fn render(
     out
 }
 
-const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA]";
+const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA]\n       forge-repomap edges <root> [--cache DIR]";
 
 #[derive(Debug)]
 struct Args {
@@ -509,7 +523,7 @@ fn parse_args(args: &[String]) -> Result<Args> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "index" | "rank" => cmd = if args[i] == "index" { "index" } else { "rank" }.into(),
+            "index" | "rank" | "edges" => cmd = args[i].clone(),
             "--dir" => {
                 dir = PathBuf::from(flag_value(args, i, "--dir")?);
                 i += 1;
@@ -539,6 +553,9 @@ fn parse_args(args: &[String]) -> Result<Args> {
             "--changed-since" => {
                 since = Some(flag_value(args, i, "--changed-since")?.to_string());
                 i += 1;
+            }
+            other if cmd == "edges" && !other.starts_with("--") => {
+                dir = PathBuf::from(other);
             }
             other => anyhow::bail!("unknown argument {other}; {USAGE}"),
         }
@@ -570,25 +587,35 @@ fn main() -> Result<()> {
         .as_deref()
         .filter(|p| !p.as_os_str().is_empty())
         .map(BlobCache::new);
-    let (files, parsed) = index(&dir, shared.as_ref())?;
-    let changed = since
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|b| changed_since(&dir, b))
-        .unwrap_or_default();
     match cmd.as_str() {
         "index" => {
+            let (files, parsed) = index(&dir, shared.as_ref())?;
             let map: BTreeMap<&String, &Vec<Symbol>> = files.iter().map(|(p, s)| (p, s)).collect();
             println!("{}", serde_json::to_string_pretty(&map)?);
             eprintln!("{} file(s), {parsed} parsed, the rest cached", files.len());
         }
         "rank" => {
+            let (files, parsed) = index(&dir, shared.as_ref())?;
+            let changed = since
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|b| changed_since(&dir, b))
+                .unwrap_or_default();
             let words = task_words(&task);
             print!("{}", render(&files, &words, &hot, &changed, budget));
             eprintln!(
                 "{} file(s), {parsed} parsed, {} changed since base",
                 files.len(),
                 changed.len()
+            );
+        }
+        "edges" => {
+            let (graph, parsed) = edges::build(&dir, shared.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&graph)?);
+            eprintln!(
+                "{} node(s), {} edge(s), {parsed} parsed",
+                graph.nodes.len(),
+                graph.edges.len()
             );
         }
         _ => anyhow::bail!("{USAGE}"),
