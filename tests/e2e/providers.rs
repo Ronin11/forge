@@ -69,10 +69,12 @@ fn a_task_on_a_codex_provider_runs_end_to_end_and_records_runner_and_provider() 
     // The local provider's price table defaults to 0: a real cost, not
     // absent, since codex itself reports none for Forge to fall back to.
     assert_eq!(cost_usd, Some(0.0));
-    assert_eq!(input_tokens, Some(100));
+    // Phase one's usage (100 in, 50+5 out) plus phase two's (20 in, 8 out),
+    // both counted into the one attempt.
+    assert_eq!(input_tokens, Some(120));
     // turn.completed's output_tokens and reasoning_output_tokens both sum
-    // into the one output count.
-    assert_eq!(output_tokens, Some(55));
+    // into the one output count, across both phases.
+    assert_eq!(output_tokens, Some(63));
 
     let model: String = c
         .query_row("SELECT model FROM tasks WHERE id=1", [], |r| r.get(0))
@@ -80,9 +82,9 @@ fn a_task_on_a_codex_provider_runs_end_to_end_and_records_runner_and_provider() 
     assert_eq!(model, "codex-fake-model");
 
     let log = e.log_text(1, 1);
-    let argv: Vec<String> = log
+    let argvs: Vec<Vec<String>> = log
         .lines()
-        .find_map(|l| {
+        .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
             (v["type"] == "forge_test_argv").then(|| {
                 v["argv"]
@@ -93,28 +95,55 @@ fn a_task_on_a_codex_provider_runs_end_to_end_and_records_runner_and_provider() 
                     .collect()
             })
         })
-        .expect("the fake logs its argv");
-    assert!(
-        argv.contains(&"--skip-git-repo-check".to_string()),
-        "{argv:?}"
+        .collect();
+    assert_eq!(
+        argvs.len(),
+        2,
+        "phase one (no schema) and phase two (resume, with schema): {argvs:?}"
     );
-    assert!(argv.contains(&"--json".to_string()), "{argv:?}");
-    assert!(argv.contains(&"-C".to_string()), "{argv:?}");
-    assert!(argv.contains(&"--output-schema".to_string()), "{argv:?}");
-    assert!(argv.contains(&"-m".to_string()), "{argv:?}");
-    assert!(argv.contains(&"codex-fake-model".to_string()), "{argv:?}");
-    if e.sandbox_disabled() {
+    let phase_one = &argvs[0];
+    let phase_two = &argvs[1];
+
+    for argv in [phase_one, phase_two] {
         assert!(
-            argv.windows(2)
-                .any(|w| w[0] == "-s" && w[1] == "workspace-write"),
+            argv.contains(&"--skip-git-repo-check".to_string()),
             "{argv:?}"
         );
-    } else {
-        assert!(
-            argv.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
-            "{argv:?}"
-        );
+        assert!(argv.contains(&"--json".to_string()), "{argv:?}");
+        assert!(argv.contains(&"-C".to_string()), "{argv:?}");
+        assert!(argv.contains(&"-m".to_string()), "{argv:?}");
+        assert!(argv.contains(&"codex-fake-model".to_string()), "{argv:?}");
+        if e.sandbox_disabled() {
+            assert!(
+                argv.windows(2)
+                    .any(|w| w[0] == "-s" && w[1] == "workspace-write"),
+                "{argv:?}"
+            );
+        } else {
+            assert!(
+                argv.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+                "{argv:?}"
+            );
+        }
     }
+
+    // Phase one runs with no schema attached, so the model actually works.
+    assert!(
+        !phase_one.contains(&"--output-schema".to_string()),
+        "{phase_one:?}"
+    );
+    assert!(!phase_one.contains(&"resume".to_string()), "{phase_one:?}");
+
+    // Phase two resumes the thread phase one started and carries the schema.
+    assert!(
+        phase_two.contains(&"--output-schema".to_string()),
+        "{phase_two:?}"
+    );
+    assert!(phase_two.contains(&"resume".to_string()), "{phase_two:?}");
+    assert!(
+        phase_two.contains(&"codex-fake-sess-1".to_string()),
+        "{phase_two:?}"
+    );
 
     // `forge trace --json` shows the same on the attempt row.
     let doc = e.trace_json(1);

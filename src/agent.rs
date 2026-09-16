@@ -787,38 +787,19 @@ fn apply_codex_event(
     None
 }
 
-/// The codex-cli backend: `codex exec --skip-git-repo-check --json -C
-/// <worktree> [-m <model>] --output-schema <file> <prompt>`, sandboxed with
-/// `-s workspace-write` when Forge's own sandbox is off, or
+/// codex's `exec` flags shared by both of the two phases below, after `exec
+/// [resume <id>]` and before whatever differs (`--output-schema` and the
+/// prompt): `--skip-git-repo-check --json -C <worktree> [-m <model>]`,
+/// sandboxed with `-s workspace-write` when Forge's own sandbox is off, or
 /// `--dangerously-bypass-approvals-and-sandbox` when the attempt already
 /// runs inside one (bubblewrap) and codex's own would only be redundant.
-/// Resuming swaps in `resume <thread_id>` after `exec`. Stdin is always
-/// closed: codex blocks forever reading it otherwise, unlike the claude CLI,
-/// which takes the prompt on stdin.
-async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
-    let bin = real_bin(&codex_bin_for(l.step));
-    // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
-    // codex reads it inside the sandbox, where Forge's home is an empty
-    // tmpfs. The worktree is the one directory bound read-write for the
-    // attempt, and its `.git` is invisible to `git status`, so the file
-    // lives there (tasks 274-286 exited at launch: "Failed to read output
-    // schema file", written beside the log under FORGE2_HOME).
-    let schema_path = l
-        .worktree
-        .join(".git")
-        .join(format!("forge-{}-schema.json", l.step));
-    std::fs::write(&schema_path, l.schema)
-        .with_context(|| format!("writing {}", schema_path.display()))?;
-
-    let mut argv: Vec<String> = vec![bin.clone(), "exec".to_string()];
-    if let Some(id) = l.resume {
-        argv.push("resume".into());
-        argv.push(id.to_string());
-    }
-    argv.push("--skip-git-repo-check".into());
-    argv.push("--json".into());
-    argv.push("-C".into());
-    argv.push(l.worktree.display().to_string());
+fn codex_common_argv(l: &Launch<'_>) -> Vec<String> {
+    let mut argv = vec![
+        "--skip-git-repo-check".to_string(),
+        "--json".to_string(),
+        "-C".to_string(),
+        l.worktree.display().to_string(),
+    ];
     if l.sandbox.is_some() {
         argv.push("--dangerously-bypass-approvals-and-sandbox".into());
     } else {
@@ -829,29 +810,40 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         argv.push("-m".into());
         argv.push(l.model.to_string());
     }
-    argv.push("--output-schema".into());
-    argv.push(schema_path.display().to_string());
-    argv.extend(l.provider.extra_args.iter().cloned());
-    argv.push(l.prompt.to_string());
+    argv
+}
 
-    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
-    extra_env.extend(l.provider.env.iter().cloned());
+/// Phase two's fixed prompt: no schema was ever put in front of the model
+/// while it worked, so this is the first it hears of the shape its answer
+/// must take. Named fields match `envelope::SCHEMA` so the model has enough
+/// to go on without having seen the schema itself.
+const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
+result for everything done in this thread so far: schema_version, summary, \
+changes, checks_run, claims, and needs_input if you stopped for a reason \
+before finishing, matching the schema you were given exactly.";
 
-    let mut log =
-        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
-    writeln!(
-        log,
-        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
-        serde_json::to_string(l.prompt)?
-    )?;
-
-    let mut child = Command::from(command_in(l.sandbox, l.worktree, &argv, &extra_env))
+/// One spawn of a codex `exec` phase to exit or timeout, writing every raw
+/// line to `log` and folding it into `out`/`watch` via `apply_codex_event` —
+/// the plumbing `run_codex`'s two phases share. Returns the exit code, and
+/// whether this phase itself timed out; the caller decides what either means
+/// for the attempt as a whole.
+#[allow(clippy::too_many_arguments)]
+async fn run_codex_phase(
+    l: &Launch<'_>,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    start: &Instant,
+    log: &mut File,
+    out: &mut Outcome,
+    watch: &mut Watch,
+) -> Result<(Option<i32>, bool, String)> {
+    let mut child = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .with_context(|| format!("spawning {bin}"))?;
+        .with_context(|| format!("spawning {}", argv[0]))?;
 
     let stderr = child.stderr.take().context("agent stderr")?;
     let stderr_task = tokio::spawn(async move {
@@ -860,15 +852,10 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         s
     });
 
-    let start = Instant::now();
     let deadline = tokio::time::Instant::now() + l.timeout;
-    let mut out = Outcome {
-        session_id: l.resume.map(|s| s.to_string()),
-        ..Outcome::default()
-    };
-    let mut watch = Watch::new(l.early_ending);
     let stdout = child.stdout.take().context("agent stdout")?;
     let mut lines = BufReader::new(stdout).lines();
+    let mut tripped_this_phase = false;
 
     let read = async {
         while let Some(line) = lines.next_line().await? {
@@ -887,7 +874,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
                 let name = v["item"]["command"].as_str().unwrap_or("command_execution");
                 l.report.emit(l.task_id, Event::ToolCall { name });
             }
-            if let Some(text) = apply_codex_event(&v, &mut out, &mut watch, l.writes) {
+            if let Some(text) = apply_codex_event(&v, out, watch, l.writes) {
                 writeln!(
                     log,
                     "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
@@ -900,30 +887,31 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
                         text: &format!("early    stopped: {text}"),
                     },
                 );
+                tripped_this_phase = true;
                 break;
             }
         }
         Ok::<(), anyhow::Error>(())
     };
 
+    let mut timed_out = false;
+    let mut exit_code = None;
     match tokio::time::timeout_at(deadline, read).await {
         Ok(r) => {
             r?;
-            if out.ended_early.is_some() {
+            if tripped_this_phase {
                 child.kill().await.ok();
                 child.wait().await.ok();
             } else {
                 match tokio::time::timeout_at(deadline, child.wait()).await {
-                    Ok(status) => out.exit_code = status?.code(),
-                    Err(_) => out.timed_out = true,
+                    Ok(status) => exit_code = status?.code(),
+                    Err(_) => timed_out = true,
                 }
             }
         }
-        Err(_) => out.timed_out = true,
+        Err(_) => timed_out = true,
     }
-    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
-    out.early_near = watch.near(l.writes);
-    if out.timed_out {
+    if timed_out {
         child.kill().await.ok();
         child.wait().await.ok();
         writeln!(
@@ -932,6 +920,113 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             l.timeout.as_secs()
         )?;
     }
+
+    let stderr_text = stderr_task.await.unwrap_or_default();
+    Ok((exit_code, timed_out, stderr_text))
+}
+
+/// The codex-cli backend, run in two phases. A weaker model asked to commit
+/// to `--output-schema`'s shape before it has done anything just answers
+/// with a description of what it would do instead of doing it (dev.home's
+/// qwen3-coder:30b through codex-cli, tasks 293-297: one turn, zero tool
+/// calls, a schema-shaped result, under `--output-schema`; three tool calls
+/// and a real edit, the same prompt, without it). So phase one runs the
+/// prompt with no schema attached, and only once that run ends — with or
+/// without a plain final message — does phase two resume the same thread
+/// with `--output-schema` and a short fixed prompt asking only for the
+/// structured report `run_codex` parses as the attempt's result. Stdin is
+/// always closed in both phases: codex blocks forever reading it otherwise,
+/// unlike the claude CLI, which takes the prompt on stdin.
+async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
+    let bin = real_bin(&codex_bin_for(l.step));
+    // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
+    // codex reads it inside the sandbox, where Forge's home is an empty
+    // tmpfs. The worktree is the one directory bound read-write for the
+    // attempt, and its `.git` is invisible to `git status`, so the file
+    // lives there (tasks 274-286 exited at launch: "Failed to read output
+    // schema file", written beside the log under FORGE2_HOME).
+    let schema_path = l
+        .worktree
+        .join(".git")
+        .join(format!("forge-{}-schema.json", l.step));
+    std::fs::write(&schema_path, l.schema)
+        .with_context(|| format!("writing {}", schema_path.display()))?;
+
+    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+    extra_env.extend(l.provider.env.iter().cloned());
+
+    let mut log =
+        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+        serde_json::to_string(l.prompt)?
+    )?;
+
+    let start = Instant::now();
+    let mut out = Outcome {
+        session_id: l.resume.map(|s| s.to_string()),
+        ..Outcome::default()
+    };
+    let mut watch = Watch::new(l.early_ending);
+
+    let mut argv1: Vec<String> = vec![bin.clone(), "exec".to_string()];
+    if let Some(id) = l.resume {
+        argv1.push("resume".into());
+        argv1.push(id.to_string());
+    }
+    argv1.extend(codex_common_argv(&l));
+    argv1.extend(l.provider.extra_args.iter().cloned());
+    argv1.push(l.prompt.to_string());
+
+    let (exit1, timed_out1, mut stderr_text) = run_codex_phase(
+        &l, &argv1, &extra_env, &start, &mut log, &mut out, &mut watch,
+    )
+    .await?;
+    out.exit_code = exit1;
+    out.timed_out = timed_out1;
+
+    // Whatever phase one ended with, ask the same thread to report itself
+    // structurally now — but only when there is a thread to resume; a run
+    // that never got as far as `thread.started` has nothing for phase two
+    // to continue.
+    if let Some(thread_id) = out.session_id.clone() {
+        writeln!(
+            log,
+            "{{\"type\":\"forge_phase_two\",\"forge_ms\":{},\"thread_id\":{}}}",
+            start.elapsed().as_millis(),
+            serde_json::to_string(&thread_id)?
+        )?;
+        l.report.emit(
+            l.task_id,
+            Event::Note {
+                text: "phase 2  resuming the thread for the structured report",
+            },
+        );
+
+        let mut argv2: Vec<String> = vec![
+            bin.clone(),
+            "exec".to_string(),
+            "resume".to_string(),
+            thread_id,
+        ];
+        argv2.extend(codex_common_argv(&l));
+        argv2.push("--output-schema".into());
+        argv2.push(schema_path.display().to_string());
+        argv2.extend(l.provider.extra_args.iter().cloned());
+        argv2.push(CODEX_REPORT_PROMPT.to_string());
+
+        let (exit2, timed_out2, stderr2) = run_codex_phase(
+            &l, &argv2, &extra_env, &start, &mut log, &mut out, &mut watch,
+        )
+        .await?;
+        out.exit_code = exit2;
+        out.timed_out = out.timed_out || timed_out2;
+        stderr_text.push_str(&stderr2);
+    }
+
+    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
+    out.early_near = watch.near(l.writes);
     if !out.is_error {
         out.is_error = out.exit_code.is_some_and(|c| c != 0);
     }
@@ -946,7 +1041,6 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         );
     }
 
-    let stderr_text = stderr_task.await.unwrap_or_default();
     if !stderr_text.trim().is_empty() {
         writeln!(
             log,
@@ -1185,6 +1279,37 @@ mod tests {
         assert_eq!(out.cache_read_input_tokens, Some(10));
         // Reasoning tokens sum into the output count alongside the plain ones.
         assert_eq!(out.output_tokens, Some(55));
+    }
+
+    #[test]
+    fn a_phase_one_stream_with_tool_calls_then_a_phase_two_structured_message_has_both() {
+        // Phase one: the model works, ending with a plain final message that
+        // is not itself JSON (no schema was ever put in front of it).
+        let mut lines = vec![
+            r#"{"type":"thread.started","thread_id":"codex-sess-1"}"#,
+            r#"{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"echo 42 > answer.txt"}}"#,
+            r#"{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"echo 42 > answer.txt","exit_code":0}}"#,
+            r#"{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"wrote 42 to answer.txt"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":50,"reasoning_output_tokens":5}}"#,
+        ];
+        // Phase two: the resumed thread, asked only for the structured
+        // report, answers with the envelope.
+        lines.extend([
+            r#"{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"{\"schema_version\":1,\"summary\":\"wrote 42\",\"needs_input\":null,\"changes\":[{\"path\":\"answer.txt\",\"kind\":\"added\"}],\"checks_run\":[],\"claims\":[]}"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}"#,
+        ]);
+
+        let out = run_codex_fixture(&lines, thresholds(100, 100, 100, 2));
+        assert!(out.tool_calls > 0, "phase one's command execution counted");
+        assert!(out.got_result);
+        // Phase one's plain text is not JSON; only phase two's message is.
+        let structured: Value =
+            serde_json::from_str(&out.structured.expect("phase two's structured result")).unwrap();
+        assert_eq!(structured["summary"], "wrote 42");
+        // Both phases' turns and usage count into the one attempt.
+        assert_eq!(out.num_turns, 2);
+        assert_eq!(out.input_tokens, Some(120));
+        assert_eq!(out.output_tokens, Some(63));
     }
 
     #[test]
