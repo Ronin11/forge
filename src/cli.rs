@@ -259,6 +259,10 @@ enum Cmd {
         /// after the first, by whether they were handed a journal
         #[arg(long)]
         journal: bool,
+        /// Attempts, outcomes, cost and wall time per (role, provider,
+        /// model), role being the attempt step
+        #[arg(long)]
+        by_role: bool,
         /// Only this project's tasks (also adds the per-project section
         /// when neither this nor --initiative is given)
         #[arg(long)]
@@ -615,10 +619,13 @@ pub async fn main() -> Result<()> {
             step,
             quality,
             journal,
+            by_role,
             project,
             initiative,
             json,
-        } => stats(tools, step, quality, journal, project, initiative, json),
+        } => stats(
+            tools, step, quality, journal, by_role, project, initiative, json,
+        ),
         Cmd::Events {
             since,
             follow,
@@ -2157,11 +2164,13 @@ fn tools_json(f: &Forge, step: Option<&str>) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(steps))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stats(
     tools: bool,
     step: Option<String>,
     quality: bool,
     journal: bool,
+    by_role: bool,
     project: Option<String>,
     initiative: Option<i64>,
     json: bool,
@@ -2187,6 +2196,9 @@ fn stats(
     }
     if journal {
         return journal_control_stats(&f);
+    }
+    if by_role {
+        return by_role_stats(&f);
     }
     let doc = crate::view::stats_doc(&f, &scope)?;
     out!(
@@ -2317,6 +2329,49 @@ fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
             pct(w.broke_base_share),
             w.repaired,
             pct(w.repaired_share)
+        );
+    }
+    Ok(())
+}
+
+/// Attempts, outcomes, cost and wall time per (role, provider, model),
+/// role being the attempt's step; landed and broke-base counts for the
+/// `code` role only.
+fn by_role_stats(f: &Forge) -> Result<()> {
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default())?;
+    out!(
+        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7}",
+        "ROLE",
+        "PROVIDER",
+        "MODEL",
+        "ATT",
+        "SUCCEED%",
+        "TURNS",
+        "COST",
+        "SECS",
+        "LANDED",
+        "BROKEBASE",
+        "BROKE%"
+    );
+    let pct = |share: Option<f64>| match share {
+        Some(s) => format!("{:.0}%", s * 100.0),
+        None => "-".into(),
+    };
+    let count = |v: Option<i64>| v.map_or("-".to_string(), |n| n.to_string());
+    for r in &doc.by_role {
+        out!(
+            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7}",
+            r.role,
+            r.provider,
+            r.model,
+            r.attempts,
+            pct(r.succeeded_share),
+            r.mean_turns,
+            format!("${:.2}", r.mean_cost_usd),
+            r.mean_secs,
+            count(r.landed),
+            count(r.broke_base),
+            pct(r.broke_base_share)
         );
     }
     Ok(())

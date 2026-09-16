@@ -72,7 +72,7 @@ and does not parse stdout.
   agent choosing a workflow, not documented field-by-field here since no
   client (`tui/`, `web/`) reads it today — treat its shape as informal
   until a client depends on it.
-- **`forge stats --json [--tools] [--step S] [--quality] [--journal]`** —
+- **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
   form always carries the fields) prints defect escape per workflow
@@ -80,7 +80,10 @@ and does not parse stdout.
   base or were later repaired. `--journal` (also text mode only; the
   JSON form always carries `journal`/`no_journal`) prints the journal
   control arm's retrospective split instead: code attempts after the
-  first, by whether they were handed a journal.
+  first, by whether they were handed a journal. `--by-role` (also text
+  mode only; the JSON form always carries `by_role`) prints the runner
+  breakdown instead: attempts, outcomes, cost and wall time per (role,
+  provider, model).
 - **`forge plugin list --json`** — every plugin found under
   `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
   from, and whether it is enabled. A JSON array of
@@ -341,8 +344,10 @@ why the task ended as it did, and what a human or a retry could try.
 ### `StatsDoc`
 
 The document `forge stats --json` prints: `{workflows, steps, journal,
-no_journal, tools}`. `tools` is present only with `--tools` (an object
-keyed by step name); otherwise it is omitted.
+no_journal, projects, by_role, tools}`. `tools` is present only with
+`--tools` (an object keyed by step name); otherwise it is omitted.
+`projects` is present only when `forge stats` is not itself scoped to
+one project or initiative.
 
 **`workflows`** — array of `StatsWorkflowRow`, one per workflow name +
 definition hash: `workflow`, `hash`, `pieces` (task count),
@@ -381,6 +386,21 @@ non-empty (`journal`) or not (`no_journal`). Fields: `attempts`,
 `mean_turns`, `mean_first_edit` (null if nothing in the group edited),
 `mean_cost_usd`. Both objects are always present, zeroed out when a
 side has no matching attempts yet.
+
+**`by_role`** — array of `StatsRoleRow`, one per (role, provider, model)
+combination with at least one attempt, role being the attempt's step
+(`code`, `review`, and so on): `role`, `provider`, `model`, `attempts`,
+`succeeded`, `succeeded_share` (null when `attempts` is 0),
+`mean_turns`, `mean_cost_usd`, `mean_secs`. For the `code` role only,
+also `landed` (tasks with an attempt in this group that landed) and
+`broke_base` (of those, how many broke a later task's base — the same
+defect-escape signal as `StatsWorkflowRow::broke_base`, keyed by the
+group's own tasks instead of by workflow) with `broke_base_share`
+(`broke_base` divided by `landed`; null when `landed` is null or 0).
+Outside the `code` role, `landed`, `broke_base`, and `broke_base_share`
+are omitted from the JSON row entirely, since landing is not a
+role-specific concept. `forge stats --by-role` is the text-mode view of
+the same rows.
 
 ### `PluginRow`
 

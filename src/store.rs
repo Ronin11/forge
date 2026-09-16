@@ -351,6 +351,25 @@ pub struct JournalStat {
     pub mean_cost_usd: f64,
 }
 
+/// One row of the runner breakdown: attempts, outcomes, cost and wall
+/// time for one (role, provider, model) combination, role being the
+/// attempt's step (see `forge stats --by-role`).
+pub struct RoleStat {
+    pub role: String,
+    pub provider: String,
+    pub model: String,
+    pub attempts: i64,
+    pub succeeded: i64,
+    pub mean_turns: f64,
+    pub mean_cost_usd: f64,
+    pub mean_ms: f64,
+    /// Landed tasks with an attempt in this group, and how many broke a
+    /// later task's base (see `WorkflowStat::broke_base`); `None` outside
+    /// the `code` role, where landing is not meaningful.
+    pub landed: Option<i64>,
+    pub broke_base: Option<i64>,
+}
+
 /// One operation, kernel or user, as it ran.
 #[derive(Default, Debug, Clone)]
 pub struct Op {
@@ -1742,6 +1761,54 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The runner breakdown: attempts, outcomes, cost and wall time per
+    /// (role, provider, model), role being the attempt's step. For the
+    /// `code` role only, also the landed count and the broke-base count
+    /// (see `WorkflowStat::broke_base`) for tasks with an attempt in the
+    /// group.
+    pub fn role_stats(&self) -> Result<Vec<RoleStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
+                    COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
+                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END),
+                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' AND EXISTS (
+                        SELECT 1 FROM attempts a2
+                        JOIN tasks b ON b.id = a2.task_id
+                        WHERE b.base_sha = t.landed_sha
+                          AND a2.step = 'code'
+                          AND a2.attempt_no = (SELECT MIN(a3.attempt_no) FROM attempts a3 WHERE a3.task_id = a2.task_id AND a3.step = 'code')
+                          AND EXISTS (
+                              SELECT 1 FROM json_each(a2.verdict_json) j
+                              WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
+                          )
+                    ) THEN t.id END)
+             FROM attempts a JOIN tasks t ON t.id = a.task_id
+             WHERE a.state != 'running'
+             GROUP BY a.step, a.provider, attempt_model
+             ORDER BY a.step, a.provider, attempt_model",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let role: String = r.get(0)?;
+            let landed: i64 = r.get(8)?;
+            let broke_base: i64 = r.get(9)?;
+            let is_code = role == "code";
+            Ok(RoleStat {
+                role,
+                provider: r.get(1)?,
+                model: r.get(2)?,
+                attempts: r.get(3)?,
+                succeeded: r.get(4)?,
+                mean_turns: r.get(5)?,
+                mean_cost_usd: r.get(6)?,
+                mean_ms: r.get(7)?,
+                landed: is_code.then_some(landed),
+                broke_base: is_code.then_some(broke_base),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The listing behind `forge log`: newest first, filtered, and paged by
     /// `before` (ids strictly below it) so a client can scroll back.
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
@@ -3028,6 +3095,170 @@ mod tests {
             "the only attempt never edited"
         );
         assert_eq!(no_journal.mean_cost_usd, 0.6);
+    }
+
+    #[test]
+    fn role_stats_splits_by_provider_and_model_and_averages_within_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+        let base_task = |started_at: i64| Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: started_at,
+            started_at: Some(started_at),
+            finished_at: Some(started_at + 1),
+            workflow: "direct".into(),
+            ..Default::default()
+        };
+        let attempt = |task_id, step: &str, provider: &str, model: &str| Attempt {
+            task_id,
+            attempt_no: 1,
+            step: step.into(),
+            provider: provider.into(),
+            started_at: 0,
+            inputs_json: format!(r#"{{"model":"{model}"}}"#),
+            ..Default::default()
+        };
+        let finish = |id, state, num_turns, cost_usd, agent_ms, verdict_json: &str| {
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state,
+                reason: String::new(),
+                finished_at: Some(1),
+                agent_exit: Some(0),
+                timed_out: false,
+                num_turns,
+                tool_calls: 1,
+                cost_usd: Some(cost_usd),
+                agent_ms,
+                commits: 1,
+                files_changed: 1,
+                dirty: false,
+                verdict_json: verdict_json.into(),
+                result_text: String::new(),
+                envelope_json: String::new(),
+                rl_five_hour: None,
+                rl_seven_day: None,
+                rl_five_hour_resets: None,
+                rl_seven_day_resets: None,
+                end_sha: String::new(),
+                outputs_json: String::new(),
+                session_id: String::new(),
+                first_edit: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                early_signals: "[]".into(),
+                early_near: "[]".into(),
+            })
+            .unwrap();
+        };
+
+        // A: code / anthropic / sonnet, succeeds and lands.
+        let mut a = base_task(1);
+        a.id = s.insert_task(&a).unwrap();
+        let a1 = s
+            .insert_attempt(&attempt(a.id, "code", "anthropic", "sonnet"))
+            .unwrap();
+        finish(a1, AttemptState::Succeeded, 10, 1.0, 1000, "[]");
+        a.landed_sha = "aaaaaaaa".into();
+        s.update_task(&a).unwrap();
+
+        // A also carries a review-step attempt: a different role, excluded
+        // from landed/broke-base entirely.
+        let a2 = s
+            .insert_attempt(&attempt(a.id, "review", "anthropic", "sonnet"))
+            .unwrap();
+        finish(a2, AttemptState::Succeeded, 2, 0.1, 100, "[]");
+
+        // B: same code / anthropic / sonnet group, fails, never lands.
+        let mut b = base_task(2);
+        b.id = s.insert_task(&b).unwrap();
+        let b1 = s
+            .insert_attempt(&attempt(b.id, "code", "anthropic", "sonnet"))
+            .unwrap();
+        finish(b1, AttemptState::ChecksFailed, 20, 3.0, 3000, "[]");
+        s.update_task(&b).unwrap();
+
+        // C: code / openai / gpt-5, its own group entirely, succeeds and lands.
+        let mut c = base_task(3);
+        c.id = s.insert_task(&c).unwrap();
+        let c1 = s
+            .insert_attempt(&attempt(c.id, "code", "openai", "gpt-5"))
+            .unwrap();
+        finish(c1, AttemptState::Succeeded, 5, 0.5, 500, "[]");
+        c.landed_sha = "cccccccc".into();
+        s.update_task(&c).unwrap();
+
+        // D: code / anthropic / haiku, its own group; starts from A's landed
+        // sha and is red on it, so A's group counts a broke-base.
+        let mut d = base_task(4);
+        d.base_sha = "aaaaaaaa".into();
+        d.id = s.insert_task(&d).unwrap();
+        let d1 = s
+            .insert_attempt(&attempt(d.id, "code", "anthropic", "haiku"))
+            .unwrap();
+        finish(
+            d1,
+            AttemptState::ChecksFailed,
+            1,
+            0.0,
+            0,
+            r#"[{"level":"L1","name":"test","ok":false,"exit":1,"ms":0,"timed_out":false,"tail":"","failing_tests":[]}]"#,
+        );
+        s.update_task(&d).unwrap();
+
+        let stats = s.role_stats().unwrap();
+        assert_eq!(
+            stats.len(),
+            4,
+            "code/anthropic/sonnet, code/openai/gpt-5, code/anthropic/haiku, review/anthropic/sonnet"
+        );
+
+        let find = |role: &str, provider: &str, model: &str| {
+            stats
+                .iter()
+                .find(|r| r.role == role && r.provider == provider && r.model == model)
+                .unwrap_or_else(|| panic!("no row for {role}/{provider}/{model}"))
+        };
+
+        let sonnet = find("code", "anthropic", "sonnet");
+        assert_eq!(sonnet.attempts, 2);
+        assert_eq!(sonnet.succeeded, 1);
+        assert_eq!(sonnet.mean_turns, 15.0);
+        assert_eq!(sonnet.mean_cost_usd, 2.0);
+        assert_eq!(sonnet.mean_ms, 2000.0);
+        assert_eq!(sonnet.landed, Some(1), "only A landed");
+        assert_eq!(sonnet.broke_base, Some(1), "A broke D's base");
+
+        let gpt = find("code", "openai", "gpt-5");
+        assert_eq!(gpt.attempts, 1);
+        assert_eq!(gpt.succeeded, 1);
+        assert_eq!(gpt.mean_turns, 5.0);
+        assert_eq!(gpt.mean_cost_usd, 0.5);
+        assert_eq!(gpt.mean_ms, 500.0);
+        assert_eq!(gpt.landed, Some(1));
+        assert_eq!(gpt.broke_base, Some(0), "nothing based off C's landed sha");
+
+        let haiku = find("code", "anthropic", "haiku");
+        assert_eq!(haiku.attempts, 1);
+        assert_eq!(haiku.succeeded, 0);
+        assert_eq!(haiku.landed, Some(0), "D never landed");
+        assert_eq!(haiku.broke_base, Some(0));
+
+        let review = find("review", "anthropic", "sonnet");
+        assert_eq!(review.attempts, 1);
+        assert_eq!(review.succeeded, 1);
+        assert_eq!(review.landed, None, "landed is code-only");
+        assert_eq!(review.broke_base, None, "broke-base is code-only");
     }
 
     #[test]

@@ -702,6 +702,57 @@ impl From<&crate::store::ProjectStat> for StatsProjectRow {
     }
 }
 
+/// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
+/// for one (role, provider, model) combination, role being the attempt's
+/// step, as `forge stats --by-role` shows it.
+#[derive(Serialize)]
+pub struct StatsRoleRow {
+    pub role: String,
+    pub provider: String,
+    pub model: String,
+    pub attempts: i64,
+    pub succeeded: i64,
+    /// `succeeded` divided by `attempts`; `None` when there are none.
+    pub succeeded_share: Option<f64>,
+    pub mean_turns: f64,
+    pub mean_cost_usd: f64,
+    pub mean_secs: f64,
+    /// Landed tasks with an attempt in this group; `None` outside the
+    /// `code` role. See `StatsWorkflowRow::broke_base`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landed: Option<i64>,
+    /// Of `landed`, how many broke a later task's base; `None` outside the
+    /// `code` role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broke_base: Option<i64>,
+    /// `broke_base` divided by `landed`; `None` when `landed` is `None` or 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broke_base_share: Option<f64>,
+}
+
+impl From<&crate::store::RoleStat> for StatsRoleRow {
+    fn from(r: &crate::store::RoleStat) -> Self {
+        let broke_base_share = match (r.landed, r.broke_base) {
+            (Some(landed), Some(broke)) if landed > 0 => Some(broke as f64 / landed as f64),
+            _ => None,
+        };
+        StatsRoleRow {
+            role: r.role.clone(),
+            provider: r.provider.clone(),
+            model: r.model.clone(),
+            attempts: r.attempts,
+            succeeded: r.succeeded,
+            succeeded_share: (r.attempts > 0).then(|| r.succeeded as f64 / r.attempts as f64),
+            mean_turns: r.mean_turns,
+            mean_cost_usd: r.mean_cost_usd,
+            mean_secs: r.mean_ms / 1000.0,
+            landed: r.landed,
+            broke_base: r.broke_base,
+            broke_base_share,
+        }
+    }
+}
+
 /// Everything `forge stats` shows: outcomes per workflow, outcomes per
 /// step, the journal control arm's retrospective split (with `--journal`),
 /// and (with `--tools`) tool usage per step. `forge stats --json`
@@ -720,6 +771,9 @@ pub struct StatsDoc {
     /// scope of its own (see docs/PROJECTS.md, "The record, scoped").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<StatsProjectRow>,
+    /// Attempts, outcomes, cost and wall time per (role, provider, model);
+    /// see `forge stats --by-role`.
+    pub by_role: Vec<StatsRoleRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
@@ -752,6 +806,7 @@ pub fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDo
         journal,
         no_journal,
         projects,
+        by_role: f.store.role_stats()?.iter().map(Into::into).collect(),
         tools: None,
     })
 }
@@ -1430,6 +1485,7 @@ mod stats_tests {
             journal: StatsJournalRow::default(),
             no_journal: StatsJournalRow::default(),
             projects: vec![],
+            by_role: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
