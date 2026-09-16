@@ -190,6 +190,11 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     };
 
     let seq: i64 = 0;
+    // Set when this retry starts from a verified branch with the current
+    // base merged into it: a textually clean merge that does not build
+    // surfaces at the setup step, and that failure belongs to the coder,
+    // not to the task, since a fresh clone would never see it.
+    let mut merged_base_retry = false;
     if t.worktree.is_empty() {
         let base_name = format!("forge/{}-{}", t.id, slug(&t.task));
         t.branch = base_name.clone();
@@ -280,6 +285,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         let msg = format!("Merge the current base into {}", from.branch);
                         match git::merge(&dir, &t.base_sha, &msg).await {
                             Ok(git::Merge::Merged(_)) | Ok(git::Merge::UpToDate) => {
+                                merged_base_retry = true;
                                 f.report.emit(id, Event::Note { text: &format!("start    from task {old}'s verified branch {} @ {short}, with the current base merged in", from.branch) });
                             }
                             Ok(git::Merge::Conflict(files)) => {
@@ -387,6 +393,40 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         run.idx += 1;
                         continue;
                     }
+                    // A merge that is textually clean can still be
+                    // semantically broken; that surfaces here, at setup,
+                    // before any attempt. It is the merge's problem, not
+                    // the task's: hand the coder the error on the verified
+                    // branch instead of failing with nothing to show for it.
+                    if merged_base_retry
+                        && step.action.name == "setup"
+                        && let Some(c_idx) = resolved.steps[run.idx..]
+                            .iter()
+                            .position(|s| {
+                                s.action.kind == Kind::Directive
+                                    && s.action.contract == Contract::Code
+                            })
+                            .map(|i| run.idx + i)
+                    {
+                        let c_name = resolved.steps[c_idx].action.name.clone();
+                        f.report.emit(
+                            id,
+                            Event::Note {
+                                text: &format!(
+                                    "setup    the merged base does not build; {c_name} will see the error"
+                                ),
+                            },
+                        );
+                        run.owed.insert(
+                            c_idx as i64 + 1,
+                            format!(
+                                "Setup failed after merging the current base into this verified branch:\n{}\nThe merge is textually clean but the result does not build. Fix it, leave the tree clean, and commit.",
+                                crate::checks::last_lines(&detail, 30)
+                            ),
+                        );
+                        run.idx += 1;
+                        continue;
+                    }
                     if step.action.verifies
                         && let Some(d_idx) = (0..run.idx)
                             .rev()
@@ -420,11 +460,22 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                         break 'steps;
                     }
                     end = Some(End::Failed {
-                        reason: format!(
-                            "operation {} failed: {}",
-                            step.action.name,
-                            detail.lines().next().unwrap_or("")
-                        ),
+                        // `setup` gets the full tail: a build failure on a
+                        // fresh clone means the repository or the base is
+                        // broken, and `forge show` needs more than the
+                        // first line of a compiler's output to say why.
+                        reason: if step.action.name == "setup" {
+                            format!(
+                                "operation setup failed:\n{}",
+                                crate::checks::last_lines(&detail, 30)
+                            )
+                        } else {
+                            format!(
+                                "operation {} failed: {}",
+                                step.action.name,
+                                detail.lines().next().unwrap_or("")
+                            )
+                        },
                         counted: false,
                         pushes: false,
                     });
