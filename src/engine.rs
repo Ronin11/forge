@@ -1273,19 +1273,24 @@ async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
         }
         id = parent.retry_of?;
     };
+    // The pushed branch first: it is the copy a person can fix by hand,
+    // and the local worktree goes stale the moment someone does (task
+    // 269 fetched a worktree that predated the fix on the remote).
+    if parent.pushed {
+        let repo = Path::new(&parent.repo);
+        if let Ok(cfg) = config::load_working(repo).await
+            && let Some(remote) = cfg.push_remote
+            && let Some(url) = git::remote_url(repo, &remote).await
+        {
+            return Some(VerifiedBranch {
+                source: url,
+                branch: parent.branch.clone(),
+            });
+        }
+    }
     if Path::new(&parent.worktree).join(".git").exists() {
         return Some(VerifiedBranch {
             source: parent.worktree.clone(),
-            branch: parent.branch.clone(),
-        });
-    }
-    if parent.pushed {
-        let repo = Path::new(&parent.repo);
-        let cfg = config::load_working(repo).await.ok()?;
-        let remote = cfg.push_remote?;
-        let url = git::remote_url(repo, &remote).await?;
-        return Some(VerifiedBranch {
-            source: url,
             branch: parent.branch.clone(),
         });
     }
