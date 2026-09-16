@@ -375,6 +375,10 @@ const BUILTIN_ACTIONS: &[(&str, &str)] = &[
         include_str!("builtins/actions/playwright.toml"),
     ),
     ("setup.toml", include_str!("builtins/actions/setup.toml")),
+    (
+        "interview.toml",
+        include_str!("builtins/actions/interview.toml"),
+    ),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
@@ -452,6 +456,10 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "tdd-reviewed.toml",
         include_str!("builtins/workflows/tdd-reviewed.toml"),
+    ),
+    (
+        "intake.toml",
+        include_str!("builtins/workflows/intake.toml"),
     ),
 ];
 
@@ -1114,6 +1122,7 @@ mod tests {
                 "direct",
                 "docs",
                 "documented",
+                "intake",
                 "mapped",
                 "planned",
                 "playable",

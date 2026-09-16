@@ -1801,6 +1801,17 @@ impl Store {
         )?)
     }
 
+    /// How many `interview` attempts blocked on a question since `since`:
+    /// the operator's `[intake] max_questions_per_day` cap, one row per
+    /// person-facing turn (the confirmation counts as one).
+    pub fn interview_questions_since(&self, since: i64) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*) FROM attempts WHERE step = 'interview' AND state = 'needs_input' AND started_at >= ?1",
+            params![since],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Tasks whose worktree is still on disk as far as Forge knows.
     pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
         let c = self.lock();

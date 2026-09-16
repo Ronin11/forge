@@ -751,7 +751,25 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                                 step_ok = true;
                                 break;
                             }
-                            AttemptState::Unverified | AttemptState::NeedsInput => break,
+                            AttemptState::NeedsInput => {
+                                // The interview's confirmation turn writes
+                                // the brief alongside the question that
+                                // asks the person to confirm it; every
+                                // other contract's question stops here
+                                // with nothing recorded as a plan.
+                                if step.action.name == "interview"
+                                    && let Some(summary) = verdict
+                                        .envelope
+                                        .as_ref()
+                                        .map(|e| e.summary.trim().to_string())
+                                    && !summary.is_empty()
+                                {
+                                    t.plan = summary;
+                                    f.store.update_task(&t).env()?;
+                                }
+                                break;
+                            }
+                            AttemptState::Unverified => break,
                             AttemptState::ChecksFailed | AttemptState::AgentFailed => {
                                 // Out of turns before producing a result: continue the
                                 // same session rather than start over blind. Even with
@@ -861,6 +879,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
                             report: &f.report,
                             scratch: None,
                             report_from_git: false,
+                            plan_rows: true,
                         })
                         .await
                         .task()?;

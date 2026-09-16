@@ -212,6 +212,37 @@ fn p_config(f: &Forge) -> String {
     f.paths.home.join("config.toml").display().to_string()
 }
 
+/// The name of the first directive step `t`'s resolved workflow runs,
+/// the same approximation `first_role` makes for the provider it holds:
+/// good enough to tell an `intake` task (whose only directive is
+/// `interview`) apart from every other workflow.
+fn first_directive_name(f: &Forge, t: &Task) -> Option<String> {
+    let resolved: workflows::Resolved = if !t.actions_json.is_empty() {
+        serde_json::from_str(&t.actions_json).ok()?
+    } else {
+        workflows::resolve(&f.paths.home, &t.workflow).ok()?
+    };
+    resolved
+        .steps
+        .into_iter()
+        .find(|s| s.action.kind == workflows::Kind::Directive)
+        .map(|s| s.action.name)
+}
+
+/// The operator's `[intake] max_questions_per_day` cap, when `t`'s next
+/// agent step is the `interview` directive: at the cap, the worker
+/// leaves it queued rather than start a turn that would ask another
+/// question today (see docs/INTAKE.md).
+fn intake_is_held(f: &Forge, t: &Task) -> bool {
+    if first_directive_name(f, t).as_deref() != Some("interview") {
+        return false;
+    }
+    f.store
+        .interview_questions_since(unix_now() - 86_400)
+        .map(|n| n >= f.intake.max_questions_per_day as i64)
+        .unwrap_or(false)
+}
+
 /// Every initiative currently holding new claims: its budget is spent, or
 /// its trailing run of same-rule failures reached its stop rule (see
 /// docs/PROJECTS.md, "Stop rule and budget"). Only initiatives with a
@@ -286,9 +317,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }
             let held = held_initiatives(&f)?;
-            let Some(t) = f
-                .store
-                .claim_next(pid, &held, |t| provider_is_held(&f, t))?
+            let Some(t) = f.store.claim_next(pid, &held, |t| {
+                provider_is_held(&f, t) || intake_is_held(&f, t)
+            })?
             else {
                 // Nothing claimable: either the queue is empty/blocked, or
                 // every queued candidate's own provider is at its cap.

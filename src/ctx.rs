@@ -84,6 +84,7 @@ pub struct Forge {
     pub supervisor: config::Supervisor,
     pub early_ending: config::EarlyEnding,
     pub measure: config::Measure,
+    pub intake: config::Intake,
     /// Agent backends by name, the built-in "anthropic" always present
     /// (see `config::load_home`).
     pub providers: std::collections::BTreeMap<String, agent::Provider>,
@@ -125,6 +126,7 @@ impl Forge {
             supervisor: home.supervisor,
             early_ending: home.early_ending,
             measure: home.measure,
+            intake: home.intake,
             providers: home.providers,
             roles: home.roles,
             sandbox,
@@ -143,6 +145,7 @@ impl Forge {
             supervisor: home.supervisor,
             early_ending: home.early_ending,
             measure: home.measure,
+            intake: home.intake,
             providers: home.providers,
             roles: home.roles,
             sandbox: None,

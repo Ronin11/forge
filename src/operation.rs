@@ -321,6 +321,7 @@ pub(crate) async fn run_operation(
             report: &f.report,
             scratch: None,
             report_from_git: false,
+            plan_rows: true,
         })
         .await
         .task()?;

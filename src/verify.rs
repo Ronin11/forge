@@ -76,6 +76,12 @@ pub struct Subject<'a> {
     /// `changes[]` from git before the L0 rules run, instead of holding
     /// the model to its own list.
     pub report_from_git: bool,
+    /// Whether a `Contract::Plan` directive's summary is judged as a
+    /// repository file plan (`plan-substantive`, `plan-names-real-paths`):
+    /// true for `investigate`, false for `interview`, whose summary is
+    /// either a question, a brief, or a plain sentence ending the
+    /// conversation, none of which is a file plan.
+    pub plan_rows: bool,
 }
 
 /// What git says about the branch at verdict time.
@@ -956,7 +962,7 @@ pub async fn verify_directive(
                             .join(", ")
                     ),
                 ));
-                if question.is_none() {
+                if question.is_none() && s.plan_rows {
                     v.checks.extend(plan_rows(s, common.envelope.as_ref()));
                 }
                 emit_rows(s.report, s.task_id, &v.checks);
@@ -1629,6 +1635,7 @@ mod tests {
             report: &report,
             scratch: None,
             report_from_git: true,
+            plan_rows: true,
         };
         let common = common_l0(&s, &outcome).await.unwrap();
         let note = common
@@ -1666,6 +1673,7 @@ mod tests {
             report: &report,
             scratch: None,
             report_from_git: false,
+            plan_rows: true,
         };
         let common = common_l0(&s, &outcome).await.unwrap();
         assert!(common.rows.iter().all(|r| r.name != "changes-from-git"));

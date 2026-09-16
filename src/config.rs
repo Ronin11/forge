@@ -199,6 +199,8 @@ struct HomeRaw {
     plugin_dirs: Vec<String>,
     #[serde(default)]
     measure: MeasureRaw,
+    #[serde(default)]
+    intake: IntakeRaw,
     /// Agent backends beyond the built-in "anthropic" default; see
     /// `agent::Provider`.
     #[serde(default)]
@@ -312,6 +314,7 @@ pub struct HomeConfig {
     /// Extra plugin roots, in the order given, resolved to absolute paths.
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
+    pub intake: Intake,
     /// Agent backends by name, the built-in "anthropic" always present
     /// (overridable, but never absent) so a task naming no `--provider`
     /// always resolves to one.
@@ -401,6 +404,21 @@ pub struct Measure {
 pub struct ExploreRole {
     pub provider: String,
     pub fraction: f64,
+}
+
+#[derive(Deserialize, Default)]
+struct IntakeRaw {
+    max_questions_per_day: Option<u32>,
+}
+
+/// The `interview` directive's own cap, separate from `[budget]`: how
+/// many questions it may ask a person in a rolling 24 hours before the
+/// worker leaves its tasks queued rather than start a turn that would
+/// ask another (see docs/INTAKE.md, "A per-interview budget and a cap on
+/// questions per day").
+#[derive(Clone, Copy, Debug)]
+pub struct Intake {
+    pub max_questions_per_day: u32,
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
@@ -495,6 +513,12 @@ journal_control = 0.0
 # runner = \"codex-cli\"
 # notes = \"signed in with codex login\"
 
+[intake]
+# How many questions the `interview` directive may ask a person in a rolling
+# 24 hours. At the cap, the worker leaves its intake tasks queued rather than
+# start a turn that would ask another; see docs/INTAKE.md.
+max_questions_per_day = 8
+
 # Which provider each role runs under by default: the four contracts
 # (code, tests, review, plan) and the supervisor. \"anthropic\" where a
 # role names none. A project can override a role with `forge project set
@@ -577,6 +601,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         measure: Measure {
             journal_control: raw.measure.journal_control.unwrap_or(0.0),
             explore,
+        },
+        intake: Intake {
+            max_questions_per_day: raw.intake.max_questions_per_day.unwrap_or(8),
         },
         providers,
         roles,

@@ -3161,6 +3161,7 @@ async fn integrate(ids: Vec<i64>) -> Result<()> {
             report: &f.report,
             scratch: None,
             report_from_git: false,
+            plan_rows: true,
         })
         .await?;
         if v.state != crate::store::AttemptState::Succeeded {

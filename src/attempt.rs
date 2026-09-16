@@ -8,7 +8,7 @@ use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault};
 use crate::landing::overlay_refs;
-use crate::prompts::{code_prompt, plan_prompt, review_prompt, tests_prompt};
+use crate::prompts::{code_prompt, interview_prompt, plan_prompt, review_prompt, tests_prompt};
 use crate::report::Event;
 use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
 use crate::verify::{self, Subject, Verdict};
@@ -144,6 +144,20 @@ pub async fn run_attempt(
                 scratch: Some(scratch_dir(&t.worktree)),
             }
         }
+        Contract::Plan if step.action.name == "interview" => Spec {
+            dir: PathBuf::from(&t.worktree),
+            prompt: interview_prompt(
+                t,
+                cfg,
+                step,
+                &f.store.decisions_in_lineage(t.id).task()?,
+                outcome.as_deref(),
+            ),
+            inputs: common,
+            overlay_refs: Vec::new(),
+            verify_ref: None,
+            scratch: None,
+        },
         Contract::Plan => Spec {
             dir: PathBuf::from(&t.worktree),
             prompt: plan_prompt(
@@ -249,6 +263,7 @@ pub async fn run_attempt(
             report: &f.report,
             scratch: spec.scratch.as_deref(),
             report_from_git: provider.report_from_git,
+            plan_rows: step.action.name != "interview",
         },
         &outcome,
     )

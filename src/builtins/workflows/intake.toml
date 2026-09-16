@@ -1,0 +1,11 @@
+name = "intake"
+description = "the front door for a person who does not think in workflows: one directive, interview, has the second conversation and turns it into a brief a project can be built from"
+steps = [
+{ action = "setup" },
+{ action = "interview" },
+]
+
+[meta]
+use_when = "the task is intake itself: a person's own words, not yet a brief, and the first thing to do is ask them what they need"
+avoid_when = "the brief already exists and is confirmed; this workflow never writes code"
+requires = []

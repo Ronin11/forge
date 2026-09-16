@@ -98,6 +98,19 @@ impossible as stated costs one read of the tree rather than several
 attempts at writing. `investigate` is the built-in directive on this
 contract; `planned` is the workflow that runs it before `code`.
 
+`interview` is the plan contract's other directive: the second
+conversation with a person who does not think in workflows (see
+docs/INTAKE.md). It is read-only like `investigate` — no writes, and the
+sandbox binds nothing writable but the scratch — but its summary is
+never a repository plan: on any given turn it is either the next plain
+question, or, once its checklist is satisfied, the brief plus the
+confirmation question, or, if the person asked to stop, a plain sentence
+saying so. None of that is held to `plan-substantive` or
+`plan-names-real-paths`; the kernel verifies `interview` on `untouched`
+and a structured result alone, the same way it holds every other
+contract to only what it can check. `intake` is the workflow that runs
+it after `setup`.
+
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a
 finished task's recorded plan (`t.plan`), creates an initiative in the
@@ -318,6 +331,7 @@ forms, one now and one later.
 | `documented` | setup → repo-map → code → document → comments-only (verifies) |
 | `mapped` | setup → repo-map → code → graph → graph-check (verifies) |
 | `planned` | setup → repo-map → investigate → code |
+| `intake` | setup → interview |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.

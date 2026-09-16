@@ -1,0 +1,7 @@
+name = "interview"
+kind = "directive"
+contract = "plan"
+description = "the second conversation: reads nothing and changes nothing, asks a person one plain question per turn about instances (never requirements), and once its checklist is satisfied writes the brief as the task's plan and asks them to confirm it; stops early only when the person says to"
+consumes = ["branch"]
+produces = ["plan"]
+max_turns = 10
