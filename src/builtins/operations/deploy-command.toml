@@ -17,7 +17,7 @@ if [ "$host" = "local" ]; then
   bash -c "cd \"$dest\" && $cmd"
   bash -c "cd \"$dest\" && $FORGE_CHECK"
 else
-  rsync -a --delete -e ssh "$src"/ "$host:$dest"/
+  rsync -a --delete "$src"/ "$host:$dest"/
   echo "copied $src to $host:$dest"
   ssh "$host" "cd \"$dest\" && $cmd"
   ssh "$host" "cd \"$dest\" && $FORGE_CHECK"

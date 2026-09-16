@@ -93,7 +93,11 @@ fn ask(f: &Forge, project: &str, repo: &str, reason: String) -> Result<()> {
 /// and record what happened. On a failed check, redeploy the last passing
 /// commit for the same target and ask a human about it (see
 /// docs/DEPLOY.md, "When a deploy runs" and "Rollback and the human rung").
-pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> Result<()> {
+///
+/// Returns whether the deploy's own check passed: `false` covers both
+/// failure branches (rolled back, or nothing to roll back to), which is
+/// all the exit code the CLI needs.
+pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> Result<bool> {
     let target = f
         .store
         .deploy_target(project, name)?
@@ -145,7 +149,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
                 rolled_back_to: None,
             },
         );
-        return Ok(());
+        return Ok(true);
     }
 
     // The check failed: redeploy the last commit that passed its check on
@@ -180,7 +184,7 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
             &target.repo,
             format!("{reason}; here is the check's output:\n{}", r.tail),
         )?;
-        return Ok(());
+        return Ok(false);
     };
 
     let rb = deploy_at(
@@ -230,5 +234,5 @@ pub async fn run(f: &Forge, project: &str, name: &str, sha: Option<String>) -> R
         )
     };
     ask(f, project, &target.repo, question)?;
-    Ok(())
+    Ok(false)
 }
