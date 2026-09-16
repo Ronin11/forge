@@ -286,19 +286,23 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
 
 /// One task parsed from an initiative's `--from` file: a paragraph, its
 /// optional dependency on an earlier paragraph (1-based, within the
-/// file), its optional repository override, and its text.
+/// file), its optional repository override, its optional provider
+/// override, and its text.
 pub struct FileTask {
     pub after: Option<usize>,
     pub repo: Option<String>,
+    pub provider: Option<String>,
     pub text: String,
 }
 
 /// Parse an initiative's task file: one task per paragraph (blank-line
 /// separated), each optionally led by an `after: <n>` line naming an
-/// earlier paragraph in the file as a dependency and a `repo: <path>`
-/// line naming the repository it runs against instead of the project's
-/// first one (see docs/PROJECTS.md, "Verbs"). Both lead lines may appear,
-/// in either order; whatever is left is the task's text.
+/// earlier paragraph in the file as a dependency, a `repo: <path>` line
+/// naming the repository it runs against instead of the project's first
+/// one, and a `provider: <name>` line naming the provider it runs under
+/// instead of `--provider`'s default (see docs/PROJECTS.md, "Verbs").
+/// The lead lines may appear in any order; whatever is left is the
+/// task's text.
 pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     let mut out: Vec<FileTask> = Vec::new();
     for para in text.split("\n\n") {
@@ -312,6 +316,7 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
         let this_no = out.len() + 1;
         let mut after = None;
         let mut repo = None;
+        let mut provider = None;
         let mut body: Vec<&str> = Vec::new();
         let mut in_lead = true;
         for line in para.lines() {
@@ -331,6 +336,10 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
                 repo = Some(p.trim().to_string());
                 continue;
             }
+            if in_lead && let Some(p) = line.strip_prefix("provider:") {
+                provider = Some(p.trim().to_string());
+                continue;
+            }
             in_lead = false;
             body.push(line);
         }
@@ -341,6 +350,7 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
         out.push(FileTask {
             after,
             repo,
+            provider,
             text: body,
         });
     }
@@ -645,6 +655,14 @@ mod tests {
         assert_eq!(tasks[2].repo.as_deref(), Some("/b"));
         assert_eq!(tasks[2].after, Some(1));
         assert_eq!(tasks[2].text, "third task");
+    }
+
+    #[test]
+    fn parse_initiative_file_reads_a_provider_line() {
+        let tasks = parse_initiative_file("provider: devhome\nfirst task\n\nsecond task").unwrap();
+        assert_eq!(tasks[0].provider.as_deref(), Some("devhome"));
+        assert_eq!(tasks[0].text, "first task");
+        assert_eq!(tasks[1].provider, None);
     }
 
     #[test]
