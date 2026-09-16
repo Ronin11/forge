@@ -12,6 +12,7 @@ mod listing;
 mod ops;
 mod plugins;
 mod providers;
+mod provision;
 mod refs;
 mod resume;
 mod statusline;

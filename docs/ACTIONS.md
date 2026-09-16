@@ -260,11 +260,15 @@ active, before the check; see docs/DEPLOY.md), and `deploy-static`
 the target's own check command if it declared one, else this method's
 default of fetching a `url` arg over curl, requiring HTTP 200 and, when
 a `marker` arg is given, that string in the body; see docs/DEPLOY.md),
-and `deploy-smoke` (after a target's check passes, opens its declared
+`deploy-smoke` (after a target's check passes, opens its declared
 smoke url in headless Chromium through Playwright, records console
 errors, failed requests, the title and a screenshot, and fails on a
 console error or a failed request to the url's own origin; see
-docs/DEPLOY.md).
+docs/DEPLOY.md), and `provision-hetzner` (what `forge provision` runs:
+creates a same-named firewall allowing 22, 80, 443 and icmp if absent,
+`hcloud server create`s the box, waits for it to report running, prints
+its ipv4, and writes an ssh-config fragment for the operator to append
+to their own `~/.ssh/config`; see docs/DEPLOY.md, "Provisioning").
 The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code
 visualiser: one JSON document of every source file the extractor table
