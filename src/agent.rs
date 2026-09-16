@@ -791,8 +791,16 @@ fn apply_codex_event(
 /// which takes the prompt on stdin.
 async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     let bin = real_bin(&codex_bin_for(l.step));
-    // The schema is text (`envelope::SCHEMA`), but codex takes a file.
-    let schema_path = l.log_path.with_extension("schema.json");
+    // The schema is text (`envelope::SCHEMA`), but codex takes a file, and
+    // codex reads it inside the sandbox, where Forge's home is an empty
+    // tmpfs. The worktree is the one directory bound read-write for the
+    // attempt, and its `.git` is invisible to `git status`, so the file
+    // lives there (tasks 274-286 exited at launch: "Failed to read output
+    // schema file", written beside the log under FORGE2_HOME).
+    let schema_path = l
+        .worktree
+        .join(".git")
+        .join(format!("forge-{}-schema.json", l.step));
     std::fs::write(&schema_path, l.schema)
         .with_context(|| format!("writing {}", schema_path.display()))?;
 
