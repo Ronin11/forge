@@ -1184,7 +1184,10 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
     let mut child = e
         .cmd("interviewer-confirmed.sh")
         .env("PATH", path)
-        .args(["work"])
+        // The default 30s idle poll would outlast the wait below: after
+        // nate answers, the worker must notice the newly requeued task
+        // itself, not just claim the one already queued at startup.
+        .args(["work", "--poll", "1"])
         .stderr(stderr_file)
         .spawn()
         .unwrap();
