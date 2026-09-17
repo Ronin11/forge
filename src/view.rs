@@ -1910,6 +1910,239 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
     })
 }
 
+/// The brief an `intake` task's `interview` directive writes to `t.plan`
+/// once its checklist is satisfied (see docs/INTAKE.md, "Mechanics").
+#[derive(Deserialize)]
+pub(crate) struct Brief {
+    pub(crate) workflows: Vec<BriefWorkflow>,
+    pub(crate) where_it_runs: String,
+    #[serde(default)]
+    pub(crate) confirmed: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BriefWorkflow {
+    pub(crate) name: String,
+    trigger: String,
+    inputs: String,
+    outputs: String,
+    other_people: String,
+    failure_today: String,
+    success_signal: String,
+    do_not_touch: String,
+}
+
+/// One workflow's fields, in the person's own words, as a paragraph: the
+/// backlog entry `intake accept` files for it, the project's purpose (for
+/// the first workflow named), and one entry of `PortalDoc.brief`.
+pub(crate) fn workflow_paragraph(w: &BriefWorkflow) -> String {
+    format!(
+        "{}: starts when {}. Takes in {} and produces {}. Involves {}. Today, {}. Working would look like: {}. Must not change: {}.",
+        w.name,
+        w.trigger,
+        w.inputs,
+        w.outputs,
+        w.other_people,
+        w.failure_today,
+        w.success_signal,
+        w.do_not_touch,
+    )
+}
+
+/// One deploy target on `PortalDoc`: the customer's "Running for you"
+/// list (see docs/PORTAL.md, "What they see"). No method, args, check
+/// command or repo path — those are how, not what.
+#[derive(Serialize)]
+pub struct PortalDeployTarget {
+    pub name: String,
+    pub where_it_runs: String,
+    pub last_deployed_at: Option<i64>,
+    pub check_ok: Option<bool>,
+    pub look_ok: Option<bool>,
+    pub screenshot: Option<String>,
+}
+
+/// One open initiative on `PortalDoc`: the customer's "Being built" list.
+/// `state` is always one of "in progress", "waiting on you" or "done"
+/// (see docs/PORTAL.md) — never the operator's `open`/`held`/`done with
+/// failures` vocabulary, and never a task count.
+#[derive(Serialize)]
+pub struct PortalInitiative {
+    pub outcome: String,
+    pub state: String,
+}
+
+/// One open question on `PortalDoc`, addressed to the customer: the
+/// "Needs you" list. `task_id` is what answering in place posts back
+/// against (`forge answer <task_id> ...`).
+#[derive(Serialize)]
+pub struct PortalQuestion {
+    pub task_id: i64,
+    pub text: String,
+}
+
+/// One landed task on `PortalDoc`: the customer's "Done" list, one line
+/// in the words of the request.
+#[derive(Serialize)]
+pub struct PortalLanded {
+    pub text: String,
+    pub landed_at: i64,
+}
+
+/// The confirmed intake brief on `PortalDoc`, in the person's own words
+/// (see docs/INTAKE.md): "Your plan".
+#[derive(Serialize)]
+pub struct PortalBrief {
+    pub where_it_runs: String,
+    pub workflows: Vec<String>,
+}
+
+/// One open backlog item on `PortalDoc`: the rest of "Your plan", what
+/// is queued but not yet running.
+#[derive(Serialize)]
+pub struct PortalBacklogItem {
+    pub id: i64,
+    pub text: String,
+    pub created_at: i64,
+}
+
+/// The document `forge project view NAME --json` prints: everything the
+/// customer portal's page needs for one project, in their own words (see
+/// docs/PORTAL.md, "What they see"). No ids beyond a task's own (needed
+/// to answer a question in place), no branches, no costs, no attempt
+/// data, no verdict rows — the operator's page shows those; this shows
+/// only what the customer asked for and what they're waiting on.
+#[derive(Serialize)]
+pub struct PortalDoc {
+    pub project: String,
+    pub purpose: String,
+    pub deploy_targets: Vec<PortalDeployTarget>,
+    pub initiatives: Vec<PortalInitiative>,
+    pub questions: Vec<PortalQuestion>,
+    pub landed: Vec<PortalLanded>,
+    pub brief: Option<PortalBrief>,
+    pub backlog: Vec<PortalBacklogItem>,
+}
+
+pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
+    let mut deploy_targets = Vec::new();
+    for t in f.store.deploy_targets(&p.name)? {
+        let last = f.store.deploys(&p.name, Some(&t.name))?.into_iter().next();
+        let (last_deployed_at, check_ok, look_ok, screenshot) = match &last {
+            Some(d) => (
+                Some(d.started_at),
+                d.check_ok,
+                d.look_ok,
+                d.smoke_json.as_ref().map(|_| {
+                    f.paths
+                        .home
+                        .join("deploys")
+                        .join(d.id.to_string())
+                        .join("screenshot.png")
+                        .display()
+                        .to_string()
+                }),
+            ),
+            None => (None, None, None, None),
+        };
+        deploy_targets.push(PortalDeployTarget {
+            name: t.name,
+            where_it_runs: t.args.get("host").cloned().unwrap_or_default(),
+            last_deployed_at,
+            check_ok,
+            look_ok,
+            screenshot,
+        });
+    }
+
+    let tasks = f.store.project_tasks(&p.name)?;
+    let latest: Vec<Task> = latest_per_lineage(f, &tasks)?
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+
+    // A blocked task whose kind is "question" is what the customer sees
+    // under Needs you; it also flips its own initiative's plain state to
+    // "waiting on you" below, the two lists staying consistent with each
+    // other by construction.
+    let mut questions = Vec::new();
+    let mut questioning_initiatives: std::collections::BTreeSet<i64> = Default::default();
+    for t in latest.iter().filter(|t| t.state == TaskState::Blocked) {
+        let (kind, text) = request_kind(&t.reason);
+        if kind == "question" {
+            questions.push(PortalQuestion {
+                task_id: t.id,
+                text,
+            });
+            if let Some(ini) = t.initiative {
+                questioning_initiatives.insert(ini);
+            }
+        }
+    }
+
+    let mut landed: Vec<PortalLanded> = latest
+        .iter()
+        .filter(|t| !t.landed_sha.is_empty())
+        .map(|t| PortalLanded {
+            text: t.task.lines().next().unwrap_or("").to_string(),
+            landed_at: t.finished_at.unwrap_or(0),
+        })
+        .collect();
+    landed.sort_by(|a, b| b.landed_at.cmp(&a.landed_at));
+
+    let initiatives = initiative_rows(f, Some(&p.name))?
+        .into_iter()
+        .filter(|r| r.state != "done" && r.state != "done with failures")
+        .map(|r| {
+            let state = if questioning_initiatives.contains(&r.id) {
+                "waiting on you"
+            } else {
+                "in progress"
+            };
+            PortalInitiative {
+                outcome: r.outcome,
+                state: state.to_string(),
+            }
+        })
+        .collect();
+
+    // The confirmed brief lives only on the intake task that produced it
+    // (`t.plan`, see docs/INTAKE.md); a project carries no copy of its
+    // own, so the most recent confirmed one is re-read here.
+    let brief = tasks
+        .iter()
+        .filter(|t| t.workflow == "intake" && !t.plan.is_empty())
+        .filter_map(|t| serde_json::from_str::<Brief>(&t.plan).ok())
+        .rfind(|b| b.confirmed)
+        .map(|b| PortalBrief {
+            where_it_runs: b.where_it_runs,
+            workflows: b.workflows.iter().map(workflow_paragraph).collect(),
+        });
+
+    let backlog = f
+        .store
+        .backlog(&p.name)?
+        .into_iter()
+        .filter(|b| b.done_at.is_none())
+        .map(|b| PortalBacklogItem {
+            id: b.id,
+            text: b.text,
+            created_at: b.created_at,
+        })
+        .collect();
+
+    Ok(PortalDoc {
+        project: p.name.clone(),
+        purpose: p.purpose.clone(),
+        deploy_targets,
+        initiatives,
+        questions,
+        landed,
+        brief,
+        backlog,
+    })
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;
@@ -2547,5 +2780,195 @@ mod stop_rule_tests {
             super::same_rule_streak(&other),
             Some(("has-commits".to_string(), 1))
         );
+    }
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::{Attempt, AttemptState, DeployTarget, Initiative, Project, Store};
+    use std::collections::BTreeMap;
+
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    fn insert(f: &Forge, mut t: Task) -> Task {
+        t.id = f.store.insert_task(&t).unwrap();
+        f.store.update_task(&t).unwrap();
+        t
+    }
+
+    /// Every word docs/PORTAL.md rules off the customer's page, as a key
+    /// substring: `PortalDoc`'s JSON must never carry one, at any depth.
+    fn assert_no_forbidden_keys(v: &Value) {
+        const FORBIDDEN: &[&str] = &["cost", "attempt", "branch", "verdict"];
+        match v {
+            Value::Object(map) => {
+                for (k, val) in map {
+                    let lower = k.to_lowercase();
+                    for word in FORBIDDEN {
+                        assert!(
+                            !lower.contains(word),
+                            "PortalDoc must not carry a {word:?}-shaped key, found {k:?}"
+                        );
+                    }
+                    assert_no_forbidden_keys(val);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(assert_no_forbidden_keys),
+            _ => {}
+        }
+    }
+
+    /// A project with everything the operator's page would show — an
+    /// expensive attempt, a branch, a passing verdict, a real deploy —
+    /// must still hand the customer a document with none of it: only
+    /// what docs/PORTAL.md, "What they see" actually lists.
+    #[test]
+    fn portal_doc_never_carries_a_forbidden_key_even_when_the_project_has_everything() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "equitizr".into(),
+                purpose: "quote requests turned into automations".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut args = BTreeMap::new();
+        args.insert("host".to_string(), "prod.example.com".to_string());
+        f.store
+            .add_deploy_target(&DeployTarget {
+                project: "equitizr".into(),
+                name: "prod".into(),
+                repo: "/repo".into(),
+                scope: None,
+                method: "deploy-command".into(),
+                args,
+                check_cmd: "true".into(),
+                on_landing: true,
+                smoke_url: Some("https://prod.example.com/".into()),
+            })
+            .unwrap();
+        let deploy_id = f
+            .store
+            .start_deploy("equitizr", "prod", "abc123", 100, None)
+            .unwrap();
+        f.store
+            .finish_deploy(
+                deploy_id,
+                101,
+                true,
+                "ok",
+                None,
+                "",
+                Some(true),
+                Some(r#"{"screenshot":"screenshot.png"}"#),
+                Some(true),
+                Some("[]"),
+            )
+            .unwrap();
+
+        let landed = insert(
+            &f,
+            Task {
+                repo: "/repo".into(),
+                task: "make the quote text say 'usually same day'\nsecond line".into(),
+                base_branch: "main".into(),
+                branch: "task-1-branch".into(),
+                model: "sonnet".into(),
+                max_turns: 10,
+                max_attempts: 1,
+                timeout_secs: 60,
+                state: TaskState::Succeeded,
+                created_at: crate::unix_now(),
+                finished_at: Some(crate::unix_now()),
+                landed_sha: "deadbeef".into(),
+                workflow: "direct".into(),
+                project: Some("equitizr".into()),
+                ..Default::default()
+            },
+        );
+        f.store
+            .insert_attempt(&Attempt {
+                task_id: landed.id,
+                attempt_no: 1,
+                step: "code".into(),
+                state: AttemptState::Succeeded,
+                started_at: 1,
+                cost_usd: Some(12.5),
+                verdict_json: r#"[{"name":"tests","ok":true}]"#.into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let ini_id = f
+            .store
+            .create_initiative(&Initiative {
+                project: "equitizr".into(),
+                outcome: "quoting takes one click".into(),
+                stop_after_same_rule: 3,
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        insert(
+            &f,
+            Task {
+                repo: "/repo".into(),
+                task: "which price sheet should this pull from?".into(),
+                base_branch: "main".into(),
+                branch: "task-2-branch".into(),
+                model: "sonnet".into(),
+                max_turns: 10,
+                max_attempts: 1,
+                timeout_secs: 60,
+                state: TaskState::Blocked,
+                reason: "needs input: which price sheet should this pull from?".into(),
+                created_at: crate::unix_now(),
+                workflow: "direct".into(),
+                project: Some("equitizr".into()),
+                initiative: Some(ini_id),
+                ..Default::default()
+            },
+        );
+
+        f.store
+            .add_backlog("equitizr", "send a weekly summary")
+            .unwrap();
+
+        let p = f.store.project("equitizr").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+        assert_eq!(doc.deploy_targets.len(), 1);
+        assert_eq!(doc.deploy_targets[0].where_it_runs, "prod.example.com");
+        assert_eq!(doc.initiatives.len(), 1);
+        assert_eq!(
+            doc.initiatives[0].state, "waiting on you",
+            "its only task is blocked on a question"
+        );
+        assert_eq!(doc.questions.len(), 1);
+        assert_eq!(doc.landed.len(), 1);
+        assert_eq!(
+            doc.landed[0].text, "make the quote text say 'usually same day'",
+            "first line only"
+        );
+        assert_eq!(doc.backlog.len(), 1);
+
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_no_forbidden_keys(&v);
     }
 }

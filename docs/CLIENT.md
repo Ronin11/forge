@@ -49,6 +49,16 @@ and does not parse stdout.
   first. A JSON array of [`BacklogRow`](#backlogrow). `--add`/`--done`
   write before printing, so a client re-reads this rather than parsing
   the write's own (non-JSON) output.
+- **`forge project view NAME --json`** — everything the customer portal's
+  page needs for one project, in the customer's own words (see
+  docs/PORTAL.md, "What they see"). A single [`PortalDoc`](#portaldoc)
+  object. Exits non-zero if `NAME` names no known project.
+- **`forge project portal NAME [--revoke]`** — mint a fresh customer
+  portal token for a project and print its link path, `/p/<token>` (see
+  docs/PORTAL.md, "What it is"). Not `--json`; there is nothing to parse
+  beyond the printed path. `--revoke` first revokes every token minted
+  earlier for this project, so only the fresh one keeps working; without
+  it, an earlier link stays valid alongside the new one.
 - **`forge initiative list [<project>] --json`** — every initiative, or
   only `<project>`'s, oldest first. A JSON array of
   [`InitiativeRow`](#initiativerow).
@@ -243,6 +253,26 @@ is not yet queued (see docs/PROJECTS.md, "Backlog").
 | `text` | string | What it says, one line or a paragraph. |
 | `created_at` | integer | Unix seconds. |
 | `done_at` | integer or null | Unix seconds it was marked done, or `null` while open. |
+
+### `PortalDoc`
+
+The document `forge project view NAME --json` prints: everything the
+customer portal's page needs for one project, in the customer's own
+words (see docs/PORTAL.md, "What they see"). Deliberately thin: no task
+ids beyond a question's own (needed to answer it in place), no branches,
+no costs, no attempt data, no verdict rows — those belong to the
+operator's page (`forge trace`, `forge stats`), never to this one.
+
+| field | type | meaning |
+|---|---|---|
+| `project` | string | The project's name. |
+| `purpose` | string | The project's one-paragraph purpose. |
+| `deploy_targets` | array of `{name, where_it_runs, last_deployed_at, check_ok, look_ok, screenshot}` | "Running for you": each deploy target, `where_it_runs` its `host` arg, `last_deployed_at` Unix seconds of its most recent deploy (`null` if never deployed), `check_ok`/`look_ok` that deploy's verdicts (`null` if it never ran or never declared a smoke url), `screenshot` the last look's screenshot path, `null` when the smoke step never ran. |
+| `initiatives` | array of `{outcome, state}` | "Being built": every open initiative (not `done` or `done with failures`), `state` one of `"in progress"`, `"waiting on you"` (an open question on one of its tasks — see `questions`), or `"done"`. Never a task count. |
+| `questions` | array of `{task_id, text}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`. |
+| `landed` | array of `{text, landed_at}` | "Done": landed tasks, newest first, `text` the first line of the request and `landed_at` Unix seconds it went live. |
+| `brief` | `{where_it_runs, workflows}` or `null` | "Your plan": the most recent confirmed intake brief, `workflows` one paragraph per workflow in the person's own words (see docs/INTAKE.md); `null` for a project with no intake behind it. |
+| `backlog` | array of `{id, text, created_at}` | The rest of "Your plan": open backlog items, cut from the brief. |
 
 ### `InitiativeRow`
 

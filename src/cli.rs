@@ -551,6 +551,24 @@ enum ProjectCmd {
         #[command(subcommand)]
         cmd: ProjectDeployCmd,
     },
+    /// Mint a fresh customer portal link for this project (see
+    /// docs/PORTAL.md): prints "/p/<token>"
+    Portal {
+        name: String,
+        /// Revoke every token minted earlier for this project, so only
+        /// the fresh one keeps working
+        #[arg(long)]
+        revoke: bool,
+    },
+    /// Everything the customer portal's page needs for this project, in
+    /// their own words: no ids, branches, costs, attempts or verdicts
+    /// (see docs/PORTAL.md, "What they see")
+    View {
+        name: String,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -916,6 +934,8 @@ pub async fn main() -> Result<()> {
                 ),
                 ProjectDeployCmd::Remove { project, name } => project_deploy_remove(project, name),
             },
+            ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
+            ProjectCmd::View { name, json } => project_view(name, json),
         },
         Cmd::Deploy(a) => match a.cmd {
             Some(DeploySub::Log {
@@ -1523,44 +1543,7 @@ fn project_deploy_remove(project: String, name: String) -> Result<()> {
     Ok(())
 }
 
-/// The brief an `intake` task's `interview` directive writes to `t.plan`
-/// once its checklist is satisfied (see docs/INTAKE.md, "Mechanics").
-#[derive(serde::Deserialize)]
-struct Brief {
-    workflows: Vec<BriefWorkflow>,
-    where_it_runs: String,
-    #[serde(default)]
-    confirmed: bool,
-}
-
-#[derive(serde::Deserialize)]
-struct BriefWorkflow {
-    name: String,
-    trigger: String,
-    inputs: String,
-    outputs: String,
-    other_people: String,
-    failure_today: String,
-    success_signal: String,
-    do_not_touch: String,
-}
-
-/// One workflow's fields, in the person's own words, as a paragraph: the
-/// backlog entry `intake accept` files for it, and (for the first
-/// workflow named) the project's purpose.
-fn workflow_paragraph(w: &BriefWorkflow) -> String {
-    format!(
-        "{}: starts when {}. Takes in {} and produces {}. Involves {}. Today, {}. Working would look like: {}. Must not change: {}.",
-        w.name,
-        w.trigger,
-        w.inputs,
-        w.outputs,
-        w.other_people,
-        w.failure_today,
-        w.success_signal,
-        w.do_not_touch,
-    )
-}
+use crate::view::{Brief, workflow_paragraph};
 
 /// Deploy methods `intake accept` can draft a target for without operator
 /// help: the built-in action files under `src/builtins/operations/deploy-*.toml`.
@@ -1911,6 +1894,92 @@ fn project_show(name: String, json: bool) -> Result<()> {
         return Ok(());
     }
     print_project_row(&row);
+    Ok(())
+}
+
+/// 32 bytes of OS randomness, hex-encoded: the same shape `forge-web`
+/// mints its own access token in (`web/src/main.rs`'s `token`), and
+/// already url-safe since every character is `0-9a-f`.
+fn random_portal_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
+        .context("reading /dev/urandom")?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn project_portal(name: String, revoke: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    if revoke {
+        let n = f.store.revoke_portal_tokens(&name, unix_now())?;
+        out!("revoked {n} earlier token(s) for project {name}");
+    }
+    let token = random_portal_token()?;
+    f.store.create_portal_token(&name, &token, unix_now())?;
+    out!("/p/{token}");
+    Ok(())
+}
+
+fn project_view(name: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let p = f
+        .store
+        .project(&name)?
+        .with_context(|| format!("no project {name}"))?;
+    let doc = crate::view::portal_doc(&f, &p)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    out!("project    {}", doc.project);
+    out!("purpose    {}", doc.purpose);
+    out!();
+    out!("Running for you:");
+    for t in &doc.deploy_targets {
+        out!(
+            "  {:<12} {:<20} last deployed {} check={} look={}",
+            t.name,
+            t.where_it_runs,
+            t.last_deployed_at
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "never".into()),
+            t.check_ok
+                .map(|ok| ok.to_string())
+                .unwrap_or_else(|| "-".into()),
+            t.look_ok
+                .map(|ok| ok.to_string())
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
+    out!();
+    out!("Being built:");
+    for i in &doc.initiatives {
+        out!("  [{}] {}", i.state, i.outcome);
+    }
+    out!();
+    out!("Needs you:");
+    for q in &doc.questions {
+        out!("  #{} {}", q.task_id, q.text);
+    }
+    out!();
+    out!("Done:");
+    for l in &doc.landed {
+        out!("  {} ({})", l.text, l.landed_at);
+    }
+    out!();
+    out!("Your plan:");
+    if let Some(b) = &doc.brief {
+        out!("  runs: {}", b.where_it_runs);
+        for w in &b.workflows {
+            out!("  - {w}");
+        }
+    }
+    for b in &doc.backlog {
+        out!("  backlog #{}: {}", b.id, b.text);
+    }
     Ok(())
 }
 

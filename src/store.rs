@@ -1043,6 +1043,19 @@ CREATE INDEX assessments_task ON assessments(task_id, id);
 ALTER TABLE deploys ADD COLUMN look_ok INTEGER;
 ALTER TABLE deploys ADD COLUMN look_json TEXT;
 ",
+    // The customer portal's access token (see docs/PORTAL.md, "What it
+    // is"): a per-project link, minted by `forge project portal`. A
+    // project can have more than one active token (minting again without
+    // `--revoke` just adds one); `revoked_at` is how one stops working.
+    "
+CREATE TABLE portal_tokens (
+  token TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE INDEX portal_tokens_project ON portal_tokens(project);
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -2696,6 +2709,42 @@ impl Store {
             params![id, project, crate::unix_now()],
         )?;
         Ok(n > 0)
+    }
+
+    /// Mint a fresh portal token for a project (see docs/PORTAL.md, "What
+    /// it is"): `forge project portal` generates the token text itself
+    /// (32 random bytes, hex-encoded) and records it here.
+    pub fn create_portal_token(&self, project: &str, token: &str, at: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO portal_tokens (token, project, created_at) VALUES (?1, ?2, ?3)",
+            params![token, project, at],
+        )?;
+        Ok(())
+    }
+
+    /// Revoke every currently-active token on a project (`forge project
+    /// portal --revoke`). Returns how many were revoked.
+    pub fn revoke_portal_tokens(&self, project: &str, at: i64) -> Result<usize> {
+        Ok(self.lock().execute(
+            "UPDATE portal_tokens SET revoked_at=?2 WHERE project=?1 AND revoked_at IS NULL",
+            params![project, at],
+        )?)
+    }
+
+    /// The project an active (unrevoked) portal token opens, if any: how
+    /// the portal server resolves `/p/<token>`. Not called yet — the
+    /// server is a later build-order step (see docs/PORTAL.md) — but
+    /// exercised directly by the store's own tests below.
+    #[allow(dead_code)]
+    pub fn portal_token_project(&self, token: &str) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT project FROM portal_tokens WHERE token=?1 AND revoked_at IS NULL",
+                params![token],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// List a repository under a project, with an optional scope (the
@@ -4405,6 +4454,64 @@ mod tests {
                 smoke_url: None,
             })
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_minted_portal_token_resolves_to_its_project_and_a_stranger_resolves_to_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        assert!(s.portal_token_project("nope").unwrap().is_none());
+
+        s.create_portal_token("equitizr", "tok1", 1).unwrap();
+        assert_eq!(
+            s.portal_token_project("tok1").unwrap().as_deref(),
+            Some("equitizr")
+        );
+    }
+
+    #[test]
+    fn revoking_a_projects_tokens_stops_them_resolving_but_leaves_other_projects_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        mk_project(&s, "nucleosynthesis");
+
+        s.create_portal_token("equitizr", "tok1", 1).unwrap();
+        s.create_portal_token("equitizr", "tok2", 2).unwrap();
+        s.create_portal_token("nucleosynthesis", "tok3", 3).unwrap();
+
+        let n = s.revoke_portal_tokens("equitizr", 10).unwrap();
+        assert_eq!(n, 2, "both of equitizr's tokens were active");
+
+        assert!(s.portal_token_project("tok1").unwrap().is_none());
+        assert!(s.portal_token_project("tok2").unwrap().is_none());
+        assert_eq!(
+            s.portal_token_project("tok3").unwrap().as_deref(),
+            Some("nucleosynthesis"),
+            "revoking one project's tokens must not touch another's"
+        );
+
+        // Revoking again finds nothing left active.
+        assert_eq!(s.revoke_portal_tokens("equitizr", 20).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_project_can_carry_more_than_one_active_token_until_revoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        s.create_portal_token("equitizr", "tok1", 1).unwrap();
+        s.create_portal_token("equitizr", "tok2", 2).unwrap();
+        assert_eq!(
+            s.portal_token_project("tok1").unwrap().as_deref(),
+            Some("equitizr"),
+            "minting a second token does not itself revoke the first"
+        );
+        assert_eq!(
+            s.portal_token_project("tok2").unwrap().as_deref(),
+            Some("equitizr")
         );
     }
 

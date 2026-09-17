@@ -98,6 +98,13 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge project view NAME --json`: everything the customer portal's
+    /// page needs for one project.
+    pub fn project_view(&self, name: &str) -> Result<PortalDoc> {
+        let v = self.json(&["project", "view", name, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge initiative list [<project>] --json`: every initiative, or
     /// only `project`'s.
     pub fn initiative_list(&self, project: Option<&str>) -> Result<Vec<InitiativeRow>> {
@@ -452,6 +459,98 @@ pub struct BacklogRow {
     pub created_at: i64,
     #[serde(default)]
     pub done_at: Option<i64>,
+}
+
+/// One deploy target on [`PortalDoc`]: the customer's "Running for you"
+/// list (see docs/PORTAL.md, "What they see").
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalDeployTarget {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub where_it_runs: String,
+    #[serde(default)]
+    pub last_deployed_at: Option<i64>,
+    #[serde(default)]
+    pub check_ok: Option<bool>,
+    #[serde(default)]
+    pub look_ok: Option<bool>,
+    #[serde(default)]
+    pub screenshot: Option<String>,
+}
+
+/// One open initiative on [`PortalDoc`]: the customer's "Being built"
+/// list. `state` is always "in progress", "waiting on you" or "done".
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalInitiative {
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub state: String,
+}
+
+/// One open question on [`PortalDoc`], addressed to the customer: the
+/// "Needs you" list.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalQuestion {
+    #[serde(default)]
+    pub task_id: i64,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// One landed task on [`PortalDoc`]: the customer's "Done" list.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalLanded {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub landed_at: i64,
+}
+
+/// The confirmed intake brief on [`PortalDoc`] (see docs/INTAKE.md):
+/// "Your plan".
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalBrief {
+    #[serde(default)]
+    pub where_it_runs: String,
+    #[serde(default)]
+    pub workflows: Vec<String>,
+}
+
+/// One open backlog item on [`PortalDoc`].
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalBacklogItem {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+/// The document `forge project view NAME --json` prints: everything the
+/// customer portal's page needs for one project, in their own words (see
+/// docs/PORTAL.md, "What they see"). No branches, costs, attempt data or
+/// verdict rows — those belong to the operator's page, not this one.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalDoc {
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub deploy_targets: Vec<PortalDeployTarget>,
+    #[serde(default)]
+    pub initiatives: Vec<PortalInitiative>,
+    #[serde(default)]
+    pub questions: Vec<PortalQuestion>,
+    #[serde(default)]
+    pub landed: Vec<PortalLanded>,
+    #[serde(default)]
+    pub brief: Option<PortalBrief>,
+    #[serde(default)]
+    pub backlog: Vec<PortalBacklogItem>,
 }
 
 /// One row of `forge initiative list --json` / `forge initiative show
