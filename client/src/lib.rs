@@ -791,6 +791,10 @@ pub struct JobRow {
     pub trigger_ref: String,
     #[serde(default)]
     pub state: String,
+    /// `"repo"` or `"catalog"`: where the workflow was resolved from (see
+    /// docs/JOBS.md, "Where an automation lives").
+    #[serde(default)]
+    pub workflow_source: String,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
@@ -872,6 +876,10 @@ pub struct JobDoc {
     pub trigger_ref: String,
     #[serde(default)]
     pub state: String,
+    /// `"repo"` or `"catalog"`: where the workflow was resolved from (see
+    /// docs/JOBS.md, "Where an automation lives").
+    #[serde(default)]
+    pub workflow_source: String,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
