@@ -461,8 +461,14 @@ to be configured. It prints schema-valid share, expected-kind share,
 mean cost and mean seconds, and (because it runs the real executor) it
 leaves an ordinary row per run in `jobs`, all dry.
 
-Run once against two fake providers standing in for anthropic and
-devhome, on all four fixtures:
+The numbers below came from the e2e suite's FAKE providers standing in
+for anthropic and devhome, not from the models; the task was asked for
+the real run and recorded the fakes. The real run on 2026-09-17 scored
+0/4 schema-valid on both providers (anthropic produced structured
+output the bench did not accept; devhome failed to launch in 0.01 s),
+which is a harness defect under diagnosis, not a measurement.
+
+What the fakes produced, kept only to show the table's shape:
 
 ```
 provider     runs  schema-valid     expected-kind     mean-cost mean-seconds
