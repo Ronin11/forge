@@ -803,6 +803,23 @@ fn project_set_purpose_replaces_the_migrations_placeholder_everywhere_it_shows()
     assert_eq!(doc["purpose"], "Keeps the orders flowing.");
 }
 
+/// `--title` gives a task the day it was filed in the customer's own
+/// words (see docs/PORTAL.md): what `PortalDoc`'s "Done" line uses
+/// instead of deriving one from the task's own text.
+#[test]
+fn forge_add_title_is_stored_on_the_task() {
+    let e = Env::new();
+    let id = e.add(&["--title", "Show the annual discount on every quote"]);
+    let title: Option<String> = e
+        .db()
+        .query_row("SELECT title FROM tasks WHERE id=?1", [id], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        title.as_deref(),
+        Some("Show the annual discount on every quote")
+    );
+}
+
 #[test]
 fn a_projects_scope_fails_a_task_that_writes_outside_it() {
     let e = Env::new();

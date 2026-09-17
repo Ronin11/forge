@@ -17,6 +17,14 @@ fn row(e: &Env, id: i64) -> (String, String, Option<String>, Option<String>) {
         .unwrap()
 }
 
+/// A task's `title` column: the customer's own words, for the day it was
+/// filed that way (see docs/PORTAL.md).
+fn title(e: &Env, id: i64) -> Option<String> {
+    e.db()
+        .query_row("SELECT title FROM tasks WHERE id=?1", [id], |r| r.get(0))
+        .unwrap()
+}
+
 /// The most recent task run under the `concierge` workflow: `forge ask`'s
 /// own decision-making task, whose log carries the prompt it was given.
 fn concierge_task_id(e: &Env) -> i64 {
@@ -188,6 +196,13 @@ fn a_request_files_a_task_on_the_projects_default_workflow_and_records_the_decis
     let d: serde_json::Value =
         serde_json::from_str(&concierge_json.expect("concierge_json is recorded")).unwrap();
     assert_eq!(d["kind"], "request");
+
+    // The concierge sets the filed task's title to the customer's own
+    // words, for the day it was filed that way (see docs/PORTAL.md).
+    assert_eq!(
+        title(&e, filed).as_deref(),
+        Some("Please change the quote text to say usually same day.")
+    );
 
     // The prompt carried the project's own record.
     let cid = concierge_task_id(&e);
