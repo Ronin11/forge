@@ -2121,6 +2121,7 @@ async fn initiative_new(
             out!("queued task {} (paragraph {})", t.id, ids.len() + 1);
             ids.push(t.id);
         }
+        out!("filed {} of {} tasks", ids.len(), paragraphs.len());
     }
     Ok(())
 }
