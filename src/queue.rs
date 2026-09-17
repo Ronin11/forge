@@ -331,6 +331,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
 /// optional dependency on an earlier paragraph (1-based, within the
 /// file), its optional repository override, its optional provider
 /// override, its optional workflow override, and its text.
+#[derive(Debug)]
 pub struct FileTask {
     pub after: Option<usize>,
     pub repo: Option<String>,
@@ -347,7 +348,12 @@ pub struct FileTask {
 /// instead of `--provider`'s default, and a `workflow: <name>` line
 /// naming the workflow it runs under instead of `--workflow`'s default
 /// (see docs/PROJECTS.md, "Verbs"). The lead lines may appear in any
-/// order; whatever is left is the task's text.
+/// order, one per line, at the top of the paragraph; whatever is left
+/// is the task's text. A malformed lead line (an `after:` with no
+/// parseable, in-range paragraph number, or a `repo:`/`provider:`/
+/// `workflow:` with no value) refuses the whole file, naming the
+/// paragraph and the offending line, rather than silently dropping the
+/// paragraph.
 pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     let mut out: Vec<FileTask> = Vec::new();
     for para in text.split("\n\n") {
@@ -367,27 +373,45 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
         let mut in_lead = true;
         for line in para.lines() {
             if in_lead && let Some(n) = line.strip_prefix("after:") {
-                let n: usize = n.trim().parse().with_context(|| {
-                    format!("paragraph {this_no}: `after:` needs a paragraph number")
-                })?;
+                let Ok(n) = n.trim().parse::<usize>() else {
+                    bail!(
+                        "paragraph {this_no}: malformed header {line:?}: `after:` needs a paragraph number"
+                    );
+                };
                 if n == 0 || n >= this_no {
                     bail!(
-                        "paragraph {this_no}: `after: {n}` does not name an earlier paragraph in this file"
+                        "paragraph {this_no}: malformed header {line:?}: does not name an earlier paragraph in this file"
                     );
                 }
                 after = Some(n);
                 continue;
             }
             if in_lead && let Some(p) = line.strip_prefix("repo:") {
-                repo = Some(p.trim().to_string());
+                let p = p.trim();
+                if p.is_empty() {
+                    bail!("paragraph {this_no}: malformed header {line:?}: `repo:` needs a path");
+                }
+                repo = Some(p.to_string());
                 continue;
             }
             if in_lead && let Some(p) = line.strip_prefix("provider:") {
-                provider = Some(p.trim().to_string());
+                let p = p.trim();
+                if p.is_empty() {
+                    bail!(
+                        "paragraph {this_no}: malformed header {line:?}: `provider:` needs a name"
+                    );
+                }
+                provider = Some(p.to_string());
                 continue;
             }
             if in_lead && let Some(w) = line.strip_prefix("workflow:") {
-                workflow = Some(w.trim().to_string());
+                let w = w.trim();
+                if w.is_empty() {
+                    bail!(
+                        "paragraph {this_no}: malformed header {line:?}: `workflow:` needs a name"
+                    );
+                }
+                workflow = Some(w.to_string());
                 continue;
             }
             in_lead = false;
@@ -754,6 +778,83 @@ mod tests {
     fn parse_initiative_file_refuses_after_that_names_itself_or_the_future() {
         assert!(parse_initiative_file("after: 1\nonly task").is_err());
         assert!(parse_initiative_file("first task\n\nafter: 2\nsecond task").is_err());
+    }
+
+    #[test]
+    fn parse_initiative_file_reads_all_four_headers_in_any_order() {
+        // Every permutation of after:, repo:, provider:, workflow: leads
+        // the fifth paragraph the same way, regardless of which order
+        // the four lines appear in.
+        let headers = [
+            ("after: 4", "after"),
+            ("repo: /path", "repo"),
+            ("provider: devhome", "provider"),
+            ("workflow: direct", "workflow"),
+        ];
+        let mut orders: Vec<Vec<usize>> = Vec::new();
+        fn permute(cur: &mut Vec<usize>, remaining: &[usize], out: &mut Vec<Vec<usize>>) {
+            if remaining.is_empty() {
+                out.push(cur.clone());
+                return;
+            }
+            for (i, &r) in remaining.iter().enumerate() {
+                cur.push(r);
+                let mut rest = remaining.to_vec();
+                rest.remove(i);
+                permute(cur, &rest, out);
+                cur.pop();
+            }
+        }
+        permute(&mut Vec::new(), &[0, 1, 2, 3], &mut orders);
+
+        for order in orders {
+            let lead: String = order
+                .iter()
+                .map(|&i| headers[i].0)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text = format!("one\n\ntwo\n\nthree\n\nfour\n\n{lead}\nthe fifth task");
+            let tasks = parse_initiative_file(&text)
+                .unwrap_or_else(|e| panic!("order {order:?} failed: {e}"));
+            assert_eq!(tasks.len(), 5, "order {order:?}");
+            let fifth = &tasks[4];
+            assert_eq!(fifth.after, Some(4), "order {order:?}");
+            assert_eq!(fifth.repo.as_deref(), Some("/path"), "order {order:?}");
+            assert_eq!(
+                fifth.provider.as_deref(),
+                Some("devhome"),
+                "order {order:?}"
+            );
+            assert_eq!(fifth.workflow.as_deref(), Some("direct"), "order {order:?}");
+            assert_eq!(fifth.text, "the fifth task", "order {order:?}");
+        }
+    }
+
+    #[test]
+    fn parse_initiative_file_refuses_a_malformed_header_naming_the_paragraph_and_line() {
+        let err = parse_initiative_file("one\n\nafter: 4\nrepo: /path\nthe fifth task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 2"), "{err}");
+        assert!(err.contains("after: 4"), "{err}");
+
+        let err = parse_initiative_file("repo:\nfirst task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 1"), "{err}");
+        assert!(err.contains("repo:"), "{err}");
+
+        let err = parse_initiative_file("provider: \nfirst task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 1"), "{err}");
+        assert!(err.contains("provider:"), "{err}");
+
+        let err = parse_initiative_file("workflow: \nfirst task")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 1"), "{err}");
+        assert!(err.contains("workflow:"), "{err}");
     }
 
     #[test]

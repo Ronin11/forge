@@ -137,6 +137,215 @@ pub enum Kind {
     Operation,
 }
 
+/// A workflow's `kind`: `build` (the default) runs a task to a landing;
+/// `run` runs a job to a verified effect instead. See docs/JOBS.md.
+/// Serialized by its lowercase name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkflowKind {
+    #[default]
+    Build,
+    Run,
+}
+
+impl WorkflowKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkflowKind::Build => "build",
+            WorkflowKind::Run => "run",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What starts a job (docs/JOBS.md, "Trigger"). Serialized by its
+/// lowercase name; an unknown value is a TOML deserialize error, refused
+/// with the file and line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TriggerOn {
+    Manual,
+    Schedule,
+    Message,
+    Webhook,
+    Event,
+}
+
+impl TriggerOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriggerOn::Manual => "manual",
+            TriggerOn::Schedule => "schedule",
+            TriggerOn::Message => "message",
+            TriggerOn::Webhook => "webhook",
+            TriggerOn::Event => "event",
+        }
+    }
+
+    /// The field `on` requires alongside it: `schedule` a cron
+    /// expression, `message` a contact group, `webhook` a name, `event`
+    /// a Forge event type; `manual` needs none.
+    fn field(self) -> Option<&'static str> {
+        match self {
+            TriggerOn::Manual => None,
+            TriggerOn::Schedule => Some("cron"),
+            TriggerOn::Message => Some("contact"),
+            TriggerOn::Webhook => Some("name"),
+            TriggerOn::Event => Some("type"),
+        }
+    }
+}
+
+impl std::fmt::Display for TriggerOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What starts a job, and its one field (docs/JOBS.md, "Trigger").
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Trigger {
+    pub on: TriggerOn,
+    pub cron: Option<String>,
+    pub contact: Option<String>,
+    pub name: Option<String>,
+    pub r#type: Option<String>,
+}
+
+impl Trigger {
+    /// The value of the one field `on` names, for display.
+    pub fn value(&self) -> Option<&str> {
+        match self.on {
+            TriggerOn::Manual => None,
+            TriggerOn::Schedule => self.cron.as_deref(),
+            TriggerOn::Message => self.contact.as_deref(),
+            TriggerOn::Webhook => self.name.as_deref(),
+            TriggerOn::Event => self.r#type.as_deref(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TriggerRaw {
+    on: TriggerOn,
+    #[serde(default)]
+    cron: Option<String>,
+    #[serde(default)]
+    contact: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    r#type: Option<String>,
+}
+
+/// A side effect on the world an operation performs (docs/JOBS.md,
+/// "Effect"). Serialized by its lowercase name; an unknown value is a
+/// TOML deserialize error, refused with the file and line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectKind {
+    Message,
+    Row,
+    File,
+    Http,
+}
+
+impl EffectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EffectKind::Message => "message",
+            EffectKind::Row => "row",
+            EffectKind::File => "file",
+            EffectKind::Http => "http",
+        }
+    }
+}
+
+impl std::fmt::Display for EffectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What to do when a job's assertions fail (docs/JOBS.md, "Limits").
+/// `retry:N` carries its count; the rest are unit values. Serialized as
+/// the string form (`ask:contact`, `retry:2`, ...); an unknown value is
+/// refused with the file and line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OnFailure {
+    AskContact,
+    AskOperator,
+    Retry(u32),
+    Drop,
+}
+
+impl OnFailure {
+    pub fn as_str(&self) -> String {
+        match self {
+            OnFailure::AskContact => "ask:contact".to_string(),
+            OnFailure::AskOperator => "ask:operator".to_string(),
+            OnFailure::Retry(n) => format!("retry:{n}"),
+            OnFailure::Drop => "drop".to_string(),
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<OnFailure> {
+        match s {
+            "ask:contact" => Some(OnFailure::AskContact),
+            "ask:operator" => Some(OnFailure::AskOperator),
+            "drop" => Some(OnFailure::Drop),
+            _ => s
+                .strip_prefix("retry:")
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(OnFailure::Retry),
+        }
+    }
+}
+
+impl std::fmt::Display for OnFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_str())
+    }
+}
+
+impl Serialize for OnFailure {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OnFailure {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        OnFailure::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "on_failure {s:?} is not ask:contact, ask:operator, retry:N, or drop"
+            ))
+        })
+    }
+}
+
+/// A run workflow's budget and failure policy (docs/JOBS.md, "Limits").
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    pub budget_usd: f64,
+    pub per_day: u32,
+    pub on_failure: OnFailure,
+}
+
 /// How much of an operation's stdout and stderr the kernel keeps on its
 /// `ops` row: `tail`, the last 40 lines, or `full`, the whole thing capped
 /// at 1 MB.
@@ -261,12 +470,21 @@ struct StepRaw {
     model: Option<String>,
     max_turns: Option<u32>,
     timeout_secs: Option<u32>,
+    /// A job step's directive: the role it is routed under (docs/JOBS.md,
+    /// "Steps").
+    role: Option<String>,
+    /// A job step's operation: the effect it performs (docs/JOBS.md,
+    /// "Effects").
+    effect: Option<EffectKind>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkflowRaw {
     name: String,
+    /// `build` (the default) or `run` (docs/JOBS.md).
+    #[serde(default)]
+    kind: WorkflowKind,
     #[serde(default)]
     description: String,
     steps: Vec<StepRaw>,
@@ -278,6 +496,14 @@ struct WorkflowRaw {
     assess: bool,
     #[serde(default)]
     meta: Meta,
+    /// `kind = "run"` only: what starts a job.
+    trigger: Option<TriggerRaw>,
+    /// `kind = "run"` only: named commands run after the steps, with the
+    /// effect log and every step's output on disk.
+    #[serde(default)]
+    assert: BTreeMap<String, Vec<String>>,
+    /// `kind = "run"` only: budget and failure policy.
+    limits: Option<Limits>,
 }
 
 /// What the author declares about a workflow, for a human or an agent
@@ -306,17 +532,26 @@ pub struct StepRef {
     pub model: Option<String>,
     pub max_turns: Option<u32>,
     pub timeout_secs: Option<u32>,
+    pub role: Option<String>,
+    pub effect: Option<EffectKind>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Workflow {
     pub name: String,
+    pub kind: WorkflowKind,
     pub description: String,
     pub steps: Vec<StepRef>,
     /// Run the `assess` directive after a landing on this workflow (see
     /// `WorkflowRaw::assess`).
     pub assess: bool,
     pub meta: Meta,
+    /// `kind = "run"` only.
+    pub trigger: Option<Trigger>,
+    /// `kind = "run"` only; empty when unset.
+    pub assert: BTreeMap<String, Vec<String>>,
+    /// `kind = "run"` only.
+    pub limits: Option<Limits>,
     pub hash: String,
     pub path: PathBuf,
     pub text: String,
@@ -711,6 +946,37 @@ fn parse_workflow(dir: &Path, path: &Path, text: &str) -> Result<Workflow> {
     if raw.steps.is_empty() {
         bail!("{}: a workflow needs at least one step", path.display());
     }
+    match raw.kind {
+        WorkflowKind::Run => {
+            if raw.trigger.is_none() {
+                bail!(
+                    "{}: kind = \"run\" needs a [trigger] (docs/JOBS.md)",
+                    path.display()
+                );
+            }
+        }
+        WorkflowKind::Build => {
+            if raw.trigger.is_some() {
+                bail!(
+                    "{}: kind = \"build\" (the default) may not have [trigger]; that is a run workflow's section (set kind = \"run\")",
+                    path.display()
+                );
+            }
+            if !raw.assert.is_empty() {
+                bail!(
+                    "{}: kind = \"build\" (the default) may not have [assert]; that is a run workflow's section (set kind = \"run\")",
+                    path.display()
+                );
+            }
+            if raw.limits.is_some() {
+                bail!(
+                    "{}: kind = \"build\" (the default) may not have [limits]; that is a run workflow's section (set kind = \"run\")",
+                    path.display()
+                );
+            }
+        }
+    }
+    let trigger = raw.trigger.map(|t| build_trigger(path, t)).transpose()?;
     let mut steps = Vec::new();
     for s in raw.steps {
         let action = s.action.or(s.kind);
@@ -732,17 +998,59 @@ fn parse_workflow(dir: &Path, path: &Path, text: &str) -> Result<Workflow> {
             model: s.model,
             max_turns: s.max_turns,
             timeout_secs: s.timeout_secs,
+            role: s.role,
+            effect: s.effect,
         });
     }
     Ok(Workflow {
         name: raw.name,
+        kind: raw.kind,
         description: raw.description,
         steps,
         assess: raw.assess,
         meta: raw.meta,
+        trigger,
+        assert: raw.assert,
+        limits: raw.limits,
         hash: blob_hash(dir, path)?,
         path: path.to_path_buf(),
         text: text.to_string(),
+    })
+}
+
+/// Validate a `[trigger]` table: the one field `on` requires is present
+/// and non-empty, and no other trigger field is set.
+fn build_trigger(path: &Path, raw: TriggerRaw) -> Result<Trigger> {
+    let fields: [(&str, &Option<String>); 4] = [
+        ("cron", &raw.cron),
+        ("contact", &raw.contact),
+        ("name", &raw.name),
+        ("type", &raw.r#type),
+    ];
+    let want = raw.on.field();
+    for (field, val) in fields {
+        let wanted = Some(field) == want;
+        if wanted && val.as_deref().is_none_or(str::is_empty) {
+            bail!(
+                "{}: [trigger] on = \"{}\" needs `{field}`",
+                path.display(),
+                raw.on.as_str()
+            );
+        }
+        if !wanted && val.is_some() {
+            bail!(
+                "{}: [trigger] on = \"{}\" does not take `{field}`",
+                path.display(),
+                raw.on.as_str()
+            );
+        }
+    }
+    Ok(Trigger {
+        on: raw.on,
+        cron: raw.cron,
+        contact: raw.contact,
+        name: raw.name,
+        r#type: raw.r#type,
     })
 }
 
@@ -1516,6 +1824,142 @@ mod tests {
             resolve(dir.path(), "old").unwrap().steps[0].action.name,
             "code"
         );
+    }
+
+    /// docs/JOBS.md, "The definition", reordered so `steps` sits at the
+    /// top level: TOML binds a bare `key = value` to the nearest
+    /// preceding table header, so `steps` must come before `[trigger]`
+    /// to be the workflow's own field rather than `trigger.steps`.
+    const JOBS_MD_EXAMPLE: &str = r#"
+name = "quote-by-text"
+kind = "run"
+description = "a customer texts a photo of a job; they get a quote back and it goes in the book"
+
+steps = [
+  { action = "extract-job",  role = "read" },
+  { action = "price-job" },
+  { action = "draft-quote",  role = "write" },
+  { action = "send-quote",   effect = "message" },
+  { action = "log-quote",    effect = "row" },
+]
+
+[trigger]
+on = "message"
+contact = "customers"
+
+[assert]
+quoted  = ["scripts/assert-quote.sh"]
+
+[limits]
+budget_usd = 0.10
+per_day    = 200
+on_failure = "ask:contact"
+"#;
+
+    #[test]
+    fn a_run_workflow_parses_the_jobs_md_example() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(dir.path(), "quote-by-text.toml", JOBS_MD_EXAMPLE);
+        let w = get(dir.path(), "quote-by-text").unwrap().unwrap();
+        assert_eq!(w.kind, WorkflowKind::Run);
+        let t = w.trigger.as_ref().unwrap();
+        assert_eq!(t.on, TriggerOn::Message);
+        assert_eq!(t.value(), Some("customers"));
+        assert_eq!(
+            w.assert.get("quoted").unwrap(),
+            &vec!["scripts/assert-quote.sh".to_string()]
+        );
+        let limits = w.limits.as_ref().unwrap();
+        assert_eq!(limits.budget_usd, 0.10);
+        assert_eq!(limits.per_day, 200);
+        assert_eq!(limits.on_failure, OnFailure::AskContact);
+        assert_eq!(w.steps[0].role.as_deref(), Some("read"));
+        assert_eq!(w.steps[3].effect, Some(EffectKind::Message));
+        assert_eq!(w.steps[4].effect, Some(EffectKind::Row));
+    }
+
+    #[test]
+    fn a_build_workflow_may_not_have_run_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "wrongly-run.toml",
+            "name = \"wrongly-run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
+        assert!(err.contains("may not have [trigger]"), "{err}");
+        write(
+            dir.path(),
+            "wrongly-run.toml",
+            "name = \"wrongly-run\"\nsteps = [{ action = \"code\" }]\n[limits]\nbudget_usd = 1.0\nper_day = 1\non_failure = \"drop\"\n",
+        );
+        let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
+        assert!(err.contains("may not have [limits]"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_trigger_on_is_refused_with_the_file_and_line() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "carrier-pigeon.toml",
+            "name = \"carrier-pigeon\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"carrier-pigeon\"\n",
+        );
+        let err = get(dir.path(), "carrier-pigeon").unwrap_err().to_string();
+        assert!(err.contains("carrier-pigeon.toml"), "{err}");
+        assert!(err.contains("line"), "{err}");
+        assert!(err.contains("unknown variant"), "{err}");
+    }
+
+    #[test]
+    fn a_run_workflow_needs_a_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "untriggered.toml",
+            "name = \"untriggered\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n",
+        );
+        let err = get(dir.path(), "untriggered").unwrap_err().to_string();
+        assert!(err.contains("kind = \"run\" needs a [trigger]"), "{err}");
+    }
+
+    #[test]
+    fn on_failure_round_trips_and_rejects_junk() {
+        for (s, want) in [
+            ("ask:contact", OnFailure::AskContact),
+            ("ask:operator", OnFailure::AskOperator),
+            ("retry:3", OnFailure::Retry(3)),
+            ("drop", OnFailure::Drop),
+        ] {
+            assert_eq!(OnFailure::parse(s), Some(want.clone()));
+            assert_eq!(want.as_str(), s);
+        }
+        assert_eq!(OnFailure::parse("retry:"), None);
+        assert_eq!(OnFailure::parse("retry:x"), None);
+        assert_eq!(OnFailure::parse("ask"), None);
+        for on in [
+            TriggerOn::Manual,
+            TriggerOn::Schedule,
+            TriggerOn::Message,
+            TriggerOn::Webhook,
+            TriggerOn::Event,
+        ] {
+            let json = serde_json::to_string(&on).unwrap();
+            assert_eq!(json, format!("\"{}\"", on.as_str()));
+        }
+        for e in [
+            EffectKind::Message,
+            EffectKind::Row,
+            EffectKind::File,
+            EffectKind::Http,
+        ] {
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(json, format!("\"{}\"", e.as_str()));
+        }
     }
 
     #[test]

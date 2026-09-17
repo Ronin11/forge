@@ -93,6 +93,80 @@ Kernel steps, always, not listed:
 What happens after the last step is landing: integrate the base, re-verify,
 push, fast-forward. See docs/ACTIONS.md, "Landing".
 
+## Jobs: `kind = "run"`
+
+A workflow file declares `kind = "build"` (the default, everything above)
+or `kind = "run"`. A run workflow is an automation: it starts from a
+trigger, its steps perform effects on the world instead of writing to a
+branch, and it ends in a verified effect instead of a landing. No
+repository, no branch, no landing; many runs a day; cheap; verified per
+run. See docs/JOBS.md for the full picture (jobs, the executor, fixture
+verification); this is the shape of the file alone.
+
+```toml
+name = "quote-by-text"
+kind = "run"
+description = "a customer texts a photo of a job; they get a quote back and it goes in the book"
+
+steps = [
+  { action = "extract-job",  role = "read" },      # directive: photo + text → job description (schema)
+  { action = "price-job" },                         # operation: rules from the price sheet
+  { action = "draft-quote",  role = "write" },     # directive: description + price → a text (schema)
+  { action = "send-quote",   effect = "message" },  # operation: Signal to the sender
+  { action = "log-quote",    effect = "row" },      # operation: append to the book
+]
+
+[trigger]
+on = "message"            # message | schedule | webhook | event | manual
+contact = "customers"     # the Signal plugin's contact group that starts it
+
+[assert]
+quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once
+
+[limits]
+budget_usd = 0.10          # per run
+per_day    = 200           # runs per day before it asks
+on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop
+```
+
+(TOML binds a bare `key = value` to the nearest preceding `[table]`
+header, so `steps` has to come before `[trigger]`, not after it, to be
+the workflow's own field rather than `trigger.steps`.)
+
+A run workflow adds three sections and two step fields to the shape
+above, unchanged otherwise: a step still names an `action` (or another
+workflow, spliced inline), with the same `model`, `max_turns`, and
+`timeout_secs` overrides.
+
+- **`[trigger]`.** What starts a job. `on` is one of `manual`,
+  `schedule`, `message`, `webhook`, `event`, and takes exactly one more
+  field naming what it triggers on: `schedule` a `cron` expression,
+  `message` a `contact` group, `webhook` a `name`, `event` a Forge
+  event `type`; `manual` takes none.
+- **`[assert]`.** Named commands, each a list like an action's `run`,
+  checked after the steps with the effect log and every step's output
+  on disk; exit status is the verdict.
+- **`[limits]`.** `budget_usd` (per run), `per_day` (a rate before it
+  asks), and `on_failure`: `ask:contact`, `ask:operator`, `retry:N`, or
+  `drop`.
+- **A step's `role`.** A directive step in a job carries a `role`
+  instead of running the kernel's fixed contracts; it is routed to a
+  provider like every role (docs/CONFIG.md), given the step's inputs
+  and instructions, and has no tools.
+- **A step's `effect`.** An operation step that acts on the world
+  declares its effect kind: `message`, `row`, `file`, or `http`. The
+  executor logs every effect with its target; a dry run records what it
+  would have done and does nothing.
+
+A build workflow (the default `kind`) may not have `[trigger]`,
+`[assert]`, or `[limits]` — those are a run workflow's sections. A run
+workflow needs `[trigger]` and at least one step, the same "at least
+one step" every workflow needs. An unknown `on`, `effect`, or
+`on_failure` value is refused with the file and line, the same as any
+other malformed field. Loading, hashing, and versioning are otherwise
+identical to a build workflow: `forge workflows` marks a run workflow
+and shows its trigger in words.
+
 ## The honest exits
 
 An agent may stop with `needs_input` of kind `question` (it needs the
