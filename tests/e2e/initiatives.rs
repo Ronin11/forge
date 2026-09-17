@@ -714,6 +714,104 @@ fn from_refuses_an_unknown_provider_named_by_a_paragraph_before_queuing_anything
 }
 
 #[test]
+fn from_records_the_from_files_own_workflow_and_falls_the_rest_to_the_flags_default() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(
+        &file,
+        "workflow: reviewed\nfirst task on its own workflow\n\nsecond task falls to the default",
+    )
+    .unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "both tasks land on the right workflow",
+            "--from",
+            file.to_str().unwrap(),
+            "--workflow",
+            "direct",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (w1, w2): (String, String) = e
+        .db()
+        .query_row(
+            "SELECT (SELECT workflow FROM tasks WHERE id=1), (SELECT workflow FROM tasks WHERE id=2)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(w1, "reviewed");
+    assert_eq!(w2, "direct");
+}
+
+#[test]
+fn from_refuses_an_unknown_workflow_named_by_a_paragraph_before_queuing_anything() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    std::fs::write(
+        &file,
+        "first task is fine\n\nworkflow: does-not-exist\nsecond task names a bad workflow",
+    )
+    .unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "refused before anything is queued",
+            "--from",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("does-not-exist"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let count: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "no task should be queued when a workflow is unknown"
+    );
+}
+
+#[test]
 fn file_into_initiative_without_an_initiative_id_runs_code_as_usual() {
     let e = Env::new();
     write_filer_workflow(&e);

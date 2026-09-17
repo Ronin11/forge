@@ -330,11 +330,12 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
 /// One task parsed from an initiative's `--from` file: a paragraph, its
 /// optional dependency on an earlier paragraph (1-based, within the
 /// file), its optional repository override, its optional provider
-/// override, and its text.
+/// override, its optional workflow override, and its text.
 pub struct FileTask {
     pub after: Option<usize>,
     pub repo: Option<String>,
     pub provider: Option<String>,
+    pub workflow: Option<String>,
     pub text: String,
 }
 
@@ -342,10 +343,11 @@ pub struct FileTask {
 /// separated), each optionally led by an `after: <n>` line naming an
 /// earlier paragraph in the file as a dependency, a `repo: <path>` line
 /// naming the repository it runs against instead of the project's first
-/// one, and a `provider: <name>` line naming the provider it runs under
-/// instead of `--provider`'s default (see docs/PROJECTS.md, "Verbs").
-/// The lead lines may appear in any order; whatever is left is the
-/// task's text.
+/// one, a `provider: <name>` line naming the provider it runs under
+/// instead of `--provider`'s default, and a `workflow: <name>` line
+/// naming the workflow it runs under instead of `--workflow`'s default
+/// (see docs/PROJECTS.md, "Verbs"). The lead lines may appear in any
+/// order; whatever is left is the task's text.
 pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     let mut out: Vec<FileTask> = Vec::new();
     for para in text.split("\n\n") {
@@ -360,6 +362,7 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
         let mut after = None;
         let mut repo = None;
         let mut provider = None;
+        let mut workflow = None;
         let mut body: Vec<&str> = Vec::new();
         let mut in_lead = true;
         for line in para.lines() {
@@ -383,6 +386,10 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
                 provider = Some(p.trim().to_string());
                 continue;
             }
+            if in_lead && let Some(w) = line.strip_prefix("workflow:") {
+                workflow = Some(w.trim().to_string());
+                continue;
+            }
             in_lead = false;
             body.push(line);
         }
@@ -394,6 +401,7 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
             after,
             repo,
             provider,
+            workflow,
             text: body,
         });
     }
