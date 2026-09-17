@@ -472,6 +472,16 @@ pub struct ProjectRow {
     pub withdrawn: i64,
     #[serde(default)]
     pub cost_usd: f64,
+    /// Jobs started in the last rolling 24h, counted separately from the
+    /// task counts above (docs/JOBS.md step 1d).
+    #[serde(default)]
+    pub jobs_today: i64,
+    #[serde(default)]
+    pub jobs_ok: i64,
+    #[serde(default)]
+    pub jobs_failed: i64,
+    #[serde(default)]
+    pub jobs_needs_human: i64,
     #[serde(default)]
     pub workflow: Option<String>,
     #[serde(default)]

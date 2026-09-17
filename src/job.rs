@@ -1,7 +1,7 @@
 //! `forge job start`: the executor for operation-only run workflows, run
 //! inline with `--now` (docs/JOBS.md, "The executor"). Without `--now` the
-//! job is only recorded as `queued`; claiming a queued job is the worker's
-//! job, a later build-order step.
+//! job is only recorded as `queued`; `drive` is what the worker's claim
+//! loop (`src/worker.rs`) calls to run it, later, the same way.
 //!
 //! A run's steps see no worktree, no clone, no commit: the project's first
 //! repository is materialised at its latest landed commit into a scratch
@@ -21,6 +21,7 @@ use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn scratch_dir(f: &Forge, job_id: i64) -> PathBuf {
@@ -152,6 +153,12 @@ pub async fn start(
     };
     let job_id = f.store.create_job(&job)?;
     if !now {
+        // Persist the input for whenever the worker claims this job
+        // (`drive`, below); `run_now` writes the same file again once it
+        // does.
+        let idir = input_dir(f, job_id);
+        std::fs::create_dir_all(&idir)?;
+        std::fs::write(idir.join("input.json"), &input_text)?;
         return Ok(job_id);
     }
 
@@ -320,4 +327,92 @@ async fn run_now(
         &serde_json::to_string(&verdict)?,
     )?;
     Ok(())
+}
+
+/// Run a job the worker has already claimed (its store row moved from
+/// `queued` to `running` by `Store::claim_next_job`): resolve its pinned
+/// workflow, its input written by `start` when it was queued, and its
+/// project's repository, then replay the same steps-and-assert executor
+/// `--now` runs inline. The workflow is re-resolved by name rather than
+/// pinned by `workflow_hash`, same as `--now`'s own steps were already
+/// resolved before `create_job`.
+async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
+    let job = f
+        .store
+        .job(job_id)?
+        .with_context(|| format!("job {job_id} vanished before the worker could run it"))?;
+    let (wf, steps) = workflows::resolve_job(&f.paths.home, &job.workflow)?;
+    if let Some(a) = steps.iter().find(|a| a.kind == Kind::Directive) {
+        bail!(
+            "job step {:?} is a directive; directive steps are not supported yet (docs/JOBS.md, build order step 2)",
+            a.name
+        );
+    }
+    let repo = f
+        .store
+        .first_repo(&job.project)?
+        .with_context(|| format!("project {} has no registered repository", job.project))?;
+    let repo_path = PathBuf::from(&repo);
+    let cfg = config::load_working(&repo_path).await?;
+
+    let idir = input_dir(f, job_id);
+    let input_text =
+        std::fs::read_to_string(idir.join("input.json")).unwrap_or_else(|_| "{}".into());
+    let input_json: serde_json::Value =
+        serde_json::from_str(&input_text).context("parsing the job's saved input as JSON")?;
+    let input_fields = string_fields(&input_json)?;
+
+    run_now(
+        f,
+        job_id,
+        &job.project,
+        &repo_path,
+        &job.landed_sha,
+        &steps,
+        &wf.assert,
+        wf.limits.as_ref(),
+        job.dry_run,
+        &input_text,
+        &input_fields,
+        cfg.check_timeout_secs,
+    )
+    .await
+}
+
+/// The verdict `drive` records for a job that failed before it could run
+/// any step, e.g. its workflow no longer resolves or its project lost its
+/// repository between being queued and being claimed.
+fn executor_error_verdict(e: &anyhow::Error) -> String {
+    let verdict = vec![checks::CheckResult {
+        level: "OP".to_string(),
+        name: "executor".to_string(),
+        ok: false,
+        tail: format!("{e:#}"),
+        ..Default::default()
+    }];
+    serde_json::to_string(&verdict).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// What the worker's claim loop calls on a job it just claimed
+/// (`Store::claim_next_job`): run it to completion and report its final
+/// state. A job's own failure — a bad archive, a step that errors, a
+/// failing assertion — is recorded on the job and never propagated as an
+/// error, so it can never stop the worker or requeue an unrelated task
+/// (docs/JOBS.md step 1d: "a job's failure never affects a task").
+pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
+    if let Err(e) = run_claimed(&f, job_id).await {
+        let _ = f.store.finish_job(
+            job_id,
+            unix_now(),
+            JobState::Failed,
+            Some(0.0),
+            &executor_error_verdict(&e),
+        );
+    }
+    f.store
+        .job(job_id)
+        .ok()
+        .flatten()
+        .map(|j| j.state)
+        .unwrap_or(JobState::Failed)
 }

@@ -268,6 +268,122 @@ on_failure = "drop"
     assert!(!dry_scratch.join("book.csv").exists());
 }
 
+/// `forge job start` without `--now` only queues the job; the worker's
+/// claim loop (`src/worker.rs`) claims it alongside tasks, within the
+/// same `--jobs` cap, and runs it through `src/job.rs` exactly as `--now`
+/// would have (docs/JOBS.md step 1d). `forge work --once` drains it to
+/// `ok` with no agent and no task in the mix.
+#[test]
+fn a_queued_job_is_claimed_and_run_by_forge_work_once() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/snapshot.toml"),
+        r#"name = "snapshot"
+kind = "run"
+description = "writes a file and appends a row: the two operations the executor runs inline"
+
+steps = [
+  { action = "write-file", effect = "file" },
+  { action = "append-row", effect = "row" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+effects = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\" && grep -q '^row' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+
+    let input = e.home.join("input.json");
+    std::fs::write(
+        &input,
+        r#"{"path":"out.txt","content":"hello world","table":"book.csv","row":"hello,42"}"#,
+    )
+    .unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // No `--now`: the job is only recorded, queued.
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "equitizr", "snapshot", "--input", input_s],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "queued", "{doc:?}");
+    assert!(doc["effects"].as_array().unwrap().is_empty());
+
+    // The worker claims it and runs it to completion; no task is in the
+    // queue, so this is the job alone driving `forge work --once`.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(doc["dry_run"], false);
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "file");
+    assert_eq!(effects[1]["kind"], "row");
+
+    let scratch = e.home.join("worktrees").join(format!("job-{id}"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("out.txt")).unwrap(),
+        "hello world"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("book.csv")).unwrap(),
+        "hello,42\n"
+    );
+
+    // The project rollup counts the job separately from its (empty) task
+    // counts.
+    let project: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "show", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(project["jobs_today"], 1, "{project:?}");
+    assert_eq!(project["jobs_ok"], 1, "{project:?}");
+    assert_eq!(project["jobs_failed"], 0, "{project:?}");
+    assert_eq!(project["jobs_needs_human"], 0, "{project:?}");
+}
+
 /// A run workflow with a directive step is refused with a clear message:
 /// directive steps are the next build-order step (docs/JOBS.md), not this
 /// one.
