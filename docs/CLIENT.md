@@ -363,10 +363,10 @@ of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 ### `StatsDoc`
 
 The document `forge stats --json` prints: `{workflows, steps, journal,
-no_journal, projects, by_role, tools}`. `tools` is present only with
-`--tools` (an object keyed by step name); otherwise it is omitted.
-`projects` is present only when `forge stats` is not itself scoped to
-one project or initiative.
+no_journal, projects, by_role, assessment_correlation, tools}`. `tools`
+is present only with `--tools` (an object keyed by step name); otherwise
+it is omitted. `projects` is present only when `forge stats` is not
+itself scoped to one project or initiative.
 
 **`workflows`** — array of `StatsWorkflowRow`, one per workflow name +
 definition hash: `workflow`, `hash`, `pieces` (task count),
@@ -442,6 +442,20 @@ was added yet to measure). Outside the `code` role, `landed`,
 `true_cost_per_landed_usd`, and `churn_share` are all omitted from the
 JSON row entirely, since landing is not a role-specific concept. `forge
 stats --by-role` is the text-mode view of the same rows.
+
+**`assessment_correlation`** — array of `CorrelationRow`, judging the
+assess directive's fast proxy against the delayed-cost measures it
+stands in for (docs/ACTIONS.md, "Assessment"): one row per measure,
+`{measure, rho, n}`. `measure` is `"churn"` (per landed task, its
+`churn_share`-style ratio: churned lines over added lines) or
+`"repair_cost"` (per landed task, its `repair_cost_usd`). `rho` is
+Spearman's rank correlation between the task's assess score and the
+measure, over this scope's landed tasks that carry both an assessment
+and the measure (`null` when fewer than two tasks carry both, or
+either side has no variance to rank); `n` is how many tasks that rests
+on. Two rows are always present, in `churn` then `repair_cost` order.
+`forge stats --quality` prints the same two numbers as a line under the
+defect-escape table.
 
 ### `PluginRow`
 

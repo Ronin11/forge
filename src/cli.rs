@@ -3137,6 +3137,16 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
             pct(w.churn_share)
         );
     }
+    if !doc.assessment_correlation.is_empty() {
+        let rho = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("{n:.2}"));
+        let line = doc
+            .assessment_correlation
+            .iter()
+            .map(|c| format!("score vs {}: rho {} (n={})", c.measure, rho(c.rho), c.n))
+            .collect::<Vec<_>>()
+            .join("; ");
+        out!("{line}");
+    }
     Ok(())
 }
 

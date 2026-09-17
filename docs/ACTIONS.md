@@ -329,8 +329,12 @@ finding count) and a `finding` line per finding, under the lineage;
 `forge trace --json` carries the same score, findings, model, provider
 and cost as an `assessment` object (`null` if it never ran; see
 docs/CLIENT.md, "`TraceDoc`"); `forge initiative report` adds a `score`
-to each of the initiative's tasks; and the web task view shows both. Not
-`forge stats`.
+to each of the initiative's tasks; and the web task view shows both.
+`forge stats` never shows a task's own score, but does judge the proxy
+itself: `forge stats --quality` prints Spearman's rank correlation
+between score and each delayed-cost measure (churn, repair cost), over
+landed tasks that carry both, with the count of tasks each rests on —
+see "Delayed cost" in docs/CLIENT.md, "`StatsDoc`".
 
 ## Data flow
 

@@ -882,8 +882,126 @@ pub struct StatsDoc {
     /// Attempts, outcomes, cost and wall time per (role, provider, model);
     /// see `forge stats --by-role`.
     pub by_role: Vec<StatsRoleRow>,
+    /// Spearman's rank correlation between the assess directive's score
+    /// and each delayed-cost measure, over this scope's landed tasks
+    /// that carry both; see `forge stats --quality` and
+    /// `quality_correlation`.
+    pub assessment_correlation: Vec<CorrelationRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
+}
+
+/// One row of `StatsDoc.assessment_correlation`: how well the assess
+/// directive's fast proxy score tracks one delayed-cost measure that only
+/// shows up once later tasks land (docs/ACTIONS.md, "Assessment";
+/// docs/LATER.md's delayed-cost follow-up to "Defect escape") — Spearman's
+/// rank correlation, over this scope's landed tasks carrying both an
+/// assessment and the measure.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct CorrelationRow {
+    /// `"churn"` (per task, the share of its added lines a later landing
+    /// rewrote) or `"repair_cost"` (per task, its cached repair cost in
+    /// USD).
+    pub measure: String,
+    /// Spearman's rho; `None` when fewer than two tasks carry both the
+    /// score and this measure, or either side has no variance to rank.
+    pub rho: Option<f64>,
+    /// How many landed, assessed tasks this rests on.
+    pub n: i64,
+}
+
+/// Spearman's rank correlation between the assess directive's score and
+/// each delayed-cost measure, over `scope`'s landed tasks that carry an
+/// assessment and the measure in question: `churn` (per task, its cached
+/// `(churned, added)` lines as `churned / added`, omitted when `added` is
+/// 0) and `repair_cost` (per task, its cached repair cost in USD; see
+/// `refresh_churn` and `refresh_repair_cost`, both already run by the
+/// time `stats_doc` calls this). The two measures can rest on different
+/// task counts, since a task can have one cached without the other.
+fn quality_correlation(
+    f: &Forge,
+    scope: &crate::store::StatsFilter,
+) -> Result<Vec<CorrelationRow>> {
+    let mut churn_pairs = Vec::new();
+    let mut repair_pairs = Vec::new();
+    for t in f.store.landed_tasks(scope)? {
+        let Some(a) = f.store.assessment(t.id)? else {
+            continue;
+        };
+        let score = a.score as f64;
+        if let Some((added, churned, _)) = f.store.churn_cache(t.id)?
+            && added > 0
+        {
+            churn_pairs.push((score, churned as f64 / added as f64));
+        }
+        if let Some((repair_cost, _)) = f.store.repair_cost_cache(t.id)? {
+            repair_pairs.push((score, repair_cost));
+        }
+    }
+    Ok(vec![
+        CorrelationRow {
+            measure: "churn".into(),
+            n: churn_pairs.len() as i64,
+            rho: spearman(&churn_pairs),
+        },
+        CorrelationRow {
+            measure: "repair_cost".into(),
+            n: repair_pairs.len() as i64,
+            rho: spearman(&repair_pairs),
+        },
+    ])
+}
+
+/// Spearman's rank correlation over `pairs`: Pearson's r computed on each
+/// side's ranks (ties broken by averaging), which is Spearman's rho with
+/// the standard tie correction. `None` when fewer than two pairs, or
+/// either side is constant (an undefined correlation).
+fn spearman(pairs: &[(f64, f64)]) -> Option<f64> {
+    if pairs.len() < 2 {
+        return None;
+    }
+    let xs: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+    let ys: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+    pearson(&rank(&xs), &rank(&ys))
+}
+
+/// 1-based ranks of `v`, tied values given their shared average rank.
+fn rank(v: &[f64]) -> Vec<f64> {
+    let mut idx: Vec<usize> = (0..v.len()).collect();
+    idx.sort_by(|&a, &b| v[a].partial_cmp(&v[b]).unwrap());
+    let mut ranks = vec![0.0; v.len()];
+    let mut i = 0;
+    while i < idx.len() {
+        let mut j = i;
+        while j + 1 < idx.len() && v[idx[j + 1]] == v[idx[i]] {
+            j += 1;
+        }
+        let avg_rank = (i + j) as f64 / 2.0 + 1.0;
+        for &k in &idx[i..=j] {
+            ranks[k] = avg_rank;
+        }
+        i = j + 1;
+    }
+    ranks
+}
+
+/// Pearson's r between `a` and `b`, `None` when either has zero variance.
+fn pearson(a: &[f64], b: &[f64]) -> Option<f64> {
+    let n = a.len() as f64;
+    let mean_a = a.iter().sum::<f64>() / n;
+    let mean_b = b.iter().sum::<f64>() / n;
+    let (mut cov, mut var_a, mut var_b) = (0.0, 0.0, 0.0);
+    for i in 0..a.len() {
+        let da = a[i] - mean_a;
+        let db = b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+    if var_a == 0.0 || var_b == 0.0 {
+        return None;
+    }
+    Some(cov / (var_a.sqrt() * var_b.sqrt()))
 }
 
 /// Refresh `task_churn` for every landed task (scope does not narrow this:
@@ -1073,6 +1191,7 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
         no_journal,
         projects,
         by_role: f.store.role_stats()?.iter().map(Into::into).collect(),
+        assessment_correlation: quality_correlation(f, scope)?,
         tools: None,
     })
 }
@@ -1781,7 +1900,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
 #[cfg(test)]
 mod stats_tests {
     use super::*;
-    use crate::store::{Attempt, AttemptState, FinishAttempt, StepStat, WorkflowStat};
+    use crate::store::{Assessment, Attempt, AttemptState, FinishAttempt, StepStat, WorkflowStat};
 
     #[test]
     fn workflow_row_carries_named_fields_and_the_deprecated_legacy_keys() {
@@ -2096,6 +2215,78 @@ mod stats_tests {
         assert_eq!(stat.repair_cost, 5.0);
     }
 
+    /// Six landed, assessed tasks whose scores rise from 3 to 8 as their
+    /// churn share falls from 1.0 to 0.0: the assess directive's fast
+    /// proxy tracking the delayed-cost measure it stands in for (see
+    /// docs/ACTIONS.md, "Assessment"). Sets the churn and repair-cost
+    /// caches directly, past their 30-day window, so `quality_correlation`
+    /// reads cached numbers rather than exercising `refresh_churn`'s git
+    /// diff (already covered above).
+    #[test]
+    fn quality_correlation_is_negative_when_score_rises_as_churn_falls() {
+        let (_home, f) = fixture();
+        let landing = |finished_at: i64| Task {
+            repo: "/does/not/matter".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            base_sha: "base".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: finished_at,
+            started_at: Some(finished_at),
+            finished_at: Some(finished_at),
+            workflow: "direct".into(),
+            landed_sha: format!("landed-{finished_at}"),
+            ..Default::default()
+        };
+        for (i, (score, added, churned)) in [
+            (3i64, 10i64, 10i64),
+            (4, 10, 8),
+            (5, 10, 6),
+            (6, 10, 4),
+            (7, 10, 2),
+            (8, 10, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut t = landing(1000 + i as i64);
+            t.id = f.store.insert_task(&t).unwrap();
+            f.store.update_task(&t).unwrap();
+            f.store
+                .insert_assessment(&Assessment {
+                    id: 0,
+                    task_id: t.id,
+                    score,
+                    findings_json: "[]".into(),
+                    model: "m".into(),
+                    provider: "p".into(),
+                    cost_usd: None,
+                    created_at: t.finished_at.unwrap(),
+                })
+                .unwrap();
+            let computed_at = t.finished_at.unwrap() + crate::store::THIRTY_DAYS_SECS;
+            f.store
+                .set_churn_cache(t.id, added, churned, computed_at)
+                .unwrap();
+            f.store
+                .set_repair_cost_cache(t.id, 0.0, computed_at)
+                .unwrap();
+        }
+
+        let rows = quality_correlation(&f, &crate::store::StatsFilter::default()).unwrap();
+        let churn = rows.iter().find(|r| r.measure == "churn").unwrap();
+        assert_eq!(churn.n, 6);
+        assert!(
+            churn.rho.unwrap() < 0.0,
+            "score rises as churn falls, expected a negative rho: {:?}",
+            churn.rho
+        );
+    }
+
     #[test]
     fn step_row_carries_named_fields_and_the_deprecated_legacy_keys() {
         let st = StepStat {
@@ -2133,6 +2324,7 @@ mod stats_tests {
             no_journal: StatsJournalRow::default(),
             projects: vec![],
             by_role: vec![],
+            assessment_correlation: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
