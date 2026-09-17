@@ -2329,7 +2329,12 @@ fn project_view(name: String, json: bool) -> Result<()> {
     out!();
     out!("Being built:");
     for i in &doc.initiatives {
-        out!("  [{}] {} ({} pieces of work)", i.state, i.outcome, i.pieces);
+        out!(
+            "  [{}] {} ({} pieces of work)",
+            i.state,
+            i.outcome,
+            i.pieces
+        );
     }
     if doc.initiatives_more > 0 {
         out!("  ...and {} more", doc.initiatives_more);

@@ -2371,22 +2371,27 @@ fn is_path_like_word(word: &str) -> bool {
     if trimmed.contains('/') {
         return true;
     }
-    if let Some(rest) = trimmed.strip_prefix(['L', 'l']) {
-        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-            return true;
-        }
+    if let Some(rest) = trimmed.strip_prefix(['L', 'l'])
+        && !rest.is_empty()
+        && rest.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
     }
     if let Some(dot) = trimmed.rfind('.') {
         let (base, ext) = (&trimmed[..dot], &trimmed[dot + 1..]);
-        if !base.is_empty() && (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        if !base.is_empty()
+            && (1..=5).contains(&ext.len())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric())
         {
             return true;
         }
     }
-    if let Some((a, b)) = trimmed.split_once(':') {
-        if !a.is_empty() && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) {
-            return true;
-        }
+    if let Some((a, b)) = trimmed.split_once(':')
+        && !a.is_empty()
+        && !b.is_empty()
+        && b.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
     }
     false
 }
@@ -2400,13 +2405,13 @@ fn strip_path_like_tokens(text: &str) -> String {
     let mut i = 0;
     while i < words.len() {
         let bare = words[i].trim_matches(|c: char| !c.is_alphanumeric());
-        if bare.eq_ignore_ascii_case("line") {
-            if let Some(next) = words.get(i + 1) {
-                let digits = next.trim_matches(|c: char| !c.is_ascii_digit());
-                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                    i += 2;
-                    continue;
-                }
+        if bare.eq_ignore_ascii_case("line")
+            && let Some(next) = words.get(i + 1)
+        {
+            let digits = next.trim_matches(|c: char| !c.is_ascii_digit());
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                i += 2;
+                continue;
             }
         }
         if is_path_like_word(words[i]) {
@@ -3426,7 +3431,10 @@ mod portal_tests {
             doc.landed[0].text, "Make the quote text say 'usually same day'.",
             "first sentence only, no path-like tokens from the rest of the request"
         );
-        assert_eq!(doc.landed[0].pieces, None, "a standalone task, not an initiative");
+        assert_eq!(
+            doc.landed[0].pieces, None,
+            "a standalone task, not an initiative"
+        );
         assert_eq!(doc.landed_more, 0);
         assert_eq!(doc.backlog.len(), 1);
 
@@ -3552,7 +3560,10 @@ mod portal_tests {
         let doc = portal_doc(&f, &p).unwrap();
         assert_eq!(doc.landed.len(), 2);
         // Newest first: the titled task landed a hundred seconds later.
-        assert_eq!(doc.landed[0].text, "Show the annual discount on every quote");
+        assert_eq!(
+            doc.landed[0].text,
+            "Show the annual discount on every quote"
+        );
         assert_eq!(
             doc.landed[1].text,
             "Make the quote widget always show the annual discount."
@@ -3616,9 +3627,7 @@ mod portal_tests {
                 },
             );
         }
-        f.store
-            .settle_initiative(ini_id, 1_700_000_006)
-            .unwrap();
+        f.store.settle_initiative(ini_id, 1_700_000_006).unwrap();
 
         // Twelve standalone landed tasks, oldest to newest, no initiative.
         for n in 0..12 {
