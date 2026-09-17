@@ -414,3 +414,47 @@ fn the_supervisor_accepts_a_question_whose_checks_already_passed_and_lands_it() 
     // Nothing waits for the human, and nothing was rebuilt.
     assert!(e.requests_json().as_array().unwrap().is_empty());
 }
+
+/// A question addressed to a named contact (an intake interview's
+/// person, say) is not the operator's, so it is not the supervisor's
+/// either: it must be skipped without an attempt, leaving it for the
+/// channel plugin to deliver and answer.
+#[test]
+fn a_question_addressed_to_someone_else_never_gets_a_supervisor_attempt() {
+    let e = Env::new();
+    // A supervisor fake that would answer is wired in, so a failure to
+    // skip would show up as an answer, not silence.
+    let mut c = e.with_role("needsinput-to.sh", "SUPERVISOR", "supervisor-answer.sh");
+    c.env("FORGE2_SUPERVISOR", "1");
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to the answer file",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("question addressed to alice; not the supervisor's to answer"),
+        "{err}"
+    );
+    assert!(!err.contains("supervisor reading the record"), "{err}");
+    assert!(!err.contains("supervisor answered"), "{err}");
+    let (state, _reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    let attempts = e.attempts(1);
+    assert_eq!(
+        attempts.len(),
+        1,
+        "no supervisor attempt should have run: {attempts:?}"
+    );
+    // The question is still for the channel plugin to pick up.
+    let reqs: serde_json::Value = e.requests_json();
+    assert_eq!(reqs.as_array().unwrap().len(), 1, "{reqs}");
+    assert_eq!(reqs[0]["to"], "alice");
+    let ds: serde_json::Value = e.decisions_json();
+    assert!(ds.as_array().unwrap().is_empty(), "{ds}");
+}

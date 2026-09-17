@@ -322,6 +322,15 @@ fn prompt(
     Ok(p)
 }
 
+/// The note for a task whose open question is addressed to someone
+/// other than the operator (a channel plugin's contact, e.g. an intake
+/// interview): `None` when the question is the operator's (and so the
+/// supervisor's) to rule on.
+pub fn addressed_elsewhere(t: &Task) -> Option<String> {
+    let to = t.question_to.as_deref()?;
+    (!to.is_empty()).then(|| format!("question addressed to {to}; not the supervisor's to answer"))
+}
+
 /// Supervise one blocked task. Returns what was done; `Skipped` when the
 /// task is not the supervisor's to handle.
 pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
@@ -335,6 +344,10 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     let cfg = f.effective_supervisor(&t);
     if t.state != TaskState::Blocked {
         return Ok(Ruled::Skipped(format!("task is {}", t.state.as_str())));
+    }
+    if let Some(note) = addressed_elsewhere(&t) {
+        f.report.emit(id, Event::Note { text: &note });
+        return Ok(Ruled::Skipped(note));
     }
     let attempts = f.store.attempts(id)?;
     // The question is on the last attempt that was not the supervisor's

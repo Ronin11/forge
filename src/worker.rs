@@ -56,10 +56,21 @@ pub fn worker_status(paths: &Paths) -> Option<WorkerStatus> {
 pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
     match engine::run_task(f.clone(), id).await {
         Ok(TaskState::Blocked) => {
-            // The rung before the human: the supervisor reads the record
-            // and answers, files a prerequisite, or escalates. Its own
-            // failure is a note, never a task failure.
-            if let Err(e) = crate::supervisor::supervise(&f, id).await {
+            // A question addressed to someone other than the operator
+            // (an intake interview's contact, say) is not the
+            // supervisor's to rule on: leave it for the channel plugin,
+            // and never spend a supervisor attempt on it.
+            let addressed_elsewhere = f
+                .store
+                .task(id)?
+                .and_then(|t| crate::supervisor::addressed_elsewhere(&t));
+            if let Some(note) = addressed_elsewhere {
+                f.report.emit(id, Event::Note { text: &note });
+            } else if let Err(e) = crate::supervisor::supervise(&f, id).await {
+                // The rung before the human: the supervisor reads the
+                // record and answers, files a prerequisite, or
+                // escalates. Its own failure is a note, never a task
+                // failure.
                 f.report.emit(
                     id,
                     Event::Note {
