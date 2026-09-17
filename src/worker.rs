@@ -324,6 +324,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 stopping = true;
                 break;
             }
+            for t in f.store.release_dependents()? {
+                eprintln!("task {t} unblocked: its dependencies landed or were withdrawn");
+            }
             for (t, d, why) in f.store.block_dependents()? {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }

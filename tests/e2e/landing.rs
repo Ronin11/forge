@@ -710,8 +710,11 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("retried task 3 as 5"), "{out}");
+    // The chain re-points 4's after list at the new task, but no longer
+    // releases 4 itself: that takes 5 actually reaching a terminal state
+    // (see `a_task_blocked_on_a_failed_dependency_is_released_once_its_after_list_points_at_a_task_that_lands`).
     let doc: serde_json::Value = e.trace_json("4");
-    assert_eq!(doc["task"]["state"], "queued", "{doc}");
+    assert_eq!(doc["task"]["state"], "blocked", "{doc}");
     assert_eq!(doc["task"]["after"], serde_json::json!([5]));
     assert!(doc["task"]["retry_of"].is_null());
     // The overrides reach the retried task, not the chained dependent.
@@ -764,9 +767,12 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
     let log: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
     assert_eq!(log.as_array().unwrap().len(), 5);
-    // A rerouted dependent no longer waits on a failed task: it leaves the human queue.
+    // A rerouted dependent still names its now-stale, failed dependency
+    // until the new task it was re-pointed at actually lands: it has not
+    // left the human queue yet.
     let reqs: serde_json::Value = e.requests_json();
-    assert!(reqs.as_array().unwrap().is_empty(), "{reqs}");
+    assert_eq!(reqs.as_array().unwrap().len(), 1, "{reqs}");
+    assert_eq!(reqs.as_array().unwrap()[0]["id"], 4);
 }
 
 #[test]
@@ -1065,12 +1071,104 @@ fn a_blocked_dependency_keeps_its_dependents_waiting_and_a_retry_carries_them_al
         e.task(5)
     );
     assert!(e.forge("ok.sh", &["retry", "4"]).status.success());
-    assert_eq!(e.task(5).0, "queued", "{:?}", e.task(5));
+    // The reroute re-points the after list, but release is no longer the
+    // retry's own job: 5 stays blocked, with its stale reason, until 6
+    // itself reaches a terminal state.
+    assert_eq!(e.task(5).0, "blocked", "{:?}", e.task(5));
+    assert!(
+        e.task(5).1.starts_with("waits on task 4 "),
+        "{:?}",
+        e.task(5)
+    );
     let after: String = e
         .db()
         .query_row("SELECT after_json FROM tasks WHERE id=5", [], |r| r.get(0))
         .unwrap();
     assert_eq!(after, "[6]");
+    // What happens once 6 actually reaches a terminal state -- 5 released
+    // to queued, or reblocked with a fresh reason -- is covered by
+    // `a_task_blocked_on_a_failed_dependency_is_released_once_its_after_list_points_at_a_task_that_lands`.
+}
+
+#[test]
+fn a_task_blocked_on_a_failed_dependency_is_released_once_its_after_list_points_at_a_task_that_lands()
+ {
+    // a and a3 each fail independently; b waits on a, c waits on a3, so a
+    // retry of a (which only reroutes a's own dependents) never touches c.
+    let e = Env::new();
+    let a = e.add(&["--retries", "0"]);
+    let b = e.add(&["--retries", "0", "--after", &a.to_string()]);
+    let a3 = e.add(&["--retries", "0"]);
+    let c = e.add(&["--retries", "0", "--after", &a3.to_string()]);
+    let o = e.forge("wrong.sh", &["work", "--once"]);
+    let _ = o;
+    assert_eq!(e.task(a).0, "failed");
+    assert_eq!(e.task(a3).0, "failed");
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    let _ = o;
+    assert_eq!(e.task(b).0, "blocked", "{:?}", e.task(b));
+    assert!(
+        e.task(b).1.starts_with(&format!("waits on task {a} ")),
+        "{:?}",
+        e.task(b)
+    );
+    assert_eq!(e.task(c).0, "blocked", "{:?}", e.task(c));
+    assert!(
+        e.task(c).1.starts_with(&format!("waits on task {a3} ")),
+        "{:?}",
+        e.task(c)
+    );
+
+    // Path 1: `forge retry` re-points b's after list at the new attempt,
+    // but no longer releases b itself -- that takes the new attempt
+    // actually landing.
+    assert!(
+        e.forge("ok.sh", &["retry", &a.to_string()])
+            .status
+            .success()
+    );
+    let a2: i64 = e
+        .db()
+        .query_row("SELECT MAX(id) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    let after: String = e
+        .db()
+        .query_row("SELECT after_json FROM tasks WHERE id=?1", [b], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, format!("[{a2}]"));
+    assert_eq!(e.task(b).0, "blocked", "{:?}", e.task(b));
+
+    // Capped at one claim so this call only runs a2, isolating the
+    // release it fires (the moment a2 lands) from b then also being
+    // picked up and run.
+    let o = e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(a2).0, "succeeded", "{:?}", e.task(a2));
+    assert_eq!(e.task(b).0, "queued", "{:?}", e.task(b));
+    assert_eq!(e.task(b).1, "");
+    // c, waiting on the unrelated a3, is untouched by any of this.
+    assert_eq!(e.task(c).0, "blocked", "{:?}", e.task(c));
+
+    // Path 2: a direct edit of c's after list, re-pointed by hand at the
+    // task that already landed above. Nothing re-evaluates c at edit
+    // time -- the next claim loop's periodic scan is what catches it up.
+    e.db()
+        .execute(
+            "UPDATE tasks SET after_json=?2 WHERE id=?1",
+            rusqlite::params![c, format!("[{a2}]")],
+        )
+        .unwrap();
+    assert_eq!(e.task(c).0, "blocked", "the edit alone changes nothing yet");
+
+    // b, already queued from the step above, is the oldest claimable task
+    // and takes this call's one slot; that is enough to prove the point --
+    // the periodic scan still queues c before any claim is attempted.
+    let o = e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"]);
+    let _ = o;
+    assert_eq!(e.task(c).0, "queued", "{:?}", e.task(c));
+    assert_eq!(e.task(c).1, "");
 }
 
 #[test]
