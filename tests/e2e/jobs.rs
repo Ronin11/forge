@@ -573,6 +573,93 @@ fn a_directives_schema_valid_output_flows_to_the_next_operation() {
     );
 }
 
+/// The per-run budget in `[limits]` is enforced after every directive: a
+/// step whose cost brings the run over it ends the job `needs_human`
+/// rather than `ok` or `failed`, and the operation after it never runs
+/// (docs/JOBS.md, "Steps").
+#[test]
+fn a_directive_step_over_budget_ends_the_job_needs_human() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/extract-job.toml"),
+        EXTRACT_JOB_ACTION,
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/log-price.toml"),
+        LOG_PRICE_ACTION,
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/tight-budget.toml"),
+        r#"name = "tight-budget"
+kind = "run"
+description = "a per-run budget the one directive step already exceeds"
+
+steps = [
+  { action = "extract-job", role = "read" },
+  { action = "log-price",   effect = "row" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+priced = ["bash", "-c", "grep -q '^row' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 0.0001
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+
+    let mut c = e.with_role("ok.sh", "EXTRACT_JOB", "job-directive-valid.sh");
+    let o = c
+        .args(["job", "start", "equitizr", "tight-budget", "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "needs_human", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the operation must not run once the budget is exceeded: {steps:?}"
+    );
+    assert!(
+        doc["verdict_json"].as_str().unwrap().contains("budget"),
+        "{doc:?}"
+    );
+    assert!(doc["effects"].as_array().unwrap().is_empty());
+}
+
 /// A directive step's structured output that does not match its action's
 /// schema fails the job with the validation message, before the operation
 /// after it ever runs (docs/JOBS.md, "Steps").
