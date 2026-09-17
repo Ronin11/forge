@@ -1352,6 +1352,13 @@ fn print_project_row(r: &crate::view::ProjectRow) {
     );
     out!("cost       ${:.2}", r.cost_usd);
     out!(
+        "jobs       today={} ok={} failed={} needs_human={}",
+        r.jobs_today,
+        r.jobs_ok,
+        r.jobs_failed,
+        r.jobs_needs_human
+    );
+    out!(
         "defaults   workflow={} per-task=${} per-initiative=${} supervisor={} per-lineage={} protected={}",
         r.workflow.as_deref().unwrap_or("-"),
         r.per_task_usd
@@ -3503,6 +3510,27 @@ async fn stats(
                     Some(s) => format!("{:.0}%", s * 100.0),
                     None => "-".into(),
                 }
+            );
+        }
+    }
+    if !doc.jobs.is_empty() {
+        out!();
+        out!(
+            "{:<16} {:>5} {:>4} {:>6} {:>11}",
+            "PROJECT",
+            "TODAY",
+            "OK",
+            "FAILED",
+            "NEEDS_HUMAN"
+        );
+        for j in &doc.jobs {
+            out!(
+                "{:<16} {:>5} {:>4} {:>6} {:>11}",
+                j.project,
+                j.today,
+                j.ok,
+                j.failed,
+                j.needs_human
             );
         }
     }
