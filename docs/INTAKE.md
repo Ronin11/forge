@@ -115,3 +115,40 @@ better question, both of which are files.
 
 The first interview is the one with the business that runs on text,
 with the operator watching every turn.
+
+## The front door is not the interview (added 2026-09-17)
+
+A customer sends three kinds of message, and only one wants an
+interview.
+
+- **A request**: "make the quote text say 'usually same day'". They have
+  said exactly what they want. It becomes a task on their project with
+  the brief as its reason, the checks verify it, the deploy target ships
+  it, and the same thread says it is live. A one-off is a task of one.
+- **A question**: "did the reminder go to the Hendersons?" No build. It
+  is answered from the project's record, the way the supervisor answers
+  from ours.
+- **A need**: "I keep losing track of who I've quoted." A symptom with a
+  workflow underneath. This is the interview's case, and only this.
+
+So the front door is the **concierge**: a read-only directive that sees
+the message, the project's brief and backlog, and its recent tasks, and
+decides which of the three it is, asking one question only when it
+genuinely cannot tell. The interview is one branch; a task is another;
+an answer is the third. `forge ask <project> <message>` is the verb, and
+the Signal plugin routes a contact's message through it instead of
+filing it blindly as a task.
+
+**The escalator.** Because Forge keeps a record, one-offs turn into
+automation without anyone asking for it. After the third request of the
+same shape on a project, the concierge says so: "that is the third time
+you have asked me to change a quote by hand; want it to pull the price
+from your sheet?" That is the interviewer's naming-of-repetition applied
+across weeks instead of within one conversation. A yes files an
+initiative from the pattern.
+
+What keeps this small: the customer sees texts, one question at a time,
+from a stock model with a short prompt. No conversation engine, no state
+beyond a blocked task and its answer, no personas. The structure is two
+artifacts, a brief and a backlog. If it ever feels like a form, the fix
+is the prompt, not more harness.
