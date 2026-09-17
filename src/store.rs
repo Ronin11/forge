@@ -3390,10 +3390,8 @@ impl Store {
 
     /// Record a job starting. Returns its id; `finish_job` completes it,
     /// `append_job_step`/`append_job_effect` record what it did along the
-    /// way (see docs/JOBS.md, "The record"). Not called yet — the executor
-    /// is a later build-order step — but exercised directly by the store's
-    /// own tests below.
-    #[allow(dead_code)]
+    /// way (see docs/JOBS.md, "The record"), and `src/job.rs` is the
+    /// executor that calls all four.
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3417,9 +3415,7 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
-    /// Record one step of a job's run. Returns its id. Not called yet —
-    /// see `create_job`.
-    #[allow(dead_code)]
+    /// Record one step of a job's run. Returns its id; see `create_job`.
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3443,8 +3439,7 @@ impl Store {
     }
 
     /// Record one effect a job's step performed on the world. Returns its
-    /// id. Not called yet — see `create_job`.
-    #[allow(dead_code)]
+    /// id; see `create_job`.
     pub fn append_job_effect(&self, e: &JobEffect) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3456,8 +3451,7 @@ impl Store {
     }
 
     /// Record a job's outcome: its final state, cost and assertions'
-    /// verdict. Not called yet — see `create_job`.
-    #[allow(dead_code)]
+    /// verdict; see `create_job`.
     pub fn finish_job(
         &self,
         id: i64,

@@ -659,6 +659,25 @@ enum ProjectDeployCmd {
 
 #[derive(Subcommand)]
 enum JobCmd {
+    /// Start a job now, or leave it queued for the worker: a manual
+    /// trigger through `forge job start <project> <workflow>` (see
+    /// docs/JOBS.md, "The executor")
+    Start {
+        project: String,
+        workflow: String,
+        /// A JSON object; each top-level string field becomes
+        /// `FORGE_INPUT_<NAME>` for every step, and the whole file is
+        /// written to `$FORGE_INPUT_DIR/input.json`
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// Record what each effect operation would do without doing it
+        #[arg(long)]
+        dry_run: bool,
+        /// Run the job in this process now, rather than leaving it queued
+        /// for the worker
+        #[arg(long)]
+        now: bool,
+    },
     /// Jobs, newest first, or only `<project>`'s
     List {
         project: Option<String>,
@@ -984,6 +1003,13 @@ pub async fn main() -> Result<()> {
         },
         Cmd::Provision(a) => provision_run(a.project, a.name, a.args).await,
         Cmd::Job { cmd } => match cmd {
+            JobCmd::Start {
+                project,
+                workflow,
+                input,
+                dry_run,
+                now,
+            } => job_start(project, workflow, input, dry_run, now).await,
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),
@@ -1862,6 +1888,21 @@ fn print_job_row(r: &crate::view::JobRow) {
         r.state,
         r.trigger_kind
     );
+}
+
+/// `forge job start <project> <workflow> [--input <file>] [--dry-run]
+/// [--now]` (see docs/JOBS.md, "The executor").
+async fn job_start(
+    project: String,
+    workflow: String,
+    input: Option<PathBuf>,
+    dry_run: bool,
+    now: bool,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let id = crate::job::start(&f, &project, &workflow, input.as_deref(), dry_run, now).await?;
+    out!("{id}");
+    Ok(())
 }
 
 /// `forge job list [<project>] [--json]`: jobs, newest first, or only

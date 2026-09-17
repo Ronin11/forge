@@ -1,0 +1,15 @@
+name = "append-row"
+kind = "operation"
+description = "a job step's `row` effect: appends FORGE_INPUT_ROW as one line to the table FORGE_INPUT_TABLE (relative to the job's scratch directory). Honours FORGE_DRY_RUN by logging the row to FORGE_EFFECT_LOG without appending it."
+run = ["bash", "-c", '''
+set -e
+table="$FORGE_INPUT_TABLE"
+summary="appended a row to $table"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "row\t%s\t%s (dry run)\n" "$table" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  mkdir -p "$(dirname "$table")"
+  printf "%s\n" "$FORGE_INPUT_ROW" >> "$table"
+  printf "row\t%s\t%s\n" "$table" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']

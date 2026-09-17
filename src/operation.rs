@@ -353,6 +353,34 @@ pub(crate) async fn run_operation(
     Ok((true, detail))
 }
 
+/// A job step's operation (docs/JOBS.md, "The executor"): the action's
+/// `run` command, or the scratch tree's own declared check of that name.
+/// Unlike a task's operation there is no worktree, no commit, no verify:
+/// the exit code alone decides the step, and every fact the script needs
+/// (the job id, the step, the effect log, the dry-run flag, the input, the
+/// project's secrets) is already in `env`.
+pub(crate) async fn run_job_operation(
+    action: &workflows::ActionDef,
+    repo_checks: &BTreeMap<String, Vec<String>>,
+    cwd: &Path,
+    env: &[(String, String)],
+    timeout: Duration,
+) -> anyhow::Result<checks::CheckResult> {
+    let argv: Vec<String> = match (&action.run, &action.check) {
+        (Some(run), _) => run.clone(),
+        (None, Some(name)) => repo_checks.get(name).cloned().with_context(|| {
+            format!(
+                "job step {:?}: the repository declares no check named {name:?}",
+                action.name
+            )
+        })?,
+        (None, None) => {
+            anyhow::bail!("job step {:?} has neither run nor check", action.name)
+        }
+    };
+    Ok(checks::run_one("OP", &action.name, &argv, cwd, None, timeout, env).await)
+}
+
 /// The action a deploy target's `method` names, resolved once up front so
 /// `forge deploy` fails on an unknown method before it ever starts a
 /// deploy row.

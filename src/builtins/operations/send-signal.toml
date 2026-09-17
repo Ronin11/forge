@@ -1,0 +1,14 @@
+name = "send-signal"
+kind = "operation"
+description = "a job step's `message` effect: sends FORGE_INPUT_TEXT to FORGE_INPUT_CONTACT through signal-cli (SIGNAL_CLI names the binary, and SIGNAL_ACCOUNT the sending number, both project secrets). Honours FORGE_DRY_RUN by logging the message to FORGE_EFFECT_LOG without sending it."
+run = ["bash", "-c", '''
+set -e
+contact="$FORGE_INPUT_CONTACT"
+summary="sent to $contact"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "message\t%s\t%s (dry run)\n" "$contact" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  "${SIGNAL_CLI:-signal-cli}" -a "$SIGNAL_ACCOUNT" send -m "$FORGE_INPUT_TEXT" "$contact"
+  printf "message\t%s\t%s\n" "$contact" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']

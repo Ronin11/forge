@@ -1,0 +1,15 @@
+name = "write-file"
+kind = "operation"
+description = "a job step's `file` effect: writes FORGE_INPUT_CONTENT to the path FORGE_INPUT_PATH (relative to the job's scratch directory). Honours FORGE_DRY_RUN by logging the write to FORGE_EFFECT_LOG without touching the file."
+run = ["bash", "-c", '''
+set -e
+path="$FORGE_INPUT_PATH"
+summary="wrote $(printf %s "$FORGE_INPUT_CONTENT" | wc -c) byte(s) to $path"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "file\t%s\t%s (dry run)\n" "$path" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  mkdir -p "$(dirname "$path")"
+  printf "%s" "$FORGE_INPUT_CONTENT" > "$path"
+  printf "file\t%s\t%s\n" "$path" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']

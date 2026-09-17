@@ -209,6 +209,19 @@ struct HomeRaw {
     /// project and per task (see `build_roles`).
     #[serde(default)]
     roles: RolesRaw,
+    /// Per-project settings kept in the operator's own config rather than
+    /// the store: today just a project's secrets (see `ProjectHomeRaw`).
+    #[serde(default)]
+    projects: BTreeMap<String, ProjectHomeRaw>,
+}
+
+/// `[projects.<name>]` in the operator's config.
+#[derive(Deserialize, Default)]
+struct ProjectHomeRaw {
+    /// Injected as environment for that project's jobs (`forge job start`),
+    /// never into a prompt (see docs/JOBS.md, "Security posture").
+    #[serde(default)]
+    secrets: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -324,6 +337,9 @@ pub struct HomeConfig {
     /// Every role's default provider name (see `ROLES`); always has all
     /// five keys, "anthropic" where the operator named none.
     pub roles: BTreeMap<String, String>,
+    /// A project's secrets, by project name (see `ProjectHomeRaw`); a
+    /// project the operator declared none for is absent, not empty.
+    pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -529,6 +545,12 @@ max_questions_per_day = 8
 #
 # [roles]
 # review = \"devhome\"
+
+# A project's secrets, injected as environment for that project's jobs
+# (`forge job start`) and never into a prompt (see docs/JOBS.md).
+#
+# [projects.equitizr.secrets]
+# SIGNAL_TOKEN = \"...\"
 ";
 
 /// Write the operator's config the first time `home` is used, so there is a
@@ -609,6 +631,11 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         },
         providers,
         roles,
+        project_secrets: raw
+            .projects
+            .into_iter()
+            .map(|(name, p)| (name, p.secrets))
+            .collect(),
     })
 }
 

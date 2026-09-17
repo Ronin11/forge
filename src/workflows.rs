@@ -672,6 +672,22 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         "provision-hetzner.toml",
         include_str!("builtins/operations/provision-hetzner.toml"),
     ),
+    (
+        "write-file.toml",
+        include_str!("builtins/operations/write-file.toml"),
+    ),
+    (
+        "append-row.toml",
+        include_str!("builtins/operations/append-row.toml"),
+    ),
+    (
+        "http-post.toml",
+        include_str!("builtins/operations/http-post.toml"),
+    ),
+    (
+        "send-signal.toml",
+        include_str!("builtins/operations/send-signal.toml"),
+    ),
 ];
 
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
@@ -1305,6 +1321,49 @@ pub fn resolve(home: &Path, name: &str) -> Result<Resolved> {
     Ok(out)
 }
 
+/// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
+/// run workflow never splices a child workflow the way a build workflow
+/// does; every step names an action directly.
+fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec<ActionDef>> {
+    wf.steps
+        .iter()
+        .map(|s| {
+            let name = s.action.as_deref().with_context(|| {
+                format!(
+                    "{:?}: a job step names an action; run workflows do not compose child workflows",
+                    wf.name
+                )
+            })?;
+            actions.get(name).cloned().with_context(|| {
+                format!("{:?}: job step names unknown action {name:?}", wf.name)
+            })
+        })
+        .collect()
+}
+
+/// A run workflow by name, resolved to the exact action each of its steps
+/// runs (docs/JOBS.md, "The executor"). Unlike `resolve`, there is no
+/// splicing and none of `check_flow`'s build-only data-flow rules: a job
+/// step's action is used as written. Fails on an unknown workflow, a
+/// workflow that is not `kind = "run"`, an unknown action, or a step that
+/// names a child workflow.
+pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<ActionDef>)> {
+    let cat = load_catalog(home)?;
+    ensure_sound(&cat)?;
+    let wf = cat
+        .workflows
+        .get(name)
+        .with_context(|| format!("unknown workflow {name:?}; see `forge workflows`"))?
+        .clone();
+    if wf.kind != WorkflowKind::Run {
+        bail!(
+            "{name:?} is kind = \"build\"; `forge job start` runs kind = \"run\" workflows only"
+        );
+    }
+    let steps = job_steps(&wf, &cat.actions)?;
+    Ok((wf, steps))
+}
+
 /// One thing wrong with a file, and whether it blocks use.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Problem {
@@ -1332,9 +1391,17 @@ pub fn check(home: &Path) -> Result<Vec<Problem>> {
         }
     }
     for (name, wf) in &workflows {
-        let mut out = Resolved::default();
-        let r = splice(wf, &workflows, &actions, &mut Vec::new(), &mut out)
-            .and_then(|_| check_flow(&out.steps));
+        // A run workflow is not spliced and does not follow the build
+        // data-flow rules (`check_flow` requires a directive, which an
+        // operation-only job never has); it only needs its steps' actions
+        // to exist (see `job_steps`).
+        let r = if wf.kind == WorkflowKind::Run {
+            job_steps(wf, &actions).map(|_| ())
+        } else {
+            let mut out = Resolved::default();
+            splice(wf, &workflows, &actions, &mut Vec::new(), &mut out)
+                .and_then(|_| check_flow(&out.steps))
+        };
         if let Err(e) = r {
             problems.push(Problem {
                 file: format!("{name}.toml"),

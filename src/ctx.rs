@@ -90,6 +90,8 @@ pub struct Forge {
     pub providers: std::collections::BTreeMap<String, agent::Provider>,
     /// Every role's default provider name (see `config::ROLES`).
     pub roles: std::collections::BTreeMap<String, String>,
+    /// A project's secrets, by project name (see `config::load_home`).
+    pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
     pub sandbox: Option<Sandbox>,
     pub report: Reporter,
 }
@@ -129,6 +131,7 @@ impl Forge {
             intake: home.intake,
             providers: home.providers,
             roles: home.roles,
+            project_secrets: home.project_secrets,
             sandbox,
             report,
         })
@@ -148,6 +151,7 @@ impl Forge {
             intake: home.intake,
             providers: home.providers,
             roles: home.roles,
+            project_secrets: home.project_secrets,
             sandbox: None,
             report,
         })

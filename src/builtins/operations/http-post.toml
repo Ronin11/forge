@@ -1,0 +1,14 @@
+name = "http-post"
+kind = "operation"
+description = "a job step's `http` effect: posts FORGE_INPUT_BODY to FORGE_INPUT_URL. Honours FORGE_DRY_RUN by logging the call to FORGE_EFFECT_LOG without making it."
+run = ["bash", "-c", '''
+set -e
+url="$FORGE_INPUT_URL"
+summary="posted to $url"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "http\t%s\t%s (dry run)\n" "$url" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  curl -sS -X POST -d "$FORGE_INPUT_BODY" "$url" > /dev/null
+  printf "http\t%s\t%s\n" "$url" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']
