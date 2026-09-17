@@ -59,6 +59,11 @@ and does not parse stdout.
   beyond the printed path. `--revoke` first revokes every token minted
   earlier for this project, so only the fresh one keeps working; without
   it, an earlier link stays valid alongside the new one.
+- **`forge project resolve-token TOKEN --json`** — the project a customer
+  portal token opens (see docs/PORTAL.md, "What it is"): how
+  `forge-portal` turns `/p/<token>` into the name it then passes to
+  `forge project view`. Prints `{"project": NAME}`; exits non-zero if the
+  token is unknown or revoked.
 - **`forge initiative list [<project>] --json`** — every initiative, or
   only `<project>`'s, oldest first. A JSON array of
   [`InitiativeRow`](#initiativerow).
@@ -244,6 +249,7 @@ initiatives are a later build-order step.
 | `repos` | array of `{repo, scope}` | Repositories the project works in. `repo` is an absolute path; `scope` is the paths within it the project owns (a JSON-encoded array, as a string), or `null` for the whole repository. |
 | `queued`, `running`, `succeeded`, `failed`, `unverified`, `blocked`, `withdrawn` | integer | Task counts by state, across the project's tasks. |
 | `cost_usd` | number | Total cost across every attempt of every task in the project. |
+| `jobs_today`, `jobs_ok`, `jobs_failed`, `jobs_needs_human` | integer | Jobs (`kind = "run"` workflow runs) started in the last rolling 24h, counted separately from the task counts above: `jobs_today` is every one of them, the rest are of those how many reached each terminal state (see docs/JOBS.md step 1d). |
 | `workflow` | string or null | Default workflow for a task in this project, set by `forge project set --workflow`; `null` falls to "direct". |
 | `per_task_usd`, `per_initiative_usd` | number or null | Default cost caps, set by `forge project set`; `null` falls to the operator's config (per-task) or means no cap (per-initiative). |
 | `supervisor_model` | string or null | Default supervisor model, set by `forge project set --supervisor-model`; `null` falls to the operator's. |
@@ -436,10 +442,10 @@ of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 ### `StatsDoc`
 
 The document `forge stats --json` prints: `{workflows, steps, journal,
-no_journal, projects, by_role, assessment_correlation, tools}`. `tools`
-is present only with `--tools` (an object keyed by step name); otherwise
-it is omitted. `projects` is present only when `forge stats` is not
-itself scoped to one project or initiative.
+no_journal, projects, jobs, by_role, assessment_correlation, tools}`.
+`tools` is present only with `--tools` (an object keyed by step name);
+otherwise it is omitted. `projects` and `jobs` are present only when
+`forge stats` is not itself scoped to one project or initiative.
 
 **`workflows`** — array of `StatsWorkflowRow`, one per workflow name +
 definition hash: `workflow`, `hash`, `pieces` (task count),
@@ -529,6 +535,13 @@ either side has no variance to rank); `n` is how many tasks that rests
 on. Two rows are always present, in `churn` then `repair_cost` order.
 `forge stats --quality` prints the same two numbers as a line under the
 defect-escape table.
+
+**`jobs`** — array of `StatsJobsRow`, one per project with a job started
+in the last rolling 24h: `project`, `today` (every job of theirs started
+in the window), `ok`, `failed`, `needs_human` (of those, how many
+reached that state) — counted separately from `projects`'s task rollup,
+since a job is not a task (docs/JOBS.md step 1d). `forge stats` prints
+the same numbers as a table under the projects one.
 
 ### `PluginRow`
 
@@ -702,3 +715,12 @@ across a rotation, not to the snapshot protocol itself.
   `initiative report <id> --json` for the `/initiatives/<id>` page,
   which is the outcome, the tasks and their states, and the rest of the
   generated report all from that one document.
+- **`forge-portal`** (`portal/src/main.rs`): `GET /p/<token>` runs
+  `project resolve-token <token> --json` to find the project, then
+  `project view <name> --json` for the page's four read-only sections —
+  Running for you, Being built, Done, Your plan (Needs you and the Ask
+  box are a later build-order step; see docs/PORTAL.md, "Build order").
+  `GET /p/<token>/shot/<target>` streams that target's last-look
+  screenshot file, whose path is `PortalDoc.deploy_targets[].screenshot`.
+  An unknown or revoked token, a target with no screenshot, or any other
+  route is a plain 404 page.

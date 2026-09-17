@@ -75,6 +75,7 @@ name = "quote-by-text"
 kind = "run"
 description = "a customer texts a photo of a job; they get a quote back and it goes in the book"
 
+
 steps = [
   { action = "extract-job",  role = "read" },      # directive: photo + text → job description (schema)
   { action = "price-job" },                         # operation: rules from the price sheet

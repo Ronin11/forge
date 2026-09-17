@@ -10,8 +10,9 @@
 
 use crate::ctx::{Forge, Paths};
 use crate::engine::{self, Fault};
+use crate::job;
 use crate::report::Event;
-use crate::store::{Task, TaskState};
+use crate::store::{JobState, Task, TaskState};
 use crate::unix_now;
 use crate::workflows;
 use anyhow::Result;
@@ -19,6 +20,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
+
+/// What one slot of the worker's `--jobs` cap finished running: a task
+/// (`src/engine.rs`) or a job (`src/job.rs`) — the worker claims both from
+/// the same queue of free slots (docs/JOBS.md step 1d).
+enum WorkResult {
+    Task(i64, Result<TaskState>),
+    Job(i64, JobState),
+}
 
 pub fn pid_alive(pid: i64) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
@@ -304,9 +313,11 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     );
     let plugins = crate::plugins::Supervisor::start(f.clone());
     let jobs = opts.jobs.max(1);
-    let mut running: JoinSet<(i64, Result<TaskState>)> = JoinSet::new();
+    let mut running: JoinSet<WorkResult> = JoinSet::new();
     let mut ids: Vec<i64> = Vec::new();
+    let mut job_ids: Vec<i64> = Vec::new();
     let (mut done, mut ok) = (0u32, 0u32);
+    let (mut jobs_done, mut jobs_ok) = (0u32, 0u32);
     let mut stopping = false;
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
@@ -331,10 +342,36 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }
             let held = held_initiatives(&f)?;
-            let Some(t) = f.store.claim_next(pid, &held, |t| {
+            if let Some(t) = f.store.claim_next(pid, &held, |t| {
                 provider_is_held(&f, t) || intake_is_held(&f, t)
-            })?
-            else {
+            })? {
+                hold_until = None;
+                claimed += 1;
+                eprintln!(
+                    "======== task {} starting ({} queued, {} running)",
+                    t.id,
+                    f.store.queued_count()?,
+                    running.len() + 1
+                );
+                ids.push(t.id);
+                let fc = f.clone();
+                running.spawn(async move { WorkResult::Task(t.id, drive(fc, t.id).await) });
+            } else if let Some(j) = f.store.claim_next_job()? {
+                // A job carries no provider or initiative hold (it runs
+                // no directive step yet), so it is claimed only once
+                // every queued task has already been tried this pass.
+                hold_until = None;
+                claimed += 1;
+                eprintln!(
+                    "======== job {} starting ({} queued, {} running)",
+                    j.id,
+                    f.store.queued_jobs()?.len(),
+                    running.len() + 1
+                );
+                job_ids.push(j.id);
+                let fc = f.clone();
+                running.spawn(async move { WorkResult::Job(j.id, job::drive(fc, j.id).await) });
+            } else {
                 // Nothing claimable: either the queue is empty/blocked, or
                 // every queued candidate's own provider is at its cap.
                 // Only the latter is a hold worth waiting out.
@@ -347,18 +384,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     hold_until = None;
                 }
                 break;
-            };
-            hold_until = None;
-            claimed += 1;
-            eprintln!(
-                "======== task {} starting ({} queued, {} running)",
-                t.id,
-                f.store.queued_count()?,
-                running.len() + 1
-            );
-            ids.push(t.id);
-            let fc = f.clone();
-            running.spawn(async move { (t.id, drive(fc, t.id).await) });
+            }
         }
 
         if running.is_empty() {
@@ -393,20 +419,29 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         tokio::select! {
             Some(joined) = running.join_next() => {
                 match joined {
-                    Ok((id, Ok(state))) => {
+                    Ok(WorkResult::Task(id, Ok(state))) => {
                         ids.retain(|&x| x != id);
                         done += 1;
                         if state == TaskState::Succeeded { ok += 1 }
                         eprintln!("======== task {id} {}\n", state.as_str());
                     }
-                    Ok((id, Err(e))) => {
+                    Ok(WorkResult::Task(id, Err(e))) => {
                         ids.retain(|&x| x != id);
                         eprintln!("======== task {id} could not run: {e:#}");
                         env_error = Some(e);
                         stopping = true;
                     }
+                    Ok(WorkResult::Job(id, state)) => {
+                        // A job's own failure is recorded on the job
+                        // (`job::drive` never returns an error); it never
+                        // sets `env_error` or touches any task's state.
+                        job_ids.retain(|&x| x != id);
+                        jobs_done += 1;
+                        if state == JobState::Ok { jobs_ok += 1 }
+                        eprintln!("======== job {id} {}\n", state.as_str());
+                    }
                     Err(join) => {
-                        eprintln!("a task panicked: {join}");
+                        eprintln!("a task or job panicked: {join}");
                         stopping = true;
                     }
                 }
@@ -414,13 +449,16 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
             _ = shutdown_signal() => {
                 if !stopping {
                     stopping = true;
-                    eprintln!("stopping: no new tasks; {} running attempt(s) will finish (signal again to abort them)", running.len());
+                    eprintln!("stopping: no new tasks or jobs; {} running attempt(s) will finish (signal again to abort them)", running.len());
                 } else {
-                    eprintln!("aborting {} running attempt(s) and requeueing their tasks", running.len());
+                    eprintln!("aborting {} running attempt(s) and requeueing their tasks and jobs", running.len());
                     running.abort_all();
                     while running.join_next().await.is_some() {}
                     for id in ids.drain(..) {
                         f.store.requeue(id, "worker aborted by operator")?;
+                    }
+                    for id in job_ids.drain(..) {
+                        f.store.requeue_job(id)?;
                     }
                     break;
                 }
@@ -430,6 +468,12 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
     plugins.stop().await;
     eprintln!("worked {done} task(s): {ok} succeeded, {} not", done - ok);
+    if jobs_done > 0 {
+        eprintln!(
+            "worked {jobs_done} job(s): {jobs_ok} ok, {} not",
+            jobs_done - jobs_ok
+        );
+    }
     match env_error {
         Some(e) => Err(e),
         None => Ok(()),

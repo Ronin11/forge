@@ -785,6 +785,30 @@ impl From<&crate::store::ProjectStat> for StatsProjectRow {
     }
 }
 
+/// One row of `StatsDoc.jobs`: one project's jobs in the last rolling 24h,
+/// by outcome — counted separately from `StatsProjectRow`'s task rollup
+/// (docs/JOBS.md step 1d).
+#[derive(Serialize)]
+pub struct StatsJobsRow {
+    pub project: String,
+    pub today: i64,
+    pub ok: i64,
+    pub failed: i64,
+    pub needs_human: i64,
+}
+
+impl From<&crate::store::JobStat> for StatsJobsRow {
+    fn from(j: &crate::store::JobStat) -> Self {
+        StatsJobsRow {
+            project: j.project.clone(),
+            today: j.today,
+            ok: j.ok,
+            failed: j.failed,
+            needs_human: j.needs_human,
+        }
+    }
+}
+
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
 /// for one (role, provider, model) combination, role being the attempt's
 /// step, as `forge stats --by-role` shows it.
@@ -879,6 +903,10 @@ pub struct StatsDoc {
     /// scope of its own (see docs/PROJECTS.md, "The record, scoped").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<StatsProjectRow>,
+    /// Jobs started in the last rolling 24h, per project, by outcome; same
+    /// scoping rule as `projects` (docs/JOBS.md step 1d).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<StatsJobsRow>,
     /// Attempts, outcomes, cost and wall time per (role, provider, model);
     /// see `forge stats --by-role`.
     pub by_role: Vec<StatsRoleRow>,
@@ -1174,10 +1202,17 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
         .find(|j| !j.has_journal)
         .map(Into::into)
         .unwrap_or_default();
-    let projects = if scope.project.is_none() && scope.initiative.is_none() {
-        f.store.project_stats()?.iter().map(Into::into).collect()
+    let (projects, jobs) = if scope.project.is_none() && scope.initiative.is_none() {
+        (
+            f.store.project_stats()?.iter().map(Into::into).collect(),
+            f.store
+                .job_stats(crate::unix_now() - 86_400)?
+                .iter()
+                .map(Into::into)
+                .collect(),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     Ok(StatsDoc {
         workflows: f
@@ -1190,6 +1225,7 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
         journal,
         no_journal,
         projects,
+        jobs,
         by_role: f.store.role_stats()?.iter().map(Into::into).collect(),
         assessment_correlation: quality_correlation(f, scope)?,
         tools: None,
@@ -1399,6 +1435,14 @@ pub struct ProjectRow {
     pub blocked: i64,
     pub withdrawn: i64,
     pub cost_usd: f64,
+    /// Jobs (`kind = "run"` workflow runs) started in the last rolling
+    /// 24h, counted separately from the task rollup above (docs/JOBS.md
+    /// step 1d): every one of them, then how many of those reached each
+    /// terminal state.
+    pub jobs_today: i64,
+    pub jobs_ok: i64,
+    pub jobs_failed: i64,
+    pub jobs_needs_human: i64,
     pub workflow: Option<String>,
     pub per_task_usd: Option<f64>,
     pub per_initiative_usd: Option<f64>,
@@ -1419,6 +1463,9 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         .map(ProjectRepoRow::from)
         .collect();
     let cost = f.store.project_task_stats(&p.name)?.cost;
+    let job_stats = f
+        .store
+        .project_job_stats(&p.name, crate::unix_now() - 86_400)?;
     let tasks = f.store.project_tasks(&p.name)?;
     let mut proposals: Vec<ProposalRow> = tasks.iter().filter_map(proposal_row).collect();
     proposals.sort_by(|a, b| b.task_id.cmp(&a.task_id));
@@ -1447,6 +1494,10 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         blocked: stats.blocked,
         withdrawn: stats.withdrawn,
         cost_usd: cost,
+        jobs_today: job_stats.today,
+        jobs_ok: job_stats.ok,
+        jobs_failed: job_stats.failed,
+        jobs_needs_human: job_stats.needs_human,
         workflow: p.workflow.clone(),
         per_task_usd: p.per_task_usd,
         per_initiative_usd: p.per_initiative_usd,
@@ -2786,6 +2837,7 @@ mod stats_tests {
             journal: StatsJournalRow::default(),
             no_journal: StatsJournalRow::default(),
             projects: vec![],
+            jobs: vec![],
             by_role: vec![],
             assessment_correlation: vec![],
             tools: None,
@@ -2793,6 +2845,7 @@ mod stats_tests {
         let v = serde_json::to_value(&doc).unwrap();
         assert!(v.get("tools").is_none(), "{v}");
         assert!(v.get("projects").is_none(), "{v}");
+        assert!(v.get("jobs").is_none(), "{v}");
     }
 
     #[test]

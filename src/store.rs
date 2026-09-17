@@ -853,6 +853,21 @@ pub struct ProjectStat {
     pub broke_base: i64,
 }
 
+/// Jobs run in the last rolling 24h for one project, by outcome: what
+/// `forge project show` and `forge stats`'s jobs section count separately
+/// from tasks (docs/JOBS.md step 1d). `today` is every job started in the
+/// window, whatever its current state; `ok`/`failed`/`needs_human` are
+/// those of them that reached that state (a still-`queued` or `running`
+/// job counts toward `today` alone).
+#[derive(Default, Debug, Clone)]
+pub struct JobStat {
+    pub project: String,
+    pub today: i64,
+    pub ok: i64,
+    pub failed: i64,
+    pub needs_human: i64,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -3037,10 +3052,8 @@ impl Store {
     }
 
     /// The project an active (unrevoked) portal token opens, if any: how
-    /// the portal server resolves `/p/<token>`. Not called yet — the
-    /// server is a later build-order step (see docs/PORTAL.md) — but
-    /// exercised directly by the store's own tests below.
-    #[allow(dead_code)]
+    /// `forge project resolve-token` resolves `/p/<token>` for the portal
+    /// server (see docs/PORTAL.md).
     pub fn portal_token_project(&self, token: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
@@ -3301,6 +3314,47 @@ impl Store {
                 landed: r.get(2)?,
                 cost: r.get(3)?,
                 broke_base: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// One project's jobs in the last rolling 24h, by outcome: what `forge
+    /// project show` counts separately from its task rollup (see
+    /// `JobStat`, docs/JOBS.md step 1d).
+    pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+             FROM jobs WHERE project=?1 AND started_at >= ?2",
+            params![project, since],
+            |r| {
+                Ok(JobStat {
+                    project: project.to_string(),
+                    today: r.get(0)?,
+                    ok: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    needs_human: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                })
+            },
+        )?)
+    }
+
+    /// Every project with a job in the last rolling 24h, by outcome: what
+    /// `forge stats` adds as its jobs section when it is not itself scoped
+    /// to one project or initiative (see `JobStat`).
+    pub fn job_stats(&self, since: i64) -> Result<Vec<JobStat>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT project, COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+             FROM jobs WHERE started_at >= ?1 GROUP BY project ORDER BY project",
+        )?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok(JobStat {
+                project: r.get(0)?,
+                today: r.get(1)?,
+                ok: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                needs_human: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3654,6 +3708,51 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![project], job_effect_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Queued jobs, oldest first: what the worker's claim loop considers,
+    /// alongside `queued_unblocked`'s tasks (see `claim_next_job`).
+    pub fn queued_jobs(&self) -> Result<Vec<Job>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+             FROM jobs WHERE state='queued' ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], job_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Atomically take one specific queued job, mirroring `claim` for tasks.
+    pub fn claim_job(&self, id: i64) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE jobs SET state='running' WHERE id=?1 AND state='queued'",
+            params![id],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// The oldest queued job the worker can claim right now, same shape as
+    /// `claim_next` for tasks: a job carries no provider or initiative
+    /// hold yet (it runs no directive step), so the first one found is
+    /// always claimable.
+    pub fn claim_next_job(&self) -> Result<Option<Job>> {
+        for j in self.queued_jobs()? {
+            if self.claim_job(j.id)? {
+                return self.job(j.id);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Put a running job back in the queue: the worker aborted with it
+    /// still in flight (see `worker::work`'s double-signal abort, which
+    /// does the same for a running task's `requeue`).
+    pub fn requeue_job(&self, id: i64) -> Result<()> {
+        self.lock().execute(
+            "UPDATE jobs SET state='queued' WHERE id=?1 AND state='running'",
+            params![id],
+        )?;
+        Ok(())
     }
 }
 
