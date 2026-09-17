@@ -2076,8 +2076,19 @@ fn job_show(id: i64, json: bool) -> Result<()> {
     out!("cost       ${:.2}", doc.cost_usd.unwrap_or(0.0));
     if !doc.steps.is_empty() {
         out!("steps");
+        let verdict: Vec<crate::checks::CheckResult> =
+            serde_json::from_str(&doc.verdict_json).unwrap_or_default();
         for s in &doc.steps {
             out!("  {:<3} {:<20} {}", s.seq, s.action, s.kind);
+            if s.kind == "directive" {
+                let log = f.paths.logs.join(format!("job-{}-{}.jsonl", doc.id, s.seq));
+                if log.exists() {
+                    out!("      log    {}", log.display());
+                }
+                if let Some(c) = verdict.iter().find(|c| c.name == s.action && !c.ok) {
+                    out!("      failed {}", c.tail);
+                }
+            }
         }
     }
     if !doc.effects.is_empty() {
