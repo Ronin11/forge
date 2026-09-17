@@ -285,6 +285,17 @@ creates a same-named firewall allowing 22, 80, 443 and icmp if absent,
 `hcloud server create`s the box, waits for it to report running, prints
 its ipv4, and writes an ssh-config fragment for the operator to append
 to their own `~/.ssh/config`; see docs/DEPLOY.md, "Provisioning").
+
+A job's steps (docs/JOBS.md) are operations too, and four built-in ones
+perform its effects, each honouring `FORGE_DRY_RUN` by logging to
+`FORGE_EFFECT_LOG` instead of acting: `write-file` (writes
+`FORGE_INPUT_CONTENT` to `FORGE_INPUT_PATH`, the `file` effect),
+`append-row` (appends `FORGE_INPUT_ROW` to the table
+`FORGE_INPUT_TABLE`, the `row` effect), `http-post` (posts
+`FORGE_INPUT_BODY` to `FORGE_INPUT_URL`, the `http` effect), and
+`send-signal` (sends `FORGE_INPUT_TEXT` to `FORGE_INPUT_CONTACT` through
+signal-cli, the `message` effect).
+
 The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code
 visualiser: one JSON document of every source file the extractor table

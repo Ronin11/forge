@@ -75,10 +75,6 @@ name = "quote-by-text"
 kind = "run"
 description = "a customer texts a photo of a job; they get a quote back and it goes in the book"
 
-[trigger]
-on = "message"            # message | schedule | webhook | event | manual
-contact = "customers"     # the Signal plugin's contact group that starts it
-
 steps = [
   { action = "extract-job",  role = "read" },      # directive: photo + text → job description (schema)
   { action = "price-job" },                         # operation: rules from the price sheet
@@ -86,6 +82,10 @@ steps = [
   { action = "send-quote",   effect = "message" },  # operation: Signal to the sender
   { action = "log-quote",    effect = "row" },      # operation: append to the book
 ]
+
+[trigger]
+on = "message"            # message | schedule | webhook | event | manual
+contact = "customers"     # the Signal plugin's contact group that starts it
 
 [assert]
 quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once

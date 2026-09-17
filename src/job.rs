@@ -206,11 +206,7 @@ async fn run_now(
     let effect_log = idir.join("effects.log");
     std::fs::write(&effect_log, "")?;
 
-    let secrets = f
-        .project_secrets
-        .get(project)
-        .cloned()
-        .unwrap_or_default();
+    let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
     let timeout = Duration::from_secs(check_timeout_secs);
 
     let mut ok = true;

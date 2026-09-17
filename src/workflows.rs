@@ -1356,9 +1356,7 @@ pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<ActionDef>)
         .with_context(|| format!("unknown workflow {name:?}; see `forge workflows`"))?
         .clone();
     if wf.kind != WorkflowKind::Run {
-        bail!(
-            "{name:?} is kind = \"build\"; `forge job start` runs kind = \"run\" workflows only"
-        );
+        bail!("{name:?} is kind = \"build\"; `forge job start` runs kind = \"run\" workflows only");
     }
     let steps = job_steps(&wf, &cat.actions)?;
     Ok((wf, steps))
