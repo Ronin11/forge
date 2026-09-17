@@ -53,6 +53,7 @@ fn string_fields(input: &serde_json::Value) -> Result<Vec<(String, String)>> {
 /// (`FORGE_OUTPUT_<NAME>`): how a later operation reads what a directive
 /// decided (docs/JOBS.md, "The executor", item 3: "Outputs are files in
 /// the scratch directory and flow to the next step").
+#[allow(clippy::too_many_arguments)]
 fn step_env(
     job_id: i64,
     step_name: &str,
@@ -248,7 +249,11 @@ async fn run_directive(
         serde_json::from_str(schema).context("the action's schema is not valid JSON")?;
     let instance: serde_json::Value = match serde_json::from_str(structured) {
         Ok(v) => v,
-        Err(e) => return Ok(fail(format!("the structured output is not valid JSON: {e}"))),
+        Err(e) => {
+            return Ok(fail(format!(
+                "the structured output is not valid JSON: {e}"
+            )));
+        }
     };
     if let Err(e) = jsonschema::validate(&schema_value, &instance) {
         return Ok(fail(format!(
