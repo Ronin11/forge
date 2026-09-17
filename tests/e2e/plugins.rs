@@ -1052,3 +1052,252 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
         .unwrap();
     let _ = child.wait();
 }
+
+fn add_intake(e: &Env, task: &str) -> i64 {
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            task,
+            "--workflow",
+            "intake",
+            "--no-land",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn answer(e: &Env, id: i64, text: &str, by: &str) -> i64 {
+    let o = e.forge("ok.sh", &["answer", &id.to_string(), text, "--by", by]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .nth(4)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// The customer portal, step 4 (docs/PORTAL.md, "Reachable"): a `CONTACTS`
+/// name gets their portal link two ways, both against the same stub
+/// `signal-cli` as the sibling tests. First, unprompted: `forge intake
+/// accept` creating nate's first project emits `project_created`, which
+/// the still-running plugin picks up off the same event log and mints him
+/// a link. Second, on request: nate texts `/portal` and gets a link back
+/// too, minted fresh, for the project the first send already remembered
+/// he owns.
+#[test]
+fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_request() {
+    let e = Env::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/signal");
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "install", src.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    let outgoing = e._dir.path().join("signal-out.txt");
+    let incoming = e._dir.path().join("signal-in.txt");
+    std::fs::write(&outgoing, "").unwrap();
+    std::fs::write(&incoming, "").unwrap();
+
+    let operator_number = "+15555550199";
+    let nate_number = "+15555550122";
+
+    std::fs::write(
+        e.home.join("plugins/signal/config"),
+        format!(
+            "SIGNAL_ACCOUNT=+15555550100\n\
+             SIGNAL_TO={operator_number}\n\
+             SIGNAL_ALLOWED={operator_number}\n\
+             CONTACTS=nate:{nate_number}\n\
+             POLL_SECONDS=1\n\
+             TARGET_REPO={}\n\
+             WORKFLOW=direct\n\
+             NOTIFY_ON=blocked failed\n\
+             PORTAL_URL=https://portal.example.com\n",
+            e.repo.display()
+        ),
+    )
+    .unwrap();
+
+    // Same dest-recording stub as the addressee test.
+    let stub_dir = e._dir.path().join("stub-bin");
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("signal-cli"),
+        format!(
+            "#!/bin/sh\n\
+             case \"$3\" in\n\
+             send)\n\
+             shift 3\n\
+             msg=\"\"\n\
+             dest=\"\"\n\
+             while [ $# -gt 0 ]; do\n\
+             case \"$1\" in\n\
+             -m) msg=$2; shift 2 ;;\n\
+             -g) dest=$2; shift 2 ;;\n\
+             *) dest=$1; shift ;;\n\
+             esac\n\
+             done\n\
+             printf '%s|%s\\n===\\n' \"$dest\" \"$msg\" >> {out}\n\
+             ;;\n\
+             receive)\n\
+             if [ -s {inc} ]; then\n\
+             cat {inc}\n\
+             : > {inc}\n\
+             fi\n\
+             ;;\n\
+             esac\n",
+            out = outgoing.display(),
+            inc = incoming.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        stub_dir.join("signal-cli"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "signal"])
+            .status
+            .success()
+    );
+
+    let mut id = add_intake(&e, "Nate runs a shop. Contact: nate.");
+
+    let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
+    let stderr_path = e.home.join("worker-stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = e
+        .cmd("interviewer-confirmed.sh")
+        .env("PATH", path)
+        // The default 30s idle poll would outlast the wait below: after
+        // nate answers, the worker must notice the newly requeued task
+        // itself, not just claim the one already queued at startup.
+        .args(["work", "--poll", "1"])
+        .stderr(stderr_file)
+        .spawn()
+        .unwrap();
+
+    // Turn 0: the interviewer blocks, addressed to nate, asking him to
+    // confirm the brief.
+    assert!(
+        wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
+        "the intake task never blocked: {:?}",
+        std::fs::read_to_string(&stderr_path)
+    );
+
+    id = answer(&e, id, "Yes, that's right.", "nate");
+
+    // Turn 1: confirmed, so the intake task succeeds.
+    assert!(
+        wait_until(|| e.task(id).0 == "succeeded", Duration::from_secs(20)),
+        "the intake task never succeeded: {:?}",
+        std::fs::read_to_string(&stderr_path)
+    );
+
+    let accept = e.forge("ok.sh", &["intake", "accept", &id.to_string()]);
+    assert!(
+        accept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accept.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&accept.stdout).contains("created project nate"),
+        "{}",
+        String::from_utf8_lossy(&accept.stdout)
+    );
+
+    // Unprompted: the plugin saw `project_created` on the same event log
+    // it is still tailing, and sent nate his portal link without being
+    // asked.
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&outgoing)
+                .unwrap_or_default()
+                .contains("https://portal.example.com/p/"),
+            Duration::from_secs(10)
+        ),
+        "expected an unprompted portal link in {}: {:?}",
+        outgoing.display(),
+        std::fs::read_to_string(&outgoing)
+    );
+
+    let after_accept = std::fs::read_to_string(&outgoing).unwrap();
+    let first_entry = after_accept
+        .split("===\n")
+        .find(|e| e.contains("https://portal.example.com/p/"))
+        .unwrap_or_else(|| panic!("no entry carried the unprompted link: {after_accept}"));
+    assert!(
+        first_entry.starts_with(&format!("{nate_number}|")),
+        "the unprompted link must go to nate's number, not the operator's: {first_entry:?}"
+    );
+
+    // On request: nate texts /portal and gets his link back too, minted
+    // fresh (a different token from the unprompted one).
+    std::fs::write(
+        &incoming,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "envelope": {
+                    "source": nate_number,
+                    "sourceNumber": nate_number,
+                    "dataMessage": {"message": "/portal"}
+                }
+            })
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || {
+                std::fs::read_to_string(&outgoing)
+                    .unwrap_or_default()
+                    .matches("https://portal.example.com/p/")
+                    .count()
+                    >= 2
+            },
+            Duration::from_secs(10)
+        ),
+        "expected a second portal link after /portal in {}: {:?}",
+        outgoing.display(),
+        std::fs::read_to_string(&outgoing)
+    );
+
+    let after_portal = std::fs::read_to_string(&outgoing).unwrap();
+    let entries: Vec<&str> = after_portal
+        .split("===\n")
+        .filter(|e| e.contains("https://portal.example.com/p/"))
+        .collect();
+    assert_eq!(entries.len(), 2, "{after_portal:?}");
+    assert!(
+        entries[1].starts_with(&format!("{nate_number}|")),
+        "the /portal reply must go to nate's number: {:?}",
+        entries[1]
+    );
+    assert_ne!(
+        entries[0], entries[1],
+        "each mint should be a fresh token: {after_portal:?}"
+    );
+
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    let _ = child.wait();
+}

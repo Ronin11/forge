@@ -196,16 +196,20 @@ process with two loops so either exiting stops both. Outbound follows
 `forge events` the way notify does and messages a configured Signal
 number or group when a task reaches a state on its watch list (blocked,
 by default, or failed), including the blocked question if there is one,
-and when a deploy finishes: a failed or rolled-back deploy always
-messages, a passing one only when `NOTIFY_DEPLOY_OK=1` is set. Inbound
-polls `signal-cli receive` and, for a message from an allowed sender,
-either answers a task (`/answer <id> <text>`), reports queue status
-(`/status`), or files new work via `forge add`; anyone else's message is
+when a deploy finishes (a failed or rolled-back deploy always messages,
+a passing one only when `NOTIFY_DEPLOY_OK=1` is set), and when `forge
+intake accept` creates a project for the first time for a name in
+`CONTACTS` (docs/PORTAL.md, "Reachable"), sending that contact their
+customer portal link unprompted. Inbound polls `signal-cli receive`
+and, for a message from an allowed sender, either answers a task
+(`/answer <id> <text>`), reports queue status (`/status`), or files new
+work via `forge add`; a `CONTACTS` name can also text `/portal` at any
+time to get their own portal link resent. Anyone else's message is
 logged and dropped. Its configuration is `plugins/signal/config` (see
 `config.example`): the bot's Signal account, who to notify, the allowed
-senders, the target repo and workflow, which states to notify on, and
-whether a passing deploy is worth a message. Install with `forge plugin
-install plugins/signal`.
+senders, the target repo and workflow, which states to notify on,
+whether a passing deploy is worth a message, and the portal's public
+URL. Install with `forge plugin install plugins/signal`.
 
 **statusline** (`events`) maintains a status document, not a bar itself:
 it writes `$XDG_STATE_HOME/forge2/status.json` atomically on every event

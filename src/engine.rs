@@ -1133,6 +1133,24 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     if let Some(iid) = t.initiative {
         crate::view::maybe_settle_initiative(&f, id, iid).env()?;
     }
+    // A dependent waiting on this task, blocked with a stale reason
+    // because its after list has since been re-pointed here, is released
+    // or given a fresh reason now that this task itself has landed,
+    // failed, or gone unverified; a question or a review demotion
+    // (TaskState::Blocked) settles nothing for a dependent to react to.
+    if matches!(
+        t.state,
+        TaskState::Succeeded | TaskState::Failed | TaskState::Unverified
+    ) {
+        for d in f.store.release_dependents_of(id).env()? {
+            f.report.emit(
+                d,
+                Event::Note {
+                    text: "unblocked: its dependencies landed or were withdrawn",
+                },
+            );
+        }
+    }
 
     f.report.emit(
         id,

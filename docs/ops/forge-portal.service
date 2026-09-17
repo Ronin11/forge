@@ -1,0 +1,27 @@
+# A user-level systemd unit for forge-portal (see docs/PORTAL.md), the
+# customer portal server: binds loopback, reads and writes through the
+# `forge` binary, never opens forge.db itself. Install at
+# ~/.config/systemd/user/forge-portal.service on the operator's host (the
+# same box `forge deploy` and `forge provision` reach), then:
+#
+#   loginctl enable-linger <user>   # so it starts without a login session
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now forge-portal
+#
+# `deploy-user-service` (docs/DEPLOY.md, "Methods") restarts this same
+# unit after each landing on the repository that builds `forge`, the same
+# way it restarts any other project's service.
+[Unit]
+Description=Forge customer portal
+After=network.target
+
+[Service]
+WorkingDirectory=%h/forge2
+Environment=FORGE2_HOME=%h/.local/share/forge2
+Environment=FORGE_BIN=%h/forge2/target/release/forge
+ExecStart=%h/forge2/target/release/forge-portal --bind 127.0.0.1:7799
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

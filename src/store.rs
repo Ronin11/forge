@@ -1529,6 +1529,62 @@ fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
+/// The shared decision behind `release_dependents` and
+/// `release_dependents_of`: for each `(id, after_json)` candidate — always
+/// a task currently `blocked` with a reason starting "waits on task" —
+/// walk its after list and either release it to `queued` with its reason
+/// cleared (every dependency landed or was withdrawn: never a defect in
+/// the work, see `TaskState::Withdrawn`), give it a fresh reason naming
+/// the first dependency that ended badly (failed, unverified, or
+/// succeeded without landing), or leave it alone (a dependency still
+/// queued, running, or itself blocked has not resolved yet). Returns the
+/// ids released to `queued`.
+fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<Vec<i64>> {
+    let mut released = Vec::new();
+    for (id, after_json) in candidates {
+        let after: Vec<i64> = serde_json::from_str(&after_json).unwrap_or_default();
+        let mut blocker: Option<(i64, String, String)> = None;
+        let mut all_resolved = true;
+        for d in after {
+            let row: Option<(String, String, bool, String)> = c
+                .query_row(
+                    "SELECT state, reason, land, landed_sha FROM tasks WHERE id=?1",
+                    params![d],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let Some((state, reason, land, landed_sha)) = row else {
+                all_resolved = false;
+                continue;
+            };
+            let ok =
+                state == "withdrawn" || (state == "succeeded" && (!land || !landed_sha.is_empty()));
+            if ok {
+                continue;
+            }
+            all_resolved = false;
+            if blocker.is_none() && matches!(state.as_str(), "failed" | "unverified" | "succeeded")
+            {
+                blocker = Some((d, state, reason));
+            }
+        }
+        if let Some((d, state, reason)) = blocker {
+            let why = format!("waits on task {d} ({state}: {reason})");
+            c.execute(
+                "UPDATE tasks SET reason=?2 WHERE id=?1 AND state='blocked'",
+                params![id, why],
+            )?;
+        } else if all_resolved {
+            c.execute(
+                "UPDATE tasks SET state='queued', reason='', finished_at=NULL WHERE id=?1 AND state='blocked'",
+                params![id],
+            )?;
+            released.push(id);
+        }
+    }
+    Ok(released)
+}
+
 /// `task_repair_cost`'s cached row for `task_id`: `(repair_cost,
 /// computed_at)`, or `None` if it has never been computed. See
 /// `compute_repair_cost` in view.rs for how the git-level number is
@@ -1870,41 +1926,72 @@ impl Store {
     }
 
     /// A retry of `old` carries its dependents along: every task waiting
-    /// on `old` waits on `new` instead, and one that was swept into
-    /// blocked because `old` ended is queued again. Returns the ids moved.
+    /// on `old` waits on `new` instead. Releasing a dependent that was
+    /// swept into blocked by `old`'s failure is no longer this function's
+    /// job: it happens once `new` itself reaches a terminal state, the
+    /// same as any other re-pointed dependency (see
+    /// `release_dependents_of`). Returns the ids moved.
     pub fn reroute_dependents(&self, old: i64, new: i64) -> Result<Vec<i64>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, t.after_json, t.state, t.reason FROM tasks t, json_each(t.after_json) j
+            "SELECT t.id, t.after_json FROM tasks t, json_each(t.after_json) j
              WHERE j.value = ?1 AND t.state IN ('queued', 'blocked') AND t.id != ?2",
         )?;
-        let rows: Vec<(i64, String, String, String)> = stmt
-            .query_map(params![old, new], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(params![old, new], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut moved = Vec::new();
-        for (id, after_json, state, reason) in rows {
+        for (id, after_json) in rows {
             let after: Vec<i64> = serde_json::from_str(&after_json).unwrap_or_default();
             let after: Vec<i64> = after
                 .into_iter()
                 .map(|d| if d == old { new } else { d })
                 .collect();
-            let swept = state == "blocked" && reason.starts_with(&format!("waits on task {old} "));
-            if swept {
-                c.execute(
-                    "UPDATE tasks SET after_json=?2, state='queued', reason='', finished_at=NULL WHERE id=?1",
-                    params![id, serde_json::to_string(&after)?],
-                )?;
-            } else {
-                c.execute(
-                    "UPDATE tasks SET after_json=?2 WHERE id=?1",
-                    params![id, serde_json::to_string(&after)?],
-                )?;
-            }
+            c.execute(
+                "UPDATE tasks SET after_json=?2 WHERE id=?1",
+                params![id, serde_json::to_string(&after)?],
+            )?;
             moved.push(id);
         }
         Ok(moved)
+    }
+
+    /// Re-evaluate every task that waits on `dep` and is currently blocked
+    /// with a reason that says so: the trigger fired whenever a task
+    /// reaches a terminal state (see `engine::run_task` and
+    /// `queue::withdraw`), so a dependent whose after list was re-pointed
+    /// at `dep` — by a retry's reroute or by hand — is released (or freshly
+    /// reblocked) as soon as `dep` resolves, rather than waiting for the
+    /// next full scan. Returns the ids released to `queued`.
+    pub fn release_dependents_of(&self, dep: i64) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let candidates: Vec<(i64, String)> = {
+            let mut stmt = c.prepare(
+                "SELECT t.id, t.after_json FROM tasks t, json_each(t.after_json) j
+                 WHERE j.value = ?1 AND t.state = 'blocked' AND t.reason LIKE 'waits on task%'",
+            )?;
+            stmt.query_map(params![dep], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        release_or_reblock(&c, candidates)
+    }
+
+    /// Re-evaluate every currently blocked task whose reason says it
+    /// waits on a dependency: the backstop run on each claim loop, so a
+    /// dependent whose after list was re-pointed by a direct store edit —
+    /// which fires no trigger of its own — still catches up once its
+    /// (possibly new) dependency resolves. Returns the ids released to
+    /// `queued`.
+    pub fn release_dependents(&self) -> Result<Vec<i64>> {
+        let c = self.lock();
+        let candidates: Vec<(i64, String)> = {
+            let mut stmt = c.prepare(
+                "SELECT id, after_json FROM tasks WHERE state = 'blocked' AND reason LIKE 'waits on task%'",
+            )?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        release_or_reblock(&c, candidates)
     }
 
     /// The first task in `id`'s chain of retries: itself when it retries nothing.

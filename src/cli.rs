@@ -1773,6 +1773,13 @@ fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> R
             ..Default::default()
         })?;
         out!("created project {project_name}");
+        f.report.emit(
+            task,
+            crate::report::Event::ProjectCreated {
+                project: &project_name,
+                person: &person,
+            },
+        );
     } else {
         out!("project {project_name} already exists");
     }

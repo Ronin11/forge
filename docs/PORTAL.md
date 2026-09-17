@@ -48,6 +48,32 @@ reverse proxy the deploy targets use, on the operator's host, so a
 customer reaches it at a name and nothing on the box is exposed that
 was not already.
 
+## Reachable
+
+The reverse proxy entry is a name pointed at `forge-portal`'s loopback
+port, the same shape as every deploy target's Caddy block (see
+docs/DEPLOY.md, "Provisioning"):
+
+```
+portal.example.com {
+    reverse_proxy 127.0.0.1:7799
+}
+```
+
+`forge-portal` itself runs as a user-level systemd unit,
+`docs/ops/forge-portal.service`, kept alive the same way any long-running
+service on the operator's host is.
+
+The link still has to reach the customer. The Signal plugin
+(`plugins/signal/`) sends it two ways, both `forge project portal
+<project>` under the hood: a contact configured in its `CONTACTS` table
+gets their link back by texting `/portal`, and gets it unprompted the
+first time `forge intake accept` creates a project for them (the
+`project_created` event, docs/CLIENT.md) — the moment there is finally
+something on the page worth looking at. Its `PORTAL_URL` setting is the
+name from the Caddyfile block above, so the link it sends is the one
+that resolves.
+
 ## What it is not
 
 Not the operator's page with things hidden: a separate crate with its
@@ -62,5 +88,7 @@ line under Done, Being built, or Needs you.
 2. The crate and the read-only page: Running for you, Being built, Done,
    Your plan.
 3. Needs you with the answer form, and Ask through the concierge.
-4. The proxy entry on the operator's host and a link sent over the
-   customer's channel.
+4. Reachable: the proxy entry on the operator's host
+   (docs/DEPLOY.md, "Provisioning"), the `forge-portal` systemd unit
+   (`docs/ops/forge-portal.service`), and the Signal plugin sending a
+   contact their link on `/portal` and on their first project.

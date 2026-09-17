@@ -752,6 +752,17 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     if let Some(iid) = old.initiative {
         crate::view::maybe_settle_initiative(f, id, iid)?;
     }
+    // A dependent already blocked on this task (its after list re-pointed
+    // here while it waited) is released now that this one is terminal;
+    // one still queued is picked up by `block_dependents` instead.
+    for d in f.store.release_dependents_of(id)? {
+        f.report.emit(
+            d,
+            Event::Note {
+                text: "unblocked: its dependencies landed or were withdrawn",
+            },
+        );
+    }
     Ok(decision)
 }
 

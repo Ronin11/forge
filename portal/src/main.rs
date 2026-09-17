@@ -1,22 +1,66 @@
-//! forge-portal: the customer portal (see docs/PORTAL.md), a read-only
-//! page at `/p/<token>` showing one project's work in plain words. Like
+//! forge-portal: the customer portal (see docs/PORTAL.md), a page at
+//! `/p/<token>` showing one project's work in plain words. Like
 //! `forge-web` it never touches the kernel: every read is a `forge`
-//! verb's JSON. `GET /p/<token>` resolves the token to a project through
-//! `forge project resolve-token`, then renders `forge project view
-//! --json` as four sections: Running for you, Being built, Done, Your
+//! verb's JSON and every write is a `forge` verb's exit status. `GET
+//! /p/<token>` resolves the token to a project through `forge project
+//! resolve-token`, then renders `forge project view --json` as six
+//! sections: Running for you, Being built, Needs you, Done, Ask, Your
 //! plan. An unknown or revoked token is a plain 404 page, with no hint
 //! of why. `GET /p/<token>/shot/<target>` streams that deploy target's
-//! last-look screenshot file. This is the read-only step (docs/PORTAL.md,
-//! "Build order" 2); Needs you and the Ask box are step 3.
+//! last-look screenshot file.
+//!
+//! `POST /p/<token>/answer` (`id`, `text`) runs `forge answer <id> <text>
+//! --by customer`, re-queuing the blocked task; `POST /p/<token>/ask`
+//! (`message`) runs `forge ask <project> <message> --from customer` and
+//! shows its stdout back as the reply line. Both are token-scoped (the
+//! same 404 an unknown token gets elsewhere) and rate-limited to ten
+//! writes a minute per token; over that, and any failure from `forge`
+//! itself, is the same fixed error page, so nothing about why leaks.
 
 use anyhow::{Context, Result};
 use forge_client::{
     Forge, PortalBacklogItem, PortalBrief, PortalDeployTarget, PortalDoc, PortalInitiative,
-    PortalLanded,
+    PortalLanded, PortalQuestion,
 };
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+
+/// The identity the portal writes under: there is one link per project
+/// and no accounts yet (see docs/PORTAL.md, "What it is"), so every
+/// answer and every ask comes from the same named contact.
+const CONTACT: &str = "customer";
+
+/// Per-token write rate limit: ten writes a minute (see docs/PORTAL.md).
+const RATE_LIMIT: usize = 10;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Tracks write timestamps per token, in memory, for the lifetime of the
+/// server process. A token that outgrows this needs a real account
+/// system, which is a later build-order step.
+#[derive(Default)]
+struct RateLimiter {
+    hits: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl RateLimiter {
+    /// Records one write attempt for `token` and reports whether it is
+    /// within the limit: prunes hits older than the window, then allows
+    /// the write only if fewer than `RATE_LIMIT` remain.
+    fn allow(&self, token: &str) -> bool {
+        let now = Instant::now();
+        let mut hits = self.hits.lock().expect("rate limiter mutex poisoned");
+        let entry = hits.entry(token.to_string()).or_default();
+        entry.retain(|&t| now.duration_since(t) < RATE_WINDOW);
+        if entry.len() >= RATE_LIMIT {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
+}
 
 const STYLE: &str = include_str!("style.css");
 
@@ -110,6 +154,58 @@ fn not_found() -> Response<Cursor<Vec<u8>>> {
     )
 }
 
+/// The one error page every write failure shows, whatever the cause
+/// (rate limit, bad input, `forge` itself failing): fixed wording so
+/// nothing about why leaks (see docs/PORTAL.md).
+fn write_error(status: u16) -> Response<Cursor<Vec<u8>>> {
+    html(
+        status,
+        &page(
+            "Couldn't send that",
+            r#"<div class="notfound"><h1>That didn't go through.</h1><p>Wait a moment, then try again.</p></div>"#,
+        ),
+    )
+}
+
+/// Percent-decodes one `application/x-www-form-urlencoded` value (plus
+/// as space).
+fn urldecode(v: &str) -> String {
+    let bytes = v.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&v[i + 1..i + 3], 16) {
+                Ok(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                Err(_) => out.push(b'%'),
+            },
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// One value out of a `application/x-www-form-urlencoded` body.
+fn form_value(body: &str, key: &str) -> Option<String> {
+    body.split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| urldecode(v))
+}
+
+/// The request body, read to completion (tiny_http's reader is already
+/// bounded by `Content-Length`).
+fn read_body(req: &mut Request) -> String {
+    let mut body = String::new();
+    let _ = req.as_reader().read_to_string(&mut body);
+    body
+}
+
 /// The class and plain-word phrase for one deploy target's current state:
 /// bad beats a bad look, a bad look beats "never checked", "never
 /// checked" beats "never deployed".
@@ -188,6 +284,34 @@ fn render_landed(items: &[PortalLanded]) -> String {
     out
 }
 
+fn render_questions(items: &[PortalQuestion], token: &str) -> String {
+    if items.is_empty() {
+        return r#"<p class="empty">Nothing needs you right now.</p>"#.to_string();
+    }
+    let mut out = String::new();
+    for q in items {
+        out.push_str(&format!(
+            r#"<form class="ask" method="post" action="/p/{token}/answer"><p>{text}</p><input type="hidden" name="id" value="{id}"><input type="text" name="text" placeholder="Your answer" required><button type="submit">Send</button></form>"#,
+            token = esc(token),
+            text = esc(&q.text),
+            id = q.task_id,
+        ));
+    }
+    out
+}
+
+/// The Ask box: one text field posting to `/p/<token>/ask`. `reply`, when
+/// set, is the line the last submission's `forge ask` printed back.
+fn render_ask(token: &str, reply: Option<&str>) -> String {
+    let banner = reply
+        .map(|r| format!(r#"<p class="reply">{}</p>"#, esc(r)))
+        .unwrap_or_default();
+    format!(
+        r#"{banner}<form class="ask" method="post" action="/p/{token}/ask"><textarea name="message" placeholder="Ask us anything" required></textarea><button type="submit">Send</button></form>"#,
+        token = esc(token),
+    )
+}
+
 fn render_plan(brief: &Option<PortalBrief>, backlog: &[PortalBacklogItem]) -> String {
     let mut out = String::new();
     match brief {
@@ -213,7 +337,7 @@ fn render_plan(brief: &Option<PortalBrief>, backlog: &[PortalBacklogItem]) -> St
     out
 }
 
-fn render_page(doc: &PortalDoc, token: &str) -> String {
+fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String {
     let header = format!(
         r#"<header><h1>{}</h1><p>{}</p></header>"#,
         esc(&doc.project),
@@ -223,12 +347,16 @@ fn render_page(doc: &PortalDoc, token: &str) -> String {
         r#"<main>
 <section><h2>Running for you</h2>{targets}</section>
 <section><h2>Being built</h2>{initiatives}</section>
+<section><h2>Needs you</h2>{questions}</section>
 <section><h2>Done</h2>{landed}</section>
+<section><h2>Ask</h2>{ask}</section>
 <section><h2>Your plan</h2>{plan}</section>
 </main>"#,
         targets = render_targets(&doc.deploy_targets, token),
         initiatives = render_initiatives(&doc.initiatives),
+        questions = render_questions(&doc.questions, token),
         landed = render_landed(&doc.landed),
+        ask = render_ask(token, ask_reply),
         plan = render_plan(&doc.brief, &doc.backlog),
     );
     page(&doc.project, &format!("{header}{main}"))
@@ -241,15 +369,64 @@ fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
         .and_then(|t| t.screenshot.as_deref())
 }
 
-/// One request: resolve the token, then either render the page or stream
-/// a deploy target's last-look screenshot.
-fn handle(req: Request, forge: &Forge) {
-    let url = req.url().to_string();
-    let path = url.split('?').next().unwrap_or(&url).to_string();
-    if req.method() != &Method::Get {
-        let _ = req.respond(html(405, &page("Read-only", "<p>Read-only for now.</p>")));
+/// Answers a blocked task's question: `forge answer <id> <text> --by
+/// customer`, then the freshly re-read page. A missing or malformed
+/// `id`/`text`, or `forge` itself failing, is the fixed write-error page
+/// — never a hint of which.
+fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
+    let body = read_body(&mut req);
+    let id = form_value(&body, "id").and_then(|v| v.parse::<i64>().ok());
+    let text = form_value(&body, "text").filter(|t| !t.trim().is_empty());
+    let (Some(id), Some(text)) = (id, text) else {
+        let _ = req.respond(write_error(400));
+        return;
+    };
+    let id = id.to_string();
+    if forge.run(&["answer", &id, &text, "--by", CONTACT]).is_err() {
+        let _ = req.respond(write_error(502));
         return;
     }
+    match forge.project_view(project) {
+        Ok(doc) => {
+            let _ = req.respond(html(200, &render_page(&doc, token, None)));
+        }
+        Err(_) => {
+            let _ = req.respond(write_error(502));
+        }
+    }
+}
+
+/// Sends a message through the concierge: `forge ask <project> <message>
+/// --from customer`, then the freshly re-read page with the command's
+/// stdout shown back as the reply line.
+fn handle_ask(mut req: Request, forge: &Forge, project: &str, token: &str) {
+    let body = read_body(&mut req);
+    let Some(message) = form_value(&body, "message").filter(|m| !m.trim().is_empty()) else {
+        let _ = req.respond(write_error(400));
+        return;
+    };
+    let reply = match forge.run(&["ask", project, &message, "--from", CONTACT]) {
+        Ok(out) => out.trim().to_string(),
+        Err(_) => {
+            let _ = req.respond(write_error(502));
+            return;
+        }
+    };
+    match forge.project_view(project) {
+        Ok(doc) => {
+            let _ = req.respond(html(200, &render_page(&doc, token, Some(&reply))));
+        }
+        Err(_) => {
+            let _ = req.respond(write_error(502));
+        }
+    }
+}
+
+/// One request: resolve the token, then render the page, stream a
+/// deploy target's last-look screenshot, or run a write.
+fn handle(req: Request, forge: &Forge, limiter: &RateLimiter) {
+    let url = req.url().to_string();
+    let path = url.split('?').next().unwrap_or(&url).to_string();
     let Some(rest) = path.strip_prefix("/p/") else {
         let _ = req.respond(not_found());
         return;
@@ -262,6 +439,14 @@ fn handle(req: Request, forge: &Forge) {
         let _ = req.respond(not_found());
         return;
     }
+    let write_route = matches!(sub, Some("answer") | Some("ask"));
+    match (req.method(), write_route) {
+        (&Method::Get, false) | (&Method::Post, true) => {}
+        _ => {
+            let _ = req.respond(html(405, &page("Read-only", "<p>Read-only for now.</p>")));
+            return;
+        }
+    }
     let project = match forge.resolve_portal_token(token) {
         Ok(p) => p,
         Err(_) => {
@@ -269,6 +454,18 @@ fn handle(req: Request, forge: &Forge) {
             return;
         }
     };
+    if write_route {
+        if !limiter.allow(token) {
+            let _ = req.respond(write_error(429));
+            return;
+        }
+        match sub {
+            Some("answer") => handle_answer(req, forge, &project, token),
+            Some("ask") => handle_ask(req, forge, &project, token),
+            _ => unreachable!(),
+        }
+        return;
+    }
     let doc = match forge.project_view(&project) {
         Ok(d) => d,
         Err(_) => {
@@ -278,7 +475,7 @@ fn handle(req: Request, forge: &Forge) {
     };
     match sub {
         None => {
-            let _ = req.respond(html(200, &render_page(&doc, token)));
+            let _ = req.respond(html(200, &render_page(&doc, token, None)));
         }
         Some(sub) => {
             let target = sub
@@ -317,6 +514,7 @@ fn main() -> Result<()> {
         }
     }
     let forge = Forge::new();
+    let limiter = Arc::new(RateLimiter::default());
     let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("binding {bind}: {e}"))?;
     let addr = server.server_addr();
     eprintln!("forge-portal listening on {addr}");
@@ -324,7 +522,8 @@ fn main() -> Result<()> {
     let server = Arc::new(server);
     for req in server.incoming_requests() {
         let forge = forge.clone();
-        std::thread::spawn(move || handle(req, &forge));
+        let limiter = limiter.clone();
+        std::thread::spawn(move || handle(req, &forge, &limiter));
     }
     Ok(())
 }

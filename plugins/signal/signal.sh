@@ -28,6 +28,11 @@ NOTIFY_ON="blocked failed"
 # rolled-back deploy always sends a message (see docs/DEPLOY.md, "When a
 # deploy runs"). Set to 1 to also message on a deploy that simply passed.
 NOTIFY_DEPLOY_OK=0
+# Where the operator's reverse proxy serves the customer portal (see
+# docs/PORTAL.md and docs/DEPLOY.md, "Provisioning"), e.g.
+# https://portal.example.com. A portal link is sent as
+# "$PORTAL_URL/p/<token>"; left empty, the bare "/p/<token>" path is sent.
+PORTAL_URL=
 
 config="$FORGE_PLUGIN_DIR/config"
 if [ -f "$config" ]; then
@@ -47,6 +52,7 @@ if [ -f "$config" ]; then
             WORKFLOW) WORKFLOW=$val ;;
             NOTIFY_ON) NOTIFY_ON=$val ;;
             NOTIFY_DEPLOY_OK) NOTIFY_DEPLOY_OK=$val ;;
+            PORTAL_URL) PORTAL_URL=$val ;;
         esac
     done <"$config"
 fi
@@ -149,6 +155,47 @@ task_for_contact() {
     '
 }
 
+# The project CONTACTS name $1's customer portal link should open:
+# whatever `record_portal_project` last recorded for them (from a
+# `project_created` event, see docs/PORTAL.md), or their own name if
+# nothing has been recorded yet — `forge intake accept`'s default project
+# name is the interviewed person's name, slugged, so for a plain name
+# (the common case) this already matches before the event ever arrives.
+contact_project() {
+    name=$1
+    map="$FORGE_PLUGIN_STATE/portal-projects"
+    if [ -f "$map" ]; then
+        proj=$(awk -v want="$name" '$1==want{p=$2} END{if(p)print p}' "$map")
+        if [ -n "$proj" ]; then
+            printf '%s\n' "$proj"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$name"
+}
+
+# Remembers that CONTACTS name $1's portal project is $2, so a later
+# `/portal` request (or another project of theirs, later) resolves to it
+# even if it doesn't match their own name.
+record_portal_project() {
+    printf '%s %s\n' "$1" "$2" >>"$FORGE_PLUGIN_STATE/portal-projects"
+}
+
+# Mints a fresh customer portal link for CONTACTS name $1's project (see
+# docs/PORTAL.md) and sends it to Signal destination $2. Best-effort: a
+# person with no project yet (or a name `forge project portal` doesn't
+# recognize) gets nothing rather than an error message about internals.
+send_portal_link() {
+    name=$1
+    dest=$2
+    project=$(contact_project "$name")
+    link=$("$FORGE_BIN" project portal "$project" 2>/dev/null | tail -n1)
+    case "$link" in
+        /p/*) signal_send "$dest" "Your Forge portal: ${PORTAL_URL}${link}" ;;
+        *) log "could not mint a portal link for $name (project $project)" ;;
+    esac
+}
+
 outbound() {
     cursor="$FORGE_PLUGIN_STATE/cursor"
     if [ -f "$cursor" ]; then
@@ -180,6 +227,17 @@ outbound() {
                     status=failed
                 fi
                 signal_send "$SIGNAL_TO" "deploy $project/$target @ $sha: $status"
+            fi
+            continue
+        fi
+
+        if [ "$type" = project_created ]; then
+            project=$(printf '%s\n' "$line" | json_str project)
+            person=$(printf '%s\n' "$line" | json_str person)
+            num=$(contact_number "$person")
+            if [ -n "$num" ]; then
+                record_portal_project "$person" "$project"
+                send_portal_link "$person" "$num"
             fi
             continue
         fi
@@ -294,7 +352,9 @@ inbound() {
             name=$(contact_name "$sender")
             id=""
             [ -n "$name" ] && id=$(task_for_contact "$name")
-            if [ -n "$name" ] && [ -n "$id" ]; then
+            if [ -n "$name" ] && [ "$body" = "/portal" ]; then
+                send_portal_link "$name" "$sender"
+            elif [ -n "$name" ] && [ -n "$id" ]; then
                 handle_contact_reply "$name" "$sender" "$id" "$body"
             elif allowed "$sender"; then
                 handle_message "$body"
