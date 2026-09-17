@@ -702,6 +702,93 @@ fn a_directives_schema_invalid_output_fails_the_job_with_the_validation_message(
     );
 }
 
+/// A directive step whose agent run itself fails (docs/JOBS.md, "Steps"): no
+/// structured output, a `result` frame carrying an error subtype, and a line
+/// on stderr — what a job step run through `run_directive` leaves behind is
+/// like an attempt's own record: an event stream and stderr under
+/// `FORGE2_HOME/logs/job-<id>-<seq>.jsonl`, the prompt as its first line,
+/// the text the agent did return (there is no structured output to prefer)
+/// as the step's `output_ref`, and a verdict tail that quotes the result's
+/// own subtype and the stderr tail rather than a bare exit code. `forge job
+/// show` prints that tail and names the log file.
+#[test]
+fn a_directives_failed_agent_run_leaves_a_log_an_output_and_a_tail_naming_the_subtype() {
+    let e = Env::new();
+    setup_quote_workflow(&e);
+
+    let mut c = e.with_role("ok.sh", "EXTRACT_JOB", "job-directive-error.sh");
+    let o = c
+        .args(["job", "start", "equitizr", "quote", "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "the operation must not run: {steps:?}");
+    assert_eq!(steps[0]["action"], "extract-job");
+    assert!(
+        !steps[0]["output_ref"].as_str().unwrap().is_empty(),
+        "the plain text the agent returned instead of a structured result is \
+         still kept as the step's output: {steps:?}"
+    );
+    let output_text = std::fs::read_to_string(steps[0]["output_ref"].as_str().unwrap()).unwrap();
+    assert_eq!(output_text, "I could not complete this.");
+
+    let verdict = doc["verdict_json"].as_str().unwrap();
+    assert!(
+        verdict.contains("error_during_execution"),
+        "the tail quotes the result's own subtype: {verdict}"
+    );
+    assert!(
+        verdict.contains("boom: something in the sandbox broke"),
+        "the tail quotes the stderr tail: {verdict}"
+    );
+    assert!(
+        !verdict.contains("agent exit"),
+        "a directive's failure tail is never the bare exit code: {verdict}"
+    );
+
+    let log_path = e.home.join(format!("logs/job-{id}-0.jsonl"));
+    assert!(
+        log_path.is_file(),
+        "the step's event stream and stderr are logged like an attempt's: {}",
+        log_path.display()
+    );
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let first_line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        first_line["type"], "forge_prompt",
+        "the prompt comes first: {log}"
+    );
+    assert!(
+        log.contains("boom: something in the sandbox broke"),
+        "stderr is folded into the log too: {log}"
+    );
+
+    let show = e.forge("ok.sh", &["job", "show", &id.to_string()]);
+    let text = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        text.contains("error_during_execution") && text.contains("boom"),
+        "forge job show prints the failed step's tail: {text}"
+    );
+    assert!(
+        text.contains(log_path.to_str().unwrap()),
+        "forge job show names the log file: {text}"
+    );
+
+    assert!(
+        doc["effects"].as_array().unwrap().is_empty(),
+        "log-price never ran: {doc:?}"
+    );
+}
+
 /// `forge job bench`: the repository's own `.forge/workflows/changelog-line.toml`
 /// and two of its four real fixtures (`.forge/fixtures/changelog-line/`),
 /// run once per provider in dry-run mode. Two fake providers, told apart

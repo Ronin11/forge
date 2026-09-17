@@ -54,6 +54,14 @@ pub struct Outcome {
     pub max_turns_hit: bool,
     /// The provider refused the run for a rate window: not the agent's fault.
     pub rate_limited: bool,
+    /// The result frame's own `subtype` (e.g. `"success"`,
+    /// `"error_max_turns"`, `"error_during_execution"`); `None` when no
+    /// result frame ever arrived. A directive job step quotes this in its
+    /// failure tail instead of the bare exit code.
+    pub subtype: Option<String>,
+    /// Everything the agent wrote to stderr across the run. A directive job
+    /// step's failure tail quotes the last lines of this.
+    pub stderr_text: String,
 }
 
 /// Subscription usage as the CLI reports it: utilization is 0..1 of the
@@ -566,6 +574,7 @@ async fn run_once(
                     if let Some(id) = v["session_id"].as_str() {
                         out.session_id = Some(id.to_string());
                     }
+                    out.subtype = v["subtype"].as_str().map(str::to_string);
                     out.max_turns_hit = v["subtype"].as_str() == Some("error_max_turns");
                     let text = v["result"].as_str().unwrap_or("").to_ascii_lowercase();
                     if out.is_error && (text.contains("rate limit") || text.contains("rate-limit"))
@@ -724,38 +733,51 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     }
 }
 
+/// The claude CLI's argv for one launch: the flags common to every run,
+/// `--json-schema` for the structured result every step (attempt or
+/// directive) is held to, and, when `no_tools` asks for a bounded judgment
+/// with none, `--tools ""` — `--disallowedTools *` looked equivalent but is
+/// not: `--json-schema` forces a `StructuredOutput` tool into the run for
+/// the model to answer through, and `*` denies that one too, so the model
+/// can never submit its answer and the run ends at its turn cap with
+/// `error_max_turns` (docs/JOBS.md, "Steps"; reproduced by hand against the
+/// real CLI). `--tools ""` disables every other built-in tool while leaving
+/// `StructuredOutput` (which is not itself a member of the built-in set)
+/// reachable.
+fn claude_argv(bin: &str, l: &Launch<'_>) -> Vec<String> {
+    let mut argv = vec![
+        bin.to_string(),
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--model".to_string(),
+        l.model.to_string(),
+        "--max-turns".to_string(),
+        l.max_turns.to_string(),
+        "--json-schema".to_string(),
+        l.schema.to_string(),
+    ];
+    if l.no_tools {
+        argv.push("--tools".to_string());
+        argv.push(String::new());
+    }
+    argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(id) = l.resume {
+        argv.push("--resume".to_string());
+        argv.push(id.to_string());
+    }
+    argv
+}
+
 async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     // The binary itself, never a version-manager shim: a shim inside the
     // sandbox reaches for state the sandbox does not have (a global tool
     // config, a registry cache, a writable shims directory) and dies
     // before the agent starts. Forge 1 learned this the same way.
     let bin = real_bin(&agent_bin_for(l.step));
-    let mut argv: Vec<String> = [
-        bin.as_str(),
-        "--print",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--dangerously-skip-permissions",
-        "--model",
-        l.model,
-        "--max-turns",
-        &l.max_turns.to_string(),
-        "--json-schema",
-        l.schema,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    if l.no_tools {
-        argv.push("--disallowedTools".into());
-        argv.push("*".into());
-    }
-    argv.extend(l.provider.extra_args.iter().cloned());
-    if let Some(id) = l.resume {
-        argv.push("--resume".into());
-        argv.push(id.to_string());
-    }
+    let argv = claude_argv(&bin, &l);
     let mut identity = crate::git::identity(&l.worktree.join(".git")).await;
     identity.extend(l.provider.env.iter().cloned());
     let mut log =
@@ -766,7 +788,7 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
         serde_json::to_string(l.prompt)?
     )?;
 
-    let (out, stderr_text) = run_with_relaunch(
+    let (mut out, stderr_text) = run_with_relaunch(
         l.sandbox,
         l.worktree,
         &argv,
@@ -789,6 +811,7 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
             serde_json::to_string(&stderr_text)?
         )?;
     }
+    out.stderr_text = stderr_text;
     Ok(out)
 }
 
@@ -1239,6 +1262,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
             serde_json::to_string(&stderr_text)?
         )?;
     }
+    out.stderr_text = stderr_text;
     Ok(out)
 }
 
@@ -1770,5 +1794,95 @@ fi\n"
         let structured: Value =
             serde_json::from_str(&out.structured.expect("phase two still runs as today")).unwrap();
         assert_eq!(structured["summary"], "done");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_launch<'a>(
+        worktree: &'a Path,
+        report: &'a Reporter,
+        provider: &'a Provider,
+        log_path: &'a PathBuf,
+        schema: &'a str,
+        no_tools: bool,
+        resume: Option<&'a str>,
+    ) -> Launch<'a> {
+        Launch {
+            task_id: 1,
+            worktree,
+            prompt: "do the task",
+            model: "sonnet",
+            max_turns: 3,
+            timeout: Duration::from_secs(5),
+            log_path,
+            sandbox: None,
+            report,
+            step: "step",
+            provider,
+            resume,
+            start_sha: "",
+            writes: false,
+            schema,
+            early_ending: thresholds(100, 100, 100, 2),
+            no_tools,
+        }
+    }
+
+    /// `--disallowedTools *` looked like "no tools" but denies the
+    /// `StructuredOutput` tool `--json-schema` itself forces into the run,
+    /// so the model could never submit its answer and the run always ended
+    /// at its turn cap (reproduced by hand against the real CLI: exit 1,
+    /// `subtype: "error_max_turns"`). `--tools ""` disables the built-in set
+    /// while leaving `StructuredOutput` reachable.
+    #[test]
+    fn claude_argv_with_no_tools_uses_the_tools_flag_not_disallowed_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let l = test_launch(dir.path(), &report, &provider, &log_path, "{}", true, None);
+        let argv = claude_argv("claude", &l);
+        assert!(!argv.iter().any(|a| a == "--disallowedTools"), "{argv:?}");
+        let tools_at = argv
+            .iter()
+            .position(|a| a == "--tools")
+            .expect("--tools present: {argv:?}");
+        assert_eq!(argv[tools_at + 1], "", "{argv:?}");
+    }
+
+    #[test]
+    fn claude_argv_without_no_tools_passes_no_tools_flag_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let l = test_launch(dir.path(), &report, &provider, &log_path, "{}", false, None);
+        let argv = claude_argv("claude", &l);
+        assert!(!argv.iter().any(|a| a == "--tools"), "{argv:?}");
+    }
+
+    #[test]
+    fn claude_argv_carries_the_schema_model_and_resume_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider::default();
+        let log_path = dir.path().join("log.jsonl");
+        let schema = r#"{"type":"object"}"#;
+        let l = test_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            schema,
+            true,
+            Some("sess-1"),
+        );
+        let argv = claude_argv("claude", &l);
+        assert_eq!(argv[0], "claude");
+        let schema_at = argv.iter().position(|a| a == "--json-schema").unwrap();
+        assert_eq!(argv[schema_at + 1], schema);
+        let model_at = argv.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(argv[model_at + 1], "sonnet");
+        let resume_at = argv.iter().position(|a| a == "--resume").unwrap();
+        assert_eq!(argv[resume_at + 1], "sess-1");
     }
 }

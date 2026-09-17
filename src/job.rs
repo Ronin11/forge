@@ -19,7 +19,7 @@ use crate::agent;
 use crate::ctx::Forge;
 use crate::store::{Job, JobEffect, JobState, JobStep};
 use crate::workflows::{self, Kind};
-use crate::{checks, config, git, operation, unix_now, verify};
+use crate::{checks, config, git, operation, unix_now};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -171,6 +171,7 @@ struct DirectiveOutcome {
 async fn run_directive(
     f: &Forge,
     job_id: i64,
+    seq: i64,
     project_roles: &BTreeMap<String, String>,
     step: &workflows::RunStep,
     scratch: &Path,
@@ -199,7 +200,10 @@ async fn run_directive(
     let max_turns = step.max_turns.unwrap_or(1);
     let timeout = Duration::from_secs(step.timeout_secs.unwrap_or(120) as u64);
     let prompt = directive_prompt(action, input_text, step_outputs, input_bytes);
-    let log_path = idir.join(format!("step-{}.jsonl", action.name));
+    // Like an attempt's own log (`attempt::run_attempt`): the event stream
+    // and stderr on disk under `FORGE2_HOME/logs`, named so `forge job show`
+    // can point a failed step's tail at it.
+    let log_path = f.paths.logs.join(format!("job-{job_id}-{seq}.jsonl"));
     // Guaranteed present and valid JSON Schema by `workflows::job_steps`
     // and `parse_action`.
     let schema = action.schema.as_deref().unwrap_or("{}");
@@ -226,6 +230,26 @@ async fn run_directive(
     .await?;
 
     let cost_usd = outcome.cost_usd.unwrap_or(0.0);
+    let stderr_tail = checks::last_lines(&outcome.stderr_text, 20);
+
+    // Whatever text the agent produced — its structured result, or the
+    // plain text it returned instead when there was none — is written to
+    // disk and named as the step's `output_ref`, pass or fail, the same as
+    // an attempt leaves its own report behind: the point is never to have
+    // to re-run a job just to see what the model actually said.
+    let output_text = outcome
+        .structured
+        .clone()
+        .or_else(|| (!outcome.result_text.is_empty()).then(|| outcome.result_text.clone()));
+    let output_ref = output_text
+        .as_ref()
+        .map(|text| {
+            let path = idir.join(format!("output-{}.json", action.name));
+            std::fs::write(&path, text)?;
+            Ok::<_, anyhow::Error>(path)
+        })
+        .transpose()?;
+
     let fail = |tail: String| DirectiveOutcome {
         provider: provider.name.clone(),
         model: model.clone(),
@@ -237,10 +261,10 @@ async fn run_directive(
             tail,
             ..Default::default()
         },
-        output_text: String::new(),
-        output_ref: None,
+        output_text: output_text.clone().unwrap_or_default(),
+        output_ref: output_ref.clone(),
     };
-    if let Some(why) = verify::agent_failure(&outcome) {
+    if let Some(why) = directive_agent_failure(&outcome, &stderr_tail) {
         return Ok(fail(why));
     }
     let Some(structured) = &outcome.structured else {
@@ -262,8 +286,6 @@ async fn run_directive(
         )));
     }
 
-    let output_path = idir.join(format!("output-{}.json", action.name));
-    std::fs::write(&output_path, structured)?;
     Ok(DirectiveOutcome {
         provider: provider.name.clone(),
         model,
@@ -275,8 +297,39 @@ async fn run_directive(
             ..Default::default()
         },
         output_text: structured.clone(),
-        output_ref: Some(output_path),
+        output_ref,
     })
+}
+
+/// Why a directive step's agent run failed: unlike an attempt's own
+/// `verify::agent_failure`, this quotes the result frame's own `subtype`
+/// and the last lines of stderr rather than the bare exit code, since a
+/// job's directive step has no worktree of its own left behind to inspect
+/// after the fact — the log this writes under `FORGE2_HOME/logs` and the
+/// tail here are the only diagnosis a failed run leaves (docs/JOBS.md,
+/// "Steps").
+fn directive_agent_failure(outcome: &agent::Outcome, stderr_tail: &str) -> Option<String> {
+    let quote = |reason: &str| {
+        if stderr_tail.is_empty() {
+            reason.to_string()
+        } else {
+            format!("{reason}\nstderr:\n{stderr_tail}")
+        }
+    };
+    if outcome.rate_limited {
+        Some("rate limited by the provider".to_string())
+    } else if let Some(why) = &outcome.ended_early {
+        Some(format!("stopped early: {why}"))
+    } else if outcome.timed_out {
+        Some(quote("agent timed out"))
+    } else if !outcome.got_result {
+        Some(quote("agent produced no result"))
+    } else if outcome.is_error {
+        let subtype = outcome.subtype.as_deref().unwrap_or("error");
+        Some(quote(&format!("agent result {subtype:?}")))
+    } else {
+        None
+    }
 }
 
 /// `forge job start <project> <workflow>`: record a job and, with `--now`,
@@ -489,6 +542,7 @@ async fn run_now(
                 let d = match run_directive(
                     f,
                     job_id,
+                    seq,
                     project_roles,
                     step,
                     &scratch,
