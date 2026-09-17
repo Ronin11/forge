@@ -496,7 +496,9 @@ pub struct InitiativeRow {
 }
 
 /// One lineage in [`InitiativeDoc::tasks`]: its latest task's id, state
-/// and reason, plus how many retries the lineage took to reach it.
+/// and reason, plus how many retries the lineage took to reach it, and
+/// the assess directive's score for its own landing, if any ran (see
+/// docs/ACTIONS.md, "Assessment").
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct InitiativeTaskRow {
     #[serde(default)]
@@ -507,6 +509,8 @@ pub struct InitiativeTaskRow {
     pub reason: String,
     #[serde(default)]
     pub retries: i64,
+    #[serde(default)]
+    pub score: Option<i64>,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
@@ -703,6 +707,37 @@ pub struct Deploy {
     pub reason: String,
 }
 
+/// One finding in `Assessment.findings`, as the assess directive
+/// returned it.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Finding {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub finding: String,
+    #[serde(default)]
+    pub severity: String,
+}
+
+/// `TraceDoc.assessment`: the assess directive's most recent run against
+/// this task's own landing (see docs/ACTIONS.md, "Assessment"). Absent
+/// when it never ran.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Assessment {
+    #[serde(default)]
+    pub score: i64,
+    #[serde(default)]
+    pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
 /// One entry of `TraceDoc.ops`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Op {
@@ -751,6 +786,8 @@ pub struct TraceDoc {
     pub diagnosis: Value,
     #[serde(default)]
     pub deploys: Vec<Deploy>,
+    #[serde(default)]
+    pub assessment: Option<Assessment>,
 }
 
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time

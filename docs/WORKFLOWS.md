@@ -48,7 +48,12 @@ under `workflows/actions/`, see docs/ACTIONS.md) or another workflow,
 spliced inline, plus optional `model`, `max_turns`, and `timeout_secs`
 overriding the action's own defaults and the task's. A `[meta]`
 table declares what the author knows for a human or an agent choosing a
-workflow: `use_when`, `avoid_when`, `requires`. Never a cost: cost and
+workflow: `use_when`, `avoid_when`, `requires`. A top-level `assess =
+true` (default false) opts the workflow into running the `assess`
+directive once after a landing on it, scoring the landed diff's
+maintainability rather than sitting in `steps` like every other action
+(see docs/ACTIONS.md, "Assessment"); of the built-ins, `reviewed` and
+`tdd` set it. Never a cost: cost and
 success are measured from runs, and a workflow with fewer than five runs
 is `unknown`. `forge workflows` shows, per current version and per
 previous version over the last fifty tasks, the verified success rate

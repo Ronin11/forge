@@ -318,7 +318,7 @@ const UPTIME_RESET: Duration = Duration::from_secs(60);
 const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How often the supervisor re-reads the enabled set while the worker is
 /// up, so `forge plugin enable`/`disable` takes effect without a restart.
-const RECONCILE_SECS: u64 = 5;
+const RECONCILE_SECS: u64 = 10;
 
 /// What a plugin is doing right now, as the supervisor last recorded it.
 /// Persisted to `<FORGE2_HOME>/plugins-run/<name>.json` so `forge plugin
@@ -374,6 +374,38 @@ fn write_run_state(home: &Path, name: &str, state: &RunState) {
     if std::fs::write(&tmp, text).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
     }
+}
+
+fn restart_request_path(home: &Path, name: &str) -> PathBuf {
+    home.join("plugins-run").join(format!("{name}.restart"))
+}
+
+/// The restart generation the supervisor has last seen for `name`; `0`
+/// when `forge plugin restart` has never been called for it. A counter
+/// rather than a timestamp so two requests inside the same second are
+/// never coalesced into one.
+fn read_restart_gen(home: &Path, name: &str) -> u64 {
+    std::fs::read_to_string(restart_request_path(home, name))
+        .ok()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Bumps `name`'s restart generation so a running supervisor's next
+/// reconcile tick (see `Supervisor::start`) replaces its process with a
+/// fresh one, without touching the enabled flag. This is the only way a
+/// live plugin ever re-reads its own `FORGE_PLUGIN_DIR/config`: the
+/// reference plugins only read it at startup (see docs/PLUGINS.md).
+pub fn request_restart(home: &Path, name: &str) -> Result<()> {
+    let path = restart_request_path(home, name);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let next = read_restart_gen(home, name) + 1;
+    let tmp = path.with_extension("restart.tmp");
+    std::fs::write(&tmp, next.to_string())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 fn describe_exit(status: std::process::ExitStatus) -> String {
@@ -593,7 +625,11 @@ fn enabled_plugins_now(f: &Forge) -> BTreeMap<String, Plugin> {
 /// them (SIGTERM, then SIGKILL after ten seconds) when told to. While
 /// running it polls the enabled set every `RECONCILE_SECS` seconds, so
 /// `forge plugin enable`/`disable` take effect within a few seconds
-/// without needing the worker restarted.
+/// without needing the worker restarted; the same tick also notices a
+/// `forge plugin restart` request and swaps a still-enabled plugin's
+/// process for a fresh one, since `enable`/`disable` alone never
+/// replaces a process that stayed enabled the whole time (see
+/// `request_restart`).
 pub struct Supervisor {
     stop: watch::Sender<bool>,
     reconciler: JoinHandle<()>,
@@ -603,10 +639,29 @@ impl Supervisor {
     pub fn start(f: Arc<Forge>) -> Supervisor {
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let reconciler = tokio::spawn(async move {
-            let mut running: BTreeMap<String, (watch::Sender<bool>, JoinHandle<()>)> =
+            // `restart_gen` is the generation this instance was started
+            // with; a mismatch against `read_restart_gen` on a later tick
+            // means `forge plugin restart` ran while it was up.
+            let mut running: BTreeMap<String, (watch::Sender<bool>, JoinHandle<()>, u64)> =
                 BTreeMap::new();
             loop {
                 let enabled = enabled_plugins_now(&f);
+
+                let to_restart: Vec<String> = running
+                    .iter()
+                    .filter(|(name, (_, _, rgen))| {
+                        enabled.contains_key(*name)
+                            && read_restart_gen(&f.paths.home, name) != *rgen
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                for name in to_restart {
+                    if let Some((ptx, handle, _)) = running.remove(&name) {
+                        let _ = ptx.send(true);
+                        handle.await.ok();
+                    }
+                }
+
                 for (name, plugin) in &enabled {
                     if !running.contains_key(name) {
                         let (ptx, prx) = watch::channel(false);
@@ -615,7 +670,8 @@ impl Supervisor {
                             plugin.clone(),
                             prx,
                         ));
-                        running.insert(name.clone(), (ptx, handle));
+                        let rgen = read_restart_gen(&f.paths.home, name);
+                        running.insert(name.clone(), (ptx, handle, rgen));
                     }
                 }
                 let gone: Vec<String> = running
@@ -624,7 +680,7 @@ impl Supervisor {
                     .cloned()
                     .collect();
                 for name in gone {
-                    if let Some((ptx, handle)) = running.remove(&name) {
+                    if let Some((ptx, handle, _)) = running.remove(&name) {
                         let _ = ptx.send(true);
                         handle.await.ok();
                     }
@@ -638,7 +694,7 @@ impl Supervisor {
                     _ = stop_rx.changed() => {}
                 }
                 if *stop_rx.borrow() {
-                    for (_, (ptx, handle)) in std::mem::take(&mut running) {
+                    for (_, (ptx, handle, _)) in std::mem::take(&mut running) {
                         let _ = ptx.send(true);
                         handle.await.ok();
                     }

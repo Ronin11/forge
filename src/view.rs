@@ -10,7 +10,7 @@ use crate::store::{
 use crate::workflows::Problem;
 use crate::{config, plugins};
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One row of `forge log` / `forge log --json`: a task as the queue lists
@@ -331,6 +331,29 @@ pub struct TraceDiagnosis {
     pub action: String,
 }
 
+/// One finding in `TraceAssessment.findings`, as the assess directive
+/// returned it (see src/assess.rs).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Finding {
+    pub path: String,
+    pub finding: String,
+    pub severity: String,
+}
+
+/// `TraceDoc.assessment`: the assess directive's most recent run against
+/// this task's own landing (see docs/ACTIONS.md, "Assessment"). `None`
+/// when the workflow never opted in, the task never landed, or the run
+/// failed.
+#[derive(Serialize)]
+pub struct TraceAssessment {
+    pub score: i64,
+    pub findings: Vec<Finding>,
+    pub model: String,
+    pub provider: String,
+    pub cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
 /// Everything `forge trace` shows about a task, built once from the store.
 /// `forge trace --json` serializes this directly; `forge trace` and `forge
 /// show` both render text from it, so the three no longer each query the
@@ -347,6 +370,10 @@ pub struct TraceDoc {
     /// runs"). Empty for a task that never landed or landed nothing
     /// on-landing.
     pub deploys: Vec<DeployRow>,
+    /// The assess directive's most recent run against this task's own
+    /// landing (see docs/ACTIONS.md, "Assessment"). `None` when it never
+    /// ran.
+    pub assessment: Option<TraceAssessment>,
 }
 
 pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
@@ -360,6 +387,14 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         .iter()
         .map(DeployRow::from)
         .collect();
+    let assessment = f.store.assessment(t.id)?.map(|a| TraceAssessment {
+        score: a.score,
+        findings: serde_json::from_str(&a.findings_json).unwrap_or_default(),
+        model: a.model,
+        provider: a.provider,
+        cost_usd: a.cost_usd,
+        created_at: a.created_at,
+    });
 
     let task = TraceTask {
         id: t.id,
@@ -499,6 +534,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         resolved,
         diagnosis,
         deploys,
+        assessment,
     })
 }
 
@@ -1568,6 +1604,11 @@ pub struct InitiativeTaskRow {
     pub state: String,
     pub reason: String,
     pub retries: i64,
+    /// The assess directive's maintainability score for this task's own
+    /// landing, 0-10; `None` when it never ran (workflow does not opt
+    /// in, the task never landed, or the run failed; see
+    /// docs/ACTIONS.md, "Assessment").
+    pub score: Option<i64>,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
@@ -1729,13 +1770,16 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         stop_after_same_rule: ini.stop_after_same_rule,
         tasks: lineages
             .iter()
-            .map(|(t, retries)| InitiativeTaskRow {
-                id: t.id,
-                state: t.state.as_str().to_string(),
-                reason: t.reason.clone(),
-                retries: *retries,
+            .map(|(t, retries)| {
+                Ok(InitiativeTaskRow {
+                    id: t.id,
+                    state: t.state.as_str().to_string(),
+                    reason: t.reason.clone(),
+                    retries: *retries,
+                    score: f.store.assessment(t.id)?.map(|a| a.score),
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?,
         refused,
         rulings,
         questions,

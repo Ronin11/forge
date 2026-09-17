@@ -321,8 +321,16 @@ runs `assess` once against the landed diff and stores the row on
 `assessments` (`task_id`, `score`, `findings_json`, `model`, `provider`,
 `cost_usd`, `created_at`). A run that fails — the agent errors, its
 result does not fit the schema, or it touched the tree — is logged and
-ignored: no row, no effect on the task. No view or `forge stats` reads
-this table yet.
+ignored: no row, no effect on the task.
+
+A task's most recent assessment, once it has one, surfaces wherever the
+task itself does: `forge show` prints an `assess` line (score and
+finding count) and a `finding` line per finding, under the lineage;
+`forge trace --json` carries the same score, findings, model, provider
+and cost as an `assessment` object (`null` if it never ran; see
+docs/CLIENT.md, "`TraceDoc`"); `forge initiative report` adds a `score`
+to each of the initiative's tasks; and the web task view shows both. Not
+`forge stats`.
 
 ## The deploy look
 

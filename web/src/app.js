@@ -211,6 +211,9 @@
         const status = dep.check_ok === true ? 'ok' : dep.check_ok === false ? (dep.rolled_back_to ? `rolled back to ${esc(dep.rolled_back_to.slice(0, 8))}` : 'failed') : 'running';
         return `<div>${esc(dep.target)} ${esc((dep.sha || '').slice(0, 8))} ${status}</div>`;
       }).join('');
+      const assessment = d.assessment ? `
+        <div><span class="k">score</span>${d.assessment.score}/10 (${(d.assessment.findings || []).length} finding(s))</div>
+        ${(d.assessment.findings || []).map(fnd => `<div class="mute">${esc(fnd.severity)} ${esc(fnd.path)}: ${esc(fnd.finding)}</div>`).join('')}` : '';
       const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
       const retry = (t.state === 'failed' || t.state === 'blocked') ? `<button id="retry">retry</button>` : '';
       $('#detail').innerHTML = `
@@ -223,6 +226,7 @@
           ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
           ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
           ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
+          ${assessment}
           ${deploys ? `<div><span class="k">deploys</span>${deploys}</div>` : ''}
         </div>
         <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>

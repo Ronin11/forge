@@ -638,11 +638,13 @@ pub struct Deploy {
 /// One run of the assess directive against a landed task (see
 /// src/assess.rs): a maintainability score 0-10 and a list of findings, as
 /// the JSON `[{"path":...,"finding":...,"severity":"notable"|"concern"}]`
-/// the directive returned, with what ran it and what it cost. Never read
-/// by a view or `forge stats`.
+/// the directive returned, with what ran it and what it cost. Surfaced by
+/// `forge show`, `forge trace --json` and `forge initiative report`;
+/// never by `forge stats`.
 #[derive(Debug, Clone)]
 pub struct Assessment {
-    /// Recorded now; surfaced to a view once a later step needs it.
+    /// Recorded now; no view needs it (each reads a task's single most
+    /// recent assessment by `task_id`, not this row's own id).
     #[allow(dead_code)]
     pub id: i64,
     pub task_id: i64,
@@ -3137,9 +3139,7 @@ impl Store {
     }
 
     /// A task's most recent assessment, if the assess directive has ever
-    /// run against it. Recorded now; surfaced to a view once a later step
-    /// needs it (see `Assessment::id`).
-    #[allow(dead_code)]
+    /// run against it (see docs/ACTIONS.md, "Assessment").
     pub fn assessment(&self, task_id: i64) -> Result<Option<Assessment>> {
         Ok(self
             .lock()
