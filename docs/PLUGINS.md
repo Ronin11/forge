@@ -200,16 +200,24 @@ when a deploy finishes (a failed or rolled-back deploy always messages,
 a passing one only when `NOTIFY_DEPLOY_OK=1` is set), and when `forge
 intake accept` creates a project for the first time for a name in
 `CONTACTS` (docs/PORTAL.md, "Reachable"), sending that contact their
-customer portal link unprompted. Inbound polls `signal-cli receive`
-and, for a message from an allowed sender, either answers a task
-(`/answer <id> <text>`), reports queue status (`/status`), or files new
-work via `forge add`; a `CONTACTS` name can also text `/portal` at any
-time to get their own portal link resent. Anyone else's message is
-logged and dropped. Its configuration is `plugins/signal/config` (see
-`config.example`): the bot's Signal account, who to notify, the allowed
-senders, the target repo and workflow, which states to notify on,
-whether a passing deploy is worth a message, and the portal's public
-URL. Install with `forge plugin install plugins/signal`.
+customer portal link unprompted. Inbound polls `signal-cli receive`.
+An allowed sender or a `CONTACTS` name can answer a task (`/answer <id>
+<text>`), report queue status (`/status`), or ask for the command list
+(`/help`); an allowed sender's plain message files new work via `forge
+add`, and a `CONTACTS` name can also text `/portal` at any time to get
+their own portal link resent. Everything else from a `CONTACTS` name —
+unless it answers their own open question, which is submitted as their
+answer instead — routes through the concierge (docs/INTAKE.md, "The
+front door is not the interview"): `forge ask <project> "<message>"
+--from <name>`, the project being whichever `PROJECTS` names for them,
+or else `TARGET_REPO`'s own project, and the reply (an answer, "on it"
+for a filed task, or the question when the decision is unclear) is sent
+back to them. Anyone else's message is logged and dropped. Its
+configuration is `plugins/signal/config` (see `config.example`): the
+bot's Signal account, who to notify, the allowed senders, contacts and
+their projects, the target repo and workflow, which states to notify
+on, whether a passing deploy is worth a message, and the portal's
+public URL. Install with `forge plugin install plugins/signal`.
 
 **statusline** (`events`) maintains a status document, not a bar itself:
 it writes `$XDG_STATE_HOME/forge2/status.json` atomically on every event

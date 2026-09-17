@@ -20,6 +20,11 @@ SIGNAL_ALLOWED=
 # open is submitted as their answer, not queued as a new task.
 # Space-separated "name:number" pairs.
 CONTACTS=
+# Which project a CONTACTS name's plain message is filed against, as
+# "name:project" pairs (space-separated). A name PROJECTS does not list
+# falls to TARGET_REPO's own project (see `target_repo_project`), the
+# same repo->project link `forge add` resolves without a --project.
+PROJECTS=
 POLL_SECONDS=30
 TARGET_REPO=
 WORKFLOW=direct
@@ -47,6 +52,7 @@ if [ -f "$config" ]; then
             SIGNAL_TO) SIGNAL_TO=$val ;;
             SIGNAL_ALLOWED) SIGNAL_ALLOWED=$val ;;
             CONTACTS) CONTACTS=$val ;;
+            PROJECTS) PROJECTS=$val ;;
             POLL_SECONDS) POLL_SECONDS=$val ;;
             TARGET_REPO) TARGET_REPO=$val ;;
             WORKFLOW) WORKFLOW=$val ;;
@@ -101,6 +107,80 @@ contact_name() {
         fi
     done
     return 1
+}
+
+# The project PROJECTS names for CONTACTS name $1, or nothing (and a
+# non-zero exit) if PROJECTS names no project for them.
+project_for_contact() {
+    name=$1
+    for pair in $PROJECTS; do
+        n=${pair%%:*}
+        proj=${pair#*:}
+        if [ "$n" = "$name" ]; then
+            printf '%s\n' "$proj"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# TARGET_REPO's own project: whichever project's repository list names
+# it, read off the plain-text `forge project list` ("name" and "repo"
+# lines) rather than parsed JSON, since this is one exact string match,
+# not a document to walk. The same repo->project link `forge add`
+# resolves on its own when a task names no --project.
+target_repo_project() {
+    "$FORGE_BIN" project list 2>/dev/null | awk -v repo="$TARGET_REPO" '
+        /^name /  { name = $2 }
+        /^repo /  { if ($2 == repo) { print name; exit } }
+    '
+}
+
+# The project CONTACTS name $1's message should be filed against:
+# PROJECTS names it directly, or TARGET_REPO's own project when it does
+# not.
+concierge_project() {
+    name=$1
+    if proj=$(project_for_contact "$name") && [ -n "$proj" ]; then
+        printf '%s\n' "$proj"
+        return 0
+    fi
+    target_repo_project
+}
+
+# Runs the concierge (docs/INTAKE.md, "The front door is not the
+# interview") on CONTACTS name $1's message ($2), against project $3,
+# and sends whichever reply it decided back to their Signal number ($4):
+# the answer to a question, "on it" for a filed task (a request or a
+# need — either way a task now exists to act on), or the question when
+# the decision is unclear — the same open-question machinery
+# `task_for_contact` picks their next reply up with, so the exchange
+# continues as an interview would.
+concierge_reply() {
+    name=$1
+    body=$2
+    project=$3
+    dest=$4
+    errs=$(mktemp)
+    if out=$("$FORGE_BIN" ask "$project" "$body" --from "$name" 2>"$errs"); then
+        first=$(printf '%s\n' "$out" | head -n1)
+        case "$first" in
+            "concierge: a request;"* | "concierge: a need"*)
+                reply="on it"
+                ;;
+            "concierge: unclear;"*)
+                reply=$(printf '%s\n' "$first" | sed 's/^.*with a question\( for [^:]*\)\{0,1\}: //')
+                ;;
+            *)
+                reply=$first
+                ;;
+        esac
+    else
+        log "ask failed for $name: $(cat "$errs")"
+        reply="could not process that; try again?"
+    fi
+    rm -f "$errs"
+    signal_send "$dest" "$reply"
 }
 
 signal_send() {
@@ -282,13 +362,16 @@ allowed() {
     return 1
 }
 
-# $1: the message body from an allowed sender. Always passed to `forge`
-# as one argv entry, never through a shell that could interpret it: the
-# only commands this plugin recognizes are `/answer` and `/status`, and
-# everything else is external data handed to `forge add` as the task's
-# text, not instructions to this script.
+# $1: the message body from an allowed sender or a CONTACTS name, $2:
+# where the reply goes (an allowed sender's own SIGNAL_TO, or a
+# contact's own number). Always passed to `forge` as one argv entry,
+# never through a shell that could interpret it: the only commands this
+# plugin recognizes are `/answer`, `/status` and `/help`, and everything
+# else is external data handed to `forge add` as the task's text, not
+# instructions to this script.
 handle_message() {
     body=$1
+    dest=$2
     case "$body" in
         /answer\ *)
             rest=${body#/answer }
@@ -296,9 +379,9 @@ handle_message() {
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
             if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
-                signal_send "$SIGNAL_TO" "answered task $id"
+                signal_send "$dest" "answered task $id"
             else
-                signal_send "$SIGNAL_TO" "could not answer task $id"
+                signal_send "$dest" "could not answer task $id"
             fi
             ;;
         /status)
@@ -307,15 +390,18 @@ handle_message() {
             running=$(printf '%s\n' "$snap" | grep -c '"state": *"running"')
             blocked=$(printf '%s\n' "$snap" | grep -c '"state": *"blocked"')
             worker=$(printf '%s\n' "$snap" | sed -n 's/.*"running": *\(true\|false\).*/\1/p' | head -n1)
-            signal_send "$SIGNAL_TO" "queued=$queued running=$running blocked=$blocked worker=$worker"
+            signal_send "$dest" "queued=$queued running=$running blocked=$blocked worker=$worker"
+            ;;
+        /help)
+            signal_send "$dest" "commands: /answer <id> <text>, /status; anything else is filed as a new task"
             ;;
         *)
             out=$("$FORGE_BIN" add "$TARGET_REPO" "$body" --workflow "$WORKFLOW" 2>&1)
             id=$(printf '%s\n' "$out" | sed -n 's/.*queued task \([0-9]*\).*/\1/p')
             if [ -n "$id" ]; then
-                signal_send "$SIGNAL_TO" "queued task $id"
+                signal_send "$dest" "queued task $id"
             else
-                signal_send "$SIGNAL_TO" "could not queue: $out"
+                signal_send "$dest" "could not queue: $out"
             fi
             ;;
     esac
@@ -356,8 +442,22 @@ inbound() {
                 send_portal_link "$name" "$sender"
             elif [ -n "$name" ] && [ -n "$id" ]; then
                 handle_contact_reply "$name" "$sender" "$id" "$body"
+            elif [ -n "$name" ]; then
+                case "$body" in
+                    /answer\ * | /status | /help)
+                        handle_message "$body" "$sender"
+                        ;;
+                    *)
+                        project=$(concierge_project "$name")
+                        if [ -n "$project" ]; then
+                            concierge_reply "$name" "$body" "$project" "$sender"
+                        else
+                            log "no project for $name (PROJECTS names none and TARGET_REPO's is not on record); ignoring"
+                        fi
+                        ;;
+                esac
             elif allowed "$sender"; then
-                handle_message "$body"
+                handle_message "$body" "$SIGNAL_TO"
             else
                 log "ignoring message from ${sender:-an unknown sender}, not in SIGNAL_ALLOWED or CONTACTS"
             fi

@@ -20,10 +20,19 @@ SIGNAL_ALLOWED=+15555550199
 # Space-separated "name:number" pairs.
 CONTACTS=alice:+15555550111
 
+# Which project a CONTACTS name's plain message (not /answer, /status,
+# /help, or an answer to their open question) is routed to: `forge ask`
+# sorts it into a request, a question, a need, or unclear, and the
+# reply goes back to them over Signal. Space-separated "name:project"
+# pairs; a name this doesn't list falls to TARGET_REPO's own project.
+PROJECTS=alice:demo
+
 # How often to poll signal-cli for new messages.
 POLL_SECONDS=30
 
-# Repo and workflow `forge add` uses for a message that isn't a command.
+# Repo and workflow `forge add` uses for a message from an allowed
+# sender that isn't a command (see SIGNAL_ALLOWED above); also
+# PROJECTS' fallback project for a CONTACTS name's message.
 TARGET_REPO=/path/to/repo
 WORKFLOW=direct
 
