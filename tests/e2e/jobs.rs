@@ -701,3 +701,116 @@ fn a_directives_schema_invalid_output_fails_the_job_with_the_validation_message(
         "log-price never ran: {doc:?}"
     );
 }
+
+/// `forge job bench`: the repository's own `.forge/workflows/changelog-line.toml`
+/// and two of its four real fixtures (`.forge/fixtures/changelog-line/`),
+/// run once per provider in dry-run mode. Two fake providers, told apart
+/// by `JOB_BENCH_PROVIDER` (set through each one's own `[providers.<name>].env`,
+/// since the agent binary is chosen by step name alone — see
+/// `tests/fakes/job-bench.sh`): "anthropic" classifies both fixtures
+/// right, "devhome" is free and mislabels the fix as a chore. `bench`
+/// measures exactly that gap (docs/JOBS.md, "Steps": "the bounded
+/// judgment the local model is fit for").
+#[test]
+fn forge_job_bench_measures_two_fake_providers_over_two_fixtures() {
+    let e = Env::new();
+    std::fs::create_dir_all(&e.home).unwrap();
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[providers.anthropic]\n\
+         runner = \"claude-cli\"\n\
+         env = { JOB_BENCH_PROVIDER = \"anthropic\" }\n\
+         [providers.devhome]\n\
+         runner = \"claude-cli\"\n\
+         env = { JOB_BENCH_PROVIDER = \"devhome\" }\n",
+    )
+    .unwrap();
+
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    // The real automation this task ships, copied into the project's own
+    // repository the way docs/JOBS.md says an automation lives — not
+    // rewritten for the test, so the test exercises exactly the files
+    // that are checked in.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let wf_dir = e.repo.join(".forge/workflows");
+    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/changelog-line.toml"),
+        wf_dir.join("changelog-line.toml"),
+    )
+    .unwrap();
+    for f in [
+        "summarise-changelog-line.toml",
+        "append-changelog-line.toml",
+    ] {
+        std::fs::copy(
+            root.join(".forge/workflows/actions").join(f),
+            wf_dir.join("actions").join(f),
+        )
+        .unwrap();
+    }
+    let fx_dir = e.repo.join(".forge/fixtures/changelog-line");
+    std::fs::create_dir_all(&fx_dir).unwrap();
+    for f in ["01-fix.json", "03-docs.json"] {
+        std::fs::copy(
+            root.join(".forge/fixtures/changelog-line").join(f),
+            fx_dir.join(f),
+        )
+        .unwrap();
+    }
+
+    let o = e
+        .cmd("job-bench.sh")
+        .args([
+            "job",
+            "bench",
+            "equitizr",
+            "changelog-line",
+            "--providers",
+            "anthropic,devhome",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    eprintln!("{stdout}");
+    assert!(stdout.contains("anthropic"), "{stdout}");
+    assert!(stdout.contains("devhome"), "{stdout}");
+    assert!(
+        stdout.matches("2/2 (100%)").count() >= 3,
+        "both providers: 2/2 schema-valid, and anthropic also 2/2 expected-kind: {stdout}"
+    );
+    assert!(
+        stdout.contains("1/2 (50%)"),
+        "devhome mislabels the fix as a chore: {stdout}"
+    );
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "list", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 4, "two providers over two fixtures: {rows:?}");
+    assert!(
+        rows.iter().all(|r| r["dry_run"] == true),
+        "bench never performs a real effect: {rows:?}"
+    );
+}

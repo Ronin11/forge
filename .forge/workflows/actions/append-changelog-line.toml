@@ -1,0 +1,16 @@
+name = "append-changelog-line"
+kind = "operation"
+description = "a job step's `file` effect: appends the directive's changelog line to CHANGELOG.md in the scratch. Honours FORGE_DRY_RUN by logging the append to FORGE_EFFECT_LOG without touching the file."
+run = ["bash", "-c", '''
+set -e
+out="$FORGE_OUTPUT_SUMMARISE_CHANGELOG_LINE"
+line=$(sed -n 's/.*"line":"\([^"]*\)".*/\1/p' "$out")
+kind=$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$out")
+summary="($kind) $line"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "file\tCHANGELOG.md\t%s (dry run)\n" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  printf -- "- %s\n" "$summary" >> CHANGELOG.md
+  printf "file\tCHANGELOG.md\t%s\n" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']

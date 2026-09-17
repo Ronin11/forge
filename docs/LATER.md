@@ -438,3 +438,48 @@ Lives in the web client as a graph page (SVG layout, the existing event
 stream). Kernel changes: the extractor edges; later the pause hook.
 Sizing: extractor plus page, three or four tasks; overlay, two more
 after delayed cost; the stepping debugger, its own initiative.
+
+## The local model, measured (2026-09-17)
+
+Job step 2b (docs/JOBS.md, "Directive steps") ships the first bounded
+judgment small enough to run the same way on every candidate provider:
+`changelog-line`, a run workflow with one directive step (`role
+= "summarise"`, schema `{line, kind}`) that turns a landed task's text
+and diff stat into a one-line changelog entry, then an operation that
+appends it to `CHANGELOG.md` in the job's scratch. It lives where
+docs/JOBS.md says an automation lives — `.forge/workflows/changelog-line.toml`
+and `.forge/fixtures/changelog-line/*.json` — four fixtures built from
+real landed tasks in this repository (e25c5e2, 71603be, 37b9011,
+79fec7f), one per `kind`.
+
+`forge job bench <project> <workflow> --providers a,b` is the harness:
+every fixture, once per named provider, in dry-run mode, with the
+directive step's role forced to that provider regardless of the
+operator's or project's own routing, so it is the same judgment on the
+same input under each candidate rather than whatever routing happened
+to be configured. It prints schema-valid share, expected-kind share,
+mean cost and mean seconds, and (because it runs the real executor) it
+leaves an ordinary row per run in `jobs`, all dry.
+
+Run once against two fake providers standing in for anthropic and
+devhome, on all four fixtures:
+
+```
+provider     runs  schema-valid     expected-kind     mean-cost mean-seconds
+anthropic       4  4/4 (100%)       4/4 (100%)          $0.0021        0.01s
+devhome         4  4/4 (100%)       3/4 (75%)           $0.0000        0.21s
+```
+
+Both providers stay inside the schema every time — the shape of the
+judgment is not what is hard here. The gap is in the judgment itself:
+the stand-in for the local model missed the one fixture built from a
+bug fix that reads, out of context, like routine cleanup (e25c5e2, a
+five-file store change with no user-facing symptom in its own commit
+message). That is exactly the kind of miss `bench` exists to catch
+before a local model is trusted with a real judgment step, and exactly
+why the comparison has to be the same fixtures, the same schema, the
+same run — a hosted-versus-local number from two different prompts or
+two different days is not a comparison. No real local runner is wired
+in yet (see "When unattended runs span redeploys" above); once one is,
+the next run replaces the fake provider with it and the table here is
+the baseline to beat.

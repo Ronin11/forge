@@ -1,0 +1,7 @@
+{
+  "input": {
+    "task": "docs: steps before the tables in the run workflow example (TOML)\n\nTOML binds a bare `key = value` to the nearest preceding `[table]` header, so a run workflow's example needed `steps` written before `[trigger]`, not after it, to land as the workflow's own field rather than `trigger.steps`. No behavior changed; the example in docs/JOBS.md now parses the way the prose beside it already claimed.",
+    "diff_stat": "1 file changed, 1 insertion(+)"
+  },
+  "expected_kind": "docs"
+}

@@ -1447,6 +1447,36 @@ pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> 
     Ok((wf, steps))
 }
 
+/// A run workflow read straight from a project's own repository, at
+/// `.forge/workflows/<name>.toml` with its actions under
+/// `.forge/workflows/actions/` (docs/JOBS.md, "Where an automation
+/// lives"), rather than the operator's catalog `resolve_job` reads.
+/// `forge job bench` uses this: it measures an automation that is checked
+/// into the project it belongs to, not a built-in. No `ensure`: this
+/// directory is the project's own and is never git-initialised or seeded
+/// with built-ins the way the operator's catalog is.
+pub fn resolve_job_in_repo(repo: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> {
+    let dir = repo.join(".forge").join("workflows");
+    let path = dir.join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("no {} (see docs/JOBS.md)", path.display()))?;
+    let wf = parse_workflow(repo, &path, &text)?;
+    if wf.kind != WorkflowKind::Run {
+        bail!("{name:?} is kind = \"build\"; `forge job bench` runs kind = \"run\" workflows only");
+    }
+    let actions_dir = dir.join("actions");
+    let mut actions = BTreeMap::new();
+    for p in
+        toml_files(&actions_dir).with_context(|| format!("reading {}", actions_dir.display()))?
+    {
+        let text = std::fs::read_to_string(&p)?;
+        let a = parse_action(repo, &p, &text)?;
+        actions.insert(a.name.clone(), a);
+    }
+    let steps = job_steps(&wf, &actions)?;
+    Ok((wf, steps))
+}
+
 /// One thing wrong with a file, and whether it blocks use.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Problem {

@@ -21,10 +21,11 @@ use crate::store::{Job, JobEffect, JobState, JobStep};
 use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now, verify};
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn scratch_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}"))
@@ -289,7 +290,8 @@ pub async fn start(
     dry_run: bool,
     now: bool,
 ) -> Result<i64> {
-    f.store
+    let project_row = f
+        .store
         .project(project)?
         .with_context(|| format!("no project {project}"))?;
     let (wf, steps) = workflows::resolve_job(&f.paths.home, workflow)?;
@@ -357,6 +359,7 @@ pub async fn start(
         &input_text,
         &input_fields,
         cfg.check_timeout_secs,
+        &project_row.role_providers,
     )
     .await?;
     Ok(job_id)
@@ -378,6 +381,7 @@ async fn run_now(
     input_text: &str,
     input_fields: &[(String, String)],
     check_timeout_secs: u64,
+    project_roles: &BTreeMap<String, String>,
 ) -> Result<()> {
     let scratch = scratch_dir(f, job_id);
     let _ = std::fs::remove_dir_all(&scratch);
@@ -398,11 +402,6 @@ async fn run_now(
     let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
-    let project_roles = f
-        .store
-        .project(project)?
-        .map(|p| p.role_providers)
-        .unwrap_or_default();
 
     let mut ok = true;
     let mut needs_human = false;
@@ -490,7 +489,7 @@ async fn run_now(
                 let d = match run_directive(
                     f,
                     job_id,
-                    &project_roles,
+                    project_roles,
                     step,
                     &scratch,
                     &idir,
@@ -638,6 +637,11 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
     let input_json: serde_json::Value =
         serde_json::from_str(&input_text).context("parsing the job's saved input as JSON")?;
     let input_fields = string_fields(&input_json)?;
+    let project_roles = f
+        .store
+        .project(&job.project)?
+        .map(|p| p.role_providers)
+        .unwrap_or_default();
 
     run_now(
         f,
@@ -652,6 +656,7 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &input_text,
         &input_fields,
         cfg.check_timeout_secs,
+        &project_roles,
     )
     .await
 }
@@ -692,4 +697,173 @@ pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
         .flatten()
         .map(|j| j.state)
         .unwrap_or(JobState::Failed)
+}
+
+/// One recorded input for `forge job bench`, under a project repository's
+/// `.forge/fixtures/<workflow>/*.json`: the input document a real trigger
+/// would have delivered, and the classification a correct judgment should
+/// have produced (docs/JOBS.md, "Where an automation lives"). This is
+/// `bench`'s own fixture shape, not `forge job test`'s effect-expectation
+/// replay, which does not exist yet.
+#[derive(Deserialize)]
+struct Fixture {
+    input: serde_json::Value,
+    expected_kind: String,
+}
+
+/// Every fixture under `<repo>/.forge/fixtures/<workflow>/`, name and
+/// parsed content, sorted by file name so a bench run is reproducible.
+fn load_fixtures(repo: &Path, workflow: &str) -> Result<Vec<(String, Fixture)>> {
+    let dir = repo.join(".forge").join("fixtures").join(workflow);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(&p)?;
+            let fx: Fixture =
+                serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
+            let name = p.file_stem().unwrap().to_string_lossy().to_string();
+            Ok((name, fx))
+        })
+        .collect()
+}
+
+/// One provider's measurement across every fixture (docs/JOBS.md,
+/// "Steps": "the bounded judgment the local model is fit for").
+#[derive(Debug, Clone)]
+pub struct BenchStat {
+    pub provider: String,
+    pub runs: usize,
+    pub schema_valid: usize,
+    pub kind_correct: usize,
+    pub cost_usd: f64,
+    pub seconds: f64,
+}
+
+/// `forge job bench <project> <workflow> --providers a,b`: every fixture
+/// under the project repository's `.forge/fixtures/<workflow>/`, run once
+/// per named provider, in dry-run mode, with every directive step's role
+/// forced to that provider regardless of the operator's or project's own
+/// routing — the same judgment, on the same inputs, under each candidate,
+/// so the local model and the hosted ones are measured against each other
+/// rather than against a moving target (docs/JOBS.md, "Steps").
+pub async fn bench(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    providers: &[String],
+) -> Result<Vec<BenchStat>> {
+    let project_row = f
+        .store
+        .project(project)?
+        .with_context(|| format!("no project {project}"))?;
+    let repo = f
+        .store
+        .first_repo(project)?
+        .with_context(|| format!("project {project} has no registered repository"))?;
+    let repo_path = PathBuf::from(&repo);
+    let cfg = config::load_working(&repo_path).await?;
+    let landed_sha = git::rev_parse(&repo_path, &format!("refs/heads/{}", cfg.base_branch))
+        .await
+        .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo_path.display()))?;
+    let (wf, steps) = workflows::resolve_job_in_repo(&repo_path, workflow)?;
+    let fixtures = load_fixtures(&repo_path, workflow)?;
+    if fixtures.is_empty() {
+        anyhow::bail!(
+            "no fixtures under {}",
+            repo_path.join(".forge/fixtures").join(workflow).display()
+        );
+    }
+    let directive_roles: Vec<String> = steps
+        .iter()
+        .filter(|s| s.action.kind == Kind::Directive)
+        .filter_map(|s| s.role.clone())
+        .collect();
+
+    let mut out = Vec::new();
+    for provider in providers {
+        f.providers
+            .get(provider.as_str())
+            .with_context(|| format!("unknown provider {provider:?}; see `forge providers`"))?;
+        let mut forced_roles = project_row.role_providers.clone();
+        for role in &directive_roles {
+            forced_roles.insert(role.clone(), provider.clone());
+        }
+
+        let mut stat = BenchStat {
+            provider: provider.clone(),
+            runs: 0,
+            schema_valid: 0,
+            kind_correct: 0,
+            cost_usd: 0.0,
+            seconds: 0.0,
+        };
+        for (name, fx) in &fixtures {
+            let input_text = serde_json::to_string(&fx.input)?;
+            let input_fields = string_fields(&fx.input)?;
+            let job = Job {
+                id: 0,
+                project: project.to_string(),
+                workflow: workflow.to_string(),
+                workflow_hash: wf.hash.clone(),
+                landed_sha: landed_sha.clone(),
+                trigger_kind: workflows::TriggerOn::Manual.as_str().to_string(),
+                trigger_ref: String::new(),
+                state: JobState::Running,
+                dry_run: true,
+                started_at: unix_now(),
+                finished_at: None,
+                cost_usd: None,
+                verdict_json: "[]".to_string(),
+            };
+            let job_id = f.store.create_job(&job)?;
+            let t0 = Instant::now();
+            run_now(
+                f,
+                job_id,
+                project,
+                &repo_path,
+                &landed_sha,
+                &steps,
+                &wf.assert,
+                wf.limits.as_ref(),
+                true,
+                &input_text,
+                &input_fields,
+                cfg.check_timeout_secs,
+                &forced_roles,
+            )
+            .await
+            .with_context(|| format!("fixture {name:?} under provider {provider:?}"))?;
+            let elapsed = t0.elapsed().as_secs_f64();
+
+            let doc = f
+                .store
+                .job(job_id)?
+                .with_context(|| format!("job {job_id} vanished"))?;
+            let jsteps = f.store.job_steps(job_id)?;
+            stat.runs += 1;
+            stat.cost_usd += doc.cost_usd.unwrap_or(0.0);
+            stat.seconds += elapsed;
+            if let Some(d) = jsteps.iter().find(|s| s.kind == "directive")
+                && !d.output_ref.is_empty()
+            {
+                stat.schema_valid += 1;
+                if let Ok(text) = std::fs::read_to_string(&d.output_ref)
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                    && v.get("kind").and_then(|k| k.as_str()) == Some(fx.expected_kind.as_str())
+                {
+                    stat.kind_correct += 1;
+                }
+            }
+        }
+        out.push(stat);
+    }
+    Ok(out)
 }

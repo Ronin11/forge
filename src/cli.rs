@@ -722,6 +722,20 @@ enum JobCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Bench a run workflow's directive steps against every fixture under
+    /// the project repository's `.forge/fixtures/<workflow>/`, once per
+    /// named provider, in dry-run mode: schema-valid share, expected-kind
+    /// share, mean cost and mean seconds, so the local model and the
+    /// hosted ones are measured on the same real judgment (see
+    /// docs/JOBS.md, "Steps")
+    Bench {
+        project: String,
+        workflow: String,
+        /// Provider names already configured under `[providers.<name>]`
+        /// (see `forge providers`), comma-separated
+        #[arg(long, value_delimiter = ',')]
+        providers: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1042,6 +1056,11 @@ pub async fn main() -> Result<()> {
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),
+            JobCmd::Bench {
+                project,
+                workflow,
+                providers,
+            } => job_bench(project, workflow, providers).await,
         },
         Cmd::Initiative { cmd } => match cmd {
             InitiativeCmd::New {
@@ -2086,6 +2105,55 @@ fn job_log(project: String, json: bool) -> Result<()> {
             r.target,
             r.summary,
             if r.dry_run { " (dry run)" } else { "" }
+        );
+    }
+    Ok(())
+}
+
+/// `forge job bench <project> <workflow> --providers a,b`: see
+/// `crate::job::bench`.
+async fn job_bench(project: String, workflow: String, providers: Vec<String>) -> Result<()> {
+    if providers.is_empty() {
+        anyhow::bail!("--providers needs at least one name, comma-separated");
+    }
+    let f = Forge::open(false, false)?;
+    let rows = crate::job::bench(&f, &project, &workflow, &providers).await?;
+    out!(
+        "{:<12} {:>4}  {:<16} {:<16} {:>10} {:>12}",
+        "provider",
+        "runs",
+        "schema-valid",
+        "expected-kind",
+        "mean-cost",
+        "mean-seconds"
+    );
+    for r in &rows {
+        let pct = |n: usize| {
+            if r.runs == 0 {
+                0.0
+            } else {
+                100.0 * n as f64 / r.runs as f64
+            }
+        };
+        let mean = |x: f64| if r.runs == 0 { 0.0 } else { x / r.runs as f64 };
+        out!(
+            "{:<12} {:>4}  {:<16} {:<16} {:>10} {:>12}",
+            r.provider,
+            r.runs,
+            format!(
+                "{}/{} ({:.0}%)",
+                r.schema_valid,
+                r.runs,
+                pct(r.schema_valid)
+            ),
+            format!(
+                "{}/{} ({:.0}%)",
+                r.kind_correct,
+                r.runs,
+                pct(r.kind_correct)
+            ),
+            format!("${:.4}", mean(r.cost_usd)),
+            format!("{:.2}s", mean(r.seconds)),
         );
     }
     Ok(())

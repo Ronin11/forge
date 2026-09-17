@@ -1,0 +1,7 @@
+{
+  "input": {
+    "task": "jobs: fmt and clippy fixes for the directive-step executor\n\ncargo fmt --all and cargo clippy --workspace --all-targets -D warnings both pass; step_env now takes 8 parameters and needs the same too_many_arguments allow every other job.rs entry point already carries. No behavior changed.",
+    "diff_stat": "1 file changed, 6 insertions(+), 1 deletion(-)"
+  },
+  "expected_kind": "chore"
+}

@@ -1,0 +1,19 @@
+name = "changelog-line"
+kind = "run"
+description = "a landed task's text and diff stat become a one-line changelog entry, appended to CHANGELOG.md — the first bounded judgment measured across providers (docs/JOBS.md, \"Steps\")"
+
+steps = [
+  { action = "summarise-changelog-line", role = "summarise" },
+  { action = "append-changelog-line",    effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+appended = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 0.05
+per_day = 50
+on_failure = "ask:operator"

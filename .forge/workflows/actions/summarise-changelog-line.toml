@@ -1,0 +1,8 @@
+name = "summarise-changelog-line"
+kind = "directive"
+contract = "plan"
+description = "turn a landed task's text and diff stat into a one-line changelog entry"
+prompt = "Return only the fields the schema names: `line`, a single changelog line in the project's own voice (no leading dash, no trailing period), and `kind`, the one word that best names what the change was for a reader of the changelog."
+schema = '''
+{"type":"object","additionalProperties":false,"required":["line","kind"],"properties":{"line":{"type":"string","minLength":1},"kind":{"type":"string","enum":["fix","feature","docs","chore"]}}}
+'''
