@@ -133,7 +133,7 @@ forge project new <name> --purpose <text> [--repo <path>[:<scope>]]...
 forge project list | show <name> | backlog <name> [--add <text>]
 forge project set <name> --workflow … --per-task-usd … --supervisor-model …
 
-forge initiative new <project> --outcome <text> [--from <file>] [--provider <name>] [--budget <usd>]
+forge initiative new <project> --outcome <text> [--from <file>] [--provider <name>] [--workflow <name>] [--budget <usd>]
 forge initiative set <id> [--budget <usd>] [--stop-after <n>] [--outcome <text>]
 forge initiative list [<project>] | show <id> | report <id> [--json]
 forge add <repo> <text> --initiative <id>        (project follows the initiative)

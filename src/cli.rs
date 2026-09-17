@@ -664,8 +664,9 @@ enum InitiativeCmd {
         /// A file of task texts, one per paragraph (blank-line
         /// separated); a paragraph may lead with `after: <n>` (an
         /// earlier paragraph's 1-based number, as a dependency),
-        /// `repo: <path>` (else the project's first repository) and
-        /// `provider: <name>` (else --provider's default)
+        /// `repo: <path>` (else the project's first repository),
+        /// `provider: <name>` (else --provider's default) and
+        /// `workflow: <name>` (else --workflow's default)
         #[arg(long)]
         from: Option<PathBuf>,
         /// The provider every paragraph runs under unless it names its
@@ -674,6 +675,12 @@ enum InitiativeCmd {
         /// read
         #[arg(long)]
         provider: Option<String>,
+        /// The workflow every paragraph runs under unless it names its
+        /// own `workflow:` (default: the project's, else "direct");
+        /// validated against the workflow catalog (see `forge
+        /// workflows`) when the file is read
+        #[arg(long)]
+        workflow: Option<String>,
         /// This initiative's own cost cap in USD (default: the
         /// project's per-initiative-usd)
         #[arg(long)]
@@ -952,9 +959,15 @@ pub async fn main() -> Result<()> {
                 outcome,
                 from,
                 provider,
+                workflow,
                 budget,
                 stop_after,
-            } => initiative_new(project, outcome, from, provider, budget, stop_after).await,
+            } => {
+                initiative_new(
+                    project, outcome, from, provider, workflow, budget, stop_after,
+                )
+                .await
+            }
             InitiativeCmd::FromPlan { task, outcome } => initiative_from_plan(task, outcome).await,
             InitiativeCmd::Set {
                 id,
@@ -2023,6 +2036,7 @@ async fn initiative_new(
     outcome: String,
     from: Option<PathBuf>,
     provider: Option<String>,
+    workflow: Option<String>,
     budget: Option<f64>,
     stop_after: Option<u32>,
 ) -> Result<()> {
@@ -2055,12 +2069,24 @@ async fn initiative_new(
             })?;
             Ok(())
         };
+        let known_workflow = |name: &str| -> Result<()> {
+            workflows::get(&f.paths.home, name)?.with_context(|| {
+                format!("unknown workflow {name:?}; see `forge workflows` for what is configured")
+            })?;
+            Ok(())
+        };
         if let Some(p) = &provider {
             known_provider(p)?;
+        }
+        if let Some(w) = &workflow {
+            known_workflow(w)?;
         }
         for p in &paragraphs {
             if let Some(pr) = &p.provider {
                 known_provider(pr)?;
+            }
+            if let Some(w) = &p.workflow {
+                known_workflow(w)?;
             }
         }
         let mut ids: Vec<i64> = Vec::new();
@@ -2082,6 +2108,7 @@ async fn initiative_new(
                 repo: PathBuf::from(repo),
                 task: p.text.clone(),
                 provider: p.provider.clone().or_else(|| provider.clone()),
+                workflow: p.workflow.clone().or_else(|| workflow.clone()),
                 max_turns: 100,
                 retries: 1,
                 timeout_secs: 1800,
