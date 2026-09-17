@@ -95,7 +95,10 @@ forge gc [--dry-run]                                        # remove worktrees t
    if it fails, so a chain can be queued in one go. A dependency that
    blocks on a question keeps its dependents waiting, and any retry of a
    dependency (`forge retry`, `forge answer`, the supervisor) carries
-   them along to the new task.
+   them along to the new task. `--after` (and an initiative file's
+   `after:` header) may name a task in a different repository: a
+   dependency means only "wait for that task to land (or succeed, if it
+   never will)", which does not care which repository either task is in.
 7. **Record.** Every attempt is a row: agent exit, timeout, turns, tool
    calls, cost from the CLI's accounting, wall time from Forge's clock,
    commits and files from git, and the verdict. The agent's text is stored
