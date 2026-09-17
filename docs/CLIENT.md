@@ -59,6 +59,11 @@ and does not parse stdout.
   beyond the printed path. `--revoke` first revokes every token minted
   earlier for this project, so only the fresh one keeps working; without
   it, an earlier link stays valid alongside the new one.
+- **`forge project resolve-token TOKEN --json`** — the project a customer
+  portal token opens (see docs/PORTAL.md, "What it is"): how
+  `forge-portal` turns `/p/<token>` into the name it then passes to
+  `forge project view`. Prints `{"project": NAME}`; exits non-zero if the
+  token is unknown or revoked.
 - **`forge initiative list [<project>] --json`** — every initiative, or
   only `<project>`'s, oldest first. A JSON array of
   [`InitiativeRow`](#initiativerow).
@@ -710,3 +715,12 @@ across a rotation, not to the snapshot protocol itself.
   `initiative report <id> --json` for the `/initiatives/<id>` page,
   which is the outcome, the tasks and their states, and the rest of the
   generated report all from that one document.
+- **`forge-portal`** (`portal/src/main.rs`): `GET /p/<token>` runs
+  `project resolve-token <token> --json` to find the project, then
+  `project view <name> --json` for the page's four read-only sections —
+  Running for you, Being built, Done, Your plan (Needs you and the Ask
+  box are a later build-order step; see docs/PORTAL.md, "Build order").
+  `GET /p/<token>/shot/<target>` streams that target's last-look
+  screenshot file, whose path is `PortalDoc.deploy_targets[].screenshot`.
+  An unknown or revoked token, a target with no screenshot, or any other
+  route is a plain 404 page.

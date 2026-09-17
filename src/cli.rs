@@ -587,6 +587,16 @@ enum ProjectCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Resolve a customer portal token to the project it opens (see
+    /// docs/PORTAL.md, "What it is"): how the portal server turns
+    /// `/p/<token>` into a project name before it calls `forge project
+    /// view`. Exits non-zero if the token is unknown or revoked.
+    ResolveToken {
+        token: String,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1010,6 +1020,7 @@ pub async fn main() -> Result<()> {
             },
             ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
             ProjectCmd::View { name, json } => project_view(name, json),
+            ProjectCmd::ResolveToken { token, json } => project_resolve_token(token, json),
         },
         Cmd::Deploy(a) => match a.cmd {
             Some(DeploySub::Log {
@@ -2252,6 +2263,23 @@ fn project_view(name: String, json: bool) -> Result<()> {
     for b in &doc.backlog {
         out!("  backlog #{}: {}", b.id, b.text);
     }
+    Ok(())
+}
+
+fn project_resolve_token(token: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let project = f
+        .store
+        .portal_token_project(&token)?
+        .context("unknown or revoked token")?;
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "project": project }))?
+        );
+        return Ok(());
+    }
+    out!("{project}");
     Ok(())
 }
 

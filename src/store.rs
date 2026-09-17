@@ -2965,10 +2965,8 @@ impl Store {
     }
 
     /// The project an active (unrevoked) portal token opens, if any: how
-    /// the portal server resolves `/p/<token>`. Not called yet — the
-    /// server is a later build-order step (see docs/PORTAL.md) — but
-    /// exercised directly by the store's own tests below.
-    #[allow(dead_code)]
+    /// `forge project resolve-token` resolves `/p/<token>` for the portal
+    /// server (see docs/PORTAL.md).
     pub fn portal_token_project(&self, token: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
