@@ -336,6 +336,36 @@ between score and each delayed-cost measure (churn, repair cost), over
 landed tasks that carry both, with the count of tasks each rests on —
 see "Delayed cost" in docs/CLIENT.md, "`StatsDoc`".
 
+## The deploy look
+
+A deterministic check proves a port answers; it does not prove the page
+is fit to show anyone (see docs/DEPLOY.md, "A deterministic smoke
+step"). `deploy-look` is the last, human-shaped check: after the smoke
+step, a read-only agent looks at the screenshot it took the way a
+person opening the site would.
+
+`deploy-look` is a directive on the `plan` contract, read-only like
+`investigate` — no writes. It is given the deploy's full-page screenshot
+(a path it is told to read as an image), the page's title, the smoke
+step's console-error and failed-request lists, the target's own url, and
+the project's purpose, and returns a structured result: `ok` (true or
+false) and `findings`, each a `severity` of `blocking` or `notable` and
+one sentence, judging only what the screenshot shows — error text, a
+placeholder or missing image, an empty map or list where content is
+expected, broken layout, developer copy left on the page.
+
+Like `assess`, `deploy-look` never sits in a workflow's `steps` list:
+`forge deploy` runs it itself, once, as its own last step, whenever the
+target declares a smoke url and the smoke step leaves a screenshot to
+look at. Its verdict lands on the deploy row (`look_ok`, `look_json`),
+shown by `forge deploy log` and the initiative report. A blocking
+finding fails the deploy exactly like a failed check: rollback and the
+human rung (docs/DEPLOY.md, "Rollback and the human rung") both apply,
+the finding's sentence named in the question. A run that fails on its
+own — the agent errors, or its result does not fit the schema — is
+logged and ignored, exactly like a failed `assess` run: no effect on the
+deploy beyond that.
+
 ## Data flow
 
 Each action declares what it consumes and produces from a small

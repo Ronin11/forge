@@ -1,0 +1,7 @@
+name = "deploy-look"
+kind = "directive"
+contract = "plan"
+description = "after a deploy's smoke step, a read-only agent reads the deploy's screenshot the way a person would and returns ok/findings, since a placeholder tile is an image and only eyes catch it; never in a workflow's steps, run from forge deploy itself when the target declares a smoke url"
+model = "sonnet"
+max_turns = 8
+timeout_secs = 180

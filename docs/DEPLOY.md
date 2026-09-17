@@ -115,6 +115,35 @@ lands on the deploy row as `smoke_ok` and `smoke_json`, and `forge
 deploy log` shows it. A target with no `--smoke` url skips the step
 entirely.
 
+## The deploy look
+
+A check that answers, and a smoke step that finds no console error or
+failed request, still is not proof the page looks right: a map
+provider's "API key required" placeholder is an image served with
+status 200 and no console error at all, so nothing deterministic sees
+it — only eyes do (this is the same equitizr map-tile failure "A
+deterministic smoke step" above opens with; it can hide from a smoke
+check too, if the placeholder itself never errors).
+
+Whenever a target declares `--smoke <url>` and the smoke step leaves a
+screenshot to look at, `forge deploy`'s last step is `deploy-look`
+(`src/builtins/actions/deploy-look.toml`, see docs/ACTIONS.md, "The
+deploy look"): a read-only agent given the screenshot, the page title,
+the smoke step's console-error and failed-request lists, the target's
+url, and the project's purpose, asked for a short verdict — `ok` and a
+list of `findings`, each a `severity` of `blocking` or `notable` and one
+sentence, judging only what the screenshot shows. It runs whether or not
+the smoke step itself passed, since a passing smoke check is exactly the
+case a placeholder or empty page can hide behind.
+
+The verdict lands on the deploy row as `look_ok` and `look_json`, shown
+by `forge deploy log` and the initiative report. A `blocking` finding
+fails the deploy exactly like a failed check: rollback and the human
+rung below both apply, the finding's sentence named in the question. A
+`notable` finding is recorded but does not fail the deploy. A run that
+fails on its own — the agent errors, or its result does not fit the
+schema — is logged and ignored, never failing the deploy for it.
+
 ## When a deploy runs
 
 After a landing on the target's repository, if the target was declared

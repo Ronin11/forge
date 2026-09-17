@@ -1357,6 +1357,8 @@ pub struct DeployRow {
     pub reason: String,
     pub smoke_ok: Option<bool>,
     pub smoke_json: Option<String>,
+    pub look_ok: Option<bool>,
+    pub look_json: Option<String>,
 }
 
 impl From<&crate::store::Deploy> for DeployRow {
@@ -1374,6 +1376,8 @@ impl From<&crate::store::Deploy> for DeployRow {
             reason: d.reason.clone(),
             smoke_ok: d.smoke_ok,
             smoke_json: d.smoke_json.clone(),
+            look_ok: d.look_ok,
+            look_json: d.look_json.clone(),
         }
     }
 }
@@ -1755,6 +1759,8 @@ pub struct InitiativeQuestionRow {
 
 /// One row of `InitiativeDoc.deployed`: a deploy one of the initiative's
 /// tasks triggered on landing (see docs/DEPLOY.md, "When a deploy runs").
+/// `findings` is `deploy-look`'s verdict, parsed from the deploy row's
+/// `look_json`, empty when it never ran.
 #[derive(Serialize)]
 pub struct InitiativeDeployRow {
     pub task_id: i64,
@@ -1762,6 +1768,7 @@ pub struct InitiativeDeployRow {
     pub sha: String,
     pub check_ok: Option<bool>,
     pub rolled_back_to: Option<String>,
+    pub findings: Vec<crate::deploy_look::Finding>,
 }
 
 /// How many attempts of `tasks` each verification rule refused, by name,
@@ -1857,12 +1864,18 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
     let mut deployed = Vec::new();
     for t in &tasks {
         for d in f.store.deploys_for_task(t.id)? {
+            let findings = d
+                .look_json
+                .as_deref()
+                .and_then(|j| serde_json::from_str(j).ok())
+                .unwrap_or_default();
             deployed.push(InitiativeDeployRow {
                 task_id: t.id,
                 target: d.target,
                 sha: d.sha,
                 check_ok: d.check_ok,
                 rolled_back_to: d.rolled_back_to,
+                findings,
             });
         }
     }

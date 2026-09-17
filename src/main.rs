@@ -13,6 +13,7 @@ mod cli;
 mod config;
 mod ctx;
 mod deploy;
+mod deploy_look;
 mod doctor;
 mod engine;
 mod envelope;
