@@ -330,6 +330,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ProjectCmd,
     },
+    /// Jobs: one run of a `kind = "run"` workflow (see docs/JOBS.md)
+    Job {
+        #[command(subcommand)]
+        cmd: JobCmd,
+    },
     /// Initiatives: one outcome, pursued as a set of tasks, tracked as
     /// one thing (see docs/PROJECTS.md)
     Initiative {
@@ -653,6 +658,31 @@ enum ProjectDeployCmd {
 }
 
 #[derive(Subcommand)]
+enum JobCmd {
+    /// Jobs, newest first, or only `<project>`'s
+    List {
+        project: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// One job, with every step and effect it recorded
+    Show {
+        id: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// A project's job effects across every one of its jobs, newest first
+    Log {
+        project: String,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum InitiativeCmd {
     /// Register a new initiative and, with --from, file its tasks
     New {
@@ -953,6 +983,11 @@ pub async fn main() -> Result<()> {
             None => deploy_run(a.project, a.name, a.sha).await,
         },
         Cmd::Provision(a) => provision_run(a.project, a.name, a.args).await,
+        Cmd::Job { cmd } => match cmd {
+            JobCmd::List { project, json } => job_list(project, json),
+            JobCmd::Show { id, json } => job_show(id, json),
+            JobCmd::Log { project, json } => job_log(project, json),
+        },
         Cmd::Initiative { cmd } => match cmd {
             InitiativeCmd::New {
                 project,
@@ -1810,6 +1845,118 @@ fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
     }
     for r in &rows {
         print_deploy_row(r);
+    }
+    Ok(())
+}
+
+fn print_job_row(r: &crate::view::JobRow) {
+    let sha = if r.landed_sha.is_empty() {
+        "-".to_string()
+    } else {
+        r.landed_sha[..r.landed_sha.len().min(8)].to_string()
+    };
+    out!(
+        "{:<5} {:<20} {:<12} {sha} {}",
+        r.id,
+        r.workflow,
+        r.state,
+        r.trigger_kind
+    );
+}
+
+/// `forge job list [<project>] [--json]`: jobs, newest first, or only
+/// `<project>`'s (see docs/JOBS.md, "The record").
+fn job_list(project: Option<String>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if let Some(p) = &project {
+        f.store
+            .project(p)?
+            .with_context(|| format!("no project {p}"))?;
+    }
+    let rows: Vec<crate::view::JobRow> = f
+        .store
+        .jobs(project.as_deref(), None)?
+        .iter()
+        .map(crate::view::JobRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no jobs");
+        return Ok(());
+    }
+    for r in &rows {
+        print_job_row(r);
+    }
+    Ok(())
+}
+
+/// `forge job show <id> [--json]`: one job, with every step and effect it recorded.
+fn job_show(id: i64, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let j = f.store.job(id)?.with_context(|| format!("no job {id}"))?;
+    let doc = crate::view::job_doc(&f, &j)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    out!("job {} ({})", doc.id, doc.project);
+    out!("workflow   {}", doc.workflow);
+    out!("trigger    {} {}", doc.trigger_kind, doc.trigger_ref);
+    out!(
+        "state      {}{}",
+        doc.state,
+        if doc.dry_run { " (dry run)" } else { "" }
+    );
+    out!("cost       ${:.2}", doc.cost_usd.unwrap_or(0.0));
+    if !doc.steps.is_empty() {
+        out!("steps");
+        for s in &doc.steps {
+            out!("  {:<3} {:<20} {}", s.seq, s.action, s.kind);
+        }
+    }
+    if !doc.effects.is_empty() {
+        out!("effects");
+        for e in &doc.effects {
+            out!("  {:<3} {:<10} {} {}", e.seq, e.kind, e.target, e.summary);
+        }
+    }
+    Ok(())
+}
+
+/// `forge job log <project> [--json]`: a project's job effects across
+/// every one of its jobs, newest first.
+fn job_log(project: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let rows: Vec<crate::view::JobEffectRow> = f
+        .store
+        .job_effects_for_project(&project)?
+        .iter()
+        .map(crate::view::JobEffectRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no job effects");
+        return Ok(());
+    }
+    for r in &rows {
+        out!(
+            "{:<5} job {:<5} {:<10} {} {}{}",
+            r.id,
+            r.job_id,
+            r.kind,
+            r.target,
+            r.summary,
+            if r.dry_run { " (dry run)" } else { "" }
+        );
     }
     Ok(())
 }

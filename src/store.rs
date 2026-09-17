@@ -104,6 +104,50 @@ impl TryFrom<&str> for AttemptState {
     }
 }
 
+/// A job's state: a run workflow's run, the way `TaskState` is a build
+/// workflow's (see docs/JOBS.md, "Vocabulary"). `NeedsHuman` is a job's
+/// `on_failure = "ask:*"` outcome, the job analogue of `TaskState::Blocked`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JobState {
+    #[default]
+    Queued,
+    Running,
+    Ok,
+    Failed,
+    NeedsHuman,
+    Dropped,
+}
+
+impl JobState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobState::Queued => "queued",
+            JobState::Running => "running",
+            JobState::Ok => "ok",
+            JobState::Failed => "failed",
+            JobState::NeedsHuman => "needs_human",
+            JobState::Dropped => "dropped",
+        }
+    }
+}
+
+impl TryFrom<&str> for JobState {
+    type Error = std::io::Error;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match s {
+            "queued" => JobState::Queued,
+            "running" => JobState::Running,
+            "ok" => JobState::Ok,
+            "failed" => JobState::Failed,
+            "needs_human" => JobState::NeedsHuman,
+            "dropped" => JobState::Dropped,
+            other => {
+                return Err(std::io::Error::other(format!("unknown job state {other:?}")));
+            }
+        })
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Task {
     pub id: i64,
@@ -656,6 +700,87 @@ pub struct Assessment {
     pub created_at: i64,
 }
 
+/// One run of a `kind = "run"` workflow (see docs/JOBS.md, "Vocabulary"):
+/// its trigger, its pinned workflow version, its state, and its cost.
+/// `job_steps` and `job_effects` carry what it did; this row is what
+/// `forge job list`/`show` and `finish_job` read and write.
+#[derive(Default, Debug, Clone)]
+pub struct Job {
+    pub id: i64,
+    pub project: String,
+    pub workflow: String,
+    /// Content hash of the workflow file this job ran under, mirroring
+    /// `Task::workflow_hash`.
+    pub workflow_hash: String,
+    /// The project's landed commit this job ran the workflow's automation
+    /// files at; empty for a job whose project has never landed anything.
+    pub landed_sha: String,
+    /// `workflows::TriggerOn::as_str()`: `manual`, `schedule`, `message`,
+    /// `webhook`, or `event`.
+    pub trigger_kind: String,
+    /// The trigger's own value (a cron string, a contact, a webhook name,
+    /// an event type), mirroring `workflows::Trigger::value()`; empty for
+    /// a manual trigger.
+    pub trigger_ref: String,
+    pub state: JobState,
+    /// Effects recorded, not performed: `forge job test`'s replay mode
+    /// (docs/JOBS.md, "Verifying an automation").
+    pub dry_run: bool,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub cost_usd: Option<f64>,
+    /// The assertions' verdict, in the same shape as a task attempt's
+    /// `verdict_json` (`checks::CheckResult` rows); empty until the job
+    /// finishes.
+    pub verdict_json: String,
+}
+
+/// One step of a job's run: one entry of the workflow's `steps`, whether
+/// it was an operation or a directive (see docs/JOBS.md, "Steps").
+#[derive(Default, Debug, Clone)]
+pub struct JobStep {
+    pub id: i64,
+    pub job_id: i64,
+    /// Position in the workflow's `steps` array, from 0.
+    pub seq: i64,
+    /// The action's name, e.g. `"draft-quote"`.
+    pub action: String,
+    /// `"operation"` or `"directive"`.
+    pub kind: String,
+    /// Set only for a directive step: the role's provider.
+    pub provider: String,
+    /// Set only for a directive step: the model that ran it.
+    pub model: String,
+    pub cost_usd: Option<f64>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    /// Set only for an operation step.
+    pub exit_code: Option<i32>,
+    /// Where the step's output is on disk, relative to the job's scratch
+    /// directory.
+    pub output_ref: String,
+}
+
+/// One effect a job's step performed on the world (see docs/JOBS.md,
+/// "Effects"): a message sent, a row written, a file produced, an HTTP
+/// call made. Logged whether or not the run was a dry run.
+#[derive(Default, Debug, Clone)]
+pub struct JobEffect {
+    pub id: i64,
+    pub job_id: i64,
+    /// The step's `seq` that produced this effect.
+    pub seq: i64,
+    /// The operation's declared effect kind, e.g. `"message"`, `"row"`.
+    pub kind: String,
+    /// What the effect acted on: a phone number, a table row, a URL.
+    pub target: String,
+    /// A short human-readable description, what the portal shows per run.
+    pub summary: String,
+    /// True when the effect was only recorded, not performed (a dry run,
+    /// e.g. `forge job test`'s fixture replay).
+    pub dry_run: bool,
+}
+
 /// The unit of operation above a task: one outcome, pursued as a set of
 /// tasks, tracked as one thing (see docs/PROJECTS.md, "Initiative").
 /// `budget_usd` and `stop_after_same_rule` are nullable-in-spirit only for
@@ -1055,6 +1180,55 @@ CREATE TABLE portal_tokens (
   revoked_at INTEGER
 );
 CREATE INDEX portal_tokens_project ON portal_tokens(project);
+",
+    // A job is a run of a `kind = "run"` workflow: it starts from a
+    // trigger, produces effects, and ends when they're verified — no
+    // repository, no branch, no landing (see docs/JOBS.md, "The record").
+    // `job_steps` and `job_effects` carry what happened; `jobs` is its own
+    // state, cost and verdict.
+    "
+CREATE TABLE jobs (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  workflow TEXT NOT NULL,
+  workflow_hash TEXT NOT NULL DEFAULT '',
+  landed_sha TEXT NOT NULL DEFAULT '',
+  trigger_kind TEXT NOT NULL,
+  trigger_ref TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  cost_usd REAL,
+  verdict_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX jobs_project ON jobs(project, id);
+CREATE INDEX jobs_state ON jobs(state, id);
+CREATE TABLE job_steps (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER NOT NULL REFERENCES jobs(id),
+  seq INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  cost_usd REAL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  exit_code INTEGER,
+  output_ref TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX job_steps_job ON job_steps(job_id, seq);
+CREATE TABLE job_effects (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER NOT NULL REFERENCES jobs(id),
+  seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  dry_run INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX job_effects_job ON job_effects(job_id, seq);
 ",
 ];
 
@@ -3211,6 +3385,194 @@ impl Store {
             )
             .optional()?)
     }
+
+    /// Record a job starting. Returns its id; `finish_job` completes it,
+    /// `append_job_step`/`append_job_effect` record what it did along the
+    /// way (see docs/JOBS.md, "The record").
+    pub fn create_job(&self, j: &Job) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                j.project,
+                j.workflow,
+                j.workflow_hash,
+                j.landed_sha,
+                j.trigger_kind,
+                j.trigger_ref,
+                j.state.as_str(),
+                j.dry_run,
+                j.started_at,
+                j.finished_at,
+                j.cost_usd,
+                j.verdict_json,
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Record one step of a job's run. Returns its id.
+    pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                s.job_id,
+                s.seq,
+                s.action,
+                s.kind,
+                s.provider,
+                s.model,
+                s.cost_usd,
+                s.started_at,
+                s.finished_at,
+                s.exit_code,
+                s.output_ref,
+            ],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Record one effect a job's step performed on the world. Returns its id.
+    pub fn append_job_effect(&self, e: &JobEffect) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO job_effects (job_id, seq, kind, target, summary, dry_run)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![e.job_id, e.seq, e.kind, e.target, e.summary, e.dry_run],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Record a job's outcome: its final state, cost and assertions'
+    /// verdict.
+    pub fn finish_job(
+        &self,
+        id: i64,
+        at: i64,
+        state: JobState,
+        cost_usd: Option<f64>,
+        verdict_json: &str,
+    ) -> Result<()> {
+        self.lock().execute(
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5 WHERE id=?1",
+            params![id, state.as_str(), at, cost_usd, verdict_json],
+        )?;
+        Ok(())
+    }
+
+    /// One job by id.
+    pub fn job(&self, id: i64) -> Result<Option<Job>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+                 FROM jobs WHERE id=?1",
+                params![id],
+                job_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Jobs, newest first, optionally narrowed to one project and/or one
+    /// state: what `forge job list` shows.
+    pub fn jobs(&self, project: Option<&str>, state: Option<JobState>) -> Result<Vec<Job>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+             FROM jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR state=?2) ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(
+            params![project, state.map(JobState::as_str)],
+            job_from_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// One job's steps, in the order they ran.
+    pub fn job_steps(&self, job_id: i64) -> Result<Vec<JobStep>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref
+             FROM job_steps WHERE job_id=?1 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(params![job_id], job_step_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// One job's effects, in the order they happened.
+    pub fn job_effects(&self, job_id: i64) -> Result<Vec<JobEffect>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT id, job_id, seq, kind, target, summary, dry_run
+             FROM job_effects WHERE job_id=?1 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(params![job_id], job_effect_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// A project's job effects across every one of its jobs, newest first:
+    /// what `forge job log` shows.
+    pub fn job_effects_for_project(&self, project: &str) -> Result<Vec<JobEffect>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT job_effects.id, job_effects.job_id, job_effects.seq, job_effects.kind, job_effects.target, job_effects.summary, job_effects.dry_run
+             FROM job_effects JOIN jobs ON jobs.id = job_effects.job_id
+             WHERE jobs.project=?1 ORDER BY job_effects.id DESC",
+        )?;
+        let rows = stmt.query_map(params![project], job_effect_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
+    let state: String = r.get(7)?;
+    Ok(Job {
+        id: r.get(0)?,
+        project: r.get(1)?,
+        workflow: r.get(2)?,
+        workflow_hash: r.get(3)?,
+        landed_sha: r.get(4)?,
+        trigger_kind: r.get(5)?,
+        trigger_ref: r.get(6)?,
+        state: conv(r, "state", JobState::try_from(state.as_str()))?,
+        dry_run: r.get(8)?,
+        started_at: r.get(9)?,
+        finished_at: r.get(10)?,
+        cost_usd: r.get(11)?,
+        verdict_json: r.get(12)?,
+    })
+}
+
+fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
+    Ok(JobStep {
+        id: r.get(0)?,
+        job_id: r.get(1)?,
+        seq: r.get(2)?,
+        action: r.get(3)?,
+        kind: r.get(4)?,
+        provider: r.get(5)?,
+        model: r.get(6)?,
+        cost_usd: r.get(7)?,
+        started_at: r.get(8)?,
+        finished_at: r.get(9)?,
+        exit_code: r.get(10)?,
+        output_ref: r.get(11)?,
+    })
+}
+
+fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
+    Ok(JobEffect {
+        id: r.get(0)?,
+        job_id: r.get(1)?,
+        seq: r.get(2)?,
+        kind: r.get(3)?,
+        target: r.get(4)?,
+        summary: r.get(5)?,
+        dry_run: r.get(6)?,
+    })
 }
 
 fn deploy_target_from_row(r: &Row) -> rusqlite::Result<DeployTarget> {
@@ -4636,6 +4998,206 @@ mod tests {
         let prod_only = s.deploys("equitizr", Some("prod")).unwrap();
         assert_eq!(prod_only.len(), 1);
         assert_eq!(prod_only[0].id, a);
+    }
+
+    fn mk_job(s: &Store, project: &str, workflow: &str, started_at: i64) -> i64 {
+        s.create_job(&Job {
+            project: project.into(),
+            workflow: workflow.into(),
+            workflow_hash: "deadbeef".into(),
+            landed_sha: "cafef00d".into(),
+            trigger_kind: "manual".into(),
+            trigger_ref: "".into(),
+            state: JobState::Running,
+            dry_run: false,
+            started_at,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_created_job_is_read_back_with_its_state_round_tripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        assert!(s.job(1).unwrap().is_none());
+
+        let id = mk_job(&s, "equitizr", "quote-by-text", 100);
+        let j = s.job(id).unwrap().unwrap();
+        assert_eq!(j.project, "equitizr");
+        assert_eq!(j.workflow, "quote-by-text");
+        assert_eq!(j.workflow_hash, "deadbeef");
+        assert_eq!(j.landed_sha, "cafef00d");
+        assert_eq!(j.trigger_kind, "manual");
+        assert_eq!(j.state, JobState::Running);
+        assert!(!j.dry_run);
+        assert_eq!(j.started_at, 100);
+        assert!(j.finished_at.is_none());
+        assert!(j.cost_usd.is_none());
+    }
+
+    #[test]
+    fn finish_job_sets_state_cost_and_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let id = mk_job(&s, "equitizr", "quote-by-text", 100);
+
+        s.finish_job(id, 130, JobState::Ok, Some(0.02), r#"[{"level":"L0","name":"quoted","ok":true}]"#)
+            .unwrap();
+
+        let j = s.job(id).unwrap().unwrap();
+        assert_eq!(j.state, JobState::Ok);
+        assert_eq!(j.finished_at, Some(130));
+        assert_eq!(j.cost_usd, Some(0.02));
+        assert!(j.verdict_json.contains("quoted"));
+    }
+
+    #[test]
+    fn jobs_lists_newest_first_and_filters_by_project_and_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        mk_project(&s, "nucleosynthesis");
+
+        let a = mk_job(&s, "equitizr", "quote-by-text", 100);
+        let b = mk_job(&s, "equitizr", "quote-by-text", 200);
+        let c = mk_job(&s, "nucleosynthesis", "other", 300);
+        s.finish_job(b, 250, JobState::Failed, None, "[]").unwrap();
+
+        let all = s.jobs(None, None).unwrap();
+        assert_eq!(
+            all.iter().map(|j| j.id).collect::<Vec<_>>(),
+            vec![c, b, a],
+            "newest first"
+        );
+
+        let equitizr_only = s.jobs(Some("equitizr"), None).unwrap();
+        assert_eq!(
+            equitizr_only.iter().map(|j| j.id).collect::<Vec<_>>(),
+            vec![b, a]
+        );
+
+        let failed_only = s.jobs(None, Some(JobState::Failed)).unwrap();
+        assert_eq!(failed_only.len(), 1);
+        assert_eq!(failed_only[0].id, b);
+
+        let equitizr_running = s.jobs(Some("equitizr"), Some(JobState::Running)).unwrap();
+        assert_eq!(equitizr_running.len(), 1);
+        assert_eq!(equitizr_running[0].id, a);
+    }
+
+    #[test]
+    fn job_steps_and_effects_are_recorded_and_read_back_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let id = mk_job(&s, "equitizr", "quote-by-text", 100);
+
+        assert!(s.job_steps(id).unwrap().is_empty());
+        assert!(s.job_effects(id).unwrap().is_empty());
+
+        s.append_job_step(&JobStep {
+            job_id: id,
+            seq: 0,
+            action: "extract-job".into(),
+            kind: "directive".into(),
+            provider: "anthropic".into(),
+            model: "haiku".into(),
+            cost_usd: Some(0.001),
+            started_at: 100,
+            finished_at: Some(101),
+            output_ref: "step-0.json".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.append_job_step(&JobStep {
+            job_id: id,
+            seq: 1,
+            action: "send-quote".into(),
+            kind: "operation".into(),
+            started_at: 101,
+            finished_at: Some(102),
+            exit_code: Some(0),
+            output_ref: "step-1.json".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        s.append_job_effect(&JobEffect {
+            job_id: id,
+            seq: 1,
+            kind: "message".into(),
+            target: "+15555550100".into(),
+            summary: "quoted the Hendersons' fence job at $1,240".into(),
+            dry_run: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let steps = s.job_steps(id).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].action, "extract-job");
+        assert_eq!(steps[0].kind, "directive");
+        assert_eq!(steps[0].provider, "anthropic");
+        assert_eq!(steps[1].action, "send-quote");
+        assert_eq!(steps[1].exit_code, Some(0));
+
+        let effects = s.job_effects(id).unwrap();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].kind, "message");
+        assert_eq!(effects[0].target, "+15555550100");
+        assert!(!effects[0].dry_run);
+    }
+
+    #[test]
+    fn job_effects_for_project_spans_every_job_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        mk_project(&s, "nucleosynthesis");
+        let a = mk_job(&s, "equitizr", "quote-by-text", 100);
+        let b = mk_job(&s, "equitizr", "quote-by-text", 200);
+        let c = mk_job(&s, "nucleosynthesis", "other", 300);
+
+        s.append_job_effect(&JobEffect {
+            job_id: a,
+            seq: 0,
+            kind: "message".into(),
+            target: "customer-a".into(),
+            summary: "first".into(),
+            dry_run: false,
+            ..Default::default()
+        })
+        .unwrap();
+        s.append_job_effect(&JobEffect {
+            job_id: b,
+            seq: 0,
+            kind: "row".into(),
+            target: "book".into(),
+            summary: "second".into(),
+            dry_run: true,
+            ..Default::default()
+        })
+        .unwrap();
+        s.append_job_effect(&JobEffect {
+            job_id: c,
+            seq: 0,
+            kind: "message".into(),
+            target: "customer-c".into(),
+            summary: "other project".into(),
+            dry_run: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let effects = s.job_effects_for_project("equitizr").unwrap();
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].summary, "second", "newest first");
+        assert_eq!(effects[0].job_id, b);
+        assert_eq!(effects[1].summary, "first");
+        assert_eq!(effects[1].job_id, a);
     }
 }
 
