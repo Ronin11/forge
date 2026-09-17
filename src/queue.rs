@@ -286,12 +286,11 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         let Some(d) = f.store.task(dep)? else {
             bail!("--after {dep}: no such task");
         };
-        if d.repo != t.repo {
-            bail!(
-                "--after {dep}: that task is in {}, not this repository",
-                d.repo
-            );
-        }
+        // A dependency means only "wait for that task to reach a terminal
+        // state; block if it failed" (see `Store::queued_unblocked` and
+        // `Store::block_dependents`, both keyed on the dependency's id and
+        // state alone), so it carries across repositories: a task on one
+        // repository may wait on a task in another.
         if !d.land && d.state != TaskState::Succeeded {
             bail!(
                 "--after {dep}: that task will not land (--no-land), so nothing built on it could see its work"

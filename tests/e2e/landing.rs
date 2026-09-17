@@ -770,6 +770,128 @@ fn a_task_queued_after_another_waits_for_its_landing_and_blocks_on_its_failure()
 }
 
 #[test]
+fn a_task_on_another_repository_waits_on_a_dependency_and_runs_after_it_lands() {
+    let e = Env::new();
+    let repo2 = e._dir.path().join("repo2");
+    let origin2 = e._dir.path().join("origin2.git");
+    std::fs::create_dir_all(&repo2).unwrap();
+    git(&repo2, &["init", "-q", "-b", "main"]);
+    git(&repo2, &["config", "user.name", "Test"]);
+    git(&repo2, &["config", "user.email", "test@example.com"]);
+    std::fs::write(
+        repo2.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"test -s answer.txt\"]\n",
+    )
+    .unwrap();
+    git(&repo2, &["add", "-A"]);
+    git(&repo2, &["commit", "-qm", "init"]);
+    Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&origin2)
+        .status()
+        .unwrap();
+    git(
+        &repo2,
+        &["remote", "add", "origin", origin2.to_str().unwrap()],
+    );
+    let origin2_file = |branch: &str, path: &str| -> Option<String> {
+        let o = Command::new("git")
+            .args([
+                "--git-dir",
+                origin2.to_str().unwrap(),
+                "show",
+                &format!("{branch}:{path}"),
+            ])
+            .output()
+            .unwrap();
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).to_string())
+    };
+
+    // A task on repo2 --after a task on repo1: once refused outright
+    // ("that task is in ..., not this repository"), now accepted, since a
+    // dependency only means waiting on the other task's terminal state.
+    let a = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(a.status.success());
+    let b = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo2.to_str().unwrap(),
+            "write 43 to answer.txt",
+            "--retries",
+            "0",
+            "--after",
+            "1",
+        ],
+    );
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+
+    let o = e.forge("ok.sh", &["work", "--once", "--jobs", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(e.task(2).0, "succeeded");
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n"),
+        "task 1 landed on repo1's own base"
+    );
+    assert_eq!(
+        origin2_file("main", "answer.txt").as_deref(),
+        Some("42\n"),
+        "task 2 landed on repo2's own base"
+    );
+
+    let doc: serde_json::Value = e.trace_json("2");
+    assert_eq!(doc["task"]["after"], serde_json::json!([1]));
+
+    // A dependency across repositories still blocks a dependent on failure.
+    let c = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            e.repo.to_str().unwrap(),
+            "write nothing useful",
+            "--retries",
+            "0",
+            "--check",
+            "false",
+        ],
+    );
+    assert!(c.status.success());
+    let d = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo2.to_str().unwrap(),
+            "write 44 to answer.txt",
+            "--retries",
+            "0",
+            "--after",
+            "3",
+        ],
+    );
+    assert!(d.status.success());
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success());
+    assert_eq!(e.task(3).0, "failed");
+    let (state, reason, _) = e.task(4);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(reason.starts_with("waits on task 3 (failed: "), "{reason}");
+    assert_eq!(e.attempts(4).len(), 0, "never ran");
+}
+
+#[test]
 fn integrate_merges_verified_branches_in_order_and_reverifies_or_stops_at_the_conflict() {
     let e = Env::new();
     // Only the shell check: each task adds its own file, and the third contradicts the first.
