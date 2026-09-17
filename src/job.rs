@@ -48,13 +48,18 @@ fn string_fields(input: &serde_json::Value) -> Result<Vec<(String, String)>> {
 
 /// The environment every job step's operation runs with: the facts the
 /// docs promise (docs/JOBS.md, "The executor") — never more, and never a
-/// secret logged or put in a prompt.
+/// secret logged or put in a prompt. `output_paths` names, by action name,
+/// where an earlier directive step's validated output landed
+/// (`FORGE_OUTPUT_<NAME>`): how a later operation reads what a directive
+/// decided (docs/JOBS.md, "The executor", item 3: "Outputs are files in
+/// the scratch directory and flow to the next step").
 fn step_env(
     job_id: i64,
     step_name: &str,
     effect_log: &Path,
     input_dir: &Path,
     input_fields: &[(String, String)],
+    output_paths: &[(String, String)],
     secrets: &std::collections::BTreeMap<String, String>,
     dry_run: bool,
 ) -> Vec<(String, String)> {
@@ -75,6 +80,12 @@ fn step_env(
     }
     for (k, v) in input_fields {
         env.push((format!("FORGE_INPUT_{}", k.to_uppercase()), v.clone()));
+    }
+    for (name, path) in output_paths {
+        env.push((
+            format!("FORGE_OUTPUT_{}", name.to_uppercase().replace('-', "_")),
+            path.clone(),
+        ));
     }
     for (k, v) in secrets {
         env.push((k.clone(), v.clone()));
@@ -392,6 +403,7 @@ async fn run_now(
     let mut needs_human = false;
     let mut verdict: Vec<checks::CheckResult> = Vec::new();
     let mut step_outputs: Vec<(String, String)> = Vec::new();
+    let mut output_paths: Vec<(String, String)> = Vec::new();
     let mut total_cost = 0.0;
     for (seq, step) in steps.iter().enumerate() {
         let seq = seq as i64;
@@ -405,6 +417,7 @@ async fn run_now(
                     &effect_log,
                     &idir,
                     input_fields,
+                    &output_paths,
                     &secrets,
                     dry_run,
                 );
@@ -509,6 +522,7 @@ async fn run_now(
                     exit_code: None,
                     output_ref: d
                         .output_ref
+                        .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default(),
                 })?;
@@ -536,6 +550,9 @@ async fn run_now(
                         ..Default::default()
                     });
                     break;
+                }
+                if let Some(p) = &d.output_ref {
+                    output_paths.push((action.name.clone(), p.display().to_string()));
                 }
                 step_outputs.push((action.name.clone(), d.output_text));
             }
