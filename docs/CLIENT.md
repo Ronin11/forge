@@ -281,11 +281,13 @@ operator's page (`forge trace`, `forge stats`), never to this one.
 | field | type | meaning |
 |---|---|---|
 | `project` | string | The project's name. |
-| `purpose` | string | The project's one-paragraph purpose. |
+| `purpose` | string | The project's one-paragraph purpose; for the operator's own tools — never rendered on the customer's page (see docs/PORTAL.md). |
 | `deploy_targets` | array of `{name, where_it_runs, last_deployed_at, check_ok, look_ok, screenshot}` | "Running for you": each deploy target, `where_it_runs` its `host` arg, `last_deployed_at` Unix seconds of its most recent deploy (`null` if never deployed), `check_ok`/`look_ok` that deploy's verdicts (`null` if it never ran or never declared a smoke url), `screenshot` the last look's screenshot path, `null` when the smoke step never ran. |
-| `initiatives` | array of `{outcome, state}` | "Being built": every open initiative (not `done` or `done with failures`), `state` one of `"in progress"`, `"waiting on you"` (an open question on one of its tasks — see `questions`), or `"done"`. Never a task count. |
+| `initiatives` | array of `{outcome, state, pieces}` | "Being built": every open initiative (never settled), newest first, capped at ten (`initiatives_more` the rest); `state` one of `"in progress"` or `"waiting on you"` (an open question on one of its tasks — see `questions`); `pieces` how many tasks make up the initiative so far. |
+| `initiatives_more` | integer | How many open initiatives past the ten in `initiatives`; 0 when nothing was cut. |
 | `questions` | array of `{task_id, text}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`. |
-| `landed` | array of `{text, landed_at}` | "Done": landed tasks, newest first, `text` the first line of the request and `landed_at` Unix seconds it went live. |
+| `landed` | array of `{text, pieces, landed_at}` | "Done": one line per landed initiative (`text` its outcome, `pieces` how many tasks it took) and one line per landed task belonging to no initiative (`text` its title if it was filed in the customer's own words, else a line derived from the request's first sentence with any path-like token stripped and cut at 120 characters on a word boundary; `pieces` `null`), merged and sorted newest first, capped at ten (`landed_more` the rest). |
+| `landed_more` | integer | How many landed lines past the ten in `landed`; 0 when nothing was cut. |
 | `brief` | `{where_it_runs, workflows}` or `null` | "Your plan": the most recent confirmed intake brief, `workflows` one paragraph per workflow in the person's own words (see docs/INTAKE.md); `null` for a project with no intake behind it. |
 | `backlog` | array of `{id, text, created_at}` | The rest of "Your plan": open backlog items, cut from the brief. |
 

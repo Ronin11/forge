@@ -159,7 +159,8 @@ completion (the same way `forge run` drives a task) and acts on the
 decision:
 
 - **request**: files a task on the project — its first repository, its
-  own default workflow (else `direct`) — with the decided text.
+  own default workflow (else `direct`) — with the decided text, and the
+  customer's own message as its `title` (see docs/PORTAL.md, "Done").
 - **question**: prints the answer and records a `decisions` row
   (`answered_by` "concierge", `answered_for` the `--from` contact),
   hung off the concierge's own task; no task is filed.

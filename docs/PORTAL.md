@@ -17,12 +17,19 @@ logs anywhere on it.
   it was last deployed, whether the last check and look passed, and the
   last look's screenshot. This is the list of automations Forge built
   and keeps working for them.
-- **Being built.** Each open initiative as its outcome sentence and a
-  plain state: in progress, waiting on you, done. Never a task count.
+- **Being built.** Every open initiative, newest first: its outcome
+  sentence, a plain state (in progress, waiting on you), and how many
+  pieces of work it's taken so far. The last ten, and an "and n more"
+  line past that — never the whole backlog on one page.
 - **Needs you.** Every open question addressed to them, answerable in
   place. This is the human rung, on a screen.
-- **Done.** Landed work, one line each in the words of the request, with
-  when it went live.
+- **Done.** Landed work, newest first, one line each: a landed
+  initiative is its outcome sentence and how many pieces of work it
+  took; a landed task that belongs to no initiative is its title, if it
+  was filed in their own words, or a line cut from the first sentence
+  of the request, any file path, extension or line number stripped, at
+  most 120 characters on a word boundary — never the operator's own
+  instructions. The last ten, and an "and n more" line past that.
 - **Ask.** A box. What they type goes through the concierge exactly as a
   text would: a request becomes a task, a question gets an answer, a
   need starts an interview whose questions then appear under Needs you.
