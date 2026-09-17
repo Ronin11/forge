@@ -35,6 +35,11 @@ pub struct TaskArgs {
     repo: PathBuf,
     /// What to do, in plain language
     task: String,
+    /// The task in the customer's own words, for the day it was filed
+    /// that way; shown on the portal's "Done" line instead of a derived
+    /// one (see docs/PORTAL.md)
+    #[arg(long)]
+    title: Option<String>,
     /// Model for every step (default: the provider's own default model)
     #[arg(long)]
     model: Option<String>,
@@ -1109,6 +1114,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
         crate::queue::TaskRequest {
             repo: a.repo.clone(),
             task: a.task.clone(),
+            title: a.title.clone(),
             model: a.model.clone(),
             provider: a.provider.clone(),
             max_turns: a.max_turns,

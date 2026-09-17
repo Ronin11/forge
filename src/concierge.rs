@@ -137,6 +137,7 @@ pub async fn ask(
             // lands like any other once verified.
             let req = base(project, &repo, d.task.clone(), None);
             let mut n = queue::enqueue(&f, &req, None).await?;
+            n.title = Some(message.trim().to_string());
             n.concierge_json = Some(raw.clone());
             f.store.update_task(&n)?;
             Asked::Filed { task: n.id }

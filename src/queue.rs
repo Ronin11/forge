@@ -20,6 +20,10 @@ use std::path::PathBuf;
 pub struct TaskRequest {
     pub repo: PathBuf,
     pub task: String,
+    /// The task in the customer's own words, for the day it was filed
+    /// that way (`--title`, or the concierge on a filed request); `None`
+    /// leaves it unset (see docs/PORTAL.md).
+    pub title: Option<String>,
     /// `None` takes the model from the selected provider's own default
     /// (`--model` always wins when given).
     pub model: Option<String>,
@@ -255,6 +259,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
+        title: args.title.clone(),
         base_branch: cfg.base_branch.clone(),
         model,
         provider: provider_name,
@@ -586,6 +591,7 @@ pub fn retry_request(
     TaskRequest {
         repo: PathBuf::from(&t.repo),
         task: task.unwrap_or_else(|| t.task.clone()),
+        title: t.title.clone(),
         model: Some(t.model.clone()),
         // Empty means the original task named no `--provider` and
         // resolved per role; a retry should resolve the same way, not

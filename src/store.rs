@@ -155,6 +155,12 @@ pub struct Task {
     pub id: i64,
     pub repo: String,
     pub task: String,
+    /// The task in the customer's own words, for the day it was filed
+    /// that way (`forge add --title`, or the concierge on a filed
+    /// request): what `PortalDoc`'s "Done" line uses instead of deriving
+    /// one from `task` (see docs/PORTAL.md). `None` for every task filed
+    /// before this column, or never given one.
+    pub title: Option<String>,
     pub base_branch: String,
     pub base_sha: String,
     pub branch: String,
@@ -1292,6 +1298,12 @@ ALTER TABLE tasks ADD COLUMN proposal_json TEXT;
 ALTER TABLE tasks ADD COLUMN proposal_answer TEXT;
 ALTER TABLE tasks ADD COLUMN proposal_initiative INTEGER;
 ",
+    // The day tasks are filed in a customer's own words (see
+    // docs/PORTAL.md): `forge add --title` and the concierge, on a filed
+    // request, both set this; everything before it is NULL.
+    "
+ALTER TABLE tasks ADD COLUMN title TEXT;
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -1318,6 +1330,7 @@ const TASK_COLUMNS: &[&str] = &[
     "id",
     "repo",
     "task",
+    "title",
     "base_branch",
     "base_sha",
     "branch",
@@ -1381,6 +1394,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         id: r.get("id")?,
         repo: r.get("repo")?,
         task: r.get("task")?,
+        title: r.get("title")?,
         base_branch: r.get("base_branch")?,
         base_sha: r.get("base_sha")?,
         branch: r.get("branch")?,
@@ -1736,12 +1750,13 @@ impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO tasks (repo, task, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
+            "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                                 state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 t.repo,
                 t.task,
+                t.title,
                 t.base_branch,
                 t.model,
                 t.provider,
@@ -1782,7 +1797,8 @@ impl Store {
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
              project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
-             concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46 WHERE id=?1",
+             concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
+             title=?47 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1830,6 +1846,7 @@ impl Store {
                 t.proposal_json,
                 t.proposal_answer,
                 t.proposal_initiative,
+                t.title,
             ],
         )?;
         Ok(())
