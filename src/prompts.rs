@@ -463,7 +463,14 @@ pub fn concierge_prompt(
         if !recent.is_empty() {
             p.push_str("\n\nThe project's last tasks, newest first (id, state, first line):");
             for r in recent {
-                let first_line: String = r.task.lines().next().unwrap_or("").chars().take(160).collect();
+                let first_line: String = r
+                    .task
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect();
                 p.push_str(&format!("\n- task {} {} — {}", r.id, r.state, first_line));
             }
         }

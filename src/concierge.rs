@@ -45,12 +45,15 @@ pub enum Asked {
 /// A `TaskRequest` with the CLI's own defaults (`TaskArgs`'s
 /// `default_value_t`s), the only fields every branch below needs to fill
 /// in: the repo, the text, the project, and which workflow runs it.
-fn base(project: &str, repo: &str, task: String, workflow: &str) -> TaskRequest {
+/// `workflow: None` leaves it to `enqueue`'s own resolution — the
+/// project's default, else "direct" — which is what "the project's
+/// default workflow" means for a filed request.
+fn base(project: &str, repo: &str, task: String, workflow: Option<&str>) -> TaskRequest {
     TaskRequest {
         repo: PathBuf::from(repo),
         task,
         project: Some(project.to_string()),
-        workflow: Some(workflow.to_string()),
+        workflow: workflow.map(str::to_string),
         max_turns: 100,
         retries: 1,
         timeout_secs: 1800,
@@ -67,7 +70,7 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
         .first_repo(project)?
         .with_context(|| format!("project {project} lists no repository"))?;
 
-    let mut req = base(project, &repo, message.to_string(), "concierge");
+    let mut req = base(project, &repo, message.to_string(), Some("concierge"));
     req.retries = 0;
     req.no_land = true;
     let t = queue::enqueue(&f, &req, None).await?;
@@ -106,8 +109,9 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
             if d.task.trim().is_empty() {
                 bail!("the concierge called this a request but named no task text");
             }
-            // An ordinary task: it lands like any other once verified.
-            let req = base(project, &repo, d.task.clone(), "direct");
+            // An ordinary task on the project's own default workflow: it
+            // lands like any other once verified.
+            let req = base(project, &repo, d.task.clone(), None);
             let mut n = queue::enqueue(&f, &req, None).await?;
             n.concierge_json = Some(raw);
             f.store.update_task(&n)?;
@@ -118,7 +122,13 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
                 bail!("the concierge called this a question but gave no answer");
             }
             let decision = f.store.insert_decision_by(
-                t.id, &repo, message, &d.answer, "concierge", "", from,
+                t.id,
+                &repo,
+                message,
+                &d.answer,
+                "concierge",
+                "",
+                from,
             )?;
             Ok(Asked::Answered {
                 answer: d.answer,
@@ -134,7 +144,7 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
                 Some(c) => format!("{message} Contact: {c}."),
                 None => message.to_string(),
             };
-            let mut req = base(project, &repo, text, "intake");
+            let mut req = base(project, &repo, text, Some("intake"));
             req.retries = 0;
             req.no_land = true;
             let mut n = queue::enqueue(&f, &req, None).await?;
@@ -149,7 +159,7 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
             if d.question.trim().is_empty() {
                 bail!("the concierge called this unclear but asked no question");
             }
-            let mut req = base(project, &repo, message.to_string(), "direct");
+            let mut req = base(project, &repo, message.to_string(), Some("direct"));
             req.retries = 0;
             req.no_land = true;
             let mut n = queue::enqueue(&f, &req, None).await?;
