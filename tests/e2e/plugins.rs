@@ -10,7 +10,7 @@
 use crate::support::*;
 use rusqlite::OptionalExtension;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
@@ -1300,4 +1300,167 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
         .status()
         .unwrap();
     let _ = child.wait();
+}
+
+/// The Signal plugin routes through the concierge (docs/INTAKE.md, "The
+/// front door is not the interview"): unlike the sibling tests above,
+/// this runs `plugins/signal/signal.sh` directly rather than through
+/// `forge plugin install`/`forge work`, because a live plugin's own
+/// child processes only get the production agent env
+/// (`agent::agent_env`), which never carries the `FORGE2_CLAUDE_BIN`
+/// test seam — and this is the first plugin behavior that needs one,
+/// since `forge ask` runs the concierge directive as a real agent turn.
+/// A contact's plain message, not a command and not an answer to an
+/// open question, becomes `forge ask <project> <message> --from <name>`
+/// (the project named by `PROJECTS`), and the concierge's "request"
+/// decision (faked here the same way `tests/e2e/concierge.rs` does)
+/// both files a task on that project and gets "on it" sent back to her.
+#[test]
+fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "demo",
+                "--purpose",
+                "Demo runs a small repair shop over text messages.",
+                "--repo",
+                repo,
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugin");
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    std::fs::write(
+        plugin_dir.join("config"),
+        format!(
+            "SIGNAL_ACCOUNT=+15555550100\n\
+             SIGNAL_TO=+15555550199\n\
+             CONTACTS=alice:+15555550111\n\
+             PROJECTS=alice:demo\n\
+             POLL_SECONDS=1\n\
+             TARGET_REPO={repo}\n\
+             WORKFLOW=direct\n"
+        ),
+    )
+    .unwrap();
+
+    let message = tmp.path().join("message.json");
+    std::fs::write(
+        &message,
+        "{\"envelope\":{\"source\":\"+15555550111\",\"sourceNumber\":\"+15555550111\",\
+         \"dataMessage\":{\"message\":\"My printer broke, can someone come by Tuesday?\"}}}\n",
+    )
+    .unwrap();
+
+    // A fake `signal-cli`: `receive --json` prints the one scripted
+    // message the first time it's called and nothing after (the plugin
+    // polls in a loop), and `send` records what was sent, to whom, in
+    // `$FORGE_PLUGIN_STATE/sent`.
+    let signal_cli = tmp.path().join("signal-cli-fake.sh");
+    std::fs::write(
+        &signal_cli,
+        r#"#!/bin/sh
+set -u
+shift
+shift
+cmd=$1
+shift
+case "$cmd" in
+    send)
+        msg=""
+        dest=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -m) msg=$2; shift 2 ;;
+                -g) dest=$2; shift 2 ;;
+                *) dest=$1; shift ;;
+            esac
+        done
+        printf 'SEND %s %s\n' "$dest" "$msg" >>"$FORGE_PLUGIN_STATE/sent"
+        ;;
+    receive)
+        flag="$FORGE_PLUGIN_STATE/received"
+        if [ ! -f "$flag" ]; then
+            touch "$flag"
+            cat "$FAKE_MESSAGE_FILE"
+        fi
+        ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&signal_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let signal_sh =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/signal/signal.sh");
+    let claude_fake =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/concierge-request.sh");
+
+    let mut cmd = Command::new("sh");
+    cmd.arg(&signal_sh)
+        .env("FORGE_BIN", env!("CARGO_BIN_EXE_forge"))
+        .env("FORGE2_HOME", &e.home)
+        .env("FORGE2_CLAUDE_BIN", &claude_fake)
+        .env("FORGE2_SUPERVISOR", "0")
+        .env("FORGE_PLUGIN_DIR", &plugin_dir)
+        .env("FORGE_PLUGIN_STATE", &state_dir)
+        .env("SIGNAL_CLI", &signal_cli)
+        .env("FAKE_MESSAGE_FILE", &message)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if e.sandbox_disabled() {
+        cmd.env("FORGE2_SANDBOX", "0");
+    }
+
+    let mut child = cmd.spawn().unwrap();
+
+    let sent = state_dir.join("sent");
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&sent)
+                .unwrap_or_default()
+                .contains("on it"),
+            Duration::from_secs(30),
+        ),
+        "expected an acknowledgement to alice; sent so far: {:?}",
+        std::fs::read_to_string(&sent)
+    );
+
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    let _ = child.wait();
+
+    let sent_text = std::fs::read_to_string(&sent).unwrap();
+    assert!(sent_text.contains("SEND +15555550111 on it"), "{sent_text}");
+
+    let (project, task, title): (String, String, Option<String>) = e
+        .db()
+        .query_row(
+            "SELECT project, task, title FROM tasks WHERE project='demo' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(project, "demo");
+    assert!(task.contains("usually same day"), "{task}");
+    assert_eq!(
+        title.as_deref(),
+        Some("My printer broke, can someone come by Tuesday?")
+    );
 }
