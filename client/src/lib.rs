@@ -131,6 +131,33 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge job list [<project>] --json`: jobs, newest first, or only
+    /// `project`'s.
+    pub fn job_list(&self, project: Option<&str>) -> Result<Vec<JobRow>> {
+        let mut args = vec!["job", "list"];
+        if let Some(p) = project {
+            args.push(p);
+        }
+        args.push("--json");
+        let v = self.json(&args)?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge job show ID --json`: one job, with every step and effect it
+    /// recorded.
+    pub fn job_show(&self, id: i64) -> Result<JobDoc> {
+        let id = id.to_string();
+        let v = self.json(&["job", "show", &id, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge job log <project> --json`: a project's job effects across
+    /// every one of its jobs, newest first.
+    pub fn job_log(&self, project: &str) -> Result<Vec<JobEffectRow>> {
+        let v = self.json(&["job", "log", project, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge stats --json`: see [`StatsDoc`].
     pub fn stats(&self) -> Result<StatsDoc> {
         let v = self.json(&["stats", "--json"])?;
@@ -701,6 +728,123 @@ pub struct InitiativeDoc {
     pub created_at: i64,
     #[serde(default)]
     pub settled_at: Option<i64>,
+}
+
+/// One row of `forge job list --json`: a job, one run of a `kind = "run"`
+/// workflow (see docs/JOBS.md).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JobRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub workflow: String,
+    #[serde(default)]
+    pub workflow_hash: String,
+    #[serde(default)]
+    pub landed_sha: String,
+    #[serde(default)]
+    pub trigger_kind: String,
+    #[serde(default)]
+    pub trigger_ref: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub verdict_json: String,
+}
+
+/// One row of `JobDoc.steps`: one step of a job's run.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JobStepRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub job_id: i64,
+    #[serde(default)]
+    pub seq: i64,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub output_ref: String,
+}
+
+/// One row of `JobDoc.effects` and of `forge job log --json`: one effect a
+/// job's step performed on the world.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JobEffectRow {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub job_id: i64,
+    #[serde(default)]
+    pub seq: i64,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// The document `forge job show ID --json` prints: one job with every step
+/// and effect it recorded.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JobDoc {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub workflow: String,
+    #[serde(default)]
+    pub workflow_hash: String,
+    #[serde(default)]
+    pub landed_sha: String,
+    #[serde(default)]
+    pub trigger_kind: String,
+    #[serde(default)]
+    pub trigger_ref: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub verdict_json: String,
+    #[serde(default)]
+    pub steps: Vec<JobStepRow>,
+    #[serde(default)]
+    pub effects: Vec<JobEffectRow>,
 }
 
 /// Token counts from an attempt's result frame, as `TraceDoc` nests them.

@@ -69,6 +69,15 @@ and does not parse stdout.
   outcome, each task and how it ended, what verification refused, what
   the supervisor ruled, what reached the operator, cost and elapsed time.
   A single [`InitiativeDoc`](#initiativedoc) object.
+- **`forge job list [<project>] --json`** — jobs (runs of a `kind = "run"`
+  workflow, see docs/JOBS.md), newest first, or only `<project>`'s. A
+  JSON array of [`JobRow`](#jobrow).
+- **`forge job show ID --json`** — one job, with every step and effect it
+  recorded. A single [`JobDoc`](#jobdoc) object. Exits non-zero if `ID`
+  names no known job.
+- **`forge job log <project> --json`** — a project's job effects across
+  every one of its jobs, newest first. A JSON array of
+  [`JobEffectRow`](#jobdoc).
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -120,7 +129,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job
 ```
 
 ## Naming: unified vs. legacy keys
@@ -308,6 +317,40 @@ report (see docs/PROJECTS.md, "One notification and one report").
 | `questions` | array of `{task_id, question, answer}` | Questions that reached the operator; `answer` is `null` while the task is still blocked. |
 | `deployed` | array of `{task_id, target, sha, check_ok, rolled_back_to}` | Deploys the initiative's tasks triggered on landing (see docs/DEPLOY.md, "When a deploy runs"). `check_ok` is `null` while the deploy is still running; `rolled_back_to` is the previous passing commit, or `null`. |
 | `elapsed_secs` | integer or null | Seconds from creation to the last task's `finished_at`; `null` if nothing has finished yet. |
+
+### `JobRow`
+
+One row of `forge job list --json`: a job, one run of a `kind = "run"`
+workflow (see docs/JOBS.md, "The record"). No repository, no branch, no
+landing — a job starts from a trigger and ends when its effects are
+verified.
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | Job id. |
+| `project` | string | The project it belongs to. |
+| `workflow` | string | The run workflow's name. |
+| `workflow_hash` | string | Content hash of the workflow file this job ran under. |
+| `landed_sha` | string | The project's landed commit this job ran the workflow's automation files at; empty if the project has never landed anything. |
+| `trigger_kind` | string | `manual`, `schedule`, `message`, `webhook`, or `event`. |
+| `trigger_ref` | string | The trigger's own value (a cron string, a contact, a webhook name, an event type); empty for a manual trigger. |
+| `state` | string | `queued`, `running`, `ok`, `failed`, `needs_human` (a blocked question addressed to the contact or the operator — see docs/JOBS.md, "The human rung"), or `dropped`. |
+| `dry_run` | bool | True when effects were only recorded, not performed (e.g. `forge job test`'s fixture replay). |
+| `started_at` | integer | Unix seconds. |
+| `finished_at` | integer or null | Unix seconds; `null` while queued or running. |
+| `cost_usd` | number or null | Total cost of the run; `null` until it finishes. |
+| `verdict_json` | string | The assertions' verdict, raw JSON in the same shape as a task attempt's `verdict_json`; empty until the job finishes. |
+
+### `JobDoc`
+
+The document `forge job show ID --json` prints: one job with every step
+and effect it recorded.
+
+| field | type | meaning |
+|---|---|---|
+| `id`, `project`, `workflow`, `workflow_hash`, `landed_sha`, `trigger_kind`, `trigger_ref`, `state`, `dry_run`, `started_at`, `finished_at`, `cost_usd`, `verdict_json` | | as [`JobRow`](#jobrow). |
+| `steps` | array of `{id, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref}` | Every step of the job's run, in order. `kind` is `operation` or `directive`; `provider`/`model` are set only for a directive step, `exit_code` only for an operation step. `output_ref` is where the step's output lives on disk, relative to the job's scratch directory. |
+| `effects` | array of `{id, job_id, seq, kind, target, summary, dry_run}` | Every effect a step performed on the world, in order. `seq` is the step that produced it; `kind` is the operation's declared effect kind (e.g. `message`, `row`); `target` is what it acted on; `summary` is a short human-readable description — what the portal shows per run. Same row shape as `forge job log --json`'s, whose rows span every job in a project instead of just this one, newest first. |
 
 ### `TraceDoc`
 
