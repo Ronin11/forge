@@ -761,6 +761,49 @@ fn project_list_shows_the_test_repository_after_one_task() {
 }
 
 #[test]
+fn project_set_purpose_replaces_the_migrations_placeholder_everywhere_it_shows() {
+    let e = Env::new();
+    e.add(&[]);
+
+    // The migration-created project starts with the placeholder purpose,
+    // which `project show` and `project view` (the portal document) both
+    // treat as absent rather than printing the repository path.
+    let o = e.forge("ok.sh", &["project", "show", "repo", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["purpose"], "", "{row:?}");
+
+    let o = e.forge("ok.sh", &["project", "view", "repo", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["purpose"], "", "{doc:?}");
+
+    // `forge project set --purpose` gives it a real one, which then shows
+    // up in both places.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "set",
+                "repo",
+                "--purpose",
+                "Keeps the orders flowing."
+            ],
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["project", "show", "repo", "--json"]);
+    let row: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(row["purpose"], "Keeps the orders flowing.");
+
+    let o = e.forge("ok.sh", &["project", "view", "repo", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["purpose"], "Keeps the orders flowing.");
+}
+
+#[test]
 fn a_projects_scope_fails_a_task_that_writes_outside_it() {
     let e = Env::new();
     let repo = e.repo.to_str().unwrap();

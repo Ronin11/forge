@@ -1455,6 +1455,17 @@ pub struct ProjectRow {
     pub proposals: Vec<ProposalRow>,
 }
 
+/// A project's purpose as shown to a person: empty, rather than the
+/// migration's placeholder, when nobody has set a real one yet (see
+/// `crate::store::is_placeholder_purpose`).
+fn real_purpose(purpose: &str) -> String {
+    if crate::store::is_placeholder_purpose(purpose) {
+        String::new()
+    } else {
+        purpose.to_string()
+    }
+}
+
 pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
     let repos = f
         .store
@@ -1483,7 +1494,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
     }
     Ok(ProjectRow {
         name: p.name.clone(),
-        purpose: p.purpose.clone(),
+        purpose: real_purpose(&p.purpose),
         created_at: p.created_at,
         repos,
         queued: stats.queued,
@@ -2246,7 +2257,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
 
     Ok(PortalDoc {
         project: p.name.clone(),
-        purpose: p.purpose.clone(),
+        purpose: real_purpose(&p.purpose),
         deploy_targets,
         initiatives,
         questions,
