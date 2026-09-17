@@ -2143,7 +2143,7 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     out!("tasks");
     for t in &doc.tasks {
         out!(
-            "  {:<5} {:<10}{}{}",
+            "  {:<5} {:<10}{}{}{}",
             t.id,
             t.state,
             match t.retries {
@@ -2151,6 +2151,9 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
                 1 => " (1 retry)".to_string(),
                 n => format!(" ({n} retries)"),
             },
+            t.score
+                .map(|s| format!(" score {s}/10"))
+                .unwrap_or_default(),
             if t.reason.is_empty() {
                 String::new()
             } else {
@@ -3834,6 +3837,23 @@ fn show(id: i64) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" → ")
         );
+    }
+    if let Some(a) = &doc.assessment {
+        out!(
+            "{:<11}score {}/10, {} finding(s)",
+            "assess",
+            a.score,
+            a.findings.len()
+        );
+        for fnd in &a.findings {
+            out!(
+                "{:<11}{} {}: {}",
+                "finding",
+                fnd.severity,
+                fnd.path,
+                fnd.finding
+            );
+        }
     }
     for d in &doc.deploys {
         let sha = &d.sha[..d.sha.len().min(8)];

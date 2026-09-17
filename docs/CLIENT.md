@@ -272,7 +272,7 @@ report (see docs/PROJECTS.md, "One notification and one report").
 | field | type | meaning |
 |---|---|---|
 | `id`, `project`, `outcome`, `state`, `held_rule`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
-| `tasks` | array of `{id, state, reason}` | Every task in the initiative and how it ended. |
+| `tasks` | array of `{id, state, reason, score}` | Every task in the initiative and how it ended. `score` is the assess directive's 0-10 maintainability score for that task's own landing, or `null` if it never ran (see docs/ACTIONS.md, "Assessment"). |
 | `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
 | `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
 | `questions` | array of `{task_id, question, answer}` | Questions that reached the operator; `answer` is `null` while the task is still blocked. |
@@ -285,7 +285,7 @@ The document `forge trace ID --json` prints: everything about one task,
 built once and shared by `forge trace`, `forge show`, and the `--json`
 form so all three agree.
 
-Top level: `{task, attempts, ops, resolved, diagnosis, deploys}`.
+Top level: `{task, attempts, ops, resolved, diagnosis, deploys, assessment}`.
 
 **`task`** — the task's full record. Selected fields (most are exactly
 the store's column names):
@@ -351,6 +351,14 @@ a deploy runs"), empty for a task that never landed one. Same shape as
 `started_at`, `finished_at`, `check_ok` (null while running),
 `check_output`, `rolled_back_to` (the previous passing commit, or null),
 `reason`.
+
+**`assessment`** — `Assessment` or null: the assess directive's most
+recent run against this task's own landing (see docs/ACTIONS.md,
+"Assessment"), null when the workflow never opted in, the task never
+landed, or the run failed. `{score, findings, model, provider, cost_usd,
+created_at}` — `score` is 0 (worst) to 10 (best); `findings` is an array
+of `{path, finding, severity}` (`severity` is `notable` or `concern`);
+`model` and `provider` are what ran it; `cost_usd` is what it cost.
 
 ### `StatsDoc`
 

@@ -1202,6 +1202,55 @@ fn a_landing_on_the_reviewed_workflow_runs_assess_and_stores_the_row() {
 }
 
 #[test]
+fn an_assessed_landing_carries_its_score_and_finding_on_show_and_trace() {
+    let e = Env::new();
+    let mut c = e.cmd("ok.sh");
+    for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
+        c.env(
+            format!("FORGE2_CLAUDE_BIN_{role}"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(fake),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+
+    let show = String::from_utf8_lossy(&e.forge("ok.sh", &["show", "1"]).stdout).to_string();
+    assert!(
+        show.contains("assess     score 7/10, 1 finding(s)"),
+        "{show}"
+    );
+    assert!(
+        show.contains(
+            "finding    notable answer.txt: the value 42 is a magic number with no explanation."
+        ),
+        "{show}"
+    );
+
+    let doc = e.trace_json(1);
+    let assessment = &doc["assessment"];
+    assert_eq!(assessment["score"], 7);
+    assert_eq!(assessment["provider"], "anthropic");
+    let findings = assessment["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0]["path"], "answer.txt");
+    assert_eq!(findings[0]["severity"], "notable");
+}
+
+#[test]
 fn a_landing_on_the_direct_workflow_does_not_run_assess() {
     let e = Env::new();
     let o = e.forge(
