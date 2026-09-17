@@ -153,7 +153,7 @@ pub async fn run(
     // A check that answers is not a site that works (see docs/DEPLOY.md,
     // "A deterministic smoke step"): open the target's smoke url only once
     // the check itself has passed, and let it fail the deploy too.
-    let (smoke_ok, smoke_json) = if r.ok {
+    let (smoke_ok, smoke_json, look_ok, look_json) = if r.ok {
         match (&target.smoke_url, &smoke_action) {
             (Some(url), Some(smoke_action)) => {
                 let out_dir = f.paths.home.join("deploys").join(deploy_id.to_string());
@@ -163,12 +163,52 @@ pub async fn run(
                     r.ok = false;
                     r.tail = format!("{}\n\n-- smoke check ({url}) --\n{}", r.tail, sr.tail);
                 }
-                (Some(sr.ok), json)
+
+                // The last, human-shaped step (see docs/DEPLOY.md, "The
+                // deploy look"): whether or not the deterministic smoke
+                // check itself passed, look at what it caught.
+                let (look_ok, look_json) =
+                    match crate::deploy_look::run(f, &target, deploy_id, &out_dir).await {
+                        Ok(Some(v)) => {
+                            f.report.emit(
+                                event_task,
+                                Event::Note {
+                                    text: &format!(
+                                        "deploy-look {}, {} finding(s)",
+                                        if v.ok { "ok" } else { "not ok" },
+                                        v.findings.len()
+                                    ),
+                                },
+                            );
+                            if let Some(blocking) =
+                                v.findings.iter().find(|fnd| fnd.severity == "blocking")
+                            {
+                                r.ok = false;
+                                r.tail = format!(
+                                    "{}\n\n-- deploy look --\n{}",
+                                    r.tail, blocking.finding
+                                );
+                            }
+                            (Some(v.ok), Some(serde_json::to_string(&v.findings)?))
+                        }
+                        Ok(None) => (None, None),
+                        Err(e) => {
+                            f.report.emit(
+                                event_task,
+                                Event::Note {
+                                    text: &format!("deploy-look failed: {e:#}"),
+                                },
+                            );
+                            (None, None)
+                        }
+                    };
+
+                (Some(sr.ok), json, look_ok, look_json)
             }
-            _ => (None, None),
+            _ => (None, None, None, None),
         }
     } else {
-        (None, None)
+        (None, None, None, None)
     };
 
     if r.ok {
@@ -181,6 +221,8 @@ pub async fn run(
             "",
             smoke_ok,
             smoke_json.as_deref(),
+            look_ok,
+            look_json.as_deref(),
         )?;
         f.report.emit(
             event_task,
@@ -218,6 +260,8 @@ pub async fn run(
             &reason,
             smoke_ok,
             smoke_json.as_deref(),
+            look_ok,
+            look_json.as_deref(),
         )?;
         f.report.emit(
             event_task,
@@ -262,6 +306,8 @@ pub async fn run(
         &reason,
         smoke_ok,
         smoke_json.as_deref(),
+        look_ok,
+        look_json.as_deref(),
     )?;
     f.report.emit(
         event_task,

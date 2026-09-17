@@ -389,6 +389,10 @@ const BUILTIN_ACTIONS: &[(&str, &str)] = &[
         include_str!("builtins/actions/interview.toml"),
     ),
     ("assess.toml", include_str!("builtins/actions/assess.toml")),
+    (
+        "deploy-look.toml",
+        include_str!("builtins/actions/deploy-look.toml"),
+    ),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[

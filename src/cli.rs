@@ -1773,6 +1773,17 @@ fn print_deploy_row(r: &crate::view::DeployRow) {
     if let Some(ok) = r.smoke_ok {
         out!("{:<19}smoke {}", "", if ok { "ok" } else { "FAILED" });
     }
+    if let Some(ok) = r.look_ok {
+        out!("{:<19}look  {}", "", if ok { "ok" } else { "FAILED" });
+    }
+    let findings: Vec<crate::deploy_look::Finding> = r
+        .look_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    for fnd in &findings {
+        out!("{:<19}  {} {}", "", fnd.severity, fnd.finding);
+    }
 }
 
 fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
@@ -2209,6 +2220,9 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
             d.task_id,
             d.target
         );
+        for fnd in &d.findings {
+            out!("           {} {}", fnd.severity, fnd.finding);
+        }
     }
     Ok(())
 }

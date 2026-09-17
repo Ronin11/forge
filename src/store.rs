@@ -625,6 +625,14 @@ pub struct Deploy {
     /// title and screenshot path, as the JSON it wrote (see
     /// src/builtins/operations/deploy-smoke.toml).
     pub smoke_json: Option<String>,
+    /// Whether the `deploy-look` directive found the deployed page fit to
+    /// show anyone, `None` when the target declared no smoke url or the
+    /// screenshot smoke took was never produced for it to look at (see
+    /// src/deploy_look.rs).
+    pub look_ok: Option<bool>,
+    /// `deploy-look`'s findings, as the JSON `[{"severity":"blocking"|
+    /// "notable","finding":...}]` it returned.
+    pub look_json: Option<String>,
 }
 
 /// One run of the assess directive against a landed task (see
@@ -1025,6 +1033,13 @@ CREATE TABLE assessments (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX assessments_task ON assessments(task_id, id);
+",
+    // The deploy-look directive's verdict on a deploy's own row, beside
+    // smoke_ok/smoke_json (see src/deploy_look.rs, docs/DEPLOY.md, "The
+    // deploy look").
+    "
+ALTER TABLE deploys ADD COLUMN look_ok INTEGER;
+ALTER TABLE deploys ADD COLUMN look_json TEXT;
 ",
 ];
 
@@ -3039,9 +3054,10 @@ impl Store {
     }
 
     /// Record a deploy's outcome: the check's verdict and output, what it
-    /// rolled back to (if it did), why, and the smoke operation's verdict
-    /// when the target declared a smoke url and the check passed for it to
-    /// run (`None`, `None` otherwise).
+    /// rolled back to (if it did), why, the smoke operation's verdict when
+    /// the target declared a smoke url and the check passed for it to run
+    /// (`None`, `None` otherwise), and `deploy-look`'s verdict on the same
+    /// terms (`None`, `None` when it never ran).
     #[allow(clippy::too_many_arguments)]
     pub fn finish_deploy(
         &self,
@@ -3053,9 +3069,11 @@ impl Store {
         reason: &str,
         smoke_ok: Option<bool>,
         smoke_json: Option<&str>,
+        look_ok: Option<bool>,
+        look_json: Option<&str>,
     ) -> Result<()> {
         self.lock().execute(
-            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8
+            "UPDATE deploys SET finished_at=?2, check_ok=?3, check_output=?4, rolled_back_to=?5, reason=?6, smoke_ok=?7, smoke_json=?8, look_ok=?9, look_json=?10
              WHERE id=?1",
             params![
                 id,
@@ -3065,7 +3083,9 @@ impl Store {
                 rolled_back_to,
                 reason,
                 smoke_ok,
-                smoke_json
+                smoke_json,
+                look_ok,
+                look_json
             ],
         )?;
         Ok(())
@@ -3076,7 +3096,7 @@ impl Store {
     pub fn deploys(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json, look_ok, look_json
              FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![project, target], deploy_from_row)?;
@@ -3090,7 +3110,7 @@ impl Store {
     pub fn deploys_for_task(&self, task_id: i64) -> Result<Vec<Deploy>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json
+            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json, look_ok, look_json
              FROM deploys WHERE task_id=?1 ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![task_id], deploy_from_row)?;
@@ -3174,6 +3194,8 @@ fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
         task_id: r.get(10)?,
         smoke_ok: r.get(11)?,
         smoke_json: r.get(12)?,
+        look_ok: r.get(13)?,
+        look_json: r.get(14)?,
     })
 }
 
@@ -4469,6 +4491,8 @@ mod tests {
             "",
             Some(true),
             Some(r#"{"ok":true}"#),
+            Some(true),
+            Some("[]"),
         )
         .unwrap();
         s.finish_deploy(
@@ -4478,6 +4502,8 @@ mod tests {
             "connection refused",
             Some("aaaaaaa"),
             "the deploy of bbbbbbb failed its check and was rolled back to aaaaaaa",
+            None,
+            None,
             None,
             None,
         )
@@ -4496,6 +4522,9 @@ mod tests {
         assert_eq!(all[1].finished_at, Some(150));
         assert_eq!(all[1].smoke_ok, Some(true));
         assert_eq!(all[1].smoke_json.as_deref(), Some(r#"{"ok":true}"#));
+        assert_eq!(all[0].look_ok, None);
+        assert_eq!(all[1].look_ok, Some(true));
+        assert_eq!(all[1].look_json.as_deref(), Some("[]"));
 
         let prod_only = s.deploys("equitizr", Some("prod")).unwrap();
         assert_eq!(prod_only.len(), 1);

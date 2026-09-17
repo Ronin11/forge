@@ -693,6 +693,138 @@ fn a_deploy_smoke_check_records_a_third_party_failure_without_failing_the_deploy
     );
 }
 
+/// A clean page: 200, no console error, no failed request — the
+/// deterministic smoke check passes cleanly, exactly the case a
+/// placeholder image can hide behind (see docs/DEPLOY.md, "The deploy
+/// look"). What the page actually says does not matter for the test
+/// below: the fake `claude` decides `deploy-look`'s verdict, not a real
+/// look at the screenshot.
+fn serve_clean_page() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).unwrap_or(0);
+                let body = "<!doctype html><html><head><title>Equitizr</title></head><body>hi</body></html>";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            });
+        }
+    });
+    addr
+}
+
+/// A deterministic check and the deterministic smoke step can both pass
+/// while the page itself is unfit to show anyone (a placeholder tile is
+/// an image served with status 200, no console error). `deploy-look`'s
+/// blocking finding fails the deploy the same way a failed check does:
+/// rollback (none here, first deploy) and a question naming the finding.
+#[test]
+fn a_blocking_deploy_look_finding_fails_the_deploy_and_the_question_names_it() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let addr = serve_clean_page();
+    let url = format!("http://{addr}/index.html");
+    let dest = e._dir.path().join("remote");
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "project",
+            "deploy",
+            "add",
+            "demo",
+            "prod",
+            "--repo",
+            repo_s,
+            "--method",
+            "deploy-command",
+            "--arg",
+            "host=local",
+            "--arg",
+            &format!("dest={}", dest.to_str().unwrap()),
+            "--arg",
+            "command=true",
+            "--check",
+            "true",
+            "--smoke",
+            &url,
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // The target's check and the smoke step both pass; only `deploy-look`,
+    // via a fake `claude` that returns a blocking finding, fails the
+    // deploy.
+    let o = e
+        .with_role("ok.sh", "DEPLOY_LOOK", "deploylook-blocking.sh")
+        .args(["deploy", "demo", "prod"])
+        .output()
+        .unwrap();
+    assert!(
+        !o.status.success(),
+        "a blocking deploy-look finding should fail the deploy: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["deploy", "log", "demo", "prod", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["smoke_ok"], true, "{row:?}");
+    assert_eq!(row["check_ok"], false, "not ok: {row:?}");
+    assert_eq!(row["look_ok"], false, "{row:?}");
+    let findings: serde_json::Value =
+        serde_json::from_str(row["look_json"].as_str().unwrap()).unwrap();
+    assert!(
+        findings
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["severity"] == "blocking"
+                && f["finding"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("placeholder")),
+        "{findings:?}"
+    );
+    let output = row["check_output"].as_str().unwrap();
+    assert!(output.contains("placeholder"), "{output}");
+
+    // A blocked question was filed, naming the finding.
+    let (state, reason): (String, String) = e
+        .db()
+        .query_row(
+            "SELECT state, reason FROM tasks WHERE project = 'demo' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "blocked");
+    assert!(reason.contains("placeholder"), "{reason}");
+}
+
 /// A fake `systemctl`: records every call, and simulates a unit that
 /// takes a couple of polls after `restart` before `is-active` reports
 /// `active`, so the wait loop in deploy-user-service.toml is exercised
