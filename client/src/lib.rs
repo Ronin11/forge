@@ -531,13 +531,17 @@ pub struct PortalDeployTarget {
 }
 
 /// One open initiative on [`PortalDoc`]: the customer's "Being built"
-/// list. `state` is always "in progress", "waiting on you" or "done".
+/// list, newest first, capped at ten (`PortalDoc.initiatives_more` the
+/// rest). `state` is always "in progress" or "waiting on you"; `pieces`
+/// how many tasks make up the initiative so far.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PortalInitiative {
     #[serde(default)]
     pub outcome: String,
     #[serde(default)]
     pub state: String,
+    #[serde(default)]
+    pub pieces: i64,
 }
 
 /// One open question on [`PortalDoc`], addressed to the customer: the
@@ -550,11 +554,17 @@ pub struct PortalQuestion {
     pub text: String,
 }
 
-/// One landed task on [`PortalDoc`]: the customer's "Done" list.
+/// One line on [`PortalDoc`]'s "Done" list, newest first, capped at ten
+/// (`PortalDoc.landed_more` the rest): a landed initiative's outcome
+/// (`pieces` how many tasks it took), or a landed task belonging to no
+/// initiative (`pieces` `None`), `text` its title or a line derived from
+/// its request.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PortalLanded {
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub pieces: Option<i64>,
     #[serde(default)]
     pub landed_at: i64,
 }
@@ -588,16 +598,23 @@ pub struct PortalBacklogItem {
 pub struct PortalDoc {
     #[serde(default)]
     pub project: String,
+    /// The project's purpose; never rendered on the customer's page.
     #[serde(default)]
     pub purpose: String,
     #[serde(default)]
     pub deploy_targets: Vec<PortalDeployTarget>,
     #[serde(default)]
     pub initiatives: Vec<PortalInitiative>,
+    /// How many open initiatives past the ten in `initiatives`.
+    #[serde(default)]
+    pub initiatives_more: i64,
     #[serde(default)]
     pub questions: Vec<PortalQuestion>,
     #[serde(default)]
     pub landed: Vec<PortalLanded>,
+    /// How many landed lines past the ten in `landed`.
+    #[serde(default)]
+    pub landed_more: i64,
     #[serde(default)]
     pub brief: Option<PortalBrief>,
     #[serde(default)]

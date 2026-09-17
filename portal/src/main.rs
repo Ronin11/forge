@@ -252,34 +252,59 @@ fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
     out
 }
 
-fn render_initiatives(items: &[PortalInitiative]) -> String {
+/// "1 piece of work" / "3 pieces of work" beside an initiative's outcome.
+fn pieces_phrase(n: i64) -> String {
+    if n == 1 {
+        "1 piece of work".to_string()
+    } else {
+        format!("{n} pieces of work")
+    }
+}
+
+/// "and n more" for a list `PortalDoc` already capped at ten; empty when
+/// nothing was cut.
+fn render_more(more: i64) -> String {
+    if more <= 0 {
+        return String::new();
+    }
+    format!(r#"<li class="more">and {more} more</li>"#)
+}
+
+fn render_initiatives(items: &[PortalInitiative], more: i64) -> String {
     if items.is_empty() {
         return r#"<p class="empty">Nothing being built right now.</p>"#.to_string();
     }
     let mut out = String::from(r#"<ul class="plain">"#);
     for i in items {
         out.push_str(&format!(
-            r#"<li><div>{}</div><div class="date">{}</div></li>"#,
-            esc(&i.outcome),
-            esc(&cap_first(&i.state)),
+            r#"<li><div>{outcome}</div><div class="pieces">{pieces}</div><div class="date">{state}</div></li>"#,
+            outcome = esc(&i.outcome),
+            pieces = esc(&pieces_phrase(i.pieces)),
+            state = esc(&cap_first(&i.state)),
         ));
     }
+    out.push_str(&render_more(more));
     out.push_str("</ul>");
     out
 }
 
-fn render_landed(items: &[PortalLanded]) -> String {
+fn render_landed(items: &[PortalLanded], more: i64) -> String {
     if items.is_empty() {
         return r#"<p class="empty">Nothing has shipped yet.</p>"#.to_string();
     }
     let mut out = String::from(r#"<ul class="plain">"#);
     for l in items {
+        let pieces = match l.pieces {
+            Some(n) => format!(r#"<div class="pieces">{}</div>"#, esc(&pieces_phrase(n))),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            r#"<li><div>{}</div><div class="date">Shipped {}</div></li>"#,
-            esc(&l.text),
-            human_date(l.landed_at),
+            r#"<li><div>{text}</div>{pieces}<div class="date">Shipped {date}</div></li>"#,
+            text = esc(&l.text),
+            date = human_date(l.landed_at),
         ));
     }
+    out.push_str(&render_more(more));
     out.push_str("</ul>");
     out
 }
@@ -338,11 +363,9 @@ fn render_plan(brief: &Option<PortalBrief>, backlog: &[PortalBacklogItem]) -> St
 }
 
 fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String {
-    let header = format!(
-        r#"<header><h1>{}</h1><p>{}</p></header>"#,
-        esc(&doc.project),
-        esc(&doc.purpose)
-    );
+    // No purpose paragraph: a project's purpose is the operator's own
+    // words, never the customer's (see docs/PORTAL.md).
+    let header = format!(r#"<header><h1>{}</h1></header>"#, esc(&doc.project));
     let main = format!(
         r#"<main>
 <section><h2>Running for you</h2>{targets}</section>
@@ -353,9 +376,9 @@ fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String 
 <section><h2>Your plan</h2>{plan}</section>
 </main>"#,
         targets = render_targets(&doc.deploy_targets, token),
-        initiatives = render_initiatives(&doc.initiatives),
+        initiatives = render_initiatives(&doc.initiatives, doc.initiatives_more),
         questions = render_questions(&doc.questions, token),
-        landed = render_landed(&doc.landed),
+        landed = render_landed(&doc.landed, doc.landed_more),
         ask = render_ask(token, ask_reply),
         plan = render_plan(&doc.brief, &doc.backlog),
     );

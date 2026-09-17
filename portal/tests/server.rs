@@ -38,12 +38,14 @@ fn fixture_doc(shot_path: &str, answered: bool, asked: bool) -> String {
     } else {
         vec![serde_json::json!({"task_id": 42, "text": "Should annual plans get a discount?"})]
     };
-    let mut landed =
-        vec![serde_json::json!({"text": "Added dark mode", "landed_at": 1_699_999_999_i64})];
+    let mut landed = vec![
+        serde_json::json!({"text": "Checkout redesign shipped", "pieces": 2, "landed_at": 1_699_999_999_i64}),
+        serde_json::json!({"text": "Added dark mode", "pieces": null, "landed_at": 1_699_999_998_i64}),
+    ];
     if asked {
         landed.insert(
             0,
-            serde_json::json!({"text": "Gift wrap orders over $50", "landed_at": 1_700_000_500_i64}),
+            serde_json::json!({"text": "Gift wrap orders over $50", "pieces": null, "landed_at": 1_700_000_500_i64}),
         );
     }
     serde_json::json!({
@@ -68,10 +70,12 @@ fn fixture_doc(shot_path: &str, answered: bool, asked: bool) -> String {
             },
         ],
         "initiatives": [
-            {"outcome": "Ship the new checkout", "state": "in progress"},
+            {"outcome": "Ship the new checkout", "state": "in progress", "pieces": 3},
         ],
+        "initiatives_more": 4,
         "questions": questions,
         "landed": landed,
+        "landed_more": 5,
         "brief": {
             "where_it_runs": "on our cloud",
             "workflows": ["Order intake syncs nightly"],
@@ -253,7 +257,8 @@ fn the_six_sections_render_in_plain_words_with_no_forbidden_keys() {
     }
 
     assert!(body.contains("acme"), "{body}");
-    assert!(body.contains("Keeps the orders flowing"), "{body}");
+    // A project's purpose is the operator's own words, never rendered.
+    assert!(!body.contains("Keeps the orders flowing"), "{body}");
     assert!(body.contains("acme.example.com"), "{body}");
     assert!(
         body.contains("Up and running, and looking right."),
@@ -265,8 +270,13 @@ fn the_six_sections_render_in_plain_words_with_no_forbidden_keys() {
     );
     assert!(body.contains("Ship the new checkout"), "{body}");
     assert!(body.contains("In progress"), "{body}");
+    assert!(body.contains("3 pieces of work"), "{body}");
+    assert!(body.contains("and 4 more"), "{body}");
+    assert!(body.contains("Checkout redesign shipped"), "{body}");
+    assert!(body.contains("2 pieces of work"), "{body}");
     assert!(body.contains("Added dark mode"), "{body}");
     assert!(body.contains("Shipped Nov 14, 2023"), "{body}");
+    assert!(body.contains("and 5 more"), "{body}");
     assert!(body.contains("on our cloud"), "{body}");
     assert!(body.contains("Order intake syncs nightly"), "{body}");
     assert!(body.contains("Add CSV export"), "{body}");

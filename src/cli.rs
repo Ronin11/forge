@@ -2329,7 +2329,10 @@ fn project_view(name: String, json: bool) -> Result<()> {
     out!();
     out!("Being built:");
     for i in &doc.initiatives {
-        out!("  [{}] {}", i.state, i.outcome);
+        out!("  [{}] {} ({} pieces of work)", i.state, i.outcome, i.pieces);
+    }
+    if doc.initiatives_more > 0 {
+        out!("  ...and {} more", doc.initiatives_more);
     }
     out!();
     out!("Needs you:");
@@ -2339,7 +2342,13 @@ fn project_view(name: String, json: bool) -> Result<()> {
     out!();
     out!("Done:");
     for l in &doc.landed {
-        out!("  {} ({})", l.text, l.landed_at);
+        match l.pieces {
+            Some(n) => out!("  {} ({} pieces of work) ({})", l.text, n, l.landed_at),
+            None => out!("  {} ({})", l.text, l.landed_at),
+        }
+    }
+    if doc.landed_more > 0 {
+        out!("  ...and {} more", doc.landed_more);
     }
     out!();
     out!("Your plan:");
