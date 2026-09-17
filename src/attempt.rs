@@ -411,6 +411,7 @@ async fn launch(
         start_sha,
         schema: crate::envelope::SCHEMA,
         early_ending: f.early_ending,
+        no_tools: false,
     })
     .await
     .env()?;

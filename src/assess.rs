@@ -121,6 +121,7 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
         start_sha: landed_sha,
         schema: SCHEMA,
         early_ending: f.early_ending,
+        no_tools: false,
     })
     .await?;
     if let Some(why) = crate::verify::agent_failure(&outcome) {

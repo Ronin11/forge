@@ -311,6 +311,11 @@ pub struct Launch<'a> {
     pub schema: &'a str,
     /// Thresholds for `Watch`, the operator's `[early_ending]` config.
     pub early_ending: crate::config::EarlyEnding,
+    /// A job's directive step (docs/JOBS.md, "Steps"): the agent runs with
+    /// no tools at all. The claude backend passes the flag that disables
+    /// every tool; the codex backend cannot yet guarantee the same and
+    /// refuses the run instead of pretending to (see `run`).
+    pub no_tools: bool,
 }
 
 /// Live signs that an attempt is going nowhere, computed from the tool
@@ -707,7 +712,15 @@ async fn run_with_relaunch(
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
     match l.provider.runner {
         Runner::ClaudeCli => run_claude(l).await,
-        Runner::CodexCli => run_codex(l).await,
+        Runner::CodexCli => {
+            if l.no_tools {
+                anyhow::bail!(
+                    "the codex backend cannot yet guarantee no tool use for a directive step \
+                     (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
+                );
+            }
+            run_codex(l).await
+        }
     }
 }
 
@@ -734,6 +747,10 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if l.no_tools {
+        argv.push("--disallowedTools".into());
+        argv.push("*".into());
+    }
     argv.extend(l.provider.extra_args.iter().cloned());
     if let Some(id) = l.resume {
         argv.push("--resume".into());
@@ -1597,6 +1614,7 @@ mod tests {
             start_sha,
             schema: crate::envelope::SCHEMA,
             early_ending: thresholds(100, 100, 100, 2),
+            no_tools: false,
         })
         .await
         .unwrap();

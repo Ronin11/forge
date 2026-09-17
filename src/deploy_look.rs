@@ -152,6 +152,7 @@ pub async fn run(
         writes: false,
         schema: SCHEMA,
         early_ending: f.early_ending,
+        no_tools: false,
     })
     .await?;
     if let Some(why) = crate::verify::agent_failure(&outcome) {

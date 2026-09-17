@@ -344,6 +344,15 @@ pub struct Limits {
     pub budget_usd: f64,
     pub per_day: u32,
     pub on_failure: OnFailure,
+    /// The bound on a directive step's inputs (the input document plus
+    /// every earlier step's output, as text) in bytes; default 32 kB
+    /// (docs/JOBS.md, "Steps").
+    #[serde(default = "default_input_bytes")]
+    pub input_bytes: usize,
+}
+
+pub fn default_input_bytes() -> usize {
+    32 * 1024
 }
 
 /// How much of an operation's stdout and stderr the kernel keeps on its
@@ -387,6 +396,11 @@ struct ActionRaw {
     /// Directive: text appended verbatim as a final "This step:" section
     /// of the role prompt the agent receives.
     prompt: Option<String>,
+    /// Directive: the JSON Schema a job step's structured output is
+    /// validated against before the next step sees it (docs/JOBS.md,
+    /// "Steps"). Unused by a build workflow, which holds every directive to
+    /// the envelope schema instead.
+    schema: Option<String>,
     /// Directive (plan contract): when true and the task has an
     /// initiative id, file the plan's items as sibling tasks in that
     /// initiative after this step, instead of running the code step in
@@ -423,6 +437,7 @@ pub struct ActionDef {
     pub paths: Vec<String>,
     pub brief: String,
     pub prompt: Option<String>,
+    pub schema: Option<String>,
     pub file_into_initiative: bool,
     pub overlay: bool,
     pub verifies: bool,
@@ -864,12 +879,19 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
             || !raw.paths.is_empty()
             || !raw.brief.is_empty()
             || raw.prompt.is_some()
+            || raw.schema.is_some()
             || raw.file_into_initiative)
     {
         bail!(
-            "{}: contract, paths, brief, prompt, and file_into_initiative apply to directives only",
+            "{}: contract, paths, brief, prompt, schema, and file_into_initiative apply to directives only",
             path.display()
         );
+    }
+    if let Some(schema) = &raw.schema {
+        let v: serde_json::Value = serde_json::from_str(schema)
+            .with_context(|| format!("{}: `schema` is not valid JSON", path.display()))?;
+        jsonschema::validator_for(&v)
+            .with_context(|| format!("{}: `schema` is not a valid JSON Schema", path.display()))?;
     }
     if raw.kind == Kind::Directive && (raw.overlay || raw.verifies) {
         bail!(
@@ -938,6 +960,7 @@ fn parse_action(dir: &Path, path: &Path, text: &str) -> Result<ActionDef> {
         paths: raw.paths,
         brief: raw.brief,
         prompt: raw.prompt,
+        schema: raw.schema,
         file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
         verifies: raw.verifies,
@@ -1329,10 +1352,28 @@ pub fn resolve(home: &Path, name: &str) -> Result<Resolved> {
     Ok(out)
 }
 
+/// A job step after resolution: the action it names, plus its own `role`
+/// (a directive, routed to a provider) and any per-step overrides
+/// (docs/JOBS.md, "Steps"). An operation step's `effect` is validated here
+/// (see `job_steps`) but carries no further meaning to the executor: what
+/// an operation actually did is read back from the effect log it writes,
+/// not from what it declared.
+#[derive(Clone, Debug)]
+pub struct RunStep {
+    pub action: ActionDef,
+    pub role: Option<String>,
+    pub model: Option<String>,
+    pub max_turns: Option<u32>,
+    pub timeout_secs: Option<u32>,
+}
+
 /// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
 /// run workflow never splices a child workflow the way a build workflow
-/// does; every step names an action directly.
-fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec<ActionDef>> {
+/// does; every step names an action directly. A directive step must name a
+/// `role` (routed to a provider like every role) and its action must
+/// declare a `schema`; an operation step must not name a `role`, and a
+/// directive step must not name an `effect`.
+fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec<RunStep>> {
     wf.steps
         .iter()
         .map(|s| {
@@ -1342,8 +1383,44 @@ fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec
                     wf.name
                 )
             })?;
-            actions.get(name).cloned().with_context(|| {
+            let action = actions.get(name).cloned().with_context(|| {
                 format!("{:?}: job step names unknown action {name:?}", wf.name)
+            })?;
+            match action.kind {
+                Kind::Directive => {
+                    if s.role.as_deref().is_none_or(|r| r.trim().is_empty()) {
+                        bail!(
+                            "{:?}: job step {name:?} is a directive; it needs `role` (docs/JOBS.md, \"Steps\")",
+                            wf.name
+                        );
+                    }
+                    if action.schema.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                        bail!(
+                            "{:?}: job step {name:?} is a directive; its action {name:?} needs a `schema` (docs/JOBS.md, \"Steps\")",
+                            wf.name
+                        );
+                    }
+                    if s.effect.is_some() {
+                        bail!(
+                            "{:?}: job step {name:?} is a directive; `effect` applies to operation steps only",
+                            wf.name
+                        );
+                    }
+                }
+                Kind::Operation if s.role.is_some() => {
+                    bail!(
+                        "{:?}: job step {name:?} is an operation; `role` applies to directive steps only",
+                        wf.name
+                    );
+                }
+                Kind::Operation => {}
+            }
+            Ok(RunStep {
+                model: s.model.clone().or_else(|| action.model.clone()),
+                max_turns: s.max_turns.or(action.max_turns),
+                timeout_secs: s.timeout_secs.or(action.timeout_secs),
+                role: s.role.clone(),
+                action,
             })
         })
         .collect()
@@ -1355,7 +1432,7 @@ fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec
 /// step's action is used as written. Fails on an unknown workflow, a
 /// workflow that is not `kind = "run"`, an unknown action, or a step that
 /// names a child workflow.
-pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<ActionDef>)> {
+pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> {
     let cat = load_catalog(home)?;
     ensure_sound(&cat)?;
     let wf = cat
