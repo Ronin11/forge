@@ -1108,6 +1108,24 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
 /// who else the answer came from (a channel plugin's contact name).
 async fn answer(id: i64, text: String, by: String) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if let Some(t) = f.store.task(id)?
+        && t.state == TaskState::Blocked
+        && t.proposal_json.is_some()
+    {
+        return match crate::concierge::answer_proposal(&f, id, &text, &by).await? {
+            crate::concierge::ProposalAnswered::Initiative { initiative, tasks } => {
+                out!(
+                    "answered task {id}: filed initiative {initiative} ({} task(s))",
+                    tasks.len()
+                );
+                Ok(())
+            }
+            crate::concierge::ProposalAnswered::Declined => {
+                out!("answered task {id}: proposal declined");
+                Ok(())
+            }
+        };
+    }
     let (_, n) = crate::queue::answer(&f, id, &text, &by, "").await?;
     out!("answered task {id} as {}", n.id);
     Ok(())
@@ -1359,6 +1377,34 @@ fn print_project_row(r: &crate::view::ProjectRow) {
                 .join(", ")
         );
     }
+    if !r.proposals.is_empty() {
+        out!("proposals");
+        for p in &r.proposals {
+            print_proposal_row(p);
+        }
+    }
+}
+
+fn print_proposal_row(p: &crate::view::ProposalRow) {
+    out!(
+        "  task {} quoting {} — {}",
+        p.task_id,
+        p.quoted
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        p.repetition
+    );
+    out!(
+        "    outcome {}{}",
+        p.outcome,
+        match (p.answer.as_deref(), p.initiative) {
+            (None, _) => " (pending)".to_string(),
+            (Some(a), Some(iid)) => format!(" -> {a}, initiative {iid}"),
+            (Some(a), None) => format!(" -> {a}"),
+        }
+    );
 }
 
 fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> {
@@ -2295,37 +2341,18 @@ async fn initiative_new(
                 known_workflow(w)?;
             }
         }
-        let mut ids: Vec<i64> = Vec::new();
-        for p in &paragraphs {
-            let repo = match &p.repo {
-                Some(r) => r.clone(),
-                None => default_repo
-                    .clone()
-                    .with_context(|| format!("project {project} lists no repository"))?,
-            };
-            let after = match p.after {
-                Some(n) => vec![
-                    *ids.get(n - 1)
-                        .with_context(|| format!("after: {n} names a task not yet queued"))?,
-                ],
-                None => Vec::new(),
-            };
-            let req = crate::queue::TaskRequest {
-                repo: PathBuf::from(repo),
-                task: p.text.clone(),
-                provider: p.provider.clone().or_else(|| provider.clone()),
-                workflow: p.workflow.clone().or_else(|| workflow.clone()),
-                max_turns: 100,
-                retries: 1,
-                timeout_secs: 1800,
-                after,
-                project: Some(project.clone()),
-                initiative: Some(id),
-                ..Default::default()
-            };
-            let t = crate::queue::enqueue(&f, &req, None).await?;
-            out!("queued task {} (paragraph {})", t.id, ids.len() + 1);
-            ids.push(t.id);
+        let ids = crate::queue::file_initiative_paragraphs(
+            &f,
+            &project,
+            id,
+            &paragraphs,
+            default_repo.as_deref(),
+            provider.as_deref(),
+            workflow.as_deref(),
+        )
+        .await?;
+        for (n, tid) in ids.iter().enumerate() {
+            out!("queued task {tid} (paragraph {})", n + 1);
         }
         out!("filed {} of {} tasks", ids.len(), paragraphs.len());
     }
@@ -2441,6 +2468,9 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     }
     out!("initiative {} ({})", doc.id, doc.project);
     out!("outcome    {}", doc.outcome);
+    if let Some(p) = &doc.proposal {
+        out!("proposal   task {} — {}", p.task_id, p.repetition);
+    }
     out!(
         "state      {}{}",
         doc.state,
@@ -2549,7 +2579,9 @@ async fn add(args: TaskArgs) -> Result<()> {
 
 async fn ask(project: String, message: String, from: Option<String>) -> Result<()> {
     let f = Arc::new(Forge::open(true, false)?);
-    match crate::concierge::ask(f.clone(), &project, &message, from.as_deref()).await? {
+    let (asked, proposal) =
+        crate::concierge::ask(f.clone(), &project, &message, from.as_deref()).await?;
+    match asked {
         crate::concierge::Asked::Filed { task } => {
             out!(
                 "concierge: a request; filed task {task} ({} queued)",
@@ -2571,6 +2603,14 @@ async fn ask(project: String, message: String, from: Option<String>) -> Result<(
                     .unwrap_or_default()
             );
         }
+    }
+    if let Some(task) = proposal {
+        out!(
+            "concierge: also proposes an automation; blocked task {task} with a question{}",
+            from.as_deref()
+                .map(|c| format!(" for {c}"))
+                .unwrap_or_default()
+        );
     }
     Ok(())
 }

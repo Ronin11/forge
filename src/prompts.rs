@@ -393,8 +393,9 @@ pub fn concierge_prompt(
          guess from you.\n\
          - `unclear`: none of the other three is safe to conclude from what you were given.\n\n\
          Write your decision in `summary` as this JSON document, one line, filling in only the \
-         field the kind you chose needs and leaving the others as empty strings:\n\
-         {\"kind\":\"request|question|need|unclear\",\"task\":\"...\",\"answer\":\"...\",\"reason\":\"...\",\"question\":\"...\"}\n\
+         field the kind you chose needs and leaving the others as empty strings (`pattern` is \
+         explained below and is `null` unless it applies):\n\
+         {\"kind\":\"request|question|need|unclear\",\"task\":\"...\",\"answer\":\"...\",\"reason\":\"...\",\"question\":\"...\",\"pattern\":null}\n\
          - `request`: `task` is the task text to file, the customer's own words tidied into an \
          instruction, with the reason for the change.\n\
          - `question`: `answer` is the answer, in plain words, drawn only from what is given \
@@ -402,6 +403,13 @@ pub fn concierge_prompt(
          - `need`: `reason` is one sentence saying why an interview is warranted.\n\
          - `unclear`: `question` is the one question that would tell you which of the other \
          three this is.\n\n\
+         Separately from the kind above, look at the project's last tasks below (whichever kind \
+         you just decided is one more of them): if three or more are the same shape — the same \
+         kind of change asked for again and again, your judgment — add a `pattern` object \
+         alongside your decision, quoting the three (or more) task ids that share the shape:\n\
+         {\"task_ids\":[...],\"repetition\":\"one sentence naming the repetition\",\"outcome\":\"one \
+         sentence saying what the automation would do\"}\n\
+         Leave `pattern` null the rest of the time — most messages are not the third of anything.\n\n\
          This is one decision, not a conversation: stop with `needs_input` null every time, \
          whichever kind you chose.",
     );

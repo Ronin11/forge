@@ -251,6 +251,16 @@ pub struct Task {
     /// `unclear`); `None` for a task filed any other way (see
     /// docs/INTAKE.md, "The front door is not the interview").
     pub concierge_json: Option<String>,
+    /// The escalator's proposal, raw JSON (`task_ids`, `repetition`,
+    /// `outcome`), on the placeholder task `forge ask` blocks when the
+    /// concierge's decision names a `pattern`; `None` for every other task
+    /// (see docs/INTAKE.md, "The escalator").
+    pub proposal_json: Option<String>,
+    /// How the proposal was answered, "yes" or "no"; `None` while it is
+    /// still blocked.
+    pub proposal_answer: Option<String>,
+    /// The initiative a "yes" answer filed; `None` for a "no" or a still-open proposal.
+    pub proposal_initiative: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -1243,6 +1253,14 @@ CREATE TABLE job_effects (
 );
 CREATE INDEX job_effects_job ON job_effects(job_id, seq);
 ",
+    // The escalator (see docs/INTAKE.md, "The escalator"): the pattern a
+    // concierge decision named, on the placeholder task `forge ask` blocks
+    // with the yes/no question, and how it was answered.
+    "
+ALTER TABLE tasks ADD COLUMN proposal_json TEXT;
+ALTER TABLE tasks ADD COLUMN proposal_answer TEXT;
+ALTER TABLE tasks ADD COLUMN proposal_initiative INTEGER;
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -1311,6 +1329,9 @@ const TASK_COLUMNS: &[&str] = &[
     "initiative",
     "explore_json",
     "concierge_json",
+    "proposal_json",
+    "proposal_answer",
+    "proposal_initiative",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -1383,6 +1404,9 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             serde_json::from_str(&r.get::<_, String>("explore_json")?),
         )?,
         concierge_json: r.get("concierge_json")?,
+        proposal_json: r.get("proposal_json")?,
+        proposal_answer: r.get("proposal_answer")?,
+        proposal_initiative: r.get("proposal_initiative")?,
     })
 }
 
@@ -1671,7 +1695,7 @@ impl Store {
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
              project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
-             concierge_json=?43 WHERE id=?1",
+             concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1716,6 +1740,9 @@ impl Store {
                 t.question_to,
                 serde_json::to_string(&t.explore)?,
                 t.concierge_json,
+                t.proposal_json,
+                t.proposal_answer,
+                t.proposal_initiative,
             ],
         )?;
         Ok(())
