@@ -105,6 +105,20 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge project resolve-token TOKEN --json`: the project a customer
+    /// portal token opens. An error means the token is unknown or
+    /// revoked (see docs/PORTAL.md); the portal server turns that into a
+    /// plain 404 page.
+    pub fn resolve_portal_token(&self, token: &str) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Resolved {
+            project: String,
+        }
+        let v = self.json(&["project", "resolve-token", token, "--json"])?;
+        let r: Resolved = serde_json::from_value(v)?;
+        Ok(r.project)
+    }
+
     /// `forge initiative list [<project>] --json`: every initiative, or
     /// only `project`'s.
     pub fn initiative_list(&self, project: Option<&str>) -> Result<Vec<InitiativeRow>> {
