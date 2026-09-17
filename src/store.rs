@@ -603,11 +603,27 @@ pub struct Project {
     pub role_providers: BTreeMap<String, String>,
 }
 
+/// Whether `purpose` is the placeholder the migration and
+/// `ensure_default_project`/`seed_project_for_repo` fill in for a
+/// repository with no real purpose yet: `"Repository <path>."`. `forge
+/// project set --purpose` is the only way to replace it; until then,
+/// `forge project show` and the portal document treat it as though no
+/// purpose were set at all (see docs/PROJECTS.md).
+pub fn is_placeholder_purpose(purpose: &str) -> bool {
+    match purpose.strip_prefix("Repository ") {
+        Some(rest) => rest.trim_end_matches('.').starts_with('/'),
+        None => false,
+    }
+}
+
 /// What `forge project set` changes; a field left `None` keeps the
 /// project's current value for that column. There is no way to clear a
 /// column back to unset once set, which nothing here needs yet.
 #[derive(Default, Debug, Clone)]
 pub struct ProjectDefaults {
+    /// A new purpose paragraph, replacing the migration's placeholder or
+    /// any earlier text.
+    pub purpose: Option<String>,
     pub workflow: Option<String>,
     pub per_task_usd: Option<f64>,
     pub per_initiative_usd: Option<f64>,
@@ -2961,16 +2977,18 @@ impl Store {
         };
         let n = self.lock().execute(
             "UPDATE projects SET
-                workflow = COALESCE(?2, workflow),
-                per_task_usd = COALESCE(?3, per_task_usd),
-                per_initiative_usd = COALESCE(?4, per_initiative_usd),
-                supervisor_model = COALESCE(?5, supervisor_model),
-                supervisor_per_lineage = COALESCE(?6, supervisor_per_lineage),
-                protected_json = COALESCE(?7, protected_json),
-                role_providers_json = COALESCE(?8, role_providers_json)
+                purpose = COALESCE(?2, purpose),
+                workflow = COALESCE(?3, workflow),
+                per_task_usd = COALESCE(?4, per_task_usd),
+                per_initiative_usd = COALESCE(?5, per_initiative_usd),
+                supervisor_model = COALESCE(?6, supervisor_model),
+                supervisor_per_lineage = COALESCE(?7, supervisor_per_lineage),
+                protected_json = COALESCE(?8, protected_json),
+                role_providers_json = COALESCE(?9, role_providers_json)
              WHERE name=?1",
             params![
                 name,
+                d.purpose,
                 d.workflow,
                 d.per_task_usd,
                 d.per_initiative_usd,
@@ -4271,6 +4289,72 @@ mod tests {
         let p = s.project("p").unwrap().unwrap();
         assert_eq!(p.role_providers["code"], "openai");
         assert_eq!(p.role_providers["review"], "openai");
+    }
+
+    #[test]
+    fn set_project_defaults_purpose_replaces_the_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        s.create_project(&Project {
+            name: "p".into(),
+            purpose: "Repository /home/x/repo.".into(),
+            created_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(is_placeholder_purpose(
+            &s.project("p").unwrap().unwrap().purpose
+        ));
+
+        s.set_project_defaults(
+            "p",
+            &ProjectDefaults {
+                purpose: Some("What this project is for.".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = s.project("p").unwrap().unwrap();
+        assert_eq!(p.purpose, "What this project is for.");
+        assert!(!is_placeholder_purpose(&p.purpose));
+
+        // A `None` purpose (no `--purpose` given) leaves it alone.
+        s.set_project_defaults(
+            "p",
+            &ProjectDefaults {
+                workflow: Some("other".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.project("p").unwrap().unwrap().purpose,
+            "What this project is for."
+        );
+    }
+
+    #[test]
+    fn is_placeholder_purpose_matches_only_the_migrations_shape() {
+        assert!(is_placeholder_purpose("Repository /home/x/repo."));
+        assert!(is_placeholder_purpose("Repository /home/x/repo"));
+        assert!(!is_placeholder_purpose(""));
+        assert!(!is_placeholder_purpose("What this project is for."));
+        // Starts the same way but is not a path: a real purpose that
+        // happens to start with the same word is left alone.
+        assert!(!is_placeholder_purpose(
+            "Repository of record for this team."
+        ));
+        assert!(!is_placeholder_purpose("A Repository /home/x."));
+    }
+
+    #[test]
+    fn ensure_default_project_gives_a_new_project_the_placeholder_purpose() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let repo = dir.path().join("myrepo").display().to_string();
+        s.ensure_default_project(&repo).unwrap();
+        let p = s.project("myrepo").unwrap().unwrap();
+        assert!(is_placeholder_purpose(&p.purpose), "{}", p.purpose);
     }
 
     #[test]

@@ -434,6 +434,41 @@ fn check_queue(store: &Store) -> Vec<Check> {
     }]
 }
 
+/// Every project still carrying the migration's placeholder purpose
+/// (`Repository <path>.`, see `crate::store::is_placeholder_purpose`):
+/// `forge project show` and the portal already hide it, but the operator
+/// should still know it needs `forge project set --purpose`.
+fn check_project_purposes(store: &Store) -> Vec<Check> {
+    let projects = match store.list_projects() {
+        Ok(p) => p,
+        Err(e) => return vec![check("purposes", Status::Fail, format!("{e:#}"), "")],
+    };
+    let placeholder: Vec<String> = projects
+        .into_iter()
+        .filter(|p| crate::store::is_placeholder_purpose(&p.purpose))
+        .map(|p| p.name)
+        .collect();
+    vec![if placeholder.is_empty() {
+        check(
+            "purposes",
+            Status::Ok,
+            "every project has a real purpose",
+            "",
+        )
+    } else {
+        check(
+            "purposes",
+            Status::Warn,
+            format!(
+                "{} project(s) still have the migration's placeholder purpose: {}",
+                placeholder.len(),
+                placeholder.join(", ")
+            ),
+            "forge project set <name> --purpose <text>",
+        )
+    }]
+}
+
 fn check_worktrees(store: &Store) -> Vec<Check> {
     let tasks = match store.tasks_with_worktrees() {
         Ok(t) => t,
@@ -619,6 +654,7 @@ pub fn run() -> Result<Vec<Check>> {
         }
     };
     out.extend(check_schema(&store));
+    out.extend(check_project_purposes(&store));
     out.extend(check_workflows(&paths));
     out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));

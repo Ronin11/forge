@@ -20,6 +20,7 @@ fn doctor_runs_and_reports_the_essentials() {
         "home",
         "config",
         "schema",
+        "purposes",
         "queue",
         "worktrees",
         "logs",
@@ -93,6 +94,33 @@ fn doctor_warns_when_the_repomap_cache_is_missing() {
     assert!(o.status.success(), "{out}");
     assert!(out.contains("WARN cache"), "{out}");
     assert!(out.contains("does not exist"), "{out}");
+}
+
+#[test]
+fn doctor_warns_for_a_project_with_the_migrations_placeholder_purpose() {
+    let e = Env::new();
+    // `e.add` queues a task with no project named, so `ensure_default_project`
+    // creates one with the migration's placeholder purpose.
+    e.add(&[]);
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("WARN purposes"), "{out}");
+    assert!(out.contains("repo"), "{out}");
+    assert!(out.contains("forge project set"), "{out}");
+
+    // `forge project set --purpose` clears it.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "set", "repo", "--purpose", "A real purpose."]
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("OK   purposes"), "{out}");
 }
 
 #[test]

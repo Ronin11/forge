@@ -526,6 +526,10 @@ enum ProjectCmd {
     /// unless they say otherwise (see docs/PROJECTS.md, "Defaults")
     Set {
         name: String,
+        /// Replace the project's purpose paragraph (also clears the
+        /// migration's placeholder, `Repository <path>.`)
+        #[arg(long)]
+        purpose: Option<String>,
         /// Which workflow a task in this project runs by default
         #[arg(long)]
         workflow: Option<String>,
@@ -969,6 +973,7 @@ pub async fn main() -> Result<()> {
             ProjectCmd::Show { name, json } => project_show(name, json),
             ProjectCmd::Set {
                 name,
+                purpose,
                 workflow,
                 per_task_usd,
                 per_initiative_usd,
@@ -978,6 +983,7 @@ pub async fn main() -> Result<()> {
                 role,
             } => project_set(
                 name,
+                purpose,
                 workflow,
                 per_task_usd,
                 per_initiative_usd,
@@ -1501,6 +1507,7 @@ fn parse_role_providers(
 #[allow(clippy::too_many_arguments)]
 fn project_set(
     name: String,
+    purpose: Option<String>,
     workflow: Option<String>,
     per_task_usd: Option<f64>,
     per_initiative_usd: Option<f64>,
@@ -1512,6 +1519,7 @@ fn project_set(
     let f = Forge::open(false, false)?;
     let role_providers = parse_role_providers(&f, &role)?;
     let d = crate::store::ProjectDefaults {
+        purpose,
         workflow,
         per_task_usd,
         per_initiative_usd,

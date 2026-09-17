@@ -37,7 +37,12 @@ A project is the unit of ownership, and later the unit of tenancy.
 
 **Identity and purpose.** A name and one paragraph saying what the
 project is for. The paragraph is for people and for the supervisor; it
-is not pasted into task prompts.
+is not pasted into task prompts. A project the migration or `forge add`
+created for a repository nobody had named a project for yet has nothing
+real to say, so it gets a placeholder purpose, `Repository <path>.`;
+`forge project show`, the portal document, and `forge doctor` (a
+warning per project) all treat that placeholder as though no purpose
+were set, until `forge project set --purpose <text>` replaces it.
 
 **Repositories and scopes.** A project lists the repositories it works
 in, and for each, optionally, the paths it owns within that repository.
@@ -131,7 +136,7 @@ layer can be added then.
 ```
 forge project new <name> --purpose <text> [--repo <path>[:<scope>]]...
 forge project list | show <name> | backlog <name> [--add <text>]
-forge project set <name> --workflow … --per-task-usd … --supervisor-model …
+forge project set <name> --purpose <text> --workflow … --per-task-usd … --supervisor-model …
 
 forge initiative new <project> --outcome <text> [--from <file>] [--provider <name>] [--workflow <name>] [--budget <usd>]
 forge initiative set <id> [--budget <usd>] [--stop-after <n>] [--outcome <text>]
