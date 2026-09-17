@@ -241,6 +241,8 @@ enum Cmd {
     Version,
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {
+        #[command(subcommand)]
+        cmd: Option<WorkflowsCmd>,
         /// Also list this project's own repository workflows
         /// (`.forge/workflows/`, at its latest landed commit), beside the
         /// operator's catalog (see docs/JOBS.md, "Where an automation lives")
@@ -433,6 +435,19 @@ enum DeploySub {
         /// Machine-readable
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowsCmd {
+    /// Load every `.forge/workflows/*.toml` and `.forge/workflows/actions/*.toml`
+    /// under a path (default: the current directory) with the catalog's own
+    /// parser, and report every problem with file, line, and message. No
+    /// store, no FORGE2_HOME: a repository's own check, run wherever the
+    /// `forge` binary is (see docs/WORKFLOWS.md)
+    Validate {
+        /// Directory to check (default: the current directory)
+        path: Option<PathBuf>,
     },
 }
 
@@ -951,7 +966,10 @@ pub async fn main() -> Result<()> {
         Cmd::Integrate { ids } => integrate(ids).await,
         Cmd::Land { id } => land(id).await,
         Cmd::Journal { id, json } => journal(id, json),
-        Cmd::Workflows { project, json } => list_workflows(project, json).await,
+        Cmd::Workflows { cmd, project, json } => match cmd {
+            Some(WorkflowsCmd::Validate { path }) => validate_workflows(path),
+            None => list_workflows(project, json).await,
+        },
         Cmd::Providers { json } => list_providers(json),
         Cmd::Plugin { cmd } => match cmd {
             PluginCmd::List { json } => plugin_list(json),
@@ -2808,6 +2826,26 @@ fn run_doctor(json: bool) -> Result<()> {
 
 fn measure(f: &Forge, w: &workflows::Workflow) -> Result<profile::Measured> {
     profile::measure(&f.store, &w.name, &w.hash)
+}
+
+fn validate_workflows(path: Option<PathBuf>) -> Result<()> {
+    let root = path.unwrap_or_else(|| PathBuf::from("."));
+    let report = workflows::validate_repo(&root)?;
+    if report.problems.is_empty() {
+        out!(
+            "{} workflow(s), {} action(s) valid",
+            report.workflows,
+            report.actions
+        );
+        return Ok(());
+    }
+    for p in &report.problems {
+        match p.line {
+            Some(line) => out!("{}:{}: {}", p.file.display(), line, p.message),
+            None => out!("{}: {}", p.file.display(), p.message),
+        }
+    }
+    std::process::exit(1);
 }
 
 async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {

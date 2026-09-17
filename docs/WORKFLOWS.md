@@ -167,6 +167,25 @@ other malformed field. Loading, hashing, and versioning are otherwise
 identical to a build workflow: `forge workflows` marks a run workflow
 and shows its trigger in words.
 
+### Where an automation lives
+
+A run workflow that belongs to a project lives in that project's own
+repository, at `.forge/workflows/<name>.toml`, with any actions the
+built-in catalog does not have under `.forge/workflows/actions/`
+(docs/JOBS.md, "Where an automation lives"). Nothing in the repository's
+own checks used to validate those files against the real format, so a
+shape the loader cannot parse — a string `trigger`, a `[[steps]]` table
+with an inline `run` command, an invented step field — could land
+clean. `forge workflows validate [<path>]` (default: the current
+directory) is the fix: it loads every `.forge/workflows/*.toml` and
+`.forge/workflows/actions/*.toml` under the path with the catalog's own
+parser, checks a run workflow's trigger, that its steps each resolve to
+a real action, and that `effect` is set on an operation step only, and
+prints every problem with its file and line where the parser can place
+one. It opens no store and needs no FORGE2_HOME, so it runs as a plain
+repository check, in `forge.toml`'s `[checks]` or in CI, on any host
+that has the `forge` binary.
+
 ## The honest exits
 
 An agent may stop with `needs_input` of kind `question` (it needs the

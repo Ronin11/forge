@@ -305,3 +305,48 @@ fn a_workflow_becomes_measured_after_enough_runs_and_regressions_are_seen() {
         "{out}"
     );
 }
+
+/// `forge workflows validate`: a repository check on its own
+/// `.forge/workflows/`, with no store and no FORGE2_HOME so it runs
+/// wherever the `forge` binary does (docs/WORKFLOWS.md). Catches the
+/// equitizr shape (a string `trigger`) that landed twice because nothing
+/// ran the catalog's own loader against the repository's own files.
+#[test]
+fn forge_workflows_validate_runs_with_no_store_and_no_forge2_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join(".forge/workflows")).unwrap();
+    std::fs::write(
+        repo.join(".forge/workflows/publish-snapshot.toml"),
+        "name = \"publish-snapshot\"\nkind = \"run\"\ndescription = \"d\"\n\nsteps = [\n  { action = \"write-file\", effect = \"file\" },\n]\n\n[trigger]\non = \"manual\"\n",
+    )
+    .unwrap();
+
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
+        .env_remove("FORGE2_HOME")
+        .args(["workflows", "validate", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout).trim(),
+        "1 workflow(s), 0 action(s) valid"
+    );
+
+    std::fs::write(
+        repo.join(".forge/workflows/publish-snapshot.toml"),
+        "name = \"publish-snapshot\"\nkind = \"run\"\ndescription = \"invented string trigger\"\ntrigger = \"manual\"\n\nsteps = [\n  { action = \"write-file\", effect = \"file\" },\n]\n",
+    )
+    .unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
+        .env_remove("FORGE2_HOME")
+        .args(["workflows", "validate", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("publish-snapshot.toml:4:"),
+        "expected file and line: {out}"
+    );
+}

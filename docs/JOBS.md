@@ -55,6 +55,7 @@ In the project's repository, like everything Forge builds:
 
 ```
 .forge/workflows/quote-by-text.toml     the run workflow
+.forge/workflows/actions/*.toml         actions the built-in catalog does not have
 .forge/fixtures/quote-by-text/*.json    recorded inputs with expected effects
 scripts/…                               what the operations call
 ```
@@ -65,6 +66,25 @@ new version. Deploying an automation is landing it: the worker runs the
 next job at the project's latest landed commit. The deploy target for
 an automation is Forge itself, implicit, unless an effect has to happen
 on a machine Forge does not run on (below).
+
+But a repository's own checks never ran the catalog's loader against
+its own workflow files, so a broken one could land clean: twice,
+equitizr's `.forge/workflows/publish-snapshot.toml` landed in a shape
+the loader cannot parse (a string `trigger` instead of a `[trigger]`
+table, `[[steps]]` tables with an inline `run` command, an `http_get`
+step carrying invented `url` and `field` keys) because its reviewer had
+no way to run the parser. `forge workflows validate [<path>]` (default:
+the current directory) is that check: it loads every
+`.forge/workflows/*.toml` and `.forge/workflows/actions/*.toml` under
+the path with the same parser the operator's catalog uses, checks a run
+workflow's `[trigger]`, that every step names an action that exists
+(the repository's own or a built-in), and that `effect` is set only on
+an operation step, and prints every problem with its file and, when the
+parser can place it, the line — `n workflow(s), m action(s) valid` and
+exit 0 when there are none, non-zero otherwise. It opens no store and
+needs no FORGE2_HOME, so it runs as an ordinary repository check (wired
+into `forge.toml`'s `[checks]`, or a CI step) on any host that has the
+`forge` binary, the same way `cargo test` or `eslint` does.
 
 ## The definition
 
