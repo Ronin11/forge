@@ -203,6 +203,29 @@ current GitHub release before Caddy's first start, keeping the package's
 unit and user; every Hetzner box provisioned this way needs the same
 step until Debian ships a newer Caddy.
 
+### The customer portal, reachable
+
+`forge-portal` (docs/PORTAL.md) binds loopback on the operator's own
+host, the same box that already runs `forge-web` and every project's
+deploy targets, so it reaches the world the same way they do: a name in
+the reverse proxy's config, pointed at its port. Add a site block to the
+same Caddyfile the provisioned box already runs:
+
+```
+portal.example.com {
+    reverse_proxy 127.0.0.1:7799
+}
+```
+
+`docs/ops/forge-portal.service` is the systemd user unit that keeps
+`forge-portal` running: install it at
+`~/.config/systemd/user/forge-portal.service` on the operator's host,
+`loginctl enable-linger` the user so it survives a logout, then
+`systemctl --user enable --now forge-portal`. It is not one of the four
+deploy methods above; the portal is Forge's own server, not a project's,
+so it is provisioned by hand alongside the box rather than as a deploy
+target.
+
 ## Rollback and the human rung
 
 If the check fails, Forge deploys the previous passing commit with the

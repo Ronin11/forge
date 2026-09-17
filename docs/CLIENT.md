@@ -630,6 +630,7 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `op` | `name`, `kernel`, `ok`, `ms`, `detail` | One kernel or user operation (clone, landing, a `--check` command) finished. |
 | `deploy_started` | `project`, `target`, `sha` | A deploy of `project`/`target` began. |
 | `deploy_finished` | `project`, `target`, `sha`, `ok`, `rolled_back_to` (string or null) | A deploy reached a verdict; `rolled_back_to` is the previous passing commit it fell back to when `ok` is false. |
+| `project_created` | `project`, `person` | `forge intake accept` created `project` for the first time, on `person`'s confirmed brief (see docs/INTAKE.md); a plugin's cue to send them their customer portal link (see docs/PORTAL.md). |
 
 ### What to re-read on which event
 

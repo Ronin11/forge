@@ -121,6 +121,13 @@ pub enum Event<'a> {
         ok: bool,
         rolled_back_to: Option<&'a str>,
     },
+    /// `forge intake accept` created a project for the first time (see
+    /// docs/INTAKE.md): a plugin's cue to send the person who asked for
+    /// it their customer portal link (see docs/PORTAL.md).
+    ProjectCreated {
+        project: &'a str,
+        person: &'a str,
+    },
 }
 
 impl Event<'_> {
@@ -228,6 +235,9 @@ impl Event<'_> {
                     &sha[..sha.len().min(8)]
                 ),
             },
+            Event::ProjectCreated { project, person } => {
+                format!("created project {project} for {person}")
+            }
         }
     }
 }
@@ -444,6 +454,7 @@ fn render(ev: Event) -> Vec<String> {
         Event::InitiativeSettled { .. } => vec![String::new(), summary],
         Event::DeployStarted { .. } => vec![summary],
         Event::DeployFinished { .. } => vec![String::new(), summary],
+        Event::ProjectCreated { .. } => vec![summary],
     }
 }
 
@@ -650,6 +661,17 @@ mod tests {
                 "type": "deploy_finished", "project": "equitizr", "target": "prod",
                 "sha": "abcdef1234567890", "ok": false, "rolled_back_to": "1234567890abcdef",
                 "text": "deploy of equitizr/prod @ abcdef12 failed its check and was rolled back to 12345678",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::ProjectCreated {
+                project: "nate",
+                person: "nate",
+            }),
+            json!({
+                "type": "project_created", "project": "nate", "person": "nate",
+                "text": "created project nate for nate",
             })
         );
     }

@@ -34,3 +34,10 @@ NOTIFY_ON=blocked failed
 # rolled-back deploy always sends a message. Set to 1 to also message on
 # a deploy that simply passed.
 NOTIFY_DEPLOY_OK=0
+
+# Where the operator's reverse proxy serves the customer portal (see
+# docs/PORTAL.md), e.g. https://portal.example.com. A CONTACTS name gets
+# their portal link at "$PORTAL_URL/p/<token>" by texting /portal, and
+# automatically the first time `forge intake accept` creates their
+# project. Left empty, the bare "/p/<token>" path is sent.
+PORTAL_URL=
