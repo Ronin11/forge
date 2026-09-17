@@ -2086,14 +2086,16 @@ pub struct PortalDeployTarget {
     pub screenshot: Option<String>,
 }
 
-/// One open initiative on `PortalDoc`: the customer's "Being built" list.
-/// `state` is always one of "in progress", "waiting on you" or "done"
-/// (see docs/PORTAL.md) — never the operator's `open`/`held`/`done with
-/// failures` vocabulary, and never a task count.
+/// One open initiative on `PortalDoc`: the customer's "Being built" list,
+/// newest first, capped at ten (`PortalDoc.initiatives_more` the rest —
+/// see docs/PORTAL.md). `state` is always one of "in progress" or
+/// "waiting on you" — never the operator's `open`/`held` vocabulary.
+/// `pieces` is how many tasks make up the initiative so far.
 #[derive(Serialize)]
 pub struct PortalInitiative {
     pub outcome: String,
     pub state: String,
+    pub pieces: i64,
 }
 
 /// One open question on `PortalDoc`, addressed to the customer: the
@@ -2105,11 +2107,16 @@ pub struct PortalQuestion {
     pub text: String,
 }
 
-/// One landed task on `PortalDoc`: the customer's "Done" list, one line
-/// in the words of the request.
+/// One line on `PortalDoc`'s "Done" list, newest first, capped at ten
+/// (`PortalDoc.landed_more` the rest — see docs/PORTAL.md): a landed
+/// initiative's outcome sentence (`pieces` how many tasks it took), or a
+/// landed task that belongs to no initiative (`pieces` `None`), `text`
+/// its title if it has one, else a line derived from its request — never
+/// the operator's full text, and never a path-like token.
 #[derive(Serialize)]
 pub struct PortalLanded {
     pub text: String,
+    pub pieces: Option<i64>,
     pub landed_at: i64,
 }
 
@@ -2139,11 +2146,19 @@ pub struct PortalBacklogItem {
 #[derive(Serialize)]
 pub struct PortalDoc {
     pub project: String,
+    /// The project's purpose, for the operator's own tools; never
+    /// rendered on the customer's page (see docs/PORTAL.md).
     pub purpose: String,
     pub deploy_targets: Vec<PortalDeployTarget>,
     pub initiatives: Vec<PortalInitiative>,
+    /// How many open initiatives past the ten in `initiatives` — "and n
+    /// more" (0 when nothing was cut).
+    pub initiatives_more: i64,
     pub questions: Vec<PortalQuestion>,
     pub landed: Vec<PortalLanded>,
+    /// How many landed lines past the ten in `landed` — "and n more" (0
+    /// when nothing was cut).
+    pub landed_more: i64,
     pub brief: Option<PortalBrief>,
     pub backlog: Vec<PortalBacklogItem>,
 }
@@ -2204,19 +2219,19 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         }
     }
 
-    let mut landed: Vec<PortalLanded> = latest
-        .iter()
-        .filter(|t| !t.landed_sha.is_empty())
-        .map(|t| PortalLanded {
-            text: t.task.lines().next().unwrap_or("").to_string(),
-            landed_at: t.finished_at.unwrap_or(0),
-        })
-        .collect();
-    landed.sort_by(|a, b| b.landed_at.cmp(&a.landed_at));
+    let all_initiatives = initiative_rows(f, Some(&p.name))?;
 
-    let initiatives = initiative_rows(f, Some(&p.name))?
+    // Being built: every open initiative (never settled), newest first,
+    // capped at ten.
+    let mut open: Vec<&InitiativeRow> = all_initiatives
+        .iter()
+        .filter(|r| r.settled_at.is_none())
+        .collect();
+    open.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let initiatives_total = open.len();
+    let initiatives: Vec<PortalInitiative> = open
         .into_iter()
-        .filter(|r| r.state != "done" && r.state != "done with failures")
+        .take(10)
         .map(|r| {
             let state = if questioning_initiatives.contains(&r.id) {
                 "waiting on you"
@@ -2224,11 +2239,40 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
                 "in progress"
             };
             PortalInitiative {
-                outcome: r.outcome,
+                outcome: r.outcome.clone(),
                 state: state.to_string(),
+                pieces: initiative_pieces(r),
             }
         })
         .collect();
+    let initiatives_more = (initiatives_total - initiatives.len()) as i64;
+
+    // Done: a landed initiative is one line, its outcome and how many
+    // tasks it took; a landed task belonging to no initiative is one
+    // line, its title or a line derived from its request. Merged, newest
+    // first, capped at ten.
+    let mut landed: Vec<PortalLanded> = Vec::new();
+    for r in all_initiatives.iter().filter(|r| r.settled_at.is_some()) {
+        landed.push(PortalLanded {
+            text: r.outcome.clone(),
+            pieces: Some(initiative_pieces(r)),
+            landed_at: r.settled_at.unwrap_or(0),
+        });
+    }
+    for t in latest
+        .iter()
+        .filter(|t| !t.landed_sha.is_empty() && t.initiative.is_none())
+    {
+        landed.push(PortalLanded {
+            text: landed_task_line(t),
+            pieces: None,
+            landed_at: t.finished_at.unwrap_or(0),
+        });
+    }
+    landed.sort_by(|a, b| b.landed_at.cmp(&a.landed_at));
+    let landed_total = landed.len();
+    landed.truncate(10);
+    let landed_more = (landed_total - landed.len()) as i64;
 
     // The confirmed brief lives only on the intake task that produced it
     // (`t.plan`, see docs/INTAKE.md); a project carries no copy of its
@@ -2260,11 +2304,144 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         purpose: real_purpose(&p.purpose),
         deploy_targets,
         initiatives,
+        initiatives_more,
         questions,
         landed,
+        landed_more,
         brief,
         backlog,
     })
+}
+
+/// How many tasks make up an initiative so far — every lineage, whatever
+/// state it's in — the "n pieces of work" beside its outcome on
+/// `PortalDoc` (see docs/PORTAL.md).
+fn initiative_pieces(r: &InitiativeRow) -> i64 {
+    r.queued + r.running + r.succeeded + r.failed + r.unverified + r.blocked + r.withdrawn
+}
+
+/// A landed task's own "Done" line: its title, given the day it was
+/// filed in the customer's own words (see docs/PORTAL.md), else a line
+/// derived from its request text.
+fn landed_task_line(t: &Task) -> String {
+    if let Some(title) = t.title.as_deref() {
+        let title = title.trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
+    }
+    derive_landed_line(&t.task)
+}
+
+/// A title-less landed task's "Done" line: its first sentence, any
+/// path-like token stripped, cut at 120 characters on a word boundary —
+/// never the operator's full request (see docs/PORTAL.md).
+fn derive_landed_line(task: &str) -> String {
+    let sentence = first_sentence(task);
+    let stripped = strip_path_like_tokens(&sentence);
+    truncate_at_word_boundary(stripped.trim(), 120)
+}
+
+/// The first sentence of `text`, whitespace (including newlines)
+/// collapsed to single spaces: up to and including the first `.`, `!` or
+/// `?` that is followed by whitespace or the end of the text; the whole
+/// (flattened) text when none is found.
+fn first_sentence(text: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (i, c) in flat.char_indices() {
+        if matches!(c, '.' | '!' | '?') {
+            let after = &flat[i + c.len_utf8()..];
+            if after.chars().next().is_none_or(char::is_whitespace) {
+                return flat[..i + c.len_utf8()].to_string();
+            }
+        }
+    }
+    flat
+}
+
+/// Whether `word` has the shape of a path-like token: a slash-separated
+/// path, a file extension (`store.rs`, `PORTAL.md`), or a line-number
+/// reference (`L154`, `154:10`) — the shapes of the operator's own file
+/// tree that a customer's line must never carry (see docs/PORTAL.md).
+fn is_path_like_word(word: &str) -> bool {
+    let trimmed = word.trim_matches(|c: char| c.is_ascii_punctuation() && c != '/' && c != '.');
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('/') {
+        return true;
+    }
+    if let Some(rest) = trimmed.strip_prefix(['L', 'l']) {
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    if let Some(dot) = trimmed.rfind('.') {
+        let (base, ext) = (&trimmed[..dot], &trimmed[dot + 1..]);
+        if !base.is_empty() && (1..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return true;
+        }
+    }
+    if let Some((a, b)) = trimmed.split_once(':') {
+        if !a.is_empty() && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Strips every path-like token from `text` (see `is_path_like_word`),
+/// including a `line 42`/`Line 42` style reference (a "line" word
+/// immediately followed by a bare number).
+fn strip_path_like_tokens(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let bare = words[i].trim_matches(|c: char| !c.is_alphanumeric());
+        if bare.eq_ignore_ascii_case("line") {
+            if let Some(next) = words.get(i + 1) {
+                let digits = next.trim_matches(|c: char| !c.is_ascii_digit());
+                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        if is_path_like_word(words[i]) {
+            i += 1;
+            continue;
+        }
+        out.push(words[i]);
+        i += 1;
+    }
+    out.join(" ")
+}
+
+/// Cuts `s` to at most `max` characters, breaking on the last word
+/// boundary at or before the limit rather than mid-word; a single word
+/// longer than `max` is hard-cut.
+fn truncate_at_word_boundary(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for word in s.split(' ') {
+        let candidate = if out.is_empty() {
+            word.to_string()
+        } else {
+            format!("{out} {word}")
+        };
+        if candidate.chars().count() > max {
+            break;
+        }
+        out = candidate;
+    }
+    if out.is_empty() {
+        out = s.chars().take(max).collect();
+    }
+    out
 }
 
 /// One row of `forge job list --json`: a job as `store::Job` records it
@@ -3168,7 +3345,7 @@ mod portal_tests {
             &f,
             Task {
                 repo: "/repo".into(),
-                task: "make the quote text say 'usually same day'\nsecond line".into(),
+                task: "Make the quote text say 'usually same day'. Implementation: update src/pricing/quote.rs around line 42, then check tests/e2e/pricing.rs:88.".into(),
                 base_branch: "main".into(),
                 branch: "task-1-branch".into(),
                 model: "sonnet".into(),
@@ -3241,15 +3418,270 @@ mod portal_tests {
             doc.initiatives[0].state, "waiting on you",
             "its only task is blocked on a question"
         );
+        assert_eq!(doc.initiatives[0].pieces, 1);
+        assert_eq!(doc.initiatives_more, 0);
         assert_eq!(doc.questions.len(), 1);
         assert_eq!(doc.landed.len(), 1);
         assert_eq!(
-            doc.landed[0].text, "make the quote text say 'usually same day'",
-            "first line only"
+            doc.landed[0].text, "Make the quote text say 'usually same day'.",
+            "first sentence only, no path-like tokens from the rest of the request"
         );
+        assert_eq!(doc.landed[0].pieces, None, "a standalone task, not an initiative");
+        assert_eq!(doc.landed_more, 0);
         assert_eq!(doc.backlog.len(), 1);
 
         let v = serde_json::to_value(&doc).unwrap();
         assert_no_forbidden_keys(&v);
+    }
+
+    /// Every string value in `v`, scanned for the shapes the operator's
+    /// own tools carry that a customer's page must never: a slash path or
+    /// file extension, a dollar amount, or the words attempt, verdict,
+    /// branch, commit or sha. `screenshot` is excluded: an internal file
+    /// path the portal only ever opens server-side (see
+    /// `portal::screenshot_path`), never renders as text.
+    fn assert_no_forbidden_value_patterns(v: &Value) {
+        const WORDS: &[&str] = &["attempt", "verdict", "branch", "commit", "sha"];
+        match v {
+            Value::Object(map) => {
+                for (k, val) in map {
+                    if k == "screenshot" {
+                        continue;
+                    }
+                    assert_no_forbidden_value_patterns(val);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(assert_no_forbidden_value_patterns),
+            Value::String(s) => {
+                let lower = s.to_lowercase();
+                for word in WORDS {
+                    assert!(
+                        !lower.contains(word),
+                        "value {s:?} carries the forbidden word {word:?}"
+                    );
+                }
+                assert!(!s.contains('$'), "value {s:?} looks like a dollar amount");
+                for word in s.split_whitespace() {
+                    assert!(
+                        !super::is_path_like_word(word),
+                        "value {s:?} carries a path-like token {word:?}"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Equitizr's real record: a landed task whose text is thousands of
+    /// words of engineering instructions — file paths, line numbers, a
+    /// dollar budget, and the operator's own attempt/verdict/branch/
+    /// commit/sha vocabulary — after its first sentence. `PortalDoc` must
+    /// hand the customer only that first sentence, path-like tokens
+    /// stripped; a second landed task, filed in the customer's own words
+    /// (`title` set, as `forge add --title`/the concierge would), must
+    /// hand back exactly that title and nothing of its own operator text.
+    #[test]
+    fn portal_doc_strips_operator_language_from_equitizrs_real_record() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "equitizr".into(),
+                purpose: "quote requests turned into automations".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let engineering_instructions = format!(
+            "Make the quote widget always show the annual discount. \
+             Implementation: update src/pricing/discount.rs around line 154 \
+             to add the annual multiplier, then check tests/e2e/pricing.rs:88 \
+             for the assertion. {filler} Keep the attempt's cost under $2.50; \
+             the verdict must show branch task/annual-discount landing clean \
+             with commit sha abc1234def5678.",
+            filler = "Typecheck, lint and tests must pass. ".repeat(50),
+        );
+        let untitled = insert(
+            &f,
+            Task {
+                repo: "/repo".into(),
+                task: engineering_instructions,
+                base_branch: "main".into(),
+                branch: "task-long-branch".into(),
+                model: "sonnet".into(),
+                max_turns: 10,
+                max_attempts: 1,
+                timeout_secs: 60,
+                state: TaskState::Succeeded,
+                created_at: crate::unix_now(),
+                finished_at: Some(1_700_000_000),
+                landed_sha: "deadbeef".into(),
+                workflow: "direct".into(),
+                project: Some("equitizr".into()),
+                ..Default::default()
+            },
+        );
+        assert!(untitled.title.is_none());
+
+        insert(
+            &f,
+            Task {
+                repo: "/repo".into(),
+                title: Some("Show the annual discount on every quote".into()),
+                task: "internal: wire src/pricing/discount.rs into the quote flow; \
+                       verdict must pass, branch task/x, commit sha deadbeef, \
+                       attempt cost $9.99"
+                    .into(),
+                base_branch: "main".into(),
+                branch: "task-titled-branch".into(),
+                model: "sonnet".into(),
+                max_turns: 10,
+                max_attempts: 1,
+                timeout_secs: 60,
+                state: TaskState::Succeeded,
+                created_at: crate::unix_now(),
+                finished_at: Some(1_700_000_100),
+                landed_sha: "cafef00d".into(),
+                workflow: "direct".into(),
+                project: Some("equitizr".into()),
+                ..Default::default()
+            },
+        );
+
+        let p = f.store.project("equitizr").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+        assert_eq!(doc.landed.len(), 2);
+        // Newest first: the titled task landed a hundred seconds later.
+        assert_eq!(doc.landed[0].text, "Show the annual discount on every quote");
+        assert_eq!(
+            doc.landed[1].text,
+            "Make the quote widget always show the annual discount."
+        );
+        assert_eq!(doc.landed[0].pieces, None);
+        assert_eq!(doc.landed[1].pieces, None);
+
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_no_forbidden_keys(&v);
+        assert_no_forbidden_value_patterns(&v);
+    }
+
+    /// Done merges landed initiatives and standalone landed tasks into
+    /// one newest-first list, an initiative's line carrying how many
+    /// tasks it took; past ten, the rest collapse into `landed_more`
+    /// rather than growing the page. Being built treats open initiatives
+    /// the same way (see docs/PORTAL.md).
+    #[test]
+    fn done_and_being_built_are_newest_first_and_cap_at_ten() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "acme".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        // A landed initiative: two tasks, both succeeded, settled.
+        let ini_id = f
+            .store
+            .create_initiative(&Initiative {
+                project: "acme".into(),
+                outcome: "checkout redesign shipped".into(),
+                stop_after_same_rule: 3,
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        for n in 0..2 {
+            insert(
+                &f,
+                Task {
+                    repo: "/repo".into(),
+                    task: format!("checkout piece {n}"),
+                    base_branch: "main".into(),
+                    branch: format!("ini-branch-{n}"),
+                    model: "sonnet".into(),
+                    max_turns: 10,
+                    max_attempts: 1,
+                    timeout_secs: 60,
+                    state: TaskState::Succeeded,
+                    created_at: crate::unix_now(),
+                    finished_at: Some(crate::unix_now()),
+                    landed_sha: format!("sha{n}"),
+                    workflow: "direct".into(),
+                    project: Some("acme".into()),
+                    initiative: Some(ini_id),
+                    ..Default::default()
+                },
+            );
+        }
+        f.store
+            .settle_initiative(ini_id, 1_700_000_006)
+            .unwrap();
+
+        // Twelve standalone landed tasks, oldest to newest, no initiative.
+        for n in 0..12 {
+            insert(
+                &f,
+                Task {
+                    repo: "/repo".into(),
+                    task: format!("Ship improvement number {n}."),
+                    base_branch: "main".into(),
+                    branch: format!("solo-branch-{n}"),
+                    model: "sonnet".into(),
+                    max_turns: 10,
+                    max_attempts: 1,
+                    timeout_secs: 60,
+                    state: TaskState::Succeeded,
+                    created_at: crate::unix_now(),
+                    finished_at: Some(1_700_000_000 + n),
+                    landed_sha: format!("solo{n}"),
+                    workflow: "direct".into(),
+                    project: Some("acme".into()),
+                    ..Default::default()
+                },
+            );
+        }
+
+        // Twelve open initiatives, oldest to newest by created_at.
+        for n in 0..12 {
+            f.store
+                .create_initiative(&Initiative {
+                    project: "acme".into(),
+                    outcome: format!("open initiative {n}"),
+                    stop_after_same_rule: 3,
+                    created_at: 1_600_000_000 + n,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+
+        let p = f.store.project("acme").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+
+        // Done: 13 total landed items (1 initiative + 12 tasks), capped at
+        // ten, three more.
+        assert_eq!(doc.landed.len(), 10);
+        assert_eq!(doc.landed_more, 3);
+        assert_eq!(
+            doc.landed[0].text, "Ship improvement number 11.",
+            "newest standalone task first"
+        );
+        let checkout = doc
+            .landed
+            .iter()
+            .find(|l| l.text == "checkout redesign shipped")
+            .expect("the landed initiative's own line");
+        assert_eq!(checkout.pieces, Some(2), "two pieces of work");
+
+        // Being built: 12 open initiatives, capped at ten, two more.
+        assert_eq!(doc.initiatives.len(), 10);
+        assert_eq!(doc.initiatives_more, 2);
+        assert_eq!(
+            doc.initiatives[0].outcome, "open initiative 11",
+            "newest open initiative first"
+        );
+        assert_eq!(doc.initiatives[0].pieces, 0, "no tasks filed on it yet");
     }
 }
