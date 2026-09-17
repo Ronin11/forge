@@ -2394,11 +2394,15 @@ fn list_workflows(json: bool) -> Result<()> {
         let docs: Vec<serde_json::Value> = all
             .iter()
             .map(|w| {
+                let is_run = w.kind == workflows::WorkflowKind::Run;
                 let m = measure(&f, w).ok();
-                let resolved = workflows::resolve(&f.paths.home, &w.name).ok();
+                let resolved = (!is_run)
+                    .then(|| workflows::resolve(&f.paths.home, &w.name).ok())
+                    .flatten();
                 serde_json::json!({
-                    "name": w.name, "hash": w.hash, "description": w.description, "path": w.path,
+                    "name": w.name, "kind": w.kind, "hash": w.hash, "description": w.description, "path": w.path,
                     "steps": w.steps,
+                    "trigger": w.trigger, "assert": w.assert, "limits": w.limits,
                     "resolved": resolved.as_ref().map(|r| r.steps.iter().map(|s| serde_json::json!({"action": s.action.name, "kind": s.action.kind, "contract": s.action.contract, "hash": s.action.hash, "via": s.via, "model": s.model, "max_turns": s.max_turns, "timeout_secs": s.timeout_secs})).collect::<Vec<_>>()),
                     "meta": w.meta,
                     "measured": m.as_ref().map(|m| serde_json::json!({
@@ -2425,13 +2429,34 @@ fn list_workflows(json: bool) -> Result<()> {
         return Ok(());
     }
     for w in &all {
+        let tag = if w.kind == workflows::WorkflowKind::Run {
+            " [run]"
+        } else {
+            ""
+        };
         out!(
-            "{:<12} {}  {:<24} {}",
+            "{:<12}{} {}  {:<24} {}",
             w.name,
+            tag,
             &w.hash[..8],
             w.steps_text(),
             w.description
         );
+        if let Some(t) = &w.trigger {
+            out!(
+                "             trigger    {}",
+                match t.value() {
+                    Some(v) => format!("{} → {v}", t.on),
+                    None => t.on.to_string(),
+                }
+            );
+        }
+        if w.kind == workflows::WorkflowKind::Run {
+            // Jobs are not yet resolved or measured; that is later build
+            // order (docs/JOBS.md).
+            out!("             {}", w.path.display());
+            continue;
+        }
         match workflows::resolve(&f.paths.home, &w.name) {
             Ok(r) => out!(
                 "             resolves   {}",
