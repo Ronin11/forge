@@ -789,6 +789,140 @@ fn a_directives_failed_agent_run_leaves_a_log_an_output_and_a_tail_naming_the_su
     );
 }
 
+/// `forge job start` resolves a run workflow from the project's own
+/// repository first (docs/JOBS.md, "Where an automation lives"): a fixture
+/// repository with `.forge/workflows/publish-snapshot.toml` landed on its
+/// base branch, no matching file anywhere in the operator's catalog. The
+/// job runs the same way a catalog-sourced one does, and its record says
+/// the repository was the source.
+#[test]
+fn forge_job_start_resolves_a_run_workflow_from_the_projects_repository_and_records_the_source() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    // The operator's catalog exists, and has never heard of this workflow.
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    assert!(!e.home.join("workflows/publish-snapshot.toml").exists());
+
+    // The automation lives in the project's own repository, committed on
+    // its base branch — not written into FORGE2_HOME/workflows.
+    std::fs::create_dir_all(e.repo.join(".forge/workflows")).unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/publish-snapshot.toml"),
+        r#"name = "publish-snapshot"
+kind = "run"
+description = "publishes equitizr's snapshot: a built-in effect operation, no project actions needed"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+published = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add publish-snapshot automation"],
+    );
+
+    // `forge workflows --project equitizr` lists it beside the operator's
+    // catalog, without it ever having landed in FORGE2_HOME/workflows.
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["workflows", "--project", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let listed = doc["workflows"].as_array().unwrap();
+    let repo_wf = listed
+        .iter()
+        .find(|w| w["name"] == "publish-snapshot")
+        .unwrap_or_else(|| panic!("publish-snapshot missing from --project listing: {listed:?}"));
+    assert_eq!(repo_wf["source"], "repo");
+    assert!(
+        !listed
+            .iter()
+            .any(|w| w["name"] == "publish-snapshot" && w["source"] == "catalog"),
+        "the operator's own catalog never gained a copy: {listed:?}"
+    );
+
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"path":"snapshot.txt","content":"snapshot"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "equitizr",
+            "publish-snapshot",
+            "--input",
+            input_s,
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(
+        doc["workflow_source"], "repo",
+        "the job's record says the workflow came from the project's own repository: {doc:?}"
+    );
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "file");
+    assert_eq!(effects[0]["target"], "snapshot.txt");
+
+    let scratch = e.home.join("worktrees").join(format!("job-{id}"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("snapshot.txt")).unwrap(),
+        "snapshot"
+    );
+
+    // A name the repository does not carry at all still falls to the
+    // operator's catalog, unchanged.
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "equitizr", "no-such-workflow", "--now"],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("unknown workflow"), "{err}");
+}
+
 /// `forge job bench`: the repository's own `.forge/workflows/changelog-line.toml`
 /// and two of its four real fixtures (`.forge/fixtures/changelog-line/`),
 /// run once per provider in dry-run mode. Two fake providers, told apart

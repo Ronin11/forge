@@ -241,6 +241,11 @@ enum Cmd {
     Version,
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {
+        /// Also list this project's own repository workflows
+        /// (`.forge/workflows/`, at its latest landed commit), beside the
+        /// operator's catalog (see docs/JOBS.md, "Where an automation lives")
+        #[arg(long)]
+        project: Option<String>,
         /// Machine-readable, for an agent choosing a workflow
         #[arg(long)]
         json: bool,
@@ -946,7 +951,7 @@ pub async fn main() -> Result<()> {
         Cmd::Integrate { ids } => integrate(ids).await,
         Cmd::Land { id } => land(id).await,
         Cmd::Journal { id, json } => journal(id, json),
-        Cmd::Workflows { json } => list_workflows(json),
+        Cmd::Workflows { project, json } => list_workflows(project, json).await,
         Cmd::Providers { json } => list_providers(json),
         Cmd::Plugin { cmd } => match cmd {
             PluginCmd::List { json } => plugin_list(json),
@@ -2066,7 +2071,7 @@ fn job_show(id: i64, json: bool) -> Result<()> {
         return Ok(());
     }
     out!("job {} ({})", doc.id, doc.project);
-    out!("workflow   {}", doc.workflow);
+    out!("workflow   {} ({})", doc.workflow, doc.workflow_source);
     out!("trigger    {} {}", doc.trigger_kind, doc.trigger_ref);
     out!(
         "state      {}{}",
@@ -2805,7 +2810,7 @@ fn measure(f: &Forge, w: &workflows::Workflow) -> Result<profile::Measured> {
     profile::measure(&f.store, &w.name, &w.hash)
 }
 
-fn list_workflows(json: bool) -> Result<()> {
+async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let all = workflows::load_all(&f.paths.home)?;
     let actions = workflows::load_actions(&f.paths.home)?;
@@ -2814,32 +2819,51 @@ fn list_workflows(json: bool) -> Result<()> {
         .find(|w| w.name == "direct")
         .map(|w| measure(&f, w))
         .transpose()?;
+    let repo_workflows: Vec<workflows::Workflow> = match &project {
+        Some(p) => {
+            f.store
+                .project(p)?
+                .with_context(|| format!("no project {p}"))?;
+            let repo = f
+                .store
+                .first_repo(p)?
+                .with_context(|| format!("project {p} has no registered repository"))?;
+            let repo_path = PathBuf::from(&repo);
+            let cfg = config::load_working(&repo_path).await?;
+            let landed_sha = git::rev_parse(&repo_path, &format!("refs/heads/{}", cfg.base_branch))
+                .await
+                .with_context(|| {
+                    format!("resolving {} on {}", cfg.base_branch, repo_path.display())
+                })?;
+            workflows::load_all_at(&repo_path, &landed_sha)?
+        }
+        None => Vec::new(),
+    };
     if json {
-        let docs: Vec<serde_json::Value> = all
-            .iter()
-            .map(|w| {
-                let is_run = w.kind == workflows::WorkflowKind::Run;
-                let m = measure(&f, w).ok();
-                let resolved = (!is_run)
-                    .then(|| workflows::resolve(&f.paths.home, &w.name).ok())
-                    .flatten();
-                serde_json::json!({
-                    "name": w.name, "kind": w.kind, "hash": w.hash, "description": w.description, "path": w.path,
-                    "steps": w.steps,
-                    "trigger": w.trigger, "assert": w.assert, "limits": w.limits,
-                    "resolved": resolved.as_ref().map(|r| r.steps.iter().map(|s| serde_json::json!({"action": s.action.name, "kind": s.action.kind, "contract": s.action.contract, "hash": s.action.hash, "via": s.via, "model": s.model, "max_turns": s.max_turns, "timeout_secs": s.timeout_secs})).collect::<Vec<_>>()),
-                    "meta": w.meta,
-                    "measured": m.as_ref().map(|m| serde_json::json!({
-                        "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
-                        "all_versions": m.all, "regressed": m.regressed,
-                        "cost_vs_direct": match (&direct, m.current.known) {
-                            (Some(d), true) if d.current.known && d.current.cost_per_task > 0.0 => Some(m.current.cost_per_task / d.current.cost_per_task),
-                            _ => None,
-                        },
-                    })),
-                })
+        let doc = |w: &workflows::Workflow, source: &str| {
+            let is_run = w.kind == workflows::WorkflowKind::Run;
+            let m = measure(&f, w).ok();
+            let resolved = (!is_run && source == "catalog")
+                .then(|| workflows::resolve(&f.paths.home, &w.name).ok())
+                .flatten();
+            serde_json::json!({
+                "name": w.name, "source": source, "kind": w.kind, "hash": w.hash, "description": w.description, "path": w.path,
+                "steps": w.steps,
+                "trigger": w.trigger, "assert": w.assert, "limits": w.limits,
+                "resolved": resolved.as_ref().map(|r| r.steps.iter().map(|s| serde_json::json!({"action": s.action.name, "kind": s.action.kind, "contract": s.action.contract, "hash": s.action.hash, "via": s.via, "model": s.model, "max_turns": s.max_turns, "timeout_secs": s.timeout_secs})).collect::<Vec<_>>()),
+                "meta": w.meta,
+                "measured": m.as_ref().map(|m| serde_json::json!({
+                    "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
+                    "all_versions": m.all, "regressed": m.regressed,
+                    "cost_vs_direct": match (&direct, m.current.known) {
+                        (Some(d), true) if d.current.known && d.current.cost_per_task > 0.0 => Some(m.current.cost_per_task / d.current.cost_per_task),
+                        _ => None,
+                    },
+                })),
             })
-            .collect();
+        };
+        let mut docs: Vec<serde_json::Value> = all.iter().map(|w| doc(w, "catalog")).collect();
+        docs.extend(repo_workflows.iter().map(|w| doc(w, "repo")));
         let acts: Vec<serde_json::Value> = actions
             .values()
             .map(|a| serde_json::json!({"name": a.name, "kind": a.kind, "contract": a.contract, "hash": a.hash, "description": a.description, "consumes": a.consumes, "produces": a.produces, "run": a.run, "check": a.check, "paths": a.paths, "brief": a.brief, "max_turns": a.max_turns, "timeout_secs": a.timeout_secs, "model": a.model}))
@@ -2852,11 +2876,16 @@ fn list_workflows(json: bool) -> Result<()> {
         );
         return Ok(());
     }
-    for w in &all {
-        let tag = if w.kind == workflows::WorkflowKind::Run {
-            " [run]"
-        } else {
-            ""
+    for (w, source) in all
+        .iter()
+        .map(|w| (w, "catalog"))
+        .chain(repo_workflows.iter().map(|w| (w, "repo")))
+    {
+        let tag = match (w.kind == workflows::WorkflowKind::Run, source) {
+            (true, "repo") => " [run/repo]",
+            (true, _) => " [run]",
+            (false, "repo") => " [repo]",
+            (false, _) => "",
         };
         out!(
             "{:<12}{} {}  {:<24} {}",
@@ -2875,9 +2904,10 @@ fn list_workflows(json: bool) -> Result<()> {
                 }
             );
         }
-        if w.kind == workflows::WorkflowKind::Run {
+        if w.kind == workflows::WorkflowKind::Run || source == "repo" {
             // Jobs are not yet resolved or measured; that is later build
-            // order (docs/JOBS.md).
+            // order (docs/JOBS.md). A repository workflow resolves against
+            // its own pinned commit, not the operator's catalog by name.
             out!("             {}", w.path.display());
             continue;
         }

@@ -2461,6 +2461,8 @@ pub struct JobRow {
     pub trigger_kind: String,
     pub trigger_ref: String,
     pub state: String,
+    /// `"repo"` or `"catalog"` (see `store::Job::workflow_source`).
+    pub workflow_source: String,
     pub dry_run: bool,
     pub started_at: i64,
     pub finished_at: Option<i64>,
@@ -2479,6 +2481,7 @@ impl From<&crate::store::Job> for JobRow {
             trigger_kind: j.trigger_kind.clone(),
             trigger_ref: j.trigger_ref.clone(),
             state: j.state.as_str().to_string(),
+            workflow_source: j.workflow_source.clone(),
             dry_run: j.dry_run,
             started_at: j.started_at,
             finished_at: j.finished_at,
@@ -2563,6 +2566,8 @@ pub struct JobDoc {
     pub trigger_kind: String,
     pub trigger_ref: String,
     pub state: String,
+    /// `"repo"` or `"catalog"` (see `store::Job::workflow_source`).
+    pub workflow_source: String,
     pub dry_run: bool,
     pub started_at: i64,
     pub finished_at: Option<i64>,
@@ -2594,6 +2599,7 @@ pub fn job_doc(f: &Forge, j: &crate::store::Job) -> Result<JobDoc> {
         trigger_kind: j.trigger_kind.clone(),
         trigger_ref: j.trigger_ref.clone(),
         state: j.state.as_str().to_string(),
+        workflow_source: j.workflow_source.clone(),
         dry_run: j.dry_run,
         started_at: j.started_at,
         finished_at: j.finished_at,

@@ -762,6 +762,11 @@ pub struct Job {
     /// a manual trigger.
     pub trigger_ref: String,
     pub state: JobState,
+    /// `workflows::JobSource::as_str()`: `"repo"` when the workflow came
+    /// from the project's own repository at `landed_sha`, `"catalog"` when
+    /// it fell back to the operator's catalog (docs/JOBS.md, "Where an
+    /// automation lives").
+    pub workflow_source: String,
     /// Effects recorded, not performed: `forge job test`'s replay mode
     /// (docs/JOBS.md, "Verifying an automation").
     pub dry_run: bool,
@@ -1303,6 +1308,14 @@ ALTER TABLE tasks ADD COLUMN proposal_initiative INTEGER;
     // request, both set this; everything before it is NULL.
     "
 ALTER TABLE tasks ADD COLUMN title TEXT;
+",
+    // Where a job's workflow was resolved from (see docs/JOBS.md, "Where
+    // an automation lives"): the project's own repository at its pinned
+    // commit, or the operator's catalog when the repository had no
+    // workflow of that name there. `'catalog'` is the default so every
+    // job recorded before this column existed reads as it always ran.
+    "
+ALTER TABLE jobs ADD COLUMN workflow_source TEXT NOT NULL DEFAULT 'catalog';
 ",
 ];
 
@@ -3613,8 +3626,8 @@ impl Store {
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 j.project,
                 j.workflow,
@@ -3623,6 +3636,7 @@ impl Store {
                 j.trigger_kind,
                 j.trigger_ref,
                 j.state.as_str(),
+                j.workflow_source,
                 j.dry_run,
                 j.started_at,
                 j.finished_at,
@@ -3690,7 +3704,7 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+                "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
                  FROM jobs WHERE id=?1",
                 params![id],
                 job_from_row,
@@ -3703,7 +3717,7 @@ impl Store {
     pub fn jobs(&self, project: Option<&str>, state: Option<JobState>) -> Result<Vec<Job>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
              FROM jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR state=?2) ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![project, state.map(JobState::as_str)], job_from_row)?;
@@ -3750,7 +3764,7 @@ impl Store {
     pub fn queued_jobs(&self) -> Result<Vec<Job>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
+            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
              FROM jobs WHERE state='queued' ORDER BY id",
         )?;
         let rows = stmt.query_map([], job_from_row)?;
@@ -3807,6 +3821,7 @@ fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
         finished_at: r.get(10)?,
         cost_usd: r.get(11)?,
         verdict_json: r.get(12)?,
+        workflow_source: r.get(13)?,
     })
 }
 

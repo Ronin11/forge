@@ -347,7 +347,6 @@ pub async fn start(
         .store
         .project(project)?
         .with_context(|| format!("no project {project}"))?;
-    let (wf, steps) = workflows::resolve_job(&f.paths.home, workflow)?;
     let repo = f
         .store
         .first_repo(project)?
@@ -357,6 +356,8 @@ pub async fn start(
     let landed_sha = git::rev_parse(&repo_path, &format!("refs/heads/{}", cfg.base_branch))
         .await
         .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo_path.display()))?;
+    let (wf, steps, source) =
+        workflows::resolve_job_for_project(&f.paths.home, &repo_path, &landed_sha, workflow)?;
 
     let input_text = match input {
         Some(p) => {
@@ -382,6 +383,7 @@ pub async fn start(
         } else {
             JobState::Queued
         },
+        workflow_source: source.as_str().to_string(),
         dry_run,
         started_at,
         finished_at: None,
@@ -677,13 +679,18 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         .store
         .job(job_id)?
         .with_context(|| format!("job {job_id} vanished before the worker could run it"))?;
-    let (wf, steps) = workflows::resolve_job(&f.paths.home, &job.workflow)?;
     let repo = f
         .store
         .first_repo(&job.project)?
         .with_context(|| format!("project {} has no registered repository", job.project))?;
     let repo_path = PathBuf::from(&repo);
     let cfg = config::load_working(&repo_path).await?;
+    let (wf, steps, _source) = workflows::resolve_job_for_project(
+        &f.paths.home,
+        &repo_path,
+        &job.landed_sha,
+        &job.workflow,
+    )?;
 
     let idir = input_dir(f, job_id);
     let input_text =
@@ -870,6 +877,7 @@ pub async fn bench(
                 trigger_kind: workflows::TriggerOn::Manual.as_str().to_string(),
                 trigger_ref: String::new(),
                 state: JobState::Running,
+                workflow_source: workflows::JobSource::Repo.as_str().to_string(),
                 dry_run: true,
                 started_at: unix_now(),
                 finished_at: None,
