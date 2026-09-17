@@ -114,6 +114,21 @@ the person confirms it — re-emits the same brief with `confirmed:true`
 as that turn's own plan. `intake` is the workflow that runs it after
 `setup`.
 
+`concierge` is the plan contract's third directive: the front door, read
+only like `investigate` and `interview`, that sorts a customer message
+into a `request`, a `question`, a `need`, or `unclear` (see
+docs/INTAKE.md, "The front door is not the interview"). Its summary is a
+one-line JSON decision, never held to `plan-substantive` or
+`plan-names-real-paths` for the same reason `interview`'s is not — it
+describes nothing in the tree. `forge ask <project> <message> [--from
+<contact>]` is its only caller: it runs the `concierge` workflow (`setup`
+then `concierge`) to completion, reads the decision back off `t.plan`,
+and acts — files the task, prints the answer, files an intake task, or
+blocks a small placeholder task with the question addressed to the
+contact — recording the decision as a `concierge_json` column on the task
+it produced, or a `decisions` row (`answered_by` "concierge") for an
+answer.
+
 A plan can also become an initiative's tasks instead of one task's code.
 `forge initiative from-plan <task id> [--outcome <text>]` reads a
 finished task's recorded plan (`t.plan`), creates an initiative in the
@@ -407,6 +422,7 @@ forms, one now and one later.
 | `mapped` | setup → repo-map → code → graph → graph-check (verifies) |
 | `planned` | setup → repo-map → investigate → code |
 | `intake` | setup → interview |
+| `concierge` | setup → concierge |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.
