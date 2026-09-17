@@ -10,8 +10,8 @@
 //! for an answer.
 
 use crate::ctx::Forge;
-use crate::queue::{self, TaskRequest};
-use crate::store::TaskState;
+use crate::queue::{self, FileTask, TaskRequest};
+use crate::store::{Initiative, TaskState};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -32,6 +32,22 @@ struct Decision {
     reason: String,
     /// `unclear`: the one question to ask.
     question: String,
+    /// The escalator (docs/INTAKE.md, "The escalator"): set alongside
+    /// whichever kind above when three or more of the project's recent
+    /// requests are the same shape, in the directive's judgment.
+    pattern: Option<Pattern>,
+}
+
+/// The escalator's pattern, as the concierge directive names it: the
+/// quoted requests that share a shape, why (one sentence), and what the
+/// automation it proposes would do (one sentence, the initiative's
+/// outcome if the operator says yes).
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(default)]
+struct Pattern {
+    task_ids: Vec<i64>,
+    repetition: String,
+    outcome: String,
 }
 
 /// What `forge ask` did with the message, for the CLI to report.
@@ -63,8 +79,16 @@ fn base(project: &str, repo: &str, task: String, workflow: Option<&str>) -> Task
 
 /// Run the concierge on `message` and act on its decision. `f` is an
 /// `Arc` because reaching the decision means running the `concierge`
-/// workflow to completion, the same way `forge run` drives a task.
-pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>) -> Result<Asked> {
+/// workflow to completion, the same way `forge run` drives a task. The
+/// second element is the escalator's proposal placeholder, filed
+/// alongside whichever `Asked` the message itself decided, when the
+/// decision named a `pattern` (see docs/INTAKE.md, "The escalator").
+pub async fn ask(
+    f: Arc<Forge>,
+    project: &str,
+    message: &str,
+    from: Option<&str>,
+) -> Result<(Asked, Option<i64>)> {
     let repo = f
         .store
         .first_repo(project)?
@@ -104,7 +128,7 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
         )
     })?;
 
-    match d.kind.as_str() {
+    let asked = match d.kind.as_str() {
         "request" => {
             if d.task.trim().is_empty() {
                 bail!("the concierge called this a request but named no task text");
@@ -113,9 +137,9 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
             // lands like any other once verified.
             let req = base(project, &repo, d.task.clone(), None);
             let mut n = queue::enqueue(&f, &req, None).await?;
-            n.concierge_json = Some(raw);
+            n.concierge_json = Some(raw.clone());
             f.store.update_task(&n)?;
-            Ok(Asked::Filed { task: n.id })
+            Asked::Filed { task: n.id }
         }
         "question" => {
             if d.answer.trim().is_empty() {
@@ -130,10 +154,10 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
                 "",
                 from,
             )?;
-            Ok(Asked::Answered {
-                answer: d.answer,
+            Asked::Answered {
+                answer: d.answer.clone(),
                 decision,
-            })
+            }
         }
         "need" => {
             // "Contact: X." is the same convention an intake task's text
@@ -148,12 +172,12 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
             req.retries = 0;
             req.no_land = true;
             let mut n = queue::enqueue(&f, &req, None).await?;
-            n.concierge_json = Some(raw);
+            n.concierge_json = Some(raw.clone());
             f.store.update_task(&n)?;
-            Ok(Asked::Need {
+            Asked::Need {
                 task: n.id,
-                reason: d.reason,
-            })
+                reason: d.reason.clone(),
+            }
         }
         "unclear" => {
             if d.question.trim().is_empty() {
@@ -166,13 +190,169 @@ pub async fn ask(f: Arc<Forge>, project: &str, message: &str, from: Option<&str>
             n.state = TaskState::Blocked;
             n.reason = format!("needs input: {}", d.question);
             n.question_to = from.map(str::to_string);
-            n.concierge_json = Some(raw);
+            n.concierge_json = Some(raw.clone());
             f.store.update_task(&n)?;
-            Ok(Asked::Unclear {
+            Asked::Unclear {
                 task: n.id,
-                question: d.question,
-            })
+                question: d.question.clone(),
+            }
         }
         other => bail!("the concierge returned an unknown decision kind {other:?}"),
+    };
+
+    let proposal = match &d.pattern {
+        Some(p) if is_a_pattern(p) => Some(file_proposal(&f, project, &repo, p, &raw, from).await?),
+        _ => None,
+    };
+
+    Ok((asked, proposal))
+}
+
+/// Whether the directive's `pattern` field actually names one: three or
+/// more quoted requests, a repetition and an outcome, both non-empty. A
+/// directive that leaves `pattern` present but hollow (an empty array, an
+/// empty sentence) is treated as not having found one, rather than
+/// failing the whole decision over an optional field.
+fn is_a_pattern(p: &Pattern) -> bool {
+    p.task_ids.len() >= 3 && !p.repetition.trim().is_empty() && !p.outcome.trim().is_empty()
+}
+
+/// The escalator (docs/INTAKE.md, "The escalator"): blocks a placeholder
+/// task with one question, addressed to the contact, proposing the
+/// automation the pattern names and asking yes or no; records the
+/// proposal on the placeholder's `proposal_json` so `forge answer` can
+/// find it again. Returns the placeholder task's id.
+async fn file_proposal(
+    f: &Forge,
+    project: &str,
+    repo: &str,
+    p: &Pattern,
+    raw: &str,
+    from: Option<&str>,
+) -> Result<i64> {
+    let question = format!(
+        "{} Want it: {}? (yes or no)",
+        p.repetition.trim(),
+        p.outcome.trim()
+    );
+    let mut req = base(project, repo, p.outcome.clone(), Some("direct"));
+    req.retries = 0;
+    req.no_land = true;
+    let mut n = queue::enqueue(f, &req, None).await?;
+    n.state = TaskState::Blocked;
+    n.reason = format!("needs input: {question}");
+    n.question_to = from.map(str::to_string);
+    n.concierge_json = Some(raw.to_string());
+    n.proposal_json = Some(serde_json::to_string(&crate::view::ProposalRecord {
+        task_ids: p.task_ids.clone(),
+        repetition: p.repetition.clone(),
+        outcome: p.outcome.clone(),
+    })?);
+    f.store.update_task(&n)?;
+    Ok(n.id)
+}
+
+/// What answering an escalator proposal did: a "yes" filed an initiative
+/// (its id, and the tasks filed for it, one per quoted request's shape);
+/// a "no" just recorded the decision.
+pub enum ProposalAnswered {
+    Initiative { initiative: i64, tasks: Vec<i64> },
+    Declined,
+}
+
+/// Answer an escalator's proposal placeholder (see `file_proposal`):
+/// records the decision the same way any other answer does, then, on a
+/// yes, files an initiative on the project with the pattern's outcome and
+/// one task per quoted request's shape (the same machinery `forge
+/// initiative new --from` files a hand-written one with; here the
+/// paragraphs are the quoted requests' own texts, generated rather than
+/// read from a file). Unlike `queue::answer`, this placeholder never ran
+/// an agent turn, so there is no attempt to retry: the placeholder itself
+/// is marked settled instead.
+pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result<ProposalAnswered> {
+    let mut t = f.store.task(id)?.with_context(|| format!("no task {id}"))?;
+    if t.state != TaskState::Blocked {
+        bail!(
+            "task {id} is {}; only a blocked proposal is answered this way",
+            t.state.as_str()
+        );
     }
+    let raw = t
+        .proposal_json
+        .clone()
+        .with_context(|| format!("task {id} carries no escalator proposal"))?;
+    let p: crate::view::ProposalRecord = serde_json::from_str(&raw)
+        .with_context(|| format!("task {id}'s proposal does not fit its own schema: {raw}"))?;
+    let (_, question) = crate::view::request_kind(&t.reason);
+    f.store.insert_decision_by(
+        id,
+        &t.repo,
+        &question,
+        text,
+        by,
+        "",
+        t.question_to.as_deref(),
+    )?;
+
+    let yes = is_yes(text);
+    let result = if yes {
+        let project = t
+            .project
+            .clone()
+            .with_context(|| format!("task {id} has no project"))?;
+        let ini_id = f.store.create_initiative(&Initiative {
+            project: project.clone(),
+            outcome: p.outcome.clone(),
+            stop_after_same_rule: 3,
+            created_at: crate::unix_now(),
+            ..Default::default()
+        })?;
+        let mut paragraphs: Vec<FileTask> = Vec::new();
+        for qid in &p.task_ids {
+            let qt = f
+                .store
+                .task(*qid)?
+                .with_context(|| format!("proposal quotes task {qid} which no longer exists"))?;
+            paragraphs.push(FileTask {
+                after: None,
+                repo: Some(qt.repo.clone()),
+                provider: None,
+                workflow: None,
+                text: qt.task.clone(),
+            });
+        }
+        let ids = queue::file_initiative_paragraphs(
+            f,
+            &project,
+            ini_id,
+            &paragraphs,
+            Some(&t.repo),
+            None,
+            None,
+        )
+        .await?;
+        t.proposal_answer = Some("yes".to_string());
+        t.proposal_initiative = Some(ini_id);
+        t.state = TaskState::Succeeded;
+        t.reason = format!("proposal accepted: initiative {ini_id}");
+        ProposalAnswered::Initiative {
+            initiative: ini_id,
+            tasks: ids,
+        }
+    } else {
+        t.proposal_answer = Some("no".to_string());
+        t.state = TaskState::Succeeded;
+        t.reason = "proposal declined".to_string();
+        ProposalAnswered::Declined
+    };
+    f.store.update_task(&t)?;
+    Ok(result)
+}
+
+/// A plain yes, tolerant of a trailing "please", punctuation or a leading
+/// "y" — never a guess when the text is actually ambiguous, which reads
+/// as no more than the operator not having said yes.
+fn is_yes(text: &str) -> bool {
+    let t = text.trim().trim_end_matches(['.', '!']).to_lowercase();
+    t == "y" || t == "yes" || t.starts_with("yes,") || t.starts_with("yes ")
 }

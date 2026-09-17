@@ -431,6 +431,56 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     Ok(out)
 }
 
+/// File already-parsed paragraphs into an existing initiative: one task
+/// per paragraph, honoring each one's own `after`/`repo`/`provider`/
+/// `workflow` override, else the given defaults. Shared by `forge
+/// initiative new --from` (a hand-written file) and the escalator (a
+/// pattern proposal answered yes; see docs/INTAKE.md, "The escalator"),
+/// whose paragraphs are generated rather than read from disk. Returns the
+/// new tasks' ids, in order.
+pub async fn file_initiative_paragraphs(
+    f: &Forge,
+    project: &str,
+    initiative: i64,
+    paragraphs: &[FileTask],
+    default_repo: Option<&str>,
+    provider: Option<&str>,
+    workflow: Option<&str>,
+) -> Result<Vec<i64>> {
+    let mut ids: Vec<i64> = Vec::new();
+    for p in paragraphs {
+        let repo = match &p.repo {
+            Some(r) => r.clone(),
+            None => default_repo
+                .map(str::to_string)
+                .with_context(|| format!("project {project} lists no repository"))?,
+        };
+        let after = match p.after {
+            Some(n) => vec![
+                *ids.get(n - 1)
+                    .with_context(|| format!("after: {n} names a task not yet queued"))?,
+            ],
+            None => Vec::new(),
+        };
+        let req = TaskRequest {
+            repo: PathBuf::from(repo),
+            task: p.text.clone(),
+            provider: p.provider.clone().or_else(|| provider.map(str::to_string)),
+            workflow: p.workflow.clone().or_else(|| workflow.map(str::to_string)),
+            max_turns: 100,
+            retries: 1,
+            timeout_secs: 1800,
+            after,
+            project: Some(project.to_string()),
+            initiative: Some(initiative),
+            ..Default::default()
+        };
+        let t = enqueue(f, &req, None).await?;
+        ids.push(t.id);
+    }
+    Ok(ids)
+}
+
 /// Split a task's recorded plan into items: paragraphs (blank-line
 /// separated), trimmed, empties dropped. A plan is prose from the
 /// investigate directive rather than a delimited list, so this uses the

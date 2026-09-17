@@ -1406,6 +1406,9 @@ pub struct ProjectRow {
     pub supervisor_per_lineage: Option<i64>,
     pub protected: Vec<String>,
     pub role_providers: std::collections::BTreeMap<String, String>,
+    /// The escalator's proposals made on this project, newest first, and
+    /// how each was answered (see docs/INTAKE.md, "The escalator").
+    pub proposals: Vec<ProposalRow>,
 }
 
 pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
@@ -1417,6 +1420,8 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         .collect();
     let cost = f.store.project_task_stats(&p.name)?.cost;
     let tasks = f.store.project_tasks(&p.name)?;
+    let mut proposals: Vec<ProposalRow> = tasks.iter().filter_map(proposal_row).collect();
+    proposals.sort_by(|a, b| b.task_id.cmp(&a.task_id));
     let mut stats = crate::store::ProjectTaskStats::default();
     for (t, _) in latest_per_lineage(f, &tasks)? {
         match t.state {
@@ -1449,6 +1454,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         supervisor_per_lineage: p.supervisor_per_lineage,
         protected: p.protected.clone().unwrap_or_default(),
         role_providers: p.role_providers.clone(),
+        proposals,
     })
 }
 
@@ -1813,6 +1819,10 @@ pub struct InitiativeDoc {
     pub elapsed_secs: Option<i64>,
     pub created_at: i64,
     pub settled_at: Option<i64>,
+    /// The escalator's proposal this initiative came from, when a "yes"
+    /// answer filed it (see docs/INTAKE.md, "The escalator"); `None` for
+    /// an initiative filed any other way.
+    pub proposal: Option<ProposalRow>,
 }
 
 pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<InitiativeDoc> {
@@ -1860,6 +1870,12 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
             });
         }
     }
+    let proposal = f
+        .store
+        .project_tasks(&ini.project)?
+        .iter()
+        .find(|t| t.proposal_initiative == Some(ini.id))
+        .and_then(proposal_row);
     let refused = refused_counts(f, &tasks)?;
     let mut deployed = Vec::new();
     for t in &tasks {
@@ -1907,6 +1923,52 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         elapsed_secs: elapsed,
         created_at: ini.created_at,
         settled_at: ini.settled_at,
+        proposal,
+    })
+}
+
+/// The escalator's pattern (docs/INTAKE.md, "The escalator"), as
+/// `forge ask` records it on a proposal placeholder's `proposal_json`:
+/// the quoted requests that share a shape, why, and the outcome an
+/// initiative would pursue if the operator says yes. Written by
+/// `concierge::ask`, read back here to build `ProposalRow`.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProposalRecord {
+    pub task_ids: Vec<i64>,
+    pub repetition: String,
+    pub outcome: String,
+}
+
+/// One row of a project's or an initiative's proposals: the escalator's
+/// question, who it went to, and how it was answered (see
+/// docs/INTAKE.md, "The escalator"). `answer` is `None` while the
+/// placeholder task is still blocked; `initiative` is set only by a
+/// "yes".
+#[derive(Serialize)]
+pub struct ProposalRow {
+    pub task_id: i64,
+    pub quoted: Vec<i64>,
+    pub repetition: String,
+    pub outcome: String,
+    pub to: Option<String>,
+    pub answer: Option<String>,
+    pub initiative: Option<i64>,
+}
+
+/// Build a `ProposalRow` from a task the escalator blocked, or `None` for
+/// any other task (`proposal_json` unset or unreadable).
+pub fn proposal_row(t: &Task) -> Option<ProposalRow> {
+    let raw = t.proposal_json.as_deref()?;
+    let p: ProposalRecord = serde_json::from_str(raw).ok()?;
+    Some(ProposalRow {
+        task_id: t.id,
+        quoted: p.task_ids,
+        repetition: p.repetition,
+        outcome: p.outcome,
+        to: t.question_to.clone(),
+        answer: t.proposal_answer.clone(),
+        initiative: t.proposal_initiative,
     })
 }
 
