@@ -8,6 +8,7 @@ mod contracts;
 mod deploy;
 mod initiatives;
 mod intake;
+mod jobs;
 mod landing;
 mod listing;
 mod ops;

@@ -142,7 +142,9 @@ impl TryFrom<&str> for JobState {
             "needs_human" => JobState::NeedsHuman,
             "dropped" => JobState::Dropped,
             other => {
-                return Err(std::io::Error::other(format!("unknown job state {other:?}")));
+                return Err(std::io::Error::other(format!(
+                    "unknown job state {other:?}"
+                )));
             }
         })
     }
@@ -3388,7 +3390,10 @@ impl Store {
 
     /// Record a job starting. Returns its id; `finish_job` completes it,
     /// `append_job_step`/`append_job_effect` record what it did along the
-    /// way (see docs/JOBS.md, "The record").
+    /// way (see docs/JOBS.md, "The record"). Not called yet — the executor
+    /// is a later build-order step — but exercised directly by the store's
+    /// own tests below.
+    #[allow(dead_code)]
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3412,7 +3417,9 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
-    /// Record one step of a job's run. Returns its id.
+    /// Record one step of a job's run. Returns its id. Not called yet —
+    /// see `create_job`.
+    #[allow(dead_code)]
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3435,7 +3442,9 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
-    /// Record one effect a job's step performed on the world. Returns its id.
+    /// Record one effect a job's step performed on the world. Returns its
+    /// id. Not called yet — see `create_job`.
+    #[allow(dead_code)]
     pub fn append_job_effect(&self, e: &JobEffect) -> Result<i64> {
         let c = self.lock();
         c.execute(
@@ -3447,7 +3456,8 @@ impl Store {
     }
 
     /// Record a job's outcome: its final state, cost and assertions'
-    /// verdict.
+    /// verdict. Not called yet — see `create_job`.
+    #[allow(dead_code)]
     pub fn finish_job(
         &self,
         id: i64,
@@ -3484,10 +3494,7 @@ impl Store {
             "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json
              FROM jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR state=?2) ORDER BY id DESC",
         )?;
-        let rows = stmt.query_map(
-            params![project, state.map(JobState::as_str)],
-            job_from_row,
-        )?;
+        let rows = stmt.query_map(params![project, state.map(JobState::as_str)], job_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -5044,8 +5051,14 @@ mod tests {
         mk_project(&s, "equitizr");
         let id = mk_job(&s, "equitizr", "quote-by-text", 100);
 
-        s.finish_job(id, 130, JobState::Ok, Some(0.02), r#"[{"level":"L0","name":"quoted","ok":true}]"#)
-            .unwrap();
+        s.finish_job(
+            id,
+            130,
+            JobState::Ok,
+            Some(0.02),
+            r#"[{"level":"L0","name":"quoted","ok":true}]"#,
+        )
+        .unwrap();
 
         let j = s.job(id).unwrap().unwrap();
         assert_eq!(j.state, JobState::Ok);

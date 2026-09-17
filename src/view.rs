@@ -2267,8 +2267,18 @@ pub struct JobDoc {
 }
 
 pub fn job_doc(f: &Forge, j: &crate::store::Job) -> Result<JobDoc> {
-    let steps = f.store.job_steps(j.id)?.iter().map(JobStepRow::from).collect();
-    let effects = f.store.job_effects(j.id)?.iter().map(JobEffectRow::from).collect();
+    let steps = f
+        .store
+        .job_steps(j.id)?
+        .iter()
+        .map(JobStepRow::from)
+        .collect();
+    let effects = f
+        .store
+        .job_effects(j.id)?
+        .iter()
+        .map(JobEffectRow::from)
+        .collect();
     Ok(JobDoc {
         id: j.id,
         project: j.project.clone(),
