@@ -384,11 +384,12 @@ on_failure = "drop"
     assert_eq!(project["jobs_needs_human"], 0, "{project:?}");
 }
 
-/// A run workflow with a directive step is refused with a clear message:
-/// directive steps are the next build-order step (docs/JOBS.md), not this
-/// one.
+/// A directive job step needs `role`, to route its provider, and its
+/// action needs `schema`, to hold its structured output to (docs/JOBS.md,
+/// "Steps"). The built-in `code` directive has neither role nor schema, so
+/// it names both gaps in turn.
 #[test]
-fn forge_job_start_refuses_a_directive_step() {
+fn a_directive_job_step_needs_a_role_and_the_actions_schema() {
     let e = Env::new();
     let repo_s = e.repo.to_str().unwrap();
     assert!(
@@ -409,10 +410,33 @@ fn forge_job_start_refuses_a_directive_step() {
     );
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
     std::fs::write(
-        e.home.join("workflows/with-directive.toml"),
-        r#"name = "with-directive"
+        e.home.join("workflows/no-role.toml"),
+        r#"name = "no-role"
 kind = "run"
-description = "a job step names a directive, which this executor refuses"
+description = "a directive job step names no role"
+
+steps = [
+  { action = "code" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+noop = ["true"]
+"#,
+    )
+    .unwrap();
+    let o = e.forge("ok.sh", &["job", "start", "equitizr", "no-role", "--now"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("role"), "{err}");
+
+    std::fs::write(
+        e.home.join("workflows/no-schema.toml"),
+        r#"name = "no-schema"
+kind = "run"
+description = "a directive job step's action names no schema"
 
 steps = [
   { action = "code", role = "write" },
@@ -426,12 +450,167 @@ noop = ["true"]
 "#,
     )
     .unwrap();
-
-    let o = e.forge(
-        "ok.sh",
-        &["job", "start", "equitizr", "with-directive", "--now"],
-    );
+    let o = e.forge("ok.sh", &["job", "start", "equitizr", "no-schema", "--now"]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("directive"), "{err}");
+    assert!(err.contains("schema"), "{err}");
+}
+
+/// A directive job step's own action (docs/JOBS.md, "Steps"): an
+/// `extract-job` directive with a `role` and a `schema`, feeding a
+/// `log-price` operation that reads its validated output back
+/// (`FORGE_OUTPUT_EXTRACT_JOB`). Written once and shared by the
+/// schema-valid and schema-invalid tests below.
+const EXTRACT_JOB_ACTION: &str = r#"name = "extract-job"
+kind = "directive"
+contract = "plan"
+description = "extract a structured job description and a price hint from the customer's message"
+prompt = "Return only the fields the schema names."
+schema = '''
+{"type":"object","additionalProperties":false,"required":["job","price_hint"],"properties":{"job":{"type":"string"},"price_hint":{"type":"number"}}}
+'''
+"#;
+
+const LOG_PRICE_ACTION: &str = r#"name = "log-price"
+kind = "operation"
+description = "read extract-job's validated output and log a row effect naming the price"
+run = ["bash", "-c", "price=$(sed -n 's/.*\"price_hint\":\\([0-9.]*\\).*/\\1/p' \"$FORGE_OUTPUT_EXTRACT_JOB\"); printf 'row\\tbook.csv\\tpriced at %s\\n' \"$price\" >> \"$FORGE_EFFECT_LOG\""]
+"#;
+
+const QUOTE_WORKFLOW: &str = r#"name = "quote"
+kind = "run"
+description = "extract a job then log its price: a directive feeding an operation"
+
+steps = [
+  { action = "extract-job", role = "read" },
+  { action = "log-price",   effect = "row" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+priced = ["bash", "-c", "grep -q '^row' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#;
+
+fn setup_quote_workflow(e: &Env) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/actions/extract-job.toml"),
+        EXTRACT_JOB_ACTION,
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/log-price.toml"),
+        LOG_PRICE_ACTION,
+    )
+    .unwrap();
+    std::fs::write(e.home.join("workflows/quote.toml"), QUOTE_WORKFLOW).unwrap();
+}
+
+/// A directive step's schema-valid structured output is written as its
+/// output, recorded with its provider and real cost, and flows to the
+/// operation after it (docs/JOBS.md, "Steps" and "The executor").
+#[test]
+fn a_directives_schema_valid_output_flows_to_the_next_operation() {
+    let e = Env::new();
+    setup_quote_workflow(&e);
+
+    let mut c = e.with_role("ok.sh", "EXTRACT_JOB", "job-directive-valid.sh");
+    let o = c
+        .args(["job", "start", "equitizr", "quote", "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert!(doc["cost_usd"].as_f64().unwrap() > 0.0, "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[0]["action"], "extract-job");
+    assert_eq!(steps[0]["kind"], "directive");
+    assert_eq!(steps[0]["provider"], "anthropic");
+    assert!(!steps[0]["model"].as_str().unwrap().is_empty(), "{steps:?}");
+    assert!(steps[0]["cost_usd"].as_f64().unwrap() > 0.0, "{steps:?}");
+    assert!(!steps[0]["output_ref"].as_str().unwrap().is_empty());
+    assert_eq!(steps[1]["action"], "log-price");
+    assert_eq!(steps[1]["kind"], "operation");
+
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "row");
+    assert!(
+        effects[0]["summary"].as_str().unwrap().contains("250"),
+        "the price the directive extracted did not reach the operation: {effects:?}"
+    );
+}
+
+/// A directive step's structured output that does not match its action's
+/// schema fails the job with the validation message, before the operation
+/// after it ever runs (docs/JOBS.md, "Steps").
+#[test]
+fn a_directives_schema_invalid_output_fails_the_job_with_the_validation_message() {
+    let e = Env::new();
+    setup_quote_workflow(&e);
+
+    let mut c = e.with_role("ok.sh", "EXTRACT_JOB", "job-directive-invalid.sh");
+    let o = c
+        .args(["job", "start", "equitizr", "quote", "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the operation after the directive must not run: {steps:?}"
+    );
+    assert_eq!(steps[0]["action"], "extract-job");
+    assert!(
+        doc["verdict_json"]
+            .as_str()
+            .unwrap()
+            .contains("does not match the schema"),
+        "{doc:?}"
+    );
+    assert!(
+        doc["effects"].as_array().unwrap().is_empty(),
+        "log-price never ran: {doc:?}"
+    );
 }
