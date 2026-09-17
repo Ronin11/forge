@@ -429,6 +429,12 @@ enum PluginCmd {
     /// Disable a plugin: a running `forge work` notices within a few
     /// seconds and stops it, no restart needed
     Disable { name: String },
+    /// Reload an enabled plugin's config: a running `forge work` notices
+    /// within a few seconds and replaces its process with a fresh one
+    /// that re-reads FORGE_PLUGIN_DIR/config. Unlike enable/disable,
+    /// this is the way to pick up a config edit without ever changing
+    /// whether the plugin is enabled.
+    Restart { name: String },
     /// Copy a plugin directory into FORGE2_HOME/plugins and run its build
     Install {
         /// The plugin's own directory, holding plugin.toml
@@ -822,6 +828,7 @@ pub async fn main() -> Result<()> {
             PluginCmd::Status { name, json } => plugin_status(name, json),
             PluginCmd::Enable { name } => plugin_set_enabled(name, true),
             PluginCmd::Disable { name } => plugin_set_enabled(name, false),
+            PluginCmd::Restart { name } => plugin_restart(name),
             PluginCmd::Install { path } => plugin_install(path),
             PluginCmd::Uninstall { name } => plugin_uninstall(name),
             PluginCmd::Logs { name, follow } => plugin_logs(name, follow),
@@ -2539,6 +2546,21 @@ fn plugin_set_enabled(name: String, enabled: bool) -> Result<()> {
     }
     f.store.set_plugin_enabled(&name, enabled, unix_now())?;
     out!("{name} {}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+fn plugin_restart(name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let home_cfg = config::load_home(&f.paths.home)?;
+    let cat = crate::plugins::load_catalog(&f.paths.home, &home_cfg.plugin_dirs);
+    if !cat.plugins.contains_key(&name) {
+        bail!("no such plugin: {name:?}");
+    }
+    if !f.store.enabled_plugins()?.contains(&name) {
+        bail!("plugin {name:?} is not enabled");
+    }
+    crate::plugins::request_restart(&f.paths.home, &name)?;
+    out!("{name} restart requested");
     Ok(())
 }
 

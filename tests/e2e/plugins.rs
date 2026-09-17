@@ -13,6 +13,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::Duration;
 
+fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
+    serde_json::from_slice(
+        &e.forge("ok.sh", &["plugin", "status", name, "--json"])
+            .stdout,
+    )
+    .unwrap()
+}
+
 #[test]
 fn plugin_list_shows_the_valid_plugin_and_doctor_reports_the_invalid_one_without_failing() {
     let e = Env::new();
@@ -196,6 +204,95 @@ fn the_worker_supervises_a_failing_plugin_and_stops_it_when_disabled() {
     let status: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(status["enabled"], false);
     assert_eq!(status["state"], "stopped");
+}
+
+/// Disabling then re-enabling a plugin already replaces its process (the
+/// reconcile loop in `Supervisor::start` removes and re-adds it), but a
+/// plugin that stays enabled the whole time never gets a fresh process on
+/// its own: a config edit under `FORGE_PLUGIN_DIR/config` sits unread
+/// until something restarts it. `forge plugin restart` is that something:
+/// it replaces the process without ever touching the enabled flag.
+#[test]
+fn plugin_restart_reloads_config_without_touching_the_enabled_flag() {
+    let e = Env::new();
+    let plugin_dir = e.home.join("plugins").join("reloader");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        "name = \"reloader\"\nrun = [\"./run.sh\"]\ncapabilities = [\"events\"]\n",
+    )
+    .unwrap();
+    // Reads its config once at startup, records what it saw, then sits
+    // there running: the same shape as the reference plugins (see
+    // plugins/notify/notify.sh), which is exactly why an edit to a live
+    // plugin's config needs an explicit restart to take effect.
+    std::fs::write(
+        plugin_dir.join("run.sh"),
+        "#!/bin/bash\nset -u\nvalue=unset\nconfig=\"$FORGE_PLUGIN_DIR/config\"\nif [ -f \"$config\" ]; then\n    while IFS= read -r line || [ -n \"$line\" ]; do\n        case \"$line\" in\n            VALUE=*) value=${line#VALUE=} ;;\n        esac\n    done <\"$config\"\nfi\necho \"$value\" >\"$FORGE_PLUGIN_STATE/observed\"\nexec sleep 3600\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        plugin_dir.join("run.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "enable", "reloader"])
+            .status
+            .success()
+    );
+
+    let observed = e
+        .home
+        .join("plugins-state")
+        .join("reloader")
+        .join("observed");
+
+    let mut worker = e
+        .cmd("ok.sh")
+        .args(["work", "--poll", "1"])
+        .spawn()
+        .unwrap();
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&observed).ok().as_deref() == Some("unset\n"),
+            Duration::from_secs(10),
+        ),
+        "expected the first process to start with no config: {:?}",
+        std::fs::read_to_string(&observed)
+    );
+    let before_pid = plugin_status_json(&e, "reloader")["pid"].as_i64().unwrap();
+
+    std::fs::write(plugin_dir.join("config"), "VALUE=updated\n").unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["plugin", "restart", "reloader"])
+            .status
+            .success()
+    );
+
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&observed).ok().as_deref() == Some("updated\n"),
+            Duration::from_secs(30),
+        ),
+        "expected a fresh process to observe the edited config: {:?}",
+        std::fs::read_to_string(&observed)
+    );
+    let after = plugin_status_json(&e, "reloader");
+    assert_eq!(after["enabled"], true, "restart never touches enabled");
+    assert_ne!(
+        after["pid"].as_i64().unwrap(),
+        before_pid,
+        "restart must replace the process, not reuse it"
+    );
+
+    let _ = Command::new("kill")
+        .args(["-TERM", &worker.id().to_string()])
+        .status();
+    let _ = worker.wait();
 }
 
 /// `forge plugin install` refuses a name already installed, and
