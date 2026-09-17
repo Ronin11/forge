@@ -246,6 +246,11 @@ pub struct Task {
     /// deterministic way as `journal_arm` (see `queue::assign_explore`),
     /// and consulted by `ctx::resolve_provider` at every step.
     pub explore: BTreeMap<String, String>,
+    /// The concierge decision that produced this task, raw JSON, when
+    /// `forge ask` filed it (a `request`, a `need`, or the placeholder for
+    /// `unclear`); `None` for a task filed any other way (see
+    /// docs/INTAKE.md, "The front door is not the interview").
+    pub concierge_json: Option<String>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -1183,6 +1188,12 @@ CREATE TABLE portal_tokens (
 );
 CREATE INDEX portal_tokens_project ON portal_tokens(project);
 ",
+    // The concierge's decision, raw JSON, on the task it produced (see
+    // docs/INTAKE.md, "The front door is not the interview"); an answer
+    // records a decisions row instead, nothing here.
+    "
+ALTER TABLE tasks ADD COLUMN concierge_json TEXT;
+",
     // A job is a run of a `kind = "run"` workflow: it starts from a
     // trigger, produces effects, and ends when they're verified — no
     // repository, no branch, no landing (see docs/JOBS.md, "The record").
@@ -1299,6 +1310,7 @@ const TASK_COLUMNS: &[&str] = &[
     "project",
     "initiative",
     "explore_json",
+    "concierge_json",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -1370,6 +1382,7 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             "explore_json",
             serde_json::from_str(&r.get::<_, String>("explore_json")?),
         )?,
+        concierge_json: r.get("concierge_json")?,
     })
 }
 
@@ -1657,7 +1670,8 @@ impl Store {
              workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
              land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42 WHERE id=?1",
+             project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
+             concierge_json=?43 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1701,6 +1715,7 @@ impl Store {
                 t.provider,
                 t.question_to,
                 serde_json::to_string(&t.explore)?,
+                t.concierge_json,
             ],
         )?;
         Ok(())

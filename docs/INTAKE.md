@@ -139,6 +139,44 @@ an answer is the third. `forge ask <project> <message>` is the verb, and
 the Signal plugin routes a contact's message through it instead of
 filing it blindly as a task.
 
+**Mechanics.** `concierge` is a directive on the `plan` contract, read
+only like `interview` and `investigate` (src/builtins/actions/concierge.toml).
+Its workflow is `setup` then `concierge` alone — no code step, nothing to
+land. It is given the message, the project's purpose, its brief if it has
+one (the confirmed plan of its intake task, read the way `forge intake
+accept` reads it), its backlog, its deploy targets, and its last twenty
+tasks, each as id, state, and first line. It returns one JSON decision as
+its plan: `kind` is `request`, `question`, `need`, or `unclear`, with one
+more field for whichever kind it chose — `task` for a request (the
+customer's words, tidied, with the reason), `answer` for a question
+(drawn only from what it was given, never guessed), `reason` for a need
+(one sentence saying why an interview is warranted), or `question` for
+unclear (the one question that would settle it). It never stops with its
+own `needs_input`: a decision is one turn, not a conversation.
+
+`forge ask <project> <message> [--from <contact>]` runs `concierge` to
+completion (the same way `forge run` drives a task) and acts on the
+decision:
+
+- **request**: files a task on the project — its first repository, its
+  own default workflow (else `direct`) — with the decided text.
+- **question**: prints the answer and records a `decisions` row
+  (`answered_by` "concierge", `answered_for` the `--from` contact),
+  hung off the concierge's own task; no task is filed.
+- **need**: files an intake task, the message as its text (with `Contact:
+  <name>.` appended when `--from` names one, the convention an intake
+  task's text already carries), so the interview picks the contact up
+  the way it always has.
+- **unclear**: files a small placeholder task, already blocked, with
+  `needs input: <question>` as its reason and `--from` as the question's
+  `to`, so it shows in `forge requests` and the channel plugin can
+  deliver it and answer on the contact's behalf exactly like an
+  interview's question.
+
+Every decision is on the record: a `concierge_json` column, raw JSON, on
+the task it produced (the filed request, the intake task, or the blocked
+placeholder), or, for a question, the `decisions` row itself.
+
 **The escalator.** Because Forge keeps a record, one-offs turn into
 automation without anyone asking for it. After the third request of the
 same shape on a project, the concierge says so: "that is the third time

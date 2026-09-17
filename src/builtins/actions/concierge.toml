@@ -1,0 +1,7 @@
+name = "concierge"
+kind = "directive"
+contract = "plan"
+description = "the front door: reads a customer message against the project's purpose, brief, backlog, deploy targets and last twenty tasks, and decides whether it is a request, a question, a need, or unclear; forge ask acts on the decision"
+consumes = ["branch"]
+produces = ["plan"]
+max_turns = 10

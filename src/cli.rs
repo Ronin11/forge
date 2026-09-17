@@ -105,6 +105,19 @@ enum Cmd {
     Run(TaskArgs),
     /// Queue a task for `forge work`
     Add(TaskArgs),
+    /// The front door: sort a customer message into a request, a
+    /// question, a need, or unclear, and act on it (see docs/INTAKE.md,
+    /// "The front door is not the interview")
+    Ask {
+        /// The project the message is about
+        project: String,
+        /// The message, in the customer's own words
+        message: String,
+        /// The channel contact the message came from, addressed by a
+        /// need's intake task or an unclear decision's question
+        #[arg(long)]
+        from: Option<String>,
+    },
     /// Run queued tasks: stay up and poll, or drain and exit with --once
     Work {
         /// Tasks to run at the same time
@@ -794,6 +807,11 @@ pub async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(args) => run(args).await,
         Cmd::Add(args) => add(args).await,
+        Cmd::Ask {
+            project,
+            message,
+            from,
+        } => ask(project, message, from).await,
         Cmd::Work {
             jobs,
             poll,
@@ -2526,6 +2544,34 @@ async fn add(args: TaskArgs) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
     out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    Ok(())
+}
+
+async fn ask(project: String, message: String, from: Option<String>) -> Result<()> {
+    let f = Arc::new(Forge::open(true, false)?);
+    match crate::concierge::ask(f.clone(), &project, &message, from.as_deref()).await? {
+        crate::concierge::Asked::Filed { task } => {
+            out!(
+                "concierge: a request; filed task {task} ({} queued)",
+                f.store.queued_count()?
+            );
+        }
+        crate::concierge::Asked::Answered { answer, decision } => {
+            out!("{answer}");
+            eprintln!("concierge: a question; recorded as decision {decision}");
+        }
+        crate::concierge::Asked::Need { task, reason } => {
+            out!("concierge: a need ({reason}); filed intake task {task}");
+        }
+        crate::concierge::Asked::Unclear { task, question } => {
+            out!(
+                "concierge: unclear; blocked task {task} with a question{}: {question}",
+                from.as_deref()
+                    .map(|c| format!(" for {c}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
     Ok(())
 }
 

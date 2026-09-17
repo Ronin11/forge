@@ -10,6 +10,7 @@ mod attempt;
 mod audit;
 mod checks;
 mod cli;
+mod concierge;
 mod config;
 mod ctx;
 mod deploy;

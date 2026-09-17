@@ -628,6 +628,10 @@ const BUILTIN_ACTIONS: &[(&str, &str)] = &[
         "deploy-look.toml",
         include_str!("builtins/actions/deploy-look.toml"),
     ),
+    (
+        "concierge.toml",
+        include_str!("builtins/actions/concierge.toml"),
+    ),
 ];
 
 const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
@@ -729,6 +733,10 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "intake.toml",
         include_str!("builtins/workflows/intake.toml"),
+    ),
+    (
+        "concierge.toml",
+        include_str!("builtins/workflows/concierge.toml"),
     ),
 ];
 
@@ -1511,6 +1519,7 @@ mod tests {
             all.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
             vec![
                 "cheap",
+                "concierge",
                 "direct",
                 "docs",
                 "documented",

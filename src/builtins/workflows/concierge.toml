@@ -1,0 +1,11 @@
+name = "concierge"
+description = "the front door: one directive, concierge, reads a customer message against the project's record and decides whether it is a request, a question, a need, or unclear; forge ask is the only caller"
+steps = [
+{ action = "setup" },
+{ action = "concierge" },
+]
+
+[meta]
+use_when = "never chosen directly; forge ask <project> <message> runs it"
+avoid_when = "always, for a task filed by hand; use direct or planned instead"
+requires = []
