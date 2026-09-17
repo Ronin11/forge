@@ -253,6 +253,46 @@ fn a_question_prints_the_answer_and_records_a_decision_not_a_task() {
 }
 
 #[test]
+fn a_short_decision_is_not_held_to_plan_substantive() {
+    let e = Env::new();
+    setup(&e);
+    let before: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+
+    let o = e.forge(
+        "concierge-short.sh",
+        &[
+            "ask",
+            "demo",
+            "Did the reminder go out to the Hendersons?",
+            "--from",
+            "nate",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    assert_eq!(out, "No.");
+
+    // No task was filed for a question: only the concierge's own run.
+    let after: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, before + 1, "a question files no task of its own");
+
+    let ds: serde_json::Value = e.decisions_json();
+    let ds = ds.as_array().unwrap();
+    let d = ds
+        .iter()
+        .find(|d| d["answered_by"] == "concierge")
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert_eq!(d["answer"], "No.");
+    assert_eq!(d["answered_for"], "nate");
+}
+
+#[test]
 fn a_need_files_an_intake_task_naming_the_contact() {
     let e = Env::new();
     setup(&e);

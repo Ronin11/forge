@@ -273,7 +273,7 @@ pub async fn run_attempt(
             report: &f.report,
             scratch: spec.scratch.as_deref(),
             report_from_git: provider.report_from_git,
-            plan_rows: step.action.name != "interview",
+            plan_rows: !matches!(step.action.name.as_str(), "interview" | "concierge"),
         },
         &outcome,
     )
