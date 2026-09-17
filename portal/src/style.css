@@ -108,6 +108,44 @@ ul.plain .date {
   font-size: 15px;
   margin-top: 2px;
 }
+form.ask {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+form.ask p {
+  margin: 0 0 10px;
+}
+form.ask input[type="text"],
+form.ask textarea {
+  width: 100%;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+form.ask textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+form.ask button {
+  margin-top: 10px;
+  font: inherit;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--panel);
+  cursor: pointer;
+}
+p.reply {
+  color: var(--ok);
+  font-style: italic;
+}
 .notfound {
   max-width: 480px;
   margin: 20vh auto 0;
