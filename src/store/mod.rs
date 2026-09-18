@@ -112,10 +112,15 @@ impl TryFrom<&str> for AttemptState {
 /// A job's state: a run workflow's run, the way `TaskState` is a build
 /// workflow's (see docs/JOBS.md, "Vocabulary"). `NeedsHuman` is a job's
 /// `on_failure = "ask:*"` outcome, the job analogue of `TaskState::Blocked`.
+/// `Scheduled` is a job created with a due time (`Job::due_at`) still in the
+/// future: it waits there, a row and never an in-memory timer, until the
+/// worker's claim (`claim_next_job`) finds it due (docs/JOBS.md, "Delayed
+/// jobs").
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum JobState {
     #[default]
     Queued,
+    Scheduled,
     Running,
     Ok,
     Failed,
@@ -127,6 +132,7 @@ impl JobState {
     pub fn as_str(self) -> &'static str {
         match self {
             JobState::Queued => "queued",
+            JobState::Scheduled => "scheduled",
             JobState::Running => "running",
             JobState::Ok => "ok",
             JobState::Failed => "failed",
@@ -141,6 +147,7 @@ impl TryFrom<&str> for JobState {
     fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
         Ok(match s {
             "queued" => JobState::Queued,
+            "scheduled" => JobState::Scheduled,
             "running" => JobState::Running,
             "ok" => JobState::Ok,
             "failed" => JobState::Failed,
@@ -839,6 +846,12 @@ pub struct Job {
     /// `verdict_json` (`checks::CheckResult` rows); empty until the job
     /// finishes.
     pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed. Set from `forge job start --at`/`--delay`
+    /// or from a `[trigger] delay` firing (docs/JOBS.md, "Delayed jobs").
+    /// `JobState::Scheduled` while this is still in the future;
+    /// `claim_next_job` is the only place that reads it against now.
+    pub due_at: Option<i64>,
 }
 
 /// One step of a job's run: one entry of the workflow's `steps`, whether
@@ -1423,6 +1436,14 @@ CREATE INDEX project_repos_project ON project_repos(project);
     // is partial.
     "
 CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'schedule';
+",
+    // A delayed job (docs/JOBS.md, "Delayed jobs"): `due_at` is the unix
+    // second `claim_next_job` compares against now before a `scheduled`
+    // job is claimable. The wait is this column, never an in-memory timer,
+    // so it survives a worker restart. NULL for every job that was never
+    // delayed, including every one recorded before this column existed.
+    "
+ALTER TABLE jobs ADD COLUMN due_at INTEGER;
 ",
 ];
 

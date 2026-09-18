@@ -107,6 +107,7 @@ steps = [
 [trigger]
 on = "message"            # message | schedule | webhook | event | manual
 contact = "customers"     # the Signal plugin's contact group that starts it
+# delay = "5m"             # optional: wait this long after the event before the job is due (see "Delayed jobs")
 
 [assert]
 quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once
@@ -190,10 +191,46 @@ A job is claimed by the worker like a task and runs in a sandbox:
 
 The record: `jobs` (id, project, workflow and its pinned version,
 trigger kind and payload reference, started, finished, state, cost,
-verdict) and `job_steps` (job, step, provider, model, cost, duration,
-output reference) and `job_effects` (job, step, kind, target, summary,
-dry_run). `forge job start | list | show | log`, `forge job test` (below),
-and the shapes on the client contract.
+verdict, due time) and `job_steps` (job, step, provider, model, cost,
+duration, output reference) and `job_effects` (job, step, kind, target,
+summary, dry_run). `forge job start | list | show | log | withdraw`,
+`forge job test` (below), and the shapes on the client contract.
+
+## Delayed jobs
+
+A job can wait before it is due, rather than being claimed the moment it
+is created. This is a row, not an in-memory timer: `jobs.due_at`, a unix
+second, and one new state, `JobState::Scheduled`, that a job with a due
+time sits in until then. `claim_next_job`'s one query already claims the
+oldest `queued` job; it now also claims the oldest `scheduled` one whose
+`due_at` has passed, in the same statement. Nothing runs early, nothing
+is missed on a restart: the wait is `due_at <= now`, checked fresh every
+time the worker asks, never a sleeping task holding state in memory.
+
+Two ways to get there:
+
+- **`forge job start --at <unix>` or `--delay <duration>`.** A manual
+  start that should wait: `--at` names the due second directly, `--delay`
+  names how long from now (`s`, `m`, `h`, `d`, e.g. `5m`, `1h`, `2d`).
+  Refused together with `--now`, which runs inline immediately instead.
+  If the computed due time is already past — `--delay 0s`, or `--at` in
+  the past — the job is `queued` right away rather than `scheduled`; the
+  next `claim_next_job` treats it exactly as any other queued job.
+- **`[trigger] delay = "5m"`.** A trigger that should not fire the moment
+  its event happens. Parsed at workflow load time with the same duration
+  grammar, refused with the file and the line the way an invalid `cron`
+  is. When a firing has a delay, the job it creates is `Scheduled`, with
+  `due_at` the firing's own event time (a schedule's due slot, not the
+  moment the tick happened to run) plus the delay — so a worker that was
+  briefly down still computes the same due time it would have live.
+
+A scheduled job is visible in `forge job list`/`show` with its due time,
+and is **withdrawable**: `forge job withdraw <id>` drops it before it
+ever becomes due, the job analogue of withdrawing a queued task. It is
+refused once the job is no longer `scheduled` — claimed, run, or already
+withdrawn — the same atomic-on-state guard a task's withdraw uses, so a
+withdraw racing the worker's own claim never wins against a job already
+in flight.
 
 ## Verifying an automation
 

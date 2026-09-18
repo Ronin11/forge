@@ -301,8 +301,25 @@ async fn run_directive(
     })
 }
 
+/// The state a delayed job starts in (docs/JOBS.md, "Delayed jobs"):
+/// `Scheduled` while `due_at` is still ahead of `at` (the moment the job is
+/// created), `Queued` once it is already due — `--delay 0s`, or a
+/// `[trigger] delay` a slow-firing tick already outran. The wait, when
+/// there is one, is this row's `due_at` alone; `claim_next_job` is the only
+/// place that ever compares it to now again.
+fn scheduled_state(due_at: Option<i64>, at: i64) -> JobState {
+    if due_at.is_some_and(|d| d > at) {
+        JobState::Scheduled
+    } else {
+        JobState::Queued
+    }
+}
+
 /// `forge job start <project> <workflow>`: record a job and, with `--now`,
-/// run it in this process. Returns the job's id.
+/// run it in this process. `due_at`, from `--at`/`--delay`, leaves it
+/// `Scheduled` until then instead of `Queued` (docs/JOBS.md, "Delayed
+/// jobs"); refused together with `now`, which runs inline immediately.
+/// Returns the job's id.
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
     f: &Forge,
@@ -311,7 +328,11 @@ pub async fn start(
     input: Option<&Path>,
     dry_run: bool,
     now: bool,
+    due_at: Option<i64>,
 ) -> Result<i64> {
+    if now && due_at.is_some() {
+        anyhow::bail!("--now runs inline immediately; it cannot be combined with --at or --delay");
+    }
     let project_row = f
         .store
         .project(project)?
@@ -364,7 +385,7 @@ pub async fn start(
         state: if now {
             JobState::Running
         } else {
-            JobState::Queued
+            scheduled_state(due_at, started_at)
         },
         workflow_source: source.as_str().to_string(),
         dry_run,
@@ -372,6 +393,7 @@ pub async fn start(
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
+        due_at,
     };
     let job_id = f.store.create_job(&job)?;
     if !now {
@@ -404,11 +426,15 @@ pub async fn start(
 }
 
 /// Start a job the worker's schedule tick (`src/worker.rs`) found due
-/// (docs/JOBS.md, "Triggers"): always queued, never run inline, with
-/// `trigger_kind = "schedule"` and `trigger_ref` the due slot's unix
-/// second — the mark `store::last_scheduled_job` reads back so the same
-/// slot is never started twice. Shares `start`'s `per_day` accounting, so
-/// a schedule obeys the same cap a manual trigger does.
+/// (docs/JOBS.md, "Triggers"): never run inline, with `trigger_kind =
+/// "schedule"` and `trigger_ref` the due slot's unix second — the mark
+/// `store::last_scheduled_job` reads back so the same slot is never
+/// started twice. Shares `start`'s `per_day` accounting, so a schedule
+/// obeys the same cap a manual trigger does. The workflow's own `[trigger]
+/// delay` (docs/JOBS.md, "Delayed jobs"), if any, is added to `slot` — the
+/// firing's own event time, not the moment the tick happens to run — to
+/// get `due_at`; the job is `Queued` when there is none, or the delay has
+/// already elapsed, and `Scheduled` otherwise.
 pub async fn start_scheduled(
     f: &Forge,
     project: &str,
@@ -432,6 +458,7 @@ pub async fn start_scheduled(
             );
         }
     }
+    let due_at = wf.trigger.as_ref().and_then(|t| t.delay).map(|d| slot + d);
     let job = Job {
         id: 0,
         project: project.to_string(),
@@ -440,13 +467,14 @@ pub async fn start_scheduled(
         landed_sha: landed_sha.to_string(),
         trigger_kind: workflows::TriggerOn::Schedule.as_str().to_string(),
         trigger_ref: slot.to_string(),
-        state: JobState::Queued,
+        state: scheduled_state(due_at, started_at),
         workflow_source: source.as_str().to_string(),
         dry_run: false,
         started_at,
         finished_at: None,
         cost_usd: None,
         verdict_json: "[]".to_string(),
+        due_at,
     };
     let job_id = f.store.create_job(&job)?;
     let idir = input_dir(f, job_id);
@@ -917,6 +945,7 @@ pub async fn bench(
                 finished_at: None,
                 cost_usd: None,
                 verdict_json: "[]".to_string(),
+                due_at: None,
             };
             let job_id = f.store.create_job(&job)?;
             let t0 = Instant::now();

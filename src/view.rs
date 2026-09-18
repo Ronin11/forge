@@ -2711,6 +2711,9 @@ pub struct JobRow {
     pub finished_at: Option<i64>,
     pub cost_usd: Option<f64>,
     pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed (see `store::Job::due_at`).
+    pub due_at: Option<i64>,
 }
 
 impl From<&crate::store::Job> for JobRow {
@@ -2730,6 +2733,7 @@ impl From<&crate::store::Job> for JobRow {
             finished_at: j.finished_at,
             cost_usd: j.cost_usd,
             verdict_json: j.verdict_json.clone(),
+            due_at: j.due_at,
         }
     }
 }
@@ -2816,6 +2820,9 @@ pub struct JobDoc {
     pub finished_at: Option<i64>,
     pub cost_usd: Option<f64>,
     pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed (see `store::Job::due_at`).
+    pub due_at: Option<i64>,
     pub steps: Vec<JobStepRow>,
     pub effects: Vec<JobEffectRow>,
 }
@@ -2848,6 +2855,7 @@ pub fn job_doc(f: &Forge, j: &crate::store::Job) -> Result<JobDoc> {
         finished_at: j.finished_at,
         cost_usd: j.cost_usd,
         verdict_json: j.verdict_json.clone(),
+        due_at: j.due_at,
         steps,
         effects,
     })

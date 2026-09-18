@@ -1192,3 +1192,243 @@ ok = ["true"]
         serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 1, "{rows:?}");
 }
+
+fn setup_snapshot_workflow(e: &Env) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/snapshot.toml"),
+        r#"name = "snapshot"
+kind = "run"
+description = "writes a file and appends a row: the two operations the executor runs inline"
+
+steps = [
+  { action = "write-file", effect = "file" },
+  { action = "append-row", effect = "row" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+effects = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\" && grep -q '^row' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+}
+
+/// Delayed jobs (docs/JOBS.md, "Delayed jobs"): `forge job start --delay
+/// 1h` leaves the job `scheduled`, carrying its `due_at`, visible in
+/// `forge job list`; `forge work --once` finds nothing claimable and
+/// leaves it untouched. `--delay 0s` is due immediately, so the very same
+/// `--once` pass claims and runs it — the wait is `due_at` on the row,
+/// never an in-memory timer, so it is exactly what a restart would see too.
+#[test]
+fn forge_job_start_delay_leaves_the_job_scheduled_until_due_and_zero_runs_it() {
+    let e = Env::new();
+    setup_snapshot_workflow(&e);
+
+    let input = e.home.join("input.json");
+    std::fs::write(
+        &input,
+        r#"{"path":"out.txt","content":"hello world","table":"book.csv","row":"hello,42"}"#,
+    )
+    .unwrap();
+    let input_s = input.to_str().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // `--now` and `--delay` are refused together: one runs inline
+    // immediately, the other leaves the job waiting.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "snapshot", "--input", input_s, "--now", "--delay", "1h",
+        ],
+    );
+    assert!(!o.status.success());
+
+    // --delay 1h: scheduled, due about an hour from now.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "snapshot", "--input", input_s, "--delay", "1h",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "scheduled", "{doc:?}");
+    let due_at = doc["due_at"].as_i64().unwrap();
+    assert!(
+        (now + 3500..=now + 3700).contains(&due_at),
+        "due_at {due_at} is not about an hour from now ({now})"
+    );
+
+    // `forge job show` names the due time in plain text too.
+    let show = e.forge("ok.sh", &["job", "show", &id.to_string()]);
+    let text = String::from_utf8_lossy(&show.stdout);
+    assert!(text.contains(&due_at.to_string()), "{text}");
+
+    // `forge job list` shows it, scheduled, with when it is due, in both
+    // the machine-readable and the plain forms.
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap();
+    assert_eq!(row["state"], "scheduled");
+    assert_eq!(row["due_at"], due_at);
+
+    let list = e.forge("ok.sh", &["job", "list"]);
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        text.contains("scheduled") && text.contains(&due_at.to_string()),
+        "{text}"
+    );
+
+    // `forge work --once` finds nothing claimable: the job is left exactly
+    // where it was.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "scheduled", "still waiting: {doc:?}");
+    assert!(doc["effects"].as_array().unwrap().is_empty());
+
+    // --delay 0s: already due, so it is queued (not scheduled) right away.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "snapshot", "--input", input_s, "--delay", "0s",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let zero_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &zero_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "queued", "due now, not scheduled: {doc:?}");
+
+    // The very same --once pass claims and runs it.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &zero_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+
+    // The hour-delayed job is still untouched by any of this.
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "scheduled", "{doc:?}");
+}
+
+/// `forge job withdraw` (docs/JOBS.md, "Delayed jobs"): a scheduled job is
+/// dropped before it ever becomes due. Withdrawing it again, or a job that
+/// was never scheduled (queued, or already run), is refused.
+#[test]
+fn forge_job_withdraw_drops_a_scheduled_job_and_refuses_any_other_state() {
+    let e = Env::new();
+    setup_snapshot_workflow(&e);
+
+    let input = e.home.join("input.json");
+    std::fs::write(
+        &input,
+        r#"{"path":"out.txt","content":"hello world","table":"book.csv","row":"hello,42"}"#,
+    )
+    .unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "snapshot", "--input", input_s, "--delay", "1h",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let scheduled_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    // A plain queued job (never scheduled) cannot be withdrawn.
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "equitizr", "snapshot", "--input", input_s],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let queued_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    let o = e.forge("ok.sh", &["job", "withdraw", &queued_id.to_string()]);
+    assert!(!o.status.success());
+
+    // The scheduled one withdraws cleanly.
+    let o = e.forge("ok.sh", &["job", "withdraw", &scheduled_id.to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge(
+            "ok.sh",
+            &["job", "show", &scheduled_id.to_string(), "--json"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "dropped", "{doc:?}");
+
+    // Withdrawing it again is refused.
+    let o = e.forge("ok.sh", &["job", "withdraw", &scheduled_id.to_string()]);
+    assert!(!o.status.success());
+
+    // `forge work --once` never touches a dropped job.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge(
+            "ok.sh",
+            &["job", "show", &scheduled_id.to_string(), "--json"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "dropped", "{doc:?}");
+}

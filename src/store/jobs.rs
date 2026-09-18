@@ -15,6 +15,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
     "cost_usd",
     "verdict_json",
     "workflow_source",
+    "due_at",
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
@@ -56,6 +57,7 @@ fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
         cost_usd: r.get("cost_usd")?,
         verdict_json: r.get("verdict_json")?,
         workflow_source: r.get("workflow_source")?,
+        due_at: r.get("due_at")?,
     })
 }
 
@@ -137,8 +139,8 @@ impl Store {
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 j.project,
                 j.workflow,
@@ -153,6 +155,7 @@ impl Store {
                 j.finished_at,
                 j.cost_usd,
                 j.verdict_json,
+                j.due_at,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -286,18 +289,25 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// The oldest queued job the worker can claim right now, same shape as
-    /// `claim_next` for tasks: a job carries no provider or initiative
+    /// The oldest claimable job the worker can claim right now, same shape
+    /// as `claim_next` for tasks: a job carries no provider or initiative
     /// hold yet (it runs no directive step), so the first one found is
-    /// always claimable.
+    /// always claimable. A `queued` job is always claimable; a `scheduled`
+    /// one only once its `due_at` is at or before now (docs/JOBS.md,
+    /// "Delayed jobs") — the wait is this one condition on a row, never an
+    /// in-memory timer, so it survives a worker restart.
     pub fn claim_next_job(&self) -> Result<Option<Job>> {
         let id: Option<i64> = self
             .lock()
             .query_row(
                 "UPDATE jobs SET state='running'
-                 WHERE id = (SELECT id FROM jobs WHERE state='queued' ORDER BY id LIMIT 1)
+                 WHERE id = (
+                   SELECT id FROM jobs
+                   WHERE state='queued' OR (state='scheduled' AND due_at <= ?1)
+                   ORDER BY id LIMIT 1
+                 )
                  RETURNING id",
-                [],
+                params![crate::unix_now()],
                 |r| r.get(0),
             )
             .optional()?;
@@ -305,6 +315,19 @@ impl Store {
             Some(id) => self.job(id),
             None => Ok(None),
         }
+    }
+
+    /// Withdraw a scheduled job: the operator decided it should not run
+    /// after all, before it ever became claimable (docs/JOBS.md, "Delayed
+    /// jobs"). Atomic on state, so a job the worker claims in between
+    /// (its `due_at` having just passed) is left alone. Returns whether it
+    /// changed anything.
+    pub fn withdraw_job(&self, id: i64) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE jobs SET state='dropped', finished_at=?2 WHERE id=?1 AND state='scheduled'",
+            params![id, crate::unix_now()],
+        )?;
+        Ok(n == 1)
     }
 
     /// How many of `project`'s runs of `workflow` started at or after
@@ -450,6 +473,103 @@ mod tests {
         let equitizr_running = s.jobs(Some("equitizr"), Some(JobState::Running)).unwrap();
         assert_eq!(equitizr_running.len(), 1);
         assert_eq!(equitizr_running[0].id, a);
+    }
+
+    #[test]
+    fn claim_next_job_skips_a_scheduled_job_whose_due_at_is_in_the_future() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let now = crate::unix_now();
+        let id = s
+            .create_job(&Job {
+                project: "equitizr".into(),
+                workflow: "quote-by-text".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Scheduled,
+                due_at: Some(now + 3600),
+                started_at: now,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(s.claim_next_job().unwrap().is_none());
+        let j = s.job(id).unwrap().unwrap();
+        assert_eq!(j.state, JobState::Scheduled, "left alone: not due yet");
+    }
+
+    #[test]
+    fn claim_next_job_claims_a_scheduled_job_once_its_due_at_has_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let now = crate::unix_now();
+        let id = s
+            .create_job(&Job {
+                project: "equitizr".into(),
+                workflow: "quote-by-text".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Scheduled,
+                due_at: Some(now - 60),
+                started_at: now,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let claimed = s.claim_next_job().unwrap().unwrap();
+        assert_eq!(claimed.id, id);
+        assert_eq!(claimed.state, JobState::Running);
+    }
+
+    #[test]
+    fn claim_next_job_still_claims_a_plain_queued_job_with_no_due_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let id = s
+            .create_job(&Job {
+                project: "equitizr".into(),
+                workflow: "quote-by-text".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Queued,
+                started_at: crate::unix_now(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let claimed = s.claim_next_job().unwrap().unwrap();
+        assert_eq!(claimed.id, id);
+        assert_eq!(claimed.state, JobState::Running);
+    }
+
+    #[test]
+    fn withdraw_job_drops_a_scheduled_job_but_refuses_any_other_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "equitizr");
+        let now = crate::unix_now();
+        let scheduled = s
+            .create_job(&Job {
+                project: "equitizr".into(),
+                workflow: "quote-by-text".into(),
+                trigger_kind: "manual".into(),
+                state: JobState::Scheduled,
+                due_at: Some(now + 3600),
+                started_at: now,
+                ..Default::default()
+            })
+            .unwrap();
+        let running = mk_job(&s, "equitizr", "quote-by-text", now);
+
+        assert!(!s.withdraw_job(running).unwrap());
+        assert_eq!(s.job(running).unwrap().unwrap().state, JobState::Running);
+
+        assert!(s.withdraw_job(scheduled).unwrap());
+        let j = s.job(scheduled).unwrap().unwrap();
+        assert_eq!(j.state, JobState::Dropped);
+        assert!(j.finished_at.is_some());
+
+        assert!(!s.withdraw_job(scheduled).unwrap(), "already dropped");
     }
 
     #[test]
