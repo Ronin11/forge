@@ -245,6 +245,31 @@ pub fn tdd_repo(e: &Env) {
     git(&e.repo, &["commit", "-qam", "tdd layout"]);
 }
 
+/// A repo whose `fmt` check only ever passes once `fmt.txt` says `GOOD`,
+/// with a fix command declared for it that rewrites `fmt.txt` to say so:
+/// the fixture for the deterministic known-fixes step, the way `tdd_repo`
+/// is the fixture for the tests contract.
+pub fn fixable_repo(e: &Env) {
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\n\
+         answer = [\"bash\", \"-c\", \"test -f answer.txt && grep -qx 42 answer.txt\"]\n\
+         fmt = [\"bash\", \"-c\", \"grep -qx GOOD fmt.txt\"]\n\
+         \n\
+         [checks.fixable]\n\
+         fmt = [\"bash\", \"fix-fmt.sh\"]\n",
+    )
+    .unwrap();
+    std::fs::write(e.repo.join("fmt.txt"), "BAD\n").unwrap();
+    std::fs::write(
+        e.repo.join("fix-fmt.sh"),
+        "#!/bin/bash\necho GOOD > fmt.txt\n",
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "a fixable fmt check"]);
+}
+
 pub fn run_tdd(e: &Env, coder: &str, writer: &str, task: &str) -> Output {
     let mut c = e.with_role(coder, "TESTS", writer);
     let o = c

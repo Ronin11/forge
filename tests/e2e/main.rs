@@ -10,6 +10,7 @@ mod deploy;
 mod initiatives;
 mod intake;
 mod jobs;
+mod knownfixes;
 mod landing;
 mod listing;
 mod ops;

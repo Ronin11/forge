@@ -169,6 +169,25 @@ is the point, such as a benchmark or a generator's log; the default tail
 is enough for a check whose failure speaks for itself. `output` applies
 to operations only.
 
+### Checks and known fixes
+
+`forge.toml`'s `[checks]` table is name → argv, run as L1 in the sandbox
+against the tree, read from the trusted base commit rather than the
+branch under test so an attempt cannot change what it is verified
+against (see `docs/SYSTEM.md`, `src/config.rs`). `[checks.fixable]` names,
+for a check that only checks (`fmt = ["cargo", "fmt", "--all",
+"--check"]`), the command that fixes what it flags (`fmt = ["cargo",
+"fmt", "--all"]`); every key must already be a `[checks]` entry.
+
+When a `code` attempt's checks fail and every failing one is named in
+`[checks.fixable]` — never `setup`, whose failure means nothing else ran
+— the engine runs those fix commands in the worktree before any retry,
+commits the result as Forge naming the checks fixed, and runs the checks
+once more. Passing now ends the attempt succeeded, exactly as if the
+agent had gotten it right the first time; still failing lets the ordinary
+retry path begin. Either way the fix run is its own `known-fix` row on
+the attempt's operations, with the diff it committed.
+
 ## Landing
 
 A task's base is the base branch as the push remote has it, fetched at

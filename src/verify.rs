@@ -114,6 +114,26 @@ pub struct Verdict {
     pub checks: Vec<CheckResult>,
     pub state: AttemptState,
     pub reason: String,
+    /// Set when a code attempt failed only checks `[checks.fixable]` names
+    /// and the engine ran their fix commands before deciding the verdict
+    /// (see `try_known_fix`); `None` when no fix was attempted, whether
+    /// because nothing failed or because the failure was not fixable.
+    pub known_fix: Option<KnownFix>,
+}
+
+/// What running `[checks.fixable]`'s commands did, for the "known-fix"
+/// operation row `engine::run_task` records on the attempt.
+#[derive(Debug)]
+pub struct KnownFix {
+    /// The checks whose fix command ran, sorted.
+    pub checks: Vec<String>,
+    /// The commit the fix produced, if the fix commands changed anything.
+    pub commit: Option<String>,
+    /// `git diff --shortstat` between the tree before the fix and the fix
+    /// commit; empty when nothing was committed.
+    pub diff_stat: String,
+    /// Whether every fix command exited 0 and something was committed.
+    pub ok: bool,
 }
 
 impl Verdict {
@@ -129,6 +149,7 @@ impl Verdict {
             checks: Vec::new(),
             state: AttemptState::Running,
             reason: String::new(),
+            known_fix: None,
         }
     }
 
@@ -713,6 +734,82 @@ async fn l1_l2(
     Ok(())
 }
 
+/// Whether every check `checks` says failed is one `[checks.fixable]`
+/// names, and if so, run its fix command: a deterministic step before any
+/// agent repair. `checks` is L1/L2 exactly as `l1_l2` left it, with every
+/// L0 row already true (the caller only reaches this once L0 has passed).
+/// `setup` never qualifies even if a repository's `[checks.fixable]` names
+/// it: a failed `setup` means the tree does not build, which stops every
+/// other check from even running, and no formatter or linter fixes that.
+/// `None` when nothing failed, or when a failure is not one of these
+/// commands' business; `Some` once the commands have run and, if they
+/// changed anything, been committed as Forge.
+async fn try_known_fix(s: &Subject<'_>, checks: &[CheckResult]) -> Result<Option<KnownFix>> {
+    if checks.iter().any(|c| !c.ok && c.level != "L1") {
+        return Ok(None);
+    }
+    let mut failing: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.ok && c.level == "L1")
+        .map(|c| c.name.as_str())
+        .collect();
+    if failing.is_empty() {
+        return Ok(None);
+    }
+    failing.sort();
+    failing.dedup();
+    if failing
+        .iter()
+        .any(|n| *n == "setup" || !s.cfg.fixable.contains_key(*n))
+    {
+        return Ok(None);
+    }
+    let before = crate::git::head(s.worktree).await?;
+    let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let mut ok = true;
+    for name in &failing {
+        let argv = &s.cfg.fixable[*name];
+        let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &[]).await;
+        ok &= r.ok;
+        s.report.emit(
+            s.task_id,
+            Event::Note {
+                text: &format!(
+                    "fix      {name} ({})",
+                    if r.ok { "ok" } else { "command failed" }
+                ),
+            },
+        );
+    }
+    let names: Vec<String> = failing.iter().map(|n| n.to_string()).collect();
+    let message = format!("fix: {}", names.join(", "));
+    let commit = crate::git::commit_all(s.worktree, &message).await?;
+    let diff_stat = match &commit {
+        Some(sha) => crate::git::diff_shortstat(s.worktree, &before, sha)
+            .await
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    s.report.emit(
+        s.task_id,
+        Event::Note {
+            text: &match &commit {
+                Some(sha) => format!("fix      committed {} as {}", names.join(", "), &sha[..8]),
+                None => format!(
+                    "fix      {} left nothing to commit; the checks will fail again",
+                    names.join(", ")
+                ),
+            },
+        },
+    );
+    Ok(Some(KnownFix {
+        checks: names,
+        ok: ok && commit.is_some(),
+        commit,
+        diff_stat,
+    }))
+}
+
 /// The L0 rows about where a change landed: protected paths, the
 /// directive's write scope, the verification namespace.
 /// `changed` is the branch's whole change, for the rules that guard the
@@ -876,6 +973,19 @@ pub async fn verify_directive(
                 // question priority over these rows.
                 if v.checks.iter().all(|c| c.ok) {
                     l1_l2(s, common.envelope.as_ref(), &mut v.checks).await?;
+                    // Deterministic repair before any agent gets involved: a
+                    // failure only in checks `[checks.fixable]` names is
+                    // fixed, committed, and the checks run once more.
+                    // Skipped when a question is pending: `decide` gives it
+                    // priority over the checks regardless, so a fix here
+                    // would be wasted work.
+                    if question.is_none()
+                        && let Some(fix) = try_known_fix(s, &v.checks).await?
+                    {
+                        v.checks.retain(|c| c.level != "L1" && c.level != "L2");
+                        l1_l2(s, common.envelope.as_ref(), &mut v.checks).await?;
+                        v.known_fix = Some(fix);
+                    }
                 }
             }
             Contract::Tests => {
@@ -1590,6 +1700,7 @@ mod tests {
     fn test_cfg() -> Config {
         Config {
             checks: std::collections::BTreeMap::new(),
+            fixable: std::collections::BTreeMap::new(),
             base_branch: "main".into(),
             push_remote: None,
             check_timeout_secs: 60,
@@ -1685,6 +1796,177 @@ mod tests {
         assert!(!row.ok);
     }
 
+    fn fixable_cfg(fixable: &[(&str, &[&str])]) -> Config {
+        let mut cfg = test_cfg();
+        cfg.checks.insert("fmt".into(), vec!["true".into()]);
+        cfg.checks.insert("setup".into(), vec!["true".into()]);
+        for (name, argv) in fixable {
+            cfg.fixable.insert(
+                name.to_string(),
+                argv.iter().map(|s| s.to_string()).collect(),
+            );
+        }
+        cfg
+    }
+
+    #[tokio::test]
+    async fn try_known_fix_runs_the_command_commits_and_reports_the_diff_stat() {
+        let (dir, _base) = commit_fixture().await;
+        std::fs::write(dir.path().join("fmt.txt"), "BAD\n").unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "."])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "--quiet", "-m", "bad fmt"])
+            .status()
+            .unwrap();
+        let cfg = fixable_cfg(&[("fmt", &["bash", "-c", "echo GOOD > fmt.txt"])]);
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: "",
+            start_sha: "",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: false,
+            plan_rows: true,
+        };
+        let checks = vec![
+            l0(Rule::CleanTree, true, String::new()),
+            CheckResult {
+                level: "L1".into(),
+                name: "fmt".into(),
+                ok: false,
+                ..Default::default()
+            },
+        ];
+        let fix = try_known_fix(&s, &checks)
+            .await
+            .unwrap()
+            .expect("fmt is declared fixable, so a fix must run");
+        assert!(fix.ok);
+        assert_eq!(fix.checks, vec!["fmt".to_string()]);
+        assert!(fix.commit.is_some());
+        assert!(!fix.diff_stat.is_empty(), "{fix:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("fmt.txt")).unwrap(),
+            "GOOD\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_known_fix_declines_when_a_failing_check_is_not_fixable() {
+        let (dir, _base) = commit_fixture().await;
+        let cfg = fixable_cfg(&[("fmt", &["bash", "-c", "echo GOOD > fmt.txt"])]);
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: "",
+            start_sha: "",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: false,
+            plan_rows: true,
+        };
+        let checks = vec![CheckResult {
+            level: "L1".into(),
+            name: "clippy".into(),
+            ok: false,
+            ..Default::default()
+        }];
+        assert!(try_known_fix(&s, &checks).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn try_known_fix_declines_a_failed_setup_even_if_named_fixable() {
+        let (dir, _base) = commit_fixture().await;
+        let cfg = fixable_cfg(&[("setup", &["bash", "-c", "true"])]);
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: "",
+            start_sha: "",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: false,
+            plan_rows: true,
+        };
+        let checks = vec![CheckResult {
+            level: "L1".into(),
+            name: "setup".into(),
+            ok: false,
+            ..Default::default()
+        }];
+        assert!(try_known_fix(&s, &checks).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn try_known_fix_declines_when_an_l0_row_also_failed() {
+        let (dir, _base) = commit_fixture().await;
+        let cfg = fixable_cfg(&[("fmt", &["bash", "-c", "echo GOOD > fmt.txt"])]);
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: "",
+            start_sha: "",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            report_from_git: false,
+            plan_rows: true,
+        };
+        let checks = vec![
+            l0(Rule::CleanTree, false, "dirty".into()),
+            CheckResult {
+                level: "L1".into(),
+                name: "fmt".into(),
+                ok: false,
+                ..Default::default()
+            },
+        ];
+        assert!(try_known_fix(&s, &checks).await.unwrap().is_none());
+    }
+
     #[test]
     fn l1_all_passed_needs_at_least_one_l1_row_and_none_failing() {
         assert!(!l1_all_passed(&[]), "no L1 rows at all is not a pass");
@@ -1764,6 +2046,7 @@ mod tests {
             }],
             state: AttemptState::ChecksFailed,
             reason: "L1 failed: test".into(),
+            known_fix: None,
         };
         let fb = feedback(&v, &Outcome::default(), 30);
         assert!(fb.contains("failing tests: TestA"), "{fb}");

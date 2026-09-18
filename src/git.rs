@@ -579,6 +579,16 @@ pub async fn diff_text(dir: &Path, from: &str, to: &str) -> Result<String> {
     Git::new(dir).raw(&["diff", from, to]).await
 }
 
+/// `git diff --shortstat`'s one line ("2 files changed, 3 insertions(+), 1
+/// deletion(-)"), for the diff stat a known fix's operation row carries.
+pub async fn diff_shortstat(dir: &Path, from: &str, to: &str) -> Result<String> {
+    Ok(Git::new(dir)
+        .line(&["diff", "--shortstat", from, to])
+        .await?
+        .trim()
+        .to_string())
+}
+
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(

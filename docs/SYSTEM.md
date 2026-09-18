@@ -199,7 +199,7 @@ graph TD
 
 **src/agent.rs** spawns the `claude` CLI (or `$FORGE2_CLAUDE_BIN`) under the sandbox and reads its stream-json output under a wall-clock timeout into an `Outcome` (cost, tokens, structured envelope, rate-limit samples); the raw stream is the attempt's log.
 
-**src/config.rs** parses two configs: the repository's `forge.toml` (declared checks, protected paths, hidden-test namespace, base branch/remote), read from the trusted base commit so the branch under test cannot change what it is verified against, and the operator's `FORGE2_HOME/config.toml` (budget, sandbox paths).
+**src/config.rs** parses two configs: the repository's `forge.toml` (declared checks and their fix commands under `[checks.fixable]`, protected paths, hidden-test namespace, base branch/remote), read from the trusted base commit so the branch under test cannot change what it is verified against, and the operator's `FORGE2_HOME/config.toml` (budget, sandbox paths).
 
 **src/ctx.rs** resolves `FORGE2_HOME` (`Paths`) and builds `Forge`, the shared process context (store handle, budget, sandbox, reporter) used across the CLI and engine.
 

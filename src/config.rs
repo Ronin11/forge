@@ -12,11 +12,26 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize, Default)]
 struct Raw {
     #[serde(default)]
-    checks: BTreeMap<String, Vec<String>>,
+    checks: ChecksRaw,
     #[serde(default)]
     defaults: Defaults,
     #[serde(default)]
     verify: VerifyRaw,
+}
+
+/// `[checks]`: the ordinary name -> argv entries, flattened, plus the one
+/// reserved sub-table `[checks.fixable]` naming, for a check the repository
+/// already declares, the command that fixes what it flags (e.g. `cargo fmt
+/// --all` for a `fmt` check that only checks). `#[serde(flatten)]` is what
+/// makes this split possible: serde tries the named field (`fixable`)
+/// first and folds every other key into the flattened map, so an ordinary
+/// check is never mistaken for the reserved table and vice versa.
+#[derive(Deserialize, Default)]
+struct ChecksRaw {
+    #[serde(default)]
+    fixable: BTreeMap<String, Vec<String>>,
+    #[serde(flatten)]
+    checks: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -42,6 +57,11 @@ struct Defaults {
 
 pub struct Config {
     pub checks: BTreeMap<String, Vec<String>>,
+    /// `[checks.fixable]`: for a check named here, the command that fixes
+    /// what it flags, run by the engine before any agent repair when that
+    /// check is the only thing an attempt failed (see docs/ACTIONS.md).
+    /// Every key is one of `checks`' own, checked in `parse`.
+    pub fixable: BTreeMap<String, Vec<String>>,
     pub base_branch: String,
     /// Remote to push succeeded branches to; `None` when the repo has no
     /// such remote or `push = false`.
@@ -87,9 +107,17 @@ pub fn is_protected(protected: &[String], path: &str) -> bool {
 
 async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result<Config> {
     let raw: Raw = toml::from_str(text).with_context(|| format!("parsing {what}"))?;
-    for (name, argv) in &raw.checks {
+    for (name, argv) in &raw.checks.checks {
         if argv.is_empty() {
             bail!("check `{name}` has an empty command");
+        }
+    }
+    for (name, argv) in &raw.checks.fixable {
+        if argv.is_empty() {
+            bail!("checks.fixable.{name} has an empty command");
+        }
+        if !raw.checks.checks.contains_key(name) {
+            bail!("checks.fixable.{name}: no such check `{name}` declared in [checks]");
         }
     }
     let base_branch = match raw.defaults.base_branch {
@@ -105,7 +133,8 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
         None
     };
     Ok(Config {
-        checks: raw.checks,
+        checks: raw.checks.checks,
+        fixable: raw.checks.fixable,
         base_branch,
         push_remote,
         check_timeout_secs: raw.defaults.check_timeout_secs.unwrap_or(600),
@@ -790,6 +819,66 @@ mod tests {
         };
         assert!(err.contains(".forge/forge.toml"), "{err}");
         assert!(err.contains("forge.toml"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn fixable_is_split_from_the_ordinary_checks_and_exposed_on_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[defaults]\nbase_branch = \"main\"\n\
+             [checks]\n\
+             fmt = [\"cargo\", \"fmt\", \"--all\", \"--check\"]\n\
+             clippy = [\"cargo\", \"clippy\"]\n\
+             \n\
+             [checks.fixable]\n\
+             fmt = [\"cargo\", \"fmt\", \"--all\"]\n\
+             clippy = [\"cargo\", \"clippy\", \"--fix\"]\n",
+        )
+        .unwrap();
+        let c = load_working(repo).await.unwrap();
+        assert_eq!(
+            c.checks.keys().collect::<Vec<_>>(),
+            vec!["clippy", "fmt"],
+            "the fixable sub-table must not be mistaken for a check named `fixable`"
+        );
+        assert_eq!(c.fixable["fmt"], vec!["cargo", "fmt", "--all"]);
+        assert_eq!(c.fixable["clippy"], vec!["cargo", "clippy", "--fix"]);
+    }
+
+    #[tokio::test]
+    async fn fixable_naming_an_undeclared_check_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[checks]\nfmt = [\"cargo\", \"fmt\", \"--check\"]\n\
+             [checks.fixable]\nclippy = [\"cargo\", \"clippy\", \"--fix\"]\n",
+        )
+        .unwrap();
+        let err = match load_working(repo).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("clippy"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn fixable_with_an_empty_command_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[checks]\nfmt = [\"cargo\", \"fmt\", \"--check\"]\n\
+             [checks.fixable]\nfmt = []\n",
+        )
+        .unwrap();
+        let err = match load_working(repo).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("fmt"), "{err}");
     }
 
     #[test]
