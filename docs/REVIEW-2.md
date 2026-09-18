@@ -203,7 +203,7 @@ test extended; then store.rs split into `store/{tasks,attempts,jobs,
 projects,deploys,stats,schema}.rs` with one `impl Store` block per
 file and no behaviour change, one file per task.
 
-**Stage 3. cli.rs verbs into modules (Forge, after 1). Queued 2026-09-18 as five chained tasks (431-435).** One verb per
+**Stage 3. cli.rs verbs into modules (Forge, after 1). Queued 2026-09-18 as five chained tasks (431-435). Done 2026-09-18 (31bf278, 5fa266b, 10c1bcc, 71d7cf8): `intake_accept`, `integrate`, `initiative_new`'s validation and `project_deploy_add/set` moved out; a `#[cfg(test)]` in cli.rs now measures every `fn` body and fails on any over 80 lines outside a named allowlist (`main`; the renderers `show`, `trace`, `initiative_report`, `log`, `list_workflows`, `stats`, `quality_stats`; `land_task`, which lands a verified branch and reports every outcome) — a function may leave the list, nothing new joins it.** One verb per
 task: `intake_accept` into intake.rs as `accept(f, task) -> Project`;
 `integrate` onto landing.rs; `initiative_new`'s validation into
 queue.rs beside `parse_initiative_file`; `project_deploy_add/set` into
