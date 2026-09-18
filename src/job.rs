@@ -403,6 +403,58 @@ pub async fn start(
     Ok(job_id)
 }
 
+/// Start a job the worker's schedule tick (`src/worker.rs`) found due
+/// (docs/JOBS.md, "Triggers"): always queued, never run inline, with
+/// `trigger_kind = "schedule"` and `trigger_ref` the due slot's unix
+/// second — the mark `store::last_scheduled_job` reads back so the same
+/// slot is never started twice. Shares `start`'s `per_day` accounting, so
+/// a schedule obeys the same cap a manual trigger does.
+pub async fn start_scheduled(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+    wf: &workflows::Workflow,
+    source: workflows::JobSource,
+    slot: i64,
+) -> Result<i64> {
+    let started_at = unix_now();
+    if let Some(l) = wf.limits.as_ref()
+        && l.per_day > 0
+    {
+        let n = f
+            .store
+            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
+        if n >= i64::from(l.per_day) {
+            anyhow::bail!(
+                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}",
+                l.per_day
+            );
+        }
+    }
+    let job = Job {
+        id: 0,
+        project: project.to_string(),
+        workflow: workflow.to_string(),
+        workflow_hash: wf.hash.clone(),
+        landed_sha: landed_sha.to_string(),
+        trigger_kind: workflows::TriggerOn::Schedule.as_str().to_string(),
+        trigger_ref: slot.to_string(),
+        state: JobState::Queued,
+        workflow_source: source.as_str().to_string(),
+        dry_run: false,
+        started_at,
+        finished_at: None,
+        cost_usd: None,
+        verdict_json: "[]".to_string(),
+    };
+    let job_id = f.store.create_job(&job)?;
+    let idir = input_dir(f, job_id);
+    std::fs::create_dir_all(&idir)?;
+    std::fs::write(idir.join("input.json"), "{}")?;
+    Ok(job_id)
+}
+
 /// Run a job's steps and assertions now, recording everything as it goes,
 /// and `finish_job` with the final state, cost and verdict.
 #[allow(clippy::too_many_arguments)]

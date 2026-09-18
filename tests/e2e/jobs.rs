@@ -1107,3 +1107,88 @@ on_failure = "drop"
     let o = start(&["--now", "--dry-run"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// The worker's schedule trigger (docs/JOBS.md, "Triggers"): a run
+/// workflow committed to a project's own repository with `[trigger] on =
+/// "schedule"` and a `cron` that matches every minute fires on its own —
+/// `forge work --once` starts it with no `forge job start` at all, exactly
+/// once, recorded with `trigger_kind = "schedule"` and `trigger_ref` the
+/// slot's unix second. Running the worker again right away, still inside
+/// the same minute, does not start a second job for it.
+#[test]
+fn a_schedule_trigger_starts_exactly_one_job_via_forge_work_once() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/actions/noop.toml"),
+        "name = \"noop\"\nkind = \"operation\"\ndescription = \"always succeeds; nothing to run\"\nrun = [\"true\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/tick.toml"),
+        r#"name = "tick"
+kind = "run"
+description = "fires every minute, for e2e coverage of the schedule trigger"
+
+steps = [
+  { action = "noop" },
+]
+
+[trigger]
+on = "schedule"
+cron = "* * * * *"
+
+[assert]
+ok = ["true"]
+"#,
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "add the tick automation"]);
+
+    assert!(
+        e.forge("ok.sh", &["job", "list", "--json"])
+            .stdout
+            .starts_with(b"[]")
+    );
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["project"], "equitizr");
+    assert_eq!(rows[0]["workflow"], "tick");
+    assert_eq!(rows[0]["trigger_kind"], "schedule");
+    let trigger_ref = rows[0]["trigger_ref"].as_str().unwrap();
+    let slot: i64 = trigger_ref.parse().unwrap();
+    assert_eq!(slot % 60, 0, "the slot is a minute boundary: {trigger_ref}");
+
+    // Running the worker again right away, still inside the same minute,
+    // finds nothing new due: the same slot never starts a second job.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1, "{rows:?}");
+}

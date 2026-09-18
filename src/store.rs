@@ -1409,6 +1409,16 @@ CREATE INDEX deploys_task ON deploys(task_id, id);
 CREATE INDEX backlog_project ON backlog(project, id);
 CREATE INDEX project_repos_project ON project_repos(project);
 ",
+    // A schedule trigger's slot (docs/JOBS.md, "Triggers"): one job per
+    // project, workflow and slot, so a tick that reconsiders an already-
+    // started slot (a second worker pass before the next one comes due, a
+    // restart replaying the same tick) fails the insert instead of
+    // starting a second job for it. Manual and other triggers share the
+    // same `trigger_ref` column but are never unique on it, so the index
+    // is partial.
+    "
+CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'schedule';
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -4079,6 +4089,20 @@ impl Store {
         Ok(self.lock().query_row(
             "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND started_at >= ?3",
             params![project, workflow, since],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The latest slot (`Job::trigger_ref`, a unix second) `project`'s
+    /// `workflow` has already started a `schedule`-triggered job for, or
+    /// `None` if it never has: what the worker's schedule tick
+    /// (`src/worker.rs`) compares a cron's due slots against so the same
+    /// slot never starts twice and a restart cannot double-fire (docs/JOBS.md,
+    /// "Triggers").
+    pub fn last_scheduled_job(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
+        Ok(self.lock().query_row(
+            "SELECT MAX(CAST(trigger_ref AS INTEGER)) FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind='schedule'",
+            params![project, workflow],
             |r| r.get(0),
         )?)
     }

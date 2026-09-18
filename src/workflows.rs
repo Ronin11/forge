@@ -12,9 +12,11 @@
 //! See docs/ACTIONS.md and docs/WORKFLOWS.md.
 
 use anyhow::{Context, Result, bail};
+use croner::Cron;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// Names the engine inserts itself; a user operation may not shadow them.
 pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "land", "clone"];
@@ -234,7 +236,7 @@ impl Trigger {
 #[serde(deny_unknown_fields)]
 struct TriggerRaw {
     on: TriggerOn,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_cron")]
     cron: Option<String>,
     #[serde(default)]
     contact: Option<String>,
@@ -242,6 +244,23 @@ struct TriggerRaw {
     name: Option<String>,
     #[serde(default)]
     r#type: Option<String>,
+}
+
+/// Parses `cron` with `croner` at load time, so a schedule trigger that can
+/// never fire is refused the same way an unknown `on` value is: as a TOML
+/// deserialize error, with the file and the line (docs/JOBS.md, "Triggers").
+/// The worker's schedule tick (`src/worker.rs`) can then assume every
+/// `Trigger::cron` it sees already parses.
+fn deserialize_cron<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let cron: Option<String> = Option::deserialize(deserializer)?;
+    if let Some(expr) = &cron {
+        Cron::from_str(expr)
+            .map_err(|e| serde::de::Error::custom(format!("invalid cron {expr:?}: {e}")))?;
+    }
+    Ok(cron)
 }
 
 /// A side effect on the world an operation performs (docs/JOBS.md,
@@ -2377,6 +2396,21 @@ on_failure = "ask:contact"
         assert!(err.contains("carrier-pigeon.toml"), "{err}");
         assert!(err.contains("line"), "{err}");
         assert!(err.contains("unknown variant"), "{err}");
+    }
+
+    #[test]
+    fn an_invalid_cron_is_refused_at_parse_time_with_the_file_and_line() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "off-the-rails.toml",
+            "name = \"off-the-rails\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"schedule\"\ncron = \"not a cron\"\n",
+        );
+        let err = get(dir.path(), "off-the-rails").unwrap_err().to_string();
+        assert!(err.contains("off-the-rails.toml"), "{err}");
+        assert!(err.contains("line"), "{err}");
+        assert!(err.contains("invalid cron"), "{err}");
     }
 
     #[test]
