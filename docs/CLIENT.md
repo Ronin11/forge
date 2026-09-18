@@ -163,6 +163,23 @@ not where new fields get added.
 exception that is explicitly time-limited: they are kept for one
 release only and a client should already be reading the named fields.
 
+## Fixtures
+
+Three of the documents above are checked in as literal examples, not just
+prose: `tests/fixtures/job.json` (`forge job show --json`),
+`tests/fixtures/deploy.json` (`forge deploy log --json`), and
+`tests/fixtures/portal.json` (`forge project view --json`, the customer
+portal document). Each was captured once from real `forge` output on a
+throwaway project (see `capture_job_deploy_and_portal_fixtures` in
+`tests/e2e/fixtures.rs`, `#[ignore]`d so it only regenerates them when a
+person deliberately reruns it and reviews the diff) and is parsed by
+`forge-client`'s own `JobDoc`/`Deploy`/`PortalDoc` types in that same
+file's other tests. A shape drift between what the CLI actually prints
+and what those types expect fails a test, the same way `TaskRow`,
+`Snapshot` and `TraceDoc` are checked against live `forge` output (not a
+checked-in file) by `forge_client_parses_trace_snapshot_log_and_requests`
+in `tests/e2e/listing.rs`.
+
 ## JSON documents
 
 ### `TaskRow`

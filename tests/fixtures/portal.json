@@ -1,0 +1,62 @@
+{
+  "project": "equitizr",
+  "purpose": "quote requests turned into automations",
+  "deploy_targets": [
+    {
+      "name": "prod",
+      "where_it_runs": "local",
+      "last_deployed_at": 1789769299,
+      "check_ok": false,
+      "look_ok": null,
+      "screenshot": null
+    }
+  ],
+  "run_workflows": [
+    {
+      "name": "nightly-sync",
+      "jobs": [
+        {
+          "started_at": 1789769299,
+          "state": "ok",
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "initiatives": [
+    {
+      "outcome": "quoting takes one click",
+      "state": "waiting on you",
+      "pieces": 1
+    }
+  ],
+  "initiatives_more": 0,
+  "questions": [
+    {
+      "task_id": 2,
+      "text": "which price sheet should this pull from?"
+    }
+  ],
+  "landed": [
+    {
+      "text": "Make the quote text say 'usually same day'.",
+      "pieces": null,
+      "landed_at": 2
+    }
+  ],
+  "landed_more": 0,
+  "brief": {
+    "where_it_runs": "local, deploy-command",
+    "workflows": [
+      "quote by photo: starts when a photo comes in. Takes in a photo and produces a quote. Involves none. Today, nothing. Working would look like: a quote sent. Must not change: billing.",
+      "weekly invoice: starts when friday. Takes in jobs done and produces an invoice. Involves none. Today, nothing. Working would look like: invoice sent. Must not change: billing."
+    ]
+  },
+  "backlog": [
+    {
+      "id": 1,
+      "text": "send a weekly summary",
+      "created_at": 1789769299
+    }
+  ]
+}

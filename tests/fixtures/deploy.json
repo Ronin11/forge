@@ -1,0 +1,34 @@
+[
+  {
+    "id": 2,
+    "project": "equitizr",
+    "target": "prod",
+    "sha": "cdcce8adba0629506cf8e6c6e8f3cb56479ce850",
+    "started_at": 1789769299,
+    "finished_at": 1789769299,
+    "check_ok": false,
+    "check_output": "copied . to /tmp/.tmppFzsJ1/site (local)\nbad\n",
+    "rolled_back_to": "290e9b86dcc6b6babedb4c0b6e273f7da48bf2e9",
+    "reason": "the deploy of cdcce8ad failed its check and was rolled back to 290e9b86",
+    "smoke_ok": null,
+    "smoke_json": null,
+    "look_ok": null,
+    "look_json": null
+  },
+  {
+    "id": 1,
+    "project": "equitizr",
+    "target": "prod",
+    "sha": "290e9b86dcc6b6babedb4c0b6e273f7da48bf2e9",
+    "started_at": 1789769299,
+    "finished_at": 1789769299,
+    "check_ok": true,
+    "check_output": "copied . to /tmp/.tmppFzsJ1/site (local)\ngood\n",
+    "rolled_back_to": null,
+    "reason": "",
+    "smoke_ok": null,
+    "smoke_json": null,
+    "look_ok": null,
+    "look_json": null
+  }
+]

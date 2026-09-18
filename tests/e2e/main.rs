@@ -7,6 +7,7 @@ mod support;
 mod concierge;
 mod contracts;
 mod deploy;
+mod fixtures;
 mod initiatives;
 mod intake;
 mod jobs;

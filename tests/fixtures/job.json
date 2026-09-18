@@ -1,0 +1,67 @@
+{
+  "id": 1,
+  "project": "equitizr",
+  "workflow": "nightly-sync",
+  "workflow_hash": "c9e80cb91ca4e5f8c3a49332f7aa06f9efc77fb5",
+  "landed_sha": "9c2e746dbe5b9a0c06fcf74680e2cba4fd3c38fd",
+  "trigger_kind": "manual",
+  "trigger_ref": "",
+  "state": "ok",
+  "workflow_source": "catalog",
+  "dry_run": false,
+  "started_at": 1789769299,
+  "finished_at": 1789769299,
+  "cost_usd": 0.0,
+  "verdict_json": "[{\"level\":\"L0\",\"name\":\"effects\",\"ok\":true,\"exit\":0,\"ms\":1,\"timed_out\":false,\"tail\":\"\",\"failing_tests\":[]},{\"level\":\"L0\",\"name\":\"budget\",\"ok\":true,\"exit\":null,\"ms\":0,\"timed_out\":false,\"tail\":\"$0.00 of $1.00\",\"failing_tests\":[]}]",
+  "due_at": null,
+  "steps": [
+    {
+      "id": 1,
+      "job_id": 1,
+      "seq": 0,
+      "action": "write-file",
+      "kind": "operation",
+      "provider": "",
+      "model": "",
+      "cost_usd": 0.0,
+      "started_at": 1789769299,
+      "finished_at": 1789769299,
+      "exit_code": 0,
+      "output_ref": ""
+    },
+    {
+      "id": 2,
+      "job_id": 1,
+      "seq": 1,
+      "action": "append-row",
+      "kind": "operation",
+      "provider": "",
+      "model": "",
+      "cost_usd": 0.0,
+      "started_at": 1789769299,
+      "finished_at": 1789769299,
+      "exit_code": 0,
+      "output_ref": ""
+    }
+  ],
+  "effects": [
+    {
+      "id": 1,
+      "job_id": 1,
+      "seq": 0,
+      "kind": "file",
+      "target": "out.txt",
+      "summary": "wrote 11 byte(s) to out.txt",
+      "dry_run": false
+    },
+    {
+      "id": 2,
+      "job_id": 1,
+      "seq": 1,
+      "kind": "row",
+      "target": "book.csv",
+      "summary": "appended a row to book.csv",
+      "dry_run": false
+    }
+  ]
+}
