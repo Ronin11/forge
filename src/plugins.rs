@@ -693,13 +693,16 @@ impl Supervisor {
                     _ = tokio::time::sleep(Duration::from_secs(RECONCILE_SECS)) => {}
                     _ = stop_rx.changed() => {}
                 }
-                if *stop_rx.borrow() {
-                    for (_, (ptx, handle, _)) in std::mem::take(&mut running) {
-                        let _ = ptx.send(true);
-                        handle.await.ok();
-                    }
-                    break;
-                }
+            }
+            // Every path out of the loop above lands here with `running`
+            // possibly non-empty: a plugin spawned earlier in the same tick
+            // a stop was noticed (e.g. the replacement half of a restart
+            // that raced the drain) must never be left running past
+            // `Supervisor::stop`, so drain it once, unconditionally, rather
+            // than only on the tick that first observes the stop signal.
+            for (_, (ptx, handle, _)) in running {
+                let _ = ptx.send(true);
+                handle.await.ok();
             }
         });
         Supervisor {

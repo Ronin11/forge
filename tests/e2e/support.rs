@@ -3,7 +3,7 @@
 
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 pub struct Env {
@@ -12,6 +12,82 @@ pub struct Env {
     pub repo: PathBuf,
     pub origin: PathBuf,
     no_sandbox: bool,
+}
+
+/// A spawned `forge work` (or other long-lived process a test drives by
+/// hand): SIGTERM, then SIGKILL if it outlives a grace period, and reaped
+/// on drop. Every test that spawns a worker should hold one of these
+/// rather than a bare `Child`, so a failing assertion between spawn and an
+/// explicit stop can never leave the process running past the test (five
+/// idle `forge work` processes were once found still running after an e2e
+/// binary had already exited, one per test that only stopped its worker on
+/// the success path).
+pub struct Worker(Option<Child>);
+
+impl Worker {
+    pub fn spawn(cmd: &mut Command) -> Worker {
+        Worker(Some(cmd.spawn().expect("spawn worker")))
+    }
+
+    pub fn id(&self) -> u32 {
+        self.0.as_ref().expect("worker already taken").id()
+    }
+
+    pub fn signal(&self, sig: libc::c_int) {
+        unsafe {
+            libc::kill(self.id() as i32, sig);
+        }
+    }
+
+    pub fn wait(&mut self) -> ExitStatus {
+        self.0
+            .as_mut()
+            .expect("worker already taken")
+            .wait()
+            .expect("wait worker")
+    }
+
+    /// SIGTERM and wait for a clean exit: the shape most tests want.
+    pub fn stop(&mut self) -> ExitStatus {
+        self.signal(libc::SIGTERM);
+        self.wait()
+    }
+
+    /// SIGTERM and wait for a clean exit, returning captured output.
+    pub fn stop_with_output(mut self) -> Output {
+        self.signal(libc::SIGTERM);
+        self.0
+            .take()
+            .expect("worker already taken")
+            .wait_with_output()
+            .expect("wait worker")
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let Some(child) = self.0.as_mut() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> String {

@@ -8,19 +8,7 @@
 use crate::support::*;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
 use std::time::Duration;
-
-/// SIGTERM, not SIGKILL: the worker's own shutdown path (src/worker.rs)
-/// only stops its supervised plugins gracefully when asked to via a
-/// signal it traps, matching how the rest of this suite stops a
-/// background `forge work` (tests/e2e/plugins.rs).
-fn stop_worker(child: &mut Child) {
-    let _ = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status();
-    let _ = child.wait();
-}
 
 fn enable_statusline(e: &Env) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/statusline");
@@ -83,13 +71,12 @@ fn a_quiet_home_is_idle_and_a_running_task_moves_through_working_to_a_well_forme
     let fake_home = tempfile::tempdir().unwrap();
     let path = status_path(fake_home.path());
 
-    let mut child = e
-        .cmd("ok.sh")
-        .env("HOME", fake_home.path())
-        .env("FAKE_SLEEP", "1")
-        .args(["work", "--poll", "1"])
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("HOME", fake_home.path())
+            .env("FAKE_SLEEP", "1")
+            .args(["work", "--poll", "1"]),
+    );
 
     assert!(
         wait_until(|| path.exists(), Duration::from_secs(10)),
@@ -130,7 +117,7 @@ fn a_quiet_home_is_idle_and_a_running_task_moves_through_working_to_a_well_forme
         e.task(id)
     );
 
-    stop_worker(&mut child);
+    worker.stop();
 }
 
 #[test]
@@ -143,12 +130,9 @@ fn a_blocked_task_moves_the_state_to_attention() {
 
     let id = e.add(&[]);
 
-    let mut child = e
-        .cmd("needsinput.sh")
-        .env("HOME", fake_home.path())
-        .args(["work"])
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("needsinput.sh").env("HOME", fake_home.path()).args(["work"]),
+    );
 
     assert!(
         wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(15)),
@@ -165,7 +149,7 @@ fn a_blocked_task_moves_the_state_to_attention() {
     assert_eq!(doc.questions, 1);
     assert!(!doc.failed_recently);
 
-    stop_worker(&mut child);
+    worker.stop();
 }
 
 /// A task can sit queued or run long enough that its total lifetime
@@ -194,12 +178,7 @@ fn a_task_created_long_ago_but_finished_recently_still_counts_as_recently_failed
     let fake_home = tempfile::tempdir().unwrap();
     let path = status_path(fake_home.path());
 
-    let mut child = e
-        .cmd("ok.sh")
-        .env("HOME", fake_home.path())
-        .args(["work"])
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(e.cmd("ok.sh").env("HOME", fake_home.path()).args(["work"]));
 
     assert!(
         wait_until(|| state_is(&path, "attention"), Duration::from_secs(15)),
@@ -211,5 +190,5 @@ fn a_task_created_long_ago_but_finished_recently_still_counts_as_recently_failed
     assert!(doc.failed_recently);
     assert_eq!(doc.questions, 0, "nothing is blocked in this scenario");
 
-    stop_worker(&mut child);
+    worker.stop();
 }

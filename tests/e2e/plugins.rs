@@ -249,11 +249,7 @@ fn plugin_restart_reloads_config_without_touching_the_enabled_flag() {
         .join("reloader")
         .join("observed");
 
-    let mut worker = e
-        .cmd("ok.sh")
-        .args(["work", "--poll", "1"])
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--poll", "1"]));
 
     assert!(
         wait_until(
@@ -289,10 +285,7 @@ fn plugin_restart_reloads_config_without_touching_the_enabled_flag() {
         "restart must replace the process, not reuse it"
     );
 
-    let _ = Command::new("kill")
-        .args(["-TERM", &worker.id().to_string()])
-        .status();
-    let _ = worker.wait();
+    worker.stop();
 }
 
 /// `forge plugin install` refuses a name already installed, and
@@ -613,12 +606,7 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut child = e
-        .cmd("ok.sh")
-        .env("PATH", path)
-        .args(["work", "--poll", "1"])
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(e.cmd("ok.sh").env("PATH", path).args(["work", "--poll", "1"]));
 
     // Wait on the plugin's own `filed` state file rather than the tasks
     // table: `intake_once` writes it only after both `forge add` and
@@ -686,8 +674,7 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         "expected DONE_LABEL applied: {calls_text}"
     );
 
-    let _ = child.kill();
-    let _ = child.wait();
+    worker.stop();
 }
 
 /// The Signal plugin end to end, against a stub `signal-cli` early on
@@ -775,13 +762,12 @@ fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() 
     let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
     let stderr_path = e.home.join("worker-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).unwrap();
-    let mut child = e
-        .cmd("needsinput.sh")
-        .env("PATH", path)
-        .args(["work"])
-        .stderr(stderr_file)
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("needsinput.sh")
+            .env("PATH", path)
+            .args(["work"])
+            .stderr(stderr_file),
+    );
 
     assert!(
         wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
@@ -846,11 +832,7 @@ fn the_signal_plugin_notifies_a_blocked_task_and_files_an_answer_from_a_reply() 
         "expected the answer in the re-queued task's text: {task_text}"
     );
 
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    let _ = child.wait();
+    worker.stop();
 }
 
 /// Intake's addressee mechanism (docs/INTAKE.md), end to end against the
@@ -948,13 +930,12 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
     let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
     let stderr_path = e.home.join("worker-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).unwrap();
-    let mut child = e
-        .cmd("needsinput-to.sh")
-        .env("PATH", path)
-        .args(["work"])
-        .stderr(stderr_file)
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("needsinput-to.sh")
+            .env("PATH", path)
+            .args(["work"])
+            .stderr(stderr_file),
+    );
 
     assert!(
         wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
@@ -1046,11 +1027,7 @@ fn the_signal_plugin_delivers_an_addressed_question_to_its_contact_and_records_h
     assert_eq!(answered_by, "alice");
     assert_eq!(answered_for.as_deref(), Some("alice"));
 
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    let _ = child.wait();
+    worker.stop();
 }
 
 fn add_intake(e: &Env, task: &str) -> i64 {
@@ -1181,16 +1158,15 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
     let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
     let stderr_path = e.home.join("worker-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).unwrap();
-    let mut child = e
-        .cmd("interviewer-confirmed.sh")
-        .env("PATH", path)
-        // The default 30s idle poll would outlast the wait below: after
-        // nate answers, the worker must notice the newly requeued task
-        // itself, not just claim the one already queued at startup.
-        .args(["work", "--poll", "1"])
-        .stderr(stderr_file)
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("interviewer-confirmed.sh")
+            .env("PATH", path)
+            // The default 30s idle poll would outlast the wait below: after
+            // nate answers, the worker must notice the newly requeued task
+            // itself, not just claim the one already queued at startup.
+            .args(["work", "--poll", "1"])
+            .stderr(stderr_file),
+    );
 
     // Turn 0: the interviewer blocks, addressed to nate, asking him to
     // confirm the brief.
@@ -1295,11 +1271,7 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
         "each mint should be a fresh token: {after_portal:?}"
     );
 
-    Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    let _ = child.wait();
+    worker.stop();
 }
 
 /// The Signal plugin routes through the concierge (docs/INTAKE.md, "The
