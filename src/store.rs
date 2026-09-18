@@ -1656,6 +1656,104 @@ fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     })
 }
 
+const OP_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "seq",
+    "name",
+    "kernel",
+    "started_at",
+    "ms",
+    "ok",
+    "exit",
+    "detail",
+    "attempt_id",
+    "output",
+];
+
+fn op_from_row(r: &Row) -> rusqlite::Result<Op> {
+    Ok(Op {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        seq: r.get("seq")?,
+        name: r.get("name")?,
+        kernel: r.get::<_, i64>("kernel")? != 0,
+        started_at: r.get("started_at")?,
+        ms: r.get("ms")?,
+        ok: r.get::<_, i64>("ok")? != 0,
+        exit: r.get("exit")?,
+        detail: r.get("detail")?,
+        attempt_id: r.get("attempt_id")?,
+        output: r.get("output")?,
+    })
+}
+
+const DECISION_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "repo",
+    "question",
+    "answer",
+    "created_at",
+    "answered_by",
+    "citations",
+    "retry_id",
+    "answered_for",
+];
+
+fn decision_from_row(r: &Row) -> rusqlite::Result<Decision> {
+    Ok(Decision {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        repo: r.get("repo")?,
+        question: r.get("question")?,
+        answer: r.get("answer")?,
+        created_at: r.get("created_at")?,
+        answered_by: r.get("answered_by")?,
+        citations: r.get("citations")?,
+        retry_id: r.get("retry_id")?,
+        answered_for: r.get("answered_for")?,
+    })
+}
+
+const TASK_REF_COLUMNS: &[&str] = &["id", "task_id", "kind", "url", "label", "by", "created_at"];
+
+fn task_ref_from_row(r: &Row) -> rusqlite::Result<TaskRef> {
+    Ok(TaskRef {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        kind: r.get("kind")?,
+        url: r.get("url")?,
+        label: r.get("label")?,
+        by: r.get("by")?,
+        created_at: r.get("created_at")?,
+    })
+}
+
+const ASSESSMENT_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "score",
+    "findings_json",
+    "model",
+    "provider",
+    "cost_usd",
+    "created_at",
+];
+
+fn assessment_from_row(r: &Row) -> rusqlite::Result<Assessment> {
+    Ok(Assessment {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        score: r.get("score")?,
+        findings_json: r.get("findings_json")?,
+        model: r.get("model")?,
+        provider: r.get("provider")?,
+        cost_usd: r.get("cost_usd")?,
+        created_at: r.get("created_at")?,
+    })
+}
+
 /// `id` and every task it retries, walking up through `retry_of` to the root.
 fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
     let mut stmt = conn.prepare(
@@ -1689,7 +1787,14 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
                 .query_row(
                     "SELECT state, reason, land, landed_sha FROM tasks WHERE id=?1",
                     params![d],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| {
+                        Ok((
+                            r.get("state")?,
+                            r.get("reason")?,
+                            r.get("land")?,
+                            r.get("landed_sha")?,
+                        ))
+                    },
                 )
                 .optional()?;
             let Some((state, reason, land, landed_sha)) = row else {
@@ -1732,7 +1837,7 @@ fn repair_cost_cache_query(c: &Connection, task_id: i64) -> Result<Option<(f64, 
     Ok(c.query_row(
         "SELECT repair_cost, computed_at FROM task_repair_cost WHERE task_id = ?1",
         params![task_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get("repair_cost")?, r.get("computed_at")?)),
     )
     .optional()?)
 }
@@ -1770,7 +1875,7 @@ fn line_overlap_cache_query(
     Ok(c.query_row(
         "SELECT overlap_lines, removed_lines FROM line_overlap_cache WHERE t_sha = ?1 AND l_sha = ?2",
         params![t_sha, l_sha],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get("overlap_lines")?, r.get("removed_lines")?)),
     )
     .optional()?)
 }
@@ -1797,10 +1902,12 @@ fn set_line_overlap_cache_query(
 /// `by_role` groups a landed task's delayed cost is attributed to.
 fn code_attempt_groups_query(c: &Connection, task_id: i64) -> Result<Vec<(String, String)>> {
     let mut stmt = c.prepare(
-        "SELECT DISTINCT provider, COALESCE(json_extract(inputs_json, '$.model'), '')
+        "SELECT DISTINCT provider, COALESCE(json_extract(inputs_json, '$.model'), '') AS model
          FROM attempts WHERE task_id = ?1 AND step = 'code'",
     )?;
-    let rows = stmt.query_map(params![task_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = stmt.query_map(params![task_id], |r| {
+        Ok((r.get("provider")?, r.get("model")?))
+    })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -1810,7 +1917,13 @@ fn churn_cache_query(c: &Connection, task_id: i64) -> Result<Option<(i64, i64, i
     Ok(c.query_row(
         "SELECT added_lines, churned_lines, computed_at FROM task_churn WHERE task_id = ?1",
         params![task_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| {
+            Ok((
+                r.get("added_lines")?,
+                r.get("churned_lines")?,
+                r.get("computed_at")?,
+            ))
+        },
     )
     .optional()?)
 }
@@ -2077,13 +2190,21 @@ impl Store {
     pub fn block_dependents(&self) -> Result<Vec<(i64, i64, String)>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
+            "SELECT t.id AS t_id, d.id AS d_id, d.state AS d_state, d.reason AS d_reason
+             FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
              WHERE t.state='queued' AND d.state IN ('failed', 'unverified', 'withdrawn')
                 OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.landed_sha = '' AND d.finished_at IS NOT NULL)
              ORDER BY t.id, d.id",
         )?;
         let rows: Vec<(i64, i64, String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get("t_id")?,
+                    r.get("d_id")?,
+                    r.get("d_state")?,
+                    r.get("d_reason")?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
         for (t, d, state, reason) in rows {
@@ -2112,7 +2233,9 @@ impl Store {
              WHERE j.value = ?1 AND t.state IN ('queued', 'blocked') AND t.id != ?2",
         )?;
         let rows: Vec<(i64, String)> = stmt
-            .query_map(params![old, new], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map(params![old, new], |r| {
+                Ok((r.get("id")?, r.get("after_json")?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut moved = Vec::new();
         for (id, after_json) in rows {
@@ -2144,7 +2267,7 @@ impl Store {
                 "SELECT t.id, t.after_json FROM tasks t, json_each(t.after_json) j
                  WHERE j.value = ?1 AND t.state = 'blocked' AND t.reason LIKE 'waits on task%'",
             )?;
-            stmt.query_map(params![dep], |r| Ok((r.get(0)?, r.get(1)?)))?
+            stmt.query_map(params![dep], |r| Ok((r.get("id")?, r.get("after_json")?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         release_or_reblock(&c, candidates)
@@ -2162,7 +2285,7 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT id, after_json FROM tasks WHERE state = 'blocked' AND reason LIKE 'waits on task%'",
             )?;
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            stmt.query_map([], |r| Ok((r.get("id")?, r.get("after_json")?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         release_or_reblock(&c, candidates)
@@ -2184,17 +2307,17 @@ impl Store {
             "WITH RECURSIVE down(id) AS (
                SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
              SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
-                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0)
+                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0) AS cost
              FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
         )?;
         let rows = stmt.query_map(params![root], |r| {
             Ok(LineageRow {
-                id: r.get(0)?,
-                parent: r.get(1)?,
-                state: r.get(2)?,
-                reason: r.get(3)?,
-                workflow: r.get(4)?,
-                cost: r.get(5)?,
+                id: r.get("id")?,
+                parent: r.get("retry_of")?,
+                state: r.get("state")?,
+                reason: r.get("reason")?,
+                workflow: r.get("workflow")?,
+                cost: r.get("cost")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2246,7 +2369,7 @@ impl Store {
         let c = self.lock();
         let mut stmt = c.prepare("SELECT id, worker_pid FROM tasks WHERE state='running'")?;
         let running: Vec<(i64, Option<i64>)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([], |r| Ok((r.get("id")?, r.get("worker_pid")?)))?
             .collect::<rusqlite::Result<_>>()?;
         Ok(running
             .into_iter()
@@ -2323,10 +2446,18 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
+                "SELECT COALESCE(finished_at, started_at) AS seen_at, rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
                  WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
                 params![provider],
-                |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)?, five_hour_resets: r.get(3)?, seven_day_resets: r.get(4)? }),
+                |r| {
+                    Ok(RateLimitSample {
+                        seen_at: r.get("seen_at")?,
+                        five_hour: r.get("rl_five_hour")?,
+                        seven_day: r.get("rl_seven_day")?,
+                        five_hour_resets: r.get("rl_five_hour_resets")?,
+                        seven_day_resets: r.get("rl_seven_day_resets")?,
+                    })
+                },
             )
             .optional()?)
     }
@@ -2343,25 +2474,11 @@ impl Store {
 
     pub fn ops(&self, task_id: i64) -> Result<Vec<Op>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output FROM ops WHERE task_id=?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| {
-            Ok(Op {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                seq: r.get(2)?,
-                name: r.get(3)?,
-                kernel: r.get::<_, i64>(4)? != 0,
-                started_at: r.get(5)?,
-                ms: r.get(6)?,
-                ok: r.get::<_, i64>(7)? != 0,
-                exit: r.get(8)?,
-                detail: r.get(9)?,
-                attempt_id: r.get(10)?,
-                output: r.get(11)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM ops WHERE task_id=?1 ORDER BY id",
+            OP_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![task_id], op_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -2384,13 +2501,16 @@ impl Store {
             Some(step) => {
                 let mut stmt =
                     c.prepare("SELECT task_id, step, outputs_json FROM attempts WHERE step=?1")?;
-                let rows =
-                    stmt.query_map(params![step], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                let rows = stmt.query_map(params![step], |r| {
+                    Ok((r.get("task_id")?, r.get("step")?, r.get("outputs_json")?))
+                })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
             None => {
                 let mut stmt = c.prepare("SELECT task_id, step, outputs_json FROM attempts")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((r.get("task_id")?, r.get("step")?, r.get("outputs_json")?))
+                })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
         };
@@ -2627,9 +2747,10 @@ impl Store {
     ) -> Result<Vec<crate::profile::Run>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
-                    COALESCE(t.finished_at - t.started_at, 0),
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
+            "SELECT t.id AS id, t.state AS state,
+                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0) AS cost,
+                    COALESCE(t.finished_at - t.started_at, 0) AS secs,
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
                AND t.state IN ('succeeded','failed','blocked','unverified')
                AND t.started_at IS NOT NULL
@@ -2637,7 +2758,13 @@ impl Store {
         )?;
         let rows: Vec<(i64, String, f64, i64, i64)> = stmt
             .query_map(params![workflow, hash, limit as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get("id")?,
+                    r.get("state")?,
+                    r.get("cost")?,
+                    r.get("secs")?,
+                    r.get("attempts")?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::with_capacity(rows.len());
@@ -2669,17 +2796,18 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.workflow, t.workflow_hash, COUNT(*),
-                    SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
+                "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COUNT(*) AS tasks,
+                    SUM(t.state='succeeded') AS succeeded, SUM(t.state='failed') AS failed,
+                    SUM(t.state='blocked') AS blocked, SUM(t.state='unverified') AS unverified,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
                           AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
-                    )), 0),
+                    )), 0) AS cost,
                     COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
                           AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
-                    )), 0),
-                    SUM(t.landed_sha != ''),
+                    )), 0) AS attempts,
+                    SUM(t.landed_sha != '') AS landed,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a
                         JOIN tasks b ON b.id = a.task_id
@@ -2690,28 +2818,28 @@ impl Store {
                               SELECT 1 FROM json_each(a.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    )),
+                    )) AS broke_base,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
-                    ))
+                    )) AS repaired
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
             let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
                 Ok(WorkflowStat {
-                    workflow: r.get(0)?,
-                    hash: r.get(1)?,
-                    tasks: r.get(2)?,
-                    succeeded: r.get(3)?,
-                    failed: r.get(4)?,
-                    blocked: r.get(5)?,
-                    unverified: r.get(6)?,
-                    cost: r.get(7)?,
-                    attempts: r.get(8)?,
-                    landed: r.get(9)?,
-                    broke_base: r.get(10)?,
-                    repaired: r.get(11)?,
+                    workflow: r.get("workflow")?,
+                    hash: r.get("hash")?,
+                    tasks: r.get("tasks")?,
+                    succeeded: r.get("succeeded")?,
+                    failed: r.get("failed")?,
+                    blocked: r.get("blocked")?,
+                    unverified: r.get("unverified")?,
+                    cost: r.get("cost")?,
+                    attempts: r.get("attempts")?,
+                    landed: r.get("landed")?,
+                    broke_base: r.get("broke_base")?,
+                    repaired: r.get("repaired")?,
                     repair_cost: 0.0,
                     added_lines: 0,
                     churned_lines: 0,
@@ -2776,24 +2904,24 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.workflow, t.workflow_hash, SUM(t.landed_sha != ''),
+                "SELECT t.workflow AS workflow, t.workflow_hash AS hash, SUM(t.landed_sha != '') AS landed,
                     COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
                         WHERE dt.workflow = t.workflow AND dt.workflow_hash = t.workflow_hash
                           AND d.answered_by != 'supervisor'
                           AND (?1 IS NULL OR dt.project = ?1) AND (?2 IS NULL OR dt.initiative = ?2)
-                    ), 0),
-                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+                    ), 0) AS operator_answers,
+                    SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
              FROM tasks t WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
             let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
                 Ok(HumanAttentionStat {
-                    workflow: r.get(0)?,
-                    hash: r.get(1)?,
-                    landed: r.get(2)?,
-                    operator_answers: r.get(3)?,
-                    hand_landed: r.get(4)?,
-                    withdrawals: r.get(5)?,
+                    workflow: r.get("workflow")?,
+                    hash: r.get("hash")?,
+                    landed: r.get("landed")?,
+                    operator_answers: r.get("operator_answers")?,
+                    hand_landed: r.get("hand_landed")?,
+                    withdrawals: r.get("withdrawals")?,
                     hand_commits: 0,
                 })
             })?;
@@ -2819,27 +2947,29 @@ impl Store {
     pub fn step_stats(&self, scope: &StatsFilter) -> Result<Vec<StepStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.workflow, a.step, COUNT(*), SUM(a.state='succeeded'), SUM(a.state='agent_failed'),
-                    SUM(a.state='checks_failed'), SUM(a.state='needs_input'), AVG(a.num_turns), COALESCE(SUM(a.cost_usd),0), AVG(a.agent_ms),
-                    AVG(a.first_edit), AVG(a.input_tokens)
+            "SELECT t.workflow AS workflow, a.step AS step, COUNT(*) AS attempts,
+                    SUM(a.state='succeeded') AS succeeded, SUM(a.state='agent_failed') AS agent_failed,
+                    SUM(a.state='checks_failed') AS checks_failed, SUM(a.state='needs_input') AS needs_input,
+                    AVG(a.num_turns) AS mean_turns, COALESCE(SUM(a.cost_usd),0) AS cost, AVG(a.agent_ms) AS mean_ms,
+                    AVG(a.first_edit) AS mean_first_edit, AVG(a.input_tokens) AS mean_input_tokens
              FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
         )?;
         let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
             Ok(StepStat {
-                workflow: r.get(0)?,
-                step: r.get(1)?,
-                attempts: r.get(2)?,
-                succeeded: r.get(3)?,
-                agent_failed: r.get(4)?,
-                checks_failed: r.get(5)?,
-                needs_input: r.get(6)?,
-                mean_turns: r.get(7)?,
-                cost: r.get(8)?,
-                mean_ms: r.get(9)?,
-                mean_first_edit: r.get(10)?,
-                mean_input_tokens: r.get(11)?,
+                workflow: r.get("workflow")?,
+                step: r.get("step")?,
+                attempts: r.get("attempts")?,
+                succeeded: r.get("succeeded")?,
+                agent_failed: r.get("agent_failed")?,
+                checks_failed: r.get("checks_failed")?,
+                needs_input: r.get("needs_input")?,
+                mean_turns: r.get("mean_turns")?,
+                cost: r.get("cost")?,
+                mean_ms: r.get("mean_ms")?,
+                mean_first_edit: r.get("mean_first_edit")?,
+                mean_input_tokens: r.get("mean_input_tokens")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2855,20 +2985,21 @@ impl Store {
             "SELECT
                 json_extract(a.inputs_json, '$.journal') IS NOT NULL
                     AND json_extract(a.inputs_json, '$.journal') != '' AS has_journal,
-                COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), AVG(a.first_edit),
-                COALESCE(AVG(a.cost_usd), 0)
+                COUNT(*) AS attempts, SUM(a.state='succeeded') AS succeeded,
+                AVG(a.num_turns) AS mean_turns, AVG(a.first_edit) AS mean_first_edit,
+                COALESCE(AVG(a.cost_usd), 0) AS mean_cost_usd
              FROM attempts a
              WHERE a.step = 'code' AND a.attempt_no > 1 AND a.state != 'running'
              GROUP BY has_journal",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(JournalStat {
-                has_journal: r.get(0)?,
-                attempts: r.get(1)?,
-                succeeded: r.get(2)?,
-                mean_turns: r.get(3)?,
-                mean_first_edit: r.get(4)?,
-                mean_cost_usd: r.get(5)?,
+                has_journal: r.get("has_journal")?,
+                attempts: r.get("attempts")?,
+                succeeded: r.get("succeeded")?,
+                mean_turns: r.get("mean_turns")?,
+                mean_first_edit: r.get("mean_first_edit")?,
+                mean_cost_usd: r.get("mean_cost_usd")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2886,8 +3017,8 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
-                    COUNT(*),
+                "SELECT a.step AS role, a.provider AS provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
+                    COUNT(*) AS attempts,
                     SUM(CASE
                         WHEN a.state='succeeded' THEN 1
                         WHEN a.step IN ('investigate', 'interview') AND a.state='needs_input'
@@ -2895,9 +3026,9 @@ impl Store {
                             AND COALESCE(json_extract(a.envelope_json, '$.needs_input.kind'), 'question') = 'question'
                         THEN 1
                         ELSE 0
-                    END),
-                    AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
-                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END),
+                    END) AS succeeded,
+                    AVG(a.num_turns) AS mean_turns, COALESCE(AVG(a.cost_usd), 0) AS mean_cost_usd, AVG(a.agent_ms) AS mean_ms,
+                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END) AS landed,
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a2
                         JOIN tasks b ON b.id = a2.task_id
@@ -2908,26 +3039,26 @@ impl Store {
                               SELECT 1 FROM json_each(a2.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    ) THEN t.id END)
+                    ) THEN t.id END) AS broke_base
              FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE a.state != 'running'
              GROUP BY a.step, a.provider, attempt_model
              ORDER BY a.step, a.provider, attempt_model",
             )?;
             let rows = stmt.query_map([], |r| {
-                let role: String = r.get(0)?;
-                let landed: i64 = r.get(8)?;
-                let broke_base: i64 = r.get(9)?;
+                let role: String = r.get("role")?;
+                let landed: i64 = r.get("landed")?;
+                let broke_base: i64 = r.get("broke_base")?;
                 let is_code = role == "code";
                 Ok(RoleStat {
                     role,
-                    provider: r.get(1)?,
-                    model: r.get(2)?,
-                    attempts: r.get(3)?,
-                    succeeded: r.get(4)?,
-                    mean_turns: r.get(5)?,
-                    mean_cost_usd: r.get(6)?,
-                    mean_ms: r.get(7)?,
+                    provider: r.get("provider")?,
+                    model: r.get("attempt_model")?,
+                    attempts: r.get("attempts")?,
+                    succeeded: r.get("succeeded")?,
+                    mean_turns: r.get("mean_turns")?,
+                    mean_cost_usd: r.get("mean_cost_usd")?,
+                    mean_ms: r.get("mean_ms")?,
                     landed: is_code.then_some(landed),
                     broke_base: is_code.then_some(broke_base),
                     repair_cost: is_code.then_some(0.0),
@@ -2970,10 +3101,12 @@ impl Store {
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
-                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
-                    t.workflow, t.created_at, t.finished_at, t.project, t.initiative
+            "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch','localtime') AS created,
+                    t.repo AS repo, t.task AS task,
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
+                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
+                    t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
+                    t.project AS project, t.initiative AS initiative
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
@@ -2995,18 +3128,18 @@ impl Store {
             ],
             |r| {
                 Ok(TaskSummary {
-                    id: r.get(0)?,
-                    state: r.get(1)?,
-                    created: r.get(2)?,
-                    repo: r.get(3)?,
-                    task: r.get(4)?,
-                    attempts: r.get(5)?,
-                    cost: r.get(6)?,
-                    workflow: r.get(7)?,
-                    created_at: r.get(8)?,
-                    finished_at: r.get(9)?,
-                    project: r.get(10)?,
-                    initiative: r.get(11)?,
+                    id: r.get("id")?,
+                    state: r.get("state")?,
+                    created: r.get("created")?,
+                    repo: r.get("repo")?,
+                    task: r.get("task")?,
+                    attempts: r.get("attempts")?,
+                    cost: r.get("cost")?,
+                    workflow: r.get("workflow")?,
+                    created_at: r.get("created_at")?,
+                    finished_at: r.get("finished_at")?,
+                    project: r.get("project")?,
+                    initiative: r.get("initiative")?,
                 })
             },
         )?;
@@ -3070,24 +3203,11 @@ impl Store {
         let ids = lineage_ids(&c, id)?;
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let mut stmt = c.prepare(&format!(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
-             FROM decisions d WHERE d.task_id IN ({placeholders})
-             ORDER BY d.id"
+            "SELECT {} FROM decisions d WHERE d.task_id IN ({placeholders})
+             ORDER BY d.id",
+            DECISION_COLUMNS.join(", ")
         ))?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-            Ok(Decision {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                repo: r.get(2)?,
-                question: r.get(3)?,
-                answer: r.get(4)?,
-                created_at: r.get(5)?,
-                answered_by: r.get(6)?,
-                citations: r.get(7)?,
-                retry_id: r.get(8)?,
-                answered_for: r.get(9)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), decision_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3117,28 +3237,20 @@ impl Store {
     /// carries no such column of its own.
     pub fn decisions(&self, q: &DecisionFilter) -> Result<Vec<Decision>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
+        let cols = DECISION_COLUMNS
+            .iter()
+            .map(|c| format!("d.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = c.prepare(&format!(
+            "SELECT {cols}
              FROM decisions d JOIN tasks t ON t.id = d.task_id
              WHERE (?1 IS NULL OR d.repo = ?1)
                AND (?2 IS NULL OR t.project = ?2)
                AND (?3 IS NULL OR t.initiative = ?3)
-             ORDER BY d.id DESC",
-        )?;
-        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], |r| {
-            Ok(Decision {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                repo: r.get(2)?,
-                question: r.get(3)?,
-                answer: r.get(4)?,
-                created_at: r.get(5)?,
-                answered_by: r.get(6)?,
-                citations: r.get(7)?,
-                retry_id: r.get(8)?,
-                answered_for: r.get(9)?,
-            })
-        })?;
+             ORDER BY d.id DESC"
+        ))?;
+        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], decision_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3163,20 +3275,11 @@ impl Store {
     /// A task's references, oldest first.
     pub fn task_refs(&self, task_id: i64) -> Result<Vec<TaskRef>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, task_id, kind, url, label, by, created_at FROM task_refs WHERE task_id = ?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| {
-            Ok(TaskRef {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                kind: r.get(2)?,
-                url: r.get(3)?,
-                label: r.get(4)?,
-                by: r.get(5)?,
-                created_at: r.get(6)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM task_refs WHERE task_id = ?1 ORDER BY id",
+            TASK_REF_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![task_id], task_ref_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3541,22 +3644,24 @@ impl Store {
     pub fn project_task_stats(&self, project: &str) -> Result<ProjectTaskStats> {
         let c = self.lock();
         Ok(c.query_row(
-            "SELECT SUM(state='queued'), SUM(state='running'), SUM(state='succeeded'), SUM(state='failed'),
-                    SUM(state='unverified'), SUM(state='blocked'), SUM(state='withdrawn'),
+            "SELECT SUM(state='queued') AS queued, SUM(state='running') AS running,
+                    SUM(state='succeeded') AS succeeded, SUM(state='failed') AS failed,
+                    SUM(state='unverified') AS unverified, SUM(state='blocked') AS blocked,
+                    SUM(state='withdrawn') AS withdrawn,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN
-                        (SELECT id FROM tasks WHERE project=?1)), 0)
+                        (SELECT id FROM tasks WHERE project=?1)), 0) AS cost
              FROM tasks WHERE project=?1",
             params![project],
             |r| {
                 Ok(ProjectTaskStats {
-                    queued: r.get::<_, Option<i64>>(0)?.unwrap_or(0),
-                    running: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    succeeded: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                    unverified: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                    blocked: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                    withdrawn: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                    cost: r.get(7)?,
+                    queued: r.get::<_, Option<i64>>("queued")?.unwrap_or(0),
+                    running: r.get::<_, Option<i64>>("running")?.unwrap_or(0),
+                    succeeded: r.get::<_, Option<i64>>("succeeded")?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                    unverified: r.get::<_, Option<i64>>("unverified")?.unwrap_or(0),
+                    blocked: r.get::<_, Option<i64>>("blocked")?.unwrap_or(0),
+                    withdrawn: r.get::<_, Option<i64>>("withdrawn")?.unwrap_or(0),
+                    cost: r.get("cost")?,
                 })
             },
         )?)
@@ -3569,8 +3674,8 @@ impl Store {
     pub fn project_stats(&self) -> Result<Vec<ProjectStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.project, COUNT(*), SUM(t.landed_sha != ''),
-                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.project=t.project)), 0),
+            "SELECT t.project AS project, COUNT(*) AS tasks, SUM(t.landed_sha != '') AS landed,
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.project=t.project)), 0) AS cost,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a
                         JOIN tasks b ON b.id = a.task_id
@@ -3581,17 +3686,17 @@ impl Store {
                               SELECT 1 FROM json_each(a.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    ))
+                    )) AS broke_base
              FROM tasks t WHERE t.project IS NOT NULL AND t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.project ORDER BY t.project",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ProjectStat {
-                project: r.get(0)?,
-                tasks: r.get(1)?,
-                landed: r.get(2)?,
-                cost: r.get(3)?,
-                broke_base: r.get(4)?,
+                project: r.get("project")?,
+                tasks: r.get("tasks")?,
+                landed: r.get("landed")?,
+                cost: r.get("cost")?,
+                broke_base: r.get("broke_base")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3605,21 +3710,21 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.project, SUM(t.landed_sha != ''),
+                "SELECT t.project AS project, SUM(t.landed_sha != '') AS landed,
                     COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
                         WHERE dt.project = t.project AND d.answered_by != 'supervisor'
-                    ), 0),
-                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+                    ), 0) AS operator_answers,
+                    SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
              FROM tasks t WHERE t.project IS NOT NULL
              GROUP BY t.project ORDER BY t.project",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok(HumanAttentionProjectStat {
-                    project: r.get(0)?,
-                    landed: r.get(1)?,
-                    operator_answers: r.get(2)?,
-                    hand_landed: r.get(3)?,
-                    withdrawals: r.get(4)?,
+                    project: r.get("project")?,
+                    landed: r.get("landed")?,
+                    operator_answers: r.get("operator_answers")?,
+                    hand_landed: r.get("hand_landed")?,
+                    withdrawals: r.get("withdrawals")?,
                     hand_commits: 0,
                 })
             })?;
@@ -3646,16 +3751,16 @@ impl Store {
     /// `JobStat`, docs/JOBS.md step 1d).
     pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
         Ok(self.lock().query_row(
-            "SELECT COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+            "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
              FROM jobs WHERE project=?1 AND started_at >= ?2",
             params![project, since],
             |r| {
                 Ok(JobStat {
                     project: project.to_string(),
-                    today: r.get(0)?,
-                    ok: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    failed: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    needs_human: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    today: r.get("today")?,
+                    ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                    needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
                 })
             },
         )?)
@@ -3667,16 +3772,16 @@ impl Store {
     pub fn job_stats(&self, since: i64) -> Result<Vec<JobStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT project, COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+            "SELECT project AS project, COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
              FROM jobs WHERE started_at >= ?1 GROUP BY project ORDER BY project",
         )?;
         let rows = stmt.query_map(params![since], |r| {
             Ok(JobStat {
-                project: r.get(0)?,
-                today: r.get(1)?,
-                ok: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                needs_human: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                project: r.get("project")?,
+                today: r.get("today")?,
+                ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
+                failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3876,21 +3981,12 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id, task_id, score, findings_json, model, provider, cost_usd, created_at
-                 FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+                &format!(
+                    "SELECT {} FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+                    ASSESSMENT_COLUMNS.join(", ")
+                ),
                 params![task_id],
-                |r| {
-                    Ok(Assessment {
-                        id: r.get(0)?,
-                        task_id: r.get(1)?,
-                        score: r.get(2)?,
-                        findings_json: r.get(3)?,
-                        model: r.get(4)?,
-                        provider: r.get(5)?,
-                        cost_usd: r.get(6)?,
-                        created_at: r.get(7)?,
-                    })
-                },
+                assessment_from_row,
             )
             .optional()?)
     }
@@ -6072,7 +6168,7 @@ mod column_tests {
     fn columns(store: &Store, table: &str) -> Vec<String> {
         let c = store.lock();
         let mut stmt = c.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(1))
+        stmt.query_map([], |r| r.get::<_, String>("name"))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
@@ -6093,6 +6189,10 @@ mod column_tests {
             ("project_repos", PROJECT_REPO_COLUMNS),
             ("backlog", BACKLOG_COLUMNS),
             ("initiatives", INITIATIVE_COLUMNS),
+            ("ops", OP_COLUMNS),
+            ("decisions", DECISION_COLUMNS),
+            ("task_refs", TASK_REF_COLUMNS),
+            ("assessments", ASSESSMENT_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
@@ -6109,6 +6209,65 @@ mod column_tests {
                 assert!(listed.contains(c), "{table}: column {c} is not in the list");
             }
         }
+    }
+
+    /// Every `r.get(` call in the file, with the index that follows it (an
+    /// optional `::<Type>` turbofish is skipped first), one entry per call.
+    fn positional_row_gets(src: &str) -> Vec<(usize, String, u32)> {
+        let mut out = Vec::new();
+        for (lineno, line) in src.lines().enumerate() {
+            let mut start = 0;
+            while let Some(rel) = line[start..].find("r.get") {
+                let mut pos = start + rel + "r.get".len();
+                if line[pos..].starts_with("::<") {
+                    pos += 3;
+                    let mut depth = 1;
+                    let bytes = line.as_bytes();
+                    while depth > 0 && pos < bytes.len() {
+                        match bytes[pos] as char {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            _ => {}
+                        }
+                        pos += 1;
+                    }
+                }
+                if line[pos..].starts_with('(') {
+                    let digits: String = line[pos + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect();
+                    if let Ok(n) = digits.parse::<u32>() {
+                        out.push((lineno + 1, line.trim().to_string(), n));
+                    }
+                }
+                start = pos.max(start + rel + 1);
+            }
+        }
+        out
+    }
+
+    /// A `*_from_row` function or a `query_map`/`query_row` closure that
+    /// reads `r.get(N)` for `N > 0` has the exact defect item 2 of
+    /// docs/REVIEW-2.md describes: inserting a column mid-`SELECT`
+    /// mis-parses silently. `r.get(0)` alone is left alone: by the time
+    /// this task is done, the only statements still reading it are
+    /// single-column queries (a `COUNT(*)`, a bare `id`, or the like)
+    /// where there is no second field to drift out of order against.
+    #[test]
+    fn no_row_reads_a_column_by_position_outside_a_single_column_query() {
+        let src = include_str!("store.rs");
+        let offenders: Vec<String> = positional_row_gets(src)
+            .into_iter()
+            .filter(|(_, _, n)| *n != 0)
+            .map(|(lineno, text, _)| format!("store.rs:{lineno}: {text}"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "r.get(N) for N > 0 reads a column by position; name it instead \
+             (see e.g. OP_COLUMNS/op_from_row for the pattern):\n{}",
+            offenders.join("\n")
+        );
     }
 
     #[test]
