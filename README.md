@@ -206,6 +206,7 @@ src/plugins.rs      plugins: directories named for their plugin.toml, one broken
 src/profile.rs      a workflow's measured cost and success, from its runs
 src/prompts.rs      what each contract's agent is told, assembled from pieces
 src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest
+src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
 src/sandbox.rs      bubblewrap
 src/store/          SQLite, forward-only migrations by user_version, one file per table family

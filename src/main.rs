@@ -30,6 +30,7 @@ mod plugins;
 mod profile;
 mod prompts;
 mod queue;
+mod render;
 mod report;
 mod sandbox;
 mod store;
