@@ -23,8 +23,8 @@
   const get = path => call('GET', path);
   const post = path => call('POST', path);
 
-  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /plugins, /projects,
-  // /projects/:name, /initiatives/:id, /graph, /stats
+  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /jobs, /jobs/:id,
+  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph, /stats
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
     if (location.pathname === '/projects') return { page: 'projects' };
@@ -34,13 +34,15 @@
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
     m = location.pathname.match(/^\/initiatives\/(\d+)\/?$/);
     if (m) return { page: 'initiative', id: Number(m[1]) };
+    m = location.pathname.match(/^\/jobs(?:\/(\d+))?\/?$/);
+    if (m) return { page: 'jobs', id: m[1] ? Number(m[1]) : null };
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
     return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"], a[href^="/jobs"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
@@ -50,7 +52,7 @@
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
     const projects = r.page === 'projects' || r.page === 'project';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
   }
 
   async function render() {
@@ -63,6 +65,7 @@
       : r.page === 'initiative' ? initiativeView(r.id)
       : r.page === 'graph' ? graphView(r.repo)
       : r.page === 'stats' ? statsView()
+      : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
       : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
@@ -316,6 +319,71 @@
           <table><thead><tr><th>name</th><th>purpose</th><th class="num">queued</th><th class="num">running</th><th class="num">succeeded</th><th class="num">failed</th><th class="num">cost</th></tr></thead><tbody id="project-rows"></tbody></table>`;
         drawRows(await get('/api/projects'));
       },
+    };
+  }
+
+  // ---- jobs view: automation runs (docs/JOBS.md), served like /tasks
+  // through forge-client's job_list
+  function jobsView() {
+    function drawRows(rows) {
+      $('#job-rows').innerHTML = rows.map(j => `
+        <tr class="task" data-id="${j.id}">
+          <td class="num">${j.id}</td>
+          <td>${j.project ? `<a href="/projects/${encodeURIComponent(j.project)}">${esc(j.project)}</a>` : ''}</td>
+          <td>${esc(j.workflow)}</td>
+          <td class="state ${esc(j.state)}">${esc(j.state)}${j.dry_run ? ' <span class="mute">(dry run)</span>' : ''}</td>
+          <td class="num">${usd(j.cost_usd)}</td>
+          <td class="mute" style="white-space:nowrap">${j.started_at ? new Date(j.started_at * 1000).toLocaleString() : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="mute">no jobs</td></tr>';
+    }
+    async function refresh() { drawRows(await get('/api/jobs')); }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Jobs</h2>
+          <table><thead><tr><th>id</th><th>project</th><th>workflow</th><th>state</th><th class="num">cost</th><th>started</th></tr></thead><tbody id="job-rows"></tbody></table>`;
+        $('#job-rows').addEventListener('click', ev => {
+          const tr = ev.target.closest('tr.task');
+          if (tr) go(`/jobs/${tr.dataset.id}`);
+        });
+        await refresh();
+      },
+      onEvent(e) {
+        if (INVALIDATES.jobs.includes(e.type)) refresh().catch(() => {});
+      },
+    };
+  }
+
+  // ---- one job: its steps and effects, served like a task's detail
+  // through forge-client's job_show
+  function jobView(id) {
+    async function draw() {
+      const d = await get(`/api/job/${id}`);
+      const steps = (d.steps || []).map(s => `
+        <tr><td class="num">${s.seq}</td><td>${esc(s.action)}</td><td>${esc(s.kind)}</td>
+          <td class="mute">${esc(s.provider)}${s.model ? ' · ' + esc(s.model) : ''}</td>
+          <td class="num">${usd(s.cost_usd)}</td><td class="num">${s.exit_code ?? ''}</td></tr>`).join('');
+      const effects = (d.effects || []).map(e => `
+        <tr><td class="num">${e.seq}</td><td>${esc(e.kind)}</td><td>${esc(e.target)}</td>
+          <td>${esc(e.summary)}${e.dry_run ? ' <span class="mute">(dry run)</span>' : ''}</td></tr>`).join('');
+      $('#main').innerHTML = `
+        <h2>Job ${d.id} <span class="state ${esc(d.state)}">${esc(d.state)}</span> <a href="/jobs">← jobs</a></h2>
+        <div class="card">
+          <div><span class="k">project</span>${d.project ? `<a href="/projects/${encodeURIComponent(d.project)}">${esc(d.project)}</a>` : ''}</div>
+          <div><span class="k">workflow</span>${esc(d.workflow)} <span class="mute">${esc((d.workflow_hash || '').slice(0, 8))} · ${esc(d.workflow_source)}</span></div>
+          <div><span class="k">trigger</span>${esc(d.trigger_kind)}${d.trigger_ref ? ' ' + esc(d.trigger_ref) : ''}</div>
+          <div><span class="k">cost</span>${usd(d.cost_usd)}${d.dry_run ? ' · dry run' : ''}</div>
+        </div>
+        <h2>Steps</h2>
+        <table><thead><tr><th>seq</th><th>action</th><th>kind</th><th>provider/model</th><th class="num">cost</th><th class="num">exit</th></tr></thead>
+          <tbody>${steps || '<tr><td colspan="6" class="mute">no steps</td></tr>'}</tbody></table>
+        <h2>Effects</h2>
+        <table><thead><tr><th>seq</th><th>kind</th><th>target</th><th>summary</th></tr></thead>
+          <tbody>${effects || '<tr><td colspan="4" class="mute">no effects</td></tr>'}</tbody></table>`;
+    }
+    return {
+      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await draw(); },
+      onEvent(e) { if (INVALIDATES.jobs.includes(e.type)) draw().catch(() => {}); },
     };
   }
 

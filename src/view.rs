@@ -929,13 +929,16 @@ impl From<&crate::store::JobStat> for StatsJobsRow {
 }
 
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
-/// for one (role, provider, model) combination, role being the attempt's
-/// step, as `forge stats --by-role` shows it.
+/// for one (role, provider, model, kind) combination, role being the
+/// attempt's step or the job step's action, and kind (`"attempt"` or
+/// `"job_step"`) distinguishing a build task's attempt from a job's
+/// directive step, as `forge stats --by-role` shows it.
 #[derive(Serialize)]
 pub struct StatsRoleRow {
     pub role: String,
     pub provider: String,
     pub model: String,
+    pub kind: String,
     pub attempts: i64,
     pub succeeded: i64,
     /// `succeeded` divided by `attempts`; `None` when there are none.
@@ -988,6 +991,7 @@ impl From<&crate::store::RoleStat> for StatsRoleRow {
             role: r.role.clone(),
             provider: r.provider.clone(),
             model: r.model.clone(),
+            kind: r.kind.clone(),
             attempts: r.attempts,
             succeeded: r.succeeded,
             succeeded_share: (r.attempts > 0).then(|| r.succeeded as f64 / r.attempts as f64),

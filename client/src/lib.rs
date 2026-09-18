@@ -1153,10 +1153,12 @@ pub struct TraceDoc {
 }
 
 /// One row of `StatsDoc.by_role`: attempts, outcomes, cost and wall time
-/// for one (role, provider, model) combination, role being the attempt's
-/// step (`code`, `review`, and so on). `landed`, `broke_base`,
-/// `broke_base_share`, `repair_cost_usd`, `true_cost_per_landed_usd`
-/// and `churn_share` are only ever present for the `code` role.
+/// for one (role, provider, model, kind) combination, role being the
+/// attempt's step (`code`, `review`, and so on) or a job's directive
+/// step's action, and kind (`"attempt"` or `"job_step"`) distinguishing
+/// the two. `landed`, `broke_base`, `broke_base_share`, `repair_cost_usd`,
+/// `true_cost_per_landed_usd` and `churn_share` are only ever present for
+/// the `code` role's `"attempt"` rows.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StatsRoleRow {
     #[serde(default)]
@@ -1165,6 +1167,8 @@ pub struct StatsRoleRow {
     pub provider: String,
     #[serde(default)]
     pub model: String,
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub attempts: i64,
     #[serde(default)]

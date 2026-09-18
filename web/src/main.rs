@@ -6,10 +6,12 @@
 //! `forge retry` verb the CLI runs.
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
-//! `/tasks/<id>` (one task: trace, diagnosis, journal, its events), and
+//! `/tasks/<id>` (one task: trace, diagnosis, journal, its events),
 //! `/tasks/<id>/run` (the task inside its workflow: every step with its
-//! operations, and every attempt's inputs, outputs, and verdict). One
-//! page serves all three; the path picks the view.
+//! operations, and every attempt's inputs, outputs, and verdict), and
+//! `/jobs`/`/jobs/<id>` (automation runs: the list through `forge job
+//! list`, one job's steps and effects through `forge job show`). One
+//! page serves all of these; the path picks the view.
 //!
 //! Every request carries a token. It is generated once into
 //! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
@@ -368,7 +370,9 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || p.starts_with("/projects/")
             || p.starts_with("/initiatives/")
             || p == "/graph"
-            || p == "/stats" =>
+            || p == "/stats"
+            || p == "/jobs"
+            || p.starts_with("/jobs/") =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
@@ -434,6 +438,11 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             json_or_error(forge.json(&argv))
         }
         "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
+        "/api/jobs" => json_or_error(forge.json(&["job", "list", "--json"])),
+        p if p.starts_with("/api/job/") => match id_of(&p["/api/job/".len()..]) {
+            Some(id) => json_or_error(forge.json(&["job", "show", &id.to_string(), "--json"])),
+            None => text(404, "no such job", "text/plain"),
+        },
         "/api/projects" => json_or_error(forge.json(&["project", "list", "--json"])),
         p if p.starts_with("/api/projects/") => match project_sub(p) {
             Some((name, None)) => json_or_error(forge.json(&["project", "show", &name, "--json"])),
