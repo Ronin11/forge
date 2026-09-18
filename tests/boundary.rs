@@ -22,6 +22,29 @@ fn dep_tables(manifest: &toml::Value) -> impl Iterator<Item = &toml::Table> {
         .filter_map(|v| v.as_table())
 }
 
+/// Every workspace member that is a client: the root Cargo.toml's member
+/// list minus `repomap`, which is a tool and tested separately below. Read
+/// from the manifest so the next client is covered the day it is added;
+/// the portal went a week unchecked under a hand-written list.
+fn clients(root: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let manifest: toml::Value = toml::from_str(&text).unwrap();
+    let members: Vec<String> = manifest["workspace"]["members"]
+        .as_array()
+        .expect("[workspace] members is an array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .filter(|m| m != "repomap")
+        .collect();
+    for known in ["tui", "web", "client", "portal"] {
+        assert!(
+            members.iter().any(|m| m == known),
+            "{known} is a client and must be a workspace member"
+        );
+    }
+    members
+}
+
 fn assert_manifest_forbids(member: &str, manifest_path: &Path, forbidden: &[&str]) {
     let text = std::fs::read_to_string(manifest_path).unwrap();
     let manifest: toml::Value = toml::from_str(&text).unwrap();
@@ -53,7 +76,8 @@ fn assert_sources_clean(src_dir: &Path) {
 #[test]
 fn the_clients_depend_on_nothing_of_the_kernel() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for member in ["tui", "web", "client"] {
+    for member in clients(root) {
+        let member = member.as_str();
         assert_manifest_forbids(
             member,
             &root.join(member).join("Cargo.toml"),
@@ -85,8 +109,8 @@ fn client_sources_only_invoke_documented_verbs() {
         !documented.is_empty(),
         "docs/CLIENT.md's verb fence parsed empty"
     );
-    for member in ["tui", "web", "client"] {
-        for entry in std::fs::read_dir(root.join(member).join("src")).unwrap() {
+    for member in clients(root) {
+        for entry in std::fs::read_dir(root.join(&member).join("src")).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;

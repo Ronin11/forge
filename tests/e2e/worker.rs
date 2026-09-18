@@ -310,9 +310,12 @@ fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // ok.sh with FAKE_SLEEP set takes 2s to answer; signal it well before that so the drain
-    // has real work to wait out, not a race with an attempt already done.
-    std::thread::sleep(Duration::from_millis(500));
+    // ok.sh with FAKE_SLEEP set takes 2s to answer; signal once the worker has claimed the
+    // task so the drain has real work to wait out, not a race with an attempt already done.
+    assert!(
+        wait_until(|| e.task(id).0 == "running", Duration::from_secs(10)),
+        "the worker claimed the task"
+    );
     let pid = child.id().to_string();
     Command::new("kill").args(["-TERM", &pid]).status().unwrap();
     let o = child.wait_with_output().unwrap();

@@ -1035,3 +1035,75 @@ fn forge_job_bench_measures_two_fake_providers_over_two_fixtures() {
         "bench never performs a real effect: {rows:?}"
     );
 }
+
+/// `Limits.per_day` is checked at `forge job start`: once a workflow has
+/// started that many real runs in the last 24 hours, the next start is
+/// refused with a reason naming the limit, queued or `--now` alike; a
+/// dry run neither counts nor is refused (docs/JOBS.md, "Limits").
+#[test]
+fn a_run_workflows_per_day_limit_refuses_the_next_start_and_ignores_dry_runs() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/once.toml"),
+        r#"name = "once"
+kind = "run"
+description = "one real run a day"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[limits]
+budget_usd = 1.0
+per_day = 1
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"path":"out.txt","content":"x"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+    let start = |extra: &[&str]| {
+        let mut args = vec!["job", "start", "equitizr", "once", "--input", input_s];
+        args.extend_from_slice(extra);
+        e.forge("ok.sh", &args)
+    };
+
+    // A dry run first: it does not count.
+    let o = start(&["--now", "--dry-run"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // The first real run starts.
+    let o = start(&["--now"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // The second is refused, naming the limit; queuing is refused the same way.
+    let o = start(&["--now"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("per_day limit is 1"), "{err}");
+    let o = start(&[]);
+    assert!(!o.status.success(), "queuing past the limit is refused too");
+    // A dry run is still allowed.
+    let o = start(&["--now", "--dry-run"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
