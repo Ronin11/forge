@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+mod attempts;
+mod tasks;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TaskState {
     #[default]
@@ -1617,52 +1620,84 @@ const ATTEMPT_COLUMNS: &[&str] = &[
     "provider",
 ];
 
-fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
-    Ok(Attempt {
+const OP_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "seq",
+    "name",
+    "kernel",
+    "started_at",
+    "ms",
+    "ok",
+    "exit",
+    "detail",
+    "attempt_id",
+    "output",
+];
+
+const DECISION_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "repo",
+    "question",
+    "answer",
+    "created_at",
+    "answered_by",
+    "citations",
+    "retry_id",
+    "answered_for",
+];
+
+fn decision_from_row(r: &Row) -> rusqlite::Result<Decision> {
+    Ok(Decision {
         id: r.get("id")?,
         task_id: r.get("task_id")?,
-        attempt_no: r.get("attempt_no")?,
-        state: conv(
-            r,
-            "state",
-            AttemptState::try_from(r.get::<_, String>("state")?.as_str()),
-        )?,
-        reason: r.get("reason")?,
-        started_at: r.get("started_at")?,
-        finished_at: r.get("finished_at")?,
-        agent_exit: r.get("agent_exit")?,
-        timed_out: r.get::<_, i64>("timed_out")? != 0,
-        num_turns: r.get("num_turns")?,
-        tool_calls: r.get("tool_calls")?,
-        cost_usd: r.get("cost_usd")?,
-        agent_ms: r.get("agent_ms")?,
-        commits: r.get("commits")?,
-        files_changed: r.get("files_changed")?,
-        dirty: r.get::<_, i64>("dirty")? != 0,
-        verdict_json: r.get("verdict_json")?,
-        result_text: r.get("result_text")?,
-        log_path: r.get("log_path")?,
-        envelope_json: r.get("envelope_json")?,
-        rl_five_hour: r.get("rl_five_hour")?,
-        rl_seven_day: r.get("rl_seven_day")?,
-        rl_five_hour_resets: r.get("rl_five_hour_resets")?,
-        rl_seven_day_resets: r.get("rl_seven_day_resets")?,
-        step: r.get("step")?,
-        start_sha: r.get("start_sha")?,
-        end_sha: r.get("end_sha")?,
-        inputs_json: r.get("inputs_json")?,
-        outputs_json: r.get("outputs_json")?,
-        step_seq: r.get("step_seq")?,
-        session_id: r.get("session_id")?,
-        first_edit: r.get("first_edit")?,
-        input_tokens: r.get("input_tokens")?,
-        output_tokens: r.get("output_tokens")?,
-        cache_read_input_tokens: r.get("cache_read_input_tokens")?,
-        cache_creation_input_tokens: r.get("cache_creation_input_tokens")?,
-        early_signals: r.get("early_signals")?,
-        early_near: r.get("early_near")?,
-        runner: r.get("runner")?,
+        repo: r.get("repo")?,
+        question: r.get("question")?,
+        answer: r.get("answer")?,
+        created_at: r.get("created_at")?,
+        answered_by: r.get("answered_by")?,
+        citations: r.get("citations")?,
+        retry_id: r.get("retry_id")?,
+        answered_for: r.get("answered_for")?,
+    })
+}
+
+const TASK_REF_COLUMNS: &[&str] = &["id", "task_id", "kind", "url", "label", "by", "created_at"];
+
+fn task_ref_from_row(r: &Row) -> rusqlite::Result<TaskRef> {
+    Ok(TaskRef {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        kind: r.get("kind")?,
+        url: r.get("url")?,
+        label: r.get("label")?,
+        by: r.get("by")?,
+        created_at: r.get("created_at")?,
+    })
+}
+
+const ASSESSMENT_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "score",
+    "findings_json",
+    "model",
+    "provider",
+    "cost_usd",
+    "created_at",
+];
+
+fn assessment_from_row(r: &Row) -> rusqlite::Result<Assessment> {
+    Ok(Assessment {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        score: r.get("score")?,
+        findings_json: r.get("findings_json")?,
+        model: r.get("model")?,
         provider: r.get("provider")?,
+        cost_usd: r.get("cost_usd")?,
+        created_at: r.get("created_at")?,
     })
 }
 
@@ -1678,62 +1713,6 @@ fn lineage_ids(conn: &Connection, id: i64) -> rusqlite::Result<Vec<i64>> {
     rows.collect()
 }
 
-/// The shared decision behind `release_dependents` and
-/// `release_dependents_of`: for each `(id, after_json)` candidate — always
-/// a task currently `blocked` with a reason starting "waits on task" —
-/// walk its after list and either release it to `queued` with its reason
-/// cleared (every dependency landed or was withdrawn: never a defect in
-/// the work, see `TaskState::Withdrawn`), give it a fresh reason naming
-/// the first dependency that ended badly (failed, unverified, or
-/// succeeded without landing), or leave it alone (a dependency still
-/// queued, running, or itself blocked has not resolved yet). Returns the
-/// ids released to `queued`.
-fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<Vec<i64>> {
-    let mut released = Vec::new();
-    for (id, after_json) in candidates {
-        let after: Vec<i64> = serde_json::from_str(&after_json).unwrap_or_default();
-        let mut blocker: Option<(i64, String, String)> = None;
-        let mut all_resolved = true;
-        for d in after {
-            let row: Option<(String, String, bool, String)> = c
-                .query_row(
-                    "SELECT state, reason, land, landed_sha FROM tasks WHERE id=?1",
-                    params![d],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .optional()?;
-            let Some((state, reason, land, landed_sha)) = row else {
-                all_resolved = false;
-                continue;
-            };
-            let ok =
-                state == "withdrawn" || (state == "succeeded" && (!land || !landed_sha.is_empty()));
-            if ok {
-                continue;
-            }
-            all_resolved = false;
-            if blocker.is_none() && matches!(state.as_str(), "failed" | "unverified" | "succeeded")
-            {
-                blocker = Some((d, state, reason));
-            }
-        }
-        if let Some((d, state, reason)) = blocker {
-            let why = format!("waits on task {d} ({state}: {reason})");
-            c.execute(
-                "UPDATE tasks SET reason=?2 WHERE id=?1 AND state='blocked'",
-                params![id, why],
-            )?;
-        } else if all_resolved {
-            c.execute(
-                "UPDATE tasks SET state='queued', reason='', finished_at=NULL WHERE id=?1 AND state='blocked'",
-                params![id],
-            )?;
-            released.push(id);
-        }
-    }
-    Ok(released)
-}
-
 /// `task_repair_cost`'s cached row for `task_id`: `(repair_cost,
 /// computed_at)`, or `None` if it has never been computed. See
 /// `compute_repair_cost` in view.rs for how the git-level number is
@@ -1742,7 +1721,7 @@ fn repair_cost_cache_query(c: &Connection, task_id: i64) -> Result<Option<(f64, 
     Ok(c.query_row(
         "SELECT repair_cost, computed_at FROM task_repair_cost WHERE task_id = ?1",
         params![task_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get("repair_cost")?, r.get("computed_at")?)),
     )
     .optional()?)
 }
@@ -1780,7 +1759,7 @@ fn line_overlap_cache_query(
     Ok(c.query_row(
         "SELECT overlap_lines, removed_lines FROM line_overlap_cache WHERE t_sha = ?1 AND l_sha = ?2",
         params![t_sha, l_sha],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get("overlap_lines")?, r.get("removed_lines")?)),
     )
     .optional()?)
 }
@@ -1807,10 +1786,12 @@ fn set_line_overlap_cache_query(
 /// `by_role` groups a landed task's delayed cost is attributed to.
 fn code_attempt_groups_query(c: &Connection, task_id: i64) -> Result<Vec<(String, String)>> {
     let mut stmt = c.prepare(
-        "SELECT DISTINCT provider, COALESCE(json_extract(inputs_json, '$.model'), '')
+        "SELECT DISTINCT provider, COALESCE(json_extract(inputs_json, '$.model'), '') AS model
          FROM attempts WHERE task_id = ?1 AND step = 'code'",
     )?;
-    let rows = stmt.query_map(params![task_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = stmt.query_map(params![task_id], |r| {
+        Ok((r.get("provider")?, r.get("model")?))
+    })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -1820,7 +1801,13 @@ fn churn_cache_query(c: &Connection, task_id: i64) -> Result<Option<(i64, i64, i
     Ok(c.query_row(
         "SELECT added_lines, churned_lines, computed_at FROM task_churn WHERE task_id = ?1",
         params![task_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| {
+            Ok((
+                r.get("added_lines")?,
+                r.get("churned_lines")?,
+                r.get("computed_at")?,
+            ))
+        },
     )
     .optional()?)
 }
@@ -1896,563 +1883,6 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
-    pub fn insert_task(&self, t: &Task) -> Result<i64> {
-        let c = self.lock();
-        c.execute(
-            "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
-            params![
-                t.repo,
-                t.task,
-                t.title,
-                t.base_branch,
-                t.model,
-                t.provider,
-                t.max_turns,
-                t.max_attempts,
-                t.timeout_secs,
-                serde_json::to_string(&t.checks)?,
-                t.state.as_str(),
-                t.created_at,
-                t.budget_usd,
-                t.allow_protected as i64,
-                t.workflow,
-                t.show_checks as i64,
-                t.workflow_hash,
-                t.workflow_text,
-                t.land as i64,
-                serde_json::to_string(&t.after)?,
-                t.retry_of,
-                t.journal as i64,
-                t.context_enabled as i64,
-                t.resume_on_failure as i64,
-                t.journal_arm,
-                serde_json::to_string(&t.explore)?,
-            ],
-        )?;
-        Ok(c.last_insert_rowid())
-    }
-
-    /// Persist every column the struct carries, except the id, the
-    /// creation time, and `worktree_removed_at`, which gc owns. A field
-    /// mutated after insert used to be silently dropped here.
-    pub fn update_task(&self, t: &Task) -> Result<()> {
-        self.lock().execute(
-            "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,
-             max_turns=?9, max_attempts=?10, timeout_secs=?11, checks_json=?12, state=?13, reason=?14,
-             started_at=?15, finished_at=?16, pushed=?17, worker_pid=?18, budget_usd=?19, allow_protected=?20,
-             workflow=?21, workflow_hash=?22, workflow_text=?23, actions_json=?24, interface=?25, show_checks=?26,
-             land=?27, after_json=?28, verify_base=?29, retry_of=?30, journal=?31, context=?32,
-             context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
-             project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
-             concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
-             title=?47, landed_at=?48, hand_landed=?49 WHERE id=?1",
-            params![
-                t.id,
-                t.repo,
-                t.task,
-                t.base_branch,
-                t.base_sha,
-                t.branch,
-                t.worktree,
-                t.model,
-                t.max_turns,
-                t.max_attempts,
-                t.timeout_secs,
-                serde_json::to_string(&t.checks)?,
-                t.state.as_str(),
-                t.reason,
-                t.started_at,
-                t.finished_at,
-                t.pushed as i64,
-                t.worker_pid,
-                t.budget_usd,
-                t.allow_protected as i64,
-                t.workflow,
-                t.workflow_hash,
-                t.workflow_text,
-                t.actions_json,
-                t.interface,
-                t.show_checks as i64,
-                t.land as i64,
-                serde_json::to_string(&t.after)?,
-                t.verify_base,
-                t.retry_of,
-                t.journal as i64,
-                t.context,
-                t.context_enabled as i64,
-                t.resume_on_failure as i64,
-                t.plan,
-                t.landed_sha,
-                t.journal_arm,
-                t.project,
-                t.initiative,
-                t.provider,
-                t.question_to,
-                serde_json::to_string(&t.explore)?,
-                t.concierge_json,
-                t.proposal_json,
-                t.proposal_answer,
-                t.proposal_initiative,
-                t.title,
-                t.landed_at,
-                t.hand_landed as i64,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn task(&self, id: i64) -> Result<Option<Task>> {
-        Ok(self
-            .lock()
-            .query_row(
-                &format!("SELECT {} FROM tasks WHERE id=?1", TASK_COLUMNS.join(", ")),
-                params![id],
-                task_from_row,
-            )
-            .optional()?)
-    }
-
-    /// Queued tasks whose dependencies have all landed (or succeeded
-    /// without landing, when they were told not to) and whose initiative
-    /// is not in `held`, oldest first: what `claim_next` considers.
-    pub fn queued_unblocked(&self, held: &[i64]) -> Result<Vec<Task>> {
-        let ids: Vec<i64> = {
-            let c = self.lock();
-            let mut stmt = c.prepare(
-                "SELECT t.id FROM tasks t WHERE t.state='queued' AND NOT EXISTS (
-                   SELECT 1 FROM json_each(t.after_json) j LEFT JOIN tasks d ON d.id = j.value
-                   WHERE d.id IS NULL OR d.state != 'succeeded' OR (d.land = 1 AND d.landed_sha = '')
-                 ) ORDER BY t.id",
-            )?;
-            stmt.query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        let mut out = Vec::new();
-        for id in ids {
-            let Some(t) = self.task(id)? else { continue };
-            if !t.initiative.is_some_and(|i| held.contains(&i)) {
-                out.push(t);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Atomically take the oldest queued task for this worker, skipping
-    /// any whose initiative is in `held` (the caller has already found
-    /// those initiatives are holding new claims, see
-    /// `view::initiative_hold`) or for which `provider_held` says the
-    /// provider it would run under is at its rate-window cap: the oldest
-    /// queued, unheld task whose dependencies have all landed.
-    pub fn claim_next(
-        &self,
-        pid: i64,
-        held: &[i64],
-        provider_held: impl Fn(&Task) -> bool,
-    ) -> Result<Option<Task>> {
-        for t in self.queued_unblocked(held)? {
-            if provider_held(&t) {
-                continue;
-            }
-            if self.claim(t.id, pid)? {
-                return self.task(t.id);
-            }
-        }
-        Ok(None)
-    }
-
-    /// Atomically take one specific queued task.
-    pub fn claim(&self, id: i64, pid: i64) -> Result<bool> {
-        let n = self.lock().execute(
-            "UPDATE tasks SET state='running', worker_pid=?2, started_at=?3 WHERE id=?1 AND state='queued'",
-            params![id, pid, crate::unix_now()],
-        )?;
-        Ok(n == 1)
-    }
-
-    /// Withdraw a blocked or queued task: the operator decided it should
-    /// not be done. Atomic on state, so a task the worker claims in
-    /// between is left alone. Returns whether it changed anything.
-    pub fn withdraw(&self, id: i64, reason: &str) -> Result<bool> {
-        let n = self.lock().execute(
-            "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
-            params![id, reason, crate::unix_now()],
-        )?;
-        Ok(n == 1)
-    }
-
-    /// Block every queued task that waits on a task which ended without
-    /// landing. Returns the (dependent, dependency) pairs it blocked.
-    pub fn block_dependents(&self) -> Result<Vec<(i64, i64, String)>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT t.id, d.id, d.state, d.reason FROM tasks t, json_each(t.after_json) j JOIN tasks d ON d.id = j.value
-             WHERE t.state='queued' AND d.state IN ('failed', 'unverified', 'withdrawn')
-                OR (t.state='queued' AND d.state='succeeded' AND d.land = 1 AND d.landed_sha = '' AND d.finished_at IS NOT NULL)
-             ORDER BY t.id, d.id",
-        )?;
-        let rows: Vec<(i64, i64, String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out = Vec::new();
-        for (t, d, state, reason) in rows {
-            let why = format!("waits on task {d} ({state}: {reason})");
-            let n = c.execute(
-                "UPDATE tasks SET state='blocked', reason=?2, finished_at=?3 WHERE id=?1 AND state='queued'",
-                params![t, why, crate::unix_now()],
-            )?;
-            if n > 0 {
-                out.push((t, d, why));
-            }
-        }
-        Ok(out)
-    }
-
-    /// A retry of `old` carries its dependents along: every task waiting
-    /// on `old` waits on `new` instead. Releasing a dependent that was
-    /// swept into blocked by `old`'s failure is no longer this function's
-    /// job: it happens once `new` itself reaches a terminal state, the
-    /// same as any other re-pointed dependency (see
-    /// `release_dependents_of`). Returns the ids moved.
-    pub fn reroute_dependents(&self, old: i64, new: i64) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT t.id, t.after_json FROM tasks t, json_each(t.after_json) j
-             WHERE j.value = ?1 AND t.state IN ('queued', 'blocked') AND t.id != ?2",
-        )?;
-        let rows: Vec<(i64, String)> = stmt
-            .query_map(params![old, new], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut moved = Vec::new();
-        for (id, after_json) in rows {
-            let after: Vec<i64> = serde_json::from_str(&after_json).unwrap_or_default();
-            let after: Vec<i64> = after
-                .into_iter()
-                .map(|d| if d == old { new } else { d })
-                .collect();
-            c.execute(
-                "UPDATE tasks SET after_json=?2 WHERE id=?1",
-                params![id, serde_json::to_string(&after)?],
-            )?;
-            moved.push(id);
-        }
-        Ok(moved)
-    }
-
-    /// Re-evaluate every task that waits on `dep` and is currently blocked
-    /// with a reason that says so: the trigger fired whenever a task
-    /// reaches a terminal state (see `engine::run_task` and
-    /// `queue::withdraw`), so a dependent whose after list was re-pointed
-    /// at `dep` — by a retry's reroute or by hand — is released (or freshly
-    /// reblocked) as soon as `dep` resolves, rather than waiting for the
-    /// next full scan. Returns the ids released to `queued`.
-    pub fn release_dependents_of(&self, dep: i64) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let candidates: Vec<(i64, String)> = {
-            let mut stmt = c.prepare(
-                "SELECT t.id, t.after_json FROM tasks t, json_each(t.after_json) j
-                 WHERE j.value = ?1 AND t.state = 'blocked' AND t.reason LIKE 'waits on task%'",
-            )?;
-            stmt.query_map(params![dep], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        release_or_reblock(&c, candidates)
-    }
-
-    /// Re-evaluate every currently blocked task whose reason says it
-    /// waits on a dependency: the backstop run on each claim loop, so a
-    /// dependent whose after list was re-pointed by a direct store edit —
-    /// which fires no trigger of its own — still catches up once its
-    /// (possibly new) dependency resolves. Returns the ids released to
-    /// `queued`.
-    pub fn release_dependents(&self) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let candidates: Vec<(i64, String)> = {
-            let mut stmt = c.prepare(
-                "SELECT id, after_json FROM tasks WHERE state = 'blocked' AND reason LIKE 'waits on task%'",
-            )?;
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        release_or_reblock(&c, candidates)
-    }
-
-    /// The first task in `id`'s chain of retries: itself when it retries nothing.
-    pub fn root_of(&self, id: i64) -> Result<i64> {
-        // Retries always point at an already-existing task, so ids only
-        // shrink walking up the chain: the root is the smallest one.
-        Ok(lineage_ids(&self.lock(), id)?.into_iter().min().unwrap())
-    }
-
-    /// Every task in `id`'s lineage, root first: the root and everything
-    /// that retries it, directly or through other retries.
-    pub fn lineage(&self, id: i64) -> Result<Vec<LineageRow>> {
-        let root = self.root_of(id)?;
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "WITH RECURSIVE down(id) AS (
-               SELECT ?1 UNION ALL SELECT t.id FROM down JOIN tasks t ON t.retry_of = down.id)
-             SELECT t.id, t.retry_of, t.state, t.reason, t.workflow,
-                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id = t.id), 0)
-             FROM down JOIN tasks t ON t.id = down.id ORDER BY t.id",
-        )?;
-        let rows = stmt.query_map(params![root], |r| {
-            Ok(LineageRow {
-                id: r.get(0)?,
-                parent: r.get(1)?,
-                state: r.get(2)?,
-                reason: r.get(3)?,
-                workflow: r.get(4)?,
-                cost: r.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Every task that retries `id` directly.
-    pub fn dependents_retries(&self, id: i64) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let mut stmt = c.prepare("SELECT id FROM tasks WHERE retry_of=?1 ORDER BY id")?;
-        let rows = stmt.query_map(params![id], |r| r.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// The newest task that retries `id`, if any.
-    pub fn latest_retry_of(&self, id: i64) -> Result<Option<i64>> {
-        Ok(self.lock().query_row(
-            "SELECT MAX(id) FROM tasks WHERE retry_of=?1",
-            params![id],
-            |r| r.get::<_, Option<i64>>(0),
-        )?)
-    }
-
-    pub fn queued_count(&self) -> Result<i64> {
-        Ok(self
-            .lock()
-            .query_row("SELECT COUNT(*) FROM tasks WHERE state='queued'", [], |r| {
-                r.get(0)
-            })?)
-    }
-
-    /// Put a running task back in the queue, closing its open attempt as
-    /// agent_failed with `why`, so the next worker resumes at the following
-    /// attempt number.
-    pub fn requeue(&self, id: i64, why: &str) -> Result<()> {
-        let c = self.lock();
-        c.execute(
-            "UPDATE attempts SET state='agent_failed', reason=?2, finished_at=?3 WHERE task_id=?1 AND state='running'",
-            params![id, why, crate::unix_now()],
-        )?;
-        c.execute(
-            "UPDATE tasks SET state='queued', worker_pid=NULL, reason=?2 WHERE id=?1 AND state='running'",
-            params![id, format!("requeued: {why}")],
-        )?;
-        Ok(())
-    }
-
-    /// Tasks left in `running` by a worker that no longer exists.
-    pub fn orphans(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let mut stmt = c.prepare("SELECT id, worker_pid FROM tasks WHERE state='running'")?;
-        let running: Vec<(i64, Option<i64>)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(running
-            .into_iter()
-            .filter(|(_, pid)| !pid.is_some_and(&alive))
-            .map(|(id, _)| id)
-            .collect())
-    }
-
-    pub fn insert_attempt(&self, a: &Attempt) -> Result<i64> {
-        let c = self.lock();
-        c.execute(
-            "INSERT INTO attempts (task_id, attempt_no, state, started_at, log_path, step, start_sha, inputs_json, step_seq, runner, provider)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![a.task_id, a.attempt_no, a.state.as_str(), a.started_at, a.log_path, a.step, a.start_sha, a.inputs_json, a.step_seq, a.runner, a.provider],
-        )?;
-        Ok(c.last_insert_rowid())
-    }
-
-    pub fn finish_attempt(&self, a: &FinishAttempt) -> Result<()> {
-        self.lock().execute(
-            "UPDATE attempts SET state=?2, reason=?3, finished_at=?4, agent_exit=?5, timed_out=?6, num_turns=?7,
-             tool_calls=?8, cost_usd=?9, agent_ms=?10, commits=?11, files_changed=?12, dirty=?13, verdict_json=?14,
-             result_text=?15, envelope_json=?16, rl_five_hour=?17, rl_seven_day=?18, rl_five_hour_resets=?19,
-             rl_seven_day_resets=?20, end_sha=?21, outputs_json=?22, session_id=?23, first_edit=?24,
-             input_tokens=?25, output_tokens=?26, cache_read_input_tokens=?27, cache_creation_input_tokens=?28,
-             early_signals=?29, early_near=?30 WHERE id=?1",
-            params![
-                a.id,
-                a.state.as_str(),
-                a.reason,
-                a.finished_at,
-                a.agent_exit,
-                a.timed_out as i64,
-                a.num_turns,
-                a.tool_calls,
-                a.cost_usd,
-                a.agent_ms,
-                a.commits,
-                a.files_changed,
-                a.dirty as i64,
-                a.verdict_json,
-                a.result_text,
-                a.envelope_json,
-                a.rl_five_hour,
-                a.rl_seven_day,
-                a.rl_five_hour_resets,
-                a.rl_seven_day_resets,
-                a.end_sha,
-                a.outputs_json,
-                a.session_id,
-                a.first_edit,
-                a.input_tokens,
-                a.output_tokens,
-                a.cache_read_input_tokens,
-                a.cache_creation_input_tokens,
-                a.early_signals,
-                a.early_near,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn running_ids(&self) -> Result<Vec<i64>> {
-        let c = self.lock();
-        let mut stmt = c.prepare("SELECT id FROM tasks WHERE state='running' ORDER BY id")?;
-        let rows = stmt.query_map([], |r| r.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// The most recent rate-limit sample any attempt on `provider` recorded:
-    /// the window hold is per provider, since each has its own subscription
-    /// (or none at all).
-    pub fn latest_rate_limit(&self, provider: &str) -> Result<Option<RateLimitSample>> {
-        Ok(self
-            .lock()
-            .query_row(
-                "SELECT COALESCE(finished_at, started_at), rl_five_hour, rl_seven_day, rl_five_hour_resets, rl_seven_day_resets FROM attempts
-                 WHERE provider = ?1 AND (rl_five_hour IS NOT NULL OR rl_seven_day IS NOT NULL) ORDER BY id DESC LIMIT 1",
-                params![provider],
-                |r| Ok(RateLimitSample { seen_at: r.get(0)?, five_hour: r.get(1)?, seven_day: r.get(2)?, five_hour_resets: r.get(3)?, seven_day_resets: r.get(4)? }),
-            )
-            .optional()?)
-    }
-
-    pub fn insert_op(&self, o: &Op) -> Result<i64> {
-        let c = self.lock();
-        c.execute(
-            "INSERT INTO ops (task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![o.task_id, o.seq, o.name, o.kernel as i64, o.started_at, o.ms, o.ok as i64, o.exit, o.detail, o.attempt_id, o.output],
-        )?;
-        Ok(c.last_insert_rowid())
-    }
-
-    pub fn ops(&self, task_id: i64) -> Result<Vec<Op>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, task_id, seq, name, kernel, started_at, ms, ok, exit, detail, attempt_id, output FROM ops WHERE task_id=?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| {
-            Ok(Op {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                seq: r.get(2)?,
-                name: r.get(3)?,
-                kernel: r.get::<_, i64>(4)? != 0,
-                started_at: r.get(5)?,
-                ms: r.get(6)?,
-                ok: r.get::<_, i64>(7)? != 0,
-                exit: r.get(8)?,
-                detail: r.get(9)?,
-                attempt_id: r.get(10)?,
-                output: r.get(11)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    pub fn attempts(&self, task_id: i64) -> Result<Vec<Attempt>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM attempts WHERE task_id=?1 ORDER BY attempt_no",
-            ATTEMPT_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map(params![task_id], attempt_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// (task_id, step, outputs_json) for every attempt, in one query, so
-    /// callers can pull tool facts out of outputs_json without an N+1 over
-    /// tasks. Optionally restricted to a single step.
-    pub fn attempt_tool_facts(&self, step: Option<&str>) -> Result<Vec<(i64, String, String)>> {
-        let c = self.lock();
-        let rows = match step {
-            Some(step) => {
-                let mut stmt =
-                    c.prepare("SELECT task_id, step, outputs_json FROM attempts WHERE step=?1")?;
-                let rows =
-                    stmt.query_map(params![step], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            }
-            None => {
-                let mut stmt = c.prepare("SELECT task_id, step, outputs_json FROM attempts")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            }
-        };
-        Ok(rows)
-    }
-
-    /// Total cost of a task's attempts so far, from the CLI's accounting.
-    pub fn task_cost(&self, task_id: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE task_id=?1",
-            params![task_id],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// Cost of every attempt started at or after `since`.
-    /// The files successful attempts on this repository read most: a prior
-    /// for where a new task's answer is likely to be. From the tool facts.
-    pub fn hot_files(&self, repo: &str, n: usize) -> Result<Vec<String>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT a.outputs_json FROM attempts a JOIN tasks t ON t.id = a.task_id
-             WHERE t.repo = ?1 AND a.state = 'succeeded' AND a.step != 'review'",
-        )?;
-        let rows: Vec<String> = stmt
-            .query_map(params![repo], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-        for json in rows {
-            if let Ok(o) = serde_json::from_str::<crate::audit::Outputs>(&json)
-                && let Some(t) = o.tools
-            {
-                for (path, k) in t.reads {
-                    if !path.starts_with('/') {
-                        *counts.entry(path).or_default() += k;
-                    }
-                }
-            }
-        }
-        let mut v: Vec<(String, u64)> = counts.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        Ok(v.into_iter().take(n).map(|(p, _)| p).collect())
-    }
-
-    pub fn spent_since(&self, since: i64) -> Result<f64> {
-        Ok(self.lock().query_row(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM attempts WHERE started_at >= ?1",
-            params![since],
-            |r| r.get(0),
-        )?)
-    }
-
     /// How many `interview` attempts blocked on a question since `since`:
     /// the operator's `[intake] max_questions_per_day` cap, one row per
     /// person-facing turn (the confirmation counts as one).
@@ -2462,54 +1892,6 @@ impl Store {
             params![since],
             |r| r.get(0),
         )?)
-    }
-
-    /// Tasks whose worktree is still on disk as far as Forge knows.
-    pub fn tasks_with_worktrees(&self) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE worktree != '' AND worktree_removed_at IS NULL ORDER BY id",
-            TASK_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map([], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Landed tasks, scoped like every other `forge stats` query: the
-    /// input to both delayed-cost signals (the `task_repair_cost` cache
-    /// and the `task_churn` cache).
-    pub fn landed_tasks(&self, scope: &StatsFilter) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE landed_sha != ''
-               AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
-             ORDER BY id",
-            TASK_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map(params![scope.project, scope.initiative], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Landed tasks on `repo`, other than `exclude`, whose landing fell in
-    /// `(from, to]`: the later landings a churn computation diffs `added`
-    /// against (see docs/LATER.md, the delayed-cost follow-up to "Defect
-    /// escape").
-    pub fn later_landings(
-        &self,
-        repo: &str,
-        exclude: i64,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE repo = ?1 AND id != ?2 AND landed_sha != ''
-               AND finished_at > ?3 AND finished_at <= ?4
-             ORDER BY id",
-            TASK_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map(params![repo, exclude, from, to], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// `task_churn`'s cached row for `task_id`, if it has been computed.
@@ -2571,25 +1953,6 @@ impl Store {
         set_line_overlap_cache_query(&self.lock(), t_sha, l_sha, overlap_lines, removed_lines)
     }
 
-    /// The most recent landed task on `repo` with an id below `before_id`:
-    /// what `refresh_hand_commits` diffs a landing against to find the
-    /// hand commits that reached the base branch since (see
-    /// `Task::landed_at`, `task_hand_commits`). `None` for the first
-    /// landing a repository ever gets.
-    pub fn previous_landing(&self, repo: &str, before_id: i64) -> Result<Option<Task>> {
-        let c = self.lock();
-        Ok(c.query_row(
-            &format!(
-                "SELECT {} FROM tasks WHERE repo = ?1 AND id < ?2 AND landed_sha != ''
-                 ORDER BY id DESC LIMIT 1",
-                TASK_COLUMNS.join(", ")
-            ),
-            params![repo, before_id],
-            task_from_row,
-        )
-        .optional()?)
-    }
-
     /// `task_hand_commits`'s cached row for `task_id`, if it has been computed.
     pub fn hand_commits_cache(&self, task_id: i64) -> Result<Option<i64>> {
         hand_commits_cache_query(&self.lock(), task_id)
@@ -2603,14 +1966,6 @@ impl Store {
         computed_at: i64,
     ) -> Result<()> {
         set_hand_commits_cache_query(&self.lock(), task_id, hand_commits, computed_at)
-    }
-
-    pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
-        self.lock().execute(
-            "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
-            params![id, crate::unix_now()],
-        )?;
-        Ok(())
     }
 
     /// Blocked tasks: the demand signal for workflows and the questions
@@ -2637,9 +1992,10 @@ impl Store {
     ) -> Result<Vec<crate::profile::Run>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, t.state, COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0),
-                    COALESCE(t.finished_at - t.started_at, 0),
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id)
+            "SELECT t.id AS id, t.state AS state,
+                    COALESCE((SELECT SUM(cost_usd) FROM attempts a WHERE a.task_id=t.id),0) AS cost,
+                    COALESCE(t.finished_at - t.started_at, 0) AS secs,
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
                AND t.state IN ('succeeded','failed','blocked','unverified')
                AND t.started_at IS NOT NULL
@@ -2647,7 +2003,13 @@ impl Store {
         )?;
         let rows: Vec<(i64, String, f64, i64, i64)> = stmt
             .query_map(params![workflow, hash, limit as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get("id")?,
+                    r.get("state")?,
+                    r.get("cost")?,
+                    r.get("secs")?,
+                    r.get("attempts")?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::with_capacity(rows.len());
@@ -2679,17 +2041,18 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.workflow, t.workflow_hash, COUNT(*),
-                    SUM(t.state='succeeded'), SUM(t.state='failed'), SUM(t.state='blocked'), SUM(t.state='unverified'),
+                "SELECT t.workflow AS workflow, t.workflow_hash AS hash, COUNT(*) AS tasks,
+                    SUM(t.state='succeeded') AS succeeded, SUM(t.state='failed') AS failed,
+                    SUM(t.state='blocked') AS blocked, SUM(t.state='unverified') AS unverified,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
                           AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
-                    )), 0),
+                    )), 0) AS cost,
                     COALESCE((SELECT COUNT(*) FROM attempts a WHERE a.task_id IN (
                         SELECT id FROM tasks t2 WHERE t2.workflow=t.workflow AND t2.workflow_hash=t.workflow_hash
                           AND (?1 IS NULL OR t2.project = ?1) AND (?2 IS NULL OR t2.initiative = ?2)
-                    )), 0),
-                    SUM(t.landed_sha != ''),
+                    )), 0) AS attempts,
+                    SUM(t.landed_sha != '') AS landed,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a
                         JOIN tasks b ON b.id = a.task_id
@@ -2700,28 +2063,28 @@ impl Store {
                               SELECT 1 FROM json_each(a.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    )),
+                    )) AS broke_base,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM task_refs r WHERE r.kind = 'repairs' AND r.url = 'forge://task/' || t.id
-                    ))
+                    )) AS repaired
              FROM tasks t WHERE t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
             let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
                 Ok(WorkflowStat {
-                    workflow: r.get(0)?,
-                    hash: r.get(1)?,
-                    tasks: r.get(2)?,
-                    succeeded: r.get(3)?,
-                    failed: r.get(4)?,
-                    blocked: r.get(5)?,
-                    unverified: r.get(6)?,
-                    cost: r.get(7)?,
-                    attempts: r.get(8)?,
-                    landed: r.get(9)?,
-                    broke_base: r.get(10)?,
-                    repaired: r.get(11)?,
+                    workflow: r.get("workflow")?,
+                    hash: r.get("hash")?,
+                    tasks: r.get("tasks")?,
+                    succeeded: r.get("succeeded")?,
+                    failed: r.get("failed")?,
+                    blocked: r.get("blocked")?,
+                    unverified: r.get("unverified")?,
+                    cost: r.get("cost")?,
+                    attempts: r.get("attempts")?,
+                    landed: r.get("landed")?,
+                    broke_base: r.get("broke_base")?,
+                    repaired: r.get("repaired")?,
                     repair_cost: 0.0,
                     added_lines: 0,
                     churned_lines: 0,
@@ -2786,24 +2149,24 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.workflow, t.workflow_hash, SUM(t.landed_sha != ''),
+                "SELECT t.workflow AS workflow, t.workflow_hash AS hash, SUM(t.landed_sha != '') AS landed,
                     COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
                         WHERE dt.workflow = t.workflow AND dt.workflow_hash = t.workflow_hash
                           AND d.answered_by != 'supervisor'
                           AND (?1 IS NULL OR dt.project = ?1) AND (?2 IS NULL OR dt.initiative = ?2)
-                    ), 0),
-                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+                    ), 0) AS operator_answers,
+                    SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
              FROM tasks t WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
             )?;
             let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
                 Ok(HumanAttentionStat {
-                    workflow: r.get(0)?,
-                    hash: r.get(1)?,
-                    landed: r.get(2)?,
-                    operator_answers: r.get(3)?,
-                    hand_landed: r.get(4)?,
-                    withdrawals: r.get(5)?,
+                    workflow: r.get("workflow")?,
+                    hash: r.get("hash")?,
+                    landed: r.get("landed")?,
+                    operator_answers: r.get("operator_answers")?,
+                    hand_landed: r.get("hand_landed")?,
+                    withdrawals: r.get("withdrawals")?,
                     hand_commits: 0,
                 })
             })?;
@@ -2829,27 +2192,29 @@ impl Store {
     pub fn step_stats(&self, scope: &StatsFilter) -> Result<Vec<StepStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.workflow, a.step, COUNT(*), SUM(a.state='succeeded'), SUM(a.state='agent_failed'),
-                    SUM(a.state='checks_failed'), SUM(a.state='needs_input'), AVG(a.num_turns), COALESCE(SUM(a.cost_usd),0), AVG(a.agent_ms),
-                    AVG(a.first_edit), AVG(a.input_tokens)
+            "SELECT t.workflow AS workflow, a.step AS step, COUNT(*) AS attempts,
+                    SUM(a.state='succeeded') AS succeeded, SUM(a.state='agent_failed') AS agent_failed,
+                    SUM(a.state='checks_failed') AS checks_failed, SUM(a.state='needs_input') AS needs_input,
+                    AVG(a.num_turns) AS mean_turns, COALESCE(SUM(a.cost_usd),0) AS cost, AVG(a.agent_ms) AS mean_ms,
+                    AVG(a.first_edit) AS mean_first_edit, AVG(a.input_tokens) AS mean_input_tokens
              FROM attempts a JOIN tasks t ON t.id=a.task_id WHERE a.state != 'running'
                AND (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
              GROUP BY t.workflow, a.step ORDER BY t.workflow, a.step",
         )?;
         let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
             Ok(StepStat {
-                workflow: r.get(0)?,
-                step: r.get(1)?,
-                attempts: r.get(2)?,
-                succeeded: r.get(3)?,
-                agent_failed: r.get(4)?,
-                checks_failed: r.get(5)?,
-                needs_input: r.get(6)?,
-                mean_turns: r.get(7)?,
-                cost: r.get(8)?,
-                mean_ms: r.get(9)?,
-                mean_first_edit: r.get(10)?,
-                mean_input_tokens: r.get(11)?,
+                workflow: r.get("workflow")?,
+                step: r.get("step")?,
+                attempts: r.get("attempts")?,
+                succeeded: r.get("succeeded")?,
+                agent_failed: r.get("agent_failed")?,
+                checks_failed: r.get("checks_failed")?,
+                needs_input: r.get("needs_input")?,
+                mean_turns: r.get("mean_turns")?,
+                cost: r.get("cost")?,
+                mean_ms: r.get("mean_ms")?,
+                mean_first_edit: r.get("mean_first_edit")?,
+                mean_input_tokens: r.get("mean_input_tokens")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2865,20 +2230,21 @@ impl Store {
             "SELECT
                 json_extract(a.inputs_json, '$.journal') IS NOT NULL
                     AND json_extract(a.inputs_json, '$.journal') != '' AS has_journal,
-                COUNT(*), SUM(a.state='succeeded'), AVG(a.num_turns), AVG(a.first_edit),
-                COALESCE(AVG(a.cost_usd), 0)
+                COUNT(*) AS attempts, SUM(a.state='succeeded') AS succeeded,
+                AVG(a.num_turns) AS mean_turns, AVG(a.first_edit) AS mean_first_edit,
+                COALESCE(AVG(a.cost_usd), 0) AS mean_cost_usd
              FROM attempts a
              WHERE a.step = 'code' AND a.attempt_no > 1 AND a.state != 'running'
              GROUP BY has_journal",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(JournalStat {
-                has_journal: r.get(0)?,
-                attempts: r.get(1)?,
-                succeeded: r.get(2)?,
-                mean_turns: r.get(3)?,
-                mean_first_edit: r.get(4)?,
-                mean_cost_usd: r.get(5)?,
+                has_journal: r.get("has_journal")?,
+                attempts: r.get("attempts")?,
+                succeeded: r.get("succeeded")?,
+                mean_turns: r.get("mean_turns")?,
+                mean_first_edit: r.get("mean_first_edit")?,
+                mean_cost_usd: r.get("mean_cost_usd")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -2896,8 +2262,8 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT a.step, a.provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
-                    COUNT(*),
+                "SELECT a.step AS role, a.provider AS provider, COALESCE(json_extract(a.inputs_json, '$.model'), '') AS attempt_model,
+                    COUNT(*) AS attempts,
                     SUM(CASE
                         WHEN a.state='succeeded' THEN 1
                         WHEN a.step IN ('investigate', 'interview') AND a.state='needs_input'
@@ -2905,9 +2271,9 @@ impl Store {
                             AND COALESCE(json_extract(a.envelope_json, '$.needs_input.kind'), 'question') = 'question'
                         THEN 1
                         ELSE 0
-                    END),
-                    AVG(a.num_turns), COALESCE(AVG(a.cost_usd), 0), AVG(a.agent_ms),
-                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END),
+                    END) AS succeeded,
+                    AVG(a.num_turns) AS mean_turns, COALESCE(AVG(a.cost_usd), 0) AS mean_cost_usd, AVG(a.agent_ms) AS mean_ms,
+                    COUNT(DISTINCT CASE WHEN t.landed_sha != '' THEN t.id END) AS landed,
                     COUNT(DISTINCT CASE WHEN t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a2
                         JOIN tasks b ON b.id = a2.task_id
@@ -2918,26 +2284,26 @@ impl Store {
                               SELECT 1 FROM json_each(a2.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    ) THEN t.id END)
+                    ) THEN t.id END) AS broke_base
              FROM attempts a JOIN tasks t ON t.id = a.task_id
              WHERE a.state != 'running'
              GROUP BY a.step, a.provider, attempt_model
              ORDER BY a.step, a.provider, attempt_model",
             )?;
             let rows = stmt.query_map([], |r| {
-                let role: String = r.get(0)?;
-                let landed: i64 = r.get(8)?;
-                let broke_base: i64 = r.get(9)?;
+                let role: String = r.get("role")?;
+                let landed: i64 = r.get("landed")?;
+                let broke_base: i64 = r.get("broke_base")?;
                 let is_code = role == "code";
                 Ok(RoleStat {
                     role,
-                    provider: r.get(1)?,
-                    model: r.get(2)?,
-                    attempts: r.get(3)?,
-                    succeeded: r.get(4)?,
-                    mean_turns: r.get(5)?,
-                    mean_cost_usd: r.get(6)?,
-                    mean_ms: r.get(7)?,
+                    provider: r.get("provider")?,
+                    model: r.get("attempt_model")?,
+                    attempts: r.get("attempts")?,
+                    succeeded: r.get("succeeded")?,
+                    mean_turns: r.get("mean_turns")?,
+                    mean_cost_usd: r.get("mean_cost_usd")?,
+                    mean_ms: r.get("mean_ms")?,
                     landed: is_code.then_some(landed),
                     broke_base: is_code.then_some(broke_base),
                     repair_cost: is_code.then_some(0.0),
@@ -2980,10 +2346,12 @@ impl Store {
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id, t.state, datetime(t.created_at,'unixepoch','localtime'), t.repo, t.task,
-                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id),
-                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id),
-                    t.workflow, t.created_at, t.finished_at, t.project, t.initiative
+            "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch','localtime') AS created,
+                    t.repo AS repo, t.task AS task,
+                    (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
+                    (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
+                    t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
+                    t.project AS project, t.initiative AS initiative
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
@@ -3005,18 +2373,18 @@ impl Store {
             ],
             |r| {
                 Ok(TaskSummary {
-                    id: r.get(0)?,
-                    state: r.get(1)?,
-                    created: r.get(2)?,
-                    repo: r.get(3)?,
-                    task: r.get(4)?,
-                    attempts: r.get(5)?,
-                    cost: r.get(6)?,
-                    workflow: r.get(7)?,
-                    created_at: r.get(8)?,
-                    finished_at: r.get(9)?,
-                    project: r.get(10)?,
-                    initiative: r.get(11)?,
+                    id: r.get("id")?,
+                    state: r.get("state")?,
+                    created: r.get("created")?,
+                    repo: r.get("repo")?,
+                    task: r.get("task")?,
+                    attempts: r.get("attempts")?,
+                    cost: r.get("cost")?,
+                    workflow: r.get("workflow")?,
+                    created_at: r.get("created_at")?,
+                    finished_at: r.get("finished_at")?,
+                    project: r.get("project")?,
+                    initiative: r.get("initiative")?,
                 })
             },
         )?;
@@ -3080,24 +2448,11 @@ impl Store {
         let ids = lineage_ids(&c, id)?;
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let mut stmt = c.prepare(&format!(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
-             FROM decisions d WHERE d.task_id IN ({placeholders})
-             ORDER BY d.id"
+            "SELECT {} FROM decisions d WHERE d.task_id IN ({placeholders})
+             ORDER BY d.id",
+            DECISION_COLUMNS.join(", ")
         ))?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-            Ok(Decision {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                repo: r.get(2)?,
-                question: r.get(3)?,
-                answer: r.get(4)?,
-                created_at: r.get(5)?,
-                answered_by: r.get(6)?,
-                citations: r.get(7)?,
-                retry_id: r.get(8)?,
-                answered_for: r.get(9)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), decision_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3127,28 +2482,20 @@ impl Store {
     /// carries no such column of its own.
     pub fn decisions(&self, q: &DecisionFilter) -> Result<Vec<Decision>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT d.id, d.task_id, d.repo, d.question, d.answer, d.created_at, d.answered_by, d.citations, d.retry_id, d.answered_for
+        let cols = DECISION_COLUMNS
+            .iter()
+            .map(|c| format!("d.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = c.prepare(&format!(
+            "SELECT {cols}
              FROM decisions d JOIN tasks t ON t.id = d.task_id
              WHERE (?1 IS NULL OR d.repo = ?1)
                AND (?2 IS NULL OR t.project = ?2)
                AND (?3 IS NULL OR t.initiative = ?3)
-             ORDER BY d.id DESC",
-        )?;
-        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], |r| {
-            Ok(Decision {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                repo: r.get(2)?,
-                question: r.get(3)?,
-                answer: r.get(4)?,
-                created_at: r.get(5)?,
-                answered_by: r.get(6)?,
-                citations: r.get(7)?,
-                retry_id: r.get(8)?,
-                answered_for: r.get(9)?,
-            })
-        })?;
+             ORDER BY d.id DESC"
+        ))?;
+        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], decision_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3173,20 +2520,11 @@ impl Store {
     /// A task's references, oldest first.
     pub fn task_refs(&self, task_id: i64) -> Result<Vec<TaskRef>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, task_id, kind, url, label, by, created_at FROM task_refs WHERE task_id = ?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| {
-            Ok(TaskRef {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                kind: r.get(2)?,
-                url: r.get(3)?,
-                label: r.get(4)?,
-                by: r.get(5)?,
-                created_at: r.get(6)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM task_refs WHERE task_id = ?1 ORDER BY id",
+            TASK_REF_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![task_id], task_ref_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3551,22 +2889,24 @@ impl Store {
     pub fn project_task_stats(&self, project: &str) -> Result<ProjectTaskStats> {
         let c = self.lock();
         Ok(c.query_row(
-            "SELECT SUM(state='queued'), SUM(state='running'), SUM(state='succeeded'), SUM(state='failed'),
-                    SUM(state='unverified'), SUM(state='blocked'), SUM(state='withdrawn'),
+            "SELECT SUM(state='queued') AS queued, SUM(state='running') AS running,
+                    SUM(state='succeeded') AS succeeded, SUM(state='failed') AS failed,
+                    SUM(state='unverified') AS unverified, SUM(state='blocked') AS blocked,
+                    SUM(state='withdrawn') AS withdrawn,
                     COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN
-                        (SELECT id FROM tasks WHERE project=?1)), 0)
+                        (SELECT id FROM tasks WHERE project=?1)), 0) AS cost
              FROM tasks WHERE project=?1",
             params![project],
             |r| {
                 Ok(ProjectTaskStats {
-                    queued: r.get::<_, Option<i64>>(0)?.unwrap_or(0),
-                    running: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    succeeded: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                    unverified: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                    blocked: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                    withdrawn: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                    cost: r.get(7)?,
+                    queued: r.get::<_, Option<i64>>("queued")?.unwrap_or(0),
+                    running: r.get::<_, Option<i64>>("running")?.unwrap_or(0),
+                    succeeded: r.get::<_, Option<i64>>("succeeded")?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                    unverified: r.get::<_, Option<i64>>("unverified")?.unwrap_or(0),
+                    blocked: r.get::<_, Option<i64>>("blocked")?.unwrap_or(0),
+                    withdrawn: r.get::<_, Option<i64>>("withdrawn")?.unwrap_or(0),
+                    cost: r.get("cost")?,
                 })
             },
         )?)
@@ -3579,8 +2919,8 @@ impl Store {
     pub fn project_stats(&self) -> Result<Vec<ProjectStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.project, COUNT(*), SUM(t.landed_sha != ''),
-                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.project=t.project)), 0),
+            "SELECT t.project AS project, COUNT(*) AS tasks, SUM(t.landed_sha != '') AS landed,
+                    COALESCE((SELECT SUM(a.cost_usd) FROM attempts a WHERE a.task_id IN (SELECT id FROM tasks t2 WHERE t2.project=t.project)), 0) AS cost,
                     SUM(t.landed_sha != '' AND EXISTS (
                         SELECT 1 FROM attempts a
                         JOIN tasks b ON b.id = a.task_id
@@ -3591,17 +2931,17 @@ impl Store {
                               SELECT 1 FROM json_each(a.verdict_json) j
                               WHERE json_extract(j.value, '$.level') = 'L1' AND json_extract(j.value, '$.ok') = 0
                           )
-                    ))
+                    )) AS broke_base
              FROM tasks t WHERE t.project IS NOT NULL AND t.state IN ('succeeded','failed','blocked','unverified') AND t.started_at IS NOT NULL
              GROUP BY t.project ORDER BY t.project",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ProjectStat {
-                project: r.get(0)?,
-                tasks: r.get(1)?,
-                landed: r.get(2)?,
-                cost: r.get(3)?,
-                broke_base: r.get(4)?,
+                project: r.get("project")?,
+                tasks: r.get("tasks")?,
+                landed: r.get("landed")?,
+                cost: r.get("cost")?,
+                broke_base: r.get("broke_base")?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3615,21 +2955,21 @@ impl Store {
         let mut stats = {
             let c = self.lock();
             let mut stmt = c.prepare(
-                "SELECT t.project, SUM(t.landed_sha != ''),
+                "SELECT t.project AS project, SUM(t.landed_sha != '') AS landed,
                     COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
                         WHERE dt.project = t.project AND d.answered_by != 'supervisor'
-                    ), 0),
-                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+                    ), 0) AS operator_answers,
+                    SUM(t.hand_landed) AS hand_landed, SUM(t.state = 'withdrawn') AS withdrawals
              FROM tasks t WHERE t.project IS NOT NULL
              GROUP BY t.project ORDER BY t.project",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok(HumanAttentionProjectStat {
-                    project: r.get(0)?,
-                    landed: r.get(1)?,
-                    operator_answers: r.get(2)?,
-                    hand_landed: r.get(3)?,
-                    withdrawals: r.get(4)?,
+                    project: r.get("project")?,
+                    landed: r.get("landed")?,
+                    operator_answers: r.get("operator_answers")?,
+                    hand_landed: r.get("hand_landed")?,
+                    withdrawals: r.get("withdrawals")?,
                     hand_commits: 0,
                 })
             })?;
@@ -3656,16 +2996,16 @@ impl Store {
     /// `JobStat`, docs/JOBS.md step 1d).
     pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
         Ok(self.lock().query_row(
-            "SELECT COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+            "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
              FROM jobs WHERE project=?1 AND started_at >= ?2",
             params![project, since],
             |r| {
                 Ok(JobStat {
                     project: project.to_string(),
-                    today: r.get(0)?,
-                    ok: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    failed: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    needs_human: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    today: r.get("today")?,
+                    ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
+                    failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                    needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
                 })
             },
         )?)
@@ -3677,16 +3017,16 @@ impl Store {
     pub fn job_stats(&self, since: i64) -> Result<Vec<JobStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT project, COUNT(*), SUM(state='ok'), SUM(state='failed'), SUM(state='needs_human')
+            "SELECT project AS project, COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
              FROM jobs WHERE started_at >= ?1 GROUP BY project ORDER BY project",
         )?;
         let rows = stmt.query_map(params![since], |r| {
             Ok(JobStat {
-                project: r.get(0)?,
-                today: r.get(1)?,
-                ok: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                failed: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                needs_human: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                project: r.get("project")?,
+                today: r.get("today")?,
+                ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
+                failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
+                needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3886,21 +3226,12 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id, task_id, score, findings_json, model, provider, cost_usd, created_at
-                 FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+                &format!(
+                    "SELECT {} FROM assessments WHERE task_id=?1 ORDER BY id DESC LIMIT 1",
+                    ASSESSMENT_COLUMNS.join(", ")
+                ),
                 params![task_id],
-                |r| {
-                    Ok(Assessment {
-                        id: r.get(0)?,
-                        task_id: r.get(1)?,
-                        score: r.get(2)?,
-                        findings_json: r.get(3)?,
-                        model: r.get(4)?,
-                        provider: r.get(5)?,
-                        cost_usd: r.get(6)?,
-                        created_at: r.get(7)?,
-                    })
-                },
+                assessment_from_row,
             )
             .optional()?)
     }
@@ -4816,123 +4147,9 @@ mod tests {
     }
 
     #[test]
-    fn latest_rate_limit_is_keyed_by_provider() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(&dir.path().join("t.db")).unwrap();
-        let t = Task {
-            repo: "r".into(),
-            task: "t".into(),
-            base_branch: "main".into(),
-            model: "m".into(),
-            max_turns: 1,
-            max_attempts: 2,
-            timeout_secs: 1,
-            ..Default::default()
-        };
-        let id = s.insert_task(&t).unwrap();
-        let finish = |aid: i64, five_hour: f64| FinishAttempt {
-            id: aid,
-            state: AttemptState::Succeeded,
-            reason: String::new(),
-            finished_at: Some(2),
-            agent_exit: Some(0),
-            timed_out: false,
-            num_turns: 1,
-            tool_calls: 1,
-            cost_usd: Some(0.0),
-            agent_ms: 0,
-            commits: 0,
-            files_changed: 0,
-            dirty: false,
-            verdict_json: "[]".into(),
-            result_text: String::new(),
-            envelope_json: String::new(),
-            rl_five_hour: Some(five_hour),
-            rl_seven_day: None,
-            rl_five_hour_resets: Some(2_000_000_000),
-            rl_seven_day_resets: None,
-            end_sha: String::new(),
-            outputs_json: String::new(),
-            session_id: String::new(),
-            first_edit: None,
-            input_tokens: None,
-            output_tokens: None,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            early_signals: "[]".into(),
-            early_near: "[]".into(),
-        };
-        let anthropic_attempt = s
-            .insert_attempt(&Attempt {
-                task_id: id,
-                attempt_no: 1,
-                started_at: 1,
-                provider: "anthropic".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        s.finish_attempt(&finish(anthropic_attempt, 0.95)).unwrap();
-        let devhome_attempt = s
-            .insert_attempt(&Attempt {
-                task_id: id,
-                attempt_no: 2,
-                started_at: 2,
-                provider: "devhome".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        s.finish_attempt(&finish(devhome_attempt, 0.1)).unwrap();
-        assert_eq!(
-            s.latest_rate_limit("anthropic").unwrap().unwrap().five_hour,
-            Some(0.95)
-        );
-        assert_eq!(
-            s.latest_rate_limit("devhome").unwrap().unwrap().five_hour,
-            Some(0.1)
-        );
-        assert!(s.latest_rate_limit("openai").unwrap().is_none());
-    }
-
-    #[test]
     fn unknown_state_is_an_error_not_a_default() {
         assert!(TaskState::try_from("bogus").is_err());
         assert!(AttemptState::try_from("bogus").is_err());
-    }
-
-    #[test]
-    fn claim_is_exclusive_and_requeue_closes_the_open_attempt() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Store::open(&dir.path().join("t.db")).unwrap();
-        let t = Task {
-            repo: "r".into(),
-            task: "t".into(),
-            base_branch: "main".into(),
-            model: "m".into(),
-            max_turns: 1,
-            max_attempts: 2,
-            timeout_secs: 1,
-            ..Default::default()
-        };
-        let id = s.insert_task(&t).unwrap();
-        assert!(s.claim(id, 1).unwrap());
-        assert!(!s.claim(id, 2).unwrap(), "second claim must fail");
-        let a = Attempt {
-            task_id: id,
-            attempt_no: 1,
-            started_at: 0,
-            ..Default::default()
-        };
-        s.insert_attempt(&a).unwrap();
-        s.requeue(id, "worker died").unwrap();
-        let t = s.task(id).unwrap().unwrap();
-        assert_eq!(t.state, TaskState::Queued);
-        let att = s.attempts(id).unwrap();
-        assert_eq!(att[0].state, AttemptState::AgentFailed);
-        assert_eq!(att[0].reason, "worker died");
-        assert_eq!(
-            s.claim_next(3, &[], |_| false).unwrap().map(|t| t.id),
-            Some(id)
-        );
     }
 
     #[test]
@@ -6096,7 +5313,7 @@ mod column_tests {
     fn columns(store: &Store, table: &str) -> Vec<String> {
         let c = store.lock();
         let mut stmt = c.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(1))
+        stmt.query_map([], |r| r.get::<_, String>("name"))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
@@ -6117,6 +5334,10 @@ mod column_tests {
             ("project_repos", PROJECT_REPO_COLUMNS),
             ("backlog", BACKLOG_COLUMNS),
             ("initiatives", INITIATIVE_COLUMNS),
+            ("ops", OP_COLUMNS),
+            ("decisions", DECISION_COLUMNS),
+            ("task_refs", TASK_REF_COLUMNS),
+            ("assessments", ASSESSMENT_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
@@ -6135,71 +5356,71 @@ mod column_tests {
         }
     }
 
+    /// Every `r.get(` call in the file, with the index that follows it (an
+    /// optional `::<Type>` turbofish is skipped first), one entry per call.
+    fn positional_row_gets(src: &str) -> Vec<(usize, String, u32)> {
+        let mut out = Vec::new();
+        for (lineno, line) in src.lines().enumerate() {
+            let mut start = 0;
+            while let Some(rel) = line[start..].find("r.get") {
+                let mut pos = start + rel + "r.get".len();
+                if line[pos..].starts_with("::<") {
+                    pos += 3;
+                    let mut depth = 1;
+                    let bytes = line.as_bytes();
+                    while depth > 0 && pos < bytes.len() {
+                        match bytes[pos] as char {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            _ => {}
+                        }
+                        pos += 1;
+                    }
+                }
+                if line[pos..].starts_with('(') {
+                    let digits: String = line[pos + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect();
+                    if let Ok(n) = digits.parse::<u32>() {
+                        out.push((lineno + 1, line.trim().to_string(), n));
+                    }
+                }
+                start = pos.max(start + rel + 1);
+            }
+        }
+        out
+    }
+
+    /// A `*_from_row` function or a `query_map`/`query_row` closure that
+    /// reads `r.get(N)` for `N > 0` has the exact defect item 2 of
+    /// docs/REVIEW-2.md describes: inserting a column mid-`SELECT`
+    /// mis-parses silently. `r.get(0)` alone is left alone: by the time
+    /// this task is done, the only statements still reading it are
+    /// single-column queries (a `COUNT(*)`, a bare `id`, or the like)
+    /// where there is no second field to drift out of order against.
     #[test]
-    fn update_task_persists_every_field() {
-        let (_d, store) = open();
-        let mut t = Task {
-            repo: "/r".into(),
-            task: "do".into(),
-            base_branch: "main".into(),
-            model: "sonnet".into(),
-            max_turns: 30,
-            max_attempts: 2,
-            timeout_secs: 60,
-            state: TaskState::Queued,
-            created_at: 1,
-            workflow: "direct".into(),
-            land: true,
-            journal: true,
-            context_enabled: true,
-            ..Default::default()
-        };
-        t.id = store.insert_task(&t).unwrap();
-        // Change every mutable field, then read it back.
-        t.repo = "/elsewhere".into();
-        t.task = "do more".into();
-        t.base_branch = "dev".into();
-        t.base_sha = "abc".into();
-        t.branch = "forge/x".into();
-        t.worktree = "/wt".into();
-        t.model = "opus".into();
-        t.max_turns = 99;
-        t.max_attempts = 5;
-        t.timeout_secs = 7;
-        t.checks = vec!["true".into()];
-        t.state = TaskState::Running;
-        t.reason = "why".into();
-        t.question_to = Some("alice".into());
-        t.started_at = Some(2);
-        t.finished_at = Some(3);
-        t.pushed = true;
-        t.worker_pid = Some(4);
-        t.budget_usd = Some(1.5);
-        t.allow_protected = true;
-        t.workflow = "tdd".into();
-        t.workflow_hash = "h".into();
-        t.workflow_text = "text".into();
-        t.actions_json = "[]".into();
-        t.interface = "iface".into();
-        t.show_checks = true;
-        t.land = false;
-        t.after = vec![7, 8];
-        t.verify_base = "vb".into();
-        t.retry_of = Some(9);
-        t.journal = false;
-        t.context = "ctx".into();
-        t.context_enabled = false;
-        t.resume_on_failure = true;
-        t.plan = "plan".into();
-        t.landed_sha = "abc123".into();
-        t.journal_arm = "control".into();
-        t.project = Some("proj".into());
-        t.initiative = Some(11);
-        t.landed_at = Some(4);
-        t.hand_landed = true;
-        store.update_task(&t).unwrap();
-        let back = store.task(t.id).unwrap().unwrap();
-        assert_eq!(format!("{back:?}"), format!("{t:?}"));
+    fn no_row_reads_a_column_by_position_outside_a_single_column_query() {
+        let files: &[(&str, &str)] = &[
+            ("mod.rs", include_str!("mod.rs")),
+            ("tasks.rs", include_str!("tasks.rs")),
+            ("attempts.rs", include_str!("attempts.rs")),
+        ];
+        let offenders: Vec<String> = files
+            .iter()
+            .flat_map(|(name, src)| {
+                positional_row_gets(src)
+                    .into_iter()
+                    .filter(|(_, _, n)| *n != 0)
+                    .map(move |(lineno, text, _)| format!("{name}:{lineno}: {text}"))
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "r.get(N) for N > 0 reads a column by position; name it instead \
+             (see e.g. OP_COLUMNS/op_from_row for the pattern):\n{}",
+            offenders.join("\n")
+        );
     }
 }
 

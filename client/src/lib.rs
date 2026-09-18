@@ -14,6 +14,22 @@ use std::io::BufRead;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// Retries a spawn a few times on `ETXTBSY`: the kernel can transiently
+/// report a just-written, just-chmod'd binary as busy under heavy
+/// concurrent process load, before any process actually holds it open.
+/// Nothing has run yet when this fires, so retrying is safe.
+fn retry_on_etxtbsy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    for attempt in 0..5 {
+        match spawn() {
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 /// The `forge` binary: `FORGE_BIN`, else `forge` on `PATH` — resolved
 /// exactly as `tui/src/main.rs` resolves it.
 #[derive(Clone)]
@@ -38,9 +54,7 @@ impl Forge {
     /// an error carrying stderr, per `docs/CLIENT.md`: a client shows the
     /// error and never parses stdout in that case.
     pub fn run(&self, args: &[&str]) -> Result<String> {
-        let out = Command::new(&self.bin)
-            .args(args)
-            .output()
+        let out = retry_on_etxtbsy(|| Command::new(&self.bin).args(args).output())
             .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
         if !out.status.success() {
             anyhow::bail!(
@@ -195,12 +209,14 @@ impl Forge {
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
     pub fn subscribe(&self, offset: u64) -> Result<Subscription> {
-        let mut child = Command::new(&self.bin)
-            .args(["events", "--since", &offset.to_string(), "--follow"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("running {} events --follow", self.bin))?;
+        let mut child = retry_on_etxtbsy(|| {
+            Command::new(&self.bin)
+                .args(["events", "--since", &offset.to_string(), "--follow"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .with_context(|| format!("running {} events --follow", self.bin))?;
         let stdout = child.stdout.take().context("events stdout")?;
         Ok(Subscription {
             child: Arc::new(Mutex::new(child)),
