@@ -559,6 +559,29 @@ pub struct PortalDeployTarget {
     pub screenshot: Option<String>,
 }
 
+/// One of a run workflow's last three jobs on [`PortalDoc`], "Running
+/// for you" continued: when it ran, whether it went `"ok"`, `"failed"`
+/// or `"needs_human"`, and, on failure, a one-line reason.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalJobRun {
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// One run workflow on [`PortalDoc`]: an automation this project's jobs
+/// run through, and its last three jobs, newest first.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalWorkflow {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub jobs: Vec<PortalJobRun>,
+}
+
 /// One open initiative on [`PortalDoc`]: the customer's "Being built"
 /// list, newest first, capped at ten (`PortalDoc.initiatives_more` the
 /// rest). `state` is always "in progress" or "waiting on you"; `pieces`
@@ -632,6 +655,8 @@ pub struct PortalDoc {
     pub purpose: String,
     #[serde(default)]
     pub deploy_targets: Vec<PortalDeployTarget>,
+    #[serde(default)]
+    pub run_workflows: Vec<PortalWorkflow>,
     #[serde(default)]
     pub initiatives: Vec<PortalInitiative>,
     /// How many open initiatives past the ten in `initiatives`.

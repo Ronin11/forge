@@ -69,6 +69,14 @@ fn fixture_doc(shot_path: &str, answered: bool, asked: bool) -> String {
                 "screenshot": null,
             },
         ],
+        "run_workflows": [
+            {
+                "name": "nightly-order-sync",
+                "jobs": [
+                    {"started_at": 1_700_000_100_i64, "state": "failed", "reason": "the order feed timed out"},
+                ],
+            },
+        ],
         "initiatives": [
             {"outcome": "Ship the new checkout", "state": "in progress", "pieces": 3},
         ],
@@ -262,6 +270,14 @@ fn the_six_sections_render_in_plain_words_with_no_forbidden_keys() {
     assert!(body.contains("acme.example.com"), "{body}");
     assert!(
         body.contains("Up and running, and looking right."),
+        "{body}"
+    );
+    // Running for you: a run workflow's last jobs render beside the
+    // deploy targets, with a plain-word status and its one-line reason
+    // on failure.
+    assert!(body.contains("nightly-order-sync"), "{body}");
+    assert!(
+        body.contains("Failed \u{2014} the order feed timed out."),
         "{body}"
     );
     assert!(

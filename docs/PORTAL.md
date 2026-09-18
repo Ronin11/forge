@@ -15,8 +15,12 @@ logs anywhere on it.
 
 - **Running for you.** Each deploy target: its name, where it runs, when
   it was last deployed, whether the last check and look passed, and the
-  last look's screenshot. This is the list of automations Forge built
-  and keeps working for them.
+  last look's screenshot. Alongside it, each run workflow: its name and
+  its last three jobs, newest first — when each ran, whether it went ok,
+  failed, or needs a person, and, on failure, a one-line reason. This is
+  the list of automations Forge built and keeps working for them, and
+  the recent record of the ones that run on their own schedule or
+  trigger rather than sitting behind a URL.
 - **Being built.** Every open initiative, newest first: its outcome
   sentence, a plain state (in progress, waiting on you), and how many
   pieces of work it's taken so far. The last ten, and an "and n more"
