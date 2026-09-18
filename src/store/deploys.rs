@@ -1,10 +1,11 @@
 use super::*;
+use serde::Serialize;
 
 /// A deploy target: where a project's landed code runs, how it gets
 /// there, and what proves it is up (see docs/DEPLOY.md, "A target").
 /// `scope` is the raw JSON array of paths within `repo` the target
 /// deploys, `None` for the whole repository, mirroring `ProjectRepo`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeployTarget {
     pub project: String,
     pub name: String,
@@ -24,7 +25,7 @@ pub struct DeployTarget {
 /// One deploy: a target, the commit deployed, when it started and
 /// finished, the check's verdict and output, and what it rolled back to
 /// if the check failed (see docs/DEPLOY.md, "When a deploy runs").
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Deploy {
     pub id: i64,
     pub project: String,
@@ -38,8 +39,9 @@ pub struct Deploy {
     pub reason: String,
     /// The task this deploy ran on behalf of, when it was an on-landing
     /// target rather than an operator-invoked `forge deploy`. Recorded now;
-    /// surfaced to a view once a later step needs it.
+    /// not part of `--json` output until a later step needs it there.
     #[allow(dead_code)]
+    #[serde(skip)]
     pub task_id: Option<i64>,
     /// Whether the deploy-smoke operation passed, `None` when the target
     /// declares no smoke url or the check never passed for smoke to run.
@@ -579,5 +581,51 @@ mod tests {
         let prod_only = s.deploys("equitizr", Some("prod")).unwrap();
         assert_eq!(prod_only.len(), 1);
         assert_eq!(prod_only[0].id, a);
+    }
+
+    /// Pinned against a literal captured while `view::DeployTargetRow` and
+    /// `view::DeployRow` still existed: `serde_json::to_string` on each
+    /// produced this exact text, so deleting the rows in their favour was a
+    /// no-op for every `--json` caller. `Deploy::task_id` is `#[serde(skip)]`
+    /// because `DeployRow` never carried it either.
+    #[test]
+    fn deploy_target_and_deploy_serialize_to_the_captured_row_shape() {
+        let target = DeployTarget {
+            project: "equitizr".into(),
+            name: "prod".into(),
+            repo: "equitizr".into(),
+            scope: Some(r#"["web"]"#.into()),
+            method: "rsync".into(),
+            args: BTreeMap::from([("host".to_string(), "example.com".to_string())]),
+            check_cmd: "curl -f https://example.com".into(),
+            on_landing: true,
+            smoke_url: Some("https://example.com".into()),
+        };
+        let deploy = Deploy {
+            id: 9,
+            project: "equitizr".into(),
+            target: "prod".into(),
+            sha: "deadbeef".into(),
+            started_at: 100,
+            finished_at: Some(140),
+            check_ok: Some(true),
+            check_output: "ok".into(),
+            rolled_back_to: None,
+            reason: "".into(),
+            task_id: Some(3),
+            smoke_ok: Some(true),
+            smoke_json: Some("{}".into()),
+            look_ok: Some(false),
+            look_json: None,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&target).unwrap(),
+            r#"{"project":"equitizr","name":"prod","repo":"equitizr","scope":"[\"web\"]","method":"rsync","args":{"host":"example.com"},"check_cmd":"curl -f https://example.com","on_landing":true,"smoke_url":"https://example.com"}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&deploy).unwrap(),
+            r#"{"id":9,"project":"equitizr","target":"prod","sha":"deadbeef","started_at":100,"finished_at":140,"check_ok":true,"check_output":"ok","rolled_back_to":null,"reason":"","smoke_ok":true,"smoke_json":"{}","look_ok":false,"look_json":null}"#,
+        );
     }
 }

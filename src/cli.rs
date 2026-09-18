@@ -1747,7 +1747,7 @@ fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> R
     Ok(())
 }
 
-fn print_deploy_target_row(t: &crate::view::DeployTargetRow) {
+fn print_deploy_target_row(t: &crate::store::DeployTarget) {
     out!(
         "{:<12} repo={} method={}{} on_landing={}",
         t.name,
@@ -1770,12 +1770,7 @@ fn project_deploy_list(project: String, json: bool) -> Result<()> {
     f.store
         .project(&project)?
         .with_context(|| format!("no project {project}"))?;
-    let rows: Vec<crate::view::DeployTargetRow> = f
-        .store
-        .deploy_targets(&project)?
-        .iter()
-        .map(crate::view::DeployTargetRow::from)
-        .collect();
+    let rows = f.store.deploy_targets(&project)?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -1807,7 +1802,7 @@ async fn deploy_run(
     Ok(())
 }
 
-fn print_deploy_row(r: &crate::view::DeployRow) {
+fn print_deploy_row(r: &crate::store::Deploy) {
     let sha = &r.sha[..r.sha.len().min(8)];
     let status = match r.check_ok {
         Some(true) => "ok".to_string(),
@@ -1842,12 +1837,7 @@ fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
     f.store
         .project(&project)?
         .with_context(|| format!("no project {project}"))?;
-    let rows: Vec<crate::view::DeployRow> = f
-        .store
-        .deploys(&project, name.as_deref())?
-        .iter()
-        .map(crate::view::DeployRow::from)
-        .collect();
+    let rows = f.store.deploys(&project, name.as_deref())?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
