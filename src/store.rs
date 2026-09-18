@@ -3756,8 +3756,10 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url
-                 FROM deploy_targets WHERE project=?1 AND name=?2",
+                &format!(
+                    "SELECT {} FROM deploy_targets WHERE project=?1 AND name=?2",
+                    DEPLOY_TARGET_COLUMNS.join(", ")
+                ),
                 params![project, name],
                 deploy_target_from_row,
             )
@@ -3767,10 +3769,10 @@ impl Store {
     /// A project's deploy targets, alphabetically.
     pub fn deploy_targets(&self, project: &str) -> Result<Vec<DeployTarget>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT project, name, repo, scope_json, method, args_json, check_cmd, on_landing, smoke_url
-             FROM deploy_targets WHERE project=?1 ORDER BY name",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM deploy_targets WHERE project=?1 ORDER BY name",
+            DEPLOY_TARGET_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![project], deploy_target_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -3835,10 +3837,10 @@ impl Store {
     /// `forge deploy log` shows.
     pub fn deploys(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json, look_ok, look_json
-             FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM deploys WHERE project=?1 AND (?2 IS NULL OR target=?2) ORDER BY id DESC",
+            DEPLOY_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![project, target], deploy_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -3849,10 +3851,10 @@ impl Store {
     /// under the task.
     pub fn deploys_for_task(&self, task_id: i64) -> Result<Vec<Deploy>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, target, sha, started_at, finished_at, check_ok, check_output, rolled_back_to, reason, task_id, smoke_ok, smoke_json, look_ok, look_json
-             FROM deploys WHERE task_id=?1 ORDER BY id DESC",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM deploys WHERE task_id=?1 ORDER BY id DESC",
+            DEPLOY_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![task_id], deploy_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4189,38 +4191,67 @@ fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
     })
 }
 
+const DEPLOY_TARGET_COLUMNS: &[&str] = &[
+    "project",
+    "name",
+    "repo",
+    "scope_json",
+    "method",
+    "args_json",
+    "check_cmd",
+    "on_landing",
+    "smoke_url",
+];
+
+const DEPLOY_COLUMNS: &[&str] = &[
+    "id",
+    "project",
+    "target",
+    "sha",
+    "started_at",
+    "finished_at",
+    "check_ok",
+    "check_output",
+    "rolled_back_to",
+    "reason",
+    "task_id",
+    "smoke_ok",
+    "smoke_json",
+    "look_ok",
+    "look_json",
+];
+
 fn deploy_target_from_row(r: &Row) -> rusqlite::Result<DeployTarget> {
-    let args_json: String = r.get(5)?;
     Ok(DeployTarget {
-        project: r.get(0)?,
-        name: r.get(1)?,
-        repo: r.get(2)?,
-        scope: r.get(3)?,
-        method: r.get(4)?,
-        args: serde_json::from_str(&args_json).unwrap_or_default(),
-        check_cmd: r.get(6)?,
-        on_landing: r.get(7)?,
-        smoke_url: r.get(8)?,
+        project: r.get("project")?,
+        name: r.get("name")?,
+        repo: r.get("repo")?,
+        scope: r.get("scope_json")?,
+        method: r.get("method")?,
+        args: serde_json::from_str(&r.get::<_, String>("args_json")?).unwrap_or_default(),
+        check_cmd: r.get("check_cmd")?,
+        on_landing: r.get("on_landing")?,
+        smoke_url: r.get("smoke_url")?,
     })
 }
 
 fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
     Ok(Deploy {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        target: r.get(2)?,
-        sha: r.get(3)?,
-        started_at: r.get(4)?,
-        finished_at: r.get(5)?,
-        check_ok: r.get(6)?,
-        check_output: r.get(7)?,
-        rolled_back_to: r.get(8)?,
-        reason: r.get(9)?,
-        task_id: r.get(10)?,
-        smoke_ok: r.get(11)?,
-        smoke_json: r.get(12)?,
-        look_ok: r.get(13)?,
-        look_json: r.get(14)?,
+        id: r.get("id")?,
+        project: r.get("project")?,
+        target: r.get("target")?,
+        sha: r.get("sha")?,
+        started_at: r.get("started_at")?,
+        finished_at: r.get("finished_at")?,
+        check_ok: r.get("check_ok")?,
+        check_output: r.get("check_output")?,
+        rolled_back_to: r.get("rolled_back_to")?,
+        reason: r.get("reason")?,
+        task_id: r.get("task_id")?,
+        smoke_ok: r.get("smoke_ok")?,
+        smoke_json: r.get("smoke_json")?,
+        look_ok: r.get("look_ok")?,
+        look_json: r.get("look_json")?,
     })
 }
 
@@ -6020,6 +6051,8 @@ mod column_tests {
             ("jobs", JOB_COLUMNS),
             ("job_steps", JOB_STEP_COLUMNS),
             ("job_effects", JOB_EFFECT_COLUMNS),
+            ("deploys", DEPLOY_COLUMNS),
+            ("deploy_targets", DEPLOY_TARGET_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
