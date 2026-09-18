@@ -606,7 +606,11 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut worker = Worker::spawn(e.cmd("ok.sh").env("PATH", path).args(["work", "--poll", "1"]));
+    let mut worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("PATH", path)
+            .args(["work", "--poll", "1"]),
+    );
 
     // Wait on the plugin's own `filed` state file rather than the tasks
     // table: `intake_once` writes it only after both `forge add` and

@@ -131,7 +131,9 @@ fn a_blocked_task_moves_the_state_to_attention() {
     let id = e.add(&[]);
 
     let mut worker = Worker::spawn(
-        e.cmd("needsinput.sh").env("HOME", fake_home.path()).args(["work"]),
+        e.cmd("needsinput.sh")
+            .env("HOME", fake_home.path())
+            .args(["work"]),
     );
 
     assert!(

@@ -265,7 +265,11 @@ fn a_second_signal_aborts_and_requeues() {
     std::fs::create_dir_all(&e.home).unwrap();
     let stderr_path = e.home.join("worker-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).unwrap();
-    let mut worker = Worker::spawn(e.cmd("hang.sh").args(["work", "--once"]).stderr(stderr_file));
+    let mut worker = Worker::spawn(
+        e.cmd("hang.sh")
+            .args(["work", "--once"])
+            .stderr(stderr_file),
+    );
     assert!(
         wait_until(
             || e.attempts(id).first().is_some_and(|a| a.1 == "running"),
