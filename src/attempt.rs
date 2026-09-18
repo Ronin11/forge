@@ -394,25 +394,26 @@ async fn launch(
     start_sha: &str,
     provider: &agent::Provider,
 ) -> Result<agent::Outcome, Fault> {
-    let outcome = agent::run(agent::Launch {
-        task_id: t.id,
-        worktree,
-        prompt,
-        model: &t.model,
-        max_turns: t.max_turns as u32,
-        timeout: Duration::from_secs(t.timeout_secs as u64),
-        log_path,
-        sandbox: f.sandbox.as_ref(),
-        report: &f.report,
-        step,
-        provider,
-        resume,
-        writes,
-        start_sha,
-        schema: crate::envelope::SCHEMA,
-        early_ending: f.early_ending,
-        no_tools: false,
-    })
+    let outcome = crate::directive::launch(
+        f,
+        crate::directive::Spec {
+            id: t.id,
+            step,
+            dir: worktree,
+            prompt,
+            model: &t.model,
+            max_turns: t.max_turns as u32,
+            timeout: Duration::from_secs(t.timeout_secs as u64),
+            log_path,
+            provider,
+            schema: crate::envelope::SCHEMA,
+            sandboxed: true,
+            writes,
+            start_sha,
+            resume,
+            no_tools: false,
+        },
+    )
     .await
     .env()?;
     f.report.emit(

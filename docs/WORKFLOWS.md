@@ -125,8 +125,8 @@ quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sen
 
 [limits]
 budget_usd = 0.10          # per run
-per_day    = 200           # runs per day before it asks
-on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop
+per_day    = 200           # real starts in 24 hours before the next is refused
+on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed; honoured at step 5)
 ```
 
 (TOML binds a bare `key = value` to the nearest preceding `[table]`
@@ -146,9 +146,11 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
 - **`[assert]`.** Named commands, each a list like an action's `run`,
   checked after the steps with the effect log and every step's output
   on disk; exit status is the verdict.
-- **`[limits]`.** `budget_usd` (per run), `per_day` (a rate before it
-  asks), and `on_failure`: `ask:contact`, `ask:operator`, `retry:N`, or
-  `drop`.
+- **`[limits]`.** `budget_usd` (per run); `per_day`, the number of
+  real (not dry) starts allowed in any 24 hours, past which `forge job
+  start` refuses with a reason naming the limit (asking instead is
+  docs/JOBS.md step 5); and `on_failure`: `ask:contact`, `ask:operator`,
+  `retry:N`, or `drop`, validated today and honoured when step 5 lands.
 - **A step's `role`.** A directive step in a job carries a `role`
   instead of running the kernel's fixed contracts; it is routed to a
   provider like every role (docs/CONFIG.md), given the step's inputs

@@ -940,7 +940,7 @@ pub async fn verify_directive(
     s: &Subject<'_>,
     agent: &Outcome,
 ) -> Result<Verdict> {
-    let agent_reason = agent_failure(agent);
+    let agent_reason = crate::directive::agent_failure(agent);
     let common = common_l0(s, agent).await?;
     let mut v = Verdict::open(&common.facts);
     let mut question: Option<(Kind, String)> = None;
@@ -1228,28 +1228,6 @@ pub fn plan_paths(text: &str, is_dir: &dyn Fn(&str) -> bool) -> Vec<String> {
     out
 }
 
-/// Why the agent run itself counts as failed, if it does.
-pub fn agent_failure(a: &Outcome) -> Option<String> {
-    if a.rate_limited {
-        Some("rate limited by the provider".into())
-    } else if let Some(why) = &a.ended_early {
-        Some(format!("stopped early: {why}"))
-    } else if a.timed_out {
-        Some("agent timed out".into())
-    } else if a.exit_code != Some(0) {
-        Some(format!(
-            "agent exit {}",
-            a.exit_code.map_or("signal".into(), |c| c.to_string())
-        ))
-    } else if !a.got_result {
-        Some("agent produced no result".into())
-    } else if a.is_error {
-        Some("agent reported an error".into())
-    } else {
-        None
-    }
-}
-
 /// Whether an attempt's recorded rows include at least one L1 check and
 /// every L1 row passed: the repository's checks vouch for the tree, even
 /// when the attempt itself did not settle (a question, a review
@@ -1467,50 +1445,6 @@ mod tests {
                 "want reason containing {reason:?}, got {why:?}"
             );
         }
-    }
-
-    #[test]
-    fn agent_failure_reasons() {
-        let ok = Outcome {
-            exit_code: Some(0),
-            got_result: true,
-            ..Default::default()
-        };
-        assert_eq!(agent_failure(&ok), None);
-        assert_eq!(
-            agent_failure(&Outcome {
-                timed_out: true,
-                ..Default::default()
-            })
-            .as_deref(),
-            Some("agent timed out")
-        );
-        assert_eq!(
-            agent_failure(&Outcome {
-                exit_code: Some(2),
-                ..Default::default()
-            })
-            .as_deref(),
-            Some("agent exit 2")
-        );
-        assert_eq!(
-            agent_failure(&Outcome {
-                exit_code: Some(0),
-                ..Default::default()
-            })
-            .as_deref(),
-            Some("agent produced no result")
-        );
-        assert_eq!(
-            agent_failure(&Outcome {
-                exit_code: Some(0),
-                got_result: true,
-                is_error: true,
-                ..Default::default()
-            })
-            .as_deref(),
-            Some("agent reported an error")
-        );
     }
 
     #[test]

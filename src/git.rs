@@ -672,6 +672,15 @@ pub async fn archive_into(repo: &Path, rev: &str, files: &[String], dest: &Path)
 }
 
 /// The whole tree at `rev` extracted into `dest`, with no git state.
+/// A fresh scratch checkout of `rev`: `dest` removed if it exists, then
+/// the whole tree archived into it. A deploy, a job and a verifying
+/// operation each kept their own copy of these two lines
+/// (docs/REVIEW-2.md, theme 2.1).
+pub async fn fresh_archive(repo: &Path, rev: &str, dest: &Path) -> Result<()> {
+    let _ = std::fs::remove_dir_all(dest);
+    archive_all(repo, rev, dest).await
+}
+
 pub async fn archive_all(repo: &Path, rev: &str, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let args = ["archive", "--format=tar", rev];

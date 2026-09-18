@@ -172,6 +172,19 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge deploy log <project> [<target>] --json`: a project's deploys,
+    /// newest first, each a [`Deploy`]: the rows `TraceDoc.deploys` carries,
+    /// with the smoke and look verdicts.
+    pub fn deploy_log(&self, project: &str, target: Option<&str>) -> Result<Vec<Deploy>> {
+        let mut args = vec!["deploy", "log", project];
+        if let Some(t) = target {
+            args.push(t);
+        }
+        args.push("--json");
+        let v = self.json(&args)?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge stats --json`: see [`StatsDoc`].
     pub fn stats(&self) -> Result<StatsDoc> {
         let v = self.json(&["stats", "--json"])?;
@@ -997,6 +1010,14 @@ pub struct Deploy {
     pub rolled_back_to: Option<String>,
     #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub smoke_ok: Option<bool>,
+    #[serde(default)]
+    pub smoke_json: Option<String>,
+    #[serde(default)]
+    pub look_ok: Option<bool>,
+    #[serde(default)]
+    pub look_json: Option<String>,
 }
 
 /// One finding in `Assessment.findings`, as the assess directive

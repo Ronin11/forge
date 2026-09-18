@@ -138,8 +138,7 @@ pub(crate) async fn run_operation(
         .then(|| op_scratch_dir(&t.worktree));
     let cwd: PathBuf = match &scratch {
         Some(dir) => {
-            let _ = std::fs::remove_dir_all(dir);
-            git::archive_all(&repo, &t.base_sha, dir).await.task()?;
+            git::fresh_archive(&repo, &t.base_sha, dir).await.task()?;
             let vref = format!("verify/{}", t.id);
             let files = git::ls_tree(&repo, &vref, &cfg.namespace).await.task()?;
             git::archive_into(&repo, &vref, &files, dir).await.task()?;
@@ -381,80 +380,94 @@ pub(crate) async fn run_job_operation(
     Ok(checks::run_one("OP", &action.name, &argv, cwd, None, timeout, env).await)
 }
 
+/// An operation resolved from the operator's catalog with its run command
+/// in hand, so a runner cannot be handed an action that declares none.
+/// Three resolve/run pairs (the deploy method, the smoke step, the
+/// provisioning) each re-did this and then `expect`ed it had been done
+/// (docs/REVIEW-2.md, theme 2.2).
+pub(crate) struct RunAction {
+    pub def: workflows::ActionDef,
+    pub argv: Vec<String>,
+}
+
+/// Resolve `name` from the catalog as something runnable. `label` names it
+/// in the error: `deploy method "x"`, `deploy-smoke operation`.
+pub(crate) fn resolve_action(f: &Forge, name: &str, label: &str) -> anyhow::Result<RunAction> {
+    let actions = workflows::load_actions(&f.paths.home)?;
+    let def = actions
+        .get(name)
+        .with_context(|| format!("unknown {label}"))?
+        .clone();
+    let argv = def
+        .run
+        .clone()
+        .with_context(|| format!("{label} declares no run command"))?;
+    Ok(RunAction { def, argv })
+}
+
+/// `FORGE_ARG_<NAME>` (uppercased) for every argument: how a deploy
+/// target's or a provisioning's arguments reach the operation's process,
+/// only ever in that process's environment, never in a prompt and never
+/// in a log (see docs/DEPLOY.md, "Secrets and hosts").
+fn arg_env<'a>(args: impl IntoIterator<Item = (&'a String, &'a String)>) -> Vec<(String, String)> {
+    args.into_iter()
+        .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
+        .collect()
+}
+
+/// Run a resolved operation outside of any task: no worktree, no commit,
+/// no verify, and never sandboxed. `forge deploy` never sandboxes its
+/// steps, an on-landing deploy triggered from a sandboxed task run must
+/// reach the same hosts and tools the CLI does, and provisioning reaches
+/// the operator's real cloud account and ssh keys.
+async fn run_action(
+    a: &RunAction,
+    cwd: &Path,
+    timeout: Duration,
+    env: &[(String, String)],
+) -> checks::CheckResult {
+    checks::run_one("OP", &a.def.name, &a.argv, cwd, None, timeout, env).await
+}
+
 /// The action a deploy target's `method` names, resolved once up front so
 /// `forge deploy` fails on an unknown method before it ever starts a
 /// deploy row.
-pub(crate) fn resolve_deploy_method(
-    f: &Forge,
-    method: &str,
-) -> anyhow::Result<workflows::ActionDef> {
-    let actions = workflows::load_actions(&f.paths.home)?;
-    let action = actions
-        .get(method)
-        .with_context(|| format!("unknown deploy method {method:?}"))?;
-    if action.run.is_none() {
-        anyhow::bail!("deploy method {method:?} declares no run command");
-    }
-    Ok(action.clone())
+pub(crate) fn resolve_deploy_method(f: &Forge, method: &str) -> anyhow::Result<RunAction> {
+    resolve_action(f, method, &format!("deploy method {method:?}"))
 }
 
-/// A deploy target's method, run outside of any task: no worktree, no
-/// commit, no verify. `target`'s own arguments become `FORGE_ARG_<NAME>`
-/// (uppercased) and its check command becomes `FORGE_CHECK`, both only
-/// ever in this process's environment, never in a prompt and never in a
-/// log (see docs/DEPLOY.md, "Secrets and hosts"). `cwd` is the landed
-/// tree, already checked out by the caller. Never sandboxed: `forge
-/// deploy` never sandboxes it, and an on-landing deploy triggered from a
-/// sandboxed task run must reach the same hosts and tools that same
-/// method reaches from the CLI.
+/// A deploy target's method: its arguments as `FORGE_ARG_<NAME>` and its
+/// check command as `FORGE_CHECK`; `cwd` is the landed tree, already
+/// checked out by the caller.
 pub(crate) async fn run_deploy_method(
-    action: &workflows::ActionDef,
+    action: &RunAction,
     target: &DeployTarget,
     cwd: &Path,
     timeout: Duration,
 ) -> anyhow::Result<checks::CheckResult> {
-    let argv = action
-        .run
-        .as_ref()
-        .expect("checked by resolve_deploy_method");
-    let mut env: Vec<(String, String)> = target
-        .args
-        .iter()
-        .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
-        .collect();
+    let mut env = arg_env(&target.args);
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
-    Ok(checks::run_one("OP", &action.name, argv, cwd, None, timeout, &env).await)
+    Ok(run_action(action, cwd, timeout, &env).await)
 }
 
-/// The `deploy-smoke` operation, resolved once up front exactly like
-/// `resolve_deploy_method`, so a target that declares a smoke url fails
-/// before its deploy row starts if the operation is somehow missing.
-pub(crate) fn resolve_deploy_smoke(f: &Forge) -> anyhow::Result<workflows::ActionDef> {
-    let actions = workflows::load_actions(&f.paths.home)?;
-    let action = actions
-        .get("deploy-smoke")
-        .context("no deploy-smoke operation registered")?;
-    if action.run.is_none() {
-        anyhow::bail!("deploy-smoke declares no run command");
-    }
-    Ok(action.clone())
+/// The `deploy-smoke` operation, resolved once up front like the method,
+/// so a target that declares a smoke url fails before its deploy row
+/// starts if the operation is somehow missing.
+pub(crate) fn resolve_deploy_smoke(f: &Forge) -> anyhow::Result<RunAction> {
+    resolve_action(f, "deploy-smoke", "deploy-smoke operation")
 }
 
 /// After a deploy's check passes, open its target's smoke url in headless
 /// Chromium through the `deploy-smoke` operation (see
 /// src/builtins/operations/deploy-smoke.toml) and record what it saw
 /// under `out_dir` (`FORGE2_HOME/deploys/<id>/`; see docs/DEPLOY.md, "A
-/// deterministic smoke step"). Never sandboxed, like `run_deploy_method`.
+/// deterministic smoke step").
 pub(crate) async fn run_deploy_smoke(
-    action: &workflows::ActionDef,
+    action: &RunAction,
     url: &str,
     out_dir: &Path,
     timeout: Duration,
 ) -> anyhow::Result<checks::CheckResult> {
-    let argv = action
-        .run
-        .as_ref()
-        .expect("checked by resolve_deploy_smoke");
     std::fs::create_dir_all(out_dir)?;
     let env = vec![
         ("FORGE_ARG_URL".to_string(), url.to_string()),
@@ -463,43 +476,29 @@ pub(crate) async fn run_deploy_smoke(
             out_dir.display().to_string(),
         ),
     ];
-    Ok(checks::run_one("OP", &action.name, argv, out_dir, None, timeout, &env).await)
+    Ok(run_action(action, out_dir, timeout, &env).await)
 }
 
-/// The `provision-hetzner` operation, resolved once up front exactly like
-/// `resolve_deploy_smoke`.
-pub(crate) fn resolve_provision(f: &Forge) -> anyhow::Result<workflows::ActionDef> {
-    let actions = workflows::load_actions(&f.paths.home)?;
-    let action = actions
-        .get("provision-hetzner")
-        .context("no provision-hetzner operation registered")?;
-    if action.run.is_none() {
-        anyhow::bail!("provision-hetzner declares no run command");
-    }
-    Ok(action.clone())
+/// The `provision-hetzner` operation, resolved once up front like the rest.
+pub(crate) fn resolve_provision(f: &Forge) -> anyhow::Result<RunAction> {
+    resolve_action(f, "provision-hetzner", "provision-hetzner operation")
 }
 
 /// `forge provision <project> <name>`: run `provision-hetzner` with
-/// `args` as `FORGE_ARG_<KEY>` (uppercased), plus `FORGE_ARG_OUT_DIR` for
-/// the ssh-config fragment it writes (see
-/// src/builtins/operations/provision-hetzner.toml). Never sandboxed, like
-/// `run_deploy_method`: it reaches the operator's real Hetzner account and
-/// ssh keys.
+/// `args` as `FORGE_ARG_<KEY>`, plus `FORGE_ARG_OUT_DIR` for the
+/// ssh-config fragment it writes (see
+/// src/builtins/operations/provision-hetzner.toml).
 pub(crate) async fn run_provision(
-    action: &workflows::ActionDef,
+    action: &RunAction,
     args: &BTreeMap<String, String>,
     out_dir: &Path,
     timeout: Duration,
 ) -> anyhow::Result<checks::CheckResult> {
-    let argv = action.run.as_ref().expect("checked by resolve_provision");
     std::fs::create_dir_all(out_dir)?;
-    let mut env: Vec<(String, String)> = args
-        .iter()
-        .map(|(k, v)| (format!("FORGE_ARG_{}", k.to_uppercase()), v.clone()))
-        .collect();
+    let mut env = arg_env(args);
     env.push((
         "FORGE_ARG_OUT_DIR".to_string(),
         out_dir.display().to_string(),
     ));
-    Ok(checks::run_one("OP", &action.name, argv, out_dir, None, timeout, &env).await)
+    Ok(run_action(action, out_dir, timeout, &env).await)
 }

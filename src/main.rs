@@ -15,11 +15,13 @@ mod config;
 mod ctx;
 mod deploy;
 mod deploy_look;
+mod directive;
 mod doctor;
 mod engine;
 mod envelope;
 
 mod git;
+mod intake;
 mod job;
 mod journal;
 mod landing;

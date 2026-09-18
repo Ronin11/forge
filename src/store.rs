@@ -1397,6 +1397,18 @@ CREATE TABLE task_hand_commits (
   computed_at INTEGER NOT NULL
 );
 ",
+    // Indexes for the queries the portal and the initiative report run
+    // per render (docs/REVIEW-2.md, item 5): tasks by project and by
+    // initiative, decisions and deploys by task, backlog and repositories
+    // by project.
+    "
+CREATE INDEX tasks_project ON tasks(project, id);
+CREATE INDEX tasks_initiative ON tasks(initiative, id);
+CREATE INDEX decisions_task ON decisions(task_id, id);
+CREATE INDEX deploys_task ON deploys(task_id, id);
+CREATE INDEX backlog_project ON backlog(project, id);
+CREATE INDEX project_repos_project ON project_repos(project);
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -4045,26 +4057,36 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Atomically take one specific queued job, mirroring `claim` for tasks.
-    pub fn claim_job(&self, id: i64) -> Result<bool> {
-        let n = self.lock().execute(
-            "UPDATE jobs SET state='running' WHERE id=?1 AND state='queued'",
-            params![id],
-        )?;
-        Ok(n == 1)
-    }
-
     /// The oldest queued job the worker can claim right now, same shape as
     /// `claim_next` for tasks: a job carries no provider or initiative
     /// hold yet (it runs no directive step), so the first one found is
     /// always claimable.
     pub fn claim_next_job(&self) -> Result<Option<Job>> {
-        for j in self.queued_jobs()? {
-            if self.claim_job(j.id)? {
-                return self.job(j.id);
-            }
+        let id: Option<i64> = self
+            .lock()
+            .query_row(
+                "UPDATE jobs SET state='running'
+                 WHERE id = (SELECT id FROM jobs WHERE state='queued' ORDER BY id LIMIT 1)
+                 RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => self.job(id),
+            None => Ok(None),
         }
-        Ok(None)
+    }
+
+    /// How many of `project`'s runs of `workflow` started at or after
+    /// `since`, dry runs excluded: `Limits.per_day` is checked against it
+    /// by `job::start` (docs/JOBS.md, "Limits").
+    pub fn jobs_started_since(&self, project: &str, workflow: &str, since: i64) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND started_at >= ?3",
+            params![project, workflow, since],
+            |r| r.get(0),
+        )?)
     }
 
     /// Put a running job back in the queue: the worker aborted with it

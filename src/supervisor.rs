@@ -22,7 +22,6 @@
 //! `supervisor`, with the re-queued task as its outcome, so `forge
 //! decisions` shows which of its answers led to a landing.
 
-use crate::agent;
 use crate::audit::Inputs;
 use crate::ctx::Forge;
 use crate::engine::Fault;
@@ -445,30 +444,31 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
         provider,
     )
     .await?;
-    let outcome = agent::run(agent::Launch {
-        task_id: id,
-        worktree: wt,
-        prompt: &prompt_text,
-        model: &cfg.model,
-        max_turns: cfg.max_turns,
-        timeout: std::time::Duration::from_secs(cfg.timeout_secs),
-        log_path: &log_path,
-        sandbox: f.sandbox.as_ref(),
-        report: &f.report,
-        step: "supervisor",
-        provider,
-        resume: None,
-        writes: false,
-        start_sha: &a.start_sha,
-        schema: SCHEMA,
-        early_ending: f.early_ending,
-        no_tools: false,
-    })
+    let outcome = crate::directive::launch(
+        f,
+        crate::directive::Spec {
+            id,
+            step: "supervisor",
+            dir: wt,
+            prompt: &prompt_text,
+            model: &cfg.model,
+            max_turns: cfg.max_turns,
+            timeout: std::time::Duration::from_secs(cfg.timeout_secs),
+            log_path: &log_path,
+            provider,
+            schema: SCHEMA,
+            sandboxed: true,
+            writes: false,
+            start_sha: &a.start_sha,
+            resume: None,
+            no_tools: false,
+        },
+    )
     .await?;
 
     // A run that did not finish (timeout, crash, refused) is an agent
     // failure on the record, not a failed ruling; the question escalates.
-    if let Some(why) = crate::verify::agent_failure(&outcome) {
+    if let Some(why) = crate::directive::agent_failure(&outcome) {
         let mut verdict = Verdict::open(&GitFacts::default());
         verdict.settle(Some(&why), None, false);
         crate::attempt::record(f, &mut a, wt, &verdict, &outcome, None).await?;
