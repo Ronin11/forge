@@ -11,7 +11,9 @@
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
-use forge_client::{Event, Forge, InitiativeRow, Killer, RequestRow, TaskRow, TraceDoc, Worker};
+use forge_client::{
+    Event, Forge, InitiativeRow, JobDoc, JobRow, Killer, RequestRow, TaskRow, TraceDoc, Worker,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -29,7 +31,9 @@ pub enum Screen {
     Queue,
     Requests,
     Initiatives,
+    Jobs,
     Task,
+    JobView,
 }
 
 pub struct App {
@@ -38,10 +42,13 @@ pub struct App {
     tasks: Vec<TaskRow>,
     requests: Vec<RequestRow>,
     initiatives: Vec<InitiativeRow>,
+    jobs: Vec<JobRow>,
     trace: Option<TraceDoc>,
+    job: Option<JobDoc>,
     queue_sel: usize,
     req_sel: usize,
     init_sel: usize,
+    job_sel: usize,
     scroll: u16,
     status: String,
     refreshed: Instant,
@@ -51,6 +58,8 @@ pub struct App {
     sub: Option<(Killer, Receiver<Event>)>,
     dirty_lists: bool,
     dirty_trace: bool,
+    dirty_jobs: bool,
+    dirty_job: bool,
 }
 
 impl App {
@@ -61,10 +70,13 @@ impl App {
             tasks: Vec::new(),
             requests: Vec::new(),
             initiatives: Vec::new(),
+            jobs: Vec::new(),
             trace: None,
+            job: None,
             queue_sel: 0,
             req_sel: 0,
             init_sel: 0,
+            job_sel: 0,
             scroll: 0,
             status: String::new(),
             refreshed: Instant::now() - Duration::from_secs(60),
@@ -74,6 +86,8 @@ impl App {
             sub: None,
             dirty_lists: false,
             dirty_trace: false,
+            dirty_jobs: false,
+            dirty_job: false,
         }
     }
 
@@ -99,6 +113,7 @@ impl App {
             Err(e) => self.status = format!("{e:#}"),
         }
         self.load_initiatives();
+        self.load_jobs();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -107,6 +122,10 @@ impl App {
     /// One event from the stream: remembered as live text, and a flag for
     /// what it changed, so the lists and the trace are re-read only then.
     pub fn apply(&mut self, event: Event) {
+        let job_id = match &event {
+            Event::JobStarted { job_id, .. } | Event::JobFinished { job_id, .. } => Some(*job_id),
+            _ => None,
+        };
         let (task, kind, text) = match &event {
             Event::TaskStarted { task, text, .. } => (*task, "task_started", text.as_str()),
             Event::TaskQueued { task, text, .. } => (*task, "task_queued", text.as_str()),
@@ -151,6 +170,12 @@ impl App {
                 self.dirty_trace = true;
             }
         }
+        if let Some(id) = job_id {
+            self.dirty_jobs = true;
+            if self.job.as_ref().map(|j| j.id) == Some(id) {
+                self.dirty_job = true;
+            }
+        }
     }
 
     /// Drain the stream, then re-read only what it said changed.
@@ -172,6 +197,16 @@ impl App {
             self.dirty_trace = false;
             if let Some(id) = self.trace.as_ref().and_then(|t| t.task["id"].as_i64()) {
                 self.open_task(id);
+            }
+        }
+        if self.dirty_jobs {
+            self.dirty_jobs = false;
+            self.load_jobs();
+        }
+        if self.dirty_job {
+            self.dirty_job = false;
+            if let Some(id) = self.job.as_ref().map(|j| j.id) {
+                self.open_job(id);
             }
         }
         if self.refreshed.elapsed() > Duration::from_secs(60) {
@@ -197,6 +232,7 @@ impl App {
             Err(e) => self.status = format!("{e:#}"),
         }
         self.load_initiatives();
+        self.load_jobs();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -213,6 +249,17 @@ impl App {
         self.init_sel = self.init_sel.min(self.initiatives.len().saturating_sub(1));
     }
 
+    /// `forge job list --json`, across every project: the same call on
+    /// `snapshot()` and on `refresh()`, and again whenever a `job_started`
+    /// or `job_finished` event says the jobs list changed.
+    fn load_jobs(&mut self) {
+        match self.forge.job_list(None) {
+            Ok(rows) => self.jobs = rows,
+            Err(e) => self.status = format!("{e:#}"),
+        }
+        self.job_sel = self.job_sel.min(self.jobs.len().saturating_sub(1));
+    }
+
     pub fn open_task(&mut self, id: i64) {
         match self
             .forge
@@ -227,13 +274,25 @@ impl App {
         }
     }
 
+    pub fn open_job(&mut self, id: i64) {
+        match self.forge.job_show(id) {
+            Ok(doc) => {
+                self.job = Some(doc);
+                self.screen = Screen::JobView;
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
     /// The task the cursor is on, whichever screen shows it.
     pub fn current_id(&self) -> Option<i64> {
         match self.screen {
             Screen::Queue => self.tasks.get(self.queue_sel).map(|t| t.id),
             Screen::Requests => self.requests.get(self.req_sel).map(|r| r.id),
             Screen::Initiatives => None,
+            Screen::Jobs => None,
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
+            Screen::JobView => None,
         }
     }
 
@@ -266,7 +325,10 @@ impl App {
             Screen::Initiatives => {
                 self.init_sel = (self.init_sel + 1).min(self.initiatives.len().saturating_sub(1))
             }
-            Screen::Task => self.scroll = self.scroll.saturating_add(1),
+            Screen::Jobs => {
+                self.job_sel = (self.job_sel + 1).min(self.jobs.len().saturating_sub(1))
+            }
+            Screen::Task | Screen::JobView => self.scroll = self.scroll.saturating_add(1),
         }
     }
 
@@ -275,7 +337,8 @@ impl App {
             Screen::Queue => self.queue_sel = self.queue_sel.saturating_sub(1),
             Screen::Requests => self.req_sel = self.req_sel.saturating_sub(1),
             Screen::Initiatives => self.init_sel = self.init_sel.saturating_sub(1),
-            Screen::Task => self.scroll = self.scroll.saturating_sub(1),
+            Screen::Jobs => self.job_sel = self.job_sel.saturating_sub(1),
+            Screen::Task | Screen::JobView => self.scroll = self.scroll.saturating_sub(1),
         }
     }
 
@@ -295,22 +358,30 @@ impl App {
                 self.screen = match self.screen {
                     Screen::Queue => Screen::Requests,
                     Screen::Requests => Screen::Initiatives,
+                    Screen::Initiatives => Screen::Jobs,
                     _ => Screen::Queue,
                 }
             }
-            KeyCode::Enter => {
-                if let Some(id) = self.current_id()
-                    && self.screen != Screen::Task
-                {
-                    self.scroll = 0;
-                    self.open_task(id);
+            KeyCode::Enter => match self.screen {
+                Screen::Jobs => {
+                    if let Some(id) = self.jobs.get(self.job_sel).map(|j| j.id) {
+                        self.scroll = 0;
+                        self.open_job(id);
+                    }
                 }
-            }
-            KeyCode::Esc => {
-                if self.screen == Screen::Task {
-                    self.screen = Screen::Queue;
+                Screen::Task | Screen::JobView => {}
+                _ => {
+                    if let Some(id) = self.current_id() {
+                        self.scroll = 0;
+                        self.open_task(id);
+                    }
                 }
-            }
+            },
+            KeyCode::Esc => match self.screen {
+                Screen::Task => self.screen = Screen::Queue,
+                Screen::JobView => self.screen = Screen::Jobs,
+                _ => {}
+            },
             _ => {}
         }
         false
@@ -346,13 +417,13 @@ fn subscribe(forge: &Forge, offset: u64) -> Result<(Killer, Receiver<Event>)> {
 
 fn state_style(state: &str) -> Style {
     let color = match state {
-        "succeeded" => Color::Green,
+        "succeeded" | "ok" => Color::Green,
         "running" => Color::Cyan,
-        "queued" => Color::Gray,
-        "blocked" => Color::Yellow,
+        "queued" | "scheduled" => Color::Gray,
+        "blocked" | "needs_human" => Color::Yellow,
         "failed" => Color::Red,
         "unverified" => Color::Magenta,
-        "withdrawn" => Color::DarkGray,
+        "withdrawn" | "dropped" => Color::DarkGray,
         _ => Color::White,
     };
     Style::default().fg(color)
@@ -404,17 +475,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
             &format!("initiatives ({})", app.initiatives.len()),
             Screen::Initiatives,
         ),
+        tab(&format!("jobs ({})", app.jobs.len()), Screen::Jobs),
         tab("task", Screen::Task),
+        tab("job", Screen::JobView),
     ]);
     frame.render_widget(Paragraph::new(header), head);
     match app.screen {
         Screen::Queue => draw_queue(frame, app, body),
         Screen::Requests => draw_requests(frame, app, body),
         Screen::Initiatives => draw_initiatives(frame, app, body),
+        Screen::Jobs => draw_jobs(frame, app, body),
         Screen::Task => draw_task(frame, app, body),
+        Screen::JobView => draw_job(frame, app, body),
     }
     let keys = match app.screen {
-        Screen::Task => "j/k scroll  Esc back  r retry  R retry chain  q quit",
+        Screen::Task | Screen::JobView => "j/k scroll  Esc back  r retry  R retry chain  q quit",
         _ => "j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit",
     };
     let foot_line = if app.status.is_empty() {
@@ -572,6 +647,107 @@ fn draw_initiatives(frame: &mut Frame, app: &App, area: Rect) {
     let mut st = TableState::default();
     st.select((!app.initiatives.is_empty()).then_some(app.init_sel));
     frame.render_stateful_widget(table, area, &mut st);
+}
+
+fn draw_jobs(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = app.jobs.iter().map(|j| {
+        Row::new(vec![
+            Cell::from(j.id.to_string()),
+            Cell::from(j.project.clone()),
+            Cell::from(j.workflow.clone()),
+            Cell::from(Span::styled(j.state.clone(), state_style(&j.state))),
+            Cell::from(format!("${:.2}", j.cost_usd.unwrap_or(0.0))),
+            Cell::from(j.started_at.to_string()),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(5),
+            Constraint::Length(12),
+            Constraint::Length(16),
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Min(10),
+        ],
+    )
+    .header(
+        Row::new(vec![
+            "ID", "PROJECT", "WORKFLOW", "STATE", "COST", "STARTED",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .block(Block::bordered().title("jobs, newest first"));
+    let mut st = TableState::default();
+    st.select((!app.jobs.is_empty()).then_some(app.job_sel));
+    frame.render_stateful_widget(table, area, &mut st);
+}
+
+fn draw_job(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(j) = &app.job {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("job {}  ", j.id),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(j.state.clone(), state_style(&j.state)),
+            Span::raw(format!(
+                "  {}  {}{}",
+                j.project,
+                j.workflow,
+                if j.dry_run { "  (dry run)" } else { "" }
+            )),
+        ]));
+        lines.push(Line::raw(format!(
+            "trigger {} {}   source {}",
+            j.trigger_kind, j.trigger_ref, j.workflow_source
+        )));
+        lines.push(Line::raw(format!(
+            "started {}   finished {}   cost ${:.2}",
+            j.started_at,
+            j.finished_at.map_or("-".to_string(), |f| f.to_string()),
+            j.cost_usd.unwrap_or(0.0)
+        )));
+        if let Some(due) = j.due_at {
+            lines.push(Line::raw(format!("due {due}")));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "steps",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for s in &j.steps {
+            lines.push(Line::raw(format!(
+                "  {:>2} {:<20} {:<10} {}",
+                s.seq,
+                s.action,
+                s.kind,
+                s.cost_usd.map_or(String::new(), |c| format!("${c:.2}"))
+            )));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "effects",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for e in &j.effects {
+            lines.push(Line::raw(format!(
+                "  {:<10} {} {}",
+                e.kind, e.target, e.summary
+            )));
+        }
+    } else {
+        lines.push(Line::raw("no job open; pick one in jobs and press Enter"));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((app.scroll, 0))
+            .block(Block::bordered().title("job")),
+        area,
+    );
 }
 
 fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
@@ -942,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_queue_requests_initiatives_and_back() {
+    fn tab_cycles_queue_requests_initiatives_jobs_and_back() {
         let mut app = app_with("[]", "[]");
         assert_eq!(app.screen, Screen::Queue);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
@@ -950,6 +1126,36 @@ mod tests {
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Initiatives);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Jobs);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Queue);
+    }
+
+    #[test]
+    fn job_events_flag_the_jobs_list_and_the_open_job_as_dirty() {
+        let mut app = app_with("[]", "[]");
+        app.job = Some(serde_json::from_value(serde_json::json!({"id": 9})).unwrap());
+        app.apply(
+            serde_json::from_str(
+                r#"{"ts":1,"task":0,"type":"job_started","project":"forge","workflow":"nightly","job_id":9,"dry_run":false,"text":"running forge/nightly (job 9)"}"#,
+            )
+            .unwrap(),
+        );
+        assert!(
+            app.dirty_jobs && app.dirty_job,
+            "a job event for the open job dirties both the list and the open job"
+        );
+        app.dirty_jobs = false;
+        app.dirty_job = false;
+        app.apply(
+            serde_json::from_str(
+                r#"{"ts":2,"task":0,"type":"job_finished","project":"forge","workflow":"nightly","job_id":42,"state":"ok","cost_usd":0.1,"text":"job 42 (forge/nightly) ok ($0.10)"}"#,
+            )
+            .unwrap(),
+        );
+        assert!(
+            app.dirty_jobs && !app.dirty_job,
+            "a different job's event dirties the list but leaves the open job clean"
+        );
     }
 }

@@ -45,6 +45,20 @@ JSON
 {"task":{"id":$id,"state":"succeeded","workflow":"tdd","reason":"","branch":"forge/$id-x","base_sha":"abcdef1234567890","project":"forge","initiative":3,"after":[],"retry_of":null,"text":"add snapshot tests for the tui"},"attempts":[{"attempt_no":1,"step":"code","state":"succeeded","num_turns":9,"cost_usd":0.42,"reason":"","verdict":[]}],"ops":[{"name":"clone","ok":true,"detail":"ok"},{"name":"verify","ok":true,"detail":"ok"}],"deploys":[{"id":1,"project":"forge","target":"prod","sha":"abcdef1234567890","started_at":1,"finished_at":2,"check_ok":true,"check_output":"ok","rolled_back_to":null,"reason":""}],"assessment":{"score":82,"findings":[{"path":"tui/src/lib.rs","finding":"missing coverage of the initiative screen","severity":"minor"}],"model":"claude-sonnet-5","provider":"anthropic","cost_usd":0.05,"created_at":1}}
 JSON
   ;;
+  job)
+    case "$2" in
+      list) cat <<'JSON'
+[{"id":21,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1050,"cost_usd":0.12,"verdict_json":"[]","due_at":null},{"id":20,"project":"forge","workflow":"weekly-report","workflow_hash":"h2","landed_sha":"deadbeef","trigger_kind":"manual","trigger_ref":"","state":"running","workflow_source":"catalog","dry_run":false,"started_at":900,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
+JSON
+      ;;
+      show)
+        id="$3"
+        cat <<JSON
+{"id":$id,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1050,"cost_usd":0.12,"verdict_json":"[]","due_at":null,"steps":[{"id":1,"job_id":$id,"seq":1,"action":"run-checks","kind":"directive","provider":"anthropic","model":"claude-sonnet-5","cost_usd":0.05,"started_at":1000,"finished_at":1020,"exit_code":0,"output_ref":""},{"id":2,"job_id":$id,"seq":2,"action":"notify","kind":"shell","provider":"","model":"","cost_usd":null,"started_at":1020,"finished_at":1050,"exit_code":0,"output_ref":""}],"effects":[{"id":1,"job_id":$id,"seq":1,"kind":"message","target":"ops-channel","summary":"posted the nightly summary","dry_run":false},{"id":2,"job_id":$id,"seq":2,"kind":"file","target":"reports/nightly.md","summary":"wrote the report","dry_run":false}]}
+JSON
+      ;;
+      *) echo "unexpected job: $*" >&2; exit 2 ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -136,6 +150,32 @@ fn the_initiative_list_renders_every_initiative() {
     let text = frame(&app);
     app.shutdown();
     assert_snapshot("initiative_list", &text);
+}
+
+#[test]
+fn the_jobs_list_renders_every_job() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.screen(), Screen::Jobs);
+    let text = frame(&app);
+    app.shutdown();
+    assert_snapshot("jobs_list", &text);
+}
+
+#[test]
+fn a_job_view_renders_its_steps_and_effects() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.open_job(21);
+    assert_eq!(app.screen(), Screen::JobView);
+    let text = frame(&app);
+    app.shutdown();
+    assert_snapshot("job_view", &text);
 }
 
 /// A scripted interaction: down, enter, back — a key event at a time,

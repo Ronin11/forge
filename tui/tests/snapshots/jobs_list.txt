@@ -1,8 +1,8 @@
 Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
-┌tasks, newest first───────────────────────────────────────────────────────────────────────────────┐
-│ID    STATE       WF            ATT  COST    PROJECT      TASK                                    │
-│12    running     tdd           2    $1.35   forge        add snapshot tests for the tui          │
-│11    succeeded   direct        1    $0.10   forge        fix typo in docs                        │
+┌jobs, newest first────────────────────────────────────────────────────────────────────────────────┐
+│ID    PROJECT      WORKFLOW         STATE       COST    STARTED                                   │
+│21    forge        nightly-cleanup  ok          $0.12   1000                                      │
+│20    forge        weekly-report    running     $0.00   900                                       │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -28,8 +28,8 @@ Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2) 
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌live──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
