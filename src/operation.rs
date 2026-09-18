@@ -385,6 +385,7 @@ pub(crate) async fn run_job_operation(
 /// Three resolve/run pairs (the deploy method, the smoke step, the
 /// provisioning) each re-did this and then `expect`ed it had been done
 /// (docs/REVIEW-2.md, theme 2.2).
+#[derive(Debug)]
 pub(crate) struct RunAction {
     pub def: workflows::ActionDef,
     pub argv: Vec<String>,
@@ -501,4 +502,201 @@ pub(crate) async fn run_provision(
         out_dir.display().to_string(),
     ));
     Ok(run_action(action, out_dir, timeout, &env).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::Store;
+    use crate::workflows::{Contract, Kind, Output, Product};
+
+    fn test_action(name: &str, reads_verify_ref: bool) -> workflows::ActionDef {
+        workflows::ActionDef {
+            name: name.to_string(),
+            kind: Kind::Operation,
+            description: String::new(),
+            consumes: if reads_verify_ref {
+                vec![Product::VerifyRef]
+            } else {
+                vec![]
+            },
+            produces: vec![],
+            model: None,
+            max_turns: None,
+            timeout_secs: None,
+            run: None,
+            check: None,
+            contract: Contract::Code,
+            paths: vec![],
+            brief: String::new(),
+            prompt: None,
+            schema: None,
+            file_into_initiative: false,
+            overlay: false,
+            verifies: false,
+            output: Output::Tail,
+            hash: String::new(),
+            text: String::new(),
+        }
+    }
+
+    fn test_step(action: workflows::ActionDef) -> ResolvedStep {
+        ResolvedStep {
+            action,
+            model: None,
+            max_turns: None,
+            timeout_secs: None,
+            via: vec![],
+        }
+    }
+
+    fn test_cfg(namespace: Vec<String>) -> config::Config {
+        config::Config {
+            checks: BTreeMap::new(),
+            fixable: BTreeMap::new(),
+            base_branch: "main".into(),
+            push_remote: None,
+            check_timeout_secs: 60,
+            protected: vec![],
+            namespace,
+            config_path: "forge.toml".into(),
+        }
+    }
+
+    #[test]
+    fn operation_env_lists_the_exact_facts_in_order() {
+        let t = Task {
+            id: 42,
+            workflow: "direct".into(),
+            base_branch: "main".into(),
+            base_sha: "abcdef0".into(),
+            branch: "forge/42".into(),
+            task: "do the thing".into(),
+            ..Default::default()
+        };
+        let cfg = test_cfg(vec!["tests".into(), "src".into()]);
+        let step = test_step(test_action("fmt", false));
+        let hot_files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let cache_dir = PathBuf::from("/tmp/forge-cache");
+        let env = operation_env(&t, &cfg, &step, "prevsha123", &hot_files, &cache_dir);
+
+        let bin_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.display().to_string()))
+            .unwrap_or_default();
+
+        assert_eq!(
+            env,
+            vec![
+                ("FORGE_TASK_ID".to_string(), "42".to_string()),
+                ("FORGE_WORKFLOW".to_string(), "direct".to_string()),
+                ("FORGE_STEP".to_string(), "fmt".to_string()),
+                ("FORGE_BASE_BRANCH".to_string(), "main".to_string()),
+                ("FORGE_BASE_SHA".to_string(), "abcdef0".to_string()),
+                ("FORGE_BRANCH".to_string(), "forge/42".to_string()),
+                ("FORGE_NAMESPACE".to_string(), "tests src".to_string()),
+                ("FORGE_PREV_SHA".to_string(), "prevsha123".to_string()),
+                ("FORGE_TASK".to_string(), "do the thing".to_string()),
+                ("FORGE_BIN_DIR".to_string(), bin_dir),
+                ("FORGE_HOT_FILES".to_string(), "a.rs,b.rs".to_string()),
+                (
+                    "FORGE_CACHE_DIR".to_string(),
+                    "/tmp/forge-cache".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn operation_env_appends_verify_ref_only_for_an_action_that_reads_it() {
+        let t = Task {
+            id: 7,
+            ..Default::default()
+        };
+        let cfg = test_cfg(vec![]);
+        let cache_dir = PathBuf::from("/cache");
+
+        let reading = test_step(test_action("act", true));
+        let env = operation_env(&t, &cfg, &reading, "x", &[], &cache_dir);
+        assert_eq!(
+            env.last(),
+            Some(&("FORGE_VERIFY_REF".to_string(), "verify/7".to_string()))
+        );
+
+        let not_reading = test_step(test_action("act", false));
+        let env = operation_env(&t, &cfg, &not_reading, "x", &[], &cache_dir);
+        assert!(!env.iter().any(|(k, _)| k == "FORGE_VERIFY_REF"));
+    }
+
+    #[test]
+    fn arg_env_uppercases_each_name_and_keeps_input_order() {
+        let zeta = ("zeta".to_string(), "z".to_string());
+        let alpha = ("alpha".to_string(), "a".to_string());
+        let args = vec![(&zeta.0, &zeta.1), (&alpha.0, &alpha.1)];
+
+        let env = arg_env(args);
+
+        assert_eq!(
+            env,
+            vec![
+                ("FORGE_ARG_ZETA".to_string(), "z".to_string()),
+                ("FORGE_ARG_ALPHA".to_string(), "a".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn op_scratch_dir_appends_op_to_the_worktree_path() {
+        assert_eq!(
+            op_scratch_dir("/home/x/worktrees/42"),
+            PathBuf::from("/home/x/worktrees/42-op")
+        );
+    }
+
+    /// A `Forge` over a fresh, empty store in a throwaway home: enough for
+    /// `resolve_action` to build its catalog directory (built-ins written
+    /// on first use, see `workflows::ensure`).
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    #[test]
+    fn resolve_action_errors_on_an_unknown_name_naming_the_label() {
+        let (_dir, f) = fixture();
+        let err =
+            resolve_action(&f, "no-such-action", "deploy method \"no-such-action\"").unwrap_err();
+        assert_eq!(err.to_string(), "unknown deploy method \"no-such-action\"");
+    }
+
+    #[test]
+    fn resolve_action_errors_when_the_action_declares_no_run_command() {
+        let (_dir, f) = fixture();
+        // "code" is a built-in directive: it never declares `run`.
+        let err = resolve_action(&f, "code", "deploy method \"code\"").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "deploy method \"code\" declares no run command"
+        );
+    }
+
+    #[test]
+    fn resolve_action_returns_the_argv_of_a_runnable_action() {
+        let (_dir, f) = fixture();
+        // "fmt" is a built-in operation with a `run` command.
+        let a = resolve_action(&f, "fmt", "fmt operation").unwrap();
+        assert_eq!(a.def.name, "fmt");
+        assert_eq!(Some(a.argv), a.def.run);
+    }
 }
