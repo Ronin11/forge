@@ -175,7 +175,7 @@ Ordered by what each stage unlocks. "Forge" marks work precise enough
 to hand to Forge as an initiative at one directive, table or view per
 task; "hand" marks kernel semantics. Every stage lands green.
 
-**Stage 0. The defects (hand, today).** The boundary test reads the
+**Stage 0. The defects (hand, today). Done 2026-09-18 (a783799): the widened boundary test found the portal invoking `forge answer` and `forge ask`, neither in the client contract; both documented.** The boundary test reads the
 workspace members from Cargo.toml and checks every crate that is not
 the kernel or repomap, so the next client is covered by existing;
 `claim_next_job` as one `UPDATE … RETURNING`; a migration adding the
@@ -187,7 +187,7 @@ WORKFLOWS.md as parsed and not yet honoured until JOBS.md step 5; the
 worker sleep replaced by a wait on the claim; a `deploy_log` method on
 forge-client.
 
-**Stage 1. One launcher, one scratch (hand).** `directive.rs` with
+**Stage 1. One launcher, one scratch (hand). Done 2026-09-18 (2df9fa2, dda63c8): `directive::{launch, failure, structured}` under five sites, `git::fresh_archive` under three, `operation::resolve_action` under the three pairs; every attempt string unchanged.** `directive.rs` with
 `run_directive(f, DirectiveSpec { role, prompt, dir, env, schema,
 timeout, budget }) -> DirectiveOutcome` used by attempt, job, assess,
 deploy_look and the supervisor; one `agent_failure` with one set of
@@ -195,7 +195,7 @@ strings; `Scratch::from_sha(repo, sha)` for the four archive sites;
 `operation.rs`'s three resolve/run pairs as one `resolve_action(kind,
 name)` returning a struct the runner cannot be called without.
 
-**Stage 2. Store plumbing (Forge, after 0).** One task per table
+**Stage 2. Store plumbing (Forge, after 0). Queued 2026-09-18 as eight chained tasks (423-430).** One task per table
 family: named readers and one column list for jobs/job_steps/
 job_effects, deploys/deploy_targets, projects/project_repos/backlog/
 initiatives, assessments/portal_tokens/task_refs, each with the schema
@@ -203,14 +203,14 @@ test extended; then store.rs split into `store/{tasks,attempts,jobs,
 projects,deploys,stats,schema}.rs` with one `impl Store` block per
 file and no behaviour change, one file per task.
 
-**Stage 3. cli.rs verbs into modules (Forge, after 1).** One verb per
+**Stage 3. cli.rs verbs into modules (Forge, after 1). Queued 2026-09-18 as five chained tasks (431-435).** One verb per
 task: `intake_accept` into intake.rs as `accept(f, task) -> Project`;
 `integrate` onto landing.rs; `initiative_new`'s validation into
 queue.rs beside `parse_initiative_file`; `project_deploy_add/set` into
 deploy.rs. The rule after this stage: a cli.rs function parses
 arguments, calls one kernel function and prints; thirty lines or fewer.
 
-**Stage 4. The run's seams (hand).** `retry_start` (workflow resolution,
+**Stage 4. The run's seams (hand). Done 2026-09-18 (df2d69b): `run_task` 1082 → 167 lines; the seven pieces moved by line range with the labelled breaks turned into a `StepFlow`; every fake's terminal path unchanged.** `retry_start` (workflow resolution,
 remote, verified-branch merge), `escalate` (the supervisor rung) and
 `finish` (dependents, deploy hook) out of `run_task`, which keeps the
 step loop and the `Run` cursor; target 500 lines; each seam gets unit
@@ -222,7 +222,7 @@ in the same union as attempts; a jobs list in the TUI and the web
 client; the portal's "Running for you" fed by the same row; one view
 per task.
 
-**Stage 6. Unit tests for the new modules (Forge).** One module per
+**Stage 6. Unit tests for the new modules (Forge). Queued 2026-09-18 as six independent tasks (436-441).** One module per
 task, pure functions only, no new fakes: job, deploy, deploy_look,
 operation, landing, assess, concierge, prompts.
 
