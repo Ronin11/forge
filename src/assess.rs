@@ -10,7 +10,7 @@
 use crate::ctx::Forge;
 use crate::report::Event;
 use crate::store::{Assessment, Task};
-use crate::{agent, git, unix_now, workflows};
+use crate::{git, unix_now, workflows};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -104,27 +104,28 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
         .logs
         .join(format!("assess-{}-{}.jsonl", t.id, unix_now()));
     let dirty_before = git::dirty_paths(wt).await.unwrap_or_default();
-    let outcome = agent::run(agent::Launch {
-        task_id: t.id,
-        worktree: wt,
-        prompt: &prompt_text,
-        model: &model,
-        max_turns,
-        timeout: std::time::Duration::from_secs(timeout_secs),
-        log_path: &log_path,
-        sandbox: f.sandbox.as_ref(),
-        report: &f.report,
-        step: "assess",
-        provider,
-        resume: None,
-        writes: false,
-        start_sha: landed_sha,
-        schema: SCHEMA,
-        early_ending: f.early_ending,
-        no_tools: false,
-    })
+    let outcome = crate::directive::launch(
+        f,
+        crate::directive::Spec {
+            id: t.id,
+            step: "assess",
+            dir: wt,
+            prompt: &prompt_text,
+            model: &model,
+            max_turns,
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            log_path: &log_path,
+            provider,
+            schema: SCHEMA,
+            sandboxed: true,
+            writes: false,
+            start_sha: landed_sha,
+            resume: None,
+            no_tools: false,
+        },
+    )
     .await?;
-    if let Some(why) = crate::verify::agent_failure(&outcome) {
+    if let Some(why) = crate::directive::agent_failure(&outcome) {
         bail!("its run failed: {why}");
     }
     let changed = git::changed_paths(wt, landed_sha).await.unwrap_or_default();
@@ -145,11 +146,7 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
                 .join(", ")
         );
     }
-    let r: Ruling = outcome
-        .structured
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .context("no structured result fit the schema")?;
+    let r: Ruling = crate::directive::structured(&outcome)?;
     if !(0..=10).contains(&r.score) {
         bail!("score {} is out of 0..=10", r.score);
     }

@@ -9,7 +9,7 @@
 
 use crate::ctx::Forge;
 use crate::store::DeployTarget;
-use crate::{agent, unix_now, workflows};
+use crate::{unix_now, workflows};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -131,38 +131,35 @@ pub async fn run(
         &failed_requests,
     );
 
-    let outcome = agent::run(agent::Launch {
-        task_id: 0,
-        worktree: out_dir,
-        prompt: &prompt_text,
-        model: &model,
-        max_turns,
-        timeout: std::time::Duration::from_secs(timeout_secs),
-        log_path: &log_path,
-        // `forge deploy` never sandboxes its own steps (see
-        // `operation::run_deploy_method`); this directive reads a
-        // screenshot out of a scratch directory, nothing the sandbox
-        // would protect.
-        sandbox: None,
-        report: &f.report,
-        step: "deploy-look",
-        provider,
-        resume: None,
-        start_sha: "",
-        writes: false,
-        schema: SCHEMA,
-        early_ending: f.early_ending,
-        no_tools: false,
-    })
+    let outcome = crate::directive::launch(
+        f,
+        crate::directive::Spec {
+            id: 0,
+            step: "deploy-look",
+            dir: out_dir,
+            prompt: &prompt_text,
+            model: &model,
+            max_turns,
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            log_path: &log_path,
+            provider,
+            schema: SCHEMA,
+            // `forge deploy` never sandboxes its own steps (see
+            // `operation::run_deploy_method`); this directive reads a
+            // screenshot out of a scratch directory, nothing the sandbox
+            // would protect.
+            sandboxed: false,
+            writes: false,
+            start_sha: "",
+            resume: None,
+            no_tools: false,
+        },
+    )
     .await?;
-    if let Some(why) = crate::verify::agent_failure(&outcome) {
+    if let Some(why) = crate::directive::agent_failure(&outcome) {
         bail!("its run failed: {why}");
     }
-    let v: Verdict = outcome
-        .structured
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .context("no structured result fit the schema")?;
+    let v: Verdict = crate::directive::structured(&outcome)?;
     if let Some(bad) = v
         .findings
         .iter()
