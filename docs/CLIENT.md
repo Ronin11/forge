@@ -681,6 +681,8 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `deploy_started` | `project`, `target`, `sha` | A deploy of `project`/`target` began. |
 | `deploy_finished` | `project`, `target`, `sha`, `ok`, `rolled_back_to` (string or null) | A deploy reached a verdict; `rolled_back_to` is the previous passing commit it fell back to when `ok` is false. |
 | `project_created` | `project`, `person` | `forge intake accept` created `project` for the first time, on `person`'s confirmed brief (see docs/INTAKE.md); a plugin's cue to send them their customer portal link (see docs/PORTAL.md). |
+| `job_started` | `project`, `workflow`, `job_id`, `dry_run` | A job began running its steps, either `forge job start --now` or the worker's claimed run. |
+| `job_finished` | `project`, `workflow`, `job_id`, `state`, `cost_usd` | A job reached a final state: `ok`, `failed`, `needs_human` or `dropped`. |
 
 ### What to re-read on which event
 
@@ -701,6 +703,8 @@ client re-reads the affected document with the verb above.
 - **The run view** (the task inside its workflow — `forge trace ID
   --json`'s `ops` and `attempts`): re-read on `task_done`,
   `attempt_done`, or `op`, again only for the task currently open.
+- **The jobs list** (`forge job list --json`): re-read on `job_started`
+  or `job_finished`.
 
 A client that only wants a live feed (a scrolling line per event) needs
 no re-read logic at all: every event's `text` is already the line to

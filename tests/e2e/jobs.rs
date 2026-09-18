@@ -268,6 +268,57 @@ on_failure = "drop"
     assert!(!dry_scratch.join("book.csv").exists());
 }
 
+/// `forge job start --now` emits `JobStarted` then `JobFinished` (see
+/// docs/JOBS.md, "The executor"): `forge events` shows both, carrying the
+/// job's id and its final state, so a client's jobs list knows when to
+/// re-read without polling (docs/REVIEW-2.md item 7).
+#[test]
+fn forge_job_start_now_emits_job_started_and_job_finished_events() {
+    let e = Env::new();
+    setup_snapshot_workflow(&e);
+
+    let input = e.home.join("input.json");
+    std::fs::write(
+        &input,
+        r#"{"path":"out.txt","content":"hello world","table":"book.csv","row":"hello,42"}"#,
+    )
+    .unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "snapshot", "--input", input_s, "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let events = e.forge("ok.sh", &["events"]);
+    assert!(events.status.success());
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&events.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+
+    let started_idx = lines
+        .iter()
+        .position(|v| v["type"] == "job_started" && v["job_id"] == id)
+        .unwrap_or_else(|| panic!("no job_started event for job {id} in:\n{lines:#?}"));
+    let finished_idx = lines
+        .iter()
+        .position(|v| v["type"] == "job_finished" && v["job_id"] == id)
+        .unwrap_or_else(|| panic!("no job_finished event for job {id} in:\n{lines:#?}"));
+    assert!(
+        started_idx < finished_idx,
+        "job_started should precede job_finished: {lines:#?}"
+    );
+    assert_eq!(lines[started_idx]["project"], "equitizr");
+    assert_eq!(lines[started_idx]["workflow"], "snapshot");
+    assert_eq!(lines[started_idx]["dry_run"], false);
+    assert_eq!(lines[finished_idx]["state"], "ok");
+}
+
 /// `forge job start` without `--now` only queues the job; the worker's
 /// claim loop (`src/worker.rs`) claims it alongside tasks, within the
 /// same `--jobs` cap, and runs it through `src/job.rs` exactly as `--now`

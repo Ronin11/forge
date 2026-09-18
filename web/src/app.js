@@ -12,6 +12,7 @@
     list: ['task_queued', 'task_started', 'task_done', 'attempt_done', 'pushed'],
     detail: ['task_done', 'attempt_done', 'deploy_finished'],
     run: ['task_done', 'attempt_done', 'op'],
+    jobs: ['job_started', 'job_finished'],
   };
 
   async function call(method, path) {

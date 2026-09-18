@@ -128,6 +128,24 @@ pub enum Event<'a> {
         project: &'a str,
         person: &'a str,
     },
+    /// A job began running its steps (see docs/JOBS.md, "The executor"):
+    /// both `forge job start --now` and the worker's claimed run
+    /// (`job::drive`) emit this once the archive and input are ready.
+    JobStarted {
+        project: &'a str,
+        workflow: &'a str,
+        job_id: i64,
+        dry_run: bool,
+    },
+    /// A job reached a final state: `ok`, `failed`, `needs_human` or
+    /// `dropped` (see docs/JOBS.md, "Vocabulary").
+    JobFinished {
+        project: &'a str,
+        workflow: &'a str,
+        job_id: i64,
+        state: &'a str,
+        cost_usd: f64,
+    },
 }
 
 impl Event<'_> {
@@ -238,6 +256,25 @@ impl Event<'_> {
             Event::ProjectCreated { project, person } => {
                 format!("created project {project} for {person}")
             }
+            Event::JobStarted {
+                project,
+                workflow,
+                job_id,
+                dry_run,
+            } => format!(
+                "running {project}/{workflow} (job {job_id}){}",
+                if *dry_run { ", dry run" } else { "" }
+            ),
+            Event::JobFinished {
+                project,
+                workflow,
+                job_id,
+                state,
+                cost_usd,
+            } => format!(
+                "job {job_id} ({project}/{workflow}) {state} ({})",
+                money(Some(*cost_usd))
+            ),
         }
     }
 }
@@ -455,6 +492,8 @@ fn render(ev: Event) -> Vec<String> {
         Event::DeployStarted { .. } => vec![summary],
         Event::DeployFinished { .. } => vec![String::new(), summary],
         Event::ProjectCreated { .. } => vec![summary],
+        Event::JobStarted { .. } => vec![summary],
+        Event::JobFinished { .. } => vec![String::new(), summary],
     }
 }
 
@@ -672,6 +711,35 @@ mod tests {
             json!({
                 "type": "project_created", "project": "nate", "person": "nate",
                 "text": "created project nate for nate",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::JobStarted {
+                project: "equitizr",
+                workflow: "quote-by-text",
+                job_id: 9,
+                dry_run: false,
+            }),
+            json!({
+                "type": "job_started", "project": "equitizr", "workflow": "quote-by-text",
+                "job_id": 9, "dry_run": false,
+                "text": "running equitizr/quote-by-text (job 9)",
+            })
+        );
+
+        assert_eq!(
+            to_json(&Event::JobFinished {
+                project: "equitizr",
+                workflow: "quote-by-text",
+                job_id: 9,
+                state: "ok",
+                cost_usd: 0.05,
+            }),
+            json!({
+                "type": "job_finished", "project": "equitizr", "workflow": "quote-by-text",
+                "job_id": 9, "state": "ok", "cost_usd": 0.05,
+                "text": "job 9 (equitizr/quote-by-text) ok ($0.0500)",
             })
         );
     }
