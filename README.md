@@ -179,48 +179,57 @@ See docs/ACTIONS.md.
 ## Layout
 
 ```
-src/main.rs       entry, unix_now
-src/cli.rs        commands and all terminal output
-src/ctx.rs        Forge: paths, store, budget, sandbox, reporter, built once
-src/engine.rs     run_task / run_attempt, Fault::{Task, Env}
-src/attempt.rs    one attempt of a directive: prompt, launch, verdict, the row
-src/audit.rs      diagnosis for a terminal failure; cost anti-patterns
-src/verify.rs     L0/L1/L2, the claim rule, and the pure verdict table
-src/envelope.rs   the result contract: schema and parser
-src/doctor.rs     forge doctor
-src/worker.rs     drive, the queue loop, signals
-src/workflows.rs  the workflow and action tables, loaded as one Catalog
-src/agent.rs      spawn the CLI, parse stream-json, timeout
-src/checks.rs     run one command as a check under a timeout
-src/sandbox.rs    bubblewrap
-src/git.rs        the few git operations Forge performs
-src/store/        SQLite, forward-only migrations by user_version, one file per table family
-  mod.rs          types, column lists, open, schema_version, MIGRATIONS, the migration runner
-  tasks.rs        tasks: claim, queue, dependents, lineage
-  attempts.rs     attempts and ops: insert, finish, rate limits, tool facts
-  jobs.rs         jobs, job_steps, job_effects
-  deploys.rs      deploys, deploy_targets, assessments
-  projects.rs     projects, project_repos, backlog, initiatives, portal_tokens
-  record.rs       decisions, task_refs, plugins
-  stats.rs        forge stats: workflow/step/role/human-attention/time-to-live queries
-src/config.rs     forge.toml and config.toml
-src/report.rs     typed events; the stderr printer is one consumer
-src/journal.rs    what earlier attempts in a piece of work said, and what the kernel found
-src/landing.rs    the integrator: merge base in, re-verify, push, fast-forward
-src/operation.rs  a workflow step that is a command, not an agent
-src/profile.rs    a workflow's measured cost and success, from its runs
-src/prompts.rs    what each contract's agent is told, assembled from pieces
-src/queue.rs      how a task comes to exist; enqueue validates a TaskRequest
-src/supervisor.rs the rung between a blocked task and the human
-src/tools.rs      what an attempt ran, read back from its stream
-src/view.rs       shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
-src/builtins/     built-in actions, operations, and workflows, as TOML
-tests/e2e.rs      the real binary against fake agents in tests/fakes/
+src/agent.rs        spawn the CLI, parse stream-json, timeout
+src/assess.rs       the assess directive: a read-only score of a landed diff's maintainability
+src/attempt.rs      one attempt of a directive: prompt, launch, verdict, the row
+src/audit.rs        diagnosis for a terminal failure; cost anti-patterns
+src/builtins/       built-in actions, operations, and workflows, as TOML
+src/checks.rs       run one command as a check under a timeout
+src/cli.rs          commands and all terminal output
+src/concierge.rs    forge ask: sorts a customer message into request, question, need, or unclear
+src/config.rs       forge.toml and config.toml
+src/ctx.rs          Forge: paths, store, budget, sandbox, reporter, built once
+src/deploy.rs       forge deploy: run a target's method, record the result, roll back on failure
+src/deploy_look.rs  the deploy-look directive: a read-only agent looks at the deployed page
+src/directive.rs    one launcher for every bounded agent run, one reading of how it failed
+src/doctor.rs       forge doctor
+src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
+src/envelope.rs     the result contract: schema and parser
+src/git.rs          the few git operations Forge performs
+src/intake.rs       intake acceptance: a confirmed brief becomes a project
+src/job.rs          forge job start: the executor for operation-only run workflows
+src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found
+src/landing.rs      the integrator: merge base in, re-verify, push, fast-forward
+src/main.rs         entry, unix_now
+src/operation.rs    a workflow step that is a command, not an agent
+src/plugins.rs      plugins: directories named for their plugin.toml, one broken manifest never stops the rest
+src/profile.rs      a workflow's measured cost and success, from its runs
+src/prompts.rs      what each contract's agent is told, assembled from pieces
+src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest
+src/report.rs       typed events; the stderr printer is one consumer
+src/sandbox.rs      bubblewrap
+src/store/          SQLite, forward-only migrations by user_version, one file per table family
+  mod.rs            types, column lists, open, schema_version, MIGRATIONS, the migration runner
+  tasks.rs          tasks: claim, queue, dependents, lineage
+  attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
+  jobs.rs           jobs, job_steps, job_effects
+  deploys.rs        deploys, deploy_targets, assessments
+  projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
+  record.rs         decisions, task_refs, plugins
+  stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
+src/supervisor.rs   the rung between a blocked task and the human
+src/tools.rs        what an attempt ran, read back from its stream
+src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
+src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
+src/worker.rs       drive, the queue loop, signals
+src/workflows.rs    the workflow and action tables, loaded as one Catalog
+tests/e2e/          the real binary against fake agents in tests/fakes/
 
+client/   forge-client: the one Rust client of the CLI; typed rows from --json
+portal/   forge-portal: read-only project page at /p/<token>, no login
+repomap/  forge-repomap: symbol index and task-ranked file list
 tui/      forge-tui: the operator's seat, a client of the CLI only
 web/      forge-web: the same seat in a browser
-client/   forge-client: the one Rust client of the CLI; typed rows from --json
-repomap/  forge-repomap: symbol index and task-ranked file list
 ```
 
 ## Environment
