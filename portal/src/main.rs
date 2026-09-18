@@ -20,7 +20,7 @@
 use anyhow::{Context, Result};
 use forge_client::{
     Forge, PortalBacklogItem, PortalBrief, PortalDeployTarget, PortalDoc, PortalInitiative,
-    PortalLanded, PortalQuestion,
+    PortalJobRun, PortalLanded, PortalQuestion, PortalWorkflow,
 };
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -223,9 +223,6 @@ fn deploy_status(t: &PortalDeployTarget) -> (&'static str, &'static str) {
 }
 
 fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
-    if targets.is_empty() {
-        return r#"<p class="empty">Nothing runs for you yet.</p>"#.to_string();
-    }
     let mut out = String::new();
     for t in targets {
         let (class, phrase) = deploy_status(t);
@@ -248,6 +245,54 @@ fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
             name = esc(&t.name),
             where_it_runs = esc(&t.where_it_runs),
         ));
+    }
+    out
+}
+
+/// The class and plain-word phrase for one job run: bad for a failure,
+/// warn for one that needs a person, ok for a clean run, plain for
+/// anything still in flight. A failure or a needs-you carries its
+/// one-line reason, when there is one.
+fn job_run_status(j: &PortalJobRun) -> (&'static str, String) {
+    match j.state.as_str() {
+        "ok" => ("ok", "Ran fine.".to_string()),
+        "failed" => (
+            "bad",
+            match &j.reason {
+                Some(r) => format!("Failed \u{2014} {r}."),
+                None => "Failed.".to_string(),
+            },
+        ),
+        "needs_human" => (
+            "warn",
+            match &j.reason {
+                Some(r) => format!("Needs you \u{2014} {r}."),
+                None => "Needs you.".to_string(),
+            },
+        ),
+        "running" => ("", "Running now.".to_string()),
+        "scheduled" => ("", "Scheduled.".to_string()),
+        "dropped" => ("", "Dropped.".to_string()),
+        _ => ("", "Queued.".to_string()),
+    }
+}
+
+fn render_run_workflows(workflows: &[PortalWorkflow]) -> String {
+    let mut out = String::new();
+    for w in workflows {
+        out.push_str(&format!(
+            r#"<div class="card"><div class="name">{}</div><ul class="plain">"#,
+            esc(&w.name)
+        ));
+        for j in &w.jobs {
+            let (class, phrase) = job_run_status(j);
+            out.push_str(&format!(
+                r#"<li><div class="status {class}">{phrase}</div><div class="date">{when}</div></li>"#,
+                phrase = esc(&phrase),
+                when = human_date(j.started_at),
+            ));
+        }
+        out.push_str("</ul></div>");
     }
     out
 }
@@ -362,20 +407,38 @@ fn render_plan(brief: &Option<PortalBrief>, backlog: &[PortalBacklogItem]) -> St
     out
 }
 
+/// "Running for you": deploy targets and run workflows together, since
+/// either alone is what is running for the customer (see docs/PORTAL.md).
+/// Empty only when both are.
+fn render_running(
+    targets: &[PortalDeployTarget],
+    workflows: &[PortalWorkflow],
+    token: &str,
+) -> String {
+    if targets.is_empty() && workflows.is_empty() {
+        return r#"<p class="empty">Nothing runs for you yet.</p>"#.to_string();
+    }
+    format!(
+        "{}{}",
+        render_targets(targets, token),
+        render_run_workflows(workflows)
+    )
+}
+
 fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String {
     // No purpose paragraph: a project's purpose is the operator's own
     // words, never the customer's (see docs/PORTAL.md).
     let header = format!(r#"<header><h1>{}</h1></header>"#, esc(&doc.project));
     let main = format!(
         r#"<main>
-<section><h2>Running for you</h2>{targets}</section>
+<section><h2>Running for you</h2>{running}</section>
 <section><h2>Being built</h2>{initiatives}</section>
 <section><h2>Needs you</h2>{questions}</section>
 <section><h2>Done</h2>{landed}</section>
 <section><h2>Ask</h2>{ask}</section>
 <section><h2>Your plan</h2>{plan}</section>
 </main>"#,
-        targets = render_targets(&doc.deploy_targets, token),
+        running = render_running(&doc.deploy_targets, &doc.run_workflows, token),
         initiatives = render_initiatives(&doc.initiatives, doc.initiatives_more),
         questions = render_questions(&doc.questions, token),
         landed = render_landed(&doc.landed, doc.landed_more),

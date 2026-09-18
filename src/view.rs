@@ -2329,6 +2329,29 @@ pub struct PortalDeployTarget {
     pub screenshot: Option<String>,
 }
 
+/// One of a run workflow's last three jobs on `PortalDoc`, "Running for
+/// you" continued (see docs/PORTAL.md): when it ran, whether it went
+/// `"ok"`, `"failed"` or `"needs_human"` (`store::JobState::as_str()`),
+/// and, on failure, a one-line reason cut from the first failing check's
+/// tail. No job id, no cost, no trigger, no verdict rows — the
+/// operator's `forge job show` carries those.
+#[derive(Serialize)]
+pub struct PortalJobRun {
+    pub started_at: i64,
+    pub state: String,
+    pub reason: Option<String>,
+}
+
+/// One run workflow on `PortalDoc`: an automation this project's jobs
+/// run through, and its last three jobs, newest first, from the same
+/// job rows `forge job list` serves (see docs/PORTAL.md, "What they
+/// see").
+#[derive(Serialize)]
+pub struct PortalWorkflow {
+    pub name: String,
+    pub jobs: Vec<PortalJobRun>,
+}
+
 /// One open initiative on `PortalDoc`: the customer's "Being built" list,
 /// newest first, capped at ten (`PortalDoc.initiatives_more` the rest —
 /// see docs/PORTAL.md). `state` is always one of "in progress" or
@@ -2393,6 +2416,7 @@ pub struct PortalDoc {
     /// rendered on the customer's page (see docs/PORTAL.md).
     pub purpose: String,
     pub deploy_targets: Vec<PortalDeployTarget>,
+    pub run_workflows: Vec<PortalWorkflow>,
     pub initiatives: Vec<PortalInitiative>,
     /// How many open initiatives past the ten in `initiatives` — "and n
     /// more" (0 when nothing was cut).
@@ -2435,6 +2459,32 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             look_ok,
             screenshot,
         });
+    }
+
+    // Running for you, continued: every run workflow this project's jobs
+    // have used, newest job first, each capped at its last three (see
+    // docs/PORTAL.md). `f.store.jobs` already orders newest first, so a
+    // single pass building each workflow's entry in first-seen order
+    // keeps both the workflow order and each one's job order correct.
+    let mut run_workflows: Vec<PortalWorkflow> = Vec::new();
+    for j in f.store.jobs(Some(&p.name), None)? {
+        let entry = match run_workflows.iter().position(|w| w.name == j.workflow) {
+            Some(i) => &mut run_workflows[i],
+            None => {
+                run_workflows.push(PortalWorkflow {
+                    name: j.workflow.clone(),
+                    jobs: Vec::new(),
+                });
+                run_workflows.last_mut().expect("just pushed")
+            }
+        };
+        if entry.jobs.len() < 3 {
+            entry.jobs.push(PortalJobRun {
+                started_at: j.started_at,
+                state: j.state.as_str().to_string(),
+                reason: job_failure_reason(&j),
+            });
+        }
     }
 
     let tasks = f.store.project_tasks(&p.name)?;
@@ -2546,6 +2596,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         project: p.name.clone(),
         purpose: real_purpose(&p.purpose),
         deploy_targets,
+        run_workflows,
         initiatives,
         initiatives_more,
         questions,
@@ -2554,6 +2605,26 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         brief,
         backlog,
     })
+}
+
+/// A failed or needs-human job's one-line reason on `PortalDoc`: the
+/// first line of the first failing check's tail in `verdict_json`, any
+/// path-like token stripped, cut at 120 characters on a word boundary —
+/// the same treatment `derive_landed_line` gives a landed task's own
+/// request text (see docs/PORTAL.md). `None` for a job that is queued,
+/// running, dropped, or went ok, or whose verdict carries no failing
+/// check.
+fn job_failure_reason(j: &crate::store::Job) -> Option<String> {
+    use crate::store::JobState;
+    if !matches!(j.state, JobState::Failed | JobState::NeedsHuman) {
+        return None;
+    }
+    let verdict: Vec<crate::checks::CheckResult> =
+        serde_json::from_str(&j.verdict_json).unwrap_or_default();
+    let tail = &verdict.iter().find(|c| !c.ok)?.tail;
+    let line = tail.lines().next().unwrap_or(tail);
+    let stripped = strip_path_like_tokens(line.trim());
+    Some(truncate_at_word_boundary(stripped.trim(), 120))
 }
 
 /// How many tasks make up an initiative so far — every lineage, whatever
@@ -3955,5 +4026,105 @@ mod portal_tests {
             "newest open initiative first"
         );
         assert_eq!(doc.initiatives[0].pieces, 0, "no tasks filed on it yet");
+    }
+
+    /// "Running for you" continued: every run workflow the project's jobs
+    /// have used, newest job first, each capped at its last three, a
+    /// failure's reason cut to one line with any path-like token stripped
+    /// (see docs/PORTAL.md).
+    #[test]
+    fn run_workflows_list_the_last_three_jobs_each_newest_first() {
+        use crate::store::{Job, JobState};
+
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "acme".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Four jobs for "nightly-sync": only the newest three should
+        // survive on its entry.
+        for n in 0..4 {
+            f.store
+                .create_job(&Job {
+                    project: "acme".into(),
+                    workflow: "nightly-sync".into(),
+                    state: JobState::Ok,
+                    started_at: 1_700_000_000 + n,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        // One failing job for "weekly-report", its reason cut from the
+        // first failing check's tail, path-like tokens stripped.
+        f.store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "weekly-report".into(),
+                state: JobState::Failed,
+                started_at: 1_700_000_500,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "OP".into(),
+                    name: "send-report".into(),
+                    ok: false,
+                    tail: "could not reach src/report/send.rs:12, the mailer timed out".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+        // A needs-human job for "weekly-report" too, more recent than the
+        // failure above.
+        f.store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "weekly-report".into(),
+                state: JobState::NeedsHuman,
+                started_at: 1_700_000_600,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "L0".into(),
+                    name: "budget".into(),
+                    ok: false,
+                    tail: "over the per-run budget".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let p = f.store.project("acme").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+
+        assert_eq!(doc.run_workflows.len(), 2);
+        // Most recent job first, so "weekly-report" (started at 600)
+        // sorts ahead of "nightly-sync" (started at 103 at the newest).
+        assert_eq!(doc.run_workflows[0].name, "weekly-report");
+        assert_eq!(doc.run_workflows[0].jobs.len(), 2);
+        assert_eq!(doc.run_workflows[0].jobs[0].state, "needs_human");
+        assert_eq!(
+            doc.run_workflows[0].jobs[0].reason.as_deref(),
+            Some("over the per-run budget")
+        );
+        assert_eq!(doc.run_workflows[0].jobs[1].state, "failed");
+        assert_eq!(
+            doc.run_workflows[0].jobs[1].reason.as_deref(),
+            Some("could not reach the mailer timed out"),
+            "path-like token stripped from the tail"
+        );
+
+        assert_eq!(doc.run_workflows[1].name, "nightly-sync");
+        assert_eq!(doc.run_workflows[1].jobs.len(), 3, "capped at three");
+        assert_eq!(doc.run_workflows[1].jobs[0].started_at, 1_700_000_003);
+        assert_eq!(doc.run_workflows[1].jobs[0].state, "ok");
+        assert_eq!(doc.run_workflows[1].jobs[0].reason, None);
+
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_no_forbidden_keys(&v);
     }
 }
