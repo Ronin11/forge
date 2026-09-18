@@ -79,6 +79,29 @@ pub async fn run_on_landing(f: &Forge, t: &Task, landed_sha: &str) {
     }
 }
 
+/// The score must fall in 0..=10; anything else is named in the error.
+fn check_score(score: i64) -> Result<()> {
+    if !(0..=10).contains(&score) {
+        bail!("score {} is out of 0..=10", score);
+    }
+    Ok(())
+}
+
+/// A finding's severity must be `notable` or `concern`; anything else is
+/// named in the error.
+fn check_severity(findings: &[Finding]) -> Result<()> {
+    if let Some(bad) = findings
+        .iter()
+        .find(|fnd| fnd.severity != "notable" && fnd.severity != "concern")
+    {
+        bail!(
+            "finding severity {:?} is neither notable nor concern",
+            bad.severity
+        );
+    }
+    Ok(())
+}
+
 /// `Ok(None)` when the task's workflow does not opt in; `Ok(Some(_))` with
 /// the row it stored otherwise.
 async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>> {
@@ -147,19 +170,8 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
         );
     }
     let r: Ruling = crate::directive::structured(&outcome)?;
-    if !(0..=10).contains(&r.score) {
-        bail!("score {} is out of 0..=10", r.score);
-    }
-    if let Some(bad) = r
-        .findings
-        .iter()
-        .find(|fnd| fnd.severity != "notable" && fnd.severity != "concern")
-    {
-        bail!(
-            "finding severity {:?} is neither notable nor concern",
-            bad.severity
-        );
-    }
+    check_score(r.score)?;
+    check_severity(&r.findings)?;
     f.store.insert_assessment(&Assessment {
         id: 0,
         task_id: t.id,
@@ -171,4 +183,75 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
         created_at: unix_now(),
     })?;
     Ok(Some(r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_names_the_task_and_the_diff_and_the_schema_fields() {
+        let t = Task {
+            task: "add a retry button to the deploy page".to_string(),
+            ..Default::default()
+        };
+        let diff = "diff --git a/src/deploy.rs b/src/deploy.rs\n+fn retry() {}\n";
+        let text = prompt(&t, diff);
+        for needle in ["add a retry button to the deploy page", diff] {
+            assert_eq!(
+                text.matches(needle).count(),
+                1,
+                "expected {needle:?} exactly once in:\n{text}"
+            );
+        }
+        for needle in ["`score`", "`findings`"] {
+            assert!(text.contains(needle), "expected {needle:?} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn check_score_accepts_the_full_0_to_10_range() {
+        for score in 0..=10 {
+            assert!(check_score(score).is_ok(), "{score} should be accepted");
+        }
+    }
+
+    #[test]
+    fn check_score_refuses_11_and_negative_1() {
+        let err = check_score(11).unwrap_err();
+        assert_eq!(err.to_string(), "score 11 is out of 0..=10");
+        let err = check_score(-1).unwrap_err();
+        assert_eq!(err.to_string(), "score -1 is out of 0..=10");
+    }
+
+    #[test]
+    fn check_severity_accepts_notable_and_concern() {
+        let findings = vec![
+            Finding {
+                path: "src/a.rs".to_string(),
+                finding: "a".to_string(),
+                severity: "notable".to_string(),
+            },
+            Finding {
+                path: "src/b.rs".to_string(),
+                finding: "b".to_string(),
+                severity: "concern".to_string(),
+            },
+        ];
+        assert!(check_severity(&findings).is_ok());
+    }
+
+    #[test]
+    fn check_severity_names_anything_else_in_the_error() {
+        let findings = vec![Finding {
+            path: "src/a.rs".to_string(),
+            finding: "a".to_string(),
+            severity: "critical".to_string(),
+        }];
+        let err = check_severity(&findings).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "finding severity \"critical\" is neither notable nor concern"
+        );
+    }
 }
