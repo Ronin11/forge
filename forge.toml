@@ -13,6 +13,12 @@ fmt = ["cargo", "fmt", "--all", "--check"]
 clippy = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 test = ["cargo", "test", "--workspace"]
 
+# Known fixes: when an attempt fails only these checks, Forge runs the fix,
+# commits it as itself, and re-checks once before an agent spends a repair.
+[checks.fixable]
+fmt = ["cargo", "fmt", "--all"]
+clippy = ["cargo", "clippy", "--workspace", "--all-targets", "--fix", "--allow-dirty", "--allow-staged", "--", "-D", "warnings"]
+
 [verify]
 # The client boundary is the one rule a task may not relax; forge.toml is always protected.
 protected = ["tests/boundary.rs", "forge.toml"]
