@@ -1287,16 +1287,27 @@ mod column_tests {
     /// where there is no second field to drift out of order against.
     #[test]
     fn no_row_reads_a_column_by_position_outside_a_single_column_query() {
-        let files: &[(&str, &str)] = &[
-            ("mod.rs", include_str!("mod.rs")),
-            ("tasks.rs", include_str!("tasks.rs")),
-            ("attempts.rs", include_str!("attempts.rs")),
-            ("jobs.rs", include_str!("jobs.rs")),
-            ("deploys.rs", include_str!("deploys.rs")),
-            ("projects.rs", include_str!("projects.rs")),
-            ("record.rs", include_str!("record.rs")),
-            ("stats.rs", include_str!("stats.rs")),
-        ];
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
+        let files: Vec<(String, String)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .map(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                let src = std::fs::read_to_string(&p).unwrap();
+                (name, src)
+            })
+            .collect();
+        assert!(
+            !files.is_empty(),
+            "no .rs files found under {}",
+            dir.display()
+        );
+        assert!(
+            files.iter().any(|(name, _)| name == "mod.rs"),
+            "expected mod.rs among files under {}",
+            dir.display()
+        );
         let offenders: Vec<String> = files
             .iter()
             .flat_map(|(name, src)| {
