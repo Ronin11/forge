@@ -1643,40 +1643,24 @@ fn project_deploy_add(
     on_landing: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
-    f.store
-        .project(&project)?
-        .with_context(|| format!("no project {project}"))?;
-    let repo = repo
-        .canonicalize()
-        .with_context(|| format!("--repo {}", repo.display()))?;
-    let scope_json = scope
-        .map(|s| serde_json::to_string(&s.split(',').collect::<Vec<_>>()))
-        .transpose()?;
-    let arg_map = parse_args(&args)?;
-    let check = match check {
-        Some(c) => c,
-        None if method == "deploy-static" => String::new(),
-        None => bail!("--check is required for method {method:?}"),
-    };
-    f.store.add_deploy_target(&crate::store::DeployTarget {
-        project: project.clone(),
-        name: name.clone(),
-        repo: repo.display().to_string(),
-        scope: scope_json,
-        method,
-        args: arg_map,
-        check_cmd: check,
-        on_landing,
-        smoke_url: smoke,
-    })?;
-    out!("added deploy target {name} to project {project}");
+    let t = crate::deploy::add_target(
+        &f,
+        crate::deploy::TargetSpec {
+            project,
+            name,
+            repo,
+            scope,
+            method,
+            args,
+            check,
+            smoke,
+            on_landing,
+        },
+    )?;
+    out!("added deploy target {} to project {}", t.name, t.project);
     Ok(())
 }
 
-/// Change a deploy target's fields, replacing only the ones given: the
-/// same shape as `project_deploy_add`, but starting from the stored
-/// target and merging each flag onto it (`--arg` onto the args map,
-/// everything else replacing its field whole).
 #[allow(clippy::too_many_arguments)]
 fn project_deploy_set(
     project: String,
@@ -1691,45 +1675,22 @@ fn project_deploy_set(
     no_on_landing: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let mut t = f
-        .store
-        .deploy_target(&project, &name)?
-        .with_context(|| format!("no deploy target {name} in project {project}"))?;
-
-    if let Some(repo) = repo {
-        let repo = repo
-            .canonicalize()
-            .with_context(|| format!("--repo {}", repo.display()))?;
-        t.repo = repo.display().to_string();
-    }
-    if let Some(scope) = scope {
-        t.scope = Some(serde_json::to_string(
-            &scope.split(',').collect::<Vec<_>>(),
-        )?);
-    }
-    if let Some(method) = method {
-        t.method = method;
-    }
-    for (k, v) in parse_args(&args)? {
-        t.args.insert(k, v);
-    }
-    if let Some(check) = check {
-        t.check_cmd = check;
-    }
-    if let Some(smoke) = smoke {
-        t.smoke_url = Some(smoke);
-    }
-    if on_landing {
-        t.on_landing = true;
-    } else if no_on_landing {
-        t.on_landing = false;
-    }
-    if t.check_cmd.is_empty() && t.method != "deploy-static" {
-        bail!("--check is required for method {:?}", t.method);
-    }
-
-    f.store.update_deploy_target(&t)?;
-    out!("updated deploy target {name} in project {project}");
+    let t = crate::deploy::set_target(
+        &f,
+        &project,
+        &name,
+        crate::deploy::TargetChanges {
+            repo,
+            scope,
+            method,
+            args,
+            check,
+            smoke,
+            on_landing,
+            no_on_landing,
+        },
+    )?;
+    out!("updated deploy target {} in project {}", t.name, t.project);
     Ok(())
 }
 
