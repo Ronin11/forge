@@ -161,14 +161,7 @@ pub async fn ask(
             }
         }
         "need" => {
-            // "Contact: X." is the same convention an intake task's text
-            // already carries when a person is named (see
-            // tests/e2e/intake.rs); the interview reads the contact back
-            // out of the task text the same way.
-            let text = match from {
-                Some(c) => format!("{message} Contact: {c}."),
-                None => message.to_string(),
-            };
+            let text = need_task_text(message, from);
             let mut req = base(project, &repo, text, Some("intake"));
             req.retries = 0;
             req.no_land = true;
@@ -216,6 +209,17 @@ pub async fn ask(
 /// failing the whole decision over an optional field.
 fn is_a_pattern(p: &Pattern) -> bool {
     p.task_ids.len() >= 3 && !p.repetition.trim().is_empty() && !p.outcome.trim().is_empty()
+}
+
+/// A `need`'s task text: the message as given, with "Contact: X." appended
+/// when the message named one — the same convention an intake task's text
+/// already carries when a person is named (see tests/e2e/intake.rs); the
+/// interview reads the contact back out of the task text the same way.
+fn need_task_text(message: &str, from: Option<&str>) -> String {
+    match from {
+        Some(c) => format!("{message} Contact: {c}."),
+        None => message.to_string(),
+    }
 }
 
 /// The escalator (docs/INTAKE.md, "The escalator"): blocks a placeholder
@@ -356,4 +360,156 @@ pub async fn answer_proposal(f: &Forge, id: i64, text: &str, by: &str) -> Result
 fn is_yes(text: &str) -> bool {
     let t = text.trim().trim_end_matches(['.', '!']).to_lowercase();
     t == "y" || t == "yes" || t.starts_with("yes,") || t.starts_with("yes ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_fills_the_repo_task_project_and_workflow_leaving_the_clis_own_defaults() {
+        let req = base("demo", "/repo", "do the thing".to_string(), Some("direct"));
+        assert_eq!(req.repo, PathBuf::from("/repo"));
+        assert_eq!(req.task, "do the thing");
+        assert_eq!(req.project.as_deref(), Some("demo"));
+        assert_eq!(req.workflow.as_deref(), Some("direct"));
+        assert_eq!(req.max_turns, 100);
+        assert_eq!(req.retries, 1);
+        assert_eq!(req.timeout_secs, 1800);
+    }
+
+    #[test]
+    fn base_with_no_workflow_leaves_it_for_enqueues_own_resolution() {
+        let req = base("demo", "/repo", "do the thing".to_string(), None);
+        assert!(req.workflow.is_none());
+    }
+
+    #[test]
+    fn decision_parses_each_kinds_own_field_from_the_structured_result() {
+        let cases = [
+            (
+                r#"{"kind":"request","task":"change the quote text","answer":"","reason":"","question":"","pattern":null}"#,
+                "request",
+            ),
+            (
+                r#"{"kind":"question","task":"","answer":"Yes, it went out.","reason":"","question":"","pattern":null}"#,
+                "question",
+            ),
+            (
+                r#"{"kind":"need","task":"","answer":"","reason":"worth an interview","question":"","pattern":null}"#,
+                "need",
+            ),
+            (
+                r#"{"kind":"unclear","task":"","answer":"","reason":"","question":"which one?","pattern":null}"#,
+                "unclear",
+            ),
+        ];
+        for (raw, kind) in cases {
+            let d: Decision = serde_json::from_str(raw).unwrap();
+            assert_eq!(d.kind, kind, "{raw}");
+        }
+        let d: Decision = serde_json::from_str(cases[0].0).unwrap();
+        assert_eq!(d.task, "change the quote text");
+        let d: Decision = serde_json::from_str(cases[1].0).unwrap();
+        assert_eq!(d.answer, "Yes, it went out.");
+        let d: Decision = serde_json::from_str(cases[2].0).unwrap();
+        assert_eq!(d.reason, "worth an interview");
+        let d: Decision = serde_json::from_str(cases[3].0).unwrap();
+        assert_eq!(d.question, "which one?");
+    }
+
+    #[test]
+    fn decision_defaults_every_field_missing_from_the_structured_result() {
+        let d: Decision = serde_json::from_str(r#"{"kind":"question","answer":"No."}"#).unwrap();
+        assert_eq!(d.kind, "question");
+        assert_eq!(d.answer, "No.");
+        assert_eq!(d.task, "");
+        assert_eq!(d.reason, "");
+        assert_eq!(d.question, "");
+        assert!(d.pattern.is_none());
+    }
+
+    #[test]
+    fn decision_parses_a_pattern_alongside_its_kind() {
+        let d: Decision = serde_json::from_str(
+            r#"{"kind":"request","task":"t","pattern":{"task_ids":[1,2,3],"repetition":"asked three times","outcome":"automate it"}}"#,
+        )
+        .unwrap();
+        let p = d.pattern.expect("pattern present");
+        assert_eq!(p.task_ids, vec![1, 2, 3]);
+        assert_eq!(p.repetition, "asked three times");
+        assert_eq!(p.outcome, "automate it");
+    }
+
+    fn pattern(task_ids: Vec<i64>, repetition: &str, outcome: &str) -> Pattern {
+        Pattern {
+            task_ids,
+            repetition: repetition.to_string(),
+            outcome: outcome.to_string(),
+        }
+    }
+
+    #[test]
+    fn is_a_pattern_needs_three_or_more_ids_and_a_non_empty_repetition_and_outcome() {
+        assert!(is_a_pattern(&pattern(
+            vec![1, 2, 3],
+            "asked three times",
+            "automate it"
+        )));
+        assert!(is_a_pattern(&pattern(
+            vec![1, 2, 3, 4],
+            "asked four times",
+            "automate it"
+        )));
+    }
+
+    #[test]
+    fn is_a_pattern_refuses_fewer_than_three_ids() {
+        assert!(!is_a_pattern(&pattern(
+            vec![1, 2],
+            "asked twice",
+            "automate it"
+        )));
+        assert!(!is_a_pattern(&pattern(vec![], "", "")));
+    }
+
+    #[test]
+    fn is_a_pattern_refuses_a_hollow_repetition_or_outcome() {
+        assert!(!is_a_pattern(&pattern(vec![1, 2, 3], "  ", "automate it")));
+        assert!(!is_a_pattern(&pattern(
+            vec![1, 2, 3],
+            "asked three times",
+            ""
+        )));
+    }
+
+    #[test]
+    fn need_task_text_appends_the_contact_when_the_message_named_one() {
+        assert_eq!(
+            need_task_text("I keep losing track of who I've quoted.", Some("alice")),
+            "I keep losing track of who I've quoted. Contact: alice."
+        );
+    }
+
+    #[test]
+    fn need_task_text_leaves_the_message_alone_with_no_contact() {
+        assert_eq!(
+            need_task_text("I keep losing track of who I've quoted.", None),
+            "I keep losing track of who I've quoted."
+        );
+    }
+
+    #[test]
+    fn is_yes_accepts_a_plain_yes_tolerant_of_case_punctuation_and_please() {
+        for text in ["y", "Y", "yes", "Yes.", "YES!", "yes, please", "yes please"] {
+            assert!(is_yes(text), "{text:?} should be a yes");
+        }
+    }
+
+    #[test]
+    fn is_yes_refuses_anything_that_is_not_plainly_a_yes() {
+        for text in ["no", "nope", "yesterday", "", "  ", "sure"] {
+            assert!(!is_yes(text), "{text:?} should not be a yes");
+        }
+    }
 }

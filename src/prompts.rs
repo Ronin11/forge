@@ -490,3 +490,143 @@ pub fn concierge_prompt(
     p.push_str(&step_section(step));
     Ok(p)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Paths;
+    use crate::store::Store;
+    use crate::workflows::{ActionDef, Contract, Kind, Output, ResolvedStep};
+    use std::collections::BTreeMap;
+
+    fn test_cfg() -> config::Config {
+        config::Config {
+            checks: BTreeMap::new(),
+            fixable: BTreeMap::new(),
+            base_branch: "main".into(),
+            push_remote: None,
+            check_timeout_secs: 60,
+            protected: vec![],
+            namespace: vec![],
+            config_path: "forge.toml".into(),
+        }
+    }
+
+    fn test_step() -> ResolvedStep {
+        ResolvedStep {
+            action: ActionDef {
+                name: "concierge".to_string(),
+                kind: Kind::Directive,
+                description: String::new(),
+                consumes: vec![],
+                produces: vec![],
+                model: None,
+                max_turns: None,
+                timeout_secs: None,
+                run: None,
+                check: None,
+                contract: Contract::Plan,
+                paths: vec![],
+                brief: String::new(),
+                prompt: None,
+                schema: None,
+                file_into_initiative: false,
+                overlay: false,
+                verifies: false,
+                output: Output::Tail,
+                hash: String::new(),
+                text: String::new(),
+            },
+            model: None,
+            max_turns: None,
+            timeout_secs: None,
+            via: vec![],
+        }
+    }
+
+    /// A `Forge` over a fresh, empty store, the way `supervisor::tests` and
+    /// `operation::tests` build one for a function that takes `&Forge` but
+    /// needs no agent, sandbox or real repository.
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    /// With no project on the task, the four kinds, the decision's JSON
+    /// shape and the message itself are all the concierge directive is
+    /// given: none of the project-only sections (covered instead by
+    /// `tests/e2e/concierge.rs`, which pins them with a real project on
+    /// record) should appear.
+    #[test]
+    fn concierge_prompt_with_no_project_names_the_kinds_and_the_message_only() {
+        let (_dir, f) = fixture();
+        let t = Task {
+            task: "Did the reminder go out to the Hendersons?".to_string(),
+            base_branch: "main".into(),
+            workflow: "concierge".into(),
+            ..Default::default()
+        };
+        let text = concierge_prompt(&f, &t, &test_cfg(), &test_step(), None).unwrap();
+        for needle in [
+            "`request`",
+            "`question`",
+            "`need`",
+            "`unclear`",
+            "\"kind\":\"request|question|need|unclear\"",
+            "Did the reminder go out to the Hendersons?",
+        ] {
+            assert!(text.contains(needle), "expected {needle:?} in:\n{text}");
+        }
+        for absent in [
+            "The project's purpose",
+            "confirmed brief",
+            "The project's backlog",
+            "The project's deploy targets",
+            "The project's last tasks",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "did not expect {absent:?} in:\n{text}"
+            );
+        }
+    }
+
+    /// Naming a project that carries no record yet (no purpose, brief,
+    /// backlog, deploy target or other task) reads exactly like naming
+    /// none: every section stays conditional on there being something to
+    /// say, never on the project existing.
+    #[test]
+    fn concierge_prompt_with_an_empty_project_skips_every_project_section() {
+        let (_dir, f) = fixture();
+        let t = Task {
+            task: "Please change the quote text.".to_string(),
+            base_branch: "main".into(),
+            workflow: "concierge".into(),
+            project: Some("ghost".to_string()),
+            ..Default::default()
+        };
+        let text = concierge_prompt(&f, &t, &test_cfg(), &test_step(), None).unwrap();
+        for absent in [
+            "The project's purpose",
+            "confirmed brief",
+            "The project's backlog",
+            "The project's deploy targets",
+            "The project's last tasks",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "did not expect {absent:?} in:\n{text}"
+            );
+        }
+    }
+}
