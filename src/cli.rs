@@ -3297,6 +3297,10 @@ fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Tool usage per step, read from attempts only (`forge stats --tools`
+/// and `--json --tools`): a job's directive step runs with `no_tools`
+/// (see `job::run_directive`), so unlike `Store::role_stats` this stays
+/// out of the `job_steps` union — there is nothing there to count.
 fn collect_tool_stats(
     f: &Forge,
     step: Option<&str>,
@@ -3762,10 +3766,11 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
 async fn by_role_stats(f: &Forge) -> Result<()> {
     let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
     out!(
-        "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
+        "{:<10} {:<10} {:<16} {:<9} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
         "ROLE",
         "PROVIDER",
         "MODEL",
+        "KIND",
         "ATT",
         "SUCCEED%",
         "TURNS",
@@ -3786,10 +3791,11 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
     let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for r in &doc.by_role {
         out!(
-            "{:<10} {:<10} {:<16} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
+            "{:<10} {:<10} {:<16} {:<9} {:>5} {:>8} {:>6.1} {:>9} {:>7.0} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
             r.role,
             r.provider,
             r.model,
+            r.kind,
             r.attempts,
             pct(r.succeeded_share),
             r.mean_turns,

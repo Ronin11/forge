@@ -515,25 +515,34 @@ non-empty (`journal`) or not (`no_journal`). Fields: `attempts`,
 `mean_cost_usd`. Both objects are always present, zeroed out when a
 side has no matching attempts yet.
 
-**`by_role`** — array of `StatsRoleRow`, one per (role, provider, model)
-combination with at least one attempt, role being the attempt's step
-(`code`, `review`, and so on): `role`, `provider`, `model`, `attempts`,
+**`by_role`** — array of `StatsRoleRow`, one per (role, provider, model,
+kind) combination with at least one row, role being a build task
+attempt's step (`code`, `review`, and so on) or a job's directive
+step's action, and `kind` (`"attempt"` or `"job_step"`) telling the two
+apart — a directive step's provider, model and cost are counted here
+too (docs/JOBS.md, "Steps"), never merged with a build task's attempts
+of the same role name: `role`, `provider`, `model`, `kind`, `attempts`,
 `succeeded`, `succeeded_share` (null when `attempts` is 0),
-`mean_turns`, `mean_cost_usd`, `mean_secs`. For the `code` role only,
-also `landed` (tasks with an attempt in this group that landed) and
-`broke_base` (of those, how many broke a later task's base — the same
-defect-escape signal as `StatsWorkflowRow::broke_base`, keyed by the
-group's own tasks instead of by workflow) with `broke_base_share`
+`mean_turns`, `mean_cost_usd`, `mean_secs`. A `"job_step"` row has no
+turns and no success/failure of its own recorded, so `succeeded` and
+`mean_turns` are always 0 there. For the `code` role's `"attempt"` rows
+only, also `landed` (tasks with an attempt in this group that landed)
+and `broke_base` (of those, how many broke a later task's base — the
+same defect-escape signal as `StatsWorkflowRow::broke_base`, keyed by
+the group's own tasks instead of by workflow) with `broke_base_share`
 (`broke_base` divided by `landed`; null when `landed` is null or 0).
-Also for the `code` role only, the same delayed-cost signals as
-`StatsWorkflowRow` (see above), keyed by the group's own landed tasks
-instead of by workflow: `repair_cost_usd`, `true_cost_per_landed_usd`
-(null when `landed` is null or 0), and `churn_share` (null when nothing
-was added yet to measure). Outside the `code` role, `landed`,
-`broke_base`, `broke_base_share`, `repair_cost_usd`,
+Also for the `code` role's `"attempt"` rows only, the same delayed-cost
+signals as `StatsWorkflowRow` (see above), keyed by the group's own
+landed tasks instead of by workflow: `repair_cost_usd`,
+`true_cost_per_landed_usd` (null when `landed` is null or 0), and
+`churn_share` (null when nothing was added yet to measure). Everywhere
+else — every `"job_step"` row, and `"attempt"` rows outside the `code`
+role — `landed`, `broke_base`, `broke_base_share`, `repair_cost_usd`,
 `true_cost_per_landed_usd`, and `churn_share` are all omitted from the
 JSON row entirely, since landing is not a role-specific concept. `forge
-stats --by-role` is the text-mode view of the same rows.
+stats --by-role` is the text-mode view of the same rows, with `KIND` as
+a column; `--tools`/`tools` stays attempts-only, since a job's directive
+step runs with no tools to count.
 
 **`assessment_correlation`** — array of `CorrelationRow`, judging the
 assess directive's fast proxy against the delayed-cost measures it
