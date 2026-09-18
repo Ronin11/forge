@@ -195,7 +195,7 @@ strings; `Scratch::from_sha(repo, sha)` for the four archive sites;
 `operation.rs`'s three resolve/run pairs as one `resolve_action(kind,
 name)` returning a struct the runner cannot be called without.
 
-**Stage 2. Store plumbing (Forge, after 0). Queued 2026-09-18 as eight chained tasks (423-430).** One task per table
+**Stage 2. Store plumbing (Forge, after 0). Done 2026-09-18: nine tasks (423-430, 461), $35.79; one reviewer demotion (the guard test's hand-written file list) answered by the supervisor; store.rs 6046 lines → eight files, the largest 1437, with a test holding every file under 1500 and the positional-read guard reading the directory.** One task per table
 family: named readers and one column list for jobs/job_steps/
 job_effects, deploys/deploy_targets, projects/project_repos/backlog/
 initiatives, assessments/portal_tokens/task_refs, each with the schema
@@ -203,7 +203,7 @@ test extended; then store.rs split into `store/{tasks,attempts,jobs,
 projects,deploys,stats,schema}.rs` with one `impl Store` block per
 file and no behaviour change, one file per task.
 
-**Stage 3. cli.rs verbs into modules (Forge, after 1). Queued 2026-09-18 as five chained tasks (431-435). Done 2026-09-18 (31bf278, 5fa266b, 10c1bcc, 71d7cf8): `intake_accept`, `integrate`, `initiative_new`'s validation and `project_deploy_add/set` moved out; a `#[cfg(test)]` in cli.rs now measures every `fn` body and fails on any over 80 lines outside a named allowlist (`main`; the renderers `show`, `trace`, `initiative_report`, `log`, `list_workflows`, `stats`, `quality_stats`; `land_task`, which lands a verified branch and reports every outcome) — a function may leave the list, nothing new joins it.** One verb per
+**Stage 3. cli.rs verbs into modules (Forge, after 1). Done 2026-09-18, five tasks, $11.39 (31bf278, 5fa266b, 10c1bcc, 71d7cf8): `intake_accept`, `integrate`, `initiative_new`'s validation and `project_deploy_add/set` moved out; a `#[cfg(test)]` in cli.rs now measures every `fn` body and fails on any over 80 lines outside a named allowlist (`main`; the renderers `show`, `trace`, `initiative_report`, `log`, `list_workflows`, `stats`, `quality_stats`; `land_task`, which lands a verified branch and reports every outcome) — a function may leave the list, nothing new joins it.** One verb per
 task: `intake_accept` into intake.rs as `accept(f, task) -> Project`;
 `integrate` onto landing.rs; `initiative_new`'s validation into
 queue.rs beside `parse_initiative_file`; `project_deploy_add/set` into
@@ -216,24 +216,24 @@ remote, verified-branch merge), `escalate` (the supervisor rung) and
 step loop and the `Run` cursor; target 500 lines; each seam gets unit
 tests on its inputs.
 
-**Stage 5. Jobs made visible (Forge, after 2). Queued 2026-09-18 as five tasks (442-446) after the store split.** `JobStarted`/
+**Stage 5. Jobs made visible (Forge, after 2). Done 2026-09-18: five tasks, $16.56; job events, by-role statistics counting directive steps with a kind column, jobs in the TUI, the web client and the portal.** `JobStarted`/
 `JobFinished` events; `role_stats` and `tool_stats` reading job steps
 in the same union as attempts; a jobs list in the TUI and the web
 client; the portal's "Running for you" fed by the same row; one view
 per task.
 
-**Stage 6. Unit tests for the new modules (Forge). Queued 2026-09-18 as six independent tasks (436-441).** One module per
+**Stage 6. Unit tests for the new modules (Forge). Done 2026-09-18: six tasks, $10.17; every module that had no unit tests has them, no new fakes.** One module per
 task, pure functions only, no new fakes: job, deploy, deploy_look,
 operation, landing, assess, concierge, prompts.
 
-**Stage 7. Rows once (Forge, after 2). Queued 2026-09-18 as four chained tasks (447-450) after the by-role statistics.** The view mirrors for jobs,
+**Stage 7. Rows once (Forge, after 2). Done 2026-09-18: four tasks, $8.80; the job and deploy mirrors gone with byte-identical JSON proven first, fixtures for job, deploy and portal parsed by the client crate, render.rs.** The view mirrors for jobs,
 deploys and deploy targets deleted in favour of `Serialize` on the
 store types (names already agree); fixtures `tests/fixtures/{job,
 deploy,portal}.json` captured from real output and parsed by the
 client types in the e2e; the text renderers out of view.rs into
 `render.rs`.
 
-**Stage 8. Docs and names (Forge, hand for the rename). Queued 2026-09-18 as two tasks (451-452) after stages 2 and 3; the unit and remote rename waits for the queue to drain, since a running task holds the remote url it started with.** WORKFLOWS.md's
+**Stage 8. Docs and names (Forge, hand for the rename). Done 2026-09-18 for the docs: two tasks, $3.65; README's layout with a test that names every module, SYSTEM.md regenerated. The unit and remote rename waits for a quiet queue.** WORKFLOWS.md's
 limits section honest; README's layout listing job, deploy, deploy_look,
 assess, concierge, plugins, portal; SYSTEM.md regenerated by the graph
 directive after stages 1-4 settle the modules; the unit `forge2-worker`
@@ -251,6 +251,33 @@ side. Stages 6 to 8 leave the tree testable at the unit and honest in
 its docs. Nothing changes what Forge does; every stage is checked by
 the same 393 tests plus the ones stage 6 adds.
 
-## 6. Outcome
+## 6. Outcome (2026-09-18, evening)
 
-To be written when the stages land.
+The whole plan landed in one day, like the first one. Stages 0, 1 and 4
+by hand in six commits; stages 2, 3, 5, 6, 7 and 8 through Forge as
+thirty-one tasks in six initiatives, every one landed by Forge, for
+$86.36 of agent time. The supervisor ruled twice, once on a reviewer's
+demotion that was right (a guard test with a hand-written file list,
+the same shape as the boundary hole stage 0 closed) and whose fix for
+the shape rather than the instance was filed as one more task.
+
+Two things the review did not predict. The widened boundary test found
+the portal invoking two verbs the client contract never documented, on
+its first run. And the day's landings hit a flake: five of forty-nine
+test checks ran to the 900 second wall, twice failing a landing. The
+cause was in the worker, not the tests: its SIGINT and SIGTERM listeners
+were re-created inside every select iteration, and a signal arriving in
+the gap between one and the next was lost, a gap that only opens under
+load. Fixed by hand (c93cf6c) and confirmed at 24 of 24 rounds under the
+same load; a Forge task (462) added the drain for a plugin replaced in
+the same tick as a stop and a guard that kills every test-spawned worker
+on drop.
+
+The tree: 41,211 kernel lines in 44 files (up from 37,070 in 33: the
+split's own headers and 107 new tests), cli.rs 4753 with its rule,
+view.rs 3813 without its mirrors, `run_task` 167 lines, the store in
+eight files, one module (render.rs, new and tiny) without a unit test,
+500 tests in all from 393, the e2e suite still green in 24 seconds.
+Every directive launch, failure reading, scratch checkout and operation
+resolver exists once. Jobs count in the same statistics as attempts and
+show in every client. 73 commits today.
