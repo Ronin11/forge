@@ -962,6 +962,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
         match outcome {
             Integrate::Landed(sha) => {
                 t.landed_sha = sha.clone();
+                t.landed_at = Some(unix_now());
                 end = Some(End::Landed(sha));
                 break 'run;
             }

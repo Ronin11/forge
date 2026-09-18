@@ -785,6 +785,125 @@ impl From<&crate::store::ProjectStat> for StatsProjectRow {
     }
 }
 
+/// One row of `StatsDoc.human_attention`: human attention for one
+/// workflow version — what a person had to do for its landed work, since
+/// minutes cannot be measured (docs/LATER.md, "Two metrics the record can
+/// compute and does not"). Four events, summed as `events` and divided by
+/// `landed` as `events_per_landed`.
+#[derive(Serialize)]
+pub struct HumanAttentionRow {
+    pub workflow: String,
+    pub hash: String,
+    pub landed: i64,
+    /// Decisions on this workflow's tasks with `answered_by` other than
+    /// `"supervisor"` (an operator, or a channel contact).
+    pub operator_answers: i64,
+    /// This workflow's tasks landed by a human's `forge land`.
+    pub hand_landed: i64,
+    /// This workflow's tasks left `withdrawn`.
+    pub withdrawals: i64,
+    /// Commits not authored as Forge, on the base branch, between this
+    /// workflow's landings and the ones before them.
+    pub hand_commits: i64,
+    /// The four counts above, summed.
+    pub events: i64,
+    /// `events` divided by `landed`; `None` when nothing landed.
+    pub events_per_landed: Option<f64>,
+}
+
+impl From<&crate::store::HumanAttentionStat> for HumanAttentionRow {
+    fn from(h: &crate::store::HumanAttentionStat) -> Self {
+        let events = h.operator_answers + h.hand_landed + h.withdrawals + h.hand_commits;
+        HumanAttentionRow {
+            workflow: h.workflow.clone(),
+            hash: h.hash.clone(),
+            landed: h.landed,
+            operator_answers: h.operator_answers,
+            hand_landed: h.hand_landed,
+            withdrawals: h.withdrawals,
+            hand_commits: h.hand_commits,
+            events,
+            events_per_landed: (h.landed > 0).then(|| events as f64 / h.landed as f64),
+        }
+    }
+}
+
+/// One row of `StatsDoc.human_attention_projects`: the same four signals
+/// as `HumanAttentionRow`, over one project's tasks instead of one
+/// workflow version's; shown under the same scoping rule as `projects`.
+#[derive(Serialize)]
+pub struct HumanAttentionProjectRow {
+    pub project: String,
+    pub landed: i64,
+    pub operator_answers: i64,
+    pub hand_landed: i64,
+    pub withdrawals: i64,
+    pub hand_commits: i64,
+    pub events: i64,
+    pub events_per_landed: Option<f64>,
+}
+
+impl From<&crate::store::HumanAttentionProjectStat> for HumanAttentionProjectRow {
+    fn from(h: &crate::store::HumanAttentionProjectStat) -> Self {
+        let events = h.operator_answers + h.hand_landed + h.withdrawals + h.hand_commits;
+        HumanAttentionProjectRow {
+            project: h.project.clone(),
+            landed: h.landed,
+            operator_answers: h.operator_answers,
+            hand_landed: h.hand_landed,
+            withdrawals: h.withdrawals,
+            hand_commits: h.hand_commits,
+            events,
+            events_per_landed: (h.landed > 0).then(|| events as f64 / h.landed as f64),
+        }
+    }
+}
+
+/// One row of `StatsDoc.time_to_live`: how long a request took to go live,
+/// for one workflow version's landed tasks (docs/LATER.md, "Two metrics
+/// the record can compute and does not"). Per task, that is
+/// `landed_at - created_at`, or, when a deploy is tied to the task, that
+/// deploy's `finished_at - created_at` instead (see `Store::task_ttls`).
+#[derive(Serialize)]
+pub struct TimeToLiveRow {
+    pub workflow: String,
+    pub hash: String,
+    /// How many landed tasks this rests on.
+    pub n: i64,
+    /// `None` when `n` is 0.
+    pub median_secs: Option<f64>,
+    /// `None` when `n` is 0.
+    pub p90_secs: Option<f64>,
+}
+
+/// One row of `StatsDoc.time_to_live_projects`: the same measure as
+/// `TimeToLiveRow`, over one project's landed tasks instead of one
+/// workflow version's; shown under the same scoping rule as `projects`.
+#[derive(Serialize)]
+pub struct TimeToLiveProjectRow {
+    pub project: String,
+    pub n: i64,
+    pub median_secs: Option<f64>,
+    pub p90_secs: Option<f64>,
+}
+
+/// The median and 90th percentile of `secs`, nearest-rank on the sorted
+/// list (so the percentile is always one of the actual values, never an
+/// interpolation) — `(None, None)` when `secs` is empty.
+fn median_p90(secs: &mut [i64]) -> (Option<f64>, Option<f64>) {
+    if secs.is_empty() {
+        return (None, None);
+    }
+    secs.sort_unstable();
+    let at = |p: f64| -> f64 {
+        let rank = ((p * secs.len() as f64).ceil() as usize)
+            .max(1)
+            .min(secs.len());
+        secs[rank - 1] as f64
+    };
+    (Some(at(0.5)), Some(at(0.9)))
+}
+
 /// One row of `StatsDoc.jobs`: one project's jobs in the last rolling 24h,
 /// by outcome — counted separately from `StatsProjectRow`'s task rollup
 /// (docs/JOBS.md step 1d).
@@ -915,6 +1034,18 @@ pub struct StatsDoc {
     /// that carry both; see `forge stats --quality` and
     /// `quality_correlation`.
     pub assessment_correlation: Vec<CorrelationRow>,
+    /// Human attention per workflow version: what a person had to do for
+    /// its landed work (see `HumanAttentionRow`, `forge stats --quality`).
+    pub human_attention: Vec<HumanAttentionRow>,
+    /// Human attention per project; same scoping rule as `projects`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub human_attention_projects: Vec<HumanAttentionProjectRow>,
+    /// Time to live per workflow version: how long a request took to go
+    /// live (see `TimeToLiveRow`, `forge stats --quality`).
+    pub time_to_live: Vec<TimeToLiveRow>,
+    /// Time to live per project; same scoping rule as `projects`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub time_to_live_projects: Vec<TimeToLiveProjectRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
@@ -1188,8 +1319,95 @@ async fn compute_repair_cost(f: &Forge, t: &Task, finished_at: i64) -> Result<f6
     Ok(total)
 }
 
+/// Refresh `task_hand_commits` for every landed task that has never had it
+/// computed: unlike `refresh_churn`/`refresh_repair_cost`, there is no
+/// stale-until-a-window-closes schedule, since neither endpoint of the
+/// range this counts (the previous landing's `landed_sha`, this task's own
+/// `base_sha`) ever changes once the task has landed.
+async fn refresh_hand_commits(f: &Forge) -> Result<()> {
+    let now = crate::unix_now();
+    for t in f
+        .store
+        .landed_tasks(&crate::store::StatsFilter::default())?
+    {
+        if f.store.hand_commits_cache(t.id)?.is_some() {
+            continue;
+        }
+        let hand_commits = compute_hand_commits(f, &t).await?;
+        f.store.set_hand_commits_cache(t.id, hand_commits, now)?;
+    }
+    Ok(())
+}
+
+/// One landed task's hand commits: commits not authored as Forge, on the
+/// base branch, between the previous landing on the same repository
+/// (`landed_sha`) and this task's own `base_sha` — the human attention a
+/// person spent committing straight to the base while Forge was not
+/// looking (docs/LATER.md, "Two metrics the record can compute and does
+/// not"). Zero for the first landing a repository ever gets, since there
+/// is no earlier landing to bound the range against.
+async fn compute_hand_commits(f: &Forge, t: &Task) -> Result<i64> {
+    let Some(prev) = f.store.previous_landing(&t.repo, t.id)? else {
+        return Ok(0);
+    };
+    let repo = std::path::Path::new(&t.repo);
+    crate::git::hand_commit_count(repo, &prev.landed_sha, &t.base_sha).await
+}
+
+/// `ttls` reduced to one `TimeToLiveRow` per workflow version present,
+/// each its own median and 90th percentile.
+fn time_to_live_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLiveRow> {
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<i64>> =
+        std::collections::BTreeMap::new();
+    for t in ttls {
+        groups
+            .entry((t.workflow.clone(), t.hash.clone()))
+            .or_default()
+            .push(t.secs);
+    }
+    groups
+        .into_iter()
+        .map(|((workflow, hash), mut secs)| {
+            let (median_secs, p90_secs) = median_p90(&mut secs);
+            TimeToLiveRow {
+                workflow,
+                hash,
+                n: secs.len() as i64,
+                median_secs,
+                p90_secs,
+            }
+        })
+        .collect()
+}
+
+/// `ttls` reduced to one `TimeToLiveProjectRow` per project present, each
+/// its own median and 90th percentile; a task with no project is left out,
+/// same as `Store::project_stats`.
+fn time_to_live_project_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLiveProjectRow> {
+    let mut groups: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+    for t in ttls {
+        let Some(project) = &t.project else {
+            continue;
+        };
+        groups.entry(project.clone()).or_default().push(t.secs);
+    }
+    groups
+        .into_iter()
+        .map(|(project, mut secs)| {
+            let (median_secs, p90_secs) = median_p90(&mut secs);
+            TimeToLiveProjectRow {
+                project,
+                n: secs.len() as i64,
+                median_secs,
+                p90_secs,
+            }
+        })
+        .collect()
+}
+
 pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
     refresh_churn(f).await?;
+    refresh_hand_commits(f).await?;
     refresh_repair_cost(f).await?;
     let journal_stats = f.store.journal_control_stats()?;
     let journal = journal_stats
@@ -1214,6 +1432,21 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
     } else {
         (Vec::new(), Vec::new())
     };
+    let human_attention_projects = if scope.project.is_none() && scope.initiative.is_none() {
+        f.store
+            .human_attention_project_stats()?
+            .iter()
+            .map(Into::into)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let ttls = f.store.task_ttls(scope)?;
+    let time_to_live_projects = if scope.project.is_none() && scope.initiative.is_none() {
+        time_to_live_project_rows(&ttls)
+    } else {
+        Vec::new()
+    };
     Ok(StatsDoc {
         workflows: f
             .store
@@ -1228,6 +1461,15 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
         jobs,
         by_role: f.store.role_stats()?.iter().map(Into::into).collect(),
         assessment_correlation: quality_correlation(f, scope)?,
+        human_attention: f
+            .store
+            .human_attention_stats(scope)?
+            .iter()
+            .map(Into::into)
+            .collect(),
+        human_attention_projects,
+        time_to_live: time_to_live_rows(&ttls),
+        time_to_live_projects,
         tools: None,
     })
 }
@@ -3039,12 +3281,18 @@ mod stats_tests {
             jobs: vec![],
             by_role: vec![],
             assessment_correlation: vec![],
+            human_attention: vec![],
+            human_attention_projects: vec![],
+            time_to_live: vec![],
+            time_to_live_projects: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
         assert!(v.get("tools").is_none(), "{v}");
         assert!(v.get("projects").is_none(), "{v}");
         assert!(v.get("jobs").is_none(), "{v}");
+        assert!(v.get("human_attention_projects").is_none(), "{v}");
+        assert!(v.get("time_to_live_projects").is_none(), "{v}");
     }
 
     #[test]

@@ -722,6 +722,30 @@ pub async fn identity(git_dir: &Path) -> Vec<(String, String)> {
     ]
 }
 
+/// Commits in `(from, to]` whose author is not the identity Forge would
+/// commit as in `repo` (the repository's own `user.name`/`user.email`
+/// config, falling back to `IDENTITY`, the same resolution `identity`
+/// uses): hand commits that reached the base branch outside any task Forge
+/// ran, for the human-attention measurement (docs/LATER.md, "Two metrics
+/// the record can compute and does not").
+pub async fn hand_commit_count(repo: &Path, from: &str, to: &str) -> Result<i64> {
+    let g = Git::new(repo);
+    let name = config_or(&g, "user.name", IDENTITY.0).await;
+    let email = config_or(&g, "user.email", IDENTITY.1).await;
+    let range = format!("{from}..{to}");
+    let raw = g.raw(&["log", "--format=%an%x1f%ae", &range]).await?;
+    Ok(raw
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            let mut parts = l.splitn(2, '\u{1f}');
+            let author_name = parts.next().unwrap_or("");
+            let author_email = parts.next().unwrap_or("");
+            author_name != name || author_email != email
+        })
+        .count() as i64)
+}
+
 /// A compare URL for GitHub-shaped remotes; `None` for anything else.
 pub fn compare_url(remote_url: &str, base: &str, branch: &str) -> Option<String> {
     let rest = remote_url

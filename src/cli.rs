@@ -3961,7 +3961,7 @@ fn journal(id: i64, json: bool) -> Result<()> {
 /// that a human has now cleared.
 async fn land(id: i64) -> Result<()> {
     let f = Forge::open(true, true)?;
-    let line = land_task(&f, id).await?;
+    let line = land_task(&f, id, true).await?;
     out!("{line}");
     Ok(())
 }
@@ -3993,9 +3993,11 @@ pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
 
 /// Land a task's verified branch on the base: a verified task, or one
 /// blocked on a review demotion or a question that a human or the
-/// supervisor set aside (see `landable_needs_input`). Returns the line
-/// to print.
-pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
+/// supervisor set aside (see `landable_needs_input`). `by_hand` is true
+/// only for the operator's own `forge land`, never for the supervisor's
+/// automated accept-and-land (see `Task::hand_landed`, one of the
+/// human-attention signals). Returns the line to print.
+pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<String> {
     let Some(mut t) = f.store.task(id)? else {
         bail!("no task {id}");
     };
@@ -4033,6 +4035,8 @@ pub(crate) async fn land_task(f: &Forge, id: i64) -> Result<String> {
         crate::landing::Integrate::Landed(sha) => {
             t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
             t.landed_sha = sha.clone();
+            t.landed_at = Some(crate::unix_now());
+            t.hand_landed = by_hand;
             t.pushed = true;
             if demoted {
                 t.state = TaskState::Succeeded;
