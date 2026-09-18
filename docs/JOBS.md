@@ -113,8 +113,8 @@ quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sen
 
 [limits]
 budget_usd = 0.10          # per run
-per_day    = 200           # runs per day before it asks
-on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop
+per_day    = 200           # real starts in 24 hours before the next is refused
+on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed; honoured at step 5)
 ```
 
 - **Trigger.** What starts a job and what it provides as input. The

@@ -15,7 +15,6 @@
 //! run: `job_steps.output_ref` points into the scratch tree, and a dry
 //! run is proven by what is (and is not) there.
 
-use crate::agent;
 use crate::ctx::Forge;
 use crate::store::{Job, JobEffect, JobState, JobStep};
 use crate::workflows::{self, Kind};
@@ -208,25 +207,26 @@ async fn run_directive(
     // and `parse_action`.
     let schema = action.schema.as_deref().unwrap_or("{}");
 
-    let outcome = agent::run(agent::Launch {
-        task_id: job_id,
-        worktree: scratch,
-        prompt: &prompt,
-        model: &model,
-        max_turns,
-        timeout,
-        log_path: &log_path,
-        sandbox: None,
-        report: &f.report,
-        step: action.name.as_str(),
-        provider,
-        resume: None,
-        writes: false,
-        start_sha: "",
-        schema,
-        early_ending: f.early_ending,
-        no_tools: true,
-    })
+    let outcome = crate::directive::launch(
+        f,
+        crate::directive::Spec {
+            id: job_id,
+            step: action.name.as_str(),
+            dir: scratch,
+            prompt: &prompt,
+            model: &model,
+            max_turns,
+            timeout,
+            log_path: &log_path,
+            provider,
+            schema,
+            sandboxed: false,
+            writes: false,
+            start_sha: "",
+            resume: None,
+            no_tools: true,
+        },
+    )
     .await?;
 
     let cost_usd = outcome.cost_usd.unwrap_or(0.0);
@@ -264,8 +264,8 @@ async fn run_directive(
         output_text: output_text.clone().unwrap_or_default(),
         output_ref: output_ref.clone(),
     };
-    if let Some(why) = directive_agent_failure(&outcome, &stderr_tail) {
-        return Ok(fail(why));
+    if let Some(why) = crate::directive::failure(&outcome) {
+        return Ok(fail(why.tail(&stderr_tail)));
     }
     let Some(structured) = &outcome.structured else {
         return Ok(fail("no structured output".to_string()));
@@ -299,37 +299,6 @@ async fn run_directive(
         output_text: structured.clone(),
         output_ref,
     })
-}
-
-/// Why a directive step's agent run failed: unlike an attempt's own
-/// `verify::agent_failure`, this quotes the result frame's own `subtype`
-/// and the last lines of stderr rather than the bare exit code, since a
-/// job's directive step has no worktree of its own left behind to inspect
-/// after the fact — the log this writes under `FORGE2_HOME/logs` and the
-/// tail here are the only diagnosis a failed run leaves (docs/JOBS.md,
-/// "Steps").
-fn directive_agent_failure(outcome: &agent::Outcome, stderr_tail: &str) -> Option<String> {
-    let quote = |reason: &str| {
-        if stderr_tail.is_empty() {
-            reason.to_string()
-        } else {
-            format!("{reason}\nstderr:\n{stderr_tail}")
-        }
-    };
-    if outcome.rate_limited {
-        Some("rate limited by the provider".to_string())
-    } else if let Some(why) = &outcome.ended_early {
-        Some(format!("stopped early: {why}"))
-    } else if outcome.timed_out {
-        Some(quote("agent timed out"))
-    } else if !outcome.got_result {
-        Some(quote("agent produced no result"))
-    } else if outcome.is_error {
-        let subtype = outcome.subtype.as_deref().unwrap_or("error");
-        Some(quote(&format!("agent result {subtype:?}")))
-    } else {
-        None
-    }
 }
 
 /// `forge job start <project> <workflow>`: record a job and, with `--now`,
@@ -370,6 +339,20 @@ pub async fn start(
     let input_fields = string_fields(&input_json)?;
 
     let started_at = unix_now();
+    if let Some(l) = wf.limits.as_ref()
+        && l.per_day > 0
+        && !dry_run
+    {
+        let n = f
+            .store
+            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
+        if n >= i64::from(l.per_day) {
+            anyhow::bail!(
+                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
+                l.per_day
+            );
+        }
+    }
     let job = Job {
         id: 0,
         project: project.to_string(),
@@ -439,8 +422,7 @@ async fn run_now(
     project_roles: &BTreeMap<String, String>,
 ) -> Result<()> {
     let scratch = scratch_dir(f, job_id);
-    let _ = std::fs::remove_dir_all(&scratch);
-    git::archive_all(repo, landed_sha, &scratch).await?;
+    git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working(&scratch)
         .await
         .map(|c| c.checks)
