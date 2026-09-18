@@ -422,8 +422,7 @@ async fn run_now(
     project_roles: &BTreeMap<String, String>,
 ) -> Result<()> {
     let scratch = scratch_dir(f, job_id);
-    let _ = std::fs::remove_dir_all(&scratch);
-    git::archive_all(repo, landed_sha, &scratch).await?;
+    git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working(&scratch)
         .await
         .map(|c| c.checks)

@@ -25,15 +25,14 @@ fn scratch_dir(f: &Forge, deploy_id: i64, suffix: &str) -> PathBuf {
 /// Check out `sha` into a scratch directory and run the target's method
 /// there, cleaning the directory up either way.
 async fn deploy_at(
-    action: &crate::workflows::ActionDef,
+    action: &operation::RunAction,
     target: &DeployTarget,
     repo: &Path,
     sha: &str,
     timeout: Duration,
     scratch: &Path,
 ) -> Result<crate::checks::CheckResult> {
-    let _ = std::fs::remove_dir_all(scratch);
-    git::archive_all(repo, sha, scratch).await?;
+    git::fresh_archive(repo, sha, scratch).await?;
     let r = operation::run_deploy_method(action, target, scratch, timeout).await;
     let _ = std::fs::remove_dir_all(scratch);
     r
