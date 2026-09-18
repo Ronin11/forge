@@ -160,8 +160,14 @@ pub async fn run(
         bail!("its run failed: {why}");
     }
     let v: Verdict = crate::directive::structured(&outcome)?;
-    if let Some(bad) = v
-        .findings
+    check_severity(&v.findings)?;
+    Ok(Some(v))
+}
+
+/// A finding's severity must be `blocking` or `notable`; anything else is
+/// named in the error.
+fn check_severity(findings: &[Finding]) -> Result<()> {
+    if let Some(bad) = findings
         .iter()
         .find(|fnd| fnd.severity != "blocking" && fnd.severity != "notable")
     {
@@ -170,5 +176,83 @@ pub async fn run(
             bad.severity
         );
     }
-    Ok(Some(v))
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_names_each_input_exactly_once() {
+        let text = prompt(
+            "a task runner for coding agents",
+            "https://example.com/deploys/9",
+            "Example — Home",
+            Path::new("/tmp/out/screenshot.png"),
+            r#"["TypeError: x is not a function"]"#,
+            r#"["/api/widgets"]"#,
+        );
+        for needle in [
+            "a task runner for coding agents",
+            "https://example.com/deploys/9",
+            "Example — Home",
+            "/tmp/out/screenshot.png",
+            r#"["TypeError: x is not a function"]"#,
+            r#"["/api/widgets"]"#,
+        ] {
+            assert_eq!(
+                text.matches(needle).count(),
+                1,
+                "expected {needle:?} exactly once in:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_parses_ok_and_findings() {
+        let v: Verdict = serde_json::from_str(
+            r#"{"ok":false,"findings":[{"severity":"blocking","finding":"the hero image is a broken link"}]}"#,
+        )
+        .unwrap();
+        assert!(!v.ok);
+        assert_eq!(v.findings.len(), 1);
+        assert_eq!(v.findings[0].severity, "blocking");
+        assert_eq!(v.findings[0].finding, "the hero image is a broken link");
+    }
+
+    #[test]
+    fn verdict_defaults_missing_fields() {
+        let v: Verdict = serde_json::from_str("{}").unwrap();
+        assert!(!v.ok);
+        assert!(v.findings.is_empty());
+    }
+
+    #[test]
+    fn check_severity_accepts_blocking_and_notable() {
+        let findings = vec![
+            Finding {
+                severity: "blocking".to_string(),
+                finding: "a".to_string(),
+            },
+            Finding {
+                severity: "notable".to_string(),
+                finding: "b".to_string(),
+            },
+        ];
+        assert!(check_severity(&findings).is_ok());
+    }
+
+    #[test]
+    fn check_severity_names_anything_else_in_the_error() {
+        let findings = vec![Finding {
+            severity: "critical".to_string(),
+            finding: "a".to_string(),
+        }];
+        let err = check_severity(&findings).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "finding severity \"critical\" is neither blocking nor notable"
+        );
+    }
 }
