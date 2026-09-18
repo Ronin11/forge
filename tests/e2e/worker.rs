@@ -1,5 +1,4 @@
 use crate::support::*;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -266,12 +265,11 @@ fn a_second_signal_aborts_and_requeues() {
     std::fs::create_dir_all(&e.home).unwrap();
     let stderr_path = e.home.join("worker-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).unwrap();
-    let mut child = e
-        .cmd("hang.sh")
-        .args(["work", "--once"])
-        .stderr(stderr_file)
-        .spawn()
-        .unwrap();
+    let mut worker = Worker::spawn(
+        e.cmd("hang.sh")
+            .args(["work", "--once"])
+            .stderr(stderr_file),
+    );
     assert!(
         wait_until(
             || e.attempts(id).first().is_some_and(|a| a.1 == "running"),
@@ -279,8 +277,7 @@ fn a_second_signal_aborts_and_requeues() {
         ),
         "the worker never claimed the task"
     );
-    let pid = child.id().to_string();
-    Command::new("kill").args(["-INT", &pid]).status().unwrap();
+    worker.signal(libc::SIGINT);
     assert!(
         wait_until(
             || std::fs::read_to_string(&stderr_path)
@@ -290,8 +287,8 @@ fn a_second_signal_aborts_and_requeues() {
         ),
         "the worker never acknowledged the first signal"
     );
-    Command::new("kill").args(["-INT", &pid]).status().unwrap();
-    let status = child.wait().unwrap();
+    worker.signal(libc::SIGINT);
+    let status = worker.wait();
     assert!(status.success());
     let (state, reason, _) = e.task(id);
     assert_eq!(state, "queued");
@@ -303,22 +300,19 @@ fn a_second_signal_aborts_and_requeues() {
 fn a_sigterm_drains_the_running_attempt_and_exits_cleanly() {
     let e = Env::new();
     let id = e.add(&[]);
-    let child = e
-        .cmd("ok.sh")
-        .env("FAKE_SLEEP", "1")
-        .args(["work", "--once"])
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("FAKE_SLEEP", "1")
+            .args(["work", "--once"])
+            .stderr(std::process::Stdio::piped()),
+    );
     // ok.sh with FAKE_SLEEP set takes 2s to answer; signal once the worker has claimed the
     // task so the drain has real work to wait out, not a race with an attempt already done.
     assert!(
         wait_until(|| e.task(id).0 == "running", Duration::from_secs(10)),
         "the worker claimed the task"
     );
-    let pid = child.id().to_string();
-    Command::new("kill").args(["-TERM", &pid]).status().unwrap();
-    let o = child.wait_with_output().unwrap();
+    let o = worker.stop_with_output();
     let err = String::from_utf8_lossy(&o.stderr);
     eprintln!("--- sigterm drain ---\n{err}");
     assert!(o.status.success(), "{err}");
