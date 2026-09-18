@@ -122,6 +122,8 @@ impl App {
             Event::TaskDone { task, text, .. } => (*task, "task_done", text.as_str()),
             Event::Note { task, text, .. } => (*task, "note", text.as_str()),
             Event::Op { task, text, .. } => (*task, "op", text.as_str()),
+            Event::JobStarted { task, text, .. } => (*task, "job_started", text.as_str()),
+            Event::JobFinished { task, text, .. } => (*task, "job_finished", text.as_str()),
             Event::Other => return,
         };
         let line = format!("{kind:<15} {text}");

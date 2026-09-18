@@ -16,6 +16,7 @@
 //! run is proven by what is (and is not) there.
 
 use crate::ctx::Forge;
+use crate::report::Event;
 use crate::store::{Job, JobEffect, JobState, JobStep};
 use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now};
@@ -410,6 +411,7 @@ pub async fn start(
         f,
         job_id,
         project,
+        workflow,
         &repo_path,
         &landed_sha,
         &steps,
@@ -484,12 +486,16 @@ pub async fn start_scheduled(
 }
 
 /// Run a job's steps and assertions now, recording everything as it goes,
-/// and `finish_job` with the final state, cost and verdict.
+/// and `finish_job` with the final state, cost and verdict. Emits
+/// `JobStarted` on entry and `JobFinished` once `finish_job` is recorded
+/// (docs/JOBS.md, "The executor"): the one place both `--now` and the
+/// worker's claimed run (`run_claimed`, called by `drive`) funnel through.
 #[allow(clippy::too_many_arguments)]
 async fn run_now(
     f: &Forge,
     job_id: i64,
     project: &str,
+    workflow: &str,
     repo: &Path,
     landed_sha: &str,
     steps: &[workflows::RunStep],
@@ -501,6 +507,15 @@ async fn run_now(
     check_timeout_secs: u64,
     project_roles: &BTreeMap<String, String>,
 ) -> Result<()> {
+    f.report.emit(
+        0,
+        Event::JobStarted {
+            project,
+            workflow,
+            job_id,
+            dry_run,
+        },
+    );
     let scratch = scratch_dir(f, job_id);
     git::fresh_archive(repo, landed_sha, &scratch).await?;
     let repo_checks = config::load_working(&scratch)
@@ -726,6 +741,16 @@ async fn run_now(
         Some(total_cost),
         &serde_json::to_string(&verdict)?,
     )?;
+    f.report.emit(
+        0,
+        Event::JobFinished {
+            project,
+            workflow,
+            job_id,
+            state: state.as_str(),
+            cost_usd: total_cost,
+        },
+    );
     Ok(())
 }
 
@@ -770,6 +795,7 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         f,
         job_id,
         &job.project,
+        &job.workflow,
         &repo_path,
         &job.landed_sha,
         &steps,
@@ -813,6 +839,20 @@ pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
             Some(0.0),
             &executor_error_verdict(&e),
         );
+        // `run_now` never ran (the workflow, config or archive failed to
+        // resolve first), so this is the only `JobFinished` this job gets.
+        if let Ok(Some(job)) = f.store.job(job_id) {
+            f.report.emit(
+                0,
+                Event::JobFinished {
+                    project: &job.project,
+                    workflow: &job.workflow,
+                    job_id,
+                    state: JobState::Failed.as_str(),
+                    cost_usd: 0.0,
+                },
+            );
+        }
     }
     f.store
         .job(job_id)
@@ -953,6 +993,7 @@ pub async fn bench(
                 f,
                 job_id,
                 project,
+                workflow,
                 &repo_path,
                 &landed_sha,
                 &steps,

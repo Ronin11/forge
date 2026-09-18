@@ -1410,6 +1410,40 @@ pub enum Event {
         #[serde(default)]
         task: i64,
     },
+    JobStarted {
+        #[serde(default)]
+        project: String,
+        #[serde(default)]
+        workflow: String,
+        #[serde(default)]
+        job_id: i64,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        ts: i64,
+        #[serde(default)]
+        task: i64,
+    },
+    JobFinished {
+        #[serde(default)]
+        project: String,
+        #[serde(default)]
+        workflow: String,
+        #[serde(default)]
+        job_id: i64,
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        cost_usd: f64,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        ts: i64,
+        #[serde(default)]
+        task: i64,
+    },
     #[serde(other)]
     Other,
 }
