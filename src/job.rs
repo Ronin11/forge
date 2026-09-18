@@ -370,6 +370,20 @@ pub async fn start(
     let input_fields = string_fields(&input_json)?;
 
     let started_at = unix_now();
+    if let Some(l) = wf.limits.as_ref()
+        && l.per_day > 0
+        && !dry_run
+    {
+        let n = f
+            .store
+            .jobs_started_since(project, workflow, started_at - 24 * 3600)?;
+        if n >= i64::from(l.per_day) {
+            anyhow::bail!(
+                "{workflow} has started {n} time(s) in the last 24 hours and its per_day limit is {}; it can start again when the oldest of those is a day old (asking instead is docs/JOBS.md step 5)",
+                l.per_day
+            );
+        }
+    }
     let job = Job {
         id: 0,
         project: project.to_string(),

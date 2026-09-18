@@ -124,6 +124,15 @@ and does not parse stdout.
   the web server). Not `--json`; a client shows its text output and then
   re-reads the lists itself, since `forge retry`'s own output is not
   meant to be parsed.
+- **`forge answer ID TEXT [--by NAME]`** — write verb: answers the
+  question task `ID` is blocked on and re-queues it as a retry, `--by`
+  naming the contact when the answer came through a channel (the portal
+  passes its contact name). Stdout is the new task's id; a non-zero exit
+  is the error on stderr. Not JSON.
+- **`forge ask PROJECT MESSAGE [--from NAME]`** — write verb: the front
+  door (docs/INTAKE.md), sorting a customer message into a request, a
+  question, a need or unclear and acting on it. Stdout is the one-line
+  reply to show the customer. Not JSON.
 
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`) but no current client calls it; it is
@@ -134,7 +143,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask
 ```
 
 ## Naming: unified vs. legacy keys
