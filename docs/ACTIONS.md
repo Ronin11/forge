@@ -97,6 +97,13 @@ investigator blocks the task the way any question does; a task that is
 impossible as stated costs one read of the tree rather than several
 attempts at writing. `investigate` is the built-in directive on this
 contract; `planned` is the workflow that runs it before `code`.
+`tests/e2e/contracts.rs`'s
+`a_readme_rule_that_contradicts_the_task_stops_at_investigate_before_any_code_runs`
+is the standing proof of this: a fixture repository whose README states a
+rule, a task that asks for the opposite, and an investigate directive
+that reads both end the task blocked on a question quoting the
+contradiction, with the code step never given an attempt — a
+contradictory brief stops before any code runs, before money is spent.
 
 `interview` is the plan contract's other directive: the second
 conversation with a person who does not think in workflows (see

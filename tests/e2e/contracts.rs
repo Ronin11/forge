@@ -346,6 +346,50 @@ fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_pla
     assert!(reason.contains("plan-names-real-paths"), "{reason}");
 }
 
+/// The standing stop case: a fixture repository whose README states a
+/// rule, a task that asks for the opposite, and an investigate directive
+/// that reads both. The task must end blocked with a question that
+/// quotes the contradiction, and the code step must never get an
+/// attempt: a contradictory brief stops before any code runs, before
+/// money is spent. Referenced from docs/ACTIONS.md's plan contract
+/// section.
+#[test]
+fn a_readme_rule_that_contradicts_the_task_stops_at_investigate_before_any_code_runs() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("README.md"),
+        "Rule: answer.txt must never be deleted; it is the source of truth for the answer check.\n",
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "add the rule"]);
+
+    let o = run_wf(
+        &e,
+        "neverrun.sh",
+        &[(
+            "FORGE2_CLAUDE_BIN_INVESTIGATE",
+            "investigate-contradiction.sh",
+        )],
+        "planned",
+        "Delete answer.txt, it's not needed anymore.",
+    );
+    assert!(!o.status.success());
+
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 1, "the code step must never get an attempt: {a:?}");
+    assert_eq!(a[0].1, "needs_input");
+
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "blocked", "{reason}");
+    assert!(
+        reason.contains("answer.txt must never be deleted")
+            && reason.contains("Delete answer.txt, it's not needed anymore"),
+        "the reason quotes the contradiction: {reason}"
+    );
+    assert!(!pushed, "no branch was ever pushed for a human to see");
+}
+
 #[test]
 fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     let e = Env::new();
