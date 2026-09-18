@@ -929,3 +929,233 @@ pub async fn bench(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_action(description: &str, prompt: Option<&str>) -> workflows::ActionDef {
+        workflows::ActionDef {
+            name: "act".to_string(),
+            kind: Kind::Directive,
+            description: description.to_string(),
+            consumes: vec![],
+            produces: vec![],
+            model: None,
+            max_turns: None,
+            timeout_secs: None,
+            run: None,
+            check: None,
+            contract: workflows::Contract::Code,
+            paths: vec![],
+            brief: String::new(),
+            prompt: prompt.map(str::to_string),
+            schema: None,
+            file_into_initiative: false,
+            overlay: false,
+            verifies: false,
+            output: workflows::Output::Tail,
+            hash: String::new(),
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn bounded_keeps_short_text_unchanged() {
+        assert_eq!(bounded("hello", 10), "hello");
+        assert_eq!(bounded("hello", 5), "hello");
+    }
+
+    #[test]
+    fn bounded_keeps_the_whole_prefix_and_notes_the_cut() {
+        assert_eq!(
+            bounded("hello world", 5),
+            "hello\n... [inputs cut to 5 bytes]"
+        );
+    }
+
+    #[test]
+    fn bounded_backs_off_to_a_char_boundary() {
+        // '€' is three bytes; a cut at byte 2 would land inside it.
+        assert_eq!(bounded("a€b", 2), "a\n... [inputs cut to 2 bytes]");
+    }
+
+    #[test]
+    fn string_fields_takes_only_top_level_strings_in_order() {
+        let input = serde_json::json!({
+            "b": "two",
+            "a": "one",
+            "n": 5,
+            "obj": {"x": "y"},
+            "c": "three",
+            "flag": true,
+        });
+        let fields = string_fields(&input).unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                ("a".to_string(), "one".to_string()),
+                ("b".to_string(), "two".to_string()),
+                ("c".to_string(), "three".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn string_fields_rejects_a_non_object_input() {
+        assert!(string_fields(&serde_json::json!(["a", "b"])).is_err());
+        assert!(string_fields(&serde_json::json!("just a string")).is_err());
+        assert!(string_fields(&serde_json::json!(5)).is_err());
+    }
+
+    #[test]
+    fn step_env_for_a_real_run_orders_inputs_outputs_then_secrets_last() {
+        let mut secrets = std::collections::BTreeMap::new();
+        secrets.insert("Z_SECRET".to_string(), "zzz".to_string());
+        secrets.insert("A_SECRET".to_string(), "aaa".to_string());
+        let env = step_env(
+            7,
+            "mystep",
+            Path::new("/scratch/effects.log"),
+            Path::new("/scratch/input"),
+            &[("Name".to_string(), "bob".to_string())],
+            &[(
+                "my-action".to_string(),
+                "/scratch/output-my-action.json".to_string(),
+            )],
+            &secrets,
+            false,
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("FORGE_JOB_ID".to_string(), "7".to_string()),
+                ("FORGE_STEP".to_string(), "mystep".to_string()),
+                (
+                    "FORGE_EFFECT_LOG".to_string(),
+                    "/scratch/effects.log".to_string()
+                ),
+                ("FORGE_INPUT_DIR".to_string(), "/scratch/input".to_string()),
+                ("FORGE_INPUT_NAME".to_string(), "bob".to_string()),
+                (
+                    "FORGE_OUTPUT_MY_ACTION".to_string(),
+                    "/scratch/output-my-action.json".to_string()
+                ),
+                ("A_SECRET".to_string(), "aaa".to_string()),
+                ("Z_SECRET".to_string(), "zzz".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn step_env_for_a_dry_run_adds_the_flag_before_inputs_and_never_a_real_run() {
+        let secrets = std::collections::BTreeMap::new();
+        let dry = step_env(
+            1,
+            "s",
+            Path::new("/log"),
+            Path::new("/in"),
+            &[],
+            &[],
+            &secrets,
+            true,
+        );
+        assert_eq!(
+            dry,
+            vec![
+                ("FORGE_JOB_ID".to_string(), "1".to_string()),
+                ("FORGE_STEP".to_string(), "s".to_string()),
+                ("FORGE_EFFECT_LOG".to_string(), "/log".to_string()),
+                ("FORGE_INPUT_DIR".to_string(), "/in".to_string()),
+                ("FORGE_DRY_RUN".to_string(), "1".to_string()),
+            ]
+        );
+
+        let real = step_env(
+            1,
+            "s",
+            Path::new("/log"),
+            Path::new("/in"),
+            &[],
+            &[],
+            &secrets,
+            false,
+        );
+        assert!(!real.iter().any(|(k, _)| k == "FORGE_DRY_RUN"));
+    }
+
+    #[test]
+    fn directive_prompt_orders_input_then_each_step_output_under_the_cap() {
+        let action = test_action("Do the thing.", Some("Extra instructions."));
+        let prompt = directive_prompt(
+            &action,
+            "INPUT_DOC",
+            &[
+                ("step1".to_string(), "output1".to_string()),
+                ("step2".to_string(), "output2".to_string()),
+            ],
+            10_000,
+        );
+        assert!(prompt.contains("This step: Do the thing."));
+        assert!(prompt.contains("Extra instructions."));
+        let input_pos = prompt.find("The input document:\nINPUT_DOC").unwrap();
+        let step1_pos = prompt
+            .find("The output of step \"step1\":\noutput1")
+            .unwrap();
+        let step2_pos = prompt
+            .find("The output of step \"step2\":\noutput2")
+            .unwrap();
+        assert!(input_pos < step1_pos && step1_pos < step2_pos);
+        assert!(!prompt.contains("cut to"));
+    }
+
+    #[test]
+    fn directive_prompt_cuts_its_inputs_to_the_byte_cap() {
+        let action = test_action("Do the thing.", None);
+        let prompt = directive_prompt(&action, "INPUT_DOC", &[], 5);
+        assert!(prompt.contains("cut to 5 bytes"));
+    }
+
+    #[test]
+    fn executor_error_verdict_names_the_executor_check_and_quotes_the_error() {
+        let err = anyhow::anyhow!("workflow no longer resolves");
+        let verdict = executor_error_verdict(&err);
+        let parsed: Vec<checks::CheckResult> = serde_json::from_str(&verdict).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].level, "OP");
+        assert_eq!(parsed[0].name, "executor");
+        assert!(!parsed[0].ok);
+        assert_eq!(parsed[0].tail, "workflow no longer resolves");
+    }
+
+    #[test]
+    fn load_fixtures_reads_and_sorts_by_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures_dir = dir.path().join(".forge").join("fixtures").join("triage");
+        std::fs::create_dir_all(&fixtures_dir).unwrap();
+        std::fs::write(
+            fixtures_dir.join("b.json"),
+            r#"{"input": {"title": "b"}, "expected_kind": "bug"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            fixtures_dir.join("a.json"),
+            r#"{"input": {"title": "a"}, "expected_kind": "feature"}"#,
+        )
+        .unwrap();
+        std::fs::write(fixtures_dir.join("ignored.txt"), "not json").unwrap();
+
+        let fixtures = load_fixtures(dir.path(), "triage").unwrap();
+        let names: Vec<&str> = fixtures.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert_eq!(fixtures[0].1.expected_kind, "feature");
+        assert_eq!(fixtures[1].1.expected_kind, "bug");
+        assert_eq!(fixtures[0].1.input, serde_json::json!({"title": "a"}));
+    }
+
+    #[test]
+    fn load_fixtures_errors_when_the_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_fixtures(dir.path(), "nope").is_err());
+    }
+}
