@@ -1,5 +1,133 @@
 use super::*;
 
+/// The unit of ownership above a task: what is being built, and for whom.
+/// Defaults are nullable: `None` means this project sets nothing for that
+/// column, and resolution falls through to the next layer (see
+/// docs/PROJECTS.md, "Configuration layering").
+#[derive(Default, Debug, Clone)]
+pub struct Project {
+    pub name: String,
+    pub purpose: String,
+    pub created_at: i64,
+    pub workflow: Option<String>,
+    pub per_task_usd: Option<f64>,
+    pub per_initiative_usd: Option<f64>,
+    pub supervisor_model: Option<String>,
+    pub supervisor_per_lineage: Option<i64>,
+    /// Extra protected paths, on top of the repository's own `forge.toml`.
+    pub protected: Option<Vec<String>>,
+    /// Which provider a role runs under, for roles this project overrides
+    /// (see `config::ROLES`); a role missing here falls to the operator's
+    /// `[roles]` table. Set with `forge project set --role <role>=<provider>`.
+    pub role_providers: BTreeMap<String, String>,
+}
+
+/// Whether `purpose` is the placeholder the migration and
+/// `ensure_default_project`/`seed_project_for_repo` fill in for a
+/// repository with no real purpose yet: `"Repository <path>."`. `forge
+/// project set --purpose` is the only way to replace it; until then,
+/// `forge project show` and the portal document treat it as though no
+/// purpose were set at all (see docs/PROJECTS.md).
+pub fn is_placeholder_purpose(purpose: &str) -> bool {
+    match purpose.strip_prefix("Repository ") {
+        Some(rest) => rest.trim_end_matches('.').starts_with('/'),
+        None => false,
+    }
+}
+
+/// What `forge project set` changes; a field left `None` keeps the
+/// project's current value for that column. There is no way to clear a
+/// column back to unset once set, which nothing here needs yet.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectDefaults {
+    /// A new purpose paragraph, replacing the migration's placeholder or
+    /// any earlier text.
+    pub purpose: Option<String>,
+    pub workflow: Option<String>,
+    pub per_task_usd: Option<f64>,
+    pub per_initiative_usd: Option<f64>,
+    pub supervisor_model: Option<String>,
+    pub supervisor_per_lineage: Option<i64>,
+    pub protected: Option<Vec<String>>,
+    /// Role/provider pairs to merge into the project's existing
+    /// `role_providers`; a role already set keeps its old value unless
+    /// named again here. Empty changes nothing.
+    pub role_providers: BTreeMap<String, String>,
+}
+
+/// One repository a project works in, and the paths it owns there;
+/// `scope` is `None` for the whole repository.
+#[derive(Debug, Clone)]
+pub struct ProjectRepo {
+    pub repo: String,
+    pub scope: Option<String>,
+}
+
+/// One backlog item: a thing worth doing that is not yet queued.
+#[derive(Debug, Clone)]
+pub struct BacklogItem {
+    pub id: i64,
+    pub project: String,
+    pub text: String,
+    pub created_at: i64,
+    pub done_at: Option<i64>,
+}
+
+/// The unit of operation above a task: one outcome, pursued as a set of
+/// tasks, tracked as one thing (see docs/PROJECTS.md, "Initiative").
+/// `budget_usd` and `stop_after_same_rule` are nullable-in-spirit only for
+/// the budget: `None` falls to the project's `per_initiative_usd`, while
+/// the stop rule always has a value (the schema default, 3, when the
+/// operator names none).
+#[derive(Default, Debug, Clone)]
+pub struct Initiative {
+    pub id: i64,
+    pub project: String,
+    pub outcome: String,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: i64,
+    pub created_at: i64,
+    /// When every task settled and the initiative's own record closed;
+    /// `None` while it is still open or held.
+    pub settled_at: Option<i64>,
+}
+
+/// A change to an existing initiative: only the fields given replace the
+/// stored value, the rest are left alone (see `Store::set_initiative`).
+#[derive(Default, Debug, Clone)]
+pub struct InitiativeUpdate {
+    pub outcome: Option<String>,
+    pub budget_usd: Option<f64>,
+    pub stop_after_same_rule: Option<i64>,
+}
+
+/// Task counts by state and total cost for one project.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectTaskStats {
+    pub queued: i64,
+    pub running: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub unverified: i64,
+    pub blocked: i64,
+    pub withdrawn: i64,
+    pub cost: f64,
+}
+
+/// Tasks, landed count, cost and defect escape for one project, as
+/// `forge stats`'s per-project section shows it.
+#[derive(Default, Debug, Clone)]
+pub struct ProjectStat {
+    pub project: String,
+    pub tasks: i64,
+    pub landed: i64,
+    pub cost: f64,
+    /// Landed tasks whose `landed_sha` became a later task's `base_sha`,
+    /// where that later task's first `code` attempt carries a failing L1
+    /// verdict row on an unmodified base (see `WorkflowStat::broke_base`).
+    pub broke_base: i64,
+}
+
 pub(super) const PROJECT_COLUMNS: &[&str] = &[
     "name",
     "purpose",

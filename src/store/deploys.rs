@@ -1,5 +1,84 @@
 use super::*;
 
+/// A deploy target: where a project's landed code runs, how it gets
+/// there, and what proves it is up (see docs/DEPLOY.md, "A target").
+/// `scope` is the raw JSON array of paths within `repo` the target
+/// deploys, `None` for the whole repository, mirroring `ProjectRepo`.
+#[derive(Debug, Clone)]
+pub struct DeployTarget {
+    pub project: String,
+    pub name: String,
+    pub repo: String,
+    pub scope: Option<String>,
+    /// The action file this target runs, e.g. "deploy-command".
+    pub method: String,
+    pub args: BTreeMap<String, String>,
+    pub check_cmd: String,
+    pub on_landing: bool,
+    /// A url the deploy-smoke operation opens in headless Chromium after
+    /// the check passes, `None` to skip the smoke step entirely (see
+    /// docs/DEPLOY.md, "A deterministic smoke step").
+    pub smoke_url: Option<String>,
+}
+
+/// One deploy: a target, the commit deployed, when it started and
+/// finished, the check's verdict and output, and what it rolled back to
+/// if the check failed (see docs/DEPLOY.md, "When a deploy runs").
+#[derive(Debug, Clone)]
+pub struct Deploy {
+    pub id: i64,
+    pub project: String,
+    pub target: String,
+    pub sha: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub check_ok: Option<bool>,
+    pub check_output: String,
+    pub rolled_back_to: Option<String>,
+    pub reason: String,
+    /// The task this deploy ran on behalf of, when it was an on-landing
+    /// target rather than an operator-invoked `forge deploy`. Recorded now;
+    /// surfaced to a view once a later step needs it.
+    #[allow(dead_code)]
+    pub task_id: Option<i64>,
+    /// Whether the deploy-smoke operation passed, `None` when the target
+    /// declares no smoke url or the check never passed for smoke to run.
+    pub smoke_ok: Option<bool>,
+    /// The smoke operation's own record: console errors, failed requests,
+    /// title and screenshot path, as the JSON it wrote (see
+    /// src/builtins/operations/deploy-smoke.toml).
+    pub smoke_json: Option<String>,
+    /// Whether the `deploy-look` directive found the deployed page fit to
+    /// show anyone, `None` when the target declared no smoke url or the
+    /// screenshot smoke took was never produced for it to look at (see
+    /// src/deploy_look.rs).
+    pub look_ok: Option<bool>,
+    /// `deploy-look`'s findings, as the JSON `[{"severity":"blocking"|
+    /// "notable","finding":...}]` it returned.
+    pub look_json: Option<String>,
+}
+
+/// One run of the assess directive against a landed task (see
+/// src/assess.rs): a maintainability score 0-10 and a list of findings, as
+/// the JSON `[{"path":...,"finding":...,"severity":"notable"|"concern"}]`
+/// the directive returned, with what ran it and what it cost. Surfaced by
+/// `forge show`, `forge trace --json` and `forge initiative report`;
+/// never by `forge stats`.
+#[derive(Debug, Clone)]
+pub struct Assessment {
+    /// Recorded now; no view needs it (each reads a task's single most
+    /// recent assessment by `task_id`, not this row's own id).
+    #[allow(dead_code)]
+    pub id: i64,
+    pub task_id: i64,
+    pub score: i64,
+    pub findings_json: String,
+    pub model: String,
+    pub provider: String,
+    pub cost_usd: Option<f64>,
+    pub created_at: i64,
+}
+
 pub(super) const DEPLOY_TARGET_COLUMNS: &[&str] = &[
     "project",
     "name",

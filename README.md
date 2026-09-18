@@ -194,7 +194,15 @@ src/agent.rs      spawn the CLI, parse stream-json, timeout
 src/checks.rs     run one command as a check under a timeout
 src/sandbox.rs    bubblewrap
 src/git.rs        the few git operations Forge performs
-src/store.rs      SQLite, forward-only migrations by user_version
+src/store/        SQLite, forward-only migrations by user_version, one file per table family
+  mod.rs          types, column lists, open, schema_version, MIGRATIONS, the migration runner
+  tasks.rs        tasks: claim, queue, dependents, lineage
+  attempts.rs     attempts and ops: insert, finish, rate limits, tool facts
+  jobs.rs         jobs, job_steps, job_effects
+  deploys.rs      deploys, deploy_targets, assessments
+  projects.rs     projects, project_repos, backlog, initiatives, portal_tokens
+  record.rs       decisions, task_refs, plugins
+  stats.rs        forge stats: workflow/step/role/human-attention/time-to-live queries
 src/config.rs     forge.toml and config.toml
 src/report.rs     typed events; the stderr printer is one consumer
 src/journal.rs    what earlier attempts in a piece of work said, and what the kernel found

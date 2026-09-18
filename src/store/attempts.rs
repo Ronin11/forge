@@ -1,5 +1,234 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AttemptState {
+    #[default]
+    Running,
+    Succeeded,
+    ChecksFailed,
+    AgentFailed,
+    Unverified,
+    /// The agent asked the operator a question; retrying cannot answer it.
+    NeedsInput,
+}
+
+impl AttemptState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttemptState::Running => "running",
+            AttemptState::Succeeded => "succeeded",
+            AttemptState::ChecksFailed => "checks_failed",
+            AttemptState::AgentFailed => "agent_failed",
+            AttemptState::Unverified => "unverified",
+            AttemptState::NeedsInput => "needs_input",
+        }
+    }
+}
+
+impl TryFrom<&str> for AttemptState {
+    type Error = std::io::Error;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match s {
+            "running" => AttemptState::Running,
+            "succeeded" => AttemptState::Succeeded,
+            "checks_failed" => AttemptState::ChecksFailed,
+            "agent_failed" => AttemptState::AgentFailed,
+            "unverified" => AttemptState::Unverified,
+            "needs_input" => AttemptState::NeedsInput,
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "unknown attempt state {other:?}"
+                )));
+            }
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct Attempt {
+    pub id: i64,
+    pub task_id: i64,
+    pub attempt_no: i64,
+    pub step: String,
+    /// Index of the step in the resolved workflow, for resumption.
+    pub step_seq: i64,
+    /// HEAD when the attempt started: "what you changed" means since here.
+    pub start_sha: String,
+    pub end_sha: String,
+    /// The runner and provider this attempt ran under (see
+    /// `agent::Runner`/`agent::Provider`); the model is on `inputs_json`.
+    pub runner: String,
+    pub provider: String,
+    /// audit::Inputs as JSON: everything the step was given.
+    pub inputs_json: String,
+    /// audit::Outputs as JSON: everything the step produced beyond the verdict.
+    pub outputs_json: String,
+    pub state: AttemptState,
+    pub reason: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub agent_exit: Option<i32>,
+    pub timed_out: bool,
+    pub num_turns: i64,
+    pub tool_calls: i64,
+    pub cost_usd: Option<f64>,
+    pub agent_ms: i64,
+    pub commits: i64,
+    pub files_changed: i64,
+    pub dirty: bool,
+    pub verdict_json: String,
+    pub result_text: String,
+    pub log_path: String,
+    /// The structured result as the CLI produced it, raw JSON; empty if none.
+    pub envelope_json: String,
+    pub rl_five_hour: Option<f64>,
+    pub rl_seven_day: Option<f64>,
+    pub rl_five_hour_resets: Option<i64>,
+    pub rl_seven_day_resets: Option<i64>,
+    /// The CLI session the attempt ran in; empty when the stream never said.
+    pub session_id: String,
+    /// Tool calls before the first edit; `None` when it never edited.
+    pub first_edit: Option<i64>,
+    /// Token counts from the result frame's usage object.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+    /// `agent::Outcome::early_signals` as JSON: which of `Watch`'s signs
+    /// tripped, whether or not they ended the run.
+    pub early_signals: String,
+    /// `agent::Outcome::early_near` as JSON: which signs were within 20%
+    /// of tripping and did not, so the thresholds can be tuned from here.
+    pub early_near: String,
+}
+
+/// Everything `Store::finish_attempt` writes back for an attempt that has run to completion.
+pub struct FinishAttempt {
+    /// The attempt row to update.
+    pub id: i64,
+    pub state: AttemptState,
+    pub reason: String,
+    pub finished_at: Option<i64>,
+    pub agent_exit: Option<i32>,
+    pub timed_out: bool,
+    pub num_turns: i64,
+    pub tool_calls: i64,
+    pub cost_usd: Option<f64>,
+    pub agent_ms: i64,
+    pub commits: i64,
+    pub files_changed: i64,
+    pub dirty: bool,
+    pub verdict_json: String,
+    pub result_text: String,
+    /// The structured result as the CLI produced it, raw JSON; empty if none.
+    pub envelope_json: String,
+    pub rl_five_hour: Option<f64>,
+    pub rl_seven_day: Option<f64>,
+    /// Unix seconds at which each window resets, as the CLI reported.
+    pub rl_five_hour_resets: Option<i64>,
+    pub rl_seven_day_resets: Option<i64>,
+    /// HEAD when the attempt finished.
+    pub end_sha: String,
+    /// audit::Outputs as JSON: everything the step produced beyond the verdict.
+    pub outputs_json: String,
+    /// The CLI session the attempt ran in; empty when the stream never said.
+    pub session_id: String,
+    /// Tool calls before the first edit; `None` when it never edited.
+    pub first_edit: Option<i64>,
+    /// Token counts from the result frame's usage object.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+    pub early_signals: String,
+    pub early_near: String,
+}
+
+pub struct RateLimitSample {
+    pub seen_at: i64,
+    pub five_hour: Option<f64>,
+    pub seven_day: Option<f64>,
+    /// Unix seconds at which each window resets, as the CLI reported.
+    pub five_hour_resets: Option<i64>,
+    pub seven_day_resets: Option<i64>,
+}
+
+/// One operation, kernel or user, as it ran.
+#[derive(Default, Debug, Clone)]
+pub struct Op {
+    pub id: i64,
+    pub task_id: i64,
+    pub seq: i64,
+    pub name: String,
+    pub kernel: bool,
+    pub started_at: i64,
+    pub ms: i64,
+    pub ok: bool,
+    pub exit: Option<i32>,
+    pub detail: String,
+    pub attempt_id: Option<i64>,
+    /// What the operation produced, when it produces a value: its stdout.
+    pub output: String,
+}
+
+pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "attempt_no",
+    "state",
+    "reason",
+    "started_at",
+    "finished_at",
+    "agent_exit",
+    "timed_out",
+    "num_turns",
+    "tool_calls",
+    "cost_usd",
+    "agent_ms",
+    "commits",
+    "files_changed",
+    "dirty",
+    "verdict_json",
+    "result_text",
+    "log_path",
+    "envelope_json",
+    "rl_five_hour",
+    "rl_seven_day",
+    "rl_five_hour_resets",
+    "rl_seven_day_resets",
+    "step",
+    "start_sha",
+    "end_sha",
+    "inputs_json",
+    "outputs_json",
+    "step_seq",
+    "session_id",
+    "first_edit",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "early_signals",
+    "early_near",
+    "runner",
+    "provider",
+];
+
+pub(super) const OP_COLUMNS: &[&str] = &[
+    "id",
+    "task_id",
+    "seq",
+    "name",
+    "kernel",
+    "started_at",
+    "ms",
+    "ok",
+    "exit",
+    "detail",
+    "attempt_id",
+    "output",
+];
+
 fn attempt_from_row(r: &Row) -> rusqlite::Result<Attempt> {
     Ok(Attempt {
         id: r.get("id")?,
@@ -263,68 +492,22 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Landed tasks, scoped like every other `forge stats` query: the
-    /// input to both delayed-cost signals (the `task_repair_cost` cache
-    /// and the `task_churn` cache).
-    pub fn landed_tasks(&self, scope: &StatsFilter) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE landed_sha != ''
-               AND (?1 IS NULL OR project = ?1) AND (?2 IS NULL OR initiative = ?2)
-             ORDER BY id",
-            TASK_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map(params![scope.project, scope.initiative], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Landed tasks on `repo`, other than `exclude`, whose landing fell in
-    /// `(from, to]`: the later landings a churn computation diffs `added`
-    /// against (see docs/LATER.md, the delayed-cost follow-up to "Defect
-    /// escape").
-    pub fn later_landings(
-        &self,
-        repo: &str,
-        exclude: i64,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<Task>> {
-        let c = self.lock();
-        let mut stmt = c.prepare(&format!(
-            "SELECT {} FROM tasks WHERE repo = ?1 AND id != ?2 AND landed_sha != ''
-               AND finished_at > ?3 AND finished_at <= ?4
-             ORDER BY id",
-            TASK_COLUMNS.join(", ")
-        ))?;
-        let rows = stmt.query_map(params![repo, exclude, from, to], task_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// The most recent landed task on `repo` with an id below `before_id`:
-    /// what `refresh_hand_commits` diffs a landing against to find the
-    /// hand commits that reached the base branch since (see
-    /// `Task::landed_at`, `task_hand_commits`). `None` for the first
-    /// landing a repository ever gets.
-    pub fn previous_landing(&self, repo: &str, before_id: i64) -> Result<Option<Task>> {
-        let c = self.lock();
-        Ok(c.query_row(
-            &format!(
-                "SELECT {} FROM tasks WHERE repo = ?1 AND id < ?2 AND landed_sha != ''
-                 ORDER BY id DESC LIMIT 1",
-                TASK_COLUMNS.join(", ")
-            ),
-            params![repo, before_id],
-            task_from_row,
-        )
-        .optional()?)
-    }
-
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
             params![id, crate::unix_now()],
         )?;
         Ok(())
+    }
+}
+
+impl Attempt {
+    /// An attempt an agent made, as opposed to a row the kernel wrote
+    /// about the task: the supervisor's rulings and the integrator's
+    /// check runs are on the record but are not the agent's work, so a
+    /// rule about "the last attempt" skips them.
+    pub fn is_agent(&self) -> bool {
+        self.step != "supervisor" && self.step != "integrate"
     }
 }
 

@@ -1,5 +1,38 @@
 use super::*;
 
+/// An operator's answer to a blocked task's question.
+pub struct Decision {
+    pub id: i64,
+    pub task_id: i64,
+    pub repo: String,
+    pub question: String,
+    pub answer: String,
+    pub created_at: i64,
+    /// "operator", "supervisor", or a channel contact's name.
+    pub answered_by: String,
+    /// What the answer cited, comma-separated: paths, "task N", "decision N".
+    pub citations: String,
+    /// The task the answer re-queued, when known: its state is the
+    /// answer's outcome.
+    pub retry_id: Option<i64>,
+    /// Who the question was addressed to, copied from the task's
+    /// `question_to` at answer time; `None` means the operator.
+    pub answered_for: Option<String>,
+}
+
+/// An external reference a plugin or the operator recorded on a task: the
+/// pull request it landed as, the issue it came from.
+pub struct TaskRef {
+    pub id: i64,
+    pub task_id: i64,
+    pub kind: String,
+    pub url: String,
+    pub label: String,
+    /// Who recorded it: "operator" by default, or a plugin's own name.
+    pub by: String,
+    pub created_at: i64,
+}
+
 pub(super) const DECISION_COLUMNS: &[&str] = &[
     "id",
     "task_id",

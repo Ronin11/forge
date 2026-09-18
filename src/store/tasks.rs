@@ -1,5 +1,195 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TaskState {
+    #[default]
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Unverified,
+    /// The agent asked a question or for a different workflow; not a failure.
+    Blocked,
+    /// The operator decided this should not be done: a stale description,
+    /// superseded, or the product decision went the other way. Terminal,
+    /// like `Failed`, but never a defect in the work.
+    Withdrawn,
+}
+
+impl TaskState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskState::Queued => "queued",
+            TaskState::Running => "running",
+            TaskState::Succeeded => "succeeded",
+            TaskState::Failed => "failed",
+            TaskState::Unverified => "unverified",
+            TaskState::Blocked => "blocked",
+            TaskState::Withdrawn => "withdrawn",
+        }
+    }
+}
+
+impl TryFrom<&str> for TaskState {
+    type Error = std::io::Error;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match s {
+            "queued" => TaskState::Queued,
+            "running" => TaskState::Running,
+            "succeeded" => TaskState::Succeeded,
+            "failed" => TaskState::Failed,
+            "unverified" => TaskState::Unverified,
+            "blocked" => TaskState::Blocked,
+            "withdrawn" => TaskState::Withdrawn,
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "unknown task state {other:?}"
+                )));
+            }
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct Task {
+    pub id: i64,
+    pub repo: String,
+    pub task: String,
+    /// The task in the customer's own words, for the day it was filed
+    /// that way (`forge add --title`, or the concierge on a filed
+    /// request): what `PortalDoc`'s "Done" line uses instead of deriving
+    /// one from `task` (see docs/PORTAL.md). `None` for every task filed
+    /// before this column, or never given one.
+    pub title: Option<String>,
+    pub base_branch: String,
+    pub base_sha: String,
+    pub branch: String,
+    pub worktree: String,
+    pub model: String,
+    /// The provider name every agent step of this task runs under (see
+    /// `agent::Provider`); the supervisor keeps its own model setting and
+    /// is unaffected by this.
+    pub provider: String,
+    pub max_turns: i64,
+    pub max_attempts: i64,
+    pub timeout_secs: i64,
+    /// Operator-declared acceptance commands, run as L2 after the repo's checks.
+    pub checks: Vec<String>,
+    pub state: TaskState,
+    pub reason: String,
+    /// Who a blocked question is addressed to (a channel contact's name,
+    /// e.g. from the Signal plugin's `CONTACTS`); `None` means the
+    /// operator. Set from the envelope's `needs_input.to` when the task
+    /// blocks; meaningless outside `TaskState::Blocked`.
+    pub question_to: Option<String>,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub pushed: bool,
+    pub worker_pid: Option<i64>,
+    /// Per-task cap override; `None` means the operator config's default.
+    pub budget_usd: Option<f64>,
+    pub worktree_removed_at: Option<i64>,
+    /// The operator said this task may change protected paths.
+    pub allow_protected: bool,
+    pub workflow: String,
+    /// Content hash of the workflow file the task ran under.
+    pub workflow_hash: String,
+    /// The workflow file's exact text at resolution, so the run is
+    /// self-describing even after the file changes.
+    pub workflow_text: String,
+    /// workflows::Resolved as JSON: every action version the task runs,
+    /// recorded at start; empty until then.
+    pub actions_json: String,
+    /// The tests step's summary: what the coder is told about the tests.
+    pub interface: String,
+    /// Show the L2 acceptance commands to the coder (default hidden).
+    pub show_checks: bool,
+    /// Land on the base branch once verified (the default); false leaves
+    /// the verified branch pushed for a human to merge.
+    pub land: bool,
+    /// Tasks this one waits for: claimable only once every one of them has
+    /// landed; blocked if any of them ends otherwise.
+    pub after: Vec<i64>,
+    /// The `forge-verify` commit that matches the base at clone time: the
+    /// standing suite the task is judged by. Landing uses the current tip,
+    /// since only the merged tree has everything the base gained since.
+    pub verify_base: String,
+    /// The task this one re-queues, when it was made by `forge retry`.
+    pub retry_of: Option<i64>,
+    /// Show the agents the journal of earlier attempts (the default);
+    /// false for the control arm of a measurement.
+    pub journal: bool,
+    /// How `journal` got its value: "explicit" when the request said
+    /// `--journal` or `--no-journal` itself, else "control" or "treatment"
+    /// from the operator's `[measure] journal_control` fraction, drawn
+    /// deterministically from the task id.
+    pub journal_arm: String,
+    /// What the last `context` operation printed: where things are.
+    pub context: String,
+    /// Show the agents that context (the default); false for the control arm.
+    pub context_enabled: bool,
+    /// After an attempt fails its checks, hand the next one --resume with
+    /// the same CLI session instead of a fresh one. Preserved by `forge retry`.
+    pub resume_on_failure: bool,
+    /// What the last `plan` directive returned: the plan every later
+    /// directive on this task is shown.
+    pub plan: String,
+    /// The base commit the task's branch became, once landed; empty until
+    /// then. The scheduler's notion of "landed" is this column, not the
+    /// wording of `reason`.
+    pub landed_sha: String,
+    /// When the task landed, `None` until then. Distinct from
+    /// `finished_at`: a task verified before it had anywhere to land, or
+    /// queued `--no-land`, sets `finished_at` at verification and only
+    /// gets `landed_at` later, when a human's `forge land` (or the
+    /// supervisor's own accept-and-land) actually lands it.
+    pub landed_at: Option<i64>,
+    /// Landed by a human's `forge land`, never by the supervisor's own
+    /// automated landing: one of the human-attention signals (see
+    /// `Store::human_attention_stats`).
+    pub hand_landed: bool,
+    /// The project this task belongs to; `None` for tasks predating
+    /// projects that no migration could place, or whose repository lists
+    /// more than one project.
+    pub project: Option<String>,
+    /// The initiative this task belongs to, if any.
+    pub initiative: Option<i64>,
+    /// Which provider each role drew from the operator's `[measure]
+    /// explore` fractions, keyed by role name; empty when the task named
+    /// an explicit `--provider` (which routes every role itself) or no
+    /// role was configured to explore. Drawn once at creation, the same
+    /// deterministic way as `journal_arm` (see `queue::assign_explore`),
+    /// and consulted by `ctx::resolve_provider` at every step.
+    pub explore: BTreeMap<String, String>,
+    /// The concierge decision that produced this task, raw JSON, when
+    /// `forge ask` filed it (a `request`, a `need`, or the placeholder for
+    /// `unclear`); `None` for a task filed any other way (see
+    /// docs/INTAKE.md, "The front door is not the interview").
+    pub concierge_json: Option<String>,
+    /// The escalator's proposal, raw JSON (`task_ids`, `repetition`,
+    /// `outcome`), on the placeholder task `forge ask` blocks when the
+    /// concierge's decision names a `pattern`; `None` for every other task
+    /// (see docs/INTAKE.md, "The escalator").
+    pub proposal_json: Option<String>,
+    /// How the proposal was answered, "yes" or "no"; `None` while it is
+    /// still blocked.
+    pub proposal_answer: Option<String>,
+    /// The initiative a "yes" answer filed; `None` for a "no" or a still-open proposal.
+    pub proposal_initiative: Option<i64>,
+}
+
+/// One task in a lineage: parent is what it retries.
+#[derive(Debug, Clone)]
+pub struct LineageRow {
+    pub id: i64,
+    pub parent: Option<i64>,
+    pub state: String,
+    pub reason: String,
+    pub workflow: String,
+    pub cost: f64,
+}
+
 /// The shared decision behind `release_dependents` and
 /// `release_dependents_of`: for each `(id, after_json)` candidate — always
 /// a task currently `blocked` with a reason starting "waits on task" —

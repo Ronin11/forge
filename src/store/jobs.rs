@@ -1,5 +1,165 @@
 use super::*;
 
+/// A job's state: a run workflow's run, the way `TaskState` is a build
+/// workflow's (see docs/JOBS.md, "Vocabulary"). `NeedsHuman` is a job's
+/// `on_failure = "ask:*"` outcome, the job analogue of `TaskState::Blocked`.
+/// `Scheduled` is a job created with a due time (`Job::due_at`) still in the
+/// future: it waits there, a row and never an in-memory timer, until the
+/// worker's claim (`claim_next_job`) finds it due (docs/JOBS.md, "Delayed
+/// jobs").
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum JobState {
+    #[default]
+    Queued,
+    Scheduled,
+    Running,
+    Ok,
+    Failed,
+    NeedsHuman,
+    Dropped,
+}
+
+impl JobState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobState::Queued => "queued",
+            JobState::Scheduled => "scheduled",
+            JobState::Running => "running",
+            JobState::Ok => "ok",
+            JobState::Failed => "failed",
+            JobState::NeedsHuman => "needs_human",
+            JobState::Dropped => "dropped",
+        }
+    }
+}
+
+impl TryFrom<&str> for JobState {
+    type Error = std::io::Error;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match s {
+            "queued" => JobState::Queued,
+            "scheduled" => JobState::Scheduled,
+            "running" => JobState::Running,
+            "ok" => JobState::Ok,
+            "failed" => JobState::Failed,
+            "needs_human" => JobState::NeedsHuman,
+            "dropped" => JobState::Dropped,
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "unknown job state {other:?}"
+                )));
+            }
+        })
+    }
+}
+
+/// One run of a `kind = "run"` workflow (see docs/JOBS.md, "Vocabulary"):
+/// its trigger, its pinned workflow version, its state, and its cost.
+/// `job_steps` and `job_effects` carry what it did; this row is what
+/// `forge job list`/`show` and `finish_job` read and write.
+#[derive(Default, Debug, Clone)]
+pub struct Job {
+    pub id: i64,
+    pub project: String,
+    pub workflow: String,
+    /// Content hash of the workflow file this job ran under, mirroring
+    /// `Task::workflow_hash`.
+    pub workflow_hash: String,
+    /// The project's landed commit this job ran the workflow's automation
+    /// files at; empty for a job whose project has never landed anything.
+    pub landed_sha: String,
+    /// `workflows::TriggerOn::as_str()`: `manual`, `schedule`, `message`,
+    /// `webhook`, or `event`.
+    pub trigger_kind: String,
+    /// The trigger's own value (a cron string, a contact, a webhook name,
+    /// an event type), mirroring `workflows::Trigger::value()`; empty for
+    /// a manual trigger.
+    pub trigger_ref: String,
+    pub state: JobState,
+    /// `workflows::JobSource::as_str()`: `"repo"` when the workflow came
+    /// from the project's own repository at `landed_sha`, `"catalog"` when
+    /// it fell back to the operator's catalog (docs/JOBS.md, "Where an
+    /// automation lives").
+    pub workflow_source: String,
+    /// Effects recorded, not performed: `forge job test`'s replay mode
+    /// (docs/JOBS.md, "Verifying an automation").
+    pub dry_run: bool,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub cost_usd: Option<f64>,
+    /// The assertions' verdict, in the same shape as a task attempt's
+    /// `verdict_json` (`checks::CheckResult` rows); empty until the job
+    /// finishes.
+    pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed. Set from `forge job start --at`/`--delay`
+    /// or from a `[trigger] delay` firing (docs/JOBS.md, "Delayed jobs").
+    /// `JobState::Scheduled` while this is still in the future;
+    /// `claim_next_job` is the only place that reads it against now.
+    pub due_at: Option<i64>,
+}
+
+/// One step of a job's run: one entry of the workflow's `steps`, whether
+/// it was an operation or a directive (see docs/JOBS.md, "Steps").
+#[derive(Default, Debug, Clone)]
+pub struct JobStep {
+    pub id: i64,
+    pub job_id: i64,
+    /// Position in the workflow's `steps` array, from 0.
+    pub seq: i64,
+    /// The action's name, e.g. `"draft-quote"`.
+    pub action: String,
+    /// `"operation"` or `"directive"`.
+    pub kind: String,
+    /// Set only for a directive step: the role's provider.
+    pub provider: String,
+    /// Set only for a directive step: the model that ran it.
+    pub model: String,
+    pub cost_usd: Option<f64>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    /// Set only for an operation step.
+    pub exit_code: Option<i32>,
+    /// Where the step's output is on disk, relative to the job's scratch
+    /// directory.
+    pub output_ref: String,
+}
+
+/// One effect a job's step performed on the world (see docs/JOBS.md,
+/// "Effects"): a message sent, a row written, a file produced, an HTTP
+/// call made. Logged whether or not the run was a dry run.
+#[derive(Default, Debug, Clone)]
+pub struct JobEffect {
+    pub id: i64,
+    pub job_id: i64,
+    /// The step's `seq` that produced this effect.
+    pub seq: i64,
+    /// The operation's declared effect kind, e.g. `"message"`, `"row"`.
+    pub kind: String,
+    /// What the effect acted on: a phone number, a table row, a URL.
+    pub target: String,
+    /// A short human-readable description, what the portal shows per run.
+    pub summary: String,
+    /// True when the effect was only recorded, not performed (a dry run,
+    /// e.g. `forge job test`'s fixture replay).
+    pub dry_run: bool,
+}
+
+/// Jobs run in the last rolling 24h for one project, by outcome: what
+/// `forge project show` and `forge stats`'s jobs section count separately
+/// from tasks (docs/JOBS.md step 1d). `today` is every job started in the
+/// window, whatever its current state; `ok`/`failed`/`needs_human` are
+/// those of them that reached that state (a still-`queued` or `running`
+/// job counts toward `today` alone).
+#[derive(Default, Debug, Clone)]
+pub struct JobStat {
+    pub project: String,
+    pub today: i64,
+    pub ok: i64,
+    pub failed: i64,
+    pub needs_human: i64,
+}
+
 pub(super) const JOB_COLUMNS: &[&str] = &[
     "id",
     "project",
