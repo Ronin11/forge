@@ -3193,9 +3193,10 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
-                        supervisor_model, supervisor_per_lineage, protected_json, role_providers_json
-                 FROM projects WHERE name=?1",
+                &format!(
+                    "SELECT {} FROM projects WHERE name=?1",
+                    PROJECT_COLUMNS.join(", ")
+                ),
                 params![name],
                 project_from_row,
             )
@@ -3205,11 +3206,10 @@ impl Store {
     /// Every project, alphabetically.
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT name, purpose, created_at, workflow, per_task_usd, per_initiative_usd,
-                    supervisor_model, supervisor_per_lineage, protected_json, role_providers_json
-             FROM projects ORDER BY name",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM projects ORDER BY name",
+            PROJECT_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map([], project_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -3292,18 +3292,11 @@ impl Store {
     /// A project's backlog, oldest first.
     pub fn backlog(&self, project: &str) -> Result<Vec<BacklogItem>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, text, created_at, done_at FROM backlog WHERE project=?1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map(params![project], |r| {
-            Ok(BacklogItem {
-                id: r.get(0)?,
-                project: r.get(1)?,
-                text: r.get(2)?,
-                created_at: r.get(3)?,
-                done_at: r.get(4)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM backlog WHERE project=?1 ORDER BY id",
+            BACKLOG_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![project], backlog_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3381,14 +3374,11 @@ impl Store {
     /// A project's repositories, alphabetically.
     pub fn project_repos(&self, project: &str) -> Result<Vec<ProjectRepo>> {
         let c = self.lock();
-        let mut stmt =
-            c.prepare("SELECT repo, scope_json FROM project_repos WHERE project=?1 ORDER BY repo")?;
-        let rows = stmt.query_map(params![project], |r| {
-            Ok(ProjectRepo {
-                repo: r.get(0)?,
-                scope: r.get(1)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM project_repos WHERE project=?1 ORDER BY repo",
+            PROJECT_REPO_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![project], project_repo_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -3473,8 +3463,10 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id, project, outcome, budget_usd, stop_after_same_rule, created_at, settled_at
-                 FROM initiatives WHERE id=?1",
+                &format!(
+                    "SELECT {} FROM initiatives WHERE id=?1",
+                    INITIATIVE_COLUMNS.join(", ")
+                ),
                 params![id],
                 initiative_from_row,
             )
@@ -3484,10 +3476,10 @@ impl Store {
     /// Every initiative, oldest first; only `project`'s when given.
     pub fn list_initiatives(&self, project: Option<&str>) -> Result<Vec<Initiative>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, outcome, budget_usd, stop_after_same_rule, created_at, settled_at
-             FROM initiatives WHERE ?1 IS NULL OR project = ?1 ORDER BY id",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM initiatives WHERE ?1 IS NULL OR project = ?1 ORDER BY id",
+            INITIATIVE_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![project], initiative_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4255,18 +4247,45 @@ fn deploy_from_row(r: &Row) -> rusqlite::Result<Deploy> {
     })
 }
 
+const PROJECT_COLUMNS: &[&str] = &[
+    "name",
+    "purpose",
+    "created_at",
+    "workflow",
+    "per_task_usd",
+    "per_initiative_usd",
+    "supervisor_model",
+    "supervisor_per_lineage",
+    "protected_json",
+    "role_providers_json",
+];
+
+const PROJECT_REPO_COLUMNS: &[&str] = &["project", "repo", "scope_json"];
+
+const BACKLOG_COLUMNS: &[&str] = &["id", "project", "text", "created_at", "done_at"];
+
+const INITIATIVE_COLUMNS: &[&str] = &[
+    "id",
+    "project",
+    "outcome",
+    "budget_usd",
+    "stop_after_same_rule",
+    "created_at",
+    "settled_at",
+];
+
 fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
-    let protected_json: Option<String> = r.get(8)?;
-    let role_providers_json: Option<String> = r.get(9)?;
+    let protected_json: Option<String> = r.get("protected_json")?;
+    let role_providers_json: Option<String> = r.get("role_providers_json")?;
     Ok(Project {
-        name: r.get(0)?,
-        purpose: r.get(1)?,
-        created_at: r.get(2)?,
-        workflow: r.get(3)?,
-        per_task_usd: r.get(4)?,
-        per_initiative_usd: r.get(5)?,
-        supervisor_model: r.get(6)?,
-        supervisor_per_lineage: r.get(7)?,
+        name: r.get("name")?,
+        purpose: r.get("purpose")?,
+        created_at: r.get("created_at")?,
+        workflow: r.get("workflow")?,
+        per_task_usd: r.get("per_task_usd")?,
+        per_initiative_usd: r.get("per_initiative_usd")?,
+        supervisor_model: r.get("supervisor_model")?,
+        supervisor_per_lineage: r.get("supervisor_per_lineage")?,
         protected: protected_json.map(|j| serde_json::from_str(&j).unwrap_or_default()),
         role_providers: role_providers_json
             .map(|j| serde_json::from_str(&j).unwrap_or_default())
@@ -4274,15 +4293,32 @@ fn project_from_row(r: &Row) -> rusqlite::Result<Project> {
     })
 }
 
+fn project_repo_from_row(r: &Row) -> rusqlite::Result<ProjectRepo> {
+    Ok(ProjectRepo {
+        repo: r.get("repo")?,
+        scope: r.get("scope_json")?,
+    })
+}
+
+fn backlog_from_row(r: &Row) -> rusqlite::Result<BacklogItem> {
+    Ok(BacklogItem {
+        id: r.get("id")?,
+        project: r.get("project")?,
+        text: r.get("text")?,
+        created_at: r.get("created_at")?,
+        done_at: r.get("done_at")?,
+    })
+}
+
 fn initiative_from_row(r: &Row) -> rusqlite::Result<Initiative> {
     Ok(Initiative {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        outcome: r.get(2)?,
-        budget_usd: r.get(3)?,
-        stop_after_same_rule: r.get(4)?,
-        created_at: r.get(5)?,
-        settled_at: r.get(6)?,
+        id: r.get("id")?,
+        project: r.get("project")?,
+        outcome: r.get("outcome")?,
+        budget_usd: r.get("budget_usd")?,
+        stop_after_same_rule: r.get("stop_after_same_rule")?,
+        created_at: r.get("created_at")?,
+        settled_at: r.get("settled_at")?,
     })
 }
 
@@ -6053,6 +6089,10 @@ mod column_tests {
             ("job_effects", JOB_EFFECT_COLUMNS),
             ("deploys", DEPLOY_COLUMNS),
             ("deploy_targets", DEPLOY_TARGET_COLUMNS),
+            ("projects", PROJECT_COLUMNS),
+            ("project_repos", PROJECT_REPO_COLUMNS),
+            ("backlog", BACKLOG_COLUMNS),
+            ("initiatives", INITIATIVE_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
