@@ -1384,7 +1384,8 @@ fn time_to_live_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLiveRow> {
 /// its own median and 90th percentile; a task with no project is left out,
 /// same as `Store::project_stats`.
 fn time_to_live_project_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLiveProjectRow> {
-    let mut groups: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<String, Vec<i64>> =
+        std::collections::BTreeMap::new();
     for t in ttls {
         let Some(project) = &t.project else {
             continue;

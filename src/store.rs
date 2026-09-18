@@ -5006,8 +5006,10 @@ mod tests {
         let deploy_id = s
             .start_deploy("proj", "prod", "bsha", 2500, Some(b.id))
             .unwrap();
-        s.finish_deploy(deploy_id, 2600, true, "ok", None, "", None, None, None, None)
-            .unwrap();
+        s.finish_deploy(
+            deploy_id, 2600, true, "ok", None, "", None, None, None, None,
+        )
+        .unwrap();
 
         // Task C: withdrawn, never landed.
         let mut c = base(3000);
@@ -5023,7 +5025,10 @@ mod tests {
         assert_eq!(h.operator_answers, 1);
         assert_eq!(h.hand_landed, 1);
         assert_eq!(h.withdrawals, 1);
-        assert_eq!(h.hand_commits, 3, "cached per landed task, like repair_cost");
+        assert_eq!(
+            h.hand_commits, 3,
+            "cached per landed task, like repair_cost"
+        );
 
         let human_p = s.human_attention_project_stats().unwrap();
         assert_eq!(human_p.len(), 1);

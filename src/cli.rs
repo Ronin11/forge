@@ -3795,6 +3795,104 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
             .join("; ");
         out!("{line}");
     }
+    let per_landed = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("{n:.2}"));
+    let secs = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("{n:.0}s"));
+    if !doc.human_attention.is_empty() {
+        out!();
+        out!(
+            "{:<8} {:<16} {:>6} {:>5} {:>5} {:>5} {:>5} {:>7} {:>10}",
+            "WF",
+            "HASH",
+            "LANDED",
+            "ANSWER",
+            "HAND",
+            "WDRAWN",
+            "HANDC",
+            "EVENTS",
+            "EVT/LAND"
+        );
+        for h in &doc.human_attention {
+            out!(
+                "{:<8} {:<16} {:>6} {:>5} {:>5} {:>5} {:>5} {:>7} {:>10}",
+                h.workflow,
+                h.hash,
+                h.landed,
+                h.operator_answers,
+                h.hand_landed,
+                h.withdrawals,
+                h.hand_commits,
+                h.events,
+                per_landed(h.events_per_landed)
+            );
+        }
+    }
+    if !doc.human_attention_projects.is_empty() {
+        out!();
+        out!(
+            "{:<16} {:>6} {:>5} {:>5} {:>5} {:>5} {:>7} {:>10}",
+            "PROJECT",
+            "LANDED",
+            "ANSWER",
+            "HAND",
+            "WDRAWN",
+            "HANDC",
+            "EVENTS",
+            "EVT/LAND"
+        );
+        for h in &doc.human_attention_projects {
+            out!(
+                "{:<16} {:>6} {:>5} {:>5} {:>5} {:>5} {:>7} {:>10}",
+                h.project,
+                h.landed,
+                h.operator_answers,
+                h.hand_landed,
+                h.withdrawals,
+                h.hand_commits,
+                h.events,
+                per_landed(h.events_per_landed)
+            );
+        }
+    }
+    if !doc.time_to_live.is_empty() {
+        out!();
+        out!(
+            "{:<8} {:<16} {:>5} {:>10} {:>10}",
+            "WF",
+            "HASH",
+            "N",
+            "MEDIAN",
+            "P90"
+        );
+        for t in &doc.time_to_live {
+            out!(
+                "{:<8} {:<16} {:>5} {:>10} {:>10}",
+                t.workflow,
+                t.hash,
+                t.n,
+                secs(t.median_secs),
+                secs(t.p90_secs)
+            );
+        }
+    }
+    if !doc.time_to_live_projects.is_empty() {
+        out!();
+        out!(
+            "{:<16} {:>5} {:>10} {:>10}",
+            "PROJECT",
+            "N",
+            "MEDIAN",
+            "P90"
+        );
+        for t in &doc.time_to_live_projects {
+            out!(
+                "{:<16} {:>5} {:>10} {:>10}",
+                t.project,
+                t.n,
+                secs(t.median_secs),
+                secs(t.p90_secs)
+            );
+        }
+    }
     Ok(())
 }
 
