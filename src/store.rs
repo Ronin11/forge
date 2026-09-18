@@ -3974,8 +3974,7 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
-                 FROM jobs WHERE id=?1",
+                &format!("SELECT {} FROM jobs WHERE id=?1", JOB_COLUMNS.join(", ")),
                 params![id],
                 job_from_row,
             )
@@ -3986,10 +3985,10 @@ impl Store {
     /// state: what `forge job list` shows.
     pub fn jobs(&self, project: Option<&str>, state: Option<JobState>) -> Result<Vec<Job>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
-             FROM jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR state=?2) ORDER BY id DESC",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR state=?2) ORDER BY id DESC",
+            JOB_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![project, state.map(JobState::as_str)], job_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -3997,10 +3996,10 @@ impl Store {
     /// One job's steps, in the order they ran.
     pub fn job_steps(&self, job_id: i64) -> Result<Vec<JobStep>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref
-             FROM job_steps WHERE job_id=?1 ORDER BY seq",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM job_steps WHERE job_id=?1 ORDER BY seq",
+            JOB_STEP_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![job_id], job_step_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4008,10 +4007,10 @@ impl Store {
     /// One job's effects, in the order they happened.
     pub fn job_effects(&self, job_id: i64) -> Result<Vec<JobEffect>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, job_id, seq, kind, target, summary, dry_run
-             FROM job_effects WHERE job_id=?1 ORDER BY seq",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM job_effects WHERE job_id=?1 ORDER BY seq",
+            JOB_EFFECT_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map(params![job_id], job_effect_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4020,11 +4019,16 @@ impl Store {
     /// what `forge job log` shows.
     pub fn job_effects_for_project(&self, project: &str) -> Result<Vec<JobEffect>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT job_effects.id, job_effects.job_id, job_effects.seq, job_effects.kind, job_effects.target, job_effects.summary, job_effects.dry_run
+        let cols = JOB_EFFECT_COLUMNS
+            .iter()
+            .map(|c| format!("job_effects.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = c.prepare(&format!(
+            "SELECT {cols}
              FROM job_effects JOIN jobs ON jobs.id = job_effects.job_id
              WHERE jobs.project=?1 ORDER BY job_effects.id DESC",
-        )?;
+        ))?;
         let rows = stmt.query_map(params![project], job_effect_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4033,10 +4037,10 @@ impl Store {
     /// alongside `queued_unblocked`'s tasks (see `claim_next_job`).
     pub fn queued_jobs(&self) -> Result<Vec<Job>> {
         let c = self.lock();
-        let mut stmt = c.prepare(
-            "SELECT id, project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, dry_run, started_at, finished_at, cost_usd, verdict_json, workflow_source
-             FROM jobs WHERE state='queued' ORDER BY id",
-        )?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM jobs WHERE state='queued' ORDER BY id",
+            JOB_COLUMNS.join(", ")
+        ))?;
         let rows = stmt.query_map([], job_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -4075,52 +4079,91 @@ impl Store {
     }
 }
 
+const JOB_COLUMNS: &[&str] = &[
+    "id",
+    "project",
+    "workflow",
+    "workflow_hash",
+    "landed_sha",
+    "trigger_kind",
+    "trigger_ref",
+    "state",
+    "dry_run",
+    "started_at",
+    "finished_at",
+    "cost_usd",
+    "verdict_json",
+    "workflow_source",
+];
+
+const JOB_STEP_COLUMNS: &[&str] = &[
+    "id",
+    "job_id",
+    "seq",
+    "action",
+    "kind",
+    "provider",
+    "model",
+    "cost_usd",
+    "started_at",
+    "finished_at",
+    "exit_code",
+    "output_ref",
+];
+
+const JOB_EFFECT_COLUMNS: &[&str] = &[
+    "id", "job_id", "seq", "kind", "target", "summary", "dry_run",
+];
+
 fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
-    let state: String = r.get(7)?;
     Ok(Job {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        workflow: r.get(2)?,
-        workflow_hash: r.get(3)?,
-        landed_sha: r.get(4)?,
-        trigger_kind: r.get(5)?,
-        trigger_ref: r.get(6)?,
-        state: conv(r, "state", JobState::try_from(state.as_str()))?,
-        dry_run: r.get(8)?,
-        started_at: r.get(9)?,
-        finished_at: r.get(10)?,
-        cost_usd: r.get(11)?,
-        verdict_json: r.get(12)?,
-        workflow_source: r.get(13)?,
+        id: r.get("id")?,
+        project: r.get("project")?,
+        workflow: r.get("workflow")?,
+        workflow_hash: r.get("workflow_hash")?,
+        landed_sha: r.get("landed_sha")?,
+        trigger_kind: r.get("trigger_kind")?,
+        trigger_ref: r.get("trigger_ref")?,
+        state: conv(
+            r,
+            "state",
+            JobState::try_from(r.get::<_, String>("state")?.as_str()),
+        )?,
+        dry_run: r.get("dry_run")?,
+        started_at: r.get("started_at")?,
+        finished_at: r.get("finished_at")?,
+        cost_usd: r.get("cost_usd")?,
+        verdict_json: r.get("verdict_json")?,
+        workflow_source: r.get("workflow_source")?,
     })
 }
 
 fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
     Ok(JobStep {
-        id: r.get(0)?,
-        job_id: r.get(1)?,
-        seq: r.get(2)?,
-        action: r.get(3)?,
-        kind: r.get(4)?,
-        provider: r.get(5)?,
-        model: r.get(6)?,
-        cost_usd: r.get(7)?,
-        started_at: r.get(8)?,
-        finished_at: r.get(9)?,
-        exit_code: r.get(10)?,
-        output_ref: r.get(11)?,
+        id: r.get("id")?,
+        job_id: r.get("job_id")?,
+        seq: r.get("seq")?,
+        action: r.get("action")?,
+        kind: r.get("kind")?,
+        provider: r.get("provider")?,
+        model: r.get("model")?,
+        cost_usd: r.get("cost_usd")?,
+        started_at: r.get("started_at")?,
+        finished_at: r.get("finished_at")?,
+        exit_code: r.get("exit_code")?,
+        output_ref: r.get("output_ref")?,
     })
 }
 
 fn job_effect_from_row(r: &Row) -> rusqlite::Result<JobEffect> {
     Ok(JobEffect {
-        id: r.get(0)?,
-        job_id: r.get(1)?,
-        seq: r.get(2)?,
-        kind: r.get(3)?,
-        target: r.get(4)?,
-        summary: r.get(5)?,
-        dry_run: r.get(6)?,
+        id: r.get("id")?,
+        job_id: r.get("job_id")?,
+        seq: r.get("seq")?,
+        kind: r.get("kind")?,
+        target: r.get("target")?,
+        summary: r.get("summary")?,
+        dry_run: r.get("dry_run")?,
     })
 }
 
@@ -5949,7 +5992,13 @@ mod column_tests {
     #[test]
     fn the_column_lists_agree_with_the_schema() {
         let (_d, store) = open();
-        for (table, cols) in [("tasks", TASK_COLUMNS), ("attempts", ATTEMPT_COLUMNS)] {
+        for (table, cols) in [
+            ("tasks", TASK_COLUMNS),
+            ("attempts", ATTEMPT_COLUMNS),
+            ("jobs", JOB_COLUMNS),
+            ("job_steps", JOB_STEP_COLUMNS),
+            ("job_effects", JOB_EFFECT_COLUMNS),
+        ] {
             let listed: Vec<String> = cols
                 .iter()
                 .map(|c| c.rsplit('.').next().unwrap().to_string())
