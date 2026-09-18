@@ -123,6 +123,34 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed
   trigger a run workflow on the `forge` project. Every trigger enters
   through one verb, `forge job start`, so a plugin needs nothing new to
   start a job.
+
+  A schedule is the worker's own trigger: every pass of `forge work`'s
+  poll loop ticks it, once, before it fills a free slot. For every
+  project, it resolves every run workflow that names it — the project's
+  own `.forge/workflows/*.toml` at its latest landed commit, and the
+  operator's catalog, by name, the same repository-first-then-catalog
+  order `forge job start` uses (above) — and keeps the ones with
+  `[trigger] on = "schedule"`. `cron` is parsed with `croner`
+  (`Cargo.toml`) at workflow load time, the same moment an unknown `on`
+  value is refused: an expression `croner` cannot parse is a load error,
+  with the file and the line, before any job ever tries to run it. For
+  each schedule, the tick finds the latest cron occurrence at or before
+  now and compares it to the workflow's last scheduled job — the most
+  recent `jobs` row with `trigger_kind = "schedule"` and this project and
+  workflow, its `trigger_ref` the slot as a unix second
+  (`store::last_scheduled_job`). A slot newer than that starts one job,
+  queued (never run inline), with `trigger_kind = "schedule"` and
+  `trigger_ref` set to the slot; a slot already recorded does not start
+  again, so ticking twice inside the same minute, or restarting the
+  worker, cannot double-fire it (`jobs_schedule_slot`, a unique index on
+  `(project, workflow, trigger_ref)` where `trigger_kind = 'schedule'`,
+  backs this even if two ticks ever raced). A gap while the worker was
+  down — several slots missed — still starts exactly one job, for the
+  latest missed slot: catch-up never replays every slot in between. The
+  decision itself is pure (`worker::due_schedules`): given now, a set of
+  schedules and each one's last slot, it returns what is due and at
+  which slot, with no I/O — the tick around it does the resolving,
+  reading and writing.
 - **Steps.** Operations and directives from the catalog, unchanged in
   shape. A directive in a job carries a `role`, routed to a provider
   like every role, and a schema; it is given the step's inputs and its

@@ -318,6 +318,20 @@ impl Store {
         )?)
     }
 
+    /// The latest slot (`Job::trigger_ref`, a unix second) `project`'s
+    /// `workflow` has already started a `schedule`-triggered job for, or
+    /// `None` if it never has: what the worker's schedule tick
+    /// (`src/worker.rs`) compares a cron's due slots against so the same
+    /// slot never starts twice and a restart cannot double-fire (docs/JOBS.md,
+    /// "Triggers").
+    pub fn last_scheduled_job(&self, project: &str, workflow: &str) -> Result<Option<i64>> {
+        Ok(self.lock().query_row(
+            "SELECT MAX(CAST(trigger_ref AS INTEGER)) FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind='schedule'",
+            params![project, workflow],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Put a running job back in the queue: the worker aborted with it
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).

@@ -142,7 +142,11 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
   `schedule`, `message`, `webhook`, `event`, and takes exactly one more
   field naming what it triggers on: `schedule` a `cron` expression,
   `message` a `contact` group, `webhook` a `name`, `event` a Forge
-  event `type`; `manual` takes none.
+  event `type`; `manual` takes none. `cron` is parsed (with `croner`) at
+  load time, the same as an unknown `on`: an expression that cannot
+  parse is refused with the file and the line before the workflow loads
+  at all. The worker's poll loop is what fires it (docs/JOBS.md,
+  "Trigger").
 - **`[assert]`.** Named commands, each a list like an action's `run`,
   checked after the steps with the effect log and every step's output
   on disk; exit status is the verdict.

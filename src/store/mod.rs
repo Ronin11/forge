@@ -1414,6 +1414,16 @@ CREATE INDEX deploys_task ON deploys(task_id, id);
 CREATE INDEX backlog_project ON backlog(project, id);
 CREATE INDEX project_repos_project ON project_repos(project);
 ",
+    // A schedule trigger's slot (docs/JOBS.md, "Triggers"): one job per
+    // project, workflow and slot, so a tick that reconsiders an already-
+    // started slot (a second worker pass before the next one comes due, a
+    // restart replaying the same tick) fails the insert instead of
+    // starting a second job for it. Manual and other triggers share the
+    // same `trigger_ref` column but are never unique on it, so the index
+    // is partial.
+    "
+CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'schedule';
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
