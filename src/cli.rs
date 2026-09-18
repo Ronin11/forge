@@ -1755,54 +1755,8 @@ fn project_deploy_remove(project: String, name: String) -> Result<()> {
     Ok(())
 }
 
-use crate::view::{Brief, workflow_paragraph};
-
-/// Deploy methods `intake accept` can draft a target for without operator
-/// help: the built-in action files under `src/builtins/operations/deploy-*.toml`.
-const SUPPORTED_DEPLOY_METHODS: [&str; 4] = [
-    "deploy-command",
-    "deploy-user-service",
-    "deploy-static",
-    "deploy-pipeline",
-];
-
-/// A `(host, method)` pair to draft a deploy target from "where it runs",
-/// only when that text names both a host Forge can already reach without
-/// more setup (today, just `local`) and one of the built-in methods by
-/// name; otherwise `None`, and the caller files a backlog entry instead
-/// (see docs/DEPLOY.md, "A target").
-fn resolve_draft_deploy(where_it_runs: &str) -> Option<(String, String)> {
-    let lower = where_it_runs.to_lowercase();
-    let method = SUPPORTED_DEPLOY_METHODS
-        .iter()
-        .find(|m| lower.contains(*m))?;
-    let names_local = lower
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|w| w == "local");
-    names_local.then(|| ("local".to_string(), method.to_string()))
-}
-
 fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let t = f
-        .store
-        .task(task)?
-        .with_context(|| format!("no task {task}"))?;
-    if t.workflow != "intake" {
-        bail!("task {task} did not run the intake workflow");
-    }
-    if t.plan.is_empty() {
-        bail!("task {task} has no recorded brief (the interview has not written one yet)");
-    }
-    let brief: Brief = serde_json::from_str(&t.plan)
-        .with_context(|| format!("task {task}'s plan is not a brief: {}", t.plan))?;
-    if !brief.confirmed {
-        bail!("task {task}'s brief has not been confirmed yet");
-    }
-    if brief.workflows.is_empty() {
-        bail!("task {task}'s brief names no workflows");
-    }
-
     let repo = repo
         .map(|r| {
             r.canonicalize()
@@ -1810,98 +1764,10 @@ fn intake_accept(task: i64, project: Option<String>, repo: Option<PathBuf>) -> R
         })
         .transpose()?
         .map(|r| r.display().to_string());
-
-    let person = f
-        .store
-        .decisions_in_lineage(task)?
-        .into_iter()
-        .rev()
-        .map(|d| d.answered_for.unwrap_or(d.answered_by))
-        .next()
-        .unwrap_or_else(|| "person".to_string());
-    let project_name = project.unwrap_or_else(|| crate::engine::slug(&person));
-
-    if f.store.project(&project_name)?.is_none() {
-        f.store.create_project(&crate::store::Project {
-            name: project_name.clone(),
-            purpose: workflow_paragraph(&brief.workflows[0]),
-            created_at: unix_now(),
-            ..Default::default()
-        })?;
-        out!("created project {project_name}");
-        f.report.emit(
-            task,
-            crate::report::Event::ProjectCreated {
-                project: &project_name,
-                person: &person,
-            },
-        );
-    } else {
-        out!("project {project_name} already exists");
+    let accepted = crate::intake::accept(&f, task, project, repo)?;
+    for line in accepted.lines() {
+        out!("{line}");
     }
-
-    if let Some(repo) = &repo {
-        f.store.register_repo(&project_name, repo, None)?;
-        out!("registered repository {repo} to project {project_name}");
-    }
-
-    let existing_backlog: std::collections::BTreeSet<String> = f
-        .store
-        .backlog(&project_name)?
-        .into_iter()
-        .map(|item| item.text)
-        .collect();
-
-    for w in &brief.workflows {
-        let text = workflow_paragraph(w);
-        if existing_backlog.contains(&text) {
-            out!("backlog item for {} already exists", w.name);
-            continue;
-        }
-        let id = f.store.add_backlog(&project_name, &text)?;
-        out!("added backlog item {id}: {}", w.name);
-    }
-
-    match resolve_draft_deploy(&brief.where_it_runs) {
-        Some((host, method)) => {
-            if f.store.deploy_target(&project_name, "draft")?.is_some() {
-                out!("draft deploy target already exists for project {project_name}");
-            } else {
-                let mut args = BTreeMap::new();
-                args.insert("host".to_string(), host);
-                f.store.add_deploy_target(&crate::store::DeployTarget {
-                    project: project_name.clone(),
-                    name: "draft".to_string(),
-                    repo: repo.clone().unwrap_or_else(|| t.repo.clone()),
-                    scope: None,
-                    method,
-                    args,
-                    check_cmd: String::new(),
-                    on_landing: false,
-                    smoke_url: None,
-                })?;
-                out!(
-                    "added draft deploy target draft to project {project_name} (finish it with `forge project deploy set`)"
-                );
-            }
-        }
-        None => {
-            let text = format!(
-                "deploy target: {} (names no host and method Forge already supports; complete with `forge project deploy add`)",
-                brief.where_it_runs
-            );
-            if existing_backlog.contains(&text) {
-                out!("backlog item for deploy target already exists");
-            } else {
-                let id = f.store.add_backlog(&project_name, &text)?;
-                out!(
-                    "added backlog item {id}: deploy target ({})",
-                    brief.where_it_runs
-                );
-            }
-        }
-    }
-
     Ok(())
 }
 

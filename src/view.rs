@@ -2279,7 +2279,7 @@ pub fn proposal_row(t: &Task) -> Option<ProposalRow> {
 
 /// The brief an `intake` task's `interview` directive writes to `t.plan`
 /// once its checklist is satisfied (see docs/INTAKE.md, "Mechanics").
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct Brief {
     pub(crate) workflows: Vec<BriefWorkflow>,
     pub(crate) where_it_runs: String,
@@ -2287,7 +2287,7 @@ pub(crate) struct Brief {
     pub(crate) confirmed: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct BriefWorkflow {
     pub(crate) name: String,
     trigger: String,

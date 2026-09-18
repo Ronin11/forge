@@ -20,6 +20,7 @@ mod engine;
 mod envelope;
 
 mod git;
+mod intake;
 mod job;
 mod journal;
 mod landing;
