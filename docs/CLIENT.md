@@ -444,7 +444,9 @@ of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 ### `StatsDoc`
 
 The document `forge stats --json` prints: `{workflows, steps, journal,
-no_journal, projects, jobs, by_role, assessment_correlation, tools}`.
+no_journal, projects, jobs, by_role, assessment_correlation,
+human_attention, human_attention_projects, time_to_live,
+time_to_live_projects, tools}`.
 `tools` is present only with `--tools` (an object keyed by step name);
 otherwise it is omitted. `projects` and `jobs` are present only when
 `forge stats` is not itself scoped to one project or initiative.
@@ -537,6 +539,43 @@ either side has no variance to rank); `n` is how many tasks that rests
 on. Two rows are always present, in `churn` then `repair_cost` order.
 `forge stats --quality` prints the same two numbers as a line under the
 defect-escape table.
+
+**`human_attention`** — array of `HumanAttentionRow`, one per workflow
+name + definition hash present in scope: what a person had to do for
+its landed work, since minutes cannot be measured. Four counts:
+`operator_answers` (decisions on this workflow's tasks with
+`answered_by` other than `"supervisor"`), `hand_landed` (this
+workflow's tasks landed by a human's `forge land`, never the
+supervisor's own accept-and-land), `withdrawals` (this workflow's
+tasks left `withdrawn`), and `hand_commits` (commits not authored as
+Forge, on the base branch, between this workflow's landings and the
+ones before them). `events` is the four summed; `events_per_landed` is
+`events` divided by `landed` (`null` when nothing landed). Unlike
+`workflows`, a workflow whose only tasks were withdrawn still gets a
+row here, since a withdrawal is itself a human-attention signal.
+
+**`human_attention_projects`** — array of `HumanAttentionProjectRow`,
+the same shape and signals as `human_attention` but per project instead
+of per workflow version; present under the same scoping rule as
+`projects` (only when `forge stats` is not itself scoped to one project
+or initiative).
+
+**`time_to_live`** — array of `TimeToLiveRow`, one per workflow name +
+definition hash present in scope: how long a request took to go live.
+Per landed task, that is `landed_at - created_at`, or, where a deploy
+row is tied to the task, that deploy's `finished_at - created_at`
+instead. `n` is how many landed tasks this rests on; `median_secs` and
+`p90_secs` are the median and 90th percentile of those durations, in
+seconds (both `null` when `n` is 0).
+
+**`time_to_live_projects`** — array of `TimeToLiveProjectRow`, the same
+measure as `time_to_live` but per project instead of per workflow
+version; present under the same scoping rule as `projects`.
+
+`forge stats --quality` prints `human_attention`,
+`human_attention_projects` (when present), `time_to_live` and
+`time_to_live_projects` (when present) as four more tables, in that
+order, after the defect-escape and assessment-correlation output.
 
 **`jobs`** — array of `StatsJobsRow`, one per project with a job started
 in the last rolling 24h: `project`, `today` (every job of theirs started

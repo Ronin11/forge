@@ -1,0 +1,162 @@
+//! Text-snapshot tests for the TUI: drive `forge_tui::App` against a fake
+//! `forge` binary that answers fixed fixture JSON (the same technique
+//! `web/tests/server.rs` uses to fake `forge` for the web server), render
+//! each screen with ratatui's `TestBackend` at a fixed 100x40 size — no
+//! real terminal involved — and compare the plain-text buffer to a
+//! checked-in file under `tui/tests/snapshots/`.
+//!
+//! A snapshot is never written automatically. To update one deliberately
+//! after a rendering change, re-run with `UPDATE_SNAPSHOTS=1`, e.g.:
+//!
+//!   UPDATE_SNAPSHOTS=1 cargo test -p forge-tui --test snapshots
+//!
+//! then read the diff in `git diff tui/tests/snapshots/` before committing
+//! it — the point of a checked-in snapshot is that changing what the TUI
+//! shows is a reviewable diff, not a silent side effect.
+
+use crossterm::event::{KeyCode, KeyModifiers};
+use forge_client::Forge;
+use forge_tui::{App, Screen, draw, render_text};
+use std::path::PathBuf;
+
+/// A fake `forge` binary: one `case` arm per verb the TUI calls while
+/// running these scripts, each printing fixed fixture JSON. `trace`
+/// answers with a task that has both a deploy and an assessment, so the
+/// same fixture covers the "task view with a deploy and an assessment"
+/// requirement whichever task id opens it.
+const FAKE: &str = r#"#!/bin/bash
+case "$1" in
+  snapshot) cat <<'JSON'
+{"events_offset":0,"tasks":[{"id":12,"state":"running","workflow":"tdd","attempts":2,"cost_usd":1.35,"project":"forge","task":"add snapshot tests for the tui"},{"id":11,"state":"succeeded","workflow":"direct","attempts":1,"cost_usd":0.1,"project":"forge","task":"fix typo in docs"}],"requests":[],"worker":{"running":true,"pid":555,"exe":"","stale_binary":false}}
+JSON
+  ;;
+  events) exit 0 ;;
+  initiative)
+    case "$2" in
+      list) cat <<'JSON'
+[{"id":3,"project":"forge","outcome":"cover the tui with text-snapshot tests","state":"open","held_rule":null,"queued":1,"running":1,"succeeded":3,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":4.2,"budget_usd":null,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":2,"project":"forge","outcome":"an older, settled initiative","state":"done","held_rule":null,"queued":0,"running":0,"succeeded":5,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":9.9,"budget_usd":20.0,"stop_after_same_rule":3,"created_at":1,"settled_at":2}]
+JSON
+      ;;
+      *) echo "unexpected initiative: $*" >&2; exit 2 ;;
+    esac ;;
+  trace)
+    id="$2"
+    cat <<JSON
+{"task":{"id":$id,"state":"succeeded","workflow":"tdd","reason":"","branch":"forge/$id-x","base_sha":"abcdef1234567890","project":"forge","initiative":3,"after":[],"retry_of":null,"text":"add snapshot tests for the tui"},"attempts":[{"attempt_no":1,"step":"code","state":"succeeded","num_turns":9,"cost_usd":0.42,"reason":"","verdict":[]}],"ops":[{"name":"clone","ok":true,"detail":"ok"},{"name":"verify","ok":true,"detail":"ok"}],"deploys":[{"id":1,"project":"forge","target":"prod","sha":"abcdef1234567890","started_at":1,"finished_at":2,"check_ok":true,"check_output":"ok","rolled_back_to":null,"reason":""}],"assessment":{"score":82,"findings":[{"path":"tui/src/lib.rs","finding":"missing coverage of the initiative screen","severity":"minor"}],"model":"claude-sonnet-5","provider":"anthropic","cost_usd":0.05,"created_at":1}}
+JSON
+  ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"#;
+
+struct Fake {
+    _dir: tempfile::TempDir,
+    forge: Forge,
+}
+
+fn fake_forge() -> Fake {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("forge");
+    std::fs::write(&bin, FAKE).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let forge = Forge {
+        bin: bin.to_string_lossy().into_owned(),
+    };
+    Fake { _dir: dir, forge }
+}
+
+/// One frame, 100x40, as plain text — no real terminal.
+fn frame(app: &App) -> String {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| draw(f, app)).unwrap();
+    render_text(terminal.backend())
+}
+
+/// Compares `actual` to `tui/tests/snapshots/<name>.txt`. With
+/// `UPDATE_SNAPSHOTS` set, writes it instead — the only way a snapshot
+/// file changes; nothing here writes one on a plain test run.
+fn assert_snapshot(name: &str, actual: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(format!("{name}.txt"));
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing snapshot {}; run with UPDATE_SNAPSHOTS=1 to create it",
+            path.display()
+        )
+    });
+    assert_eq!(
+        expected,
+        actual,
+        "{} differs from the rendered screen; if the new rendering is correct, \
+         re-run with UPDATE_SNAPSHOTS=1 and review the diff before committing it",
+        path.display()
+    );
+}
+
+#[test]
+fn the_task_list_renders_the_queue() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    let text = frame(&app);
+    app.shutdown();
+    assert_snapshot("task_list", &text);
+}
+
+#[test]
+fn a_task_view_renders_a_deploy_and_an_assessment() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.open_task(12);
+    assert_eq!(app.screen(), Screen::Task);
+    let text = frame(&app);
+    app.shutdown();
+    assert_snapshot("task_view_deploy_assessment", &text);
+}
+
+#[test]
+fn the_initiative_list_renders_every_initiative() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.screen(), Screen::Initiatives);
+    let text = frame(&app);
+    app.shutdown();
+    assert_snapshot("initiative_list", &text);
+}
+
+/// A scripted interaction: down, enter, back — a key event at a time,
+/// snapshotting the screen it produces after each one.
+#[test]
+fn a_scripted_interaction_moves_down_opens_a_task_and_goes_back() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    assert_snapshot("scripted_1_queue", &frame(&app));
+
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_snapshot("scripted_2_queue_down", &frame(&app));
+
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.screen(), Screen::Task);
+    assert_snapshot("scripted_3_task", &frame(&app));
+
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.screen(), Screen::Queue);
+    assert_snapshot("scripted_4_back_to_queue", &frame(&app));
+
+    app.shutdown();
+}

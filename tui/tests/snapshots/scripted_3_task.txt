@@ -1,0 +1,40 @@
+Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  task
+┌trace─────────────────────────────────────────────────────────────────────────────────────────────┐
+│task 11  succeeded  tdd                                                                           │
+│branch forge/11-x   base abcdef12                                                                 │
+│project forge   initiative 3                                                                      │
+│                                                                                                  │
+│add snapshot tests for the tui                                                                    │
+│                                                                                                  │
+│attempts                                                                                          │
+│   1 code      succeeded       9 turns  $0.42                                                     │
+│                                                                                                  │
+│operations                                                                                        │
+│  ✓ clone       ok                                                                                │
+│  ✓ verify      ok                                                                                │
+│                                                                                                  │
+│deploys                                                                                           │
+│  ✓ forge -> prod  abcdef12                                                                       │
+│                                                                                                  │
+│assessment                                                                                        │
+│  score 82   anthropic claude-sonnet-5   $0.05                                                    │
+│  minor    tui/src/lib.rs: missing coverage of the initiative screen                              │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌live──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k scroll  Esc back  r retry  R retry chain  q quit

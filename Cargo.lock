@@ -658,6 +658,7 @@ dependencies = [
  "forge-client",
  "ratatui",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

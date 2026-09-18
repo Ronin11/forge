@@ -239,6 +239,16 @@ pub struct Task {
     /// then. The scheduler's notion of "landed" is this column, not the
     /// wording of `reason`.
     pub landed_sha: String,
+    /// When the task landed, `None` until then. Distinct from
+    /// `finished_at`: a task verified before it had anywhere to land, or
+    /// queued `--no-land`, sets `finished_at` at verification and only
+    /// gets `landed_at` later, when a human's `forge land` (or the
+    /// supervisor's own accept-and-land) actually lands it.
+    pub landed_at: Option<i64>,
+    /// Landed by a human's `forge land`, never by the supervisor's own
+    /// automated landing: one of the human-attention signals (see
+    /// `Store::human_attention_stats`).
+    pub hand_landed: bool,
     /// The project this task belongs to; `None` for tasks predating
     /// projects that no migration could place, or whose repository lists
     /// more than one project.
@@ -413,6 +423,53 @@ pub struct WorkflowStat {
     /// Of `added_lines`, how many a later landing on the same repository
     /// removed or rewrote within `THIRTY_DAYS_SECS` (`task_churn`), summed.
     pub churned_lines: i64,
+}
+
+/// Human attention for one workflow version: what a person had to do for
+/// its landed work, since minutes cannot be measured (docs/LATER.md, "Two
+/// metrics the record can compute and does not"). Four signals, summed as
+/// `events` and divided by `landed` to give `events_per_landed`:
+/// `operator_answers` (decisions on this workflow's tasks with
+/// `answered_by` other than `"supervisor"`), `hand_landed` (this
+/// workflow's tasks landed by a human's `forge land`), `withdrawals`
+/// (this workflow's tasks left `withdrawn`), and `hand_commits` (commits
+/// not authored as Forge, on the base branch, between this workflow's
+/// landings and the ones before them — the `task_hand_commits` cache,
+/// summed the same way `WorkflowStat::repair_cost` sums `task_repair_cost`).
+pub struct HumanAttentionStat {
+    pub workflow: String,
+    pub hash: String,
+    pub landed: i64,
+    pub operator_answers: i64,
+    pub hand_landed: i64,
+    pub withdrawals: i64,
+    pub hand_commits: i64,
+}
+
+/// Human attention for one project: the same four signals as
+/// `HumanAttentionStat`, over a project's tasks instead of one workflow
+/// version's.
+pub struct HumanAttentionProjectStat {
+    pub project: String,
+    pub landed: i64,
+    pub operator_answers: i64,
+    pub hand_landed: i64,
+    pub withdrawals: i64,
+    pub hand_commits: i64,
+}
+
+/// One landed task's time to live: how long the request took to go live
+/// (docs/LATER.md, "Two metrics the record can compute and does not").
+/// `secs` is `landed_at - created_at`, or, when a deploy ran on behalf of
+/// this task, that deploy's `finished_at - created_at` instead — going
+/// live means the deploy, not just the landing, once one is tied to the
+/// task. `view::time_to_live` turns a scope's worth of these into the
+/// median and 90th percentile, per workflow and per project.
+pub struct TaskTtl {
+    pub workflow: String,
+    pub hash: String,
+    pub project: Option<String>,
+    pub secs: i64,
 }
 
 pub struct StepStat {
@@ -1317,6 +1374,29 @@ ALTER TABLE tasks ADD COLUMN title TEXT;
     "
 ALTER TABLE jobs ADD COLUMN workflow_source TEXT NOT NULL DEFAULT 'catalog';
 ",
+    // Two metrics the record did not compute on its own: human attention
+    // (what a person had to do for a piece of landed work) and time to
+    // live (how long a request took to go live). `landed_at` is when a
+    // task actually landed — distinct from `finished_at`, which for a
+    // task verified before it had anywhere to land (or queued `--no-land`)
+    // is set at verification time, before a human's later `forge land`
+    // (see docs/LATER.md's "Two metrics"). `hand_landed` is set only by
+    // that hand path (`forge land`), never by the supervisor's own
+    // automated landing. `task_hand_commits` caches, per landed task, the
+    // hand commits (author not Forge's identity) on the base branch
+    // between the previous landing on the same repository and this one's
+    // `base_sha` — the git-level number `refresh_hand_commits` in view.rs
+    // computes once and never revisits, since neither endpoint of that
+    // range ever changes once this task has landed.
+    "
+ALTER TABLE tasks ADD COLUMN landed_at INTEGER;
+ALTER TABLE tasks ADD COLUMN hand_landed INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE task_hand_commits (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+  hand_commits INTEGER NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -1389,6 +1469,8 @@ const TASK_COLUMNS: &[&str] = &[
     "proposal_json",
     "proposal_answer",
     "proposal_initiative",
+    "landed_at",
+    "hand_landed",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -1465,6 +1547,8 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         proposal_json: r.get("proposal_json")?,
         proposal_answer: r.get("proposal_answer")?,
         proposal_initiative: r.get("proposal_initiative")?,
+        landed_at: r.get("landed_at")?,
+        hand_landed: r.get::<_, i64>("hand_landed")? != 0,
     })
 }
 
@@ -1738,6 +1822,36 @@ fn set_churn_cache_query(
     Ok(())
 }
 
+/// `task_hand_commits`'s cached row for `task_id`: hand commits (author
+/// not Forge's identity) on the base branch between the previous landing
+/// on the same repository and this task's `base_sha`, or `None` if it has
+/// never been computed. See `refresh_hand_commits` in view.rs.
+fn hand_commits_cache_query(c: &Connection, task_id: i64) -> Result<Option<i64>> {
+    Ok(c.query_row(
+        "SELECT hand_commits FROM task_hand_commits WHERE task_id = ?1",
+        params![task_id],
+        |r| r.get(0),
+    )
+    .optional()?)
+}
+
+fn set_hand_commits_cache_query(
+    c: &Connection,
+    task_id: i64,
+    hand_commits: i64,
+    computed_at: i64,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO task_hand_commits (task_id, hand_commits, computed_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(task_id) DO UPDATE SET
+           hand_commits = excluded.hand_commits,
+           computed_at = excluded.computed_at",
+        params![task_id, hand_commits, computed_at],
+    )?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -1811,7 +1925,7 @@ impl Store {
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
              project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
-             title=?47 WHERE id=?1",
+             title=?47, landed_at=?48, hand_landed=?49 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -1860,6 +1974,8 @@ impl Store {
                 t.proposal_answer,
                 t.proposal_initiative,
                 t.title,
+                t.landed_at,
+                t.hand_landed as i64,
             ],
         )?;
         Ok(())
@@ -2433,6 +2549,40 @@ impl Store {
         set_line_overlap_cache_query(&self.lock(), t_sha, l_sha, overlap_lines, removed_lines)
     }
 
+    /// The most recent landed task on `repo` with an id below `before_id`:
+    /// what `refresh_hand_commits` diffs a landing against to find the
+    /// hand commits that reached the base branch since (see
+    /// `Task::landed_at`, `task_hand_commits`). `None` for the first
+    /// landing a repository ever gets.
+    pub fn previous_landing(&self, repo: &str, before_id: i64) -> Result<Option<Task>> {
+        let c = self.lock();
+        Ok(c.query_row(
+            &format!(
+                "SELECT {} FROM tasks WHERE repo = ?1 AND id < ?2 AND landed_sha != ''
+                 ORDER BY id DESC LIMIT 1",
+                TASK_COLUMNS.join(", ")
+            ),
+            params![repo, before_id],
+            task_from_row,
+        )
+        .optional()?)
+    }
+
+    /// `task_hand_commits`'s cached row for `task_id`, if it has been computed.
+    pub fn hand_commits_cache(&self, task_id: i64) -> Result<Option<i64>> {
+        hand_commits_cache_query(&self.lock(), task_id)
+    }
+
+    /// Write (or overwrite) `task_id`'s cached hand-commit count.
+    pub fn set_hand_commits_cache(
+        &self,
+        task_id: i64,
+        hand_commits: i64,
+        computed_at: i64,
+    ) -> Result<()> {
+        set_hand_commits_cache_query(&self.lock(), task_id, hand_commits, computed_at)
+    }
+
     pub fn mark_worktree_removed(&self, id: i64) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET worktree_removed_at=?2 WHERE id=?1",
@@ -2572,6 +2722,82 @@ impl Store {
             if let Some((added, churned, _)) = churn_cache_query(&c, t.id)? {
                 w.added_lines += added;
                 w.churned_lines += churned;
+            }
+        }
+        Ok(stats)
+    }
+
+    /// Time to live for this scope's landed tasks (see `TaskTtl`): one row
+    /// per landed task that already has an answer — its own `landed_at`,
+    /// or, when an on-landing deploy ran on its behalf and has finished, that
+    /// deploy's `finished_at`. A landed task with a deploy still running
+    /// (`finished_at` still `None`) is left out until it finishes, rather
+    /// than counted early against its mere landing.
+    pub fn task_ttls(&self, scope: &StatsFilter) -> Result<Vec<TaskTtl>> {
+        let mut out = Vec::new();
+        for t in self.landed_tasks(scope)? {
+            let deploys = self.deploys_for_task(t.id)?;
+            let end = if let Some(d) = deploys.first() {
+                d.finished_at
+            } else {
+                t.landed_at
+            };
+            if let Some(end) = end {
+                out.push(TaskTtl {
+                    workflow: t.workflow.clone(),
+                    hash: t.workflow_hash.clone(),
+                    project: t.project.clone(),
+                    secs: end - t.created_at,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Human attention per workflow version: what a person had to do for
+    /// its landed work (see `HumanAttentionStat`). One row per workflow +
+    /// hash with at least one task in scope, whatever its state — unlike
+    /// `workflow_stats`, a workflow whose only tasks were withdrawn still
+    /// gets a row here, since a withdrawal is itself a human-attention
+    /// signal.
+    pub fn human_attention_stats(&self, scope: &StatsFilter) -> Result<Vec<HumanAttentionStat>> {
+        let mut stats = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT t.workflow, t.workflow_hash, SUM(t.landed_sha != ''),
+                    COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
+                        WHERE dt.workflow = t.workflow AND dt.workflow_hash = t.workflow_hash
+                          AND d.answered_by != 'supervisor'
+                          AND (?1 IS NULL OR dt.project = ?1) AND (?2 IS NULL OR dt.initiative = ?2)
+                    ), 0),
+                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+             FROM tasks t WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.initiative = ?2)
+             GROUP BY t.workflow, t.workflow_hash ORDER BY t.workflow, t.workflow_hash",
+            )?;
+            let rows = stmt.query_map(params![scope.project, scope.initiative], |r| {
+                Ok(HumanAttentionStat {
+                    workflow: r.get(0)?,
+                    hash: r.get(1)?,
+                    landed: r.get(2)?,
+                    operator_answers: r.get(3)?,
+                    hand_landed: r.get(4)?,
+                    withdrawals: r.get(5)?,
+                    hand_commits: 0,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<HumanAttentionStat>>>()?
+        };
+        let landed = self.landed_tasks(scope)?;
+        let c = self.lock();
+        for t in &landed {
+            let Some(w) = stats
+                .iter_mut()
+                .find(|w| w.workflow == t.workflow && w.hash == t.workflow_hash)
+            else {
+                continue;
+            };
+            if let Some(hand_commits) = hand_commits_cache_query(&c, t.id)? {
+                w.hand_commits += hand_commits;
             }
         }
         Ok(stats)
@@ -3365,6 +3591,50 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Human attention per project: what a person had to do for its
+    /// landed work (see `HumanAttentionStat`), same scoping rule as
+    /// `project_stats` (only every project's own tasks, whatever their
+    /// state — a project with only withdrawn tasks still gets a row).
+    pub fn human_attention_project_stats(&self) -> Result<Vec<HumanAttentionProjectStat>> {
+        let mut stats = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT t.project, SUM(t.landed_sha != ''),
+                    COALESCE((SELECT COUNT(*) FROM decisions d JOIN tasks dt ON dt.id = d.task_id
+                        WHERE dt.project = t.project AND d.answered_by != 'supervisor'
+                    ), 0),
+                    SUM(t.hand_landed), SUM(t.state = 'withdrawn')
+             FROM tasks t WHERE t.project IS NOT NULL
+             GROUP BY t.project ORDER BY t.project",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(HumanAttentionProjectStat {
+                    project: r.get(0)?,
+                    landed: r.get(1)?,
+                    operator_answers: r.get(2)?,
+                    hand_landed: r.get(3)?,
+                    withdrawals: r.get(4)?,
+                    hand_commits: 0,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<HumanAttentionProjectStat>>>()?
+        };
+        let landed = self.landed_tasks(&StatsFilter::default())?;
+        let c = self.lock();
+        for t in &landed {
+            let Some(project) = &t.project else {
+                continue;
+            };
+            let Some(p) = stats.iter_mut().find(|p| &p.project == project) else {
+                continue;
+            };
+            if let Some(hand_commits) = hand_commits_cache_query(&c, t.id)? {
+                p.hand_commits += hand_commits;
+            }
+        }
+        Ok(stats)
     }
 
     /// One project's jobs in the last rolling 24h, by outcome: what `forge
@@ -4675,6 +4945,111 @@ mod tests {
         assert_eq!(stats[0].repair_cost, 5.0, "3.5 + 1.5, cached per task");
     }
 
+    /// Fixture: two landed tasks (one landed the ordinary way, one by hand
+    /// and later deployed) plus a withdrawn one, all in the same workflow
+    /// and project. Exercises both new metrics end to end at the store
+    /// level: human attention's four signals (operator answers, hand
+    /// landings, withdrawals, hand commits) summed and divided by landed
+    /// pieces, and time to live (a deploy's `finished_at` overriding a
+    /// task's own `landed_at` once one is tied to it).
+    #[test]
+    fn human_attention_and_time_to_live_count_hand_landing_withdrawal_and_deploy() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        s.create_project(&Project {
+            name: "proj".into(),
+            purpose: "p".into(),
+            created_at: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let base = |created_at: i64| Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at,
+            started_at: Some(created_at),
+            finished_at: Some(created_at + 10),
+            workflow: "direct".into(),
+            workflow_hash: "h1".into(),
+            project: Some("proj".into()),
+            ..Default::default()
+        };
+        let insert = |mut t: Task| {
+            t.id = s.insert_task(&t).unwrap();
+            s.update_task(&t).unwrap();
+            t
+        };
+
+        // Task A: landed the ordinary way, no deploy tied to it, and an
+        // operator answered a question of its along the way.
+        let mut a = base(1000);
+        a.landed_sha = "asha".into();
+        a.landed_at = Some(1100);
+        let a = insert(a);
+        s.insert_decision_by(a.id, "r", "q", "operator answered", "operator", "", None)
+            .unwrap();
+
+        // Task B: landed by a human's `forge land`, then deployed.
+        let mut b = base(2000);
+        b.landed_sha = "bsha".into();
+        b.landed_at = Some(2500);
+        b.hand_landed = true;
+        let b = insert(b);
+        s.set_hand_commits_cache(b.id, 3, 9999).unwrap();
+        let deploy_id = s
+            .start_deploy("proj", "prod", "bsha", 2500, Some(b.id))
+            .unwrap();
+        s.finish_deploy(
+            deploy_id, 2600, true, "ok", None, "", None, None, None, None,
+        )
+        .unwrap();
+
+        // Task C: withdrawn, never landed.
+        let mut c = base(3000);
+        c.state = TaskState::Withdrawn;
+        c.finished_at = Some(3010);
+        insert(c);
+
+        let scope = StatsFilter::default();
+        let human = s.human_attention_stats(&scope).unwrap();
+        assert_eq!(human.len(), 1);
+        let h = &human[0];
+        assert_eq!(h.landed, 2);
+        assert_eq!(h.operator_answers, 1);
+        assert_eq!(h.hand_landed, 1);
+        assert_eq!(h.withdrawals, 1);
+        assert_eq!(
+            h.hand_commits, 3,
+            "cached per landed task, like repair_cost"
+        );
+
+        let human_p = s.human_attention_project_stats().unwrap();
+        assert_eq!(human_p.len(), 1);
+        let hp = &human_p[0];
+        assert_eq!(hp.project, "proj");
+        assert_eq!(hp.landed, 2);
+        assert_eq!(hp.operator_answers, 1);
+        assert_eq!(hp.hand_landed, 1);
+        assert_eq!(hp.withdrawals, 1);
+        assert_eq!(hp.hand_commits, 3);
+
+        let mut ttls = s.task_ttls(&scope).unwrap();
+        ttls.sort_by_key(|t| t.secs);
+        assert_eq!(ttls.len(), 2);
+        assert_eq!(ttls[0].secs, 100, "task A: landed_at - created_at");
+        assert_eq!(
+            ttls[1].secs, 600,
+            "task B: the tied deploy's finished_at - created_at, not landed_at"
+        );
+    }
+
     #[test]
     fn journal_control_stats_splits_code_retries_by_whether_the_journal_was_shown() {
         let dir = tempfile::tempdir().unwrap();
@@ -5652,6 +6027,8 @@ mod column_tests {
         t.journal_arm = "control".into();
         t.project = Some("proj".into());
         t.initiative = Some(11);
+        t.landed_at = Some(4);
+        t.hand_landed = true;
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));
