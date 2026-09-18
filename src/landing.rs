@@ -8,10 +8,11 @@ use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault, OpRow, Timer, op};
 use crate::report::Event;
-use crate::store::{Attempt, AttemptState, FinishAttempt, Task};
+use crate::store::{Attempt, AttemptState, FinishAttempt, Task, TaskState};
 use crate::verify::{self, Subject, Verdict};
 use crate::{checks, config, git, unix_now};
-use std::path::Path;
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 
 /// Record the integrator's own check run as an attempts row, the way a
 /// directive's does: no agent ran it, so turns, cost and model are all
@@ -117,6 +118,49 @@ pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, F
         .await
         .map_err(|e| Fault::Env(anyhow::anyhow!(e)))?
         .env()
+}
+
+/// The fields `verify_merged_tree` needs to build a `Subject`: identical
+/// between `integrate`'s round loop and `integrate_many`'s per-task loop
+/// except for which repository, worktree, checks and overlay refs they name.
+struct MergeVerifyArgs<'a> {
+    task_id: i64,
+    repo: &'a Path,
+    worktree: &'a Path,
+    base_sha: &'a str,
+    cfg: &'a config::Config,
+    task_checks: &'a [String],
+    allow_protected: bool,
+    overlay_refs: &'a [String],
+}
+
+/// Verify `args.worktree`'s current tree with every hidden suite in
+/// `args.overlay_refs` overlaid. The one piece `integrate` (the base merged
+/// into one task's branch, re-verified until landing settles) and
+/// `integrate_many` (each task's branch merged in turn onto a fresh clone
+/// of the base) share: both merge into their worktree first, in their own
+/// way, then call this with only the `Subject` fields differing.
+async fn verify_merged_tree(f: &Forge, args: MergeVerifyArgs<'_>) -> Result<Verdict, Fault> {
+    verify::verify_integration(&Subject {
+        task_id: args.task_id,
+        repo: args.repo,
+        worktree: args.worktree,
+        base_sha: args.base_sha,
+        start_sha: args.base_sha,
+        cfg: args.cfg,
+        task_checks: args.task_checks,
+        paths: &[],
+        allow_protected: args.allow_protected,
+        overlay_refs: args.overlay_refs,
+        pending_main: None,
+        sandbox: f.sandbox.as_ref(),
+        report: &f.report,
+        scratch: None,
+        report_from_git: false,
+        plan_rows: true,
+    })
+    .await
+    .task()
 }
 
 /// Land the verified branch on the base branch: bring the base in, verify
@@ -239,26 +283,20 @@ pub async fn integrate(
         }
         let cfg_now = config::load_at(repo, wt, &base_sha).await.task()?;
         let overlay = overlay_refs(repo, t.id, None).await;
-        let v = verify::verify_integration(&Subject {
-            task_id: t.id,
-            repo,
-            worktree: wt,
-            base_sha: &base_sha,
-            start_sha: &base_sha,
-            cfg: &cfg_now,
-            task_checks: &t.checks,
-            paths: &[],
-            allow_protected: t.allow_protected,
-            overlay_refs: &overlay,
-            pending_main: None,
-            sandbox: f.sandbox.as_ref(),
-            report: &f.report,
-            scratch: None,
-            report_from_git: false,
-            plan_rows: true,
-        })
-        .await
-        .task()?;
+        let v = verify_merged_tree(
+            f,
+            MergeVerifyArgs {
+                task_id: t.id,
+                repo,
+                worktree: wt,
+                base_sha: &base_sha,
+                cfg: &cfg_now,
+                task_checks: &t.checks,
+                allow_protected: t.allow_protected,
+                overlay_refs: &overlay,
+            },
+        )
+        .await?;
         if v.state != AttemptState::Succeeded {
             *attempt_no += 1;
             let attempt_id = record_verdict(f, t, *attempt_no, *seq, &base_sha, &v).await?;
@@ -516,4 +554,368 @@ pub async fn overlay_refs(repo: &Path, task_id: i64, pinned: Option<&str>) -> Ve
         refs.push(own);
     }
     refs
+}
+
+/// One task's outcome in `integrate_many`'s merge order.
+pub enum IntegrateStep {
+    AlreadyContained {
+        task_id: i64,
+    },
+    Merged {
+        task_id: i64,
+        branch: String,
+        sha: String,
+    },
+    Verified {
+        task_id: i64,
+    },
+}
+
+impl IntegrateStep {
+    fn render(&self) -> String {
+        match self {
+            Self::AlreadyContained { task_id } => format!("task {task_id:<4} already contained"),
+            Self::Merged {
+                task_id,
+                branch,
+                sha,
+            } => format!("task {task_id:<4} merged {branch} as {}", short(sha)),
+            Self::Verified { task_id } => {
+                format!("task {task_id:<4} verified with everything before it")
+            }
+        }
+    }
+}
+
+/// How `integrate_many` ended: every named branch merged and left as a
+/// branch on the base, or the task where it stopped and why.
+pub enum IntegrateOutcome {
+    Ready,
+    Conflict {
+        task_id: i64,
+        files: Vec<String>,
+        completed: usize,
+    },
+    VerifyFailed {
+        task_id: i64,
+        reason: String,
+        completed: usize,
+    },
+}
+
+/// `integrate_many`'s result: the report `forge integrate` prints.
+pub struct IntegrateReport {
+    base_branch: String,
+    base_sha: String,
+    repo: PathBuf,
+    branch: String,
+    dir: PathBuf,
+    steps: Vec<IntegrateStep>,
+    pub outcome: IntegrateOutcome,
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(8)]
+}
+
+impl IntegrateReport {
+    pub fn render(&self) -> String {
+        let mut lines = vec![format!(
+            "base     {} @ {}",
+            self.base_branch,
+            short(&self.base_sha)
+        )];
+        lines.extend(self.steps.iter().map(IntegrateStep::render));
+        match &self.outcome {
+            IntegrateOutcome::Ready => {
+                let landed = self
+                    .steps
+                    .iter()
+                    .filter(|s| matches!(s, IntegrateStep::Verified { .. }))
+                    .count();
+                lines.push(format!(
+                    "integrated {landed} task(s) as {} in {}\n  git -C {} merge --ff-only {}",
+                    self.branch,
+                    self.repo.display(),
+                    self.repo.display(),
+                    self.branch,
+                ));
+            }
+            IntegrateOutcome::Conflict {
+                task_id,
+                files,
+                completed,
+            } => {
+                lines.push(format!(
+                    "task {task_id:<4} CONFLICT in {}",
+                    files.join(", ")
+                ));
+                lines.push(format!(
+                    "stopped after {completed} task(s); the scratch clone is at {}",
+                    self.dir.display()
+                ));
+            }
+            IntegrateOutcome::VerifyFailed {
+                task_id,
+                reason,
+                completed,
+            } => {
+                lines.push(format!(
+                    "task {task_id:<4} checks FAIL after merging: {reason}"
+                ));
+                lines.push(format!(
+                    "stopped after {completed} task(s); the scratch clone is at {}",
+                    self.dir.display()
+                ));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+/// The integrator's merge-and-verify half, by hand, for a repository that
+/// keeps a human at the gate: each named task's branch merged onto the base
+/// in order, every check with every hidden suite after each, the result
+/// left as a branch. Shares `verify_merged_tree` with `integrate`: the
+/// difference is that every task here merges unconditionally (there is no
+/// existing branch that might already contain the base) and the `Subject`
+/// carries no task-specific checks, since the result is not any one task's
+/// branch.
+pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
+    if ids.is_empty() {
+        bail!("name the verified tasks to integrate, in merge order");
+    }
+    let mut tasks = Vec::new();
+    for id in ids {
+        let Some(t) = f.store.task(*id)? else {
+            bail!("no task {id}");
+        };
+        if t.state != TaskState::Succeeded && t.state != TaskState::Unverified {
+            bail!(
+                "task {id} is {}; only a verified task's branch is integrated",
+                t.state.as_str()
+            );
+        }
+        tasks.push(t);
+    }
+    let repo = PathBuf::from(&tasks[0].repo);
+    if tasks.iter().any(|t| t.repo != tasks[0].repo) {
+        bail!("the tasks are in different repositories");
+    }
+    let cfg = config::load_working(&repo).await?;
+    let stamp = unix_now();
+    let branch = format!("forge/integration-{stamp}");
+    let dir = f.paths.worktrees.join(format!("integrate-{stamp}"));
+    let base_ref = match (
+        &cfg.push_remote,
+        git::remote_url(&repo, cfg.push_remote.as_deref().unwrap_or("origin")).await,
+    ) {
+        (Some(name), Some(url)) if git::remote_branch_exists(&url, &cfg.base_branch).await => {
+            git::fetch_branch(&repo, name, &cfg.base_branch).await.ok();
+            Some(format!("refs/remotes/{name}/{}", cfg.base_branch))
+        }
+        _ => None,
+    };
+    let base_sha = git::clone_task(
+        &repo,
+        &cfg.base_branch,
+        &dir,
+        &branch,
+        base_ref.as_deref(),
+        None,
+    )
+    .await?;
+    let remote_url = match &cfg.push_remote {
+        Some(name) => git::remote_url(&repo, name).await,
+        None => None,
+    };
+    let mut overlay: Vec<String> = Vec::new();
+    if git::ref_exists(&repo, "refs/heads/forge-verify").await {
+        overlay.push("forge-verify".into());
+    }
+    let cfg_base = config::load_at(&repo, &dir, &base_sha).await?;
+    let mut steps = Vec::new();
+    let mut outcome = IntegrateOutcome::Ready;
+    for (completed, t) in tasks.iter().enumerate() {
+        // Where the branch lives: the repository, else the remote, else the worktree.
+        let src = if git::ref_exists(&repo, &format!("refs/heads/{}", t.branch)).await {
+            repo.display().to_string()
+        } else if let Some(url) = &remote_url
+            && git::remote_branch_exists(url, &t.branch).await
+        {
+            url.clone()
+        } else if Path::new(&t.worktree).join(".git").exists() {
+            t.worktree.clone()
+        } else {
+            bail!(
+                "task {}'s branch {} is nowhere: not in the repository, the remote, or a worktree",
+                t.id,
+                t.branch
+            );
+        };
+        git::fetch_ref(&dir, &src, &t.branch)
+            .await
+            .with_context(|| format!("fetching {} from {src}", t.branch))?;
+        let message = format!("Integrate task {}: {}", t.id, t.branch);
+        let merged = match git::merge(&dir, "FETCH_HEAD", &message).await? {
+            git::Merge::UpToDate => None,
+            git::Merge::Merged(sha) => Some(sha),
+            git::Merge::Conflict(files) => {
+                outcome = IntegrateOutcome::Conflict {
+                    task_id: t.id,
+                    files,
+                    completed,
+                };
+                break;
+            }
+        };
+        steps.push(match &merged {
+            Some(sha) => IntegrateStep::Merged {
+                task_id: t.id,
+                branch: t.branch.clone(),
+                sha: sha.clone(),
+            },
+            None => IntegrateStep::AlreadyContained { task_id: t.id },
+        });
+        let own = format!("verify/{}", t.id);
+        if git::ref_exists(&repo, &format!("refs/heads/{own}")).await {
+            overlay.push(own);
+        }
+        let verdict = verify_merged_tree(
+            f,
+            MergeVerifyArgs {
+                task_id: t.id,
+                repo: &repo,
+                worktree: &dir,
+                base_sha: &base_sha,
+                cfg: &cfg_base,
+                task_checks: &[],
+                allow_protected: true,
+                overlay_refs: &overlay,
+            },
+        )
+        .await
+        .map_err(|e| match e {
+            Fault::Task(e) | Fault::Env(e) => e,
+        })?;
+        if verdict.state != AttemptState::Succeeded {
+            outcome = IntegrateOutcome::VerifyFailed {
+                task_id: t.id,
+                reason: verdict.reason,
+                completed: completed + 1,
+            };
+            break;
+        }
+        steps.push(IntegrateStep::Verified { task_id: t.id });
+    }
+    if matches!(outcome, IntegrateOutcome::Ready) {
+        git::push_to_repo(&dir, &repo, &branch).await?;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    Ok(IntegrateReport {
+        base_branch: cfg.base_branch,
+        base_sha,
+        repo,
+        branch,
+        dir,
+        steps,
+        outcome,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_shows_each_step_and_the_ff_only_instructions() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![
+                IntegrateStep::Merged {
+                    task_id: 1,
+                    branch: "forge/task-1".into(),
+                    sha: "deadbeef00".into(),
+                },
+                IntegrateStep::Verified { task_id: 1 },
+                IntegrateStep::AlreadyContained { task_id: 2 },
+                IntegrateStep::Verified { task_id: 2 },
+            ],
+            outcome: IntegrateOutcome::Ready,
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 1    merged forge/task-1 as deadbeef\n\
+             task 1    verified with everything before it\n\
+             task 2    already contained\n\
+             task 2    verified with everything before it\n\
+             integrated 2 task(s) as forge/integration-1 in /repo\n  \
+             git -C /repo merge --ff-only forge/integration-1"
+        );
+    }
+
+    #[test]
+    fn render_stops_at_a_conflict_and_names_the_scratch_clone() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![
+                IntegrateStep::Merged {
+                    task_id: 1,
+                    branch: "forge/task-1".into(),
+                    sha: "deadbeef00".into(),
+                },
+                IntegrateStep::Verified { task_id: 1 },
+            ],
+            outcome: IntegrateOutcome::Conflict {
+                task_id: 3,
+                files: vec!["answer.txt".into()],
+                completed: 1,
+            },
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 1    merged forge/task-1 as deadbeef\n\
+             task 1    verified with everything before it\n\
+             task 3    CONFLICT in answer.txt\n\
+             stopped after 1 task(s); the scratch clone is at /scratch"
+        );
+    }
+
+    #[test]
+    fn render_stops_when_the_merged_tree_fails_verification() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![IntegrateStep::Merged {
+                task_id: 2,
+                branch: "forge/task-2".into(),
+                sha: "cafef00d00".into(),
+            }],
+            outcome: IntegrateOutcome::VerifyFailed {
+                task_id: 2,
+                reason: "shell check failed".into(),
+                completed: 1,
+            },
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 2    merged forge/task-2 as cafef00d\n\
+             task 2    checks FAIL after merging: shell check failed\n\
+             stopped after 1 task(s); the scratch clone is at /scratch"
+        );
+    }
 }
