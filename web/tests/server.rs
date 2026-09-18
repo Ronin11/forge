@@ -36,6 +36,15 @@ case "$1" in
       report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\"}],\"refused\":[],\"rulings\":[],\"questions\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
       *) echo "unexpected initiative: $*" >&2; exit 2 ;;
     esac ;;
+  job)
+    case "$2" in
+      list) cat <<'JSON'
+[{"id":1,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1010,"cost_usd":0.42,"verdict_json":"[]","due_at":null},{"id":2,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"running","workflow_source":"repo","dry_run":false,"started_at":2000,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
+JSON
+        ;;
+      show) echo "{\"id\":$3,\"project\":\"demo\",\"workflow\":\"nightly\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"cron\",\"trigger_ref\":\"0 * * * *\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":1000,\"finished_at\":1010,\"cost_usd\":0.42,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"action\":\"notify\",\"kind\":\"operation\",\"provider\":\"\",\"model\":\"\",\"cost_usd\":null,\"started_at\":1000,\"finished_at\":1005,\"exit_code\":0,\"output_ref\":\"out/1\"}],\"effects\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"kind\":\"message\",\"target\":\"ops-channel\",\"summary\":\"posted status\",\"dry_run\":false}]}" ;;
+      *) echo "unexpected job: $*" >&2; exit 2 ;;
+    esac ;;
   stats) cat <<'JSON'
 {"workflows":[],"steps":[],"journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"no_journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"by_role":[{"role":"code","provider":"anthropic","model":"claude-sonnet-5","attempts":10,"succeeded":8,"succeeded_share":0.8,"mean_turns":12.5,"mean_cost_usd":1.23,"mean_secs":340.0,"landed":6,"broke_base":1,"broke_base_share":0.16666666666666666},{"role":"review","provider":"anthropic","model":"claude-haiku-4-5","attempts":4,"succeeded":4,"succeeded_share":1.0,"mean_turns":3.0,"mean_cost_usd":0.1,"mean_secs":20.0}]}
 JSON
@@ -166,6 +175,10 @@ fn without_the_token_nothing_is_served() {
         "/api/graph?repo=%2Fsome%2Frepo",
         "/stats",
         "/api/stats",
+        "/jobs",
+        "/jobs/1",
+        "/api/jobs",
+        "/api/job/1",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -358,6 +371,59 @@ fn the_stats_page_and_route_show_the_by_role_breakdown() {
     assert_eq!(v["by_role"][1]["role"], "review");
     assert_eq!(v["by_role"][1]["model"], "claude-haiku-4-5");
     assert!(v["by_role"][1]["landed"].is_null(), "{body}");
+}
+
+#[test]
+fn the_jobs_page_lists_two_fixture_jobs_and_shows_one_with_its_steps_and_effects() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    for view in ["/jobs", "/jobs/1"] {
+        let (status, _, body) = get(&w.addr, view, &cookie);
+        assert_eq!(status, 200, "{view}");
+        assert!(body.contains(r#"<script src="/app.js">"#), "{view}: {body}");
+    }
+    // The nav links to /jobs from every page, including the header on /tasks.
+    let (_, _, body) = get(&w.addr, "/tasks", &cookie);
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
+    assert!(
+        app_js.contains("href=\"/jobs\""),
+        "app.js must link /jobs from the header nav"
+    );
+    assert!(
+        app_js.contains("INVALIDATES")
+            && app_js.contains("job_started")
+            && app_js.contains("job_finished"),
+        "app.js must invalidate the jobs views on job_started/job_finished"
+    );
+
+    // forge job list --json, through /api/jobs: two fixture jobs.
+    let (status, _, body) = get(&w.addr, "/api/jobs", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 2, "{body}");
+    assert_eq!(v[0]["id"], 1);
+    assert_eq!(v[0]["project"], "demo");
+    assert_eq!(v[0]["workflow"], "nightly");
+    assert_eq!(v[0]["state"], "ok");
+    assert_eq!(v[0]["cost_usd"], 0.42);
+    assert_eq!(v[0]["started_at"], 1000);
+    assert_eq!(v[1]["id"], 2);
+    assert_eq!(v[1]["state"], "running");
+
+    // forge job show ID --json, through /api/job/<id>: steps and effects.
+    let (status, _, body) = get(&w.addr, "/api/job/1", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["id"], 1);
+    assert_eq!(v["steps"][0]["action"], "notify");
+    assert_eq!(v["steps"][0]["kind"], "operation");
+    assert_eq!(v["effects"][0]["kind"], "message");
+    assert_eq!(v["effects"][0]["summary"], "posted status");
+
+    let (status, _, _) = get(&w.addr, "/api/job/x", &cookie);
+    assert_eq!(status, 404);
 }
 
 #[test]
