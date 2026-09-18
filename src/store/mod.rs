@@ -4373,6 +4373,8 @@ mod column_tests {
             ("mod.rs", include_str!("mod.rs")),
             ("tasks.rs", include_str!("tasks.rs")),
             ("attempts.rs", include_str!("attempts.rs")),
+            ("jobs.rs", include_str!("jobs.rs")),
+            ("deploys.rs", include_str!("deploys.rs")),
         ];
         let offenders: Vec<String> = files
             .iter()
