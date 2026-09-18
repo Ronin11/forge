@@ -834,6 +834,10 @@ pub struct JobRow {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed (see docs/JOBS.md, "Delayed jobs").
+    #[serde(default)]
+    pub due_at: Option<i64>,
 }
 
 /// One row of `JobDoc.steps`: one step of a job's run.
@@ -919,6 +923,10 @@ pub struct JobDoc {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     pub verdict_json: String,
+    /// When this job becomes claimable, a unix second; `None` for a job
+    /// that was never delayed (see docs/JOBS.md, "Delayed jobs").
+    #[serde(default)]
+    pub due_at: Option<i64>,
     #[serde(default)]
     pub steps: Vec<JobStepRow>,
     #[serde(default)]

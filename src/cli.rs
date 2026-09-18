@@ -727,9 +727,21 @@ enum JobCmd {
         dry_run: bool,
         /// Run the job in this process now, rather than leaving it queued
         /// for the worker
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["at", "delay"])]
         now: bool,
+        /// Leave the job `scheduled` until this unix second, rather than
+        /// queuing it immediately (docs/JOBS.md, "Delayed jobs")
+        #[arg(long, conflicts_with = "delay")]
+        at: Option<i64>,
+        /// Leave the job `scheduled` until this long from now — a duration
+        /// string (`s`, `m`, `h`, `d`), e.g. `5m` or `1h` — rather than
+        /// queuing it immediately (docs/JOBS.md, "Delayed jobs")
+        #[arg(long)]
+        delay: Option<String>,
     },
+    /// Withdraw a scheduled job before it becomes due: refused once it is
+    /// queued, running, or finished
+    Withdraw { id: i64 },
     /// Jobs, newest first, or only `<project>`'s
     List {
         project: Option<String>,
@@ -1086,7 +1098,10 @@ pub async fn main() -> Result<()> {
                 input,
                 dry_run,
                 now,
-            } => job_start(project, workflow, input, dry_run, now).await,
+                at,
+                delay,
+            } => job_start(project, workflow, input, dry_run, now, at, delay).await,
+            JobCmd::Withdraw { id } => job_withdraw(id),
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),
@@ -1854,26 +1869,56 @@ fn print_job_row(r: &crate::view::JobRow) {
         r.landed_sha[..r.landed_sha.len().min(8)].to_string()
     };
     out!(
-        "{:<5} {:<20} {:<12} {sha} {}",
+        "{:<5} {:<20} {:<12} {sha} {}{}",
         r.id,
         r.workflow,
         r.state,
-        r.trigger_kind
+        r.trigger_kind,
+        r.due_at.map(|d| format!("  due {d}")).unwrap_or_default()
     );
 }
 
 /// `forge job start <project> <workflow> [--input <file>] [--dry-run]
-/// [--now]` (see docs/JOBS.md, "The executor").
+/// [--now | --at <unix> | --delay <duration>]` (see docs/JOBS.md, "The
+/// executor" and "Delayed jobs").
 async fn job_start(
     project: String,
     workflow: String,
     input: Option<PathBuf>,
     dry_run: bool,
     now: bool,
+    at: Option<i64>,
+    delay: Option<String>,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let id = crate::job::start(&f, &project, &workflow, input.as_deref(), dry_run, now).await?;
+    let due_at = match (at, delay) {
+        (Some(at), _) => Some(at),
+        (None, Some(d)) => {
+            Some(unix_now() + workflows::parse_duration(&d).map_err(|e| anyhow::anyhow!(e))?)
+        }
+        (None, None) => None,
+    };
+    let id = crate::job::start(
+        &f,
+        &project,
+        &workflow,
+        input.as_deref(),
+        dry_run,
+        now,
+        due_at,
+    )
+    .await?;
     out!("{id}");
+    Ok(())
+}
+
+/// `forge job withdraw <id>` (see docs/JOBS.md, "Delayed jobs").
+fn job_withdraw(id: i64) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    if !f.store.withdraw_job(id)? {
+        bail!("job {id} is not scheduled; only a scheduled job, not yet due, can be withdrawn");
+    }
+    out!("withdrew job {id}");
     Ok(())
 }
 
@@ -1923,6 +1968,9 @@ fn job_show(id: i64, json: bool) -> Result<()> {
         doc.state,
         if doc.dry_run { " (dry run)" } else { "" }
     );
+    if let Some(due) = doc.due_at {
+        out!("due        {due}");
+    }
     out!("cost       ${:.2}", doc.cost_usd.unwrap_or(0.0));
     if !doc.steps.is_empty() {
         out!("steps");

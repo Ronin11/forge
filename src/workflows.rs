@@ -217,6 +217,11 @@ pub struct Trigger {
     pub contact: Option<String>,
     pub name: Option<String>,
     pub r#type: Option<String>,
+    /// Seconds to wait after the firing event before the job is due
+    /// (docs/JOBS.md, "Delayed jobs"): parsed from a duration string
+    /// (`s`, `m`, `h`, `d`) at workflow load time. `None` fires the job
+    /// immediately, as before this field existed.
+    pub delay: Option<i64>,
 }
 
 impl Trigger {
@@ -244,6 +249,8 @@ struct TriggerRaw {
     name: Option<String>,
     #[serde(default)]
     r#type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_delay")]
+    delay: Option<i64>,
 }
 
 /// Parses `cron` with `croner` at load time, so a schedule trigger that can
@@ -261,6 +268,46 @@ where
             .map_err(|e| serde::de::Error::custom(format!("invalid cron {expr:?}: {e}")))?;
     }
     Ok(cron)
+}
+
+/// A duration string (a number followed by `s`, `m`, `h`, or `d`) in
+/// seconds: `"5m"` is 300, `"1h"` is 3600, `"0s"` is 0. Shared by
+/// `[trigger] delay` (validated at workflow load time, below) and `forge
+/// job start --delay` (docs/JOBS.md, "Delayed jobs").
+pub fn parse_duration(s: &str) -> std::result::Result<i64, String> {
+    let bad = || {
+        format!("invalid duration {s:?}: expected a number followed by s, m, h, or d, e.g. \"5m\"")
+    };
+    if s.is_empty() {
+        return Err(bad());
+    }
+    let (digits, unit) = s.split_at(s.len() - 1);
+    let secs_per_unit = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return Err(bad()),
+    };
+    let n: i64 = digits.parse().map_err(|_| bad())?;
+    if n < 0 {
+        return Err(bad());
+    }
+    Ok(n * secs_per_unit)
+}
+
+/// Parses `delay` with `parse_duration` at load time, so a delay that
+/// cannot be parsed is refused the same way an invalid cron is: as a TOML
+/// deserialize error, with the file and the line (docs/JOBS.md, "Delayed
+/// jobs").
+fn deserialize_delay<'de, D>(deserializer: D) -> std::result::Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let delay: Option<String> = Option::deserialize(deserializer)?;
+    delay
+        .map(|s| parse_duration(&s).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 /// A side effect on the world an operation performs (docs/JOBS.md,
@@ -1109,6 +1156,7 @@ fn build_trigger(path: &Path, raw: TriggerRaw) -> Result<Trigger> {
         contact: raw.contact,
         name: raw.name,
         r#type: raw.r#type,
+        delay: raw.delay,
     })
 }
 
@@ -2411,6 +2459,49 @@ on_failure = "ask:contact"
         assert!(err.contains("off-the-rails.toml"), "{err}");
         assert!(err.contains("line"), "{err}");
         assert!(err.contains("invalid cron"), "{err}");
+    }
+
+    #[test]
+    fn parse_duration_reads_s_m_h_d_and_rejects_junk() {
+        assert_eq!(parse_duration("0s"), Ok(0));
+        assert_eq!(parse_duration("5s"), Ok(5));
+        assert_eq!(parse_duration("5m"), Ok(300));
+        assert_eq!(parse_duration("1h"), Ok(3600));
+        assert_eq!(parse_duration("2d"), Ok(172_800));
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("5").is_err());
+        assert!(parse_duration("m").is_err());
+        assert!(parse_duration("5mins").is_err());
+        assert!(parse_duration("5x").is_err());
+        assert!(parse_duration("-5m").is_err());
+    }
+
+    #[test]
+    fn a_trigger_delay_parses_into_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "quote-later.toml",
+            "name = \"quote-later\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"manual\"\ndelay = \"5m\"\n",
+        );
+        let w = get(dir.path(), "quote-later").unwrap().unwrap();
+        assert_eq!(w.trigger.as_ref().unwrap().delay, Some(300));
+    }
+
+    #[test]
+    fn an_invalid_trigger_delay_is_refused_at_parse_time_with_the_file_and_line() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "quote-never.toml",
+            "name = \"quote-never\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"manual\"\ndelay = \"soon\"\n",
+        );
+        let err = get(dir.path(), "quote-never").unwrap_err().to_string();
+        assert!(err.contains("quote-never.toml"), "{err}");
+        assert!(err.contains("line"), "{err}");
+        assert!(err.contains("invalid duration"), "{err}");
     }
 
     #[test]
