@@ -477,16 +477,41 @@ pub struct WorkOpts {
     pub max_tasks: Option<u32>,
 }
 
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
+/// The worker's SIGINT and SIGTERM listeners, installed once for its whole
+/// life. They used to be created afresh inside every `select!` iteration,
+/// and a tokio signal stream only sees signals that arrive after it is
+/// created: a signal landing in the gap between one iteration's stream
+/// being dropped and the next one's being installed was lost. The gap is
+/// microseconds on an idle box and long enough under load that the e2e
+/// suite hit it about one run in ten on 2026-09-18 (an idle worker that
+/// never stopped on SIGTERM; a second SIGINT that never aborted).
+struct Shutdown {
+    int: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+}
+
+impl Shutdown {
+    fn install() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        Shutdown {
+            int: signal(SignalKind::interrupt()).expect("SIGINT handler"),
+            term: signal(SignalKind::terminate()).expect("SIGTERM handler"),
+        }
+    }
+
+    /// Resolves on the next SIGINT or SIGTERM. Signals that arrived while
+    /// nothing was awaiting this are still delivered, since the streams
+    /// outlive every `select!` that polls them.
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.int.recv() => {}
+            _ = self.term.recv() => {}
+        }
     }
 }
 
 pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
+    let mut shutdown = Shutdown::install();
     for id in f.store.orphans(pid_alive)? {
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
@@ -596,13 +621,13 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     let wait = poll.map_or(wait, |p| wait.min(p));
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(wait)) => continue,
-                        _ = shutdown_signal() => { eprintln!("stopping"); break }
+                        _ = shutdown.recv() => { eprintln!("stopping"); break }
                     }
                 }
                 (None, Some(secs)) if !stopping && env_error.is_none() && !exhausted => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(secs)) => continue,
-                        _ = shutdown_signal() => { eprintln!("stopping"); break }
+                        _ = shutdown.recv() => { eprintln!("stopping"); break }
                     }
                 }
                 _ => break,
@@ -639,7 +664,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                     }
                 }
             }
-            _ = shutdown_signal() => {
+            _ = shutdown.recv() => {
                 if !stopping {
                     stopping = true;
                     eprintln!("stopping: no new tasks or jobs; {} running attempt(s) will finish (signal again to abort them)", running.len());
