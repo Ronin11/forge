@@ -2353,32 +2353,17 @@ async fn initiative_new(
             .with_context(|| format!("reading {}", path.display()))?;
         let default_repo = f.store.first_repo(&project)?;
         let paragraphs = crate::queue::parse_initiative_file(&text)?;
-        let known_provider = |name: &str| -> Result<()> {
-            f.providers.get(name).with_context(|| {
-                format!("unknown provider {name:?}; see `forge providers` for what is configured")
-            })?;
-            Ok(())
-        };
-        let known_workflow = |name: &str| -> Result<()> {
-            workflows::get(&f.paths.home, name)?.with_context(|| {
-                format!("unknown workflow {name:?}; see `forge workflows` for what is configured")
-            })?;
-            Ok(())
-        };
         if let Some(p) = &provider {
-            known_provider(p)?;
+            f.providers.get(p).with_context(|| {
+                format!("unknown provider {p:?}; see `forge providers` for what is configured")
+            })?;
         }
         if let Some(w) = &workflow {
-            known_workflow(w)?;
+            workflows::get(&f.paths.home, w)?.with_context(|| {
+                format!("unknown workflow {w:?}; see `forge workflows` for what is configured")
+            })?;
         }
-        for p in &paragraphs {
-            if let Some(pr) = &p.provider {
-                known_provider(pr)?;
-            }
-            if let Some(w) = &p.workflow {
-                known_workflow(w)?;
-            }
-        }
+        crate::queue::validate_initiative_file(&f, &paragraphs)?;
         let ids = crate::queue::file_initiative_paragraphs(
             &f,
             &project,

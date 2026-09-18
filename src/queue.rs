@@ -436,6 +436,31 @@ pub fn parse_initiative_file(text: &str) -> Result<Vec<FileTask>> {
     Ok(out)
 }
 
+/// Validate every parsed paragraph's `provider:` and `workflow:` override
+/// (see [`parse_initiative_file`]) against what's actually configured,
+/// refusing with the paragraph's 1-based number and the unknown name
+/// rather than filing tasks that would fail once run.
+pub fn validate_initiative_file(f: &Forge, parsed: &[FileTask]) -> Result<()> {
+    for (i, p) in parsed.iter().enumerate() {
+        let n = i + 1;
+        if let Some(name) = &p.provider {
+            f.providers.get(name).with_context(|| {
+                format!(
+                    "paragraph {n}: unknown provider {name:?}; see `forge providers` for what is configured"
+                )
+            })?;
+        }
+        if let Some(name) = &p.workflow {
+            workflows::get(&f.paths.home, name)?.with_context(|| {
+                format!(
+                    "paragraph {n}: unknown workflow {name:?}; see `forge workflows` for what is configured"
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// File already-parsed paragraphs into an existing initiative: one task
 /// per paragraph, honoring each one's own `after`/`repo`/`provider`/
 /// `workflow` override, else the given defaults. Shared by `forge
@@ -921,6 +946,58 @@ mod tests {
             .to_string();
         assert!(err.contains("paragraph 1"), "{err}");
         assert!(err.contains("workflow:"), "{err}");
+    }
+
+    fn fixture_forge() -> (tempfile::TempDir, Forge) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::ctx::Paths {
+            worktrees: dir.path().join("worktrees"),
+            logs: dir.path().join("logs"),
+            home: dir.path().to_path_buf(),
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = crate::store::Store::open(&dir.path().join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    #[test]
+    fn validate_initiative_file_refuses_an_unknown_provider_naming_the_paragraph() {
+        let (_dir, f) = fixture_forge();
+        let parsed = parse_initiative_file(
+            "first task\n\nsecond task\n\nprovider: does-not-exist\nthird task",
+        )
+        .unwrap();
+        let err = validate_initiative_file(&f, &parsed)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 3"), "{err}");
+        assert!(err.contains("does-not-exist"), "{err}");
+    }
+
+    #[test]
+    fn validate_initiative_file_refuses_an_unknown_workflow_naming_the_paragraph() {
+        let (_dir, f) = fixture_forge();
+        let parsed = parse_initiative_file(
+            "first task\n\nsecond task\n\nworkflow: does-not-exist\nthird task",
+        )
+        .unwrap();
+        let err = validate_initiative_file(&f, &parsed)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("paragraph 3"), "{err}");
+        assert!(err.contains("does-not-exist"), "{err}");
+    }
+
+    #[test]
+    fn validate_initiative_file_passes_a_file_naming_a_configured_provider_and_workflow() {
+        let (_dir, f) = fixture_forge();
+        let parsed = parse_initiative_file(
+            "provider: anthropic\nfirst task\n\nworkflow: direct\nsecond task",
+        )
+        .unwrap();
+        validate_initiative_file(&f, &parsed).unwrap();
     }
 
     #[test]
