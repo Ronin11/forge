@@ -1,4 +1,5 @@
 use super::*;
+use serde::{Serialize, Serializer};
 
 /// A job's state: a run workflow's run, the way `TaskState` is a build
 /// workflow's (see docs/JOBS.md, "Vocabulary"). `NeedsHuman` is a job's
@@ -33,6 +34,14 @@ impl JobState {
     }
 }
 
+/// Serializes as `as_str()`, the same string the column and every `--json`
+/// row carry.
+impl Serialize for JobState {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
 impl TryFrom<&str> for JobState {
     type Error = std::io::Error;
     fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
@@ -57,7 +66,7 @@ impl TryFrom<&str> for JobState {
 /// its trigger, its pinned workflow version, its state, and its cost.
 /// `job_steps` and `job_effects` carry what it did; this row is what
 /// `forge job list`/`show` and `finish_job` read and write.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize)]
 pub struct Job {
     pub id: i64,
     pub project: String,
@@ -101,7 +110,7 @@ pub struct Job {
 
 /// One step of a job's run: one entry of the workflow's `steps`, whether
 /// it was an operation or a directive (see docs/JOBS.md, "Steps").
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize)]
 pub struct JobStep {
     pub id: i64,
     pub job_id: i64,
@@ -128,7 +137,7 @@ pub struct JobStep {
 /// One effect a job's step performed on the world (see docs/JOBS.md,
 /// "Effects"): a message sent, a row written, a file produced, an HTTP
 /// call made. Logged whether or not the run was a dry run.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize)]
 pub struct JobEffect {
     pub id: i64,
     pub job_id: i64,
@@ -842,5 +851,66 @@ mod tests {
         assert_eq!(effects[0].job_id, b);
         assert_eq!(effects[1].summary, "first");
         assert_eq!(effects[1].job_id, a);
+    }
+
+    /// Pinned against a literal captured while `view::JobRow`, `JobStepRow`
+    /// and `JobEffectRow` still existed: `serde_json::to_string` on each
+    /// produced this exact text, so deleting the rows in their favour was a
+    /// no-op for every `--json` caller.
+    #[test]
+    fn job_step_and_effect_serialize_to_the_captured_row_shape() {
+        let job = Job {
+            id: 7,
+            project: "equitizr".into(),
+            workflow: "quote-by-text".into(),
+            workflow_hash: "deadbeef".into(),
+            landed_sha: "cafef00d".into(),
+            trigger_kind: "manual".into(),
+            trigger_ref: "".into(),
+            state: JobState::Ok,
+            workflow_source: "repo".into(),
+            dry_run: false,
+            started_at: 100,
+            finished_at: Some(140),
+            cost_usd: Some(0.42),
+            verdict_json: "{}".into(),
+            due_at: None,
+        };
+        let step = JobStep {
+            id: 1,
+            job_id: 7,
+            seq: 0,
+            action: "draft-quote".into(),
+            kind: "directive".into(),
+            provider: "anthropic".into(),
+            model: "claude".into(),
+            cost_usd: Some(0.12),
+            started_at: 101,
+            finished_at: Some(110),
+            exit_code: None,
+            output_ref: "step-0.json".into(),
+        };
+        let effect = JobEffect {
+            id: 2,
+            job_id: 7,
+            seq: 0,
+            kind: "message".into(),
+            target: "customer-a".into(),
+            summary: "quote sent".into(),
+            dry_run: false,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&job).unwrap(),
+            r#"{"id":7,"project":"equitizr","workflow":"quote-by-text","workflow_hash":"deadbeef","landed_sha":"cafef00d","trigger_kind":"manual","trigger_ref":"","state":"ok","workflow_source":"repo","dry_run":false,"started_at":100,"finished_at":140,"cost_usd":0.42,"verdict_json":"{}","due_at":null}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&step).unwrap(),
+            r#"{"id":1,"job_id":7,"seq":0,"action":"draft-quote","kind":"directive","provider":"anthropic","model":"claude","cost_usd":0.12,"started_at":101,"finished_at":110,"exit_code":null,"output_ref":"step-0.json"}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&effect).unwrap(),
+            r#"{"id":2,"job_id":7,"seq":0,"kind":"message","target":"customer-a","summary":"quote sent","dry_run":false}"#,
+        );
     }
 }

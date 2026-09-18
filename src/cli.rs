@@ -1862,7 +1862,7 @@ fn deploy_log(project: String, name: Option<String>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_job_row(r: &crate::view::JobRow) {
+fn print_job_row(r: &crate::store::Job) {
     let sha = if r.landed_sha.is_empty() {
         "-".to_string()
     } else {
@@ -1872,7 +1872,7 @@ fn print_job_row(r: &crate::view::JobRow) {
         "{:<5} {:<20} {:<12} {sha} {}{}",
         r.id,
         r.workflow,
-        r.state,
+        r.state.as_str(),
         r.trigger_kind,
         r.due_at.map(|d| format!("  due {d}")).unwrap_or_default()
     );
@@ -1931,12 +1931,7 @@ fn job_list(project: Option<String>, json: bool) -> Result<()> {
             .project(p)?
             .with_context(|| format!("no project {p}"))?;
     }
-    let rows: Vec<crate::view::JobRow> = f
-        .store
-        .jobs(project.as_deref(), None)?
-        .iter()
-        .map(crate::view::JobRow::from)
-        .collect();
+    let rows = f.store.jobs(project.as_deref(), None)?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -2005,12 +2000,7 @@ fn job_log(project: String, json: bool) -> Result<()> {
     f.store
         .project(&project)?
         .with_context(|| format!("no project {project}"))?;
-    let rows: Vec<crate::view::JobEffectRow> = f
-        .store
-        .job_effects_for_project(&project)?
-        .iter()
-        .map(crate::view::JobEffectRow::from)
-        .collect();
+    let rows = f.store.job_effects_for_project(&project)?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());

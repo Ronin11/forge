@@ -2696,115 +2696,6 @@ fn truncate_at_word_boundary(s: &str, max: usize) -> String {
     out
 }
 
-/// One row of `forge job list --json`: a job as `store::Job` records it
-/// (see docs/JOBS.md, "The record").
-#[derive(Serialize)]
-pub struct JobRow {
-    pub id: i64,
-    pub project: String,
-    pub workflow: String,
-    pub workflow_hash: String,
-    pub landed_sha: String,
-    pub trigger_kind: String,
-    pub trigger_ref: String,
-    pub state: String,
-    /// `"repo"` or `"catalog"` (see `store::Job::workflow_source`).
-    pub workflow_source: String,
-    pub dry_run: bool,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    pub cost_usd: Option<f64>,
-    pub verdict_json: String,
-    /// When this job becomes claimable, a unix second; `None` for a job
-    /// that was never delayed (see `store::Job::due_at`).
-    pub due_at: Option<i64>,
-}
-
-impl From<&crate::store::Job> for JobRow {
-    fn from(j: &crate::store::Job) -> Self {
-        JobRow {
-            id: j.id,
-            project: j.project.clone(),
-            workflow: j.workflow.clone(),
-            workflow_hash: j.workflow_hash.clone(),
-            landed_sha: j.landed_sha.clone(),
-            trigger_kind: j.trigger_kind.clone(),
-            trigger_ref: j.trigger_ref.clone(),
-            state: j.state.as_str().to_string(),
-            workflow_source: j.workflow_source.clone(),
-            dry_run: j.dry_run,
-            started_at: j.started_at,
-            finished_at: j.finished_at,
-            cost_usd: j.cost_usd,
-            verdict_json: j.verdict_json.clone(),
-            due_at: j.due_at,
-        }
-    }
-}
-
-/// One row of `JobDoc.steps`: one step of a job's run, mirrors `store::JobStep`.
-#[derive(Serialize)]
-pub struct JobStepRow {
-    pub id: i64,
-    pub job_id: i64,
-    pub seq: i64,
-    pub action: String,
-    pub kind: String,
-    pub provider: String,
-    pub model: String,
-    pub cost_usd: Option<f64>,
-    pub started_at: i64,
-    pub finished_at: Option<i64>,
-    pub exit_code: Option<i32>,
-    pub output_ref: String,
-}
-
-impl From<&crate::store::JobStep> for JobStepRow {
-    fn from(s: &crate::store::JobStep) -> Self {
-        JobStepRow {
-            id: s.id,
-            job_id: s.job_id,
-            seq: s.seq,
-            action: s.action.clone(),
-            kind: s.kind.clone(),
-            provider: s.provider.clone(),
-            model: s.model.clone(),
-            cost_usd: s.cost_usd,
-            started_at: s.started_at,
-            finished_at: s.finished_at,
-            exit_code: s.exit_code,
-            output_ref: s.output_ref.clone(),
-        }
-    }
-}
-
-/// One row of `JobDoc.effects` and of `forge job log --json`: one effect a
-/// job's step performed on the world, mirrors `store::JobEffect`.
-#[derive(Serialize)]
-pub struct JobEffectRow {
-    pub id: i64,
-    pub job_id: i64,
-    pub seq: i64,
-    pub kind: String,
-    pub target: String,
-    pub summary: String,
-    pub dry_run: bool,
-}
-
-impl From<&crate::store::JobEffect> for JobEffectRow {
-    fn from(e: &crate::store::JobEffect) -> Self {
-        JobEffectRow {
-            id: e.id,
-            job_id: e.job_id,
-            seq: e.seq,
-            kind: e.kind.clone(),
-            target: e.target.clone(),
-            summary: e.summary.clone(),
-            dry_run: e.dry_run,
-        }
-    }
-}
-
 /// The document `forge job show ID --json` prints: one job with every
 /// step and effect it recorded, newest-run fields alongside them.
 #[derive(Serialize)]
@@ -2827,23 +2718,13 @@ pub struct JobDoc {
     /// When this job becomes claimable, a unix second; `None` for a job
     /// that was never delayed (see `store::Job::due_at`).
     pub due_at: Option<i64>,
-    pub steps: Vec<JobStepRow>,
-    pub effects: Vec<JobEffectRow>,
+    pub steps: Vec<crate::store::JobStep>,
+    pub effects: Vec<crate::store::JobEffect>,
 }
 
 pub fn job_doc(f: &Forge, j: &crate::store::Job) -> Result<JobDoc> {
-    let steps = f
-        .store
-        .job_steps(j.id)?
-        .iter()
-        .map(JobStepRow::from)
-        .collect();
-    let effects = f
-        .store
-        .job_effects(j.id)?
-        .iter()
-        .map(JobEffectRow::from)
-        .collect();
+    let steps = f.store.job_steps(j.id)?;
+    let effects = f.store.job_effects(j.id)?;
     Ok(JobDoc {
         id: j.id,
         project: j.project.clone(),
