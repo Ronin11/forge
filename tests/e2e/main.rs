@@ -25,5 +25,6 @@ mod statusline;
 mod supervisor;
 mod tdd;
 mod verdicts;
+mod webhooks;
 mod worker;
 mod workflows;
