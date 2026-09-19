@@ -112,6 +112,9 @@ contact = "customers"     # the Signal plugin's contact group that starts it
 [assert]
 quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once
 
+[skip_if]
+already_quoted = ["scripts/skip-if-already-quoted.sh"]  # exit 0 to skip this run; exit 1 to proceed
+
 [limits]
 budget_usd = 0.10          # per run
 per_day    = 200           # real starts in 24 hours before the next is refused
@@ -164,6 +167,8 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed
 - **Assertions.** Commands run after the steps, with the effect log and
   every step's output on disk; exit status is the verdict, as with a
   deploy check.
+- **`skip_if`.** Named commands, checked like `[assert]` but before any
+  step runs instead of after (see "Skipping a run", below).
 - **Limits.** A budget per run, a rate per day, and what to do on
   failure.
 
@@ -176,18 +181,56 @@ A job is claimed by the worker like a task and runs in a sandbox:
 2. Write the trigger's inputs as files and environment (`FORGE_INPUT_*`,
    `FORGE_INPUT_DIR`), and the project's secrets as environment from the
    operator's store, never into any prompt.
-3. Run the steps in order. Outputs are files in the scratch directory
+3. Run `[skip_if]`, in name order. The first command to exit 0 ends the
+   job right here — see "Skipping a run", below — before step 4 ever
+   runs.
+4. Run the steps in order. Outputs are files in the scratch directory
    and flow to the next step the way consumes and produces work today.
    A directive's structured output is validated against its schema
    before the next step sees it.
-4. Log each effect as it happens: kind, target, a short description,
+5. Log each effect as it happens: kind, target, a short description,
    the step that did it.
-5. Run the assertions. Record the verdict, the cost, and the step
+6. Run the assertions. Record the verdict, the cost, and the step
    timings.
-6. On failure, apply `on_failure`: retry, drop, or ask, where asking is
+7. On failure, apply `on_failure`: retry, drop, or ask, where asking is
    the human rung: a blocked question on the project, addressed to the
    contact or the operator, carrying the job id and what failed; the
    answer can re-run the job with the answer as an input.
+
+## Skipping a run
+
+Most automations are "fire, check the record, act or skip": a rule that
+decides there is nothing to do this time — the quote was already sent,
+the row is already there — is not a failure, and treating it as one
+would turn every "already handled" firing into a red row. `[skip_if]` is
+the third outcome:
+
+```toml
+[skip_if]
+already_quoted = ["scripts/skip-if-already-quoted.sh"]
+```
+
+Named commands, in the same shape as `[assert]`, run in the scratch tree
+with the job's environment (`FORGE_JOB_ID`, `FORGE_INPUT_*`,
+`FORGE_INPUT_DIR`, the project's secrets) before any step. They are
+checked in name order; the first to exit 0 ends the job in a new state,
+`JobState::Skipped`, with the first line of its stdout as the reason —
+nothing further runs, so no step executes and no effect happens. A
+non-zero exit means "not skipped, proceed": once every `[skip_if]`
+command has said so (or there are none), the steps run exactly as they
+would with no `[skip_if]` at all.
+
+A skip counts against nothing: not the workflow's `per_day` rate (a real
+start that turns out to have nothing to do should not use up the day's
+budget), never touches `on_failure` (a skip is not a failure to retry,
+drop, or ask about), and never adds to the failed rollup. It is still
+recorded as an ordinary `jobs` row — `forge job list`/`show` and the
+portal show it like any other run, with its reason — and rollups
+(`forge project show`, `forge stats`) count it separately from `ok`,
+`failed`, and `needs_human`.
+
+`forge workflows validate` parses `[skip_if]` the same way it parses
+`[assert]`: a build workflow (the default `kind`) may not have one.
 
 The record: `jobs` (id, project, workflow and its pinned version,
 trigger kind and payload reference, started, finished, state, cost,

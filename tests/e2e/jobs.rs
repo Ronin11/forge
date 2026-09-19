@@ -1483,3 +1483,286 @@ fn forge_job_withdraw_drops_a_scheduled_job_and_refuses_any_other_state() {
     .unwrap();
     assert_eq!(doc["state"], "dropped", "{doc:?}");
 }
+
+/// `[skip_if]` (docs/JOBS.md, "Skipping a run"): a named command, run in
+/// the scratch tree with the job's environment before any step. Exit 0
+/// ends the job `Skipped` with its stdout's first line as the reason,
+/// before any step runs and so before any effect happens or the
+/// `[assert]` commands are even reached; exit 1 means "not skipped,
+/// proceed" and the steps run exactly as they would with no `[skip_if]`
+/// at all. `forge job list`/`show` and the portal (`forge project view`)
+/// carry the skipped run as an ordinary job row.
+#[test]
+fn a_skip_if_that_exits_0_skips_the_job_and_one_that_exits_1_lets_the_steps_run() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/skip-snapshot.toml"),
+        r#"name = "skip-snapshot"
+kind = "run"
+description = "writes a file, unless skip_if says it is already handled"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[skip_if]
+already_handled = ["bash", "-c", "if [ \"$FORGE_INPUT_SKIP\" = \"yes\" ]; then echo 'already handled, nothing to do'; exit 0; else exit 1; fi"]
+
+[assert]
+wrote = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+
+    // The skip_if command exits 0: the job ends Skipped before the write-file
+    // step ever runs, so no effect is logged and nothing lands in the
+    // scratch tree.
+    let skip_input = e.home.join("skip-input.json");
+    std::fs::write(
+        &skip_input,
+        r#"{"path":"out.txt","content":"hello world","skip":"yes"}"#,
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "equitizr",
+            "skip-snapshot",
+            "--input",
+            skip_input.to_str().unwrap(),
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let skipped_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge(
+            "ok.sh",
+            &["job", "show", &skipped_id.to_string(), "--json"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "skipped", "{doc:?}");
+    assert_eq!(doc["cost_usd"], 0.0);
+    assert!(doc["effects"].as_array().unwrap().is_empty(), "{doc:?}");
+    assert!(doc["steps"].as_array().unwrap().is_empty(), "{doc:?}");
+    let verdict: Vec<serde_json::Value> =
+        serde_json::from_str(doc["verdict_json"].as_str().unwrap()).unwrap();
+    assert_eq!(verdict.len(), 1, "{verdict:?}");
+    assert_eq!(verdict[0]["name"], "already_handled");
+    assert_eq!(verdict[0]["ok"], true);
+    assert_eq!(verdict[0]["tail"], "already handled, nothing to do");
+
+    let skip_scratch = e
+        .home
+        .join("worktrees")
+        .join(format!("job-{skipped_id}"));
+    assert!(
+        !skip_scratch.join("out.txt").exists(),
+        "the write-file step never ran"
+    );
+
+    // `forge job list` carries the skipped run as an ordinary row.
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|r| r["id"] == skipped_id)
+            .unwrap()["state"],
+        "skipped"
+    );
+
+    // The portal shows it too, with the reason.
+    let portal: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "view", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let wf = portal["run_workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "skip-snapshot")
+        .unwrap_or_else(|| panic!("no skip-snapshot entry in {portal:?}"));
+    let job_run = &wf["jobs"][0];
+    assert_eq!(job_run["state"], "skipped");
+    assert_eq!(
+        job_run["reason"].as_str().unwrap(),
+        "already handled, nothing to do"
+    );
+
+    // Rollups count the skip separately: `today` includes it but neither
+    // `ok` nor `failed` does.
+    let project: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["project", "show", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(project["jobs_today"], 1, "{project:?}");
+    assert_eq!(project["jobs_ok"], 0, "{project:?}");
+    assert_eq!(project["jobs_failed"], 0, "{project:?}");
+    assert_eq!(project["jobs_skipped"], 1, "{project:?}");
+
+    // The skip_if command exits 1: not skipped, the steps run exactly as
+    // they would with no [skip_if] at all.
+    let proceed_input = e.home.join("proceed-input.json");
+    std::fs::write(
+        &proceed_input,
+        r#"{"path":"out.txt","content":"hello world","skip":"no"}"#,
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "equitizr",
+            "skip-snapshot",
+            "--input",
+            proceed_input.to_str().unwrap(),
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let ok_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    assert_ne!(ok_id, skipped_id);
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &ok_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "file");
+    assert_eq!(effects[0]["target"], "out.txt");
+
+    let ok_scratch = e.home.join("worktrees").join(format!("job-{ok_id}"));
+    assert_eq!(
+        std::fs::read_to_string(ok_scratch.join("out.txt")).unwrap(),
+        "hello world"
+    );
+}
+
+/// A `Skipped` job counts against nothing (docs/JOBS.md, "Skipping a
+/// run"): it does not consume the workflow's `per_day` budget, unlike a
+/// real (non-dry) run that reaches any other terminal state.
+#[test]
+fn a_skipped_job_does_not_count_toward_the_per_day_limit() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/skip-once.toml"),
+        r#"name = "skip-once"
+kind = "run"
+description = "always skips; used to check skip does not count against per_day"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[skip_if]
+always = ["bash", "-c", "echo 'nothing to do'; exit 0"]
+
+[limits]
+budget_usd = 1.0
+per_day = 1
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"path":"out.txt","content":"x"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // Two real (non-dry) runs, each skipped: neither counts against the
+    // per_day = 1 limit, so both succeed.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "skip-once", "--input", input_s, "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let first: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &first.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "skipped", "{doc:?}");
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job", "start", "equitizr", "skip-once", "--input", input_s, "--now",
+        ],
+    );
+    assert!(
+        o.status.success(),
+        "a skipped run must not consume the per_day budget: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let second: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+    assert_ne!(first, second);
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &second.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "skipped", "{doc:?}");
+}

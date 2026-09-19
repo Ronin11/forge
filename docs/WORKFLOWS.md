@@ -123,6 +123,9 @@ contact = "customers"     # the Signal plugin's contact group that starts it
 [assert]
 quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once
 
+[skip_if]
+already_quoted = ["scripts/skip-if-already-quoted.sh"]  # exit 0 to skip this run; exit 1 to proceed
+
 [limits]
 budget_usd = 0.10          # per run
 per_day    = 200           # real starts in 24 hours before the next is refused
@@ -133,7 +136,7 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed
 header, so `steps` has to come before `[trigger]`, not after it, to be
 the workflow's own field rather than `trigger.steps`.)
 
-A run workflow adds three sections and two step fields to the shape
+A run workflow adds four sections and two step fields to the shape
 above, unchanged otherwise: a step still names an `action` (or another
 workflow, spliced inline), with the same `model`, `max_turns`, and
 `timeout_secs` overrides.
@@ -147,6 +150,14 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
   parse is refused with the file and the line before the workflow loads
   at all. The worker's poll loop is what fires it (docs/JOBS.md,
   "Trigger").
+- **`[skip_if]`.** Named commands, each a list like an action's `run`,
+  checked in the scratch tree with the job's environment before any
+  step — before `[assert]`, before any effect happens. The first to
+  exit 0 ends the job in a new state, `Skipped`, with the first line of
+  its stdout as the reason; a non-zero exit means "not skipped,
+  proceed". A skip counts against nothing — not `per_day`, not
+  `on_failure`, not the failed rollup — and is recorded as an ordinary
+  job row like any other outcome (docs/JOBS.md, "Skipping a run").
 - **`[assert]`.** Named commands, each a list like an action's `run`,
   checked after the steps with the effect log and every step's output
   on disk; exit status is the verdict.
@@ -165,13 +176,13 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
   would have done and does nothing.
 
 A build workflow (the default `kind`) may not have `[trigger]`,
-`[assert]`, or `[limits]` — those are a run workflow's sections. A run
-workflow needs `[trigger]` and at least one step, the same "at least
-one step" every workflow needs. An unknown `on`, `effect`, or
-`on_failure` value is refused with the file and line, the same as any
-other malformed field. Loading, hashing, and versioning are otherwise
-identical to a build workflow: `forge workflows` marks a run workflow
-and shows its trigger in words.
+`[skip_if]`, `[assert]`, or `[limits]` — those are a run workflow's
+sections. A run workflow needs `[trigger]` and at least one step, the
+same "at least one step" every workflow needs. An unknown `on`,
+`effect`, or `on_failure` value is refused with the file and line, the
+same as any other malformed field. Loading, hashing, and versioning are
+otherwise identical to a build workflow: `forge workflows` marks a run
+workflow and shows its trigger in words.
 
 ### Where an automation lives
 
