@@ -236,6 +236,12 @@ impl Trigger {
                 .is_some_and(|c| c == "*" || c == contact)
     }
 
+    /// Whether this trigger fires for the webhook `name` (docs/JOBS.md,
+    /// "Triggers"): `on = "webhook"` and a `name` equal to it.
+    pub fn matches_webhook(&self, name: &str) -> bool {
+        self.on == TriggerOn::Webhook && self.name.as_deref() == Some(name)
+    }
+
     /// The value of the one field `on` names, for display.
     pub fn value(&self) -> Option<&str> {
         match self.on {

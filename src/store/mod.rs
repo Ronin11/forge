@@ -18,6 +18,7 @@ mod projects;
 mod record;
 mod stats;
 mod tasks;
+mod webhooks;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op};
 pub use deploys::{Assessment, Deploy, DeployTarget};
@@ -591,6 +592,31 @@ ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
     // firing itself is unique.
     "
 CREATE UNIQUE INDEX jobs_message_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'message' AND retry_count = 0;
+",
+    // Per-hook webhook tokens (docs/JOBS.md, \"Triggers\"): `forge project
+    // webhook token` mints one for a project's webhook `name`, `revoke`
+    // sets `revoked_at`, and `forge job fire` refuses a token that is not
+    // an active one for the hook it fires. Only the SHA-256 of the token
+    // is kept (`token_hash`), never the token.
+    "
+CREATE TABLE webhook_tokens (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE UNIQUE INDEX webhook_tokens_hash ON webhook_tokens(token_hash);
+CREATE INDEX webhook_tokens_hook ON webhook_tokens(project, name);
+",
+    // A webhook trigger's cause (docs/JOBS.md, \"Triggers\"): one job per
+    // project, workflow and delivery key (`trigger_ref`: the caller's
+    // `--ref`, else a hash of the input), so a delivery its sender retries
+    // — or two of them racing — fails the insert instead of starting a
+    // second job. The message index's shape, for a webhook.
+    "
+CREATE UNIQUE INDEX jobs_webhook_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'webhook' AND retry_count = 0;
 ",
 ];
 
@@ -1267,6 +1293,7 @@ mod column_tests {
             ("task_refs", record::TASK_REF_COLUMNS),
             ("assessments", deploys::ASSESSMENT_COLUMNS),
             ("messages", messages::MESSAGE_COLUMNS),
+            ("webhook_tokens", webhooks::WEBHOOK_TOKEN_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
@@ -1383,6 +1410,7 @@ mod column_tests {
             ("record.rs", include_str!("record.rs")),
             ("stats.rs", include_str!("stats.rs")),
             ("messages.rs", include_str!("messages.rs")),
+            ("webhooks.rs", include_str!("webhooks.rs")),
         ];
         for (name, src) in files {
             let lines = src.lines().count();

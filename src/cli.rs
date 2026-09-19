@@ -645,6 +645,12 @@ enum ProjectCmd {
         #[command(subcommand)]
         cmd: ProjectDeployCmd,
     },
+    /// Webhook tokens: what lets a caller outside Forge fire one of this
+    /// project's webhook triggers (see docs/JOBS.md, "Triggers")
+    Webhook {
+        #[command(subcommand)]
+        cmd: ProjectWebhookCmd,
+    },
     /// Mint a fresh customer portal link for this project (see
     /// docs/PORTAL.md): prints "/p/<token>"
     Portal {
@@ -669,6 +675,23 @@ enum ProjectCmd {
     /// view`. Exits non-zero if the token is unknown or revoked.
     ResolveToken {
         token: String,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectWebhookCmd {
+    /// Mint a token for a project's webhook `<name>` and print it once:
+    /// only its hash is kept, and it fires that one hook, nothing else
+    Token { project: String, name: String },
+    /// Revoke every active token on a project's webhook `<name>`
+    Revoke { project: String, name: String },
+    /// A project's webhook tokens (never the tokens themselves): which
+    /// hook, when minted, and whether revoked
+    List {
+        project: String,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -785,6 +808,29 @@ enum JobCmd {
         /// queuing it immediately (docs/JOBS.md, "Delayed jobs")
         #[arg(long)]
         delay: Option<String>,
+    },
+    /// Fire a webhook: queue a job for the project's run workflow whose
+    /// `[trigger]` is `on = "webhook"` with this name, refused without a
+    /// valid `--token` from `forge project webhook token` (see
+    /// docs/JOBS.md, "Triggers"). Prints the job's id; a delivery whose
+    /// key was already fired prints the earlier job's id and starts no
+    /// second job.
+    Fire {
+        project: String,
+        /// The webhook's name: the `name` a workflow's `[trigger]` carries
+        #[arg(long)]
+        webhook: String,
+        /// The delivery's body, a JSON object, as `forge job start
+        /// --input` takes it (default: `{}`)
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// The delivery's key: firing the same key again starts no second
+        /// job (default: the SHA-256 of the input)
+        #[arg(long = "ref")]
+        reference: Option<String>,
+        /// A token minted for this project's webhook
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Withdraw a scheduled job before it becomes due: refused once it is
     /// queued, running, or finished
@@ -1142,6 +1188,11 @@ pub async fn main() -> Result<()> {
                 ),
                 ProjectDeployCmd::Remove { project, name } => project_deploy_remove(project, name),
             },
+            ProjectCmd::Webhook { cmd } => match cmd {
+                ProjectWebhookCmd::Token { project, name } => webhook_token(project, name),
+                ProjectWebhookCmd::Revoke { project, name } => webhook_revoke(project, name),
+                ProjectWebhookCmd::List { project, json } => webhook_list(project, json),
+            },
             ProjectCmd::Portal { name, revoke } => project_portal(name, revoke),
             ProjectCmd::View { name, json } => project_view(name, json),
             ProjectCmd::ResolveToken { token, json } => project_resolve_token(token, json),
@@ -1165,6 +1216,13 @@ pub async fn main() -> Result<()> {
                 at,
                 delay,
             } => job_start(project, workflow, input, dry_run, now, at, delay).await,
+            JobCmd::Fire {
+                project,
+                webhook,
+                input,
+                reference,
+                token,
+            } => job_fire(project, webhook, input, reference, token).await,
             JobCmd::Withdraw { id } => job_withdraw(id),
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
@@ -2053,6 +2111,130 @@ async fn job_start(
     )
     .await?;
     out!("{id}");
+    Ok(())
+}
+
+/// `forge job fire <project> --webhook <name> [--input <file>] [--ref
+/// <key>] --token <token>` (docs/JOBS.md, "Triggers"). The token is checked
+/// before anything else about the project or the hook is said, and every
+/// way it can fail reads the same.
+async fn job_fire(
+    project: String,
+    webhook: String,
+    input: Option<PathBuf>,
+    reference: Option<String>,
+    token: Option<String>,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let valid = match token.as_deref() {
+        Some(t) if !t.is_empty() => f.store.webhook_token_valid(
+            &project,
+            &webhook,
+            &crate::job::sha256_hex(t.as_bytes()),
+        )?,
+        _ => false,
+    };
+    if !valid {
+        bail!(
+            "invalid webhook token for {project}/{webhook}: pass --token from `forge project webhook token`; a revoked, unknown or missing token is refused"
+        );
+    }
+    let bytes = match input.as_deref() {
+        Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
+        None => b"{}".to_vec(),
+    };
+    let trigger_ref = match reference {
+        Some(r) if r.trim().is_empty() || r.len() > 200 => {
+            bail!("--ref must be 1 to 200 characters")
+        }
+        Some(r) => r,
+        None => crate::job::sha256_hex(&bytes),
+    };
+    let input_text = String::from_utf8(bytes).context("the input file must be UTF-8")?;
+    let (workflow, wf, source, landed_sha) =
+        worker::webhook_workflow(&f, &project, &webhook).await?;
+    let (id, started) = crate::job::start_webhook(
+        &f,
+        &project,
+        &workflow,
+        &landed_sha,
+        &wf,
+        source,
+        &trigger_ref,
+        &input_text,
+    )?;
+    if !started {
+        eprintln!("job {id} already started for ref {trigger_ref}; nothing new started");
+    }
+    out!("{id}");
+    Ok(())
+}
+
+/// `forge project webhook token <project> <name>`: mint a token for a
+/// webhook and print it — the only time it is shown.
+fn webhook_token(project: String, name: String) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        bail!("a webhook name is letters, digits, '-', '_' and '.' (it is a URL path segment)");
+    }
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let token = random_portal_token()?;
+    f.store.create_webhook_token(
+        &project,
+        &name,
+        &crate::job::sha256_hex(token.as_bytes()),
+        unix_now(),
+    )?;
+    out!("{token}");
+    Ok(())
+}
+
+/// `forge project webhook revoke <project> <name>`.
+fn webhook_revoke(project: String, name: String) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let n = f.store.revoke_webhook_tokens(&project, &name, unix_now())?;
+    out!("revoked {n} token(s) for webhook {name} of project {project}");
+    Ok(())
+}
+
+/// `forge project webhook list <project> [--json]`.
+fn webhook_list(project: String, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let rows = f.store.webhook_tokens(&project)?;
+    if json {
+        let v: Vec<_> = rows
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "project": t.project,
+                    "name": t.name,
+                    "created_at": t.created_at,
+                    "revoked_at": t.revoked_at,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    for t in rows {
+        match t.revoked_at {
+            Some(at) => out!("{:<20} minted {} revoked {at}", t.name, t.created_at),
+            None => out!("{:<20} minted {} active", t.name, t.created_at),
+        }
+    }
     Ok(())
 }
 

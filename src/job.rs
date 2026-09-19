@@ -561,6 +561,75 @@ pub fn start_message(
     .map(Some)
 }
 
+/// The lowercase hex SHA-256 of `bytes`: a webhook token's stored form and
+/// the default key of a delivery that names none.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Start a job for one webhook delivery (`worker::webhook_workflow` found
+/// the run workflow): queued, never run inline, `trigger_kind = "webhook"`
+/// and `trigger_ref` the delivery's key — the caller's `--ref`, else the
+/// SHA-256 of the input — so a delivery its sender retries starts one job.
+/// Returns the job's id and whether this call started it: `false` for the
+/// job an earlier delivery of the same key already started, which is
+/// returned rather than refused, since a retry is the sender doing its
+/// job. The input file's whole text is the job's `input.json`, as `forge
+/// job start --input` would leave it, and must be a JSON object (an empty
+/// file is `{}`); `[trigger] delay` is added to the moment of delivery.
+#[allow(clippy::too_many_arguments)]
+pub fn start_webhook(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+    wf: &workflows::Workflow,
+    source: workflows::JobSource,
+    trigger_ref: &str,
+    input_text: &str,
+) -> Result<(i64, bool)> {
+    let kind = workflows::TriggerOn::Webhook;
+    let input_text = if input_text.trim().is_empty() {
+        "{}"
+    } else {
+        input_text
+    };
+    let input_json: serde_json::Value =
+        serde_json::from_str(input_text).context("parsing the input file as JSON")?;
+    string_fields(&input_json)?;
+    let earlier = || {
+        f.store
+            .job_for_trigger(project, workflow, kind.as_str(), trigger_ref)
+    };
+    if let Some(id) = earlier()? {
+        return Ok((id, false));
+    }
+    match queue_triggered(
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        kind,
+        trigger_ref,
+        unix_now(),
+        input_text,
+    ) {
+        Ok(id) => Ok((id, true)),
+        // Two deliveries of one key racing: the unique index refused the
+        // second, and the first's job is the one to report.
+        Err(e) => match earlier() {
+            Ok(Some(id)) => Ok((id, false)),
+            _ => Err(e),
+        },
+    }
+}
+
 /// Record a job a trigger (not `forge job start`) fired, queued for the
 /// worker: `per_day` checked like a manual start, `due_at` the firing's own
 /// `event_at` plus the trigger's `delay`, `input_text` written where the

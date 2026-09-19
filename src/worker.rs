@@ -16,7 +16,7 @@ use crate::store::{Direction, JobState, Message, Task, TaskState};
 use crate::unix_now;
 use crate::workflows;
 use crate::{config, git};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use croner::Cron;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -542,6 +542,36 @@ pub async fn message_triggers(f: &Forge, m: &Message) -> Vec<(String, i64)> {
         }
     }
     started
+}
+
+/// The run workflow a webhook fires (docs/JOBS.md, "Triggers"): among
+/// every run workflow that resolves for `project` — the resolution the
+/// schedule tick and `message_triggers` use — the one whose `[trigger]` is
+/// `on = "webhook"` with this `name`. An error says which of "none" and
+/// "more than one" it was, since a hook that fires two automations is
+/// refused rather than guessed at.
+pub async fn webhook_workflow(
+    f: &Forge,
+    project: &str,
+    name: &str,
+) -> Result<(String, workflows::Workflow, workflows::JobSource, String)> {
+    let mut matches: Vec<_> = project_run_workflows(f, project, "webhook trigger")
+        .await
+        .into_iter()
+        .filter(|(_, wf, _, _)| wf.trigger.as_ref().is_some_and(|t| t.matches_webhook(name)))
+        .collect();
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => bail!("no run workflow in project {project} has a webhook trigger named {name}"),
+        _ => bail!(
+            "more than one run workflow in project {project} has a webhook trigger named {name}: {}",
+            matches
+                .iter()
+                .map(|(w, ..)| w.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 pub struct WorkOpts {
