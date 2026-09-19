@@ -134,6 +134,7 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
             step: "assess",
             dir: wt,
             prompt: &prompt_text,
+            system: "",
             model: &model,
             max_turns,
             timeout: std::time::Duration::from_secs(timeout_secs),

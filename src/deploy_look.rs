@@ -138,6 +138,7 @@ pub async fn run(
             step: "deploy-look",
             dir: out_dir,
             prompt: &prompt_text,
+            system: "",
             model: &model,
             max_turns,
             timeout: std::time::Duration::from_secs(timeout_secs),

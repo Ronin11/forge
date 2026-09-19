@@ -18,7 +18,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 jsonschema = { version = "0.56.0", default-features = false }
 croner = "=4.0.0"
 chrono = { version = "=0.4.45", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"
 forge-client = { path = "client" }
+tiny_http = "0.12"
