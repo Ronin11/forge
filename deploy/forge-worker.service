@@ -1,11 +1,11 @@
-# Forge 2 worker as a user service. Install:
-#   mkdir -p ~/.config/systemd/user && cp deploy/forge2-worker.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload && systemctl --user enable --now forge2-worker
-# Redeploy after a rebuild: systemctl --user restart forge2-worker
+# Forge worker as a user service. Install:
+#   mkdir -p ~/.config/systemd/user && cp deploy/forge-worker.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now forge-worker
+# Redeploy after a rebuild: systemctl --user restart forge-worker
 # One SIGTERM drains (running attempts finish, nothing new is claimed), so the
 # stop timeout is long enough for the longest attempt.
 [Unit]
-Description=Forge 2 worker
+Description=Forge worker
 After=network-online.target
 
 [Service]
