@@ -225,6 +225,17 @@ pub struct Trigger {
 }
 
 impl Trigger {
+    /// Whether this trigger fires for an inbound message from `contact`
+    /// (docs/JOBS.md, "Triggers"): `on = "message"` and a `contact` that
+    /// is `"*"` or equals it.
+    pub fn matches_message(&self, contact: &str) -> bool {
+        self.on == TriggerOn::Message
+            && self
+                .contact
+                .as_deref()
+                .is_some_and(|c| c == "*" || c == contact)
+    }
+
     /// The value of the one field `on` names, for display.
     pub fn value(&self) -> Option<&str> {
         match self.on {

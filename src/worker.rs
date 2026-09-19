@@ -12,7 +12,7 @@ use crate::ctx::{Forge, Paths};
 use crate::engine::{self, Fault};
 use crate::job;
 use crate::report::Event;
-use crate::store::{JobState, Task, TaskState};
+use crate::store::{Direction, JobState, Message, Task, TaskState};
 use crate::unix_now;
 use crate::workflows;
 use crate::{config, git};
@@ -367,10 +367,11 @@ fn due_schedules(now: i64, schedules: Vec<Schedule>) -> Vec<Due> {
         .collect()
 }
 
-/// Every run workflow with a schedule trigger that resolves for `project`
-/// right now: its own repository's `.forge/workflows/*.toml` at its
-/// latest landed commit, and the operator's catalog, resolved by name the
-/// same way `forge job start` resolves any other workflow — the
+/// Every run workflow that resolves for `project` right now (the schedule
+/// tick keeps the ones with a schedule trigger, `message_triggers` the ones
+/// with a message trigger; `what` prefixes what is noted on stderr): its
+/// own repository's `.forge/workflows/*.toml` at its latest landed commit,
+/// and the operator's catalog, resolved by name the same way `forge job start` resolves any other workflow — the
 /// repository first, the catalog only for a name the repository does not
 /// have there (docs/JOBS.md, "Where an automation lives"). A project with
 /// no registered repository, or whose repository's `base_branch` has
@@ -378,16 +379,17 @@ fn due_schedules(now: i64, schedules: Vec<Schedule>) -> Vec<Due> {
 /// (the catalog's own, or one under this project's `.forge/workflows/`)
 /// is noted on stderr and skipped rather than stopping the tick for every
 /// other project.
-async fn project_schedules(
+pub(crate) async fn project_run_workflows(
     f: &Forge,
     project: &str,
+    what: &str,
 ) -> Vec<(String, workflows::Workflow, workflows::JobSource, String)> {
     let mut out = Vec::new();
     let repo = match f.store.first_repo(project) {
         Ok(Some(r)) => r,
         Ok(None) => return out,
         Err(e) => {
-            eprintln!("schedule tick: {project}: {e:#}");
+            eprintln!("{what}: {project}: {e:#}");
             return out;
         }
     };
@@ -395,7 +397,7 @@ async fn project_schedules(
     let cfg = match config::load_working(repo_path).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("schedule tick: {project}: {e:#}");
+            eprintln!("{what}: {project}: {e:#}");
             return out;
         }
     };
@@ -411,7 +413,7 @@ async fn project_schedules(
             .map(|w| w.name)
             .collect(),
         Err(e) => {
-            eprintln!("schedule tick: {project}: {e:#}");
+            eprintln!("{what}: {project}: {e:#}");
             Vec::new()
         }
     };
@@ -423,12 +425,12 @@ async fn project_schedules(
                 }
             }
         }
-        Err(e) => eprintln!("schedule tick: {e:#}"),
+        Err(e) => eprintln!("{what}: {e:#}"),
     }
     for name in names {
         match workflows::resolve_job_for_project(&f.paths.home, repo_path, &landed_sha, &name) {
             Ok((wf, _steps, source)) => out.push((name, wf, source, landed_sha.clone())),
-            Err(e) => eprintln!("schedule tick: {project}/{name}: {e:#}"),
+            Err(e) => eprintln!("{what}: {project}/{name}: {e:#}"),
         }
     }
     out
@@ -448,7 +450,9 @@ async fn schedule_tick(f: &Forge) -> Result<()> {
         (workflows::Workflow, workflows::JobSource, String),
     > = HashMap::new();
     for project in f.store.list_projects()? {
-        for (name, wf, source, landed_sha) in project_schedules(f, &project.name).await {
+        for (name, wf, source, landed_sha) in
+            project_run_workflows(f, &project.name, "schedule tick").await
+        {
             let Some(trigger) = wf.trigger.as_ref() else {
                 continue;
             };
@@ -503,6 +507,41 @@ async fn schedule_tick(f: &Forge) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The message trigger (docs/JOBS.md, "Triggers" and "Build order" step 3):
+/// `forge message record` calls this once an inbound message is recorded.
+/// Every run workflow that resolves for the message's project — the same
+/// resolution the schedule tick uses — whose `[trigger]` is `on =
+/// "message"` with a `contact` of `"*"` or the message's own starts one job
+/// (`job::start_message`), queued for the worker and never run inline.
+/// Idempotent per message: a workflow that already started a job for this
+/// message id starts none. Returns `(workflow, job id)` for each job
+/// started; a workflow whose start fails (its `per_day` cap, say) is noted
+/// on stderr and skipped, so one refusal never hides the others. An
+/// outbound message fires nothing.
+pub async fn message_triggers(f: &Forge, m: &Message) -> Vec<(String, i64)> {
+    let mut started = Vec::new();
+    if m.direction != Direction::In {
+        return started;
+    }
+    for (name, wf, source, landed_sha) in
+        project_run_workflows(f, &m.project, "message trigger").await
+    {
+        if !wf
+            .trigger
+            .as_ref()
+            .is_some_and(|t| t.matches_message(&m.contact))
+        {
+            continue;
+        }
+        match job::start_message(f, &m.project, &name, &landed_sha, &wf, source, m) {
+            Ok(Some(id)) => started.push((name, id)),
+            Ok(None) => {}
+            Err(e) => eprintln!("message trigger: {}/{name}: {e:#}", m.project),
+        }
+    }
+    started
 }
 
 pub struct WorkOpts {

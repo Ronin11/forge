@@ -1058,7 +1058,7 @@ pub async fn main() -> Result<()> {
                 to,
                 text,
                 task,
-            } => message_record(project, channel, from, to, text, task),
+            } => message_record(project, channel, from, to, text, task).await,
             MessageCmd::List {
                 project,
                 contact,
@@ -1471,7 +1471,7 @@ fn ref_list(task: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn message_record(
+async fn message_record(
     project: String,
     channel: String,
     from: Option<String>,
@@ -1498,6 +1498,16 @@ fn message_record(
         .store
         .insert_message(&project, &channel, &contact, direction, &text, task)?;
     out!("{id} {} {contact}", direction.as_str());
+    // The trigger point (docs/JOBS.md, "Triggers"): an inbound message
+    // queues a job for every run workflow whose `[trigger]` matches it. The
+    // message is already recorded, so a start that fails is noted, not fatal.
+    if direction == crate::store::Direction::In
+        && let Some(m) = f.store.message(id)?
+    {
+        for (workflow, job) in crate::worker::message_triggers(&f, &m).await {
+            eprintln!("job {job} queued ({workflow}, message {id})");
+        }
+    }
     Ok(())
 }
 

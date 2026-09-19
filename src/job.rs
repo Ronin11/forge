@@ -17,7 +17,7 @@
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Job, JobEffect, JobState, JobStep, Task, TaskState};
+use crate::store::{Job, JobEffect, JobState, JobStep, Message, Task, TaskState};
 use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now};
 use anyhow::{Context, Result};
@@ -495,6 +495,89 @@ pub async fn start_scheduled(
     source: workflows::JobSource,
     slot: i64,
 ) -> Result<i64> {
+    queue_triggered(
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        workflows::TriggerOn::Schedule,
+        &slot.to_string(),
+        slot,
+        "{}",
+    )
+}
+
+/// The input a message trigger gives its job (docs/JOBS.md, "Triggers"):
+/// who said it, what, when, on which channel, and the record's own id.
+/// Only the string fields become `FORGE_INPUT_*`; `at` and `message_id` are
+/// read from `input.json` in `FORGE_INPUT_DIR`.
+fn message_input(m: &Message) -> serde_json::Value {
+    serde_json::json!({
+        "from": m.contact,
+        "text": m.text,
+        "at": m.at,
+        "channel": m.channel,
+        "message_id": m.id,
+    })
+}
+
+/// Start a job for one inbound message a run workflow's `[trigger] on =
+/// "message"` matched (`worker::message_triggers`): queued, never run
+/// inline, `trigger_kind = "message"` and `trigger_ref` the message's id.
+/// `None` when this workflow already started a job for this message, so
+/// recording it twice starts one job, not two; `[trigger] delay` is added
+/// to the message's own `at` the way a schedule's is added to its slot.
+pub fn start_message(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+    wf: &workflows::Workflow,
+    source: workflows::JobSource,
+    m: &Message,
+) -> Result<Option<i64>> {
+    let kind = workflows::TriggerOn::Message;
+    let trigger_ref = m.id.to_string();
+    if f.store
+        .job_for_trigger(project, workflow, kind.as_str(), &trigger_ref)?
+        .is_some()
+    {
+        return Ok(None);
+    }
+    queue_triggered(
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        kind,
+        &trigger_ref,
+        m.at,
+        &message_input(m).to_string(),
+    )
+    .map(Some)
+}
+
+/// Record a job a trigger (not `forge job start`) fired, queued for the
+/// worker: `per_day` checked like a manual start, `due_at` the firing's own
+/// `event_at` plus the trigger's `delay`, `input_text` written where the
+/// worker's claim reads it.
+#[allow(clippy::too_many_arguments)]
+fn queue_triggered(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+    wf: &workflows::Workflow,
+    source: workflows::JobSource,
+    kind: workflows::TriggerOn,
+    trigger_ref: &str,
+    event_at: i64,
+    input_text: &str,
+) -> Result<i64> {
     let started_at = unix_now();
     if let Some(l) = wf.limits.as_ref()
         && l.per_day > 0
@@ -509,15 +592,19 @@ pub async fn start_scheduled(
             );
         }
     }
-    let due_at = wf.trigger.as_ref().and_then(|t| t.delay).map(|d| slot + d);
+    let due_at = wf
+        .trigger
+        .as_ref()
+        .and_then(|t| t.delay)
+        .map(|d| event_at + d);
     let job = Job {
         id: 0,
         project: project.to_string(),
         workflow: workflow.to_string(),
         workflow_hash: wf.hash.clone(),
         landed_sha: landed_sha.to_string(),
-        trigger_kind: workflows::TriggerOn::Schedule.as_str().to_string(),
-        trigger_ref: slot.to_string(),
+        trigger_kind: kind.as_str().to_string(),
+        trigger_ref: trigger_ref.to_string(),
         state: scheduled_state(due_at, started_at),
         workflow_source: source.as_str().to_string(),
         dry_run: false,
@@ -531,7 +618,7 @@ pub async fn start_scheduled(
     let job_id = f.store.create_job(&job)?;
     let idir = input_dir(f, job_id);
     std::fs::create_dir_all(&idir)?;
-    std::fs::write(idir.join("input.json"), "{}")?;
+    std::fs::write(idir.join("input.json"), input_text)?;
     Ok(job_id)
 }
 

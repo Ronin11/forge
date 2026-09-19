@@ -116,6 +116,20 @@ impl Store {
         Ok(c.last_insert_rowid())
     }
 
+    /// One message by id, or `None`.
+    pub fn message(&self, id: i64) -> Result<Option<Message>> {
+        let c = self.lock();
+        Ok(c.query_row(
+            &format!(
+                "SELECT {} FROM messages WHERE id = ?1",
+                MESSAGE_COLUMNS.join(", ")
+            ),
+            params![id],
+            message_from_row,
+        )
+        .optional()?)
+    }
+
     /// A project's messages, newest first, narrowed by contact, a minimum
     /// `at`, and/or direction.
     pub fn messages(&self, project: &str, q: &MessageFilter) -> Result<Vec<Message>> {

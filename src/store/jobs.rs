@@ -546,6 +546,27 @@ impl Store {
         )?)
     }
 
+    /// The id of the job `project`'s `workflow` already started for
+    /// `trigger_kind` and `trigger_ref` (a message id, say), or `None`: how
+    /// a trigger that fires twice for one cause finds the job it already
+    /// started (docs/JOBS.md, "Triggers").
+    pub fn job_for_trigger(
+        &self,
+        project: &str,
+        workflow: &str,
+        trigger_kind: &str,
+        trigger_ref: &str,
+    ) -> Result<Option<i64>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind=?3 AND trigger_ref=?4 ORDER BY id LIMIT 1",
+                params![project, workflow, trigger_kind, trigger_ref],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Put a running job back in the queue: the worker aborted with it
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).
