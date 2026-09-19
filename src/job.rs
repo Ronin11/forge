@@ -416,6 +416,7 @@ pub async fn start(
         &landed_sha,
         &steps,
         &wf.assert,
+        &wf.skip_if,
         wf.limits.as_ref(),
         dry_run,
         &input_text,
@@ -485,11 +486,12 @@ pub async fn start_scheduled(
     Ok(job_id)
 }
 
-/// Run a job's steps and assertions now, recording everything as it goes,
-/// and `finish_job` with the final state, cost and verdict. Emits
-/// `JobStarted` on entry and `JobFinished` once `finish_job` is recorded
-/// (docs/JOBS.md, "The executor"): the one place both `--now` and the
-/// worker's claimed run (`run_claimed`, called by `drive`) funnel through.
+/// Run a job's `[skip_if]` commands, then its steps and assertions,
+/// recording everything as it goes, and `finish_job` with the final state,
+/// cost and verdict. Emits `JobStarted` on entry and `JobFinished` once
+/// `finish_job` is recorded (docs/JOBS.md, "The executor" and "Skipping a
+/// run"): the one place both `--now` and the worker's claimed run
+/// (`run_claimed`, called by `drive`) funnel through.
 #[allow(clippy::too_many_arguments)]
 async fn run_now(
     f: &Forge,
@@ -500,6 +502,7 @@ async fn run_now(
     landed_sha: &str,
     steps: &[workflows::RunStep],
     assert: &BTreeMap<String, Vec<String>>,
+    skip_if: &BTreeMap<String, Vec<String>>,
     limits: Option<&workflows::Limits>,
     dry_run: bool,
     input_text: &str,
@@ -534,6 +537,52 @@ async fn run_now(
     let secrets = f.project_secrets.get(project).cloned().unwrap_or_default();
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
+
+    // `[skip_if]`, in name order: the first command to exit 0 ends the job
+    // `Skipped` before any step runs, counting against nothing — not
+    // `per_day`, not `on_failure`, not the failed rollup (docs/JOBS.md,
+    // "Skipping a run"). A non-zero exit means "not skipped, proceed".
+    for (name, argv) in skip_if {
+        let env = step_env(
+            job_id,
+            name,
+            &effect_log,
+            &idir,
+            input_fields,
+            &[],
+            &secrets,
+            dry_run,
+        );
+        let r = checks::run_one("L0", name, argv, &scratch, None, timeout, &env).await;
+        if r.ok {
+            let reason = r.stdout.lines().next().unwrap_or_default().to_string();
+            let verdict = vec![checks::CheckResult {
+                level: "L0".to_string(),
+                name: name.clone(),
+                ok: true,
+                tail: reason,
+                ..Default::default()
+            }];
+            f.store.finish_job(
+                job_id,
+                unix_now(),
+                JobState::Skipped,
+                Some(0.0),
+                &serde_json::to_string(&verdict)?,
+            )?;
+            f.report.emit(
+                0,
+                Event::JobFinished {
+                    project,
+                    workflow,
+                    job_id,
+                    state: JobState::Skipped.as_str(),
+                    cost_usd: 0.0,
+                },
+            );
+            return Ok(());
+        }
+    }
 
     let mut ok = true;
     let mut needs_human = false;
@@ -800,6 +849,7 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &job.landed_sha,
         &steps,
         &wf.assert,
+        &wf.skip_if,
         wf.limits.as_ref(),
         job.dry_run,
         &input_text,
@@ -998,6 +1048,7 @@ pub async fn bench(
                 &landed_sha,
                 &steps,
                 &wf.assert,
+                &wf.skip_if,
                 wf.limits.as_ref(),
                 true,
                 &input_text,

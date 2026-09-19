@@ -250,12 +250,20 @@ fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
 }
 
 /// The class and plain-word phrase for one job run: bad for a failure,
-/// warn for one that needs a person, ok for a clean run, plain for
-/// anything still in flight. A failure or a needs-you carries its
-/// one-line reason, when there is one.
+/// warn for one that needs a person, ok for a clean run or a skip (a
+/// `[skip_if]` deciding there was nothing to do is not a failure), plain
+/// for anything still in flight. A failure, a needs-you, or a skip carries
+/// its one-line reason, when there is one.
 fn job_run_status(j: &PortalJobRun) -> (&'static str, String) {
     match j.state.as_str() {
         "ok" => ("ok", "Ran fine.".to_string()),
+        "skipped" => (
+            "ok",
+            match &j.reason {
+                Some(r) => format!("Skipped \u{2014} {r}."),
+                None => "Skipped.".to_string(),
+            },
+        ),
         "failed" => (
             "bad",
             match &j.reason {

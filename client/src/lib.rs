@@ -512,6 +512,8 @@ pub struct ProjectRow {
     #[serde(default)]
     pub jobs_needs_human: i64,
     #[serde(default)]
+    pub jobs_skipped: i64,
+    #[serde(default)]
     pub workflow: Option<String>,
     #[serde(default)]
     pub per_task_usd: Option<f64>,

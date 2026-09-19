@@ -1432,11 +1432,12 @@ fn print_project_row(r: &crate::view::ProjectRow) {
     );
     out!("cost       ${:.2}", r.cost_usd);
     out!(
-        "jobs       today={} ok={} failed={} needs_human={}",
+        "jobs       today={} ok={} failed={} needs_human={} skipped={}",
         r.jobs_today,
         r.jobs_ok,
         r.jobs_failed,
-        r.jobs_needs_human
+        r.jobs_needs_human,
+        r.jobs_skipped
     );
     out!(
         "defaults   workflow={} per-task=${} per-initiative=${} supervisor={} per-lineage={} protected={}",
@@ -1957,6 +1958,13 @@ fn job_show(id: i64, json: bool) -> Result<()> {
         out!("due        {due}");
     }
     out!("cost       ${:.2}", doc.cost_usd.unwrap_or(0.0));
+    if doc.state == "skipped" {
+        let verdict: Vec<crate::checks::CheckResult> =
+            serde_json::from_str(&doc.verdict_json).unwrap_or_default();
+        if let Some(c) = verdict.first() {
+            out!("reason     {}", c.tail);
+        }
+    }
     if !doc.steps.is_empty() {
         out!("steps");
         let verdict: Vec<crate::checks::CheckResult> =
@@ -3570,21 +3578,23 @@ async fn stats(
     if !doc.jobs.is_empty() {
         out!();
         out!(
-            "{:<16} {:>5} {:>4} {:>6} {:>11}",
+            "{:<16} {:>5} {:>4} {:>6} {:>11} {:>7}",
             "PROJECT",
             "TODAY",
             "OK",
             "FAILED",
-            "NEEDS_HUMAN"
+            "NEEDS_HUMAN",
+            "SKIPPED"
         );
         for j in &doc.jobs {
             out!(
-                "{:<16} {:>5} {:>4} {:>6} {:>11}",
+                "{:<16} {:>5} {:>4} {:>6} {:>11} {:>7}",
                 j.project,
                 j.today,
                 j.ok,
                 j.failed,
-                j.needs_human
+                j.needs_human,
+                j.skipped
             );
         }
     }

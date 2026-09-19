@@ -583,6 +583,12 @@ struct WorkflowRaw {
     /// effect log and every step's output on disk.
     #[serde(default)]
     assert: BTreeMap<String, Vec<String>>,
+    /// `kind = "run"` only: named commands run in the scratch tree with the
+    /// job's environment before any step; the first to exit 0 ends the job
+    /// `Skipped` with the first line of its stdout as the reason (docs/JOBS.md,
+    /// "Skipping a run").
+    #[serde(default)]
+    skip_if: BTreeMap<String, Vec<String>>,
     /// `kind = "run"` only: budget and failure policy.
     limits: Option<Limits>,
 }
@@ -631,6 +637,9 @@ pub struct Workflow {
     pub trigger: Option<Trigger>,
     /// `kind = "run"` only; empty when unset.
     pub assert: BTreeMap<String, Vec<String>>,
+    /// `kind = "run"` only; empty when unset (docs/JOBS.md, "Skipping a
+    /// run").
+    pub skip_if: BTreeMap<String, Vec<String>>,
     /// `kind = "run"` only.
     pub limits: Option<Limits>,
     pub hash: String,
@@ -1073,6 +1082,12 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
                     path.display()
                 );
             }
+            if !raw.skip_if.is_empty() {
+                bail!(
+                    "{}: kind = \"build\" (the default) may not have [skip_if]; that is a run workflow's section (set kind = \"run\")",
+                    path.display()
+                );
+            }
             if raw.limits.is_some() {
                 bail!(
                     "{}: kind = \"build\" (the default) may not have [limits]; that is a run workflow's section (set kind = \"run\")",
@@ -1116,6 +1131,7 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
         meta: raw.meta,
         trigger,
         assert: raw.assert,
+        skip_if: raw.skip_if,
         limits: raw.limits,
         hash,
         path: path.to_path_buf(),
@@ -2382,6 +2398,9 @@ contact = "customers"
 [assert]
 quoted  = ["scripts/assert-quote.sh"]
 
+[skip_if]
+already_quoted = ["scripts/skip-if-already-quoted.sh"]
+
 [limits]
 budget_usd = 0.10
 per_day    = 200
@@ -2401,6 +2420,10 @@ on_failure = "ask:contact"
         assert_eq!(
             w.assert.get("quoted").unwrap(),
             &vec!["scripts/assert-quote.sh".to_string()]
+        );
+        assert_eq!(
+            w.skip_if.get("already_quoted").unwrap(),
+            &vec!["scripts/skip-if-already-quoted.sh".to_string()]
         );
         let limits = w.limits.as_ref().unwrap();
         assert_eq!(limits.budget_usd, 0.10);
@@ -2429,6 +2452,13 @@ on_failure = "ask:contact"
         );
         let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
         assert!(err.contains("may not have [limits]"), "{err}");
+        write(
+            dir.path(),
+            "wrongly-run.toml",
+            "name = \"wrongly-run\"\nsteps = [{ action = \"code\" }]\n[skip_if]\nalready_done = [\"true\"]\n",
+        );
+        let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
+        assert!(err.contains("may not have [skip_if]"), "{err}");
     }
 
     #[test]

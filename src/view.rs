@@ -910,6 +910,7 @@ pub struct StatsJobsRow {
     pub ok: i64,
     pub failed: i64,
     pub needs_human: i64,
+    pub skipped: i64,
 }
 
 impl From<&crate::store::JobStat> for StatsJobsRow {
@@ -920,6 +921,7 @@ impl From<&crate::store::JobStat> for StatsJobsRow {
             ok: j.ok,
             failed: j.failed,
             needs_human: j.needs_human,
+            skipped: j.skipped,
         }
     }
 }
@@ -1614,6 +1616,7 @@ pub struct ProjectRow {
     pub jobs_ok: i64,
     pub jobs_failed: i64,
     pub jobs_needs_human: i64,
+    pub jobs_skipped: i64,
     pub workflow: Option<String>,
     pub per_task_usd: Option<f64>,
     pub per_initiative_usd: Option<f64>,
@@ -1680,6 +1683,7 @@ pub fn project_row(f: &Forge, p: &crate::store::Project) -> Result<ProjectRow> {
         jobs_ok: job_stats.ok,
         jobs_failed: job_stats.failed,
         jobs_needs_human: job_stats.needs_human,
+        jobs_skipped: job_stats.skipped,
         workflow: p.workflow.clone(),
         per_task_usd: p.per_task_usd,
         per_initiative_usd: p.per_initiative_usd,
@@ -2410,7 +2414,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             entry.jobs.push(PortalJobRun {
                 started_at: j.started_at,
                 state: j.state.as_str().to_string(),
-                reason: job_failure_reason(&j),
+                reason: job_reason(&j),
             });
         }
     }
@@ -2535,21 +2539,25 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
     })
 }
 
-/// A failed or needs-human job's one-line reason on `PortalDoc`: the
-/// first line of the first failing check's tail in `verdict_json`, any
-/// path-like token stripped, cut at 120 characters on a word boundary —
-/// the same treatment `derive_landed_line` gives a landed task's own
-/// request text (see docs/PORTAL.md). `None` for a job that is queued,
-/// running, dropped, or went ok, or whose verdict carries no failing
-/// check.
-fn job_failure_reason(j: &crate::store::Job) -> Option<String> {
+/// A failed, needs-human, or skipped job's one-line reason on `PortalDoc`:
+/// for a failure, the first line of the first failing check's tail in
+/// `verdict_json`; for `Skipped`, the first line of the `[skip_if]`
+/// command's own tail — its stdout's first line, recorded there by
+/// `job::run_now` (docs/JOBS.md, "Skipping a run"). Either way, any
+/// path-like token is stripped and the result cut at 120 characters on a
+/// word boundary, the same treatment `derive_landed_line` gives a landed
+/// task's own request text (see docs/PORTAL.md). `None` for a job that is
+/// queued, running, dropped, or went ok, or whose verdict carries no
+/// matching check.
+fn job_reason(j: &crate::store::Job) -> Option<String> {
     use crate::store::JobState;
-    if !matches!(j.state, JobState::Failed | JobState::NeedsHuman) {
-        return None;
-    }
     let verdict: Vec<crate::checks::CheckResult> =
         serde_json::from_str(&j.verdict_json).unwrap_or_default();
-    let tail = &verdict.iter().find(|c| !c.ok)?.tail;
+    let tail = match j.state {
+        JobState::Skipped => &verdict.first()?.tail,
+        JobState::Failed | JobState::NeedsHuman => &verdict.iter().find(|c| !c.ok)?.tail,
+        _ => return None,
+    };
     let line = tail.lines().next().unwrap_or(tail);
     let stripped = crate::render::strip_path_like_tokens(line.trim());
     Some(crate::render::truncate_at_word_boundary(

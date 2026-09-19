@@ -7,7 +7,10 @@ use serde::{Serialize, Serializer};
 /// `Scheduled` is a job created with a due time (`Job::due_at`) still in the
 /// future: it waits there, a row and never an in-memory timer, until the
 /// worker's claim (`claim_next_job`) finds it due (docs/JOBS.md, "Delayed
-/// jobs").
+/// jobs"). `Skipped` is a `[skip_if]` command exiting 0 before any step ran
+/// (docs/JOBS.md, "Skipping a run"): a terminal state of its own, counted
+/// against nothing — not `per_day`, not `on_failure`, not the failed
+/// rollup — and recorded as an ordinary job row like any other outcome.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum JobState {
     #[default]
@@ -18,6 +21,7 @@ pub enum JobState {
     Failed,
     NeedsHuman,
     Dropped,
+    Skipped,
 }
 
 impl JobState {
@@ -30,6 +34,7 @@ impl JobState {
             JobState::Failed => "failed",
             JobState::NeedsHuman => "needs_human",
             JobState::Dropped => "dropped",
+            JobState::Skipped => "skipped",
         }
     }
 }
@@ -53,6 +58,7 @@ impl TryFrom<&str> for JobState {
             "failed" => JobState::Failed,
             "needs_human" => JobState::NeedsHuman,
             "dropped" => JobState::Dropped,
+            "skipped" => JobState::Skipped,
             other => {
                 return Err(std::io::Error::other(format!(
                     "unknown job state {other:?}"
@@ -157,9 +163,11 @@ pub struct JobEffect {
 /// Jobs run in the last rolling 24h for one project, by outcome: what
 /// `forge project show` and `forge stats`'s jobs section count separately
 /// from tasks (docs/JOBS.md step 1d). `today` is every job started in the
-/// window, whatever its current state; `ok`/`failed`/`needs_human` are
-/// those of them that reached that state (a still-`queued` or `running`
-/// job counts toward `today` alone).
+/// window, whatever its current state; `ok`/`failed`/`needs_human`/`skipped`
+/// are those of them that reached that state (a still-`queued` or `running`
+/// job counts toward `today` alone). `skipped` is shown separately from
+/// `ok` and never folds into `failed`: a `[skip_if]` that fired is not a
+/// failure (docs/JOBS.md, "Skipping a run").
 #[derive(Default, Debug, Clone)]
 pub struct JobStat {
     pub project: String,
@@ -167,6 +175,7 @@ pub struct JobStat {
     pub ok: i64,
     pub failed: i64,
     pub needs_human: i64,
+    pub skipped: i64,
 }
 
 pub(super) const JOB_COLUMNS: &[&str] = &[
@@ -265,7 +274,7 @@ impl Store {
     /// `JobStat`, docs/JOBS.md step 1d).
     pub fn project_job_stats(&self, project: &str, since: i64) -> Result<JobStat> {
         Ok(self.lock().query_row(
-            "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
+            "SELECT COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human, SUM(state='skipped') AS skipped
              FROM jobs WHERE project=?1 AND started_at >= ?2",
             params![project, since],
             |r| {
@@ -275,6 +284,7 @@ impl Store {
                     ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
                     failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
                     needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
+                    skipped: r.get::<_, Option<i64>>("skipped")?.unwrap_or(0),
                 })
             },
         )?)
@@ -286,7 +296,7 @@ impl Store {
     pub fn job_stats(&self, since: i64) -> Result<Vec<JobStat>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT project AS project, COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human
+            "SELECT project AS project, COUNT(*) AS today, SUM(state='ok') AS ok, SUM(state='failed') AS failed, SUM(state='needs_human') AS needs_human, SUM(state='skipped') AS skipped
              FROM jobs WHERE started_at >= ?1 GROUP BY project ORDER BY project",
         )?;
         let rows = stmt.query_map(params![since], |r| {
@@ -296,6 +306,7 @@ impl Store {
                 ok: r.get::<_, Option<i64>>("ok")?.unwrap_or(0),
                 failed: r.get::<_, Option<i64>>("failed")?.unwrap_or(0),
                 needs_human: r.get::<_, Option<i64>>("needs_human")?.unwrap_or(0),
+                skipped: r.get::<_, Option<i64>>("skipped")?.unwrap_or(0),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -501,10 +512,12 @@ impl Store {
 
     /// How many of `project`'s runs of `workflow` started at or after
     /// `since`, dry runs excluded: `Limits.per_day` is checked against it
-    /// by `job::start` (docs/JOBS.md, "Limits").
+    /// by `job::start` (docs/JOBS.md, "Limits"). A run a `[skip_if]`
+    /// command ended before any step ran is excluded too — it counts
+    /// against nothing (docs/JOBS.md, "Skipping a run").
     pub fn jobs_started_since(&self, project: &str, workflow: &str, since: i64) -> Result<i64> {
         Ok(self.lock().query_row(
-            "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND started_at >= ?3",
+            "SELECT COUNT(*) FROM jobs WHERE project=?1 AND workflow=?2 AND dry_run=0 AND state != 'skipped' AND started_at >= ?3",
             params![project, workflow, since],
             |r| r.get(0),
         )?)
