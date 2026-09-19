@@ -1,0 +1,4 @@
+name = "measure-engineering"
+kind = "operation"
+description = "runs .forge/workflows/actions/measure.sh: kernel lines, the five largest files, the eight longest functions, modules without a #[cfg(test)] block, test counts, e2e wall time and clippy warnings, written to measurements.json in the scratch and logged as a row effect"
+run = ["bash", ".forge/workflows/actions/measure.sh"]

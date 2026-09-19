@@ -1,0 +1,29 @@
+name = "engineering-weekly"
+kind = "run"
+description = "Sunday morning, the tree measures itself the way docs/REVIEW-2.md opens — kernel lines, the five largest files, the eight longest functions, modules without a #[cfg(test)] block, test counts, e2e wall time, clippy warnings — and asks for a fresh review when a threshold is crossed, so the discipline runs unattended (docs/JOBS.md)"
+
+steps = [
+  { action = "measure-engineering",  effect = "row" },
+  { action = "review-if-crossed",    effect = "row" },
+]
+
+[trigger]
+on = "schedule"
+cron = "0 8 * * 0"
+
+[skip_if]
+# A review, by hand or by an earlier run of this job, already landed this
+# week: nothing to ask for.
+reviewed_this_week = ["bash", ".forge/workflows/actions/skip-if-reviewed.sh"]
+
+[env]
+# Today's numbers (docs/REVIEW-2.md): `run_task` is ~166 lines, the
+# largest file (cli.rs) is already past 3000 — that crossing is exactly
+# what this job exists to catch and ask about.
+RUN_TASK_MAX_LINES = "400"
+SRC_FILE_MAX_LINES = "3000"
+
+[limits]
+budget_usd = 0.0
+per_day = 1
+on_failure = "ask:operator"

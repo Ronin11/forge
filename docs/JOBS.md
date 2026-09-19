@@ -204,6 +204,13 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   step runs instead of after (see "Skipping a run", below).
 - **Limits.** A budget per run, a rate per day, and what to do on
   failure.
+- **`[env]`.** A table of extra environment for every operation step and
+  `[skip_if]` command of this workflow's jobs: a threshold, a table name, a
+  URL — a fact the automation's own author picked, not one the kernel
+  knows. Declaring `RUN_TASK_MAX_LINES = "400"` here instead of writing
+  `400` into the script means changing the number is a workflow-file edit,
+  not a script edit. Refused on a build workflow, like `[assert]` and
+  `[skip_if]`.
 
 ## The executor
 
@@ -212,8 +219,15 @@ A job is claimed by the worker like a task and runs in a sandbox:
 1. Materialise the project's landed tree at its pinned commit into a
    scratch directory (from the repository cache; no clone, no branch).
 2. Write the trigger's inputs as files and environment (`FORGE_INPUT_*`,
-   `FORGE_INPUT_DIR`), and the project's secrets as environment from the
-   operator's store, never into any prompt.
+   `FORGE_INPUT_DIR`), the workflow's own `[env]` table, and the project's
+   secrets as environment from the operator's store, never into any
+   prompt. `FORGE_PROJECT` and `FORGE_REPO_DIR` name the project and its
+   real, landed repository (unlike the scratch directory a step runs in,
+   this one has a `.git`) for a step that has to act on the project
+   itself, such as filing a task with `forge add`; `FORGE_BIN_DIR` and
+   `FORGE2_HOME` are where that `forge` binary and the operator's own
+   store live, so a step's own recursive `forge` call reaches the same
+   store this one did, not a default.
 3. Run `[skip_if]`, in name order. The first command to exit 0 ends the
    job right here — see "Skipping a run", below — before step 4 ever
    runs.

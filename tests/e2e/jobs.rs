@@ -1089,6 +1089,144 @@ fn forge_job_bench_measures_two_fake_providers_over_two_fixtures() {
     );
 }
 
+/// The engineering-weekly job (scheduler task 7 of 7; docs/JOBS.md, "Where
+/// an automation lives"): the real workflow and its three scripts, copied
+/// unmodified into the project's own repository except for
+/// `SRC_FILE_MAX_LINES`, lowered from 3000 to 5 so a small fixture file
+/// crosses it deterministically and fast, with no Cargo.toml in the
+/// fixture to make measure.sh actually build or lint anything. A dry run
+/// still measures — the first `row` effect carries the JSON document — but
+/// files nothing: the second `row` effect says it would have, marked
+/// "(dry run)", and `forge log` afterward still shows no task on the
+/// project, proving `forge add` itself was never called.
+#[test]
+fn engineering_weekly_dry_run_measures_and_files_nothing() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "acme", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let wf_dir = e.repo.join(".forge/workflows");
+    std::fs::create_dir_all(wf_dir.join("actions")).unwrap();
+
+    let wf_text =
+        std::fs::read_to_string(root.join(".forge/workflows/engineering-weekly.toml")).unwrap();
+    let wf_text = wf_text.replace(
+        "SRC_FILE_MAX_LINES = \"3000\"",
+        "SRC_FILE_MAX_LINES = \"5\"",
+    );
+    assert!(
+        wf_text.contains("SRC_FILE_MAX_LINES = \"5\""),
+        "the real workflow's threshold line changed shape; update this test's replace"
+    );
+    std::fs::write(wf_dir.join("engineering-weekly.toml"), wf_text).unwrap();
+
+    for f in ["measure-engineering.toml", "review-if-crossed.toml"] {
+        std::fs::copy(
+            root.join(".forge/workflows/actions").join(f),
+            wf_dir.join("actions").join(f),
+        )
+        .unwrap();
+    }
+    for f in ["measure.sh", "compare-thresholds.sh", "skip-if-reviewed.sh"] {
+        std::fs::copy(
+            root.join(".forge/workflows/actions").join(f),
+            wf_dir.join("actions").join(f),
+        )
+        .unwrap();
+    }
+
+    // A fixture file over the test's lowered threshold, nowhere near a
+    // real 3000-line one, and no Cargo.toml: measure.sh's cargo
+    // test/clippy block never runs.
+    std::fs::create_dir_all(e.repo.join("src")).unwrap();
+    std::fs::write(
+        e.repo.join("src/big.rs"),
+        "// a fixture line, over the lowered threshold\n".repeat(10),
+    )
+    .unwrap();
+
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "engineering-weekly fixture"]);
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "acme",
+            "engineering-weekly",
+            "--dry-run",
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(doc["dry_run"], true);
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+
+    assert_eq!(effects[0]["kind"], "row");
+    assert_eq!(effects[0]["target"], "measurements.json");
+    let measured = effects[0]["summary"].as_str().unwrap();
+    assert!(measured.contains("kernel_lines"), "{measured}");
+    assert!(measured.contains("clippy_warnings"), "{measured}");
+
+    assert_eq!(effects[1]["kind"], "row");
+    assert_eq!(effects[1]["target"], "task");
+    let filed = effects[1]["summary"].as_str().unwrap();
+    assert!(filed.contains("docs/REVIEW"), "{filed}");
+    assert!(filed.contains("over 5 lines"), "{filed}");
+    assert!(filed.contains("(dry run)"), "{filed}");
+
+    // Nothing was actually filed: `forge add` was never called.
+    let tasks: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["log", "--project", "acme", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(tasks.as_array().unwrap().len(), 0, "{tasks:?}");
+
+    // A real run (the dry run above never counted against `per_day`)
+    // really does call `forge add`: the crossed threshold lands as a
+    // queued task whose text starts with "docs/REVIEW".
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "acme", "engineering-weekly", "--now"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let tasks: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["log", "--project", "acme", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let tasks = tasks.as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0]["state"], "queued");
+    assert!(
+        tasks[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("docs/REVIEW"),
+        "{tasks:?}"
+    );
+}
+
 /// `Limits.per_day` is checked at `forge job start`: once a workflow has
 /// started that many real runs in the last 24 hours, the next start is
 /// refused with a reason naming the limit, queued or `--now` alike; a
@@ -1991,11 +2129,12 @@ printf 200
     let fakehome = e._dir.path().join("fakehome");
     std::fs::create_dir_all(&fakehome).unwrap();
 
-    // check-model-drift.toml's own process only inherits a whitelisted
-    // environment (agent::agent_env — PATH, HOME, ... but not
-    // FORGE2_HOME), so like the clean-week test above it falls back to
-    // `$HOME/.local/share/forge2/logs`.
-    let logs = fakehome.join(".local/share/forge2/logs");
+    // Every operation step now gets FORGE2_HOME explicitly, set to the
+    // real store the `forge job start` process itself resolved (e.home,
+    // from `Env::cmd`'s own `FORGE2_HOME` — untouched by this command's
+    // `HOME` override), so check-model-drift.toml reads `e.home/logs`,
+    // not `$HOME/.local/share/forge2/logs`.
+    let logs = e.home.join("logs");
     std::fs::create_dir_all(&logs).unwrap();
     let a = logs.join("a.jsonl");
     let b = logs.join("b.jsonl");

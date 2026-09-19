@@ -1,0 +1,4 @@
+name = "review-if-crossed"
+kind = "operation"
+description = "reads measurements.json against this workflow's [env] thresholds (RUN_TASK_MAX_LINES, SRC_FILE_MAX_LINES) plus modules without tests and clippy warnings; when one is crossed, files a task on the project through forge add carrying the measurements and the crossed threshold, asking for a review in the shape of docs/REVIEW-2.md — a dry run only logs what it would have filed"
+run = ["bash", ".forge/workflows/actions/compare-thresholds.sh"]
