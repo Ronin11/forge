@@ -217,6 +217,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   deploys.rs        deploys, deploy_targets, assessments
   projects.rs       projects, project_repos, backlog, initiatives, portal_tokens
   record.rs         decisions, task_refs, plugins
+  messages.rs       messages: one row per inbound/outbound message on a channel, so a rule can ask "has this contact replied since"
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
 src/supervisor.rs   the rung between a blocked task and the human
