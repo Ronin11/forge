@@ -350,6 +350,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RefCmd,
     },
+    /// The message record: what a contact said on a channel and what was
+    /// said back, so a rule can ask "has this contact replied since"
+    /// (see docs/PLUGINS.md)
+    Message {
+        #[command(subcommand)]
+        cmd: MessageCmd,
+    },
     /// Projects: the unit of ownership above a task (see docs/PROJECTS.md)
     Project {
         #[command(subcommand)]
@@ -515,6 +522,46 @@ enum RefCmd {
     /// A task's references
     List {
         task: i64,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MessageCmd {
+    /// Record a message on a channel: `--from` for one that came from a
+    /// contact, `--to` for one sent to them
+    Record {
+        /// The project the message is about
+        project: String,
+        /// The channel it was recorded on, e.g. "signal"
+        #[arg(long)]
+        channel: String,
+        /// The contact it came from (an inbound message)
+        #[arg(long, conflicts_with = "to")]
+        from: Option<String>,
+        /// The contact it was sent to (an outbound message)
+        #[arg(long, conflicts_with = "from")]
+        to: Option<String>,
+        #[arg(long)]
+        text: String,
+        /// The task this message was about, if any
+        #[arg(long)]
+        task: Option<i64>,
+    },
+    /// A project's messages, newest first
+    List {
+        project: String,
+        /// Only this contact's messages
+        #[arg(long)]
+        contact: Option<String>,
+        /// Only messages at or after this unix second
+        #[arg(long)]
+        since: Option<i64>,
+        /// Only messages in this direction: "in" or "out"
+        #[arg(long)]
+        direction: Option<String>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -1003,6 +1050,23 @@ pub async fn main() -> Result<()> {
             } => ref_add(task, kind, url, label, by),
             RefCmd::List { task, json } => ref_list(task, json),
         },
+        Cmd::Message { cmd } => match cmd {
+            MessageCmd::Record {
+                project,
+                channel,
+                from,
+                to,
+                text,
+                task,
+            } => message_record(project, channel, from, to, text, task),
+            MessageCmd::List {
+                project,
+                contact,
+                since,
+                direction,
+                json,
+            } => message_list(project, contact, since, direction, json),
+        },
         Cmd::Project { cmd } => match cmd {
             ProjectCmd::New {
                 name,
@@ -1402,6 +1466,85 @@ fn ref_list(task: i64, json: bool) -> Result<()> {
             } else {
                 format!("  {}", r.label)
             }
+        );
+    }
+    Ok(())
+}
+
+fn message_record(
+    project: String,
+    channel: String,
+    from: Option<String>,
+    to: Option<String>,
+    text: String,
+    task: Option<i64>,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let (contact, direction) = match (from, to) {
+        (Some(c), None) => (c, crate::store::Direction::In),
+        (None, Some(c)) => (c, crate::store::Direction::Out),
+        (Some(_), Some(_)) => bail!("--from and --to are mutually exclusive"),
+        (None, None) => bail!("one of --from or --to is required"),
+    };
+    if let Some(id) = task
+        && f.store.task(id)?.is_none()
+    {
+        bail!("no task {id}")
+    }
+    let id = f
+        .store
+        .insert_message(&project, &channel, &contact, direction, &text, task)?;
+    out!("{id} {} {contact}", direction.as_str());
+    Ok(())
+}
+
+fn message_list(
+    project: String,
+    contact: Option<String>,
+    since: Option<i64>,
+    direction: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    f.store
+        .project(&project)?
+        .with_context(|| format!("no project {project}"))?;
+    let direction = direction
+        .as_deref()
+        .map(crate::store::Direction::try_from)
+        .transpose()?;
+    let rows: Vec<crate::view::MessageRow> = f
+        .store
+        .messages(
+            &project,
+            &crate::store::MessageFilter {
+                contact,
+                since,
+                direction,
+            },
+        )?
+        .iter()
+        .map(crate::view::MessageRow::from)
+        .collect();
+    if json {
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out!("no messages");
+        return Ok(());
+    }
+    for m in &rows {
+        out!(
+            "{:<5} {:<3} {:<8} {:<12} {}",
+            m.id,
+            m.direction,
+            m.channel,
+            m.contact,
+            m.text
         );
     }
     Ok(())

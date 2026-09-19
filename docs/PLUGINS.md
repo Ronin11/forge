@@ -78,6 +78,17 @@ operator directly, from calling `forge ref add`, and nothing checks
 that a plugin declaring it ever does. The kernel enforces nothing here
 beyond the manifest itself being valid.
 
+**message.** The plugin keeps the message record for its channel: what a
+contact said and what was said back, so a rule can later ask "has this
+contact replied since" (e.g. a `[skip_if]` command reading `forge
+message list --json`, docs/JOBS.md). `forge message record <project>
+--channel <name> (--from <contact> | --to <contact>) --text <text>
+[--task <id>]` inserts one, `--from` for an inbound message, `--to` for
+an outbound one; `forge message list <project> [--contact <name>]
+[--since <unix>] [--direction in|out] --json` reads them back, newest
+first. As with the other capabilities, declaring `message` is a promise
+the operator reads, not a permission the kernel enforces.
+
 A plugin may declare more than one, and most useful ones do: watch for
 a blocked task, ask a person, file the answer with `forge answer`.
 
@@ -191,33 +202,42 @@ from being enabled until Forge bounds a task's network egress, since it
 hands untrusted issue text to an agent that already has a real git
 credential. Install with `forge plugin install plugins/github-issues`.
 
-**signal** (`events`, `intake`) is a two-way bridge to Signal, run as one
-process with two loops so either exiting stops both. Outbound follows
-`forge events` the way notify does and messages a configured Signal
-number or group when a task reaches a state on its watch list (blocked,
-by default, or failed), including the blocked question if there is one,
-when a deploy finishes (a failed or rolled-back deploy always messages,
-a passing one only when `NOTIFY_DEPLOY_OK=1` is set), and when `forge
-intake accept` creates a project for the first time for a name in
-`CONTACTS` (docs/PORTAL.md, "Reachable"), sending that contact their
-customer portal link unprompted. Inbound polls `signal-cli receive`.
-An allowed sender or a `CONTACTS` name can answer a task (`/answer <id>
-<text>`), report queue status (`/status`), or ask for the command list
-(`/help`); an allowed sender's plain message files new work via `forge
-add`, and a `CONTACTS` name can also text `/portal` at any time to get
-their own portal link resent. Everything else from a `CONTACTS` name —
-unless it answers their own open question, which is submitted as their
-answer instead — routes through the concierge (docs/INTAKE.md, "The
-front door is not the interview"): `forge ask <project> "<message>"
---from <name>`, the project being whichever `PROJECTS` names for them,
-or else `TARGET_REPO`'s own project, and the reply (an answer, "on it"
-for a filed task, or the question when the decision is unclear) is sent
-back to them. Anyone else's message is logged and dropped. Its
-configuration is `plugins/signal/config` (see `config.example`): the
-bot's Signal account, who to notify, the allowed senders, contacts and
-their projects, the target repo and workflow, which states to notify
-on, whether a passing deploy is worth a message, and the portal's
-public URL. Install with `forge plugin install plugins/signal`.
+**signal** (`events`, `intake`, `message`) is a two-way bridge to Signal,
+run as one process with two loops so either exiting stops both. Outbound
+follows `forge events` the way notify does and messages a configured
+Signal number or group when a task reaches a state on its watch list
+(blocked, by default, or failed), including the blocked question if
+there is one, when a deploy finishes (a failed or rolled-back deploy
+always messages, a passing one only when `NOTIFY_DEPLOY_OK=1` is set),
+and when `forge intake accept` creates a project for the first time for
+a name in `CONTACTS` (docs/PORTAL.md, "Reachable"), sending that contact
+their customer portal link unprompted. Inbound polls `signal-cli
+receive`. An allowed sender or a `CONTACTS` name can answer a task
+(`/answer <id> <text>`), report queue status (`/status`), or ask for the
+command list (`/help`); an allowed sender's plain message files new work
+via `forge add`, and a `CONTACTS` name can also text `/portal` at any
+time to get their own portal link resent. Everything else from a
+`CONTACTS` name — unless it answers their own open question, which is
+submitted as their answer instead — routes through the concierge
+(docs/INTAKE.md, "The front door is not the interview"): `forge ask
+<project> "<message>" --from <name>`, the project being whichever
+`PROJECTS` names for them, or else `TARGET_REPO`'s own project, and the
+reply (an answer, "on it" for a filed task, or the question when the
+decision is unclear) is sent back to them. Anyone else's message is
+logged and dropped. Every message this plugin's own logic routes
+through `forge ask` or `forge answer` — a contact's own words, in either
+direction — and every reply it sends over `signal_send`, is recorded in
+the message record (`forge message record`, see "message" above), so
+`forge message list <project> --contact <name>` answers "has this
+contact replied since" for this channel; a project it cannot name for a
+message (e.g. an unaddressed operator notification whose task predates
+projects) is skipped rather than failed, the same best-effort posture
+as the portal link. Its configuration is `plugins/signal/config` (see
+`config.example`): the bot's Signal account, who to notify, the allowed
+senders, contacts and their projects, the target repo and workflow,
+which states to notify on, whether a passing deploy is worth a message,
+and the portal's public URL. Install with `forge plugin install
+plugins/signal`.
 
 **statusline** (`events`) maintains a status document, not a bar itself:
 it writes `$XDG_STATE_HOME/forge2/status.json` atomically on every event
