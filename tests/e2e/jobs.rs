@@ -1859,8 +1859,8 @@ for a in "$@"; do
   if [ "$prev" = "-o" ]; then out="$a"; fi
   prev="$a"
 done
-now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-printf '{"built_at":"%s"}' "$now" > "$out"
+now_ms=$(( $(date -u +%s) * 1000 ))
+printf '{"meta":{"built_at":%s}}' "$now_ms" > "$out"
 printf 200
 "#,
     );
@@ -1899,4 +1899,162 @@ printf 200
     let effects = doc["effects"].as_array().unwrap();
     assert!(effects.len() <= 4, "{effects:?}");
     assert_eq!(effects.len(), 0, "a clean week logs no effect: {effects:?}");
+}
+
+/// Same automation, but with two attempt logs planted directly under
+/// `FORGE2_HOME/logs` naming different ids for the same model family a
+/// week apart (a `system`/`init` frame, the shape `check-model-drift`
+/// actually reads — see the action's description): `check-model-drift`
+/// must notice the alias moved and log exactly one `row` effect naming
+/// both ids, proving the drift path (not just the clean-week path above)
+/// can fire.
+#[test]
+fn drift_weekly_model_drift_fires_when_an_alias_moved() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "forge",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/drift-weekly.toml"),
+        e.repo.join(".forge/workflows/drift-weekly.toml"),
+    )
+    .unwrap();
+    for action in [
+        "check-claude-cli-version",
+        "check-model-drift",
+        "check-cargo-audit",
+        "check-equitizr-freshness",
+    ] {
+        std::fs::copy(
+            root.join(format!(".forge/workflows/actions/{action}.toml")),
+            e.repo
+                .join(format!(".forge/workflows/actions/{action}.toml")),
+        )
+        .unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add the drift-weekly automation"],
+    );
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(
+        &fakebin.join("claude"),
+        "#!/bin/bash\necho '1.0.0 (Claude Code)'\n",
+    );
+    write_fake(
+        &fakebin.join("npm"),
+        "#!/bin/bash\nif [ \"$1\" = view ]; then echo 1.0.0; exit 0; fi\nexit 1\n",
+    );
+    write_fake(
+        &fakebin.join("cargo"),
+        "#!/bin/bash\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
+    );
+    write_fake(
+        &fakebin.join("curl"),
+        r#"#!/bin/bash
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$a"; fi
+  prev="$a"
+done
+now_ms=$(( $(date -u +%s) * 1000 ))
+printf '{"meta":{"built_at":%s}}' "$now_ms" > "$out"
+printf 200
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    // check-model-drift.toml's own process only inherits a whitelisted
+    // environment (agent::agent_env — PATH, HOME, ... but not
+    // FORGE2_HOME), so like the clean-week test above it falls back to
+    // `$HOME/.local/share/forge2/logs`.
+    let logs = fakehome.join(".local/share/forge2/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let a = logs.join("a.jsonl");
+    let b = logs.join("b.jsonl");
+    std::fs::write(
+        &a,
+        r#"{"type":"system","subtype":"init","session_id":"a","model":"claude-sonnet-5"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &b,
+        r#"{"type":"system","subtype":"init","session_id":"b","model":"claude-sonnet-4-5"}"#,
+    )
+    .unwrap();
+    let now = std::time::SystemTime::now();
+    let three_days_ago = now - std::time::Duration::from_secs(3 * 24 * 3600);
+    let ten_days_ago = now - std::time::Duration::from_secs(10 * 24 * 3600);
+    std::fs::File::open(&a)
+        .unwrap()
+        .set_modified(three_days_ago)
+        .unwrap();
+    std::fs::File::open(&b)
+        .unwrap()
+        .set_modified(ten_days_ago)
+        .unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args([
+            "job",
+            "start",
+            "forge",
+            "drift-weekly",
+            "--now",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["dry_run"], true);
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(
+        effects.len(),
+        1,
+        "exactly one alias (sonnet) moved: {effects:?}"
+    );
+    let row = &effects[0];
+    assert_eq!(row["kind"], "row");
+    let summary = row["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("claude-sonnet-5") && summary.contains("claude-sonnet-4-5"),
+        "{summary:?} should name both ids"
+    );
 }

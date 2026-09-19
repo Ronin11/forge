@@ -13,9 +13,9 @@ Four operations, each an action under `.forge/workflows/actions/`:
 | step | what it checks |
 |---|---|
 | `check-claude-cli-version` | the installed `claude` CLI's version against npm's latest `@anthropic-ai/claude-code`, logging both when the installed one is behind |
-| `check-model-drift` | a model family's (opus/sonnet/haiku) resolved id this week against last week, read from the `model` field of attempt logs' result frames under `FORGE2_HOME/logs` |
+| `check-model-drift` | a model family's (opus/sonnet/haiku) resolved id this week against last week, read from the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in attempt logs under `FORGE2_HOME/logs` |
 | `check-cargo-audit` | `cargo audit` on the workspace, installing `cargo-audit` first if it is missing, one effect per advisory |
-| `check-equitizr-freshness` | `https://equitizr.com/api/meta` returns 200 and its `built_at` is within 30 days |
+| `check-equitizr-freshness` | `https://equitizr.com/api/meta` returns 200, has a snapshot, and its `meta.built_at` (epoch milliseconds) is within 30 days |
 
 `[assert]` is that no effect was logged: a clean week is a green job.
 `[limits] on_failure = "ask:operator"` turns any logged effect into a

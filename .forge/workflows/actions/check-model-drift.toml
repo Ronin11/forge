@@ -1,6 +1,6 @@
 name = "check-model-drift"
 kind = "operation"
-description = "reads the `model` field of the result frame in every attempt log under FORGE2_HOME/logs (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default), buckets each by the model family (opus/sonnet/haiku) it named and by the week its log was written, and logs a row effect for a family whose resolved model id this week differs from last week's."
+description = "reads the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in every attempt log under FORGE2_HOME/logs (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default), buckets each id it names by model family (opus/sonnet/haiku) and by the week its log was written, and logs a row effect for a family whose resolved model id this week differs from last week's."
 run = ["bash", "-c", '''
 set +e
 home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
@@ -25,15 +25,16 @@ declare -A last_week
 if [ -d "$logs" ]; then
   while IFS=' ' read -r mtime path; do
     [ -z "$path" ] && continue
-    model=$(jq -r 'select(.type=="result") | .model // empty' "$path" 2>/dev/null | tail -n1)
-    [ -z "$model" ] && continue
-    fam=$(family "$model")
     mtime_i=${mtime%.*}
-    if [ "$mtime_i" -ge "$this_start" ]; then
-      this_week["$fam"]="$model"
-    elif [ "$mtime_i" -ge "$last_start" ]; then
-      last_week["$fam"]="$model"
-    fi
+    while IFS= read -r model; do
+      [ -z "$model" ] && continue
+      fam=$(family "$model")
+      if [ "$mtime_i" -ge "$this_start" ]; then
+        this_week["$fam"]="$model"
+      elif [ "$mtime_i" -ge "$last_start" ]; then
+        last_week["$fam"]="$model"
+      fi
+    done < <(jq -r 'if .type=="system" and .subtype=="init" then (.model // empty) elif .type=="assistant" then (.message.model // empty) else empty end' "$path" 2>/dev/null)
   done < <(find "$logs" -maxdepth 1 -type f -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -n)
 fi
 
