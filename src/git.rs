@@ -427,6 +427,16 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
     Ok(Some(g.line(&["rev-parse", "HEAD"]).await?))
 }
 
+/// Make `dir` a fresh repository holding everything already in it as one
+/// commit, and return that commit: how `forge job test` gives its scratch
+/// copy of a working tree the revision the job executor archives from.
+pub async fn init_commit_all(dir: &Path, message: &str) -> Result<String> {
+    Git::new(dir).line(&["init", "--quiet"]).await?;
+    commit_all(dir, message)
+        .await?
+        .with_context(|| format!("nothing to commit in {}", dir.display()))
+}
+
 /// Discard every commit and change on the branch back to `sha`.
 pub async fn reset_hard(dir: &Path, sha: &str) -> Result<()> {
     let g = Git::new(dir);

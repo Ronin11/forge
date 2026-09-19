@@ -314,13 +314,28 @@ impl Event<'_> {
 pub struct Reporter {
     log: Option<PathBuf>,
     prefix: bool,
+    quiet: bool,
 }
 
 static OUT: Mutex<()> = Mutex::new(());
 
 impl Reporter {
     pub fn new(prefix: bool, log: Option<PathBuf>) -> Reporter {
-        Reporter { log, prefix }
+        Reporter {
+            log,
+            prefix,
+            quiet: false,
+        }
+    }
+
+    /// Prints and logs nothing: for a run whose output is a report of its
+    /// own (`forge job test`).
+    pub fn quiet() -> Reporter {
+        Reporter {
+            log: None,
+            prefix: false,
+            quiet: true,
+        }
     }
 
     fn append_log(&self, task_id: i64, ev: &Event) {
@@ -357,6 +372,9 @@ impl Reporter {
     }
 
     pub fn emit(&self, task_id: i64, ev: Event) {
+        if self.quiet {
+            return;
+        }
         self.append_log(task_id, &ev);
         let lines = render(ev);
         let _guard = OUT.lock().unwrap_or_else(|p| p.into_inner());

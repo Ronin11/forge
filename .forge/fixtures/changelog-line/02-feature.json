@@ -3,5 +3,21 @@
     "task": "jobs: the worker claims queued jobs (docs/JOBS.md step 1d)\n\nforge job start without --now already enqueued a job as `queued`; now the worker's claim loop picks up queued jobs alongside tasks, within the same --jobs cap, and runs them through src/job.rs the same way --now does inline. A job's own failure (job::drive never returns an error) is recorded on the job and never propagates to env_error or any task, and a double-SIGINT abort requeues in-flight jobs the same way it requeues tasks.\n\nforge project show and forge stats gain a jobs rollup (today, ok, failed, needs_human) scoped to the last rolling 24h, counted separately from the task counts.",
     "diff_stat": "8 files changed, 486 insertions(+), 31 deletions(-)"
   },
-  "expected_kind": "feature"
+  "expected_kind": "feature",
+  "expect": {
+    "state": "ok",
+    "effects": [
+      {
+        "kind": "file",
+        "target": "CHANGELOG.md",
+        "summary_contains": "(feature) Worker claims queued jobs alongside tasks within the --jobs cap, with a rolling 24h jobs rollup in project show and stats"
+      }
+    ]
+  },
+  "outputs": {
+    "summarise-changelog-line": {
+      "line": "Worker claims queued jobs alongside tasks within the --jobs cap, with a rolling 24h jobs rollup in project show and stats",
+      "kind": "feature"
+    }
+  }
 }

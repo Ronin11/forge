@@ -3,5 +3,21 @@
     "task": "tasks: release a blocked dependent from the record, not just the retry path\n\nA task blocked on a dependency (reason \"waits on task ...\") previously only got released back to queued by forge retry's own reroute, so a dependent whose after list was re-pointed by hand, or whose retried dependency only landed later, stayed blocked with a stale reason until the store was edited directly.\n\nStore::release_dependents_of(dep) re-evaluates every blocked \"waits on\" task depending on `dep`: called whenever a task reaches a terminal state (engine::run_task's finalization, queue::withdraw).",
     "diff_stat": "5 files changed, 241 insertions(+), 24 deletions(-)"
   },
-  "expected_kind": "fix"
+  "expected_kind": "fix",
+  "expect": {
+    "state": "ok",
+    "effects": [
+      {
+        "kind": "file",
+        "target": "CHANGELOG.md",
+        "summary_contains": "(fix) Release a blocked dependent from the record, not only the retry path"
+      }
+    ]
+  },
+  "outputs": {
+    "summarise-changelog-line": {
+      "line": "Release a blocked dependent from the record, not only the retry path",
+      "kind": "fix"
+    }
+  }
 }

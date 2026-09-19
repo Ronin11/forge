@@ -856,6 +856,22 @@ enum JobCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Replay a run workflow's fixtures — every run workflow's in the
+    /// repository when none is named — through the executor in dry-run
+    /// mode, in a scratch directory, recording no job, and print each
+    /// fixture as passed or by its first difference from what it expects:
+    /// a missing effect, an extra one, a wrong state. Exits 1 on any
+    /// difference, so a repository can declare `job-test = ["forge",
+    /// "job", "test", "."]` among its checks (see docs/JOBS.md,
+    /// "Verifying an automation")
+    Test {
+        /// A run workflow's name; a lone argument that names a directory
+        /// is the path instead
+        workflow: Option<String>,
+        /// The repository whose `.forge/` holds the workflows and
+        /// fixtures (default: the current directory)
+        path: Option<PathBuf>,
+    },
     /// Bench a run workflow's directive steps against every fixture under
     /// the project repository's `.forge/fixtures/<workflow>/`, once per
     /// named provider, in dry-run mode: schema-valid share, expected-kind
@@ -1227,6 +1243,7 @@ pub async fn main() -> Result<()> {
             JobCmd::List { project, json } => job_list(project, json),
             JobCmd::Show { id, json } => job_show(id, json),
             JobCmd::Log { project, json } => job_log(project, json),
+            JobCmd::Test { workflow, path } => job_test(workflow, path).await,
             JobCmd::Bench {
                 project,
                 workflow,
@@ -2351,6 +2368,68 @@ fn job_log(project: String, json: bool) -> Result<()> {
             r.target,
             r.summary,
             if r.dry_run { " (dry run)" } else { "" }
+        );
+    }
+    Ok(())
+}
+
+/// `forge job test [<workflow>] [<path>]` reads `forge job test .` as the
+/// path: a lone argument is a workflow only when this directory holds a
+/// run workflow of that name, or when it names no directory and holds no
+/// path separator.
+fn job_test_target(workflow: Option<String>, path: Option<PathBuf>) -> (Option<String>, PathBuf) {
+    match (workflow, path) {
+        (Some(w), None) => {
+            let named_here = Path::new(".forge/workflows")
+                .join(format!("{w}.toml"))
+                .exists();
+            let is_path = w == "." || w == ".." || w.contains('/') || Path::new(&w).is_dir();
+            if is_path && !named_here {
+                (None, PathBuf::from(w))
+            } else {
+                (Some(w), PathBuf::from("."))
+            }
+        }
+        (w, p) => (w, p.unwrap_or_else(|| PathBuf::from("."))),
+    }
+}
+
+/// `forge job test [<workflow>] [<path>]`: see `crate::job::test`. Every
+/// fixture is printed, and any difference ends the command in an error,
+/// which is the exit status a repository check reads.
+async fn job_test(workflow: Option<String>, path: Option<PathBuf>) -> Result<()> {
+    let (workflow, root) = job_test_target(workflow, path);
+    let outcomes = crate::job::test(&root, workflow.as_deref()).await?;
+    let mut failed = Vec::new();
+    for o in &outcomes {
+        let label = if o.name.is_empty() {
+            o.workflow.clone()
+        } else {
+            format!("{}/{}", o.workflow, o.name)
+        };
+        match o.differences.split_first() {
+            None => out!("pass  {label}"),
+            Some((first, rest)) => {
+                out!("FAIL  {label}: {first}");
+                for d in rest {
+                    out!("        and {d}");
+                }
+                failed.push(format!("{label}: {first}"));
+            }
+        }
+    }
+    out!(
+        "{} fixture(s): {} passed, {} failed",
+        outcomes.len(),
+        outcomes.len() - failed.len(),
+        failed.len()
+    );
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "{} of {} fixture(s) differ from what they expect:\n{}",
+            failed.len(),
+            outcomes.len(),
+            failed.join("\n")
         );
     }
     Ok(())

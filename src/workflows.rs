@@ -1820,10 +1820,11 @@ pub fn resolve_job_for_project(
 
 /// Every fixture under `.forge/fixtures/<workflow>/*.json` in a project's
 /// own repository at `rev`, read the same way `resolve_job_at` reads the
-/// workflow itself — `git show`, no checkout — for the later `forge job
-/// test` (docs/JOBS.md, "Verifying an automation"). `(name, contents)`
-/// pairs, sorted by name. No caller yet: `forge job test` is later build
-/// order; this is the discovery primitive it will replay fixtures through.
+/// workflow itself — `git show`, no checkout (docs/JOBS.md, "Verifying an
+/// automation"). `(name, contents)`
+/// pairs, sorted by name. No caller: `forge job test` reads the working
+/// tree instead (`job::load_fixtures`), so a check sees work in progress;
+/// this is the same discovery pinned to a commit.
 #[allow(dead_code)]
 pub fn fixtures_at(repo: &Path, rev: &str, workflow: &str) -> Result<Vec<(String, String)>> {
     let dir = Path::new(".forge/fixtures").join(workflow);
@@ -1973,6 +1974,76 @@ pub fn validate_repo(root: &Path) -> Result<ValidateReport> {
         actions: n_actions,
         problems,
     })
+}
+
+/// Every run workflow under `<root>/.forge/workflows`, each resolved the
+/// way `validate_repo` resolves one — against the built-in actions and the
+/// tree's own `.forge/workflows/actions/*.toml`, with no home directory —
+/// for `forge job test` (docs/JOBS.md, "Verifying an automation"). `only`
+/// narrows it to one workflow, refused when the tree has no run workflow
+/// of that name. A workflow that does not resolve is returned as its
+/// error rather than dropped, so a broken automation is a failure and not
+/// a silent absence; a file that does not even parse is returned only
+/// when `only` names it or fixtures exist for it, since without either it
+/// cannot be told from a build workflow's typo. Sorted by name.
+#[allow(clippy::type_complexity)]
+pub fn resolve_jobs_in_tree(
+    root: &Path,
+    only: Option<&str>,
+) -> Result<Vec<(String, Result<(Workflow, Vec<RunStep>)>)>> {
+    let wf_dir = root.join(".forge").join("workflows");
+    let mut actions = builtin_actions_map()?;
+    for path in toml_files_if_present(&wf_dir.join("actions"))? {
+        let text = std::fs::read_to_string(&path)?;
+        let a = parse_action(&path, &text, String::new())?;
+        actions.insert(a.name.clone(), a);
+    }
+    let mut workflows: BTreeMap<String, Workflow> = BTreeMap::new();
+    let mut unparsed = Vec::new();
+    for path in toml_files_if_present(&wf_dir)? {
+        let text = std::fs::read_to_string(&path)?;
+        match parse_workflow(&path, &text, String::new()) {
+            Ok(wf) => {
+                workflows.insert(wf.name.clone(), wf);
+            }
+            Err(e) => {
+                let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+                unparsed.push((stem, e));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (name, wf) in &workflows {
+        if wf.kind != WorkflowKind::Run || only.is_some_and(|o| o != name) {
+            continue;
+        }
+        let steps = job_steps(wf, &workflows, &actions).map(|steps| (wf.clone(), steps));
+        out.push((name.clone(), steps));
+    }
+    for (name, e) in unparsed {
+        let wanted = match only {
+            Some(o) => o == name,
+            None => root.join(".forge").join("fixtures").join(&name).is_dir(),
+        };
+        if wanted {
+            out.push((name, Err(e)));
+        }
+    }
+    if let Some(o) = only
+        && out.is_empty()
+    {
+        if workflows.contains_key(o) {
+            bail!(
+                "{o:?} is kind = \"build\"; `forge job test` replays kind = \"run\" workflows only"
+            );
+        }
+        bail!(
+            "no run workflow {o:?} under {} (see docs/JOBS.md, \"Where an automation lives\")",
+            wf_dir.display()
+        );
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
 }
 
 /// One thing wrong with a file, and whether it blocks use.
