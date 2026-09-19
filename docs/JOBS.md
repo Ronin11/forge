@@ -56,7 +56,7 @@ In the project's repository, like everything Forge builds:
 ```
 .forge/workflows/quote-by-text.toml     the run workflow
 .forge/workflows/actions/*.toml         actions the built-in catalog does not have
-.forge/fixtures/quote-by-text/*.json    recorded inputs with expected effects
+.forge/fixtures/quote-by-text/*.json    recorded inputs with expected effects (see "Verifying an automation")
 scripts/…                               what the operations call
 ```
 
@@ -472,12 +472,94 @@ This is the part that makes automations buildable by Forge rather than
 merely runnable. An automation is verified by **replaying its fixtures
 through the run workflow in dry-run mode and comparing the effect log
 to the expectation** each fixture records. That is `forge job test
-<workflow>`, and it is the repository's check for automation code:
-deterministic where the steps are deterministic, and for directive
+[<workflow>] [<path>]`, and it is the repository's check for automation
+code: deterministic where the steps are deterministic, and for directive
 steps either a recorded output (the fixture pins what the model said
 last time) or a live model with an assertion loose enough to survive
 rewording. A build task that changes the automation cannot land unless
 every fixture still produces its expected effects.
+
+### A fixture
+
+One shape, one file per case, under
+`<repo>/.forge/fixtures/<workflow>/<name>.json`:
+
+```json
+{
+  "input": { "from": "+15555550100", "text": "fence, 40 ft, cedar" },
+  "expect": {
+    "state": "ok",
+    "effects": [
+      { "kind": "message", "target": "+15555550100", "summary_contains": "$1,240" },
+      { "kind": "row" }
+    ]
+  },
+  "outputs": {
+    "extract-job": { "kind": "fence", "feet": 40, "material": "cedar" }
+  }
+}
+```
+
+- **`input`** is the document a real trigger would have delivered, a JSON
+  object, given to the job exactly as `forge job start --input` gives one.
+- **`expect.state`** is what the run ends as: `ok`, `skipped` (a
+  `[skip_if]` said there was nothing to do) or `failed`; `ok` when left
+  out. (`needs_human`, a budget overrun, is accepted too, for a live run.)
+- **`expect.effects`** is the whole effect log the run must produce: each
+  entry names an effect's `kind` and, optionally, its exact `target` and a
+  fragment its `summary` `summary_contains`. Every entry must match a
+  logged effect, one entry per effect (two identical effects are listed
+  twice), and no logged effect may go unmatched. Unknown keys are refused,
+  so a misspelt `summary_contain` cannot quietly expect less.
+- **`outputs`**, when present, maps a directive step's action to the
+  structured output that stands in for its model call. The step launches
+  nothing, costs nothing and needs no provider, and the output is still
+  held to the action's own `schema`, so a fixture cannot pin what the step
+  would have refused. A directive step a fixture gives no output for runs
+  the model live, under the built-in provider, and is then only as
+  repeatable as the model.
+
+The older bench shape, `{"input": {...}, "expected_kind": "..."}` (what
+`forge job bench` scores a judgment against), is still read, as
+`expect.effects = [{"kind": <expected_kind>}]`. A fixture may carry both
+`expected_kind` and `expect`/`outputs`, and serve both commands: `bench`
+never applies `outputs`, since it exists to measure the live model.
+
+### The command
+
+`forge job test` with no workflow replays every run workflow in the
+repository that has fixtures (`.forge/workflows/*.toml` with `kind =
+"run"`); with one, that workflow's, and it is an error for it to have
+none. The path is the repository (default: the current directory); a lone
+argument that names a directory, as in `forge job test .`, is the path.
+
+Each fixture goes through the same executor as `forge job start --dry-run
+--now`: `[skip_if]`, every step, `[assert]`, `[limits]`. But it records no
+job in the operator's store and reads none of `FORGE2_HOME`: the replay
+has a scratch home of its own (a store its throwaway job rows go into,
+and the built-in actions as the whole catalog), and a copy of the
+repository's working tree, committed or not, as the tree the steps run in.
+Everything is removed when the command ends. It prints one line per
+fixture, `pass  <workflow>/<name>` or `FAIL  <workflow>/<name>: <first
+difference>` followed by any further differences, then a count; the
+differences, in order, are a **wrong state**, a **missing effect** (naming
+its kind, target and summary fragment) and an **extra effect** (naming
+what was logged). A workflow that does not resolve, or a fixture that
+cannot be read, is a failure too. Any difference exits 1, with each
+failure repeated on stderr; nothing to replay exits 0.
+
+That exit status is what makes it a repository check. A repository that
+holds automations lists it beside its other checks, in `forge.toml`:
+
+```toml
+[checks]
+job-test = ["forge", "job", "test", "."]
+```
+
+and then a task that touches a workflow, an action, a script an operation
+calls, or a fixture lands only if every fixture still comes out as
+expected. (`forge.toml` is the repository's to edit; Forge's own tasks do
+not edit it, so declaring the check is a human's or a task's own step.)
 
 The tests contract works for automations as for code: the tests agent
 writes fixtures and expectations it has seen fail on the base; the
@@ -573,8 +655,13 @@ Each step is an initiative on the `forge` project, sized to land.
    serves none); Forge events, read from `events.jsonl` by the worker's
    tick from a per-workflow offset. Rates per trigger are the workflow's
    own `per_day`, applied to every kind of start.
-4. **Verification.** Fixtures and expectations, `forge job test`, the
-   repository check, the tests contract for automations.
+4. **Verification (done).** Fixtures and expectations, `forge job test
+   [<workflow>] [<path>]` replaying them dry-run in a scratch directory
+   with recorded directive outputs, exit 1 on any difference so a
+   repository lists it as a check (see "Verifying an automation"). The
+   tests contract for automations is the existing tests contract, applied
+   to fixture files by hand; nothing specific to automations is built
+   for it yet.
 5. **The human rung (done).** `on_failure` honoured: `retry:N`, `drop`,
    `ask:operator`/`ask:contact` filing a blocked question carrying a job
    id, its workflow, the failed assertion and every effect logged (see

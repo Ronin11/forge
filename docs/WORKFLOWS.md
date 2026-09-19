@@ -223,6 +223,29 @@ one. It opens no store and needs no FORGE2_HOME, so it runs as a plain
 repository check, in `forge.toml`'s `[checks]` or in CI, on any host
 that has the `forge` binary.
 
+### Fixtures, and `forge job test`
+
+Whether a run workflow still does what it should is the other repository
+check. Its fixtures live beside it, at `.forge/fixtures/<workflow>/*.json`:
+an `input`, an `expect` (the state the run ends in and the effects it must
+log, no more and no fewer), and optionally `outputs`, a recorded structured
+output per directive step standing in for its model call
+(docs/JOBS.md, "Verifying an automation", has the shape).
+`forge job test [<workflow>] [<path>]` replays every fixture of the named
+workflow, or of every run workflow in the repository, through the executor
+in dry-run mode, in a scratch directory, without recording a job and
+without needing FORGE2_HOME, and prints each fixture as `pass` or by its
+first difference: a missing effect, an extra effect, a wrong state. It
+exits 1 on any difference, so a repository that holds automations lists it
+in its own `forge.toml` (which Forge never edits for you), next to
+`forge workflows validate` if it wants both:
+
+```toml
+[checks]
+workflows = ["forge", "workflows", "validate"]
+job-test  = ["forge", "job", "test", "."]
+```
+
 ## The honest exits
 
 An agent may stop with `needs_input` of kind `question` (it needs the
