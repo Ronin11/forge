@@ -1135,13 +1135,19 @@ mod tests {
 
         let devhome = &c.providers["devhome-chat"];
         assert_eq!(devhome.runner, crate::agent::Runner::Chat);
-        assert_eq!(devhome.base_url.as_deref(), Some("http://dev.home:11434/v1"));
+        assert_eq!(
+            devhome.base_url.as_deref(),
+            Some("http://dev.home:11434/v1")
+        );
         assert_eq!(devhome.model.as_deref(), Some("qwen3-coder:30b"));
         assert_eq!(devhome.api_key_env, None);
 
         let openai = &c.providers["openai-chat"];
         assert_eq!(openai.runner, crate::agent::Runner::Chat);
-        assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            openai.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
         assert_eq!(openai.model.as_deref(), Some("gpt-5-mini"));
         assert_eq!(openai.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
         assert_eq!(openai.price_input_per_million, 0.25);

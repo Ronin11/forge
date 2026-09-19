@@ -868,7 +868,10 @@ async fn chat_once(
     }
     let resp = req.send().await.context("sending the chat request")?;
     let status = resp.status();
-    let text = resp.text().await.context("reading the chat response body")?;
+    let text = resp
+        .text()
+        .await
+        .context("reading the chat response body")?;
     if !status.is_success() {
         anyhow::bail!(
             "chat endpoint returned {status}: {}",
@@ -958,7 +961,8 @@ async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
     } else {
         l.system
     };
-    let schema_value: Value = serde_json::from_str(l.schema).unwrap_or(Value::Object(Default::default()));
+    let schema_value: Value =
+        serde_json::from_str(l.schema).unwrap_or(Value::Object(Default::default()));
 
     let client = reqwest::Client::new();
     let schema_body = serde_json::json!({
@@ -973,7 +977,9 @@ async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
         },
     });
 
-    let resp_json = match chat_once(&client, &url, api_key.as_deref(), &schema_body, l.timeout).await {
+    let resp_json = match chat_once(&client, &url, api_key.as_deref(), &schema_body, l.timeout)
+        .await
+    {
         Ok(v) => v,
         Err(schema_err) => {
             writeln!(
@@ -997,8 +1003,9 @@ async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
                 Ok(v) => v,
                 Err(fallback_err) => {
                     out.exit_code = Some(1);
-                    out.stderr_text =
-                        format!("schema request: {schema_err:#}\nfallback request: {fallback_err:#}");
+                    out.stderr_text = format!(
+                        "schema request: {schema_err:#}\nfallback request: {fallback_err:#}"
+                    );
                     out.wall_ms = start.elapsed().as_millis();
                     writeln!(
                         log,
@@ -1010,7 +1017,10 @@ async fn run_chat(l: Launch<'_>) -> Result<Outcome> {
             }
         }
     };
-    writeln!(log, "{{\"type\":\"forge_chat_response\",\"body\":{resp_json}}}")?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_chat_response\",\"body\":{resp_json}}}"
+    )?;
 
     out.exit_code = Some(0);
     out.got_result = true;
@@ -2108,5 +2118,270 @@ fi\n"
         assert_eq!(argv[model_at + 1], "sonnet");
         let resume_at = argv.iter().position(|a| a == "--resume").unwrap();
         assert_eq!(argv[resume_at + 1], "sess-1");
+    }
+
+    /// A minimal JSON Schema `run_chat` validates the model's answer
+    /// against: one required string field, enough to tell a real answer
+    /// from garbage without dragging in `envelope::SCHEMA`'s full shape.
+    const CHAT_TEST_SCHEMA: &str =
+        r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}"#;
+
+    /// A fake `/chat/completions` endpoint on loopback: `responses` is one
+    /// `(status, body)` pair per request it will answer, in order: the
+    /// schema-mode attempt first, then the fallback if there is a second.
+    /// Returns the base URL to give `Provider::base_url` and a channel
+    /// carrying each request's parsed JSON body, in the order received, so
+    /// a test can assert on what `run_chat` actually sent.
+    fn fake_chat_server(
+        responses: Vec<(u16, String)>,
+    ) -> (String, std::sync::mpsc::Receiver<Value>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server
+            .server_addr()
+            .to_ip()
+            .expect("a loopback TCP listener always has an IP address");
+        let url = format!("http://{addr}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (status, body) in responses {
+                let mut req = server.recv().expect("the test sent a request");
+                let mut content = String::new();
+                std::io::Read::read_to_string(req.as_reader(), &mut content).unwrap();
+                let parsed: Value = serde_json::from_str(&content).unwrap();
+                tx.send(parsed).unwrap();
+                let response = tiny_http::Response::from_string(body)
+                    .with_status_code(tiny_http::StatusCode(status))
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json"[..],
+                        )
+                        .unwrap(),
+                    );
+                req.respond(response).unwrap();
+            }
+        });
+        (url, rx)
+    }
+
+    fn chat_provider(base_url: &str) -> Provider {
+        Provider {
+            runner: Runner::Chat,
+            base_url: Some(base_url.to_string()),
+            price_input_per_million: 1.0,
+            price_output_per_million: 2.0,
+            ..Provider::default()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn chat_launch<'a>(
+        worktree: &'a Path,
+        report: &'a Reporter,
+        provider: &'a Provider,
+        log_path: &'a PathBuf,
+        schema: &'a str,
+        system: &'a str,
+        prompt: &'a str,
+    ) -> Launch<'a> {
+        Launch {
+            task_id: 1,
+            worktree,
+            prompt,
+            system,
+            model: "test-model",
+            max_turns: 1,
+            timeout: Duration::from_secs(5),
+            log_path,
+            sandbox: None,
+            report,
+            step: "extract",
+            provider,
+            resume: None,
+            start_sha: "",
+            writes: false,
+            schema,
+            early_ending: thresholds(100, 100, 100, 2),
+            no_tools: true,
+        }
+    }
+
+    fn completion_body(content: &str, prompt_tokens: i64, completion_tokens: i64) -> String {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn chat_runner_uses_response_format_json_schema_and_records_tokens_and_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base_url, rx) = fake_chat_server(vec![(
+            200,
+            completion_body(r#"{"summary":"a bug in the parser"}"#, 100, 20),
+        )]);
+        let provider = chat_provider(&base_url);
+        let report = Reporter::new(false, None);
+        let log_path = dir.path().join("log.jsonl");
+        let l = chat_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            CHAT_TEST_SCHEMA,
+            "You are triaging a bug report.",
+            "The input document:\ntitle: parser crashes on empty input",
+        );
+
+        let out = run(l).await.unwrap();
+
+        assert_eq!(
+            out.structured.as_deref(),
+            Some(r#"{"summary":"a bug in the parser"}"#)
+        );
+        assert_eq!(out.input_tokens, Some(100));
+        assert_eq!(out.output_tokens, Some(20));
+        // 100 * 1.0/1e6 + 20 * 2.0/1e6.
+        assert!((out.cost_usd.unwrap() - 0.0001_40).abs() < 1e-9);
+        assert_eq!(out.exit_code, Some(0));
+        assert!(out.got_result);
+        assert!(!out.is_error);
+
+        let body = rx.recv().unwrap();
+        assert_eq!(body["model"], "test-model");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(
+            body["messages"][0]["content"],
+            "You are triaging a bug report."
+        );
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert!(
+            body["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("parser crashes on empty input")
+        );
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"],
+            serde_json::from_str::<Value>(CHAT_TEST_SCHEMA).unwrap()
+        );
+
+        assert!(
+            rx.try_recv().is_err(),
+            "only one request: the endpoint accepted response_format"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_runner_falls_back_to_a_plain_instruction_when_response_format_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base_url, rx) = fake_chat_server(vec![
+            (
+                400,
+                r#"{"error":"unsupported parameter: response_format"}"#.to_string(),
+            ),
+            (
+                200,
+                completion_body(r#"{"summary":"fallback answer"}"#, 40, 8),
+            ),
+        ]);
+        let provider = chat_provider(&base_url);
+        let report = Reporter::new(false, None);
+        let log_path = dir.path().join("log.jsonl");
+        let l = chat_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            CHAT_TEST_SCHEMA,
+            "You are triaging a bug report.",
+            "The input document:\ntitle: crash",
+        );
+
+        let out = run(l).await.unwrap();
+
+        assert_eq!(
+            out.structured.as_deref(),
+            Some(r#"{"summary":"fallback answer"}"#)
+        );
+        assert_eq!(out.input_tokens, Some(40));
+        assert_eq!(out.output_tokens, Some(8));
+
+        let first = rx.recv().unwrap();
+        assert_eq!(first["response_format"]["type"], "json_schema");
+        let second = rx.recv().unwrap();
+        assert!(
+            second.get("response_format").is_none(),
+            "the fallback drops response_format entirely: {second}"
+        );
+        assert!(
+            second["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("only the JSON object"),
+            "{second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_runner_leaves_structured_none_when_the_fallback_answer_does_not_fit_the_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base_url, _rx) = fake_chat_server(vec![
+            (400, "{}".to_string()),
+            // No "summary" field: fails CHAT_TEST_SCHEMA's own `required`.
+            (200, completion_body(r#"{"wrong_field":"nope"}"#, 10, 5)),
+        ]);
+        let provider = chat_provider(&base_url);
+        let report = Reporter::new(false, None);
+        let log_path = dir.path().join("log.jsonl");
+        let l = chat_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            CHAT_TEST_SCHEMA,
+            "system",
+            "prompt",
+        );
+
+        let out = run(l).await.unwrap();
+        assert_eq!(
+            out.structured, None,
+            "invalid against the schema, never trusted"
+        );
+        assert!(out.got_result, "the endpoint did answer, just not validly");
+        assert!(!out.is_error);
+    }
+
+    #[tokio::test]
+    async fn chat_runner_is_refused_for_a_step_that_is_not_a_directive() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base_url, _rx) = fake_chat_server(vec![]);
+        let provider = chat_provider(&base_url);
+        let report = Reporter::new(false, None);
+        let log_path = dir.path().join("log.jsonl");
+        let mut l = chat_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            CHAT_TEST_SCHEMA,
+            "system",
+            "prompt",
+        );
+        l.no_tools = false;
+
+        let err = run(l).await.unwrap_err();
+        assert!(err.to_string().contains("no tools"), "{err}");
+    }
+
+    #[test]
+    fn runner_from_str_accepts_chat() {
+        assert_eq!("chat".parse::<Runner>().unwrap(), Runner::Chat);
+        assert_eq!(Runner::Chat.as_str(), "chat");
+        let err = "bogus".parse::<Runner>().unwrap_err();
+        assert!(err.contains("chat"), "{err}");
     }
 }
