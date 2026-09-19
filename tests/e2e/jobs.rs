@@ -2742,3 +2742,117 @@ fn a_message_triggers_star_contact_and_delay_leave_a_scheduled_job_the_worker_wa
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["state"], "scheduled", "not due yet: {rows:?}");
 }
+
+/// Commit two event-triggered run workflows to the fixture repository and
+/// register it as project `shop`: `on-done` (`type = "task_done"`), whose one
+/// operation writes the event's `state` to `got.txt` in the job's scratch
+/// tree, and `watch` (`type = "job_finished"`), which does the same.
+fn setup_event_workflows(e: &Env) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "shop", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/actions/keep-state.toml"),
+        "name = \"keep-state\"\nkind = \"operation\"\ndescription = \"writes the state of the event it was started with to got.txt\"\nrun = [\"bash\", \"-c\", \"printf '%s' \\\"$FORGE_INPUT_STATE\\\" > got.txt\"]\n",
+    )
+    .unwrap();
+    for (name, ty) in [("on-done", "task_done"), ("watch", "job_finished")] {
+        std::fs::write(
+            e.repo.join(format!(".forge/workflows/{name}.toml")),
+            format!(
+                r#"name = "{name}"
+kind = "run"
+description = "starts on a {ty} event, for e2e coverage of the event trigger"
+
+steps = [
+  {{ action = "keep-state" }},
+]
+
+[trigger]
+on = "event"
+type = "{ty}"
+
+[assert]
+ok = ["true"]
+"#
+            ),
+        )
+        .unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "add the event automations"]);
+}
+
+/// The event trigger (docs/JOBS.md, "Triggers"): a task that lands starts
+/// exactly one `task_done` job, `FORGE_INPUT_STATE` `succeeded` and
+/// `trigger_ref` the event's offset in the log; that job's own
+/// `job_finished` starts the `job_finished` workflow once, and neither
+/// workflow's own job starts itself again. A second `forge work --once`
+/// starts nothing: the offset each workflow examined is kept.
+#[test]
+fn a_task_that_lands_starts_one_task_done_job_and_a_second_work_once_starts_none() {
+    let e = Env::new();
+    setup_event_workflows(&e);
+    let task = e.add(&[]);
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(task).0, "succeeded");
+
+    let rows = job_rows(&e);
+    let of = |name: &str| -> Vec<serde_json::Value> {
+        rows.iter()
+            .filter(|r| r["workflow"] == name)
+            .cloned()
+            .collect()
+    };
+    let done = of("on-done");
+    assert_eq!(done.len(), 1, "{rows:?}");
+    assert_eq!(done[0]["trigger_kind"], "event");
+    assert_eq!(done[0]["state"], "ok", "{:?}", done[0]);
+    assert!(
+        done[0]["trigger_ref"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .is_ok(),
+        "the event's offset: {:?}",
+        done[0]
+    );
+    let job_id = done[0]["id"].as_i64().unwrap();
+    let scratch = e.home.join("worktrees").join(format!("job-{job_id}"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("got.txt")).unwrap(),
+        "succeeded"
+    );
+    let input: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            e.home
+                .join("worktrees")
+                .join(format!("job-{job_id}-input/input.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(input["type"], "task_done");
+    assert_eq!(input["state"], "succeeded");
+    assert_eq!(input["task"], task);
+
+    // The done job's own job_finished started `watch` once; `watch`'s own
+    // job_finished, and `on-done`'s, started nothing more.
+    let watch = of("watch");
+    assert_eq!(watch.len(), 1, "{rows:?}");
+    assert_eq!(watch[0]["state"], "ok", "{:?}", watch[0]);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(job_rows(&e).len(), 2, "a second work --once starts none");
+}

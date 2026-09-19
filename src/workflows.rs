@@ -2637,6 +2637,30 @@ on_failure = "ask:contact"
     }
 
     #[test]
+    fn an_event_trigger_names_a_forge_event_type_or_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "on-landing.toml",
+            "name = \"on-landing\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"event\"\ntype = \"landing\"\n",
+        );
+        let err = get(dir.path(), "on-landing").unwrap_err().to_string();
+        assert!(err.contains("on-landing.toml"), "{err}");
+        assert!(err.contains("not a Forge event type"), "{err}");
+        assert!(err.contains("task_done"), "{err}");
+        write(
+            dir.path(),
+            "on-done.toml",
+            "name = \"on-done\"\nkind = \"run\"\nsteps = [{ action = \"code\" }]\n[trigger]\non = \"event\"\ntype = \"task_done\"\n",
+        );
+        let w = get(dir.path(), "on-done").unwrap().unwrap();
+        let t = w.trigger.unwrap();
+        assert!(t.matches_event("task_done"));
+        assert!(!t.matches_event("deploy_finished"));
+    }
+
+    #[test]
     fn parse_duration_reads_s_m_h_d_and_rejects_junk() {
         assert_eq!(parse_duration("0s"), Ok(0));
         assert_eq!(parse_duration("5s"), Ok(5));
