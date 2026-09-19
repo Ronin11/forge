@@ -592,10 +592,10 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
                 Err(e) => eprintln!("event tick: {project}/{name}: {e:#}"),
             }
         }
-        if next as i64 != stored {
-            if let Err(e) = f.store.set_event_cursor(project, name, next as i64) {
-                eprintln!("event tick: {project}/{name}: {e:#}");
-            }
+        if next as i64 != stored
+            && let Err(e) = f.store.set_event_cursor(project, name, next as i64)
+        {
+            eprintln!("event tick: {project}/{name}: {e:#}");
         }
     }
     Ok(())
