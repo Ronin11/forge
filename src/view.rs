@@ -6,7 +6,7 @@
 
 use crate::ctx::Forge;
 use crate::store::{
-    Decision, JournalStat, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat,
+    Decision, JournalStat, Message, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat,
 };
 use crate::workflows::Problem;
 use crate::{config, plugins};
@@ -173,6 +173,35 @@ impl From<&TaskRef> for RefRow {
             label: r.label.clone(),
             by: r.by.clone(),
             created_at: r.created_at,
+        }
+    }
+}
+
+/// One row of `forge message list --json`: a message recorded on a
+/// channel, mirrors `store::Message`.
+#[derive(Serialize)]
+pub struct MessageRow {
+    pub id: i64,
+    pub project: String,
+    pub channel: String,
+    pub contact: String,
+    pub direction: String,
+    pub text: String,
+    pub at: i64,
+    pub task_id: Option<i64>,
+}
+
+impl From<&Message> for MessageRow {
+    fn from(m: &Message) -> Self {
+        MessageRow {
+            id: m.id,
+            project: m.project.clone(),
+            channel: m.channel.clone(),
+            contact: m.contact.clone(),
+            direction: m.direction.as_str().to_string(),
+            text: m.text.clone(),
+            at: m.at,
+            task_id: m.task_id,
         }
     }
 }

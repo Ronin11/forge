@@ -13,6 +13,7 @@ use std::sync::Mutex;
 mod attempts;
 mod deploys;
 mod jobs;
+mod messages;
 mod projects;
 mod record;
 mod stats;
@@ -21,6 +22,7 @@ mod tasks;
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op};
 pub use deploys::{Assessment, Deploy, DeployTarget};
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
+pub use messages::{Direction, Message, MessageFilter};
 pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
@@ -549,6 +551,26 @@ CREATE UNIQUE INDEX jobs_schedule_slot ON jobs(project, workflow, trigger_ref) W
     // delayed, including every one recorded before this column existed.
     "
 ALTER TABLE jobs ADD COLUMN due_at INTEGER;
+",
+    // The message record (see docs/PLUGINS.md): one row per message on a
+    // channel, in either direction, so a rule can ask "has this contact
+    // replied since" (a `[skip_if]` reading `forge message list --json`)
+    // without a channel plugin keeping its own log. `task_id` links a
+    // message to the task it was about, when there is one (a concierge
+    // exchange, an intake interview's question); NULL otherwise.
+    "
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(name),
+  channel TEXT NOT NULL,
+  contact TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  task_id INTEGER REFERENCES tasks(id)
+);
+CREATE INDEX messages_project ON messages(project, id);
+CREATE INDEX messages_contact ON messages(project, contact, at);
 ",
 ];
 
@@ -1224,6 +1246,7 @@ mod column_tests {
             ("decisions", record::DECISION_COLUMNS),
             ("task_refs", record::TASK_REF_COLUMNS),
             ("assessments", deploys::ASSESSMENT_COLUMNS),
+            ("messages", messages::MESSAGE_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()
@@ -1339,6 +1362,7 @@ mod column_tests {
             ("projects.rs", include_str!("projects.rs")),
             ("record.rs", include_str!("record.rs")),
             ("stats.rs", include_str!("stats.rs")),
+            ("messages.rs", include_str!("messages.rs")),
         ];
         for (name, src) in files {
             let lines = src.lines().count();

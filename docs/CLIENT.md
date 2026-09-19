@@ -133,6 +133,17 @@ and does not parse stdout.
   door (docs/INTAKE.md), sorting a customer message into a request, a
   question, a need or unclear and acting on it. Stdout is the one-line
   reply to show the customer. Not JSON.
+- **`forge message record PROJECT --channel NAME (--from NAME | --to NAME)
+  --text TEXT [--task ID]`** — write verb: records one message on a
+  channel, inbound from a contact (`--from`) or outbound to one (`--to`),
+  so a rule can later ask "has this contact replied since" (e.g. a
+  `[skip_if]` command reading `forge message list --json`, docs/JOBS.md).
+  `--task` links it to the task it was about, when there is one. Not
+  `--json`; a client re-reads `forge message list` for the row it just
+  created.
+- **`forge message list PROJECT [--contact NAME] [--since UNIX]
+  [--direction in|out] --json`** — a project's recorded messages, newest
+  first. A JSON array of [`MessageRow`](#messagerow).
 
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`) but no current client calls it; it is
@@ -143,7 +154,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask
+snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
 ```
 
 ## Naming: unified vs. legacy keys
@@ -259,6 +270,22 @@ One `kind` does carry a convention: `repairs`, whose `url` is
 is how a task says "this repairs task 41" without inventing a second
 id space; `forge stats --quality` reads it to count a landed task as
 repaired.
+
+### `MessageRow`
+
+One row of `forge message list --json`: a message recorded on a channel,
+inbound from a contact or outbound to one.
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | Message id. |
+| `project` | string | The project the message is about. |
+| `channel` | string | Whatever the caller passed to `--channel`, e.g. `"signal"`. Not a closed vocabulary. |
+| `contact` | string | The contact's name: who it came from (inbound) or was sent to (outbound). |
+| `direction` | string | `"in"` or `"out"`. |
+| `text` | string | The message's text. |
+| `at` | integer | Unix seconds. |
+| `task_id` | integer or null | The task this message was about, when there is one (a concierge exchange, an intake interview's question); null otherwise. |
 
 ### `ProjectRow`
 

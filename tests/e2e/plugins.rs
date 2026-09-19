@@ -1439,4 +1439,25 @@ esac
         title.as_deref(),
         Some("My printer broke, can someone come by Tuesday?")
     );
+
+    // Both sides of the exchange are recorded in the message record
+    // (docs/PLUGINS.md, "the message record"): the inbound message that
+    // routed through `forge ask`, and the "on it" sent back.
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["message", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["contact"], "alice");
+    assert_eq!(rows[0]["direction"], "out");
+    assert_eq!(rows[0]["text"], "on it");
+    assert_eq!(rows[1]["contact"], "alice");
+    assert_eq!(rows[1]["direction"], "in");
+    assert_eq!(
+        rows[1]["text"],
+        "My printer broke, can someone come by Tuesday?"
+    );
+    assert_eq!(rows[1]["channel"], "signal");
 }

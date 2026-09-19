@@ -1,5 +1,5 @@
 name = "signal"
 description = "reaches a human over Signal when a task needs one, and files tasks from their replies"
 run = ["./signal.sh"]
-capabilities = ["events", "intake"]
+capabilities = ["events", "intake", "message"]
 restart = "on-failure"

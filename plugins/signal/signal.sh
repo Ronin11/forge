@@ -148,6 +148,39 @@ concierge_project() {
     target_repo_project
 }
 
+# Records one message in Forge's message record (docs/PLUGINS.md, "the
+# message record" / `forge message`), so `forge message list` answers
+# "has this contact replied since" for this channel. $1 project, $2
+# direction ("in" or "out"), $3 contact, $4 text, $5 task id (optional).
+# Best-effort and always quiet: a project this call can't name (empty)
+# is skipped rather than failed, since a plugin's own bookkeeping must
+# never be why a message wasn't sent or a reply wasn't filed. Uses
+# `mr_`-prefixed variable names throughout, since this is called as a
+# plain function (not `$(...)`) from callers that still need their own
+# same-named variables (`project`, `contact`, `name`, `text`, `task`)
+# afterward, and plain `sh` has no `local`.
+record_message() {
+    mr_project=$1
+    mr_direction=$2
+    mr_contact=$3
+    mr_text=$4
+    mr_task=${5:-}
+    [ -n "$mr_project" ] || return 0
+    case "$mr_direction" in
+        in) mr_flag=--from ;;
+        *) mr_flag=--to ;;
+    esac
+    if [ -n "$mr_task" ]; then
+        "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
+            --text "$mr_text" --task "$mr_task" >/dev/null 2>&1 \
+            || log "could not record message for $mr_contact"
+    else
+        "$FORGE_BIN" message record "$mr_project" --channel signal "$mr_flag" "$mr_contact" \
+            --text "$mr_text" >/dev/null 2>&1 \
+            || log "could not record message for $mr_contact"
+    fi
+}
+
 # Runs the concierge (docs/INTAKE.md, "The front door is not the
 # interview") on CONTACTS name $1's message ($2), against project $3,
 # and sends whichever reply it decided back to their Signal number ($4):
@@ -155,12 +188,14 @@ concierge_project() {
 # need — either way a task now exists to act on), or the question when
 # the decision is unclear — the same open-question machinery
 # `task_for_contact` picks their next reply up with, so the exchange
-# continues as an interview would.
+# continues as an interview would. Every message on this path is
+# recorded, in both directions (see `record_message`).
 concierge_reply() {
     name=$1
     body=$2
     project=$3
     dest=$4
+    record_message "$project" in "$name" "$body"
     errs=$(mktemp)
     if out=$("$FORGE_BIN" ask "$project" "$body" --from "$name" 2>"$errs"); then
         first=$(printf '%s\n' "$out" | head -n1)
@@ -181,6 +216,7 @@ concierge_reply() {
     fi
     rm -f "$errs"
     signal_send "$dest" "$reply"
+    record_message "$project" out "$name" "$reply"
 }
 
 signal_send() {
@@ -271,7 +307,11 @@ send_portal_link() {
     project=$(contact_project "$name")
     link=$("$FORGE_BIN" project portal "$project" 2>/dev/null | tail -n1)
     case "$link" in
-        /p/*) signal_send "$dest" "Your Forge portal: ${PORTAL_URL}${link}" ;;
+        /p/*)
+            msg="Your Forge portal: ${PORTAL_URL}${link}"
+            signal_send "$dest" "$msg"
+            record_message "$project" out "$name" "$msg"
+            ;;
         *) log "could not mint a portal link for $name (project $project)" ;;
     esac
 }
@@ -306,7 +346,9 @@ outbound() {
                 else
                     status=failed
                 fi
-                signal_send "$SIGNAL_TO" "deploy $project/$target @ $sha: $status"
+                msg="deploy $project/$target @ $sha: $status"
+                signal_send "$SIGNAL_TO" "$msg"
+                record_message "$project" out operator "$msg"
             fi
             continue
         fi
@@ -341,16 +383,19 @@ outbound() {
         # them, not the operator's SIGNAL_TO; unaddressed (or addressed
         # to a name CONTACTS does not know) still reaches the operator.
         dest="$SIGNAL_TO"
+        notify_contact=operator
         if [ "$state" = blocked ]; then
             q=$(question_for "$task")
             [ -n "$q" ] && msg=$(printf '%s\nquestion: %s' "$msg" "$q")
             to_name=$(question_to_for "$task")
             if [ -n "$to_name" ]; then
                 num=$(contact_number "$to_name") && [ -n "$num" ] && dest="$num"
+                notify_contact="$to_name"
             fi
         fi
 
         signal_send "$dest" "$msg"
+        record_message "$(target_repo_project)" out "$notify_contact" "$msg" "$task"
     done
 }
 
@@ -372,6 +417,7 @@ allowed() {
 handle_message() {
     body=$1
     dest=$2
+    project=$(target_repo_project)
     case "$body" in
         /answer\ *)
             rest=${body#/answer }
@@ -379,10 +425,12 @@ handle_message() {
             text=${rest#* }
             [ "$text" = "$rest" ] && text=""
             if "$FORGE_BIN" answer "$id" "$text" >/dev/null 2>&1; then
-                signal_send "$dest" "answered task $id"
+                msg="answered task $id"
             else
-                signal_send "$dest" "could not answer task $id"
+                msg="could not answer task $id"
             fi
+            signal_send "$dest" "$msg"
+            record_message "$project" out "$dest" "$msg" "$id"
             ;;
         /status)
             snap=$("$FORGE_BIN" snapshot)
@@ -390,19 +438,25 @@ handle_message() {
             running=$(printf '%s\n' "$snap" | grep -c '"state": *"running"')
             blocked=$(printf '%s\n' "$snap" | grep -c '"state": *"blocked"')
             worker=$(printf '%s\n' "$snap" | sed -n 's/.*"running": *\(true\|false\).*/\1/p' | head -n1)
-            signal_send "$dest" "queued=$queued running=$running blocked=$blocked worker=$worker"
+            msg="queued=$queued running=$running blocked=$blocked worker=$worker"
+            signal_send "$dest" "$msg"
+            record_message "$project" out "$dest" "$msg"
             ;;
         /help)
-            signal_send "$dest" "commands: /answer <id> <text>, /status; anything else is filed as a new task"
+            msg="commands: /answer <id> <text>, /status; anything else is filed as a new task"
+            signal_send "$dest" "$msg"
+            record_message "$project" out "$dest" "$msg"
             ;;
         *)
             out=$("$FORGE_BIN" add "$TARGET_REPO" "$body" --workflow "$WORKFLOW" 2>&1)
             id=$(printf '%s\n' "$out" | sed -n 's/.*queued task \([0-9]*\).*/\1/p')
             if [ -n "$id" ]; then
-                signal_send "$dest" "queued task $id"
+                msg="queued task $id"
             else
-                signal_send "$dest" "could not queue: $out"
+                msg="could not queue: $out"
             fi
+            signal_send "$dest" "$msg"
+            record_message "$project" out "$dest" "$msg" "$id"
             ;;
     esac
 }
@@ -418,11 +472,15 @@ handle_contact_reply() {
     number=$2
     id=$3
     body=$4
+    project=$(contact_project "$name")
+    record_message "$project" in "$name" "$body" "$id"
     if "$FORGE_BIN" answer "$id" "$body" --by "$name" >/dev/null 2>&1; then
-        signal_send "$number" "answered task $id"
+        msg="answered task $id"
     else
-        signal_send "$number" "could not answer task $id"
+        msg="could not answer task $id"
     fi
+    signal_send "$number" "$msg"
+    record_message "$project" out "$name" "$msg" "$id"
 }
 
 inbound() {

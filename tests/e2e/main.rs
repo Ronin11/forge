@@ -14,6 +14,7 @@ mod jobs;
 mod knownfixes;
 mod landing;
 mod listing;
+mod messages;
 mod ops;
 mod plugins;
 mod providers;
