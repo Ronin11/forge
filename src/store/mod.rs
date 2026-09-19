@@ -585,9 +585,12 @@ ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
     // same message's trigger a second time fails the insert instead of
     // starting a second job for it — the schedule slot's index, for a
     // message. Partial for the same reason: manual and schedule jobs
-    // share the column and are never unique on it here.
+    // share the column and are never unique on it here. A `retry:N`
+    // requeue keeps its job's `trigger_ref` (docs/JOBS.md, \"The human
+    // rung\") and has a `retry_count` above 0, so it is exempt: only the
+    // firing itself is unique.
     "
-CREATE UNIQUE INDEX jobs_message_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'message';
+CREATE UNIQUE INDEX jobs_message_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'message' AND retry_count = 0;
 ",
 ];
 

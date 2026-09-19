@@ -549,7 +549,8 @@ impl Store {
     /// The id of the job `project`'s `workflow` already started for
     /// `trigger_kind` and `trigger_ref` (a message id, say), or `None`: how
     /// a trigger that fires twice for one cause finds the job it already
-    /// started (docs/JOBS.md, "Triggers").
+    /// started (docs/JOBS.md, "Triggers"). A `retry:N` requeue of it is
+    /// not the firing and is not counted.
     pub fn job_for_trigger(
         &self,
         project: &str,
@@ -560,7 +561,7 @@ impl Store {
         Ok(self
             .lock()
             .query_row(
-                "SELECT id FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind=?3 AND trigger_ref=?4 ORDER BY id LIMIT 1",
+                "SELECT id FROM jobs WHERE project=?1 AND workflow=?2 AND trigger_kind=?3 AND trigger_ref=?4 AND retry_count=0 ORDER BY id LIMIT 1",
                 params![project, workflow, trigger_kind, trigger_ref],
                 |r| r.get(0),
             )
@@ -607,6 +608,45 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    fn mk_message_job(s: &Store, message_id: i64, retry_count: i64) -> Result<i64> {
+        s.create_job(&Job {
+            project: "acme".into(),
+            workflow: "quote".into(),
+            trigger_kind: "message".into(),
+            trigger_ref: message_id.to_string(),
+            state: JobState::Queued,
+            retry_count,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn one_message_starts_one_job_per_workflow_but_a_retry_is_not_a_second_firing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "acme");
+        assert_eq!(
+            s.job_for_trigger("acme", "quote", "message", "7").unwrap(),
+            None
+        );
+        let first = mk_message_job(&s, 7, 0).unwrap();
+        assert_eq!(
+            s.job_for_trigger("acme", "quote", "message", "7").unwrap(),
+            Some(first)
+        );
+        // The same message again is refused by the index itself...
+        assert!(mk_message_job(&s, 7, 0).is_err());
+        // ...a retry of the job it started is not...
+        let retry = mk_message_job(&s, 7, 1).unwrap();
+        assert_ne!(retry, first);
+        assert_eq!(
+            s.job_for_trigger("acme", "quote", "message", "7").unwrap(),
+            Some(first)
+        );
+        // ...and another message is its own cause.
+        assert!(mk_message_job(&s, 8, 0).is_ok());
     }
 
     #[test]

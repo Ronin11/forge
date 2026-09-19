@@ -942,7 +942,9 @@ async fn run_now(
         && let Some(l) = limits
         && let Some(job_row) = f.store.job(job_id)?
     {
-        let contact = trigger_contact(&job_row, trigger);
+        let input_json: serde_json::Value =
+            serde_json::from_str(input_text).unwrap_or(serde_json::Value::Null);
+        let contact = trigger_contact(&job_row, trigger, &input_json);
         let action = decide_on_failure(&l.on_failure, job_row.retry_count, contact.as_deref());
         // NeedsHuman is the job analogue of a blocked task: the row that
         // asked a person about it (docs/JOBS.md step 5's `store::jobs`
@@ -1036,15 +1038,24 @@ fn decide_on_failure(
 
 /// The contact `ask:contact` addresses (docs/JOBS.md, "The human rung"):
 /// the sender who actually fired this job when its trigger was a message
-/// (`Job::trigger_ref`, set per firing, the way a schedule's `trigger_ref`
-/// is its due slot rather than the workflow's own cron string), else the
-/// workflow's own `[trigger] contact` group, else `None` — asked of the
-/// operator instead.
-fn trigger_contact(job: &Job, trigger: Option<&workflows::Trigger>) -> Option<String> {
-    if job.trigger_kind == workflows::TriggerOn::Message.as_str() && !job.trigger_ref.is_empty() {
-        return Some(job.trigger_ref.clone());
+/// (`from` in the job's input — `trigger_ref` is the message's id, the
+/// mark that keeps one message from starting one workflow's job twice),
+/// else the workflow's own `[trigger] contact` when that names someone
+/// (not the `"*"` wildcard), else `None` — asked of the operator instead.
+fn trigger_contact(
+    job: &Job,
+    trigger: Option<&workflows::Trigger>,
+    input: &serde_json::Value,
+) -> Option<String> {
+    if job.trigger_kind == workflows::TriggerOn::Message.as_str()
+        && let Some(from) = input
+            .get("from")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    {
+        return Some(from.to_string());
     }
-    trigger.and_then(|t| t.contact.clone())
+    trigger.and_then(|t| t.contact.clone()).filter(|c| c != "*")
 }
 
 /// The question `ask:operator`/`ask:contact` files (docs/JOBS.md, "The
@@ -1750,10 +1761,11 @@ mod tests {
 
     #[test]
     fn trigger_contact_prefers_the_message_triggers_own_sender() {
-        let job = test_job("message", "+15555550100", 0);
+        let job = test_job("message", "42", 0);
         let trigger = test_trigger(Some("customers"));
+        let input = serde_json::json!({"from": "+15555550100", "message_id": 42});
         assert_eq!(
-            trigger_contact(&job, Some(&trigger)).as_deref(),
+            trigger_contact(&job, Some(&trigger), &input).as_deref(),
             Some("+15555550100"),
             "a specific sender beats the workflow's own contact group"
         );
@@ -1764,25 +1776,31 @@ mod tests {
         let job = test_job("manual", "", 0);
         let trigger = test_trigger(Some("customers"));
         assert_eq!(
-            trigger_contact(&job, Some(&trigger)).as_deref(),
+            trigger_contact(&job, Some(&trigger), &serde_json::json!({})).as_deref(),
             Some("customers")
         );
     }
 
     #[test]
-    fn trigger_contact_ignores_an_empty_trigger_ref_on_a_message_job() {
-        let job = test_job("message", "", 0);
+    fn trigger_contact_ignores_a_message_job_with_no_sender_in_its_input() {
+        let job = test_job("message", "42", 0);
         let trigger = test_trigger(Some("customers"));
         assert_eq!(
-            trigger_contact(&job, Some(&trigger)).as_deref(),
+            trigger_contact(&job, Some(&trigger), &serde_json::json!({})).as_deref(),
             Some("customers")
+        );
+        let wildcard = test_trigger(Some("*"));
+        assert_eq!(
+            trigger_contact(&job, Some(&wildcard), &serde_json::json!({})),
+            None,
+            "the wildcard names no one to ask"
         );
     }
 
     #[test]
     fn trigger_contact_is_none_with_no_trigger_and_no_sender() {
         let job = test_job("manual", "", 0);
-        assert_eq!(trigger_contact(&job, None), None);
+        assert_eq!(trigger_contact(&job, None, &serde_json::json!({})), None);
     }
 
     #[test]

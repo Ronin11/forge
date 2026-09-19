@@ -915,6 +915,163 @@ mod tests {
         assert_eq!(due[0].slot % 300, 0);
     }
 
+    fn git_in(dir: &Path, args: &[&str]) {
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    /// A `fixture()` whose project `demo` has a landed repository holding
+    /// one message-triggered run workflow per `(name, trigger table)`
+    /// given, each with a noop step.
+    fn message_fixture(triggers: &[(&str, &str)]) -> (tempfile::TempDir, Forge) {
+        let (dir, f) = fixture();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".forge/workflows/actions")).unwrap();
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        git_in(&repo, &["config", "user.name", "Test"]);
+        git_in(&repo, &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.join("forge.toml"), "[checks]\nok = [\"true\"]\n").unwrap();
+        std::fs::write(
+            repo.join(".forge/workflows/actions/noop.toml"),
+            "name = \"noop\"\nkind = \"operation\"\ndescription = \"nothing\"\nrun = [\"true\"]\n",
+        )
+        .unwrap();
+        for (name, trigger) in triggers {
+            std::fs::write(
+                repo.join(format!(".forge/workflows/{name}.toml")),
+                format!(
+                    "name = \"{name}\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{{ action = \"noop\" }}]\n\n[trigger]\n{trigger}\n\n[assert]\nok = [\"true\"]\n"
+                ),
+            )
+            .unwrap();
+        }
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-qm", "init"]);
+        f.store
+            .create_project(&crate::store::Project {
+                name: "demo".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        f.store
+            .register_repo("demo", repo.to_str().unwrap(), None)
+            .unwrap();
+        (dir, f)
+    }
+
+    fn record(f: &Forge, direction: Direction, contact: &str, text: &str) -> Message {
+        let id = f
+            .store
+            .insert_message("demo", "signal", contact, direction, text, None)
+            .unwrap();
+        f.store.message(id).unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_matching_message_starts_one_queued_job_with_the_message_as_input() {
+        let (_dir, f) = message_fixture(&[("quote", "on = \"message\"\ncontact = \"alice\"")]);
+        let m = record(&f, Direction::In, "alice", "a quote please");
+        let started = message_triggers(&f, &m).await;
+        assert_eq!(started.len(), 1, "{started:?}");
+        assert_eq!(started[0].0, "quote");
+        let job = f.store.job(started[0].1).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Queued);
+        assert_eq!(job.trigger_kind, "message");
+        assert_eq!(job.trigger_ref, m.id.to_string());
+        assert_eq!(job.due_at, None);
+        let input = std::fs::read_to_string(
+            f.paths
+                .worktrees
+                .join(format!("job-{}-input/input.json", job.id)),
+        )
+        .unwrap();
+        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        assert_eq!(
+            input,
+            serde_json::json!({
+                "from": "alice",
+                "text": "a quote please",
+                "at": m.at,
+                "channel": "signal",
+                "message_id": m.id,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_message_recorded_twice_starts_one_job() {
+        let (_dir, f) = message_fixture(&[("quote", "on = \"message\"\ncontact = \"*\"")]);
+        let m = record(&f, Direction::In, "alice", "hi");
+        assert_eq!(message_triggers(&f, &m).await.len(), 1);
+        assert!(message_triggers(&f, &m).await.is_empty());
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+        // A different message is a different cause.
+        let m2 = record(&f, Direction::In, "alice", "hi");
+        assert_eq!(message_triggers(&f, &m2).await.len(), 1);
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_non_matching_contact_starts_nothing_and_a_star_matches_anyone() {
+        let (_dir, f) = message_fixture(&[
+            ("only-bob", "on = \"message\"\ncontact = \"bob\""),
+            ("anyone", "on = \"message\"\ncontact = \"*\""),
+            ("tick", "on = \"schedule\"\ncron = \"* * * * *\""),
+            ("by-hand", "on = \"manual\""),
+        ]);
+        let m = record(&f, Direction::In, "alice", "hi");
+        let started = message_triggers(&f, &m).await;
+        assert_eq!(
+            started.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["anyone"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outbound_message_fires_nothing() {
+        let (_dir, f) = message_fixture(&[("anyone", "on = \"message\"\ncontact = \"*\"")]);
+        let m = record(&f, Direction::Out, "alice", "on it");
+        assert!(message_triggers(&f, &m).await.is_empty());
+        assert!(f.store.jobs(Some("demo"), None).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_triggers_delay_makes_the_job_scheduled_from_the_messages_own_time() {
+        let (_dir, f) =
+            message_fixture(&[("later", "on = \"message\"\ncontact = \"*\"\ndelay = \"1h\"")]);
+        let m = record(&f, Direction::In, "alice", "hi");
+        let started = message_triggers(&f, &m).await;
+        let job = f.store.job(started[0].1).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Scheduled);
+        assert_eq!(job.due_at, Some(m.at + 3600));
+    }
+
+    #[tokio::test]
+    async fn a_project_without_a_repository_fires_nothing() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&crate::store::Project {
+                name: "demo".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        let m = record(&f, Direction::In, "alice", "hi");
+        assert!(message_triggers(&f, &m).await.is_empty());
+    }
+
     /// A held initiative with a queued task is announced the first time
     /// `new_holds` sees it, never again while the hold continues (even
     /// across many polls), and again once it leaves `held` and re-enters
