@@ -561,6 +561,48 @@ pub fn start_message(
     .map(Some)
 }
 
+/// Start a job for one Forge event a run workflow's `[trigger] on =
+/// "event"` matched (`worker::event_tick`): queued, never run inline,
+/// `trigger_kind = "event"` and `trigger_ref` the event's byte offset in
+/// `events.jsonl`, `input` the event's own JSON line. `None` when this
+/// workflow already started a job for that offset, so an event the tick
+/// examines twice starts one job; `[trigger] delay` is added to the event's
+/// own time (`at`).
+#[allow(clippy::too_many_arguments)]
+pub fn start_event(
+    f: &Forge,
+    project: &str,
+    workflow: &str,
+    landed_sha: &str,
+    wf: &workflows::Workflow,
+    source: workflows::JobSource,
+    offset: u64,
+    at: i64,
+    input: &str,
+) -> Result<Option<i64>> {
+    let kind = workflows::TriggerOn::Event;
+    let trigger_ref = offset.to_string();
+    if f.store
+        .job_for_trigger(project, workflow, kind.as_str(), &trigger_ref)?
+        .is_some()
+    {
+        return Ok(None);
+    }
+    queue_triggered(
+        f,
+        project,
+        workflow,
+        landed_sha,
+        wf,
+        source,
+        kind,
+        &trigger_ref,
+        at,
+        input,
+    )
+    .map(Some)
+}
+
 /// The lowercase hex SHA-256 of `bytes`: a webhook token's stored form and
 /// the default key of a delivery that names none.
 pub fn sha256_hex(bytes: &[u8]) -> String {

@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 mod attempts;
 mod deploys;
+mod events;
 mod jobs;
 mod messages;
 mod projects;
@@ -617,6 +618,22 @@ CREATE INDEX webhook_tokens_hook ON webhook_tokens(project, name);
     // second job. The message index's shape, for a webhook.
     "
 CREATE UNIQUE INDEX jobs_webhook_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'webhook' AND retry_count = 0;
+",
+    // The event trigger's place (docs/JOBS.md, \"Triggers\"): per project and
+    // run workflow, the byte offset in `events.jsonl` up to which the
+    // worker has already examined events, so a restart reads on from there
+    // instead of from the start. And its cause: one job per project,
+    // workflow and event offset (`trigger_ref`), so an event examined twice
+    // — the cursor write lost to a crash — fails the insert instead of
+    // starting a second job. The message index's shape, for an event.
+    "
+CREATE TABLE event_cursors (
+  project TEXT NOT NULL REFERENCES projects(name),
+  workflow TEXT NOT NULL,
+  event_offset INTEGER NOT NULL,
+  PRIMARY KEY (project, workflow)
+);
+CREATE UNIQUE INDEX jobs_event_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'event' AND retry_count = 0;
 ",
 ];
 
@@ -1294,6 +1311,7 @@ mod column_tests {
             ("assessments", deploys::ASSESSMENT_COLUMNS),
             ("messages", messages::MESSAGE_COLUMNS),
             ("webhook_tokens", webhooks::WEBHOOK_TOKEN_COLUMNS),
+            ("event_cursors", events::EVENT_CURSOR_COLUMNS),
         ] {
             let listed: Vec<String> = cols
                 .iter()

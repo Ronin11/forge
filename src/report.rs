@@ -148,6 +148,33 @@ pub enum Event<'a> {
     },
 }
 
+/// Every `type` an event carries in `events.jsonl`, the values a run
+/// workflow's `[trigger] on = "event"` may name as its `type` (docs/JOBS.md,
+/// "Triggers"). The test below keeps it equal to the enum's variants.
+pub const EVENT_TYPES: &[&str] = &[
+    "task_started",
+    "task_queued",
+    "attempt_started",
+    "tool_call",
+    "agent_done",
+    "git_counted",
+    "check",
+    "attempt_done",
+    "pushed",
+    "push_failed",
+    "push_skipped",
+    "task_done",
+    "note",
+    "task_withdrawn",
+    "op",
+    "initiative_settled",
+    "deploy_started",
+    "deploy_finished",
+    "project_created",
+    "job_started",
+    "job_finished",
+];
+
 impl Event<'_> {
     /// The first line the terminal would show: what a client needs when it
     /// wants words instead of a renderer, and what `render` builds on.
@@ -741,6 +768,57 @@ mod tests {
                 "job_id": 9, "state": "ok", "cost_usd": 0.05,
                 "text": "job 9 (equitizr/quote-by-text) ok ($0.0500)",
             })
+        );
+    }
+
+    #[test]
+    fn event_types_names_every_variant_of_the_enum() {
+        let src = include_str!("report.rs");
+        let body = src
+            .split("pub enum Event<'a> {\n")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .unwrap();
+        let mut variants: Vec<String> = body
+            .lines()
+            .filter(|l| l.starts_with("    ") && !l.starts_with("     "))
+            .filter_map(|l| {
+                let name: String = l
+                    .trim()
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect();
+                name.chars().next().filter(|c| c.is_uppercase())?;
+                Some(name)
+            })
+            .map(|n| {
+                let mut out = String::new();
+                for (i, c) in n.chars().enumerate() {
+                    if c.is_uppercase() && i > 0 {
+                        out.push('_');
+                    }
+                    out.push(c.to_ascii_lowercase());
+                }
+                out
+            })
+            .collect();
+        variants.sort();
+        let mut listed: Vec<String> = EVENT_TYPES.iter().map(|s| s.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, variants);
+        // And the name the list carries is the one an event serializes under.
+        assert_eq!(
+            to_json(&Event::TaskDone {
+                state: "succeeded",
+                attempts: 1,
+                cost: 0.0,
+                reason: "",
+                branch: "b",
+                pushed: false,
+                compare: None,
+                remove_cmd: "",
+            })["type"],
+            "task_done"
         );
     }
 

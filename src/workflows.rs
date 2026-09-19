@@ -242,6 +242,12 @@ impl Trigger {
         self.on == TriggerOn::Webhook && self.name.as_deref() == Some(name)
     }
 
+    /// Whether this trigger fires for an event of `event_type`
+    /// (docs/JOBS.md, "Triggers"): `on = "event"` and a `type` equal to it.
+    pub fn matches_event(&self, event_type: &str) -> bool {
+        self.on == TriggerOn::Event && self.r#type.as_deref() == Some(event_type)
+    }
+
     /// The value of the one field `on` names, for display.
     pub fn value(&self) -> Option<&str> {
         match self.on {
@@ -1198,6 +1204,15 @@ fn build_trigger(path: &Path, raw: TriggerRaw) -> Result<Trigger> {
                 raw.on.as_str()
             );
         }
+    }
+    if let Some(t) = raw.r#type.as_deref()
+        && !crate::report::EVENT_TYPES.contains(&t)
+    {
+        bail!(
+            "{}: [trigger] type = {t:?} is not a Forge event type (one of: {})",
+            path.display(),
+            crate::report::EVENT_TYPES.join(", ")
+        );
     }
     Ok(Trigger {
         on: raw.on,

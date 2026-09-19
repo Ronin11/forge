@@ -436,51 +436,214 @@ pub(crate) async fn project_run_workflows(
     out
 }
 
+/// One run workflow of one project, resolved for this pass of the poll loop
+/// (`project_run_workflows`): what the schedule tick and the event tick both
+/// read, resolved once between them.
+struct TickRun {
+    project: String,
+    name: String,
+    wf: workflows::Workflow,
+    source: workflows::JobSource,
+    landed_sha: String,
+}
+
+/// Every project's run workflows for this pass, in project order.
+async fn tick_run_workflows(f: &Forge) -> Result<Vec<TickRun>> {
+    let mut runs = Vec::new();
+    for project in f.store.list_projects()? {
+        for (name, wf, source, landed_sha) in
+            project_run_workflows(f, &project.name, "worker tick").await
+        {
+            runs.push(TickRun {
+                project: project.name.clone(),
+                name,
+                wf,
+                source,
+                landed_sha,
+            });
+        }
+    }
+    Ok(runs)
+}
+
+/// The most `events.jsonl` one workflow examines in one tick; a worker that
+/// was down for a long while catches up over several ticks rather than
+/// holding the whole backlog in memory.
+const EVENT_TICK_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The complete lines of `path` from byte `from` on, each as `(its offset,
+/// the line without its newline)`, and the offset just past the last one
+/// returned — where the next read starts. A last line still being written
+/// (no newline yet) is left for the next read. Stops once `budget` bytes are
+/// consumed.
+fn read_event_lines(path: &Path, from: u64, budget: u64) -> (Vec<(u64, String)>, u64) {
+    use std::io::{BufRead, Seek};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (Vec::new(), from);
+    };
+    if file.seek(std::io::SeekFrom::Start(from)).is_err() {
+        return (Vec::new(), from);
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let (mut lines, mut pos) = (Vec::new(), from);
+    let mut line = String::new();
+    while pos - from < budget {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(n) if n > 0 && line.ends_with('\n') => {
+                lines.push((pos, line.trim_end().to_string()));
+                pos += n as u64;
+            }
+            // End of the log, a line still being written, or a read error.
+            _ => break,
+        }
+    }
+    (lines, pos)
+}
+
+/// The project an event belongs to: the one it names (a deploy's, a job's),
+/// else its task's. `None` for an event that names neither (a note, say),
+/// which belongs to no project's workflows.
+fn event_project(f: &Forge, ev: &serde_json::Value) -> Option<String> {
+    if let Some(p) = ev["project"].as_str() {
+        return Some(p.to_string());
+    }
+    let task = ev["task"].as_i64().filter(|t| *t > 0)?;
+    f.store.task(task).ok().flatten()?.project
+}
+
+/// The worker's event trigger (docs/JOBS.md, "Triggers" and "Build order"
+/// step 3): for every project's run workflow with `[trigger] on = "event"`,
+/// read the events in `events.jsonl` past the offset this workflow last
+/// examined (`store::event_cursor`) and start one job for each event of the
+/// declared `type` that belongs to the project, `trigger_ref` its offset
+/// (`job::start_event`) and the event's own JSON its input. The cursor then
+/// moves past everything read, whatever its type. A workflow the tick sees
+/// for the first time starts at the end of the log — a new automation is
+/// never backfilled with the whole history — and a log that has rolled (it
+/// is shorter than the cursor) is read again from its start. A job's own
+/// `job_started` and `job_finished` events never start the workflow that
+/// ran it. Called once per pass of the poll loop, after the schedule tick;
+/// cheap when no workflow has an event trigger or nothing was appended.
+async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
+    let path = f.paths.home.join("events.jsonl");
+    for run in runs {
+        let Some(trigger) = run
+            .wf
+            .trigger
+            .as_ref()
+            .filter(|t| t.on == workflows::TriggerOn::Event)
+        else {
+            continue;
+        };
+        let (project, name) = (run.project.as_str(), run.name.as_str());
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let stored = match f.store.event_cursor(project, name) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                if let Err(e) = f.store.set_event_cursor(project, name, len as i64) {
+                    eprintln!("event tick: {project}/{name}: {e:#}");
+                }
+                continue;
+            }
+            Err(e) => {
+                eprintln!("event tick: {project}/{name}: {e:#}");
+                continue;
+            }
+        };
+        // A cursor past the end of the log: it rolled to a shorter file.
+        let cursor = if (stored as u64) <= len {
+            stored as u64
+        } else {
+            0
+        };
+        let (lines, next) = read_event_lines(&path, cursor, EVENT_TICK_BYTES);
+        for (offset, line) in lines {
+            let Ok(ev) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(kind) = ev["type"].as_str().filter(|k| trigger.matches_event(k)) else {
+                continue;
+            };
+            if event_project(f, &ev).as_deref() != Some(project) {
+                continue;
+            }
+            // A job's own start and finish are events too; the workflow
+            // that produced them must not start itself again from them.
+            if ev["job_id"].is_number() && ev["workflow"].as_str() == Some(name) {
+                continue;
+            }
+            let at = ev["ts"].as_i64().unwrap_or_else(unix_now);
+            match job::start_event(
+                f,
+                project,
+                name,
+                &run.landed_sha,
+                &run.wf,
+                run.source,
+                offset,
+                at,
+                &line,
+            ) {
+                Ok(Some(id)) => {
+                    eprintln!("======== job {id} starting (event {kind} on {project}, {name})");
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("event tick: {project}/{name}: {e:#}"),
+            }
+        }
+        if next as i64 != stored {
+            if let Err(e) = f.store.set_event_cursor(project, name, next as i64) {
+                eprintln!("event tick: {project}/{name}: {e:#}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The worker's schedule trigger (docs/JOBS.md, "Triggers" and "Build
 /// order" step 3): for every project, every run workflow with `[trigger]
 /// on = "schedule"` that resolves for it, queue one job per cron slot due
 /// since its last scheduled job. Called once per pass of the poll loop
 /// (`work`, below); cheap when no project has a schedule due, since
 /// `due_schedules` alone decides what starts.
-async fn schedule_tick(f: &Forge) -> Result<()> {
+async fn schedule_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
     let now = unix_now();
     let mut schedules = Vec::new();
     let mut resolved: HashMap<
         (String, String),
-        (workflows::Workflow, workflows::JobSource, String),
+        (&workflows::Workflow, workflows::JobSource, &str),
     > = HashMap::new();
-    for project in f.store.list_projects()? {
-        for (name, wf, source, landed_sha) in
-            project_run_workflows(f, &project.name, "schedule tick").await
-        {
-            let Some(trigger) = wf.trigger.as_ref() else {
-                continue;
-            };
-            if trigger.on != workflows::TriggerOn::Schedule {
+    for run in runs {
+        let Some(trigger) = run.wf.trigger.as_ref() else {
+            continue;
+        };
+        if trigger.on != workflows::TriggerOn::Schedule {
+            continue;
+        }
+        // `workflows::parse` already refused an unparseable cron at load
+        // time (with the file and the line), so this always parses; a
+        // defensive skip rather than a panic if it somehow did not.
+        let Some(cron) = trigger.cron.as_deref().and_then(|e| Cron::from_str(e).ok()) else {
+            continue;
+        };
+        let last_ref = match f.store.last_scheduled_job(&run.project, &run.name) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("schedule tick: {}/{}: {e:#}", run.project, run.name);
                 continue;
             }
-            // `workflows::parse` already refused an unparseable cron at
-            // load time (with the file and the line), so this always
-            // parses; a defensive skip rather than a panic if it somehow
-            // did not.
-            let Some(cron) = trigger.cron.as_deref().and_then(|e| Cron::from_str(e).ok()) else {
-                continue;
-            };
-            let last_ref = match f.store.last_scheduled_job(&project.name, &name) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("schedule tick: {}/{name}: {e:#}", project.name);
-                    continue;
-                }
-            };
-            schedules.push(Schedule {
-                project: project.name.clone(),
-                workflow: name.clone(),
-                cron,
-                last_ref,
-            });
-            resolved.insert((project.name.clone(), name), (wf, source, landed_sha));
-        }
+        };
+        schedules.push(Schedule {
+            project: run.project.clone(),
+            workflow: run.name.clone(),
+            cron,
+            last_ref,
+        });
+        resolved.insert(
+            (run.project.clone(), run.name.clone()),
+            (&run.wf, run.source, run.landed_sha.as_str()),
+        );
     }
     for due in due_schedules(now, schedules) {
         let Some((wf, source, landed_sha)) =
@@ -645,7 +808,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut announced_holds: HashSet<i64> = HashSet::new();
 
     loop {
-        schedule_tick(&f).await?;
+        let runs = tick_run_workflows(&f).await?;
+        schedule_tick(&f, &runs).await?;
+        event_tick(&f, &runs).await?;
 
         // Fill free slots.
         while !stopping
