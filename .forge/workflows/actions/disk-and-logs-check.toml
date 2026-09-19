@@ -1,0 +1,55 @@
+name = "disk-and-logs-check"
+kind = "operation"
+description = "free space under FORGE2_HOME (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default) and the size of its logs directory; below 5 GB free or at/above 2 GB of logs, runs `forge gc` to reclaim retained worktrees and logs a row effect, FAIL if that is not enough."
+run = ["bash", "-c", '''
+set +e
+home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+mkdir -p "$home"
+logs="$home/logs"
+mkdir -p "$logs"
+
+threshold_free=$((5*1024*1024*1024))
+threshold_logs=$((2*1024*1024*1024))
+
+free_bytes() {
+  df -B1 --output=avail "$home" 2>/dev/null | tail -n1 | tr -d ' '
+}
+logs_bytes() {
+  du -sb "$logs" 2>/dev/null | cut -f1
+}
+
+avail=$(free_bytes)
+[ -z "$avail" ] && avail=0
+size=$(logs_bytes)
+[ -z "$size" ] && size=0
+
+suffix=""
+[ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+
+low_space=0
+[ "$avail" -lt "$threshold_free" ] && low_space=1
+big_logs=0
+[ "$size" -ge "$threshold_logs" ] && big_logs=1
+
+if [ "$low_space" = 1 ] || [ "$big_logs" = 1 ]; then
+  if [ "${FORGE_DRY_RUN:-}" != "1" ]; then
+    forge gc >/dev/null 2>&1
+  fi
+  avail=$(free_bytes)
+  [ -z "$avail" ] && avail=0
+  size=$(logs_bytes)
+  [ -z "$size" ] && size=0
+  still_low=0
+  [ "$avail" -lt "$threshold_free" ] && still_low=1
+  still_big=0
+  [ "$size" -ge "$threshold_logs" ] && still_big=1
+  if [ "$still_low" = 1 ] || [ "$still_big" = 1 ]; then
+    printf "row\tdisk\tFAIL: %s bytes free under %s, %s bytes of logs under %s, after forge gc%s\n" \
+      "$avail" "$home" "$size" "$logs" "$suffix" >> "$FORGE_EFFECT_LOG"
+  else
+    printf "row\tdisk\tWARN: forge gc reclaimed space; %s bytes free, %s bytes of logs%s\n" \
+      "$avail" "$size" "$suffix" >> "$FORGE_EFFECT_LOG"
+  fi
+fi
+exit 0
+''']

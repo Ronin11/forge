@@ -1451,70 +1451,113 @@ pub struct RunStep {
 }
 
 /// A job step, resolved to the action it names (docs/JOBS.md, "Steps"). A
-/// run workflow never splices a child workflow the way a build workflow
-/// does; every step names an action directly. A directive step must name a
-/// `role` (routed to a provider like every role) and its action must
-/// declare a `schema`; an operation step must not name a `role`, and a
-/// directive step must not name an `effect`.
-fn job_steps(wf: &Workflow, actions: &BTreeMap<String, ActionDef>) -> Result<Vec<RunStep>> {
-    wf.steps
-        .iter()
-        .map(|s| {
-            let name = s.action.as_deref().with_context(|| {
-                format!(
-                    "{:?}: a job step names an action; run workflows do not compose child workflows",
+/// step may instead name a sibling `kind = "run"` workflow (`workflow =
+/// "…"`, the same field a build workflow splices in); its steps are
+/// inlined here, recursively, the way a build workflow's own splice works,
+/// so a daily automation can be assembled from smaller run workflows
+/// (docs/JOBS.md, "Steps") — `doctor-daily` splicing in `disk-and-logs` is
+/// the motivating case. A cycle, or a reference to a workflow that is not
+/// itself `kind = "run"`, is refused. A directive step must name a `role`
+/// (routed to a provider like every role) and its action must declare a
+/// `schema`; an operation step must not name a `role`, and a directive
+/// step must not name an `effect`.
+fn job_steps(
+    wf: &Workflow,
+    workflows: &BTreeMap<String, Workflow>,
+    actions: &BTreeMap<String, ActionDef>,
+) -> Result<Vec<RunStep>> {
+    let mut out = Vec::new();
+    job_steps_into(wf, workflows, actions, &mut Vec::new(), &mut out)?;
+    Ok(out)
+}
+
+fn job_steps_into(
+    wf: &Workflow,
+    workflows: &BTreeMap<String, Workflow>,
+    actions: &BTreeMap<String, ActionDef>,
+    path: &mut Vec<String>,
+    out: &mut Vec<RunStep>,
+) -> Result<()> {
+    if path.contains(&wf.name) {
+        bail!(
+            "run workflow {:?} references itself through {}",
+            wf.name,
+            path.join(" → ")
+        );
+    }
+    path.push(wf.name.clone());
+    for s in &wf.steps {
+        if let Some(name) = &s.workflow {
+            let child = workflows.get(name).with_context(|| {
+                format!("{:?}: job step names unknown workflow {name:?}", wf.name)
+            })?;
+            if child.kind != WorkflowKind::Run {
+                bail!(
+                    "{:?}: job step names workflow {name:?}, which is kind = \"build\"; a run workflow may only splice in another run workflow",
                     wf.name
-                )
-            })?;
-            let action = actions.get(name).cloned().with_context(|| {
-                format!("{:?}: job step names unknown action {name:?}", wf.name)
-            })?;
-            match action.kind {
-                Kind::Directive => {
-                    if s.role.as_deref().is_none_or(|r| r.trim().is_empty()) {
-                        bail!(
-                            "{:?}: job step {name:?} is a directive; it needs `role` (docs/JOBS.md, \"Steps\")",
-                            wf.name
-                        );
-                    }
-                    if action.schema.as_deref().is_none_or(|s| s.trim().is_empty()) {
-                        bail!(
-                            "{:?}: job step {name:?} is a directive; its action {name:?} needs a `schema` (docs/JOBS.md, \"Steps\")",
-                            wf.name
-                        );
-                    }
-                    if s.effect.is_some() {
-                        bail!(
-                            "{:?}: job step {name:?} is a directive; `effect` applies to operation steps only",
-                            wf.name
-                        );
-                    }
-                }
-                Kind::Operation if s.role.is_some() => {
+                );
+            }
+            job_steps_into(child, workflows, actions, path, out)?;
+            continue;
+        }
+        let name = s.action.as_deref().with_context(|| {
+            format!(
+                "{:?}: a job step names exactly one of `action` or `workflow`",
+                wf.name
+            )
+        })?;
+        let action = actions
+            .get(name)
+            .cloned()
+            .with_context(|| format!("{:?}: job step names unknown action {name:?}", wf.name))?;
+        match action.kind {
+            Kind::Directive => {
+                if s.role.as_deref().is_none_or(|r| r.trim().is_empty()) {
                     bail!(
-                        "{:?}: job step {name:?} is an operation; `role` applies to directive steps only",
+                        "{:?}: job step {name:?} is a directive; it needs `role` (docs/JOBS.md, \"Steps\")",
                         wf.name
                     );
                 }
-                Kind::Operation => {}
+                if action.schema.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                    bail!(
+                        "{:?}: job step {name:?} is a directive; its action {name:?} needs a `schema` (docs/JOBS.md, \"Steps\")",
+                        wf.name
+                    );
+                }
+                if s.effect.is_some() {
+                    bail!(
+                        "{:?}: job step {name:?} is a directive; `effect` applies to operation steps only",
+                        wf.name
+                    );
+                }
             }
-            Ok(RunStep {
-                model: s.model.clone().or_else(|| action.model.clone()),
-                max_turns: s.max_turns.or(action.max_turns),
-                timeout_secs: s.timeout_secs.or(action.timeout_secs),
-                role: s.role.clone(),
-                action,
-            })
-        })
-        .collect()
+            Kind::Operation if s.role.is_some() => {
+                bail!(
+                    "{:?}: job step {name:?} is an operation; `role` applies to directive steps only",
+                    wf.name
+                );
+            }
+            Kind::Operation => {}
+        }
+        out.push(RunStep {
+            model: s.model.clone().or_else(|| action.model.clone()),
+            max_turns: s.max_turns.or(action.max_turns),
+            timeout_secs: s.timeout_secs.or(action.timeout_secs),
+            role: s.role.clone(),
+            action,
+        });
+    }
+    path.pop();
+    Ok(())
 }
 
 /// A run workflow by name, resolved to the exact action each of its steps
-/// runs (docs/JOBS.md, "The executor"). Unlike `resolve`, there is no
-/// splicing and none of `check_flow`'s build-only data-flow rules: a job
-/// step's action is used as written. Fails on an unknown workflow, a
-/// workflow that is not `kind = "run"`, an unknown action, or a step that
-/// names a child workflow.
+/// runs (docs/JOBS.md, "The executor"). Unlike `resolve`, there is none of
+/// `check_flow`'s build-only data-flow rules: a job step's action is used
+/// as written, though a step may splice in a sibling run workflow (see
+/// `job_steps`). Fails on an unknown workflow, a workflow that is not
+/// `kind = "run"`, an unknown action, or a step that names a workflow this
+/// catalog does not have.
 pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> {
     let cat = load_catalog(home)?;
     ensure_sound(&cat)?;
@@ -1526,18 +1569,20 @@ pub fn resolve_job(home: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> 
     if wf.kind != WorkflowKind::Run {
         bail!("{name:?} is kind = \"build\"; `forge job start` runs kind = \"run\" workflows only");
     }
-    let steps = job_steps(&wf, &cat.actions)?;
+    let steps = job_steps(&wf, &cat.workflows, &cat.actions)?;
     Ok((wf, steps))
 }
 
 /// A run workflow read straight from a project's own repository, at
 /// `.forge/workflows/<name>.toml` with its actions under
 /// `.forge/workflows/actions/` (docs/JOBS.md, "Where an automation
-/// lives"), rather than the operator's catalog `resolve_job` reads.
-/// `forge job bench` uses this: it measures an automation that is checked
-/// into the project it belongs to, not a built-in. No `ensure`: this
-/// directory is the project's own and is never git-initialised or seeded
-/// with built-ins the way the operator's catalog is.
+/// lives"), rather than the operator's catalog `resolve_job` reads. Every
+/// sibling `.forge/workflows/*.toml` is parsed too, so a step that splices
+/// in another run workflow (`job_steps`) resolves against the repository's
+/// own. `forge job bench` uses this: it measures an automation that is
+/// checked into the project it belongs to, not a built-in. No `ensure`:
+/// this directory is the project's own and is never git-initialised or
+/// seeded with built-ins the way the operator's catalog is.
 pub fn resolve_job_in_repo(repo: &Path, name: &str) -> Result<(Workflow, Vec<RunStep>)> {
     let dir = repo.join(".forge").join("workflows");
     let path = dir.join(format!("{name}.toml"));
@@ -1557,7 +1602,14 @@ pub fn resolve_job_in_repo(repo: &Path, name: &str) -> Result<(Workflow, Vec<Run
         let a = parse_action(&p, &text, hash)?;
         actions.insert(a.name.clone(), a);
     }
-    let steps = job_steps(&wf, &actions)?;
+    let mut workflows = BTreeMap::new();
+    for p in toml_files(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let text = std::fs::read_to_string(&p)?;
+        let hash = blob_hash(repo, &p)?;
+        let w = parse_workflow(&p, &text, hash)?;
+        workflows.insert(w.name.clone(), w);
+    }
+    let steps = job_steps(&wf, &workflows, &actions)?;
     Ok((wf, steps))
 }
 
@@ -1656,9 +1708,12 @@ pub fn load_all_at(repo: &Path, rev: &str) -> Result<Vec<Workflow>> {
 /// `.forge/workflows/actions/*.toml`: an automation names a built-in
 /// effect operation directly, the way docs/JOBS.md's own example does, and
 /// only needs a file of its own for an action the catalog does not have.
-/// `None` when the repository has no workflow of this name at that
-/// commit, so `resolve_job_for_project` falls back to the operator's
-/// catalog entirely.
+/// Every sibling `.forge/workflows/*.toml` at the same commit (`load_all_at`)
+/// is parsed too, so a step that splices in another run workflow
+/// (`job_steps`) resolves against the repository's own. `None` when the
+/// repository has no workflow of this name at that commit, so
+/// `resolve_job_for_project` falls back to the operator's catalog
+/// entirely.
 pub fn resolve_job_at(
     home: &Path,
     repo: &Path,
@@ -1690,7 +1745,11 @@ pub fn resolve_job_at(
         let a = parse_action(&path, &text, hash)?;
         actions.insert(a.name.clone(), a);
     }
-    let steps = job_steps(&wf, &actions)?;
+    let workflows: BTreeMap<String, Workflow> = load_all_at(repo, rev)?
+        .into_iter()
+        .map(|w| (w.name.clone(), w))
+        .collect();
+    let steps = job_steps(&wf, &workflows, &actions)?;
     Ok(Some((wf, steps)))
 }
 
@@ -1824,21 +1883,38 @@ pub fn validate_repo(root: &Path) -> Result<ValidateReport> {
         }
     }
 
+    // Parsed first, all of them, so a run workflow's step that splices in a
+    // sibling run workflow (`job_steps`) resolves against every workflow
+    // this repository declares, not just the one named on the command line.
     let mut n_workflows = 0;
+    let mut workflows: BTreeMap<String, Workflow> = BTreeMap::new();
+    let mut parsed: Vec<(PathBuf, String, Workflow)> = Vec::new();
     for path in toml_files_if_present(&wf_dir)? {
         let text = std::fs::read_to_string(&path)?;
         let file = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        let result = parse_workflow(&path, &text, String::new()).and_then(|wf| {
-            if wf.kind == WorkflowKind::Run {
-                job_steps(&wf, &actions)?;
+        match parse_workflow(&path, &text, String::new()) {
+            Ok(wf) => {
+                workflows.insert(wf.name.clone(), wf.clone());
+                parsed.push((file, text, wf));
             }
-            Ok(())
-        });
-        match result {
-            Ok(()) => n_workflows += 1,
             Err(e) => problems.push(ValidateProblem {
                 line: error_line(&e, &text),
                 file,
+                message: format!("{e:#}"),
+            }),
+        }
+    }
+    for (file, text, wf) in &parsed {
+        let result = if wf.kind == WorkflowKind::Run {
+            job_steps(wf, &workflows, &actions).map(|_| ())
+        } else {
+            Ok(())
+        };
+        match result {
+            Ok(()) => n_workflows += 1,
+            Err(e) => problems.push(ValidateProblem {
+                line: error_line(&e, text),
+                file: file.clone(),
                 message: format!("{e:#}"),
             }),
         }
@@ -1878,12 +1954,12 @@ pub fn check(home: &Path) -> Result<Vec<Problem>> {
         }
     }
     for (name, wf) in &workflows {
-        // A run workflow is not spliced and does not follow the build
-        // data-flow rules (`check_flow` requires a directive, which an
-        // operation-only job never has); it only needs its steps' actions
-        // to exist (see `job_steps`).
+        // A run workflow does not follow the build data-flow rules
+        // (`check_flow` requires a directive, which an operation-only job
+        // never has); it only needs its steps' actions (and any spliced-in
+        // sibling run workflow's) to exist (see `job_steps`).
         let r = if wf.kind == WorkflowKind::Run {
-            job_steps(wf, &actions).map(|_| ())
+            job_steps(wf, &workflows, &actions).map(|_| ())
         } else {
             let mut out = Resolved::default();
             splice(wf, &workflows, &actions, &mut Vec::new(), &mut out)
@@ -2547,6 +2623,63 @@ on_failure = "ask:contact"
         assert!(err.contains("kind = \"run\" needs a [trigger]"), "{err}");
     }
 
+    /// A run workflow's step may name a sibling run workflow instead of an
+    /// action, spliced inline recursively (`job_steps`) — the composition
+    /// `doctor-daily.toml` uses to pull in `disk-and-logs.toml`. Splicing a
+    /// `kind = "build"` workflow, or a cycle of run workflows, is refused.
+    #[test]
+    fn resolve_job_splices_a_sibling_run_workflow_and_rejects_a_build_kind_child_or_a_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "inner-run.toml",
+            "name = \"inner-run\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{ action = \"fmt\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        write(
+            dir.path(),
+            "outer-run.toml",
+            "name = \"outer-run\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{ action = \"fmt\" }, { workflow = \"inner-run\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        let (wf, steps) = resolve_job(dir.path(), "outer-run").unwrap();
+        assert_eq!(wf.kind, WorkflowKind::Run);
+        assert_eq!(
+            steps
+                .iter()
+                .map(|s| s.action.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fmt", "fmt"]
+        );
+
+        write(
+            dir.path(),
+            "build-child.toml",
+            "name = \"build-child\"\ndescription = \"d\"\nsteps = [{ action = \"code\" }]\n",
+        );
+        write(
+            dir.path(),
+            "bad-splice.toml",
+            "name = \"bad-splice\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{ workflow = \"build-child\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        let err = resolve_job(dir.path(), "bad-splice")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("kind = \"build\""), "{err}");
+
+        write(
+            dir.path(),
+            "cycle-a.toml",
+            "name = \"cycle-a\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{ workflow = \"cycle-b\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        write(
+            dir.path(),
+            "cycle-b.toml",
+            "name = \"cycle-b\"\nkind = \"run\"\ndescription = \"d\"\nsteps = [{ workflow = \"cycle-a\" }]\n[trigger]\non = \"manual\"\n",
+        );
+        let err = resolve_job(dir.path(), "cycle-a").unwrap_err().to_string();
+        assert!(err.contains("references itself"), "{err}");
+    }
+
     #[test]
     fn on_failure_round_trips_and_rejects_junk() {
         for (s, want) in [
@@ -2799,6 +2932,32 @@ on_failure = "drop"
         assert!(report.problems.is_empty(), "{:?}", report.problems);
         assert_eq!(report.workflows, 1);
         assert_eq!(report.actions, 1);
+    }
+
+    /// `doctor-daily.toml` splicing in `disk-and-logs.toml` (docs/JOBS.md,
+    /// "Steps"): a run workflow's step may name a sibling run workflow
+    /// instead of an action, and `forge workflows validate` resolves it
+    /// against every workflow the repository declares, not just the one
+    /// named.
+    #[test]
+    fn validate_repo_accepts_a_run_workflow_splicing_a_sibling_run_workflow() {
+        let repo = tempfile::tempdir().unwrap();
+        let r = repo.path();
+        std::fs::create_dir_all(r.join(".forge/workflows")).unwrap();
+        std::fs::write(
+            r.join(".forge/workflows/outer.toml"),
+            "name = \"outer\"\nkind = \"run\"\ndescription = \"d\"\n\nsteps = [\n  { action = \"write-file\", effect = \"file\" },\n  { workflow = \"inner\" },\n]\n\n[trigger]\non = \"manual\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            r.join(".forge/workflows/inner.toml"),
+            "name = \"inner\"\nkind = \"run\"\ndescription = \"d\"\n\nsteps = [\n  { action = \"write-file\", effect = \"file\" },\n]\n\n[trigger]\non = \"manual\"\n",
+        )
+        .unwrap();
+
+        let report = validate_repo(r).unwrap();
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert_eq!(report.workflows, 2);
     }
 
     #[test]

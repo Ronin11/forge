@@ -162,6 +162,16 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed
   judgment the local model is fit for: the harness controls the inputs
   and the assertion checks the output.
 
+  A step may instead name a sibling `kind = "run"` workflow
+  (`{ workflow = "disk-and-logs" }`), the same field a build workflow
+  splices a child in with; its steps are inlined in place, recursively, so
+  a daily automation can be assembled from smaller run workflows —
+  `doctor-daily` splices in `disk-and-logs` this way (docs/CHECKS.md). Only
+  the outer workflow's `[trigger]`, `[assert]`, `[skip_if]`, and `[limits]`
+  apply; a spliced-in workflow's own sections are never read. A cycle, or a
+  reference to a workflow that is `kind = "build"`, is refused the same way
+  an unknown action is.
+
   Because a directive has no tools, it needs no agent CLI either: a
   provider whose `runner` is `"chat"` (`agent::Runner::Chat`) answers a
   directive with a single call to an OpenAI-compatible

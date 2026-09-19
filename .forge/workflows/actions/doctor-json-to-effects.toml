@@ -1,0 +1,43 @@
+name = "doctor-json-to-effects"
+kind = "operation"
+description = "runs `forge doctor --json` and logs a row effect for every WARN or FAIL row it reports. When no row is a FAIL, marks today (UTC) as doctor's last clean day under FORGE2_HOME (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default), the marker doctor-daily's own [skip_if] reads."
+run = ["bash", "-c", '''
+set +e
+home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+mkdir -p "$home"
+
+suffix=""
+[ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+
+out=$(forge doctor --json 2>/dev/null)
+if [ -z "$out" ]; then
+  printf "row\tdoctor\tFAIL: forge doctor --json produced no output%s\n" "$suffix" >> "$FORGE_EFFECT_LOG"
+  exit 0
+fi
+
+any_fail=0
+while IFS= read -r row; do
+  [ -z "$row" ] && continue
+  name=$(echo "$row" | jq -r '.name')
+  status=$(echo "$row" | jq -r '.status')
+  detail=$(echo "$row" | jq -r '.detail')
+  hint=$(echo "$row" | jq -r '.hint')
+  hint_part=""
+  [ -n "$hint" ] && hint_part=" ($hint)"
+  case "$status" in
+    fail)
+      any_fail=1
+      printf "row\t%s\tFAIL: %s%s%s\n" "$name" "$detail" "$hint_part" "$suffix" >> "$FORGE_EFFECT_LOG"
+      ;;
+    warn)
+      printf "row\t%s\tWARN: %s%s%s\n" "$name" "$detail" "$hint_part" "$suffix" >> "$FORGE_EFFECT_LOG"
+      ;;
+  esac
+done < <(echo "$out" | jq -c '.[]')
+
+if [ "$any_fail" = 0 ] && [ "${FORGE_DRY_RUN:-}" != "1" ]; then
+  mkdir -p "$home/doctor-daily"
+  date -u +%Y-%m-%d > "$home/doctor-daily/last-ok"
+fi
+exit 0
+''']

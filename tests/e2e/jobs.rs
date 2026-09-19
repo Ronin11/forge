@@ -2058,3 +2058,141 @@ printf 200
         "{summary:?} should name both ids"
     );
 }
+
+/// docs/CHECKS.md's doctor-daily automation, copied verbatim from this
+/// repository's own `.forge/workflows/` into a throwaway project repo and
+/// committed: `doctor-daily.toml` splices in the schedule-free
+/// `disk-and-logs.toml` (`{ workflow = "disk-and-logs" }`, `job_steps`'
+/// new run-workflow composition), so a dry run resolves both files into
+/// one flat two-step job — `doctor-json-to-effects` (from doctor-daily.toml
+/// itself) then `disk-and-logs-check` (spliced in from disk-and-logs.toml)
+/// — proving the splice actually flattened rather than merely parsing. The
+/// nested `forge doctor --json` this job's first step shells out to only
+/// inherits a whitelisted environment (agent::agent_env — PATH, HOME, ...),
+/// so `claude` is faked on PATH the same way the drift-weekly test fakes
+/// its externals, and `df`/`du` are faked so disk-and-logs-check's free
+/// space and log size readings do not depend on the real machine's disk.
+/// A fresh FORGE2_HOME always has at least one WARN (`rate_limit: no
+/// samples yet`), so the effect log is never empty.
+#[test]
+fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "forge",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    for workflow in ["doctor-daily", "disk-and-logs"] {
+        std::fs::copy(
+            root.join(format!(".forge/workflows/{workflow}.toml")),
+            e.repo.join(format!(".forge/workflows/{workflow}.toml")),
+        )
+        .unwrap();
+    }
+    for action in ["doctor-json-to-effects", "disk-and-logs-check"] {
+        std::fs::copy(
+            root.join(format!(".forge/workflows/actions/{action}.toml")),
+            e.repo
+                .join(format!(".forge/workflows/actions/{action}.toml")),
+        )
+        .unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add the doctor-daily automation"],
+    );
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(
+        &fakebin.join("claude"),
+        "#!/bin/bash\necho '1.0.0 (Claude Code)'\n",
+    );
+    write_fake(
+        &fakebin.join("df"),
+        "#!/bin/bash\necho Avail\necho 107374182400\n",
+    );
+    write_fake(
+        &fakebin.join("du"),
+        "#!/bin/bash\nprintf '4096\\t%s\\n' \"${@: -1}\"\n",
+    );
+    let forge_dir = Path::new(env!("CARGO_BIN_EXE_forge"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path = format!(
+        "{}:{}:{}",
+        fakebin.display(),
+        forge_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args([
+            "job",
+            "start",
+            "forge",
+            "doctor-daily",
+            "--now",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["dry_run"], true);
+    assert!(
+        matches!(doc["state"].as_str(), Some("ok" | "failed" | "needs_human")),
+        "{doc:?}"
+    );
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|s| s["action"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["doctor-json-to-effects", "disk-and-logs-check"],
+        "the splice must flatten disk-and-logs.toml's own step in after doctor-daily.toml's: {steps:?}"
+    );
+    assert!(steps.iter().all(|s| s["kind"] == "operation"));
+
+    let effects = doc["effects"].as_array().unwrap();
+    assert!(
+        !effects.is_empty(),
+        "a fresh FORGE2_HOME always has at least one WARN row (rate_limit: no samples yet): {doc:?}"
+    );
+    assert!(effects.iter().all(|e| e["kind"] == "row"), "{effects:?}");
+    assert!(
+        effects.iter().any(
+            |e| e["target"] == "rate_limit" && e["summary"].as_str().unwrap().contains("WARN:")
+        ),
+        "{effects:?}"
+    );
+}
