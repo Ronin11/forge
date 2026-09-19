@@ -2129,11 +2129,12 @@ printf 200
     let fakehome = e._dir.path().join("fakehome");
     std::fs::create_dir_all(&fakehome).unwrap();
 
-    // check-model-drift.toml's own process only inherits a whitelisted
-    // environment (agent::agent_env — PATH, HOME, ... but not
-    // FORGE2_HOME), so like the clean-week test above it falls back to
-    // `$HOME/.local/share/forge2/logs`.
-    let logs = fakehome.join(".local/share/forge2/logs");
+    // Every operation step now gets FORGE2_HOME explicitly, set to the
+    // real store the `forge job start` process itself resolved (e.home,
+    // from `Env::cmd`'s own `FORGE2_HOME` — untouched by this command's
+    // `HOME` override), so check-model-drift.toml reads `e.home/logs`,
+    // not `$HOME/.local/share/forge2/logs`.
+    let logs = e.home.join("logs");
     std::fs::create_dir_all(&logs).unwrap();
     let a = logs.join("a.jsonl");
     let b = logs.join("b.jsonl");
