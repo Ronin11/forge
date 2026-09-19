@@ -1825,12 +1825,15 @@ pub fn initiative_state(tasks: &[Task], hold: Option<&str>) -> &'static str {
     }
 }
 
-/// `Some` when the worker is currently holding new claims for this
-/// initiative (see docs/PROJECTS.md, "Stop rule and budget"): its summed
-/// cost has reached its budget (reported as `"budget"`), or its trailing
-/// run of failed tasks all blame the same L0 rule and that run has
-/// reached `stop_after_same_rule` (reported as that rule's name).
-pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Option<String>> {
+/// `initiative_hold`'s full answer: the short tag it exposes as
+/// `held_rule` ("budget" or the rule name) paired with a human-readable
+/// detail of the same fact (the amounts, or the rule and its streak) —
+/// what `forge doctor`'s `initiatives` check reports, since `held_rule`
+/// alone does not say how close or by how much.
+fn initiative_hold_detail(
+    f: &Forge,
+    ini: &crate::store::Initiative,
+) -> Result<Option<(String, String)>> {
     let budget = ini.budget_usd.or_else(|| {
         f.store
             .project(&ini.project)
@@ -1838,10 +1841,14 @@ pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Opti
             .flatten()
             .and_then(|p| p.per_initiative_usd)
     });
-    if let Some(b) = budget
-        && f.store.initiative_cost(ini.id)? >= b
-    {
-        return Ok(Some("budget".to_string()));
+    if let Some(b) = budget {
+        let spent = f.store.initiative_cost(ini.id)?;
+        if spent >= b {
+            return Ok(Some((
+                "budget".to_string(),
+                format!("budget: ${spent:.2} of ${b:.2}"),
+            )));
+        }
     }
     if ini.stop_after_same_rule <= 0 {
         return Ok(None);
@@ -1866,7 +1873,29 @@ pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Opti
         .collect();
     Ok(same_rule_streak(&seq)
         .filter(|(_, len)| *len >= ini.stop_after_same_rule)
-        .map(|(rule, _)| rule))
+        .map(|(rule, len)| {
+            let detail = format!("stop rule: {rule} (streak {len})");
+            (rule, detail)
+        }))
+}
+
+/// `Some` when the worker is currently holding new claims for this
+/// initiative (see docs/PROJECTS.md, "Stop rule and budget"): its summed
+/// cost has reached its budget (reported as `"budget"`), or its trailing
+/// run of failed tasks all blame the same L0 rule and that run has
+/// reached `stop_after_same_rule` (reported as that rule's name).
+pub fn initiative_hold(f: &Forge, ini: &crate::store::Initiative) -> Result<Option<String>> {
+    Ok(initiative_hold_detail(f, ini)?.map(|(tag, _)| tag))
+}
+
+/// `initiative_hold`'s detail message alone, for `forge doctor`'s
+/// `initiatives` check: "budget: $spent of $cap" or "stop rule: <rule>
+/// (streak <n>)".
+pub(crate) fn initiative_hold_reason(
+    f: &Forge,
+    ini: &crate::store::Initiative,
+) -> Result<Option<String>> {
+    Ok(initiative_hold_detail(f, ini)?.map(|(_, detail)| detail))
 }
 
 /// Settle an initiative once every one of its tasks has reached a
