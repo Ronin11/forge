@@ -118,7 +118,7 @@ steps = [
 
 [trigger]
 on = "message"            # message | schedule | webhook | event | manual
-contact = "customers"     # the Signal plugin's contact group that starts it
+contact = "customers"     # the contact whose messages start it; "*" for anyone
 
 [assert]
 quoted  = ["scripts/assert-quote.sh"]   # exit 0 iff a quote was sent to the sender and logged once
@@ -144,12 +144,15 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
 - **`[trigger]`.** What starts a job. `on` is one of `manual`,
   `schedule`, `message`, `webhook`, `event`, and takes exactly one more
   field naming what it triggers on: `schedule` a `cron` expression,
-  `message` a `contact` group, `webhook` a `name`, `event` a Forge
+  `message` a `contact` (a name, or `"*"`), `webhook` a `name`, `event` a Forge
   event `type`; `manual` takes none. `cron` is parsed (with `croner`) at
   load time, the same as an unknown `on`: an expression that cannot
   parse is refused with the file and the line before the workflow loads
-  at all. The worker's poll loop is what fires it (docs/JOBS.md,
-  "Trigger").
+  at all. The worker's poll loop fires a schedule; recording an inbound
+  message (`forge message record --from`) fires a `message` trigger whose
+  `contact` is `"*"` or the message's own contact, queuing one job per
+  message with `{"from", "text", "at", "channel", "message_id"}` as its
+  input — `FORGE_INPUT_TEXT` is the text (docs/JOBS.md, "Triggers").
 - **`[skip_if]`.** Named commands, each a list like an action's `run`,
   checked in the scratch tree with the job's environment before any
   step — before `[assert]`, before any effect happens. The first to

@@ -106,7 +106,7 @@ steps = [
 
 [trigger]
 on = "message"            # message | schedule | webhook | event | manual
-contact = "customers"     # the Signal plugin's contact group that starts it
+contact = "customers"     # the contact whose messages start it; "*" for anyone
 # delay = "5m"             # optional: wait this long after the event before the job is due (see "Delayed jobs")
 
 [assert]
@@ -155,6 +155,42 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   schedules and each one's last slot, it returns what is due and at
   which slot, with no I/O — the tick around it does the resolving,
   reading and writing.
+
+  A message is the record's own trigger: `forge message record` is the
+  trigger point, so recording a `direction = in` message (`--from`; the
+  Signal plugin's record call, docs/PLUGINS.md) is what fires it, with no
+  poll in between. `worker::message_triggers` resolves every run workflow
+  for the message's project exactly as the schedule tick does
+  (`worker::project_run_workflows`: the repository's `.forge/workflows/*.toml`
+  at its latest landed commit first, then the operator's catalog) and keeps
+  the ones with `[trigger] on = "message"` whose `contact` is `"*"` or
+  equals the message's contact — a contact is matched by name, and there is
+  no other wildcard. Each match starts one job (`job::start_message`),
+  queued for the worker and never run inline, with `trigger_kind =
+  "message"`, `trigger_ref` the message's id, and this input, the way `forge
+  job start --input` would have given it:
+
+  ```json
+  {"from": "<contact>", "text": "<text>", "at": <unix>, "channel": "<channel>", "message_id": <id>}
+  ```
+
+  `FORGE_INPUT_FROM`, `FORGE_INPUT_TEXT` and `FORGE_INPUT_CHANNEL` are its
+  string fields, as for any input; `at` and `message_id` are numbers, read
+  from `$FORGE_INPUT_DIR/input.json`. A message starts at most one job per
+  workflow: the job for a message id that a workflow already has is found
+  first (`store::job_for_trigger`) and no second is made, and
+  `jobs_message_ref`, a unique index on `(project, workflow, trigger_ref)`
+  where `trigger_kind = 'message'`, backs that even if two records raced.
+  A `retry:N` requeue of that job carries the same `trigger_ref` and is not
+  a second firing, so the index exempts a `retry_count` above 0. An outbound
+  message, a message for a project with no repository, and a message no
+  workflow matches start nothing. A workflow's `per_day` cap applies as it
+  does to a schedule; a start refused by it, or a broken workflow file, is
+  noted on stderr and does not fail the record — the message is already
+  recorded — nor hide the other workflows it matched. `[trigger] delay`
+  makes the job `Scheduled` with `due_at` the message's own `at` plus the
+  delay ("Delayed jobs", below). An `ask:contact` failure addresses the
+  message's `from`.
 - **Steps.** Operations and directives from the catalog, unchanged in
   shape. A directive in a job carries a `role`, routed to a provider
   like every role, and a schema; it is given the step's inputs and its
@@ -427,9 +463,10 @@ Each step is an initiative on the `forge` project, sized to land.
 2. **Directive steps.** Bounded prompts with inputs and a schema, roles
    routed to providers, the per-run budget, and the local model
    measured on a real judgment step.
-3. **Triggers.** Schedules in the worker; the message trigger through
-   the Signal plugin; webhooks on the web client and the portal; Forge
-   events. Rates per trigger.
+3. **Triggers.** Schedules in the worker (done); the message trigger,
+   fired by `forge message record` and so by the Signal plugin (done);
+   webhooks on the web client and the portal; Forge events. Rates per
+   trigger.
 4. **Verification.** Fixtures and expectations, `forge job test`, the
    repository check, the tests contract for automations.
 5. **The human rung (done).** `on_failure` honoured: `retry:N`, `drop`,

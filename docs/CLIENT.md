@@ -396,7 +396,7 @@ verified.
 | `workflow_hash` | string | Content hash of the workflow file this job ran under. |
 | `landed_sha` | string | The project's landed commit this job ran the workflow's automation files at; empty if the project has never landed anything. |
 | `trigger_kind` | string | `manual`, `schedule`, `message`, `webhook`, or `event`. |
-| `trigger_ref` | string | The trigger's own value (a cron string, a contact, a webhook name, an event type); empty for a manual trigger. |
+| `trigger_ref` | string | What one firing was for: a schedule's due slot as a unix second, a message's id; empty for a manual trigger. |
 | `state` | string | `queued`, `running`, `ok`, `failed`, `needs_human` (a blocked question addressed to the contact or the operator — see docs/JOBS.md, "The human rung"), or `dropped`. |
 | `dry_run` | bool | True when effects were only recorded, not performed (e.g. `forge job test`'s fixture replay). |
 | `started_at` | integer | Unix seconds. |

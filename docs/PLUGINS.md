@@ -89,6 +89,13 @@ an outbound one; `forge message list <project> [--contact <name>]
 first. As with the other capabilities, declaring `message` is a promise
 the operator reads, not a permission the kernel enforces.
 
+`forge message record --from` is also the message trigger's trigger point:
+recording an inbound message queues a job for every run workflow of the
+project whose `[trigger] on = "message"` has a `contact` of `"*"` or this
+contact, once per message, for the worker to run (docs/JOBS.md,
+"Triggers"). A channel plugin needs nothing beyond that record call to
+start automations; an outbound message (`--to`) starts none.
+
 A plugin may declare more than one, and most useful ones do: watch for
 a blocked task, ask a person, file the answer with `forge answer`.
 
@@ -232,7 +239,10 @@ the message record (`forge message record`, see "message" above), so
 contact replied since" for this channel; a project it cannot name for a
 message (e.g. an unaddressed operator notification whose task predates
 projects) is skipped rather than failed, the same best-effort posture
-as the portal link. Its configuration is `plugins/signal/config` (see
+as the portal link. The record call for a contact's inbound message is
+what fires message triggers (docs/JOBS.md, "Triggers"): a run workflow
+whose `[trigger]` is `on = "message"` with this contact, or `"*"`, is
+started with the message as its input. Its configuration is `plugins/signal/config` (see
 `config.example`): the bot's Signal account, who to notify, the allowed
 senders, contacts and their projects, the target repo and workflow,
 which states to notify on, whether a passing deploy is worth a message,
