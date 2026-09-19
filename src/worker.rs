@@ -18,7 +18,7 @@ use crate::workflows;
 use crate::{config, git};
 use anyhow::Result;
 use croner::Cron;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -271,7 +271,7 @@ fn intake_is_held(f: &Forge, t: &Task) -> bool {
 /// its trailing run of same-rule failures reached its stop rule (see
 /// docs/PROJECTS.md, "Stop rule and budget"). Only initiatives with a
 /// queued task are worth checking.
-fn held_initiatives(f: &Forge) -> Result<Vec<i64>> {
+pub(crate) fn held_initiatives(f: &Forge) -> Result<Vec<i64>> {
     let mut held = Vec::new();
     for id in f.store.initiatives_with_queued_tasks()? {
         if let Some(ini) = f.store.initiative(id)?
@@ -281,6 +281,37 @@ fn held_initiatives(f: &Forge) -> Result<Vec<i64>> {
         }
     }
     Ok(held)
+}
+
+/// One line the first time an initiative enters `held` (an id not seen in
+/// `announced` before), naming why and how many of its tasks are stuck
+/// queued behind it; nothing on later passes while the hold continues, so
+/// a slow poll interval does not turn into a flood. `announced` drops an
+/// id as soon as it leaves `held`, so a later, separate hold on the same
+/// initiative is announced again.
+fn announce_new_holds(f: &Forge, held: &[i64], announced: &mut HashSet<i64>) {
+    for &id in held {
+        if !announced.insert(id) {
+            continue;
+        }
+        let Ok(Some(ini)) = f.store.initiative(id) else {
+            continue;
+        };
+        let queued = f
+            .store
+            .initiative_tasks(id)
+            .map(|ts| ts.iter().filter(|t| t.state == TaskState::Queued).count())
+            .unwrap_or(0);
+        if queued == 0 {
+            continue;
+        }
+        let reason = crate::view::initiative_hold_reason(f, &ini)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "held".to_string());
+        eprintln!("initiative {id} held ({reason}): {queued} queued task(s) skipped");
+    }
+    announced.retain(|id| held.contains(id));
 }
 
 /// One project's run workflow with a schedule trigger, resolved for this
@@ -538,6 +569,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
     let mut env_error: Option<anyhow::Error> = None;
     let mut claimed = 0u32;
     let mut hold_until: Option<i64> = None;
+    let mut announced_holds: HashSet<i64> = HashSet::new();
 
     loop {
         schedule_tick(&f).await?;
@@ -560,6 +592,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                 eprintln!("task {t} blocked: {why} (task {d})");
             }
             let held = held_initiatives(&f)?;
+            announce_new_holds(&f, &held, &mut announced_holds);
             if let Some(t) = f.store.claim_next(pid, &held, |t| {
                 provider_is_held(&f, t) || intake_is_held(&f, t)
             })? {

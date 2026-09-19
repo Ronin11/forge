@@ -491,6 +491,52 @@ fn check_worktrees(store: &Store) -> Vec<Check> {
     }]
 }
 
+/// Every initiative currently held (see `worker::held_initiatives`, `view::
+/// initiative_hold`): budget spent or a stop-rule streak, and how many of
+/// its tasks sit queued behind it. Before this check the only place this
+/// showed up was `forge initiative show <id>`, so a held initiative with a
+/// quiet, otherwise-idle worker looked exactly like an empty queue (on
+/// 2026-09-19 two initiatives sat held on budget this way for an hour).
+fn check_initiatives(f: &Forge) -> Vec<Check> {
+    let held = match worker::held_initiatives(f) {
+        Ok(h) => h,
+        Err(e) => return vec![check("initiatives", Status::Fail, format!("{e:#}"), "")],
+    };
+    let mut lines = Vec::new();
+    let mut first_id = None;
+    for id in held {
+        let Ok(Some(ini)) = f.store.initiative(id) else {
+            continue;
+        };
+        let queued = f
+            .store
+            .initiative_tasks(id)
+            .map(|ts| ts.iter().filter(|t| t.state == TaskState::Queued).count())
+            .unwrap_or(0);
+        let Ok(Some(reason)) = crate::view::initiative_hold_reason(f, &ini) else {
+            continue;
+        };
+        lines.push(format!(
+            "initiative {id} ({}): {reason}, {queued} task(s) queued behind the hold",
+            ini.project
+        ));
+        first_id.get_or_insert(id);
+    }
+    vec![if lines.is_empty() {
+        check("initiatives", Status::Ok, "none held", "")
+    } else {
+        check(
+            "initiatives",
+            Status::Warn,
+            lines.join("; "),
+            format!(
+                "forge initiative set {} --budget <usd> or --stop-after <n>",
+                first_id.unwrap()
+            ),
+        )
+    }]
+}
+
 fn check_logs(paths: &Paths) -> Vec<Check> {
     let events_size = std::fs::metadata(paths.home.join("events.jsonl"))
         .map(|m| m.len())
@@ -664,6 +710,7 @@ pub fn run() -> Result<Vec<Check>> {
     out.extend(check_logs(&paths));
 
     if let Ok(f) = Forge::open_with(paths, store) {
+        out.extend(check_initiatives(&f));
         out.extend(check_spend(&f));
         out.extend(check_rate_limit(&f));
     }
@@ -683,5 +730,127 @@ mod tests {
         assert_eq!(checks[0].name, "worktrees");
         assert!(checks[0].status == Status::Ok);
         assert_eq!(checks[0].detail, "none retained");
+    }
+
+    /// A `Forge` over a fresh, empty store in a throwaway home (the same
+    /// fixture shape `view.rs`'s tests use).
+    fn fixture() -> (tempfile::TempDir, Forge) {
+        use crate::ctx::Paths;
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let paths = Paths {
+            worktrees: home.join("worktrees"),
+            logs: home.join("logs"),
+            home,
+        };
+        std::fs::create_dir_all(&paths.worktrees).unwrap();
+        std::fs::create_dir_all(&paths.logs).unwrap();
+        let store = Store::open(&paths.home.join("forge.db")).unwrap();
+        let f = Forge::open_with(paths, store).unwrap();
+        (dir, f)
+    }
+
+    fn fixture_task(
+        state: TaskState,
+        reason: &str,
+        initiative: i64,
+        finished_at: Option<i64>,
+    ) -> crate::store::Task {
+        crate::store::Task {
+            repo: "/repo".into(),
+            task: "do the thing".into(),
+            base_branch: "main".into(),
+            model: "sonnet".into(),
+            max_turns: 10,
+            max_attempts: 1,
+            timeout_secs: 60,
+            state,
+            reason: reason.into(),
+            finished_at,
+            created_at: crate::unix_now(),
+            workflow: "direct".into(),
+            project: Some("demo".into()),
+            initiative: Some(initiative),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn check_initiatives_is_ok_with_none_held() {
+        let (_dir, f) = fixture();
+        let checks = check_initiatives(&f);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "initiatives");
+        assert!(checks[0].status == Status::Ok);
+        assert_eq!(checks[0].detail, "none held");
+    }
+
+    /// A held initiative (its trailing same-rule failures reached its
+    /// stop rule) with one task still queued behind the hold: WARN,
+    /// naming the initiative, the rule and streak, the queued count, and
+    /// a fix line naming `forge initiative set <id>`.
+    #[test]
+    fn check_initiatives_warns_for_a_held_initiative_and_names_it() {
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&crate::store::Project {
+                name: "demo".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        let ini_id = f
+            .store
+            .create_initiative(&crate::store::Initiative {
+                project: "demo".into(),
+                outcome: "o".into(),
+                stop_after_same_rule: 2,
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        for _ in 0..2 {
+            let mut t = fixture_task(
+                TaskState::Failed,
+                "L0 failed: has-commits (after 1 attempt(s))",
+                ini_id,
+                Some(crate::unix_now()),
+            );
+            t.id = f.store.insert_task(&t).unwrap();
+            f.store.update_task(&t).unwrap();
+        }
+        let mut queued = fixture_task(TaskState::Queued, "", ini_id, None);
+        queued.id = f.store.insert_task(&queued).unwrap();
+        f.store.update_task(&queued).unwrap();
+
+        let checks = check_initiatives(&f);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "initiatives");
+        assert!(checks[0].status == Status::Warn);
+        assert!(
+            checks[0].detail.contains(&format!("initiative {ini_id}")),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0].detail.contains("stop rule: has-commits"),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0].detail.contains("1 task(s) queued"),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0]
+                .hint
+                .contains(&format!("forge initiative set {ini_id}")),
+            "{}",
+            checks[0].hint
+        );
     }
 }
