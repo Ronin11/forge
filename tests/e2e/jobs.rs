@@ -1,4 +1,6 @@
 use crate::support::*;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 /// A job the store recorded — no executor yet, so this simulates what
 /// `store::Store::create_job`/`append_job_step`/`append_job_effect`/
@@ -1769,4 +1771,132 @@ on_failure = "drop"
     )
     .unwrap();
     assert_eq!(doc["state"], "skipped", "{doc:?}");
+}
+
+fn write_fake(path: &Path, script: &str) {
+    std::fs::write(path, script).unwrap();
+    let mut perm = std::fs::metadata(path).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(path, perm).unwrap();
+}
+
+/// docs/CHECKS.md's drift-weekly automation, copied verbatim from this
+/// repository's own `.forge/workflows/` into a throwaway project repo and
+/// committed, then run with `claude`, `npm`, `cargo` and `curl` replaced by
+/// fakes on PATH — so the check is deterministic and makes no real network
+/// call. `claude` and `npm` agree on the version, `cargo` has no
+/// `cargo-audit` and refuses to install one, and `curl` serves a fresh
+/// `equitizr.com/api/meta`: the clean-week scenario the job's own
+/// `[assert]` calls green. A dry run of it logs no effect (well under the
+/// four steps' one-effect-each ceiling) and `job show --json` parses.
+#[test]
+fn drift_weekly_dry_run_records_at_most_four_effects_and_parses() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "forge",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/drift-weekly.toml"),
+        e.repo.join(".forge/workflows/drift-weekly.toml"),
+    )
+    .unwrap();
+    for action in [
+        "check-claude-cli-version",
+        "check-model-drift",
+        "check-cargo-audit",
+        "check-equitizr-freshness",
+    ] {
+        std::fs::copy(
+            root.join(format!(".forge/workflows/actions/{action}.toml")),
+            e.repo
+                .join(format!(".forge/workflows/actions/{action}.toml")),
+        )
+        .unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add the drift-weekly automation"],
+    );
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(
+        &fakebin.join("claude"),
+        "#!/bin/bash\necho '1.0.0 (Claude Code)'\n",
+    );
+    write_fake(
+        &fakebin.join("npm"),
+        "#!/bin/bash\nif [ \"$1\" = view ]; then echo 1.0.0; exit 0; fi\nexit 1\n",
+    );
+    write_fake(
+        &fakebin.join("cargo"),
+        "#!/bin/bash\nif [ \"$1\" = install ]; then exit 1; fi\nexit 0\n",
+    );
+    write_fake(
+        &fakebin.join("curl"),
+        r#"#!/bin/bash
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$a"; fi
+  prev="$a"
+done
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"built_at":"%s"}' "$now" > "$out"
+printf 200
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fakehome = e._dir.path().join("fakehome");
+    std::fs::create_dir_all(&fakehome).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("HOME", &fakehome)
+        .args([
+            "job",
+            "start",
+            "forge",
+            "drift-weekly",
+            "--now",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(doc["dry_run"], true);
+    let effects = doc["effects"].as_array().unwrap();
+    assert!(effects.len() <= 4, "{effects:?}");
+    assert_eq!(effects.len(), 0, "a clean week logs no effect: {effects:?}");
 }

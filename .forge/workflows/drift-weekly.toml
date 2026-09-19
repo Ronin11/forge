@@ -1,0 +1,22 @@
+name = "drift-weekly"
+kind = "run"
+description = "weekly unattended drift checks on Monday 07:30: the claude CLI against npm, a model family's resolution against last week, cargo audit's advisories, and equitizr's freshness. A clean week logs no effect and is a green job; a drifted one logs what moved and asks the operator (docs/CHECKS.md)."
+
+steps = [
+  { action = "check-claude-cli-version",  effect = "http" },
+  { action = "check-model-drift",         effect = "row" },
+  { action = "check-cargo-audit",         effect = "row" },
+  { action = "check-equitizr-freshness",  effect = "http" },
+]
+
+[trigger]
+on = "schedule"
+cron = "30 7 * * 1"
+
+[assert]
+clean = ["bash", "-c", "[ ! -s \"$FORGE_EFFECT_LOG\" ]"]
+
+[limits]
+budget_usd = 0.0
+per_day = 1
+on_failure = "ask:operator"

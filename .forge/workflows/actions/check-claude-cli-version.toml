@@ -1,0 +1,21 @@
+name = "check-claude-cli-version"
+kind = "operation"
+description = "compares the installed claude CLI's version against npm's latest @anthropic-ai/claude-code and logs an http effect naming both when the installed one is behind. Never installs anything itself — the effect names the command for the operator to run at the next worker restart."
+run = ["bash", "-c", '''
+set +e
+installed=""
+if command -v claude >/dev/null 2>&1; then
+  installed=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+fi
+latest=""
+if command -v npm >/dev/null 2>&1; then
+  latest=$(npm view @anthropic-ai/claude-code version 2>/dev/null | tr -d '[:space:]')
+fi
+if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" != "$latest" ]; then
+  suffix=""
+  [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+  printf "http\tclaude-code\tclaude CLI is behind: installed %s, npm has %s; run \`npm install -g @anthropic-ai/claude-code@%s\` at the next worker restart%s\n" \
+    "$installed" "$latest" "$latest" "$suffix" >> "$FORGE_EFFECT_LOG"
+fi
+exit 0
+''']
