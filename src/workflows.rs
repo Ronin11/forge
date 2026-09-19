@@ -591,6 +591,13 @@ struct WorkflowRaw {
     skip_if: BTreeMap<String, Vec<String>>,
     /// `kind = "run"` only: budget and failure policy.
     limits: Option<Limits>,
+    /// `kind = "run"` only: extra environment for every operation step (and
+    /// `[skip_if]` command) of this workflow's jobs — a threshold, a table
+    /// name, a URL — declared here instead of hard-coded in the action's
+    /// script, so changing a number is a workflow-file edit, not a script
+    /// edit.
+    #[serde(default)]
+    env: BTreeMap<String, String>,
 }
 
 /// What the author declares about a workflow, for a human or an agent
@@ -642,6 +649,8 @@ pub struct Workflow {
     pub skip_if: BTreeMap<String, Vec<String>>,
     /// `kind = "run"` only.
     pub limits: Option<Limits>,
+    /// `kind = "run"` only; empty when unset.
+    pub env: BTreeMap<String, String>,
     pub hash: String,
     pub path: PathBuf,
     pub text: String,
@@ -1094,6 +1103,12 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
                     path.display()
                 );
             }
+            if !raw.env.is_empty() {
+                bail!(
+                    "{}: kind = \"build\" (the default) may not have [env]; that is a run workflow's section (set kind = \"run\")",
+                    path.display()
+                );
+            }
         }
     }
     let trigger = raw.trigger.map(|t| build_trigger(path, t)).transpose()?;
@@ -1133,6 +1148,7 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
         assert: raw.assert,
         skip_if: raw.skip_if,
         limits: raw.limits,
+        env: raw.env,
         hash,
         path: path.to_path_buf(),
         text: text.to_string(),
@@ -2435,6 +2451,20 @@ on_failure = "ask:contact"
     }
 
     #[test]
+    fn a_run_workflow_env_parses_into_a_map() {
+        let dir = tempfile::tempdir().unwrap();
+        load_all(dir.path()).unwrap();
+        write(
+            dir.path(),
+            "thresholds.toml",
+            "name = \"thresholds\"\nsteps = [{ action = \"code\", effect = \"row\" }]\nkind = \"run\"\n[trigger]\non = \"manual\"\n[env]\nMAX_LINES = \"400\"\nOTHER = \"3000\"\n",
+        );
+        let w = get(dir.path(), "thresholds").unwrap().unwrap();
+        assert_eq!(w.env.get("MAX_LINES").unwrap(), "400");
+        assert_eq!(w.env.get("OTHER").unwrap(), "3000");
+    }
+
+    #[test]
     fn a_build_workflow_may_not_have_run_sections() {
         let dir = tempfile::tempdir().unwrap();
         load_all(dir.path()).unwrap();
@@ -2459,6 +2489,13 @@ on_failure = "ask:contact"
         );
         let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
         assert!(err.contains("may not have [skip_if]"), "{err}");
+        write(
+            dir.path(),
+            "wrongly-run.toml",
+            "name = \"wrongly-run\"\nsteps = [{ action = \"code\" }]\n[env]\nMAX = \"1\"\n",
+        );
+        let err = get(dir.path(), "wrongly-run").unwrap_err().to_string();
+        assert!(err.contains("may not have [env]"), "{err}");
     }
 
     #[test]

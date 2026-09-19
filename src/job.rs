@@ -53,7 +53,19 @@ fn string_fields(input: &serde_json::Value) -> Result<Vec<(String, String)>> {
 /// where an earlier directive step's validated output landed
 /// (`FORGE_OUTPUT_<NAME>`): how a later operation reads what a directive
 /// decided (docs/JOBS.md, "The executor", item 3: "Outputs are files in
-/// the scratch directory and flow to the next step").
+/// the scratch directory and flow to the next step"). `FORGE_PROJECT` and
+/// `FORGE_REPO_DIR` name the real, landed repository (with its `.git`,
+/// unlike the scratch archive the step runs in) so a step that has to act
+/// on the project itself — filing a task with `forge add`, say — knows
+/// where; `FORGE_BIN_DIR` is where that `forge` binary lives, the fact
+/// `operation::operation_env` already gives a task's own operations.
+/// `FORGE2_HOME` is set for the same reason: `agent::command_in` clears
+/// the child's environment down to an allowlist that does not include it
+/// (so an operation never inherits stray operator state by accident), and
+/// without it a recursive `forge` call would open a default store instead
+/// of the operator's own. `workflow_env` is the workflow's own `[env]`
+/// table: thresholds and the like, declared in the file instead of
+/// hard-coded in the script.
 #[allow(clippy::too_many_arguments)]
 fn step_env(
     job_id: i64,
@@ -62,6 +74,10 @@ fn step_env(
     input_dir: &Path,
     input_fields: &[(String, String)],
     output_paths: &[(String, String)],
+    project: &str,
+    repo: &Path,
+    home: &Path,
+    workflow_env: &BTreeMap<String, String>,
     secrets: &std::collections::BTreeMap<String, String>,
     dry_run: bool,
 ) -> Vec<(String, String)> {
@@ -76,6 +92,16 @@ fn step_env(
             "FORGE_INPUT_DIR".to_string(),
             input_dir.display().to_string(),
         ),
+        ("FORGE_PROJECT".to_string(), project.to_string()),
+        ("FORGE_REPO_DIR".to_string(), repo.display().to_string()),
+        ("FORGE2_HOME".to_string(), home.display().to_string()),
+        (
+            "FORGE_BIN_DIR".to_string(),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.display().to_string()))
+                .unwrap_or_default(),
+        ),
     ];
     if dry_run {
         env.push(("FORGE_DRY_RUN".to_string(), "1".to_string()));
@@ -88,6 +114,9 @@ fn step_env(
             format!("FORGE_OUTPUT_{}", name.to_uppercase().replace('-', "_")),
             path.clone(),
         ));
+    }
+    for (k, v) in workflow_env {
+        env.push((k.clone(), v.clone()));
     }
     for (k, v) in secrets {
         env.push((k.clone(), v.clone()));
@@ -434,6 +463,7 @@ pub async fn start(
         &wf.assert,
         &wf.skip_if,
         wf.limits.as_ref(),
+        &wf.env,
         dry_run,
         &input_text,
         &input_fields,
@@ -520,6 +550,7 @@ async fn run_now(
     assert: &BTreeMap<String, Vec<String>>,
     skip_if: &BTreeMap<String, Vec<String>>,
     limits: Option<&workflows::Limits>,
+    workflow_env: &BTreeMap<String, String>,
     dry_run: bool,
     input_text: &str,
     input_fields: &[(String, String)],
@@ -566,6 +597,10 @@ async fn run_now(
             &idir,
             input_fields,
             &[],
+            project,
+            repo,
+            &f.paths.home,
+            workflow_env,
             &secrets,
             dry_run,
         );
@@ -619,6 +654,10 @@ async fn run_now(
                     &idir,
                     input_fields,
                     &output_paths,
+                    project,
+                    repo,
+                    &f.paths.home,
+                    workflow_env,
                     &secrets,
                     dry_run,
                 );
@@ -867,6 +906,7 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &wf.assert,
         &wf.skip_if,
         wf.limits.as_ref(),
+        &wf.env,
         job.dry_run,
         &input_text,
         &input_fields,
@@ -1066,6 +1106,7 @@ pub async fn bench(
                 &wf.assert,
                 &wf.skip_if,
                 wf.limits.as_ref(),
+                &wf.env,
                 true,
                 &input_text,
                 &input_fields,
@@ -1179,11 +1220,20 @@ mod tests {
         assert!(string_fields(&serde_json::json!(5)).is_err());
     }
 
+    fn bin_dir() -> String {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.display().to_string()))
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn step_env_for_a_real_run_orders_inputs_outputs_then_secrets_last() {
+    fn step_env_for_a_real_run_orders_inputs_outputs_env_then_secrets_last() {
         let mut secrets = std::collections::BTreeMap::new();
         secrets.insert("Z_SECRET".to_string(), "zzz".to_string());
         secrets.insert("A_SECRET".to_string(), "aaa".to_string());
+        let mut workflow_env = BTreeMap::new();
+        workflow_env.insert("MAX_LINES".to_string(), "400".to_string());
         let env = step_env(
             7,
             "mystep",
@@ -1194,6 +1244,10 @@ mod tests {
                 "my-action".to_string(),
                 "/scratch/output-my-action.json".to_string(),
             )],
+            "acme",
+            Path::new("/repo/acme"),
+            Path::new("/home/forge2"),
+            &workflow_env,
             &secrets,
             false,
         );
@@ -1207,11 +1261,16 @@ mod tests {
                     "/scratch/effects.log".to_string()
                 ),
                 ("FORGE_INPUT_DIR".to_string(), "/scratch/input".to_string()),
+                ("FORGE_PROJECT".to_string(), "acme".to_string()),
+                ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
+                ("FORGE2_HOME".to_string(), "/home/forge2".to_string()),
+                ("FORGE_BIN_DIR".to_string(), bin_dir()),
                 ("FORGE_INPUT_NAME".to_string(), "bob".to_string()),
                 (
                     "FORGE_OUTPUT_MY_ACTION".to_string(),
                     "/scratch/output-my-action.json".to_string()
                 ),
+                ("MAX_LINES".to_string(), "400".to_string()),
                 ("A_SECRET".to_string(), "aaa".to_string()),
                 ("Z_SECRET".to_string(), "zzz".to_string()),
             ]
@@ -1221,6 +1280,7 @@ mod tests {
     #[test]
     fn step_env_for_a_dry_run_adds_the_flag_before_inputs_and_never_a_real_run() {
         let secrets = std::collections::BTreeMap::new();
+        let workflow_env = BTreeMap::new();
         let dry = step_env(
             1,
             "s",
@@ -1228,6 +1288,10 @@ mod tests {
             Path::new("/in"),
             &[],
             &[],
+            "acme",
+            Path::new("/repo/acme"),
+            Path::new("/home/forge2"),
+            &workflow_env,
             &secrets,
             true,
         );
@@ -1238,6 +1302,10 @@ mod tests {
                 ("FORGE_STEP".to_string(), "s".to_string()),
                 ("FORGE_EFFECT_LOG".to_string(), "/log".to_string()),
                 ("FORGE_INPUT_DIR".to_string(), "/in".to_string()),
+                ("FORGE_PROJECT".to_string(), "acme".to_string()),
+                ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
+                ("FORGE2_HOME".to_string(), "/home/forge2".to_string()),
+                ("FORGE_BIN_DIR".to_string(), bin_dir()),
                 ("FORGE_DRY_RUN".to_string(), "1".to_string()),
             ]
         );
@@ -1249,6 +1317,10 @@ mod tests {
             Path::new("/in"),
             &[],
             &[],
+            "acme",
+            Path::new("/repo/acme"),
+            Path::new("/home/forge2"),
+            &workflow_env,
             &secrets,
             false,
         );
