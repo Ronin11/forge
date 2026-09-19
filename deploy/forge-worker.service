@@ -12,7 +12,7 @@ After=network-online.target
 Type=simple
 Environment=FORGE2_HOME=%h/.local/share/forge2
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/Projects/forge_2_electric_boogaloo/target/release/forge work --jobs 2
+ExecStart=%h/Projects/forge/target/release/forge work --jobs 3
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=2400
