@@ -43,6 +43,22 @@ case "$1" in
 JSON
         ;;
       show) echo "{\"id\":$3,\"project\":\"demo\",\"workflow\":\"nightly\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"cron\",\"trigger_ref\":\"0 * * * *\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":1000,\"finished_at\":1010,\"cost_usd\":0.42,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"action\":\"notify\",\"kind\":\"operation\",\"provider\":\"\",\"model\":\"\",\"cost_usd\":null,\"started_at\":1000,\"finished_at\":1005,\"exit_code\":0,\"output_ref\":\"out/1\"}],\"effects\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"kind\":\"message\",\"target\":\"ops-channel\",\"summary\":\"posted status\",\"dry_run\":false}]}" ;;
+      fire)
+        proj="$3"; shift 3
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --webhook) hook="$2" ;;
+            --input) input="$2" ;;
+            --ref) ref="$2" ;;
+            --token) token="$2" ;;
+          esac
+          shift
+        done
+        { echo "fire $proj $hook ref=${ref:-none} mode=$(stat -c %a "$input")"; cat "$input"; echo; } >> "$FORGE2_HOME/fire.log"
+        case "$token" in
+          good) echo 7 ;;
+          *) echo "invalid webhook token for $proj/$hook: pass --token (got $token)" >&2; exit 1 ;;
+        esac ;;
       *) echo "unexpected job: $*" >&2; exit 2 ;;
     esac ;;
   stats) cat <<'JSON'
@@ -67,7 +83,7 @@ struct Web {
     child: std::process::Child,
     addr: String,
     token: String,
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 impl Drop for Web {
@@ -118,7 +134,7 @@ fn start() -> Web {
         child,
         addr: addr.to_string(),
         token,
-        _home: home,
+        home,
     }
 }
 
@@ -482,4 +498,118 @@ fn events_stream_as_server_sent_events_from_the_offset() {
     }
     assert_eq!(seen.len(), 2, "{seen:?}");
     assert!(seen[0].contains("first") && seen[1].contains("second"));
+}
+
+/// One raw HTTP/1.0 POST with a body; returns (status, headers, body).
+fn post_body(addr: &str, path: &str, extra: &str, body: &str) -> (u16, String, String) {
+    post(
+        addr,
+        path,
+        &format!("{extra}Content-Length: {}\r\n\r\n{body}", body.len()),
+    )
+}
+
+fn fire_log(w: &Web) -> String {
+    std::fs::read_to_string(w.home.path().join("fire.log")).unwrap_or_default()
+}
+
+#[test]
+fn a_webhook_post_hands_its_body_and_bearer_token_to_forge_job_fire() {
+    let w = start();
+    // Not behind the web token: the hook's own bearer token is the credential.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/hooks/demo/orders?ref=delivery%2042",
+        "Authorization: Bearer good\r\n",
+        r#"{"order":"17"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["job"], 7);
+    let log = fire_log(&w);
+    assert!(
+        log.contains("fire demo orders ref=delivery 42 mode=600"),
+        "{log}"
+    );
+    assert!(log.contains(r#"{"order":"17"}"#), "{log}");
+
+    // Without a ref the kernel keys the delivery on the body; an
+    // Idempotency-Key header is a ref too.
+    let (status, _, _) = post_body(
+        &w.addr,
+        "/hooks/demo/orders",
+        "Authorization: bearer good\r\nIdempotency-Key: k1\r\n",
+        "{}",
+    );
+    assert_eq!(status, 200);
+    let (status, _, _) = post_body(
+        &w.addr,
+        "/hooks/demo/orders",
+        "Authorization: Bearer good\r\n",
+        "{}",
+    );
+    assert_eq!(status, 200);
+    let log = fire_log(&w);
+    assert!(log.contains("fire demo orders ref=k1 "), "{log}");
+    assert!(log.contains("fire demo orders ref=none "), "{log}");
+}
+
+#[test]
+fn a_webhook_with_a_wrong_or_missing_token_is_401_and_never_echoes_the_token() {
+    let w = start();
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/hooks/demo/orders",
+        "Authorization: Bearer sekrit-wrong\r\n",
+        "{}",
+    );
+    assert_eq!(status, 401, "{body}");
+    assert!(!body.contains("sekrit-wrong"), "{body}");
+    for extra in [
+        "",
+        "Authorization: Basic Zm9v\r\n",
+        "Authorization: Bearer \r\n",
+    ] {
+        let (status, _, _) = post_body(&w.addr, "/hooks/demo/orders", extra, "{}");
+        assert_eq!(status, 401, "{extra:?}");
+    }
+    // The token is a header credential only, and the web token is not one.
+    let (status, _, _) = post_body(&w.addr, "/hooks/demo/orders?token=good", "", "{}");
+    assert_eq!(status, 401);
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+    let (status, _, _) = post_body(&w.addr, "/hooks/demo/orders", &cookie, "{}");
+    assert_eq!(status, 401);
+}
+
+#[test]
+fn a_webhook_route_takes_only_a_post_to_a_plain_project_and_name() {
+    let w = start();
+    let auth = "Authorization: Bearer good\r\n";
+    let (status, _, _) = get(&w.addr, "/hooks/demo/orders", auth);
+    assert_eq!(status, 405);
+    for path in [
+        "/hooks/demo",
+        "/hooks/demo/",
+        "/hooks//orders",
+        "/hooks/demo/a/b",
+        "/hooks/demo/a%2Fb",
+    ] {
+        let (status, _, _) = post_body(&w.addr, path, auth, "{}");
+        assert_eq!(status, 404, "{path}");
+    }
+    assert_eq!(fire_log(&w), "", "nothing was fired");
+}
+
+#[test]
+fn a_webhook_body_over_the_limit_is_refused_before_it_reaches_forge() {
+    let w = start();
+    let big = "x".repeat(1024 * 1024 + 1);
+    let (status, _, _) = post_body(
+        &w.addr,
+        "/hooks/demo/orders",
+        "Authorization: Bearer good\r\n",
+        &big,
+    );
+    assert_eq!(status, 413);
+    assert_eq!(fire_log(&w), "");
 }

@@ -2,8 +2,9 @@
 //! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
 //! `log`, `trace`, `journal`, `requests`) and the live feed is
 //! `events --follow` piped through as server-sent events. Almost entirely
-//! read-only; the one write route, `POST /api/retry/<id>`, is the same
-//! `forge retry` verb the CLI runs.
+//! read-only; the write routes are `POST /api/retry/<id>`, the same `forge
+//! retry` verb the CLI runs, and `POST /hooks/<project>/<name>`, a
+//! webhook delivery handed to `forge job fire` (docs/CLIENT.md).
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
 //! `/tasks/<id>` (one task: trace, diagnosis, journal, its events),
@@ -18,7 +19,8 @@
 //! with `?token=` sets a cookie. The server binds loopback unless told
 //! otherwise, and there are no routes without the token: Forge 1's web
 //! server had open operator routes and a tailnet proxy made every peer the
-//! operator.
+//! operator. The one exception is `/hooks/`, which takes a webhook's own
+//! bearer token instead and gives it no reach past `forge job fire`.
 
 use anyhow::{Context, Result};
 use forge_client::Forge;
@@ -322,12 +324,180 @@ fn plugins_merged(forge: &Forge) -> Result<Value> {
     Ok(Value::Array(merged))
 }
 
+/// The largest webhook body the server will take: a webhook's input is a
+/// small JSON object, not an upload.
+const HOOK_BODY_LIMIT: u64 = 1024 * 1024;
+
+/// `/hooks/<project>/<name>` split into its two segments; `None` for
+/// anything else, including a segment that would smuggle a path or an
+/// argument (`forge project webhook token` allows only these characters in
+/// a name; a project's name is held to the same here).
+fn hook_route(path: &str) -> Option<(&str, &str)> {
+    let (project, name) = path.strip_prefix("/hooks/")?.split_once('/')?;
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (plain(project) && plain(name)).then_some((project, name))
+}
+
+/// The bearer token in the `Authorization` header, and only there: a
+/// webhook's token is never taken from a URL, which gets logged.
+fn bearer(req: &Request) -> Option<String> {
+    let a = header(req, "Authorization")?;
+    let (scheme, token) = a.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty())
+        .then(|| token.trim().to_string())
+}
+
+/// A body file no other user can read, removed when dropped.
+struct BodyFile(PathBuf);
+
+impl BodyFile {
+    fn write(body: &[u8]) -> Result<BodyFile> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "forge-web-hook-{}-{}.json",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        opts.open(&path)
+            .and_then(|mut f| f.write_all(body))
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(BodyFile(path))
+    }
+}
+
+impl Drop for BodyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// `POST /hooks/<project>/<name>` (docs/CLIENT.md, "Webhooks"): the body is
+/// written to a file and handed to `forge job fire` with the request's
+/// bearer token and its delivery key (`?ref=` or an `Idempotency-Key`
+/// header, else none: the kernel keys the delivery on the body). This
+/// route is not behind the web token — the per-hook token is its own
+/// credential, checked by the kernel, and the only thing this server
+/// decides about it is which status the kernel's refusal becomes.
+fn hook(mut req: Request, forge: &Forge, project: &str, name: &str, query: &str) {
+    let Some(token) = bearer(&req) else {
+        let _ = req.respond(text(
+            401,
+            &serde_json::json!({ "error": "a webhook needs `Authorization: Bearer <token>`" })
+                .to_string(),
+            "application/json",
+        ));
+        return;
+    };
+    let reference = query_param(query, "ref")
+        .map(|v| unescape(&v))
+        .or_else(|| header(&req, "Idempotency-Key"))
+        .filter(|r| !r.is_empty());
+    let mut body = Vec::new();
+    if req
+        .as_reader()
+        .take(HOOK_BODY_LIMIT + 1)
+        .read_to_end(&mut body)
+        .is_err()
+    {
+        let _ = req.respond(text(400, "unreadable body", "text/plain"));
+        return;
+    }
+    if body.len() as u64 > HOOK_BODY_LIMIT {
+        let _ = req.respond(text(413, "body too large", "text/plain"));
+        return;
+    }
+    let resp = match BodyFile::write(&body) {
+        Err(e) => text(
+            500,
+            &serde_json::json!({ "error": e.to_string() }).to_string(),
+            "application/json",
+        ),
+        Ok(file) => {
+            let path = file.0.to_string_lossy().into_owned();
+            let mut args = vec![
+                "job",
+                "fire",
+                project,
+                "--webhook",
+                name,
+                "--input",
+                &path,
+                "--token",
+                &token,
+            ];
+            if let Some(r) = reference.as_deref() {
+                args.extend(["--ref", r]);
+            }
+            match forge.run(&args) {
+                Ok(out) => text(
+                    200,
+                    &serde_json::json!({
+                        "job": out.split_whitespace().next().and_then(|j| j.parse::<i64>().ok()),
+                        "output": out.trim(),
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+                Err(e) => {
+                    let msg = e.to_string().replace(&token, "***");
+                    text(
+                        hook_refusal_status(&msg),
+                        &serde_json::json!({ "error": msg }).to_string(),
+                        "application/json",
+                    )
+                }
+            }
+        }
+    };
+    let _ = req.respond(resp);
+}
+
+/// The HTTP status for what `forge job fire` said when it exited non-zero:
+/// the kernel's own wording is the contract (docs/CLIENT.md, "Webhooks").
+fn hook_refusal_status(stderr: &str) -> u16 {
+    if stderr.contains("invalid webhook token") {
+        401
+    } else if stderr.contains("no run workflow") || stderr.contains("no project") {
+        404
+    } else if stderr.contains("per_day limit") {
+        429
+    } else if stderr.contains("more than one run workflow")
+        || stderr.contains("JSON")
+        || stderr.contains("--ref")
+    {
+        422
+    } else {
+        502
+    }
+}
+
 /// One request: authenticate, then route. Everything but `/` with a
 /// token in the query is refused without a valid token.
 fn handle(req: Request, forge: &Forge, secret: &str) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let (path, query) = (path.to_string(), query.to_string());
+    if path.starts_with("/hooks/") {
+        match (req.method(), hook_route(&path)) {
+            (Method::Post, Some((project, name))) => hook(req, forge, project, name, &query),
+            (Method::Post, None) => {
+                let _ = req.respond(text(404, "not found", "text/plain"));
+            }
+            _ => {
+                let _ = req.respond(text(405, "POST only", "text/plain"));
+            }
+        }
+        return;
+    }
     let write_post = req.method() == &Method::Post
         && (path.starts_with("/api/retry/")
             || matches!(
@@ -552,6 +722,40 @@ mod tests {
         assert_eq!(unescape("100%"), "100%");
         assert_eq!(unescape("%zz"), "%zz");
         assert_eq!(unescape("x%4"), "x%4");
+    }
+
+    #[test]
+    fn a_hook_route_is_two_plain_segments() {
+        assert_eq!(hook_route("/hooks/shop/orders"), Some(("shop", "orders")));
+        assert_eq!(hook_route("/hooks/a.b/c_d-e"), Some(("a.b", "c_d-e")));
+        for bad in [
+            "/hooks/shop",
+            "/hooks/shop/",
+            "/hooks//x",
+            "/hooks/a/b/c",
+            "/hooks/a/b c",
+            "/hooks/a/%2e",
+        ] {
+            assert_eq!(hook_route(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_kernels_refusals_map_to_statuses() {
+        assert_eq!(
+            hook_refusal_status("forge job fire: invalid webhook token for a/b"),
+            401
+        );
+        assert_eq!(
+            hook_refusal_status("no run workflow in project a has a webhook trigger named b"),
+            404
+        );
+        assert_eq!(
+            hook_refusal_status("w has started 3 time(s) and its per_day limit is 3"),
+            429
+        );
+        assert_eq!(hook_refusal_status("parsing the input file as JSON"), 422);
+        assert_eq!(hook_refusal_status("disk on fire"), 502);
     }
 
     #[test]
