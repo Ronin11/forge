@@ -2566,3 +2566,179 @@ on_failure = "retry:1"
         "retry never asks"
     );
 }
+
+/// Commit a message-triggered run workflow named `answer` (trigger table
+/// `trigger`) to the fixture repository, whose one operation writes the
+/// message it was started with to `got.txt` in the job's scratch tree, and
+/// register the repository as project `shop`.
+fn setup_message_workflow(e: &Env, trigger: &str) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "shop", "--purpose", "p", "--repo", repo_s],
+        )
+        .status
+        .success()
+    );
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/actions/keep-text.toml"),
+        "name = \"keep-text\"\nkind = \"operation\"\ndescription = \"writes the message it was started with to got.txt\"\nrun = [\"bash\", \"-c\", \"printf '%s' \\\"$FORGE_INPUT_TEXT\\\" > got.txt; printf '%s' \\\"$FORGE_INPUT_FROM\\\" > from.txt\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/answer.toml"),
+        format!(
+            r#"name = "answer"
+kind = "run"
+description = "starts on a text, for e2e coverage of the message trigger"
+
+steps = [
+  {{ action = "keep-text" }},
+]
+
+[trigger]
+{trigger}
+
+[assert]
+ok = ["true"]
+"#
+        ),
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "add the answer automation"]);
+}
+
+fn job_rows(e: &Env) -> Vec<serde_json::Value> {
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    rows.as_array().unwrap().clone()
+}
+
+/// The message trigger (docs/JOBS.md, "Triggers"): recording an inbound
+/// message for a project with a `[trigger] on = "message"` run workflow
+/// queues one job with `trigger_kind = "message"` and `trigger_ref` the
+/// message's id, running nothing inline; `forge work --once` then runs it
+/// with the message as `FORGE_INPUT_TEXT`. A message from a contact the
+/// trigger does not name, and one sent rather than received, start nothing.
+#[test]
+fn recording_an_inbound_message_queues_a_job_that_forge_work_once_runs_with_its_text() {
+    let e = Env::new();
+    setup_message_workflow(&e, "on = \"message\"\ncontact = \"alice\"");
+
+    // Not alice, and not inbound: nothing starts.
+    let record = |flag: &str, who: &str, text: &str| {
+        let o = e.forge(
+            "ok.sh",
+            &[
+                "message",
+                "record",
+                "shop",
+                "--channel",
+                "signal",
+                flag,
+                who,
+                "--text",
+                text,
+            ],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap()
+    };
+    record("--from", "bob", "not for the automation");
+    record("--to", "alice", "an answer going out");
+    assert!(job_rows(&e).is_empty());
+
+    let id = record("--from", "alice", "I need a quote for a fence");
+    let rows = job_rows(&e);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["workflow"], "answer");
+    assert_eq!(rows[0]["trigger_kind"], "message");
+    assert_eq!(rows[0]["trigger_ref"], id.to_string());
+    assert_eq!(rows[0]["state"], "queued", "queued, never run inline");
+    let job_id = rows[0]["id"].as_i64().unwrap();
+    assert!(
+        !e.home
+            .join("worktrees")
+            .join(format!("job-{job_id}"))
+            .exists()
+    );
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &job_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let scratch = e.home.join("worktrees").join(format!("job-{job_id}"));
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("got.txt")).unwrap(),
+        "I need a quote for a fence"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("from.txt")).unwrap(),
+        "alice"
+    );
+    let input: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            e.home
+                .join("worktrees")
+                .join(format!("job-{job_id}-input/input.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(input["from"], "alice");
+    assert_eq!(input["channel"], "signal");
+    assert_eq!(input["message_id"], id);
+    assert!(input["at"].as_i64().unwrap() > 0);
+    assert_eq!(job_rows(&e).len(), 1);
+}
+
+/// A `contact = "*"` trigger matches anyone, and its `delay` leaves the job
+/// `scheduled`, due the delay after the message: `forge work --once` finds
+/// it not yet claimable and runs nothing.
+#[test]
+fn a_message_triggers_star_contact_and_delay_leave_a_scheduled_job_the_worker_waits_for() {
+    let e = Env::new();
+    setup_message_workflow(&e, "on = \"message\"\ncontact = \"*\"\ndelay = \"1h\"");
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "message",
+            "record",
+            "shop",
+            "--channel",
+            "signal",
+            "--from",
+            "carol",
+            "--text",
+            "hello",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let at: i64 = e
+        .db()
+        .query_row("SELECT at FROM messages", [], |r| r.get(0))
+        .unwrap();
+
+    let rows = job_rows(&e);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["state"], "scheduled");
+    assert_eq!(rows[0]["due_at"], at + 3600, "{rows:?}");
+
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let rows = job_rows(&e);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["state"], "scheduled", "not due yet: {rows:?}");
+}
