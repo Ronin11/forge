@@ -5007,8 +5007,35 @@ async fn gc(dry_run: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::job_test_target;
     use std::collections::HashSet;
     use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn job_test_reads_a_lone_directory_as_the_path_and_a_lone_name_as_the_workflow() {
+        let target = |w: Option<&str>, p: Option<&str>| {
+            job_test_target(w.map(str::to_string), p.map(PathBuf::from))
+        };
+        let here = PathBuf::from(".");
+        assert_eq!(target(None, None), (None, here.clone()));
+        assert_eq!(target(Some("."), None), (None, here.clone()));
+        assert_eq!(
+            target(Some("../repo"), None),
+            (None, PathBuf::from("../repo"))
+        );
+        // The crate root, where tests run, holds a `src` directory and no
+        // run workflow called `src` or `no-such-workflow`.
+        assert_eq!(target(Some("src"), None), (None, PathBuf::from("src")));
+        assert_eq!(
+            target(Some("no-such-workflow"), None),
+            (Some("no-such-workflow".to_string()), here)
+        );
+        assert_eq!(
+            target(Some("wf"), Some("/repo")),
+            (Some("wf".to_string()), PathBuf::from("/repo"))
+        );
+    }
 
     /// Functions over 80 lines that stay only because they are named here,
     /// each with the one-line reason it is not a parse-call-print verb. A

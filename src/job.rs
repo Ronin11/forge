@@ -1434,6 +1434,7 @@ pub async fn drive(f: Arc<Forge>, job_id: i64) -> JobState {
 /// `forge job bench` measures a judgment against), is still read, as
 /// `expect.effects = [{kind}]`; `expected_kind` stays on the fixture for
 /// `bench`, which compares it with what the model said.
+#[derive(Debug)]
 struct Fixture {
     input: serde_json::Value,
     expect: Expect,
@@ -1443,7 +1444,7 @@ struct Fixture {
 
 /// What a replay must come to: the job's final state and its whole effect
 /// log — every effect listed must have been logged, and no other.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Expect {
     /// `ok` when the fixture does not say.
@@ -1455,7 +1456,7 @@ struct Expect {
 
 /// One effect a replay must log: its `kind`, and, when given, its exact
 /// `target` and a fragment its `summary` contains.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExpectedEffect {
     kind: String,
@@ -2263,6 +2264,182 @@ mod tests {
         assert_eq!(fixtures[0].1.expected_kind.as_deref(), Some("feature"));
         assert_eq!(fixtures[1].1.expected_kind.as_deref(), Some("bug"));
         assert_eq!(fixtures[0].1.input, serde_json::json!({"title": "a"}));
+    }
+
+    fn fixture_in(dir: &Path, text: &str) -> Result<Fixture> {
+        let fixtures_dir = dir.join(".forge").join("fixtures").join("wf");
+        std::fs::create_dir_all(&fixtures_dir).unwrap();
+        std::fs::write(fixtures_dir.join("one.json"), text).unwrap();
+        load_fixtures(dir, "wf").map(|mut v| v.remove(0).1)
+    }
+
+    #[test]
+    fn the_older_fixture_shape_is_expect_effects_of_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture_in(dir.path(), r#"{"input": {}, "expected_kind": "bug"}"#).unwrap();
+        assert_eq!(fx.expect.state, "ok");
+        assert_eq!(fx.expect.effects.len(), 1);
+        assert_eq!(fx.expect.effects[0].kind, "bug");
+        assert!(fx.expect.effects[0].target.is_none());
+        assert!(fx.outputs.is_empty());
+    }
+
+    #[test]
+    fn the_new_fixture_shape_carries_expect_and_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = fixture_in(
+            dir.path(),
+            r#"{"input": {"a": "b"},
+                "expect": {"state": "skipped", "effects": [
+                    {"kind": "file", "target": "x.txt", "summary_contains": "hi"}]},
+                "outputs": {"judge": {"kind": "bug"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(fx.expect.state, "skipped");
+        let e = &fx.expect.effects[0];
+        assert_eq!(
+            (
+                e.kind.as_str(),
+                e.target.as_deref(),
+                e.summary_contains.as_deref()
+            ),
+            ("file", Some("x.txt"), Some("hi"))
+        );
+        assert_eq!(fx.outputs["judge"], serde_json::json!({"kind": "bug"}));
+        assert!(fx.expected_kind.is_none());
+    }
+
+    #[test]
+    fn a_fixture_without_an_expectation_or_with_a_typo_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = fixture_in(dir.path(), r#"{"input": {}}"#).unwrap_err();
+        assert!(format!("{e:#}").contains("needs an `expect`"), "{e:#}");
+        let e = fixture_in(
+            dir.path(),
+            r#"{"input": {}, "expect": {"effects": [{"kind": "file", "summary_contain": "x"}]}}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("summary_contain"), "{e:#}");
+        let e =
+            fixture_in(dir.path(), r#"{"input": {}, "expect": {"state": "bogus"}}"#).unwrap_err();
+        assert!(format!("{e:#}").contains("bogus"), "{e:#}");
+    }
+
+    fn logged(kind: &str, target: &str, summary: &str) -> JobEffect {
+        JobEffect {
+            id: 0,
+            job_id: 1,
+            seq: 0,
+            kind: kind.to_string(),
+            target: target.to_string(),
+            summary: summary.to_string(),
+            dry_run: true,
+        }
+    }
+
+    fn expecting(state: &str, effects: &[(&str, Option<&str>, Option<&str>)]) -> Expect {
+        Expect {
+            state: state.to_string(),
+            effects: effects
+                .iter()
+                .map(|(k, t, c)| ExpectedEffect {
+                    kind: k.to_string(),
+                    target: t.map(str::to_string),
+                    summary_contains: c.map(str::to_string),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_replay_that_matches_has_no_differences() {
+        let log = [
+            logged("file", "a.txt", "wrote a (dry run)"),
+            logged("row", "t", "r"),
+        ];
+        let want = expecting(
+            "ok",
+            &[("row", None, None), ("file", Some("a.txt"), Some("wrote"))],
+        );
+        assert!(differences(&want, JobState::Ok, &log, "").is_empty());
+    }
+
+    #[test]
+    fn a_missing_effect_is_named_with_what_was_asked_of_it() {
+        let log = [logged("file", "a.txt", "wrote")];
+        let want = expecting(
+            "ok",
+            &[
+                ("file", None, None),
+                ("message", Some("+1555"), Some("quote")),
+            ],
+        );
+        assert_eq!(
+            differences(&want, JobState::Ok, &log, ""),
+            vec![r#"missing effect: message +1555 with a summary containing "quote""#]
+        );
+    }
+
+    #[test]
+    fn an_effect_nothing_expected_is_extra_and_a_target_or_summary_mismatch_is_missing() {
+        let log = [logged("file", "a.txt", "wrote"), logged("row", "t", "r")];
+        let want = expecting("ok", &[("file", Some("b.txt"), None)]);
+        let d = differences(&want, JobState::Ok, &log, "");
+        assert_eq!(
+            d,
+            vec![
+                "missing effect: file b.txt".to_string(),
+                "extra effect: file a.txt: wrote".to_string(),
+                "extra effect: row t: r".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_logged_effect_satisfies_one_expected_effect() {
+        let log = [logged("file", "a.txt", "wrote")];
+        let want = expecting("ok", &[("file", None, None), ("file", None, None)]);
+        assert_eq!(
+            differences(&want, JobState::Ok, &log, ""),
+            vec!["missing effect: file"]
+        );
+    }
+
+    #[test]
+    fn a_wrong_state_comes_first_and_says_what_ended_the_run() {
+        let want = expecting("ok", &[("file", None, None)]);
+        let d = differences(&want, JobState::Failed, &[], "appended: exit 1");
+        assert_eq!(
+            d,
+            vec![
+                "wrong state: expected ok, got failed (appended: exit 1)".to_string(),
+                "missing effect: file".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recorded_output_is_held_to_the_actions_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = test_action("judge", None);
+        a.schema = Some(
+            r#"{"type":"object","required":["kind"],"properties":{"kind":{"type":"string"}}}"#
+                .to_string(),
+        );
+        let ok = recorded_directive(&a, &serde_json::json!({"kind": "bug"}), dir.path()).unwrap();
+        assert!(ok.check.ok);
+        assert_eq!(ok.provider, "recorded");
+        assert_eq!(ok.cost_usd, 0.0);
+        assert_eq!(ok.output_text, r#"{"kind":"bug"}"#);
+        let path = ok.output_ref.unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), r#"{"kind":"bug"}"#);
+        let bad = recorded_directive(&a, &serde_json::json!({"kind": 3}), dir.path()).unwrap();
+        assert!(!bad.check.ok);
+        assert!(
+            bad.check.tail.contains("does not match the schema"),
+            "{}",
+            bad.check.tail
+        );
     }
 
     #[test]
