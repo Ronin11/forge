@@ -372,3 +372,44 @@ fn gc_treats_a_blocked_task_superseded_by_a_later_success_like_a_failed_one() {
     );
     assert!(!e.home.join("worktrees/1").exists());
 }
+
+/// A task queued while another runs is claimed on the next poll, not only
+/// when the running one finishes: with a slot free, the worker's loop
+/// wakes on its poll interval as well as on a join. Before 2026-09-19 it
+/// woke only on a join or a signal, and two tasks sat queued for an hour
+/// beside one running attempt and two free slots.
+#[test]
+fn a_task_queued_while_another_runs_is_claimed_before_it_finishes() {
+    let e = Env::new();
+    let first = e.add(&[]);
+    let mut worker = Worker::spawn(
+        e.cmd("ok.sh")
+            .env("FAKE_SLEEP", "1")
+            .env("FAKE_SLEEP_SECS", "15")
+            .args(["work", "--jobs", "2", "--poll", "1"]),
+    );
+    assert!(
+        wait_until(
+            || e.attempts(first).first().is_some_and(|a| a.1 == "running"),
+            Duration::from_secs(20)
+        ),
+        "the first task was never claimed"
+    );
+    let second = e.add(&[]);
+    assert!(
+        wait_until(
+            || e.attempts(second).first().is_some_and(|a| a.1 == "running"),
+            Duration::from_secs(10)
+        ),
+        "the second task was not claimed while the first ran: {:?}",
+        e.task(second)
+    );
+    assert_eq!(
+        e.attempts(first)[0].1,
+        "running",
+        "the first task was still running when the second was claimed"
+    );
+    assert!(worker.stop().success());
+    assert_eq!(e.task(first).0, "succeeded");
+    assert_eq!(e.task(second).0, "succeeded");
+}

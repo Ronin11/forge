@@ -2,7 +2,7 @@
 # writes the right answer, commits, reports it honestly, and shows a
 # rate-limit sample; pauses first when FAKE_SLEEP is set, for parallelism tests
 cat >/dev/null
-[ -n "$FAKE_SLEEP" ] && sleep 2
+[ -n "$FAKE_SLEEP" ] && sleep "${FAKE_SLEEP_SECS:-2}"
 echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.42,"resetsAt":1800000000},"seven_day":{"utilization":0.13,"resetsAt":1800500000}}}}'
 echo '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Write","input":{}}]}}'
 echo '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Write","input":{}}]}}'
