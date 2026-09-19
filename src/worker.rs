@@ -1366,6 +1366,227 @@ mod tests {
         assert!(job.due_at.unwrap() >= before + 3600);
     }
 
+    /// One pass of the event tick, as the poll loop runs it.
+    async fn tick_events(f: &Forge) {
+        let runs = tick_run_workflows(f).await.unwrap();
+        event_tick(f, &runs).await.unwrap();
+    }
+
+    /// Insert a task for `project` and emit its `task_done` with `state`.
+    fn finish_task(f: &Forge, project: &str, state: &str) -> i64 {
+        let mut t = task_on("direct");
+        t.project = Some(project.into());
+        t.id = f.store.insert_task(&t).unwrap();
+        f.store.update_task(&t).unwrap();
+        f.report.emit(
+            t.id,
+            Event::TaskDone {
+                state,
+                attempts: 1,
+                cost: 0.0,
+                reason: "",
+                branch: "b",
+                pushed: false,
+                compare: None,
+                remove_cmd: "",
+            },
+        );
+        t.id
+    }
+
+    fn emit_job_finished(f: &Forge, workflow: &str, job_id: i64) {
+        f.report.emit(
+            0,
+            Event::JobFinished {
+                project: "demo",
+                workflow,
+                job_id,
+                state: "ok",
+                cost_usd: 0.0,
+            },
+        );
+    }
+
+    fn event_jobs(f: &Forge) -> Vec<crate::store::Job> {
+        f.store
+            .jobs(Some("demo"), None)
+            .unwrap()
+            .into_iter()
+            .filter(|j| j.trigger_kind == "event")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_matching_event_starts_one_queued_job_with_the_event_as_input_and_its_offset_as_the_ref()
+     {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        tick_events(&f).await; // first sight: starts at the end of the log
+        let before = std::fs::metadata(f.paths.home.join("events.jsonl"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let task = finish_task(&f, "demo", "succeeded");
+        tick_events(&f).await;
+        let jobs = event_jobs(&f);
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        let job = &jobs[0];
+        assert_eq!(job.workflow, "on-done");
+        assert_eq!(job.state, JobState::Queued);
+        assert_eq!(job.trigger_ref, before.to_string());
+        assert_eq!(job.due_at, None);
+        let input = std::fs::read_to_string(
+            f.paths
+                .worktrees
+                .join(format!("job-{}-input/input.json", job.id)),
+        )
+        .unwrap();
+        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        assert_eq!(input["type"], "task_done");
+        assert_eq!(input["state"], "succeeded");
+        assert_eq!(input["task"], task);
+        // Ticking again, or "restarting" (nothing in memory), starts no second.
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_workflow_first_seen_after_events_happened_is_not_backfilled() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        finish_task(&f, "demo", "succeeded");
+        tick_events(&f).await;
+        assert!(event_jobs(&f).is_empty());
+        finish_task(&f, "demo", "failed");
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_events_of_the_declared_type_for_the_project_start_a_job() {
+        let (_dir, f) = message_fixture(&[
+            ("on-done", "on = \"event\"\ntype = \"task_done\""),
+            ("on-deploy", "on = \"event\"\ntype = \"deploy_finished\""),
+            ("by-hand", "on = \"manual\""),
+        ]);
+        f.store
+            .create_project(&crate::store::Project {
+                name: "other".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        tick_events(&f).await;
+        finish_task(&f, "other", "succeeded"); // another project's task
+        f.report.emit(0, Event::Note { text: "nothing" });
+        tick_events(&f).await;
+        assert!(event_jobs(&f).is_empty());
+
+        f.report.emit(
+            0,
+            Event::DeployFinished {
+                project: "other",
+                target: "prod",
+                sha: "abc",
+                ok: true,
+                rolled_back_to: None,
+            },
+        );
+        tick_events(&f).await;
+        assert!(event_jobs(&f).is_empty(), "another project's deploy");
+        f.report.emit(
+            0,
+            Event::DeployFinished {
+                project: "demo",
+                target: "prod",
+                sha: "abc",
+                ok: true,
+                rolled_back_to: None,
+            },
+        );
+        tick_events(&f).await;
+        let jobs = event_jobs(&f);
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(jobs[0].workflow, "on-deploy");
+    }
+
+    #[tokio::test]
+    async fn a_jobs_own_finish_never_starts_the_workflow_that_ran_it() {
+        let (_dir, f) = message_fixture(&[
+            ("again", "on = \"event\"\ntype = \"job_finished\""),
+            ("watcher", "on = \"event\"\ntype = \"job_finished\""),
+        ]);
+        tick_events(&f).await;
+        emit_job_finished(&f, "again", 41);
+        tick_events(&f).await;
+        let jobs = event_jobs(&f);
+        assert_eq!(jobs.len(), 1, "{jobs:?}");
+        assert_eq!(jobs[0].workflow, "watcher", "only the other workflow fires");
+        // The watcher's own job finishing starts `again`, not itself.
+        emit_job_finished(&f, "watcher", jobs[0].id);
+        tick_events(&f).await;
+        let mut names: Vec<_> = event_jobs(&f).into_iter().map(|j| j.workflow).collect();
+        names.sort();
+        assert_eq!(names, vec!["again", "watcher"]);
+    }
+
+    #[tokio::test]
+    async fn the_unique_index_backs_the_offset_when_a_cursor_write_is_lost() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        tick_events(&f).await;
+        finish_task(&f, "demo", "succeeded");
+        tick_events(&f).await;
+        let job = event_jobs(&f).remove(0);
+        // The crash between the job and the cursor: the cursor is back at 0.
+        f.store.set_event_cursor("demo", "on-done", 0).unwrap();
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 1);
+        let mut dup = job;
+        dup.id = 0;
+        assert!(f.store.create_job(&dup).is_err(), "jobs_event_ref");
+        dup.retry_count = 1;
+        assert!(f.store.create_job(&dup).is_ok(), "a retry is exempt");
+    }
+
+    #[tokio::test]
+    async fn a_log_that_rolled_is_read_again_from_its_start() {
+        let (_dir, f) = message_fixture(&[("on-done", "on = \"event\"\ntype = \"task_done\"")]);
+        tick_events(&f).await;
+        for _ in 0..3 {
+            f.report.emit(
+                0,
+                Event::Note {
+                    text: "padding padding",
+                },
+            );
+        }
+        tick_events(&f).await;
+        let log = f.paths.home.join("events.jsonl");
+        let cursor = f.store.event_cursor("demo", "on-done").unwrap().unwrap();
+        assert_eq!(cursor as u64, std::fs::metadata(&log).unwrap().len());
+        // The log rolls: a new, shorter file.
+        std::fs::remove_file(&log).unwrap();
+        finish_task(&f, "demo", "succeeded");
+        assert!((std::fs::metadata(&log).unwrap().len() as i64) < cursor);
+        tick_events(&f).await;
+        assert_eq!(event_jobs(&f).len(), 1);
+        assert_eq!(event_jobs(&f)[0].trigger_ref, "0");
+    }
+
+    #[test]
+    fn a_line_still_being_written_waits_for_its_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("events.jsonl");
+        std::fs::write(&log, "{\"a\":1}\n{\"b\":2}\n{\"c\"").unwrap();
+        let (lines, next) = read_event_lines(&log, 0, 1 << 20);
+        assert_eq!(
+            lines,
+            vec![(0, "{\"a\":1}".to_string()), (8, "{\"b\":2}".to_string())]
+        );
+        assert_eq!(next, 16);
+        let (lines, next) = read_event_lines(&log, next, 1 << 20);
+        assert!(lines.is_empty());
+        assert_eq!(next, 16);
+    }
+
     /// A held initiative with a queued task is announced the first time
     /// `new_holds` sees it, never again while the hold continues (even
     /// across many polls), and again once it leaves `held` and re-enters
