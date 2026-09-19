@@ -461,31 +461,40 @@ to be configured. It prints schema-valid share, expected-kind share,
 mean cost and mean seconds, and (because it runs the real executor) it
 leaves an ordinary row per run in `jobs`, all dry.
 
-The numbers below came from the e2e suite's FAKE providers standing in
-for anthropic and devhome, not from the models; the task was asked for
-the real run and recorded the fakes. The real run on 2026-09-17 scored
-0/4 schema-valid on both providers (anthropic produced structured
-output the bench did not accept; devhome failed to launch in 0.01 s),
-which is a harness defect under diagnosis, not a measurement.
-
-What the fakes produced, kept only to show the table's shape:
+The 2026-09-17 attempt at a real run recorded the e2e suite's FAKE
+providers instead (a harness defect, since fixed): job-step logs
+(docs/JOBS.md) and `Runner::Chat`, a tool-less runner that speaks
+straight to an OpenAI-compatible `/chat/completions` endpoint, landed
+after it. The real run below is from 2026-09-19, with `anthropic`
+(runner `claude-cli`, model `sonnet`, the operator's built-in default)
+and a new `devhome-chat` (`runner = "chat"`, `base_url =
+"http://dev.home:11434/v1"`, `model = "qwen3-coder:30b"`) added to
+`<FORGE2_HOME>/config.toml`, run as `forge job bench forge
+changelog-line --providers anthropic,devhome-chat`:
 
 ```
 provider     runs  schema-valid     expected-kind     mean-cost mean-seconds
-anthropic       4  4/4 (100%)       4/4 (100%)          $0.0021        0.01s
-devhome         4  4/4 (100%)       3/4 (75%)           $0.0000        0.21s
+anthropic       4  4/4 (100%)       4/4 (100%)          $0.1740        4.50s
+devhome-chat    4  4/4 (100%)       4/4 (100%)          $0.0000        0.51s
 ```
 
-Both providers stay inside the schema every time — the shape of the
-judgment is not what is hard here. The gap is in the judgment itself:
-the stand-in for the local model missed the one fixture built from a
-bug fix that reads, out of context, like routine cleanup (e25c5e2, a
-five-file store change with no user-facing symptom in its own commit
-message). That is exactly the kind of miss `bench` exists to catch
-before a local model is trusted with a real judgment step, and exactly
-why the comparison has to be the same fixtures, the same schema, the
-same run — a hosted-versus-local number from two different prompts or
-two different days is not a comparison. No real local runner is wired
-in yet (see "When unattended runs span redeploys" above); once one is,
-the next run replaces the fake provider with it and the table here is
-the baseline to beat.
+No run failed the directive step: all four fixtures came back
+schema-valid and correctly kinded on both providers, so there is no
+failed-run log to point at. What the `anthropic` runs' logs
+(`job-1-0.jsonl` through `job-4-0.jsonl` under `<FORGE2_HOME>/logs`) do
+show is every one of those jobs stopping short of `append-changelog-line`
+and landing `needs_human`, recorded on each job as an `L0` "budget"
+verdict — job 1's tail reads "step summarise-changelog-line brought the
+run to $0.5275, over the $0.05 per-run budget; asking the operator"; jobs
+2 through 4 the same at $0.0574, $0.0556 and $0.0554. `devhome-chat`'s
+four jobs, at $0.00 real cost, stayed under that cap and landed `ok`
+with the line appended.
+
+On judgment quality the two are tied: both stayed in schema and picked
+the right kind on every fixture, including the bug fix that reads, out
+of context, like routine cleanup (e25c5e2) that the earlier fakes'
+stand-in missed. The gap that shows up instead is economic, not
+qualitative — a real hosted run costs enough per line that this
+workflow's own `budget_usd = 0.05`, sized for a free local model, has
+to move before `anthropic` can ever finish a changelog-line job rather
+than asking the operator.
