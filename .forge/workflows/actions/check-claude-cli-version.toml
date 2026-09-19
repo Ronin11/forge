@@ -14,8 +14,14 @@ fi
 if [ -n "$installed" ] && [ -n "$latest" ] && [ "$installed" != "$latest" ]; then
   suffix=""
   [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
-  printf "http\tclaude-code\tclaude CLI is behind: installed %s, npm has %s; run \`npm install -g @anthropic-ai/claude-code@%s\` at the next worker restart%s\n" \
-    "$installed" "$latest" "$latest" "$suffix" >> "$FORGE_EFFECT_LOG"
+  # The command depends on how the CLI got here: a mise-managed install
+  # (this box) is upgraded through mise, anything else through npm.
+  fix="npm install -g @anthropic-ai/claude-code@$latest"
+  case "$(command -v claude 2>/dev/null)" in
+    */mise/*) fix="mise use -g claude@$latest" ;;
+  esac
+  printf "http\tclaude-code\tclaude CLI is behind: installed %s, npm has %s; run \`%s\` at the next worker restart%s\n" \
+    "$installed" "$latest" "$fix" "$suffix" >> "$FORGE_EFFECT_LOG"
 fi
 exit 0
 ''']
