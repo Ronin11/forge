@@ -2856,3 +2856,315 @@ fn a_task_that_lands_starts_one_task_done_job_and_a_second_work_once_starts_none
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(job_rows(&e).len(), 2, "a second work --once starts none");
 }
+
+/// Writes `files` (repo-relative path, text) into the repo and commits
+/// them, the way an automation's own workflows and fixtures are checked in.
+fn commit_files(e: &Env, files: &[(&str, &str)]) {
+    for (rel, text) in files {
+        let path = e.repo.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    git(&e.repo, &["add", "-A"]);
+    git(&e.repo, &["commit", "-qm", "automation"]);
+}
+
+/// `forge job test <args>` with no `FORGE2_HOME` at all, from `cwd`.
+fn job_test(e: &Env, cwd: &Path, args: &[&str]) -> std::process::Output {
+    let mut c = e.cmd("ok.sh");
+    c.env_remove("FORGE2_HOME")
+        .current_dir(cwd)
+        .args(["job", "test"])
+        .args(args);
+    let o = c.output().expect("forge job test");
+    eprintln!(
+        "--- forge job test {} ---\n{}{}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
+
+const SNAPSHOT_WORKFLOW: &str = r#"name = "snapshot"
+kind = "run"
+description = "writes a file, or says there is nothing to write"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[skip_if]
+empty = ["bash", "-c", "[ -z \"$FORGE_INPUT_PATH\" ] && echo nothing to write"]
+"#;
+
+/// docs/JOBS.md, "Verifying an automation": a fixture whose expectation
+/// the dry run meets passes; one expecting an effect it does not log fails
+/// and names it; the older `expected_kind` shape still reads; nothing is
+/// recorded and no home is needed or touched.
+#[test]
+fn a_fixture_that_matches_passes_and_one_expecting_an_effect_the_dry_run_does_not_log_fails_naming_it()
+ {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            (".forge/workflows/snapshot.toml", SNAPSHOT_WORKFLOW),
+            (
+                ".forge/fixtures/snapshot/a-good.json",
+                r#"{"input": {"path": "out.txt", "content": "hello"},
+                    "expect": {"state": "ok", "effects": [
+                      {"kind": "file", "target": "out.txt", "summary_contains": "wrote 5 byte(s)"}]}}"#,
+            ),
+            (
+                ".forge/fixtures/snapshot/b-old-shape.json",
+                r#"{"input": {"path": "out.txt", "content": "hello"}, "expected_kind": "file"}"#,
+            ),
+            (
+                ".forge/fixtures/snapshot/c-skipped.json",
+                r#"{"input": {}, "expect": {"state": "skipped"}}"#,
+            ),
+            (
+                ".forge/fixtures/snapshot/d-wants-a-message.json",
+                r#"{"input": {"path": "out.txt", "content": "hello"},
+                    "expect": {"state": "ok", "effects": [
+                      {"kind": "file", "target": "out.txt"},
+                      {"kind": "message", "target": "+15555550100", "summary_contains": "quote"}]}}"#,
+            ),
+        ],
+    );
+
+    let o = job_test(&e, &e.repo, &["snapshot"]);
+    assert_eq!(o.status.code(), Some(1), "any difference exits 1");
+    let out = String::from_utf8_lossy(&o.stdout);
+    for passing in ["a-good", "b-old-shape", "c-skipped"] {
+        assert!(
+            out.contains(&format!("pass  snapshot/{passing}")),
+            "{passing} passes: {out}"
+        );
+    }
+    let failing = out
+        .lines()
+        .find(|l| l.contains("snapshot/d-wants-a-message"))
+        .unwrap_or_else(|| panic!("the failing fixture is printed: {out}"));
+    assert!(failing.starts_with("FAIL"), "{failing}");
+    assert!(
+        failing
+            .contains("missing effect: message +15555550100 with a summary containing \"quote\""),
+        "{failing}"
+    );
+    assert!(out.contains("4 fixture(s): 3 passed, 1 failed"), "{out}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("d-wants-a-message"),
+        "the failure is on stderr too, for a check's captured output"
+    );
+
+    // A dry run in a scratch directory: the repository is as it was, no
+    // job was recorded anywhere, and no home was made for it.
+    assert!(!e.repo.join("out.txt").exists());
+    assert_eq!(git(&e.repo, &["status", "--porcelain"]), "");
+    assert!(
+        !e.home.exists(),
+        "no FORGE2_HOME is needed, so none is made"
+    );
+    let listed: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 0, "{listed:?}");
+
+    // Without the fixture that wants a message, everything passes and the
+    // repository path may be the only argument.
+    std::fs::remove_file(
+        e.repo
+            .join(".forge/fixtures/snapshot/d-wants-a-message.json"),
+    )
+    .unwrap();
+    let o = job_test(&e, &e.repo, &["."]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("3 fixture(s): 3 passed, 0 failed"),
+        "the working tree is what is replayed, committed or not"
+    );
+}
+
+/// The other two differences: a wrong state, and an effect nothing
+/// expected.
+#[test]
+fn a_wrong_state_and_an_extra_effect_are_each_named() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            (".forge/workflows/snapshot.toml", SNAPSHOT_WORKFLOW),
+            (
+                ".forge/fixtures/snapshot/1-thinks-it-runs.json",
+                r#"{"input": {}, "expect": {"state": "ok"}}"#,
+            ),
+            (
+                ".forge/fixtures/snapshot/2-expects-nothing.json",
+                r#"{"input": {"path": "out.txt", "content": "x"}, "expect": {"state": "ok"}}"#,
+            ),
+        ],
+    );
+    let o = job_test(&e, &e.repo, &["snapshot", e.repo.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("FAIL  snapshot/1-thinks-it-runs: wrong state: expected ok, got skipped"),
+        "{out}"
+    );
+    assert!(
+        out.contains("FAIL  snapshot/2-expects-nothing: extra effect: file out.txt:"),
+        "{out}"
+    );
+}
+
+const CLASSIFY_WORKFLOW: &str = r#"name = "classify"
+kind = "run"
+description = "a directive judges the input and an operation logs what it said"
+
+steps = [
+  { action = "judge-thing", role = "summarise" },
+  { action = "log-kind", effect = "row" },
+]
+
+[trigger]
+on = "manual"
+"#;
+
+const JUDGE_ACTION: &str = r#"name = "judge-thing"
+kind = "directive"
+contract = "plan"
+description = "name what kind of thing the input is"
+schema = '''
+{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"type":"string","enum":["bug","feature"]}}}
+'''
+"#;
+
+const LOG_KIND_ACTION: &str = r#"name = "log-kind"
+kind = "operation"
+description = "logs the kind the directive named as a row effect"
+run = ["bash", "-c", '''
+kind=$(sed -n 's/.*"kind":"\([^"]*\)".*/\1/p' "$FORGE_OUTPUT_JUDGE_THING")
+printf "row\tkinds\t%s\n" "$kind" >> "$FORGE_EFFECT_LOG"
+''']
+"#;
+
+/// A fixture's recorded output stands in for a directive step's model
+/// call, so the step runs with no provider at all; without it the same
+/// step needs the model and, with none to launch, fails.
+#[test]
+fn a_recorded_output_makes_a_directive_step_run_with_no_provider_configured() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            (".forge/workflows/classify.toml", CLASSIFY_WORKFLOW),
+            (".forge/workflows/actions/judge-thing.toml", JUDGE_ACTION),
+            (".forge/workflows/actions/log-kind.toml", LOG_KIND_ACTION),
+            (
+                ".forge/fixtures/classify/a-recorded.json",
+                r#"{"input": {"title": "it crashes"},
+                    "expect": {"state": "ok", "effects": [{"kind": "row", "target": "kinds", "summary_contains": "bug"}]},
+                    "outputs": {"judge-thing": {"kind": "bug"}}}"#,
+            ),
+        ],
+    );
+    let run = |args: &[&str]| {
+        let mut c = e.cmd("ok.sh");
+        // No provider can be launched: any model call fails.
+        c.env("FORGE2_CLAUDE_BIN", "/nonexistent/claude")
+            .env_remove("FORGE2_HOME")
+            .current_dir(&e.repo)
+            .args(["job", "test"])
+            .args(args);
+        let o = c.output().unwrap();
+        eprintln!(
+            "--- forge job test {} ---\n{}{}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o
+    };
+
+    let o = run(&[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("pass  classify/a-recorded"),
+        "every run workflow in the repository is replayed when none is named"
+    );
+
+    // The same input with nothing recorded needs the model, and fails.
+    commit_files(
+        &e,
+        &[(
+            ".forge/fixtures/classify/b-unrecorded.json",
+            r#"{"input": {"title": "it crashes"}, "expect": {"state": "ok"}}"#,
+        )],
+    );
+    let o = run(&["classify"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("pass  classify/a-recorded"), "{out}");
+    assert!(
+        out.contains("FAIL  classify/b-unrecorded: wrong state: expected ok, got failed"),
+        "{out}"
+    );
+
+    // A recorded output is held to the action's schema like a live one.
+    commit_files(
+        &e,
+        &[(
+            ".forge/fixtures/classify/b-unrecorded.json",
+            r#"{"input": {}, "expect": {"state": "ok"},
+                "outputs": {"judge-thing": {"kind": "chore"}}}"#,
+        )],
+    );
+    let o = run(&["classify"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stdout)
+            .contains("the recorded output does not match the schema"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+}
+
+/// A repository with no run workflow has nothing to replay, which is not
+/// a failure a repository check should report; asking for a workflow that
+/// is not there, or has no fixtures, is.
+#[test]
+fn forge_job_test_with_nothing_to_replay_passes_and_a_named_gap_fails() {
+    let e = Env::new();
+    let o = job_test(&e, &e.repo, &["."]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("0 fixture(s): 0 passed, 0 failed"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+
+    commit_files(&e, &[(".forge/workflows/snapshot.toml", SNAPSHOT_WORKFLOW)]);
+    let o = job_test(&e, &e.repo, &["."]);
+    assert!(
+        o.status.success(),
+        "a workflow with no fixtures is skipped when none is named"
+    );
+    let o = job_test(&e, &e.repo, &["snapshot"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("no fixtures under"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let o = job_test(&e, &e.repo, &["no-such-workflow"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("no run workflow \"no-such-workflow\""),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
