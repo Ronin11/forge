@@ -17,7 +17,7 @@
 
 use crate::ctx::Forge;
 use crate::report::Event;
-use crate::store::{Job, JobEffect, JobState, JobStep};
+use crate::store::{Job, JobEffect, JobState, JobStep, Task, TaskState};
 use crate::workflows::{self, Kind};
 use crate::{checks, config, git, operation, unix_now};
 use anyhow::{Context, Result};
@@ -411,6 +411,7 @@ pub async fn start(
         cost_usd: None,
         verdict_json: "[]".to_string(),
         due_at,
+        retry_count: 0,
     };
     let job_id = f.store.create_job(&job)?;
     if !now {
@@ -434,6 +435,7 @@ pub async fn start(
         &wf.assert,
         &wf.skip_if,
         wf.limits.as_ref(),
+        wf.trigger.as_ref(),
         dry_run,
         &input_text,
         &input_fields,
@@ -494,6 +496,7 @@ pub async fn start_scheduled(
         cost_usd: None,
         verdict_json: "[]".to_string(),
         due_at,
+        retry_count: 0,
     };
     let job_id = f.store.create_job(&job)?;
     let idir = input_dir(f, job_id);
@@ -520,6 +523,7 @@ async fn run_now(
     assert: &BTreeMap<String, Vec<String>>,
     skip_if: &BTreeMap<String, Vec<String>>,
     limits: Option<&workflows::Limits>,
+    trigger: Option<&workflows::Trigger>,
     dry_run: bool,
     input_text: &str,
     input_fields: &[(String, String)],
@@ -792,13 +796,39 @@ async fn run_now(
         });
     }
 
-    let state = if needs_human {
+    let mut state = if needs_human {
         JobState::NeedsHuman
     } else if ok {
         JobState::Ok
     } else {
         JobState::Failed
     };
+
+    // `[limits] on_failure`, honoured (docs/JOBS.md, "The human rung"): a
+    // dry run (a fixture replay, `forge job bench`) never retries or asks,
+    // the way a `[skip_if]` skip never does either. The decision is made
+    // now, against the job row as it stood when the run started, so its
+    // `retry_count` reflects this run's own lineage rather than a race
+    // with whatever `finish_job` is about to write.
+    let mut on_failure = None;
+    if !dry_run
+        && matches!(state, JobState::Failed | JobState::NeedsHuman)
+        && let Some(l) = limits
+        && let Some(job_row) = f.store.job(job_id)?
+    {
+        let contact = trigger_contact(&job_row, trigger);
+        let action = decide_on_failure(&l.on_failure, job_row.retry_count, contact.as_deref());
+        // NeedsHuman is the job analogue of a blocked task: the row that
+        // asked a person about it (docs/JOBS.md step 5's `store::jobs`
+        // comment on `JobState::NeedsHuman`). A budget overrun already
+        // lands there on its own; an assertion or step failure that
+        // resolves to `ask:*` now joins it.
+        if matches!(action, FailureAction::Ask(_)) {
+            state = JobState::NeedsHuman;
+        }
+        on_failure = Some((action, job_row));
+    }
+
     f.store.finish_job(
         job_id,
         unix_now(),
@@ -816,7 +846,169 @@ async fn run_now(
             cost_usd: total_cost,
         },
     );
+
+    if let Some((action, job_row)) = on_failure {
+        match action {
+            FailureAction::Stop => {}
+            FailureAction::Retry => {
+                if let Err(e) = retry_job(f, &job_row, input_text).await {
+                    eprintln!("job {job_id} retry: {e:#}");
+                }
+            }
+            FailureAction::Ask(to) => {
+                let effects = f.store.job_effects(job_id).unwrap_or_default();
+                let reason = failure_reason(job_id, workflow, &verdict, &effects);
+                if let Err(e) = ask(
+                    f,
+                    project,
+                    &repo.display().to_string(),
+                    to.as_deref(),
+                    reason,
+                ) {
+                    eprintln!("job {job_id} ask: {e:#}");
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+/// docs/JOBS.md step 5 ("The human rung"): what `[limits] on_failure` says
+/// to do with a job that just ended `Failed` or `NeedsHuman` — pure, no
+/// I/O, so the policy itself is unit-testable apart from the store and
+/// filesystem writes `run_now` does with its answer.
+#[derive(Debug, PartialEq, Eq)]
+enum FailureAction {
+    /// Requeue with the same input; the new job's `retry_count` is one
+    /// more than this one's.
+    Retry,
+    /// `drop`, or a `retry:N` whose budget is already spent: the job's own
+    /// recorded state is the last word.
+    Stop,
+    /// File a question addressed to this contact (`None`: the operator).
+    Ask(Option<String>),
+}
+
+fn decide_on_failure(
+    on_failure: &workflows::OnFailure,
+    retry_count: i64,
+    trigger_contact: Option<&str>,
+) -> FailureAction {
+    match on_failure {
+        workflows::OnFailure::Drop => FailureAction::Stop,
+        workflows::OnFailure::Retry(n) => {
+            if retry_count < i64::from(*n) {
+                FailureAction::Retry
+            } else {
+                FailureAction::Stop
+            }
+        }
+        workflows::OnFailure::AskOperator => FailureAction::Ask(None),
+        workflows::OnFailure::AskContact => FailureAction::Ask(trigger_contact.map(str::to_string)),
+    }
+}
+
+/// The contact `ask:contact` addresses (docs/JOBS.md, "The human rung"):
+/// the sender who actually fired this job when its trigger was a message
+/// (`Job::trigger_ref`, set per firing, the way a schedule's `trigger_ref`
+/// is its due slot rather than the workflow's own cron string), else the
+/// workflow's own `[trigger] contact` group, else `None` — asked of the
+/// operator instead.
+fn trigger_contact(job: &Job, trigger: Option<&workflows::Trigger>) -> Option<String> {
+    if job.trigger_kind == workflows::TriggerOn::Message.as_str() && !job.trigger_ref.is_empty() {
+        return Some(job.trigger_ref.clone());
+    }
+    trigger.and_then(|t| t.contact.clone())
+}
+
+/// The question `ask:operator`/`ask:contact` files (docs/JOBS.md, "The
+/// human rung"): the job id, its workflow, the assertion or step that
+/// failed, and every effect the run logged — so whoever answers can see
+/// what almost happened without re-running anything.
+fn failure_reason(
+    job_id: i64,
+    workflow: &str,
+    verdict: &[checks::CheckResult],
+    effects: &[JobEffect],
+) -> String {
+    let failed = verdict
+        .iter()
+        .find(|c| !c.ok)
+        .map(|c| format!("{}: {}", c.name, c.tail))
+        .unwrap_or_else(|| "no check recorded which one failed".to_string());
+    let effects = if effects.is_empty() {
+        "none".to_string()
+    } else {
+        effects
+            .iter()
+            .map(|e| format!("- {} {}: {}", e.kind, e.target, e.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!("job {job_id} ({workflow}) failed: {failed}\n\nEffects:\n{effects}")
+}
+
+/// File a blocked no-work task on the project, the human rung a job's
+/// `ask:*` on_failure ends at (docs/JOBS.md, "The human rung") — the same
+/// shape `deploy::ask` files for a failed deploy, so `forge requests`, the
+/// portal and the Signal plugin surface it the same way. Always a new
+/// task: unlike a deploy target, a job has no single running task of its
+/// own to reuse.
+fn ask(
+    f: &Forge,
+    project: &str,
+    repo: &str,
+    question_to: Option<&str>,
+    reason: String,
+) -> Result<()> {
+    let mut t = Task {
+        repo: repo.to_string(),
+        task: "job question".to_string(),
+        base_branch: String::new(),
+        state: TaskState::Blocked,
+        reason,
+        question_to: question_to.map(str::to_string),
+        created_at: unix_now(),
+        workflow: "direct".to_string(),
+        project: Some(project.to_string()),
+        land: false,
+        ..Default::default()
+    };
+    t.id = f.store.insert_task(&t)?;
+    f.store.update_task(&t)?;
+    Ok(())
+}
+
+/// Requeue a failed or needs-human job with the same input: `retry:N`'s
+/// share of docs/JOBS.md's "The human rung". `trigger_kind`/`trigger_ref`
+/// carry over unchanged — a retry of a schedule-triggered job is still
+/// that slot's job, not a new firing — and `retry_count` is one more than
+/// the job it retries, so the next failure's `decide_on_failure` can tell
+/// when the budget is spent.
+async fn retry_job(f: &Forge, job: &Job, input_text: &str) -> Result<i64> {
+    let retry = Job {
+        id: 0,
+        project: job.project.clone(),
+        workflow: job.workflow.clone(),
+        workflow_hash: job.workflow_hash.clone(),
+        landed_sha: job.landed_sha.clone(),
+        trigger_kind: job.trigger_kind.clone(),
+        trigger_ref: job.trigger_ref.clone(),
+        state: JobState::Queued,
+        workflow_source: job.workflow_source.clone(),
+        dry_run: false,
+        started_at: unix_now(),
+        finished_at: None,
+        cost_usd: None,
+        verdict_json: "[]".to_string(),
+        due_at: None,
+        retry_count: job.retry_count + 1,
+    };
+    let retry_id = f.store.create_job(&retry)?;
+    let idir = input_dir(f, retry_id);
+    std::fs::create_dir_all(&idir)?;
+    std::fs::write(idir.join("input.json"), input_text)?;
+    Ok(retry_id)
 }
 
 /// Run a job the worker has already claimed (its store row moved from
@@ -867,6 +1059,7 @@ async fn run_claimed(f: &Forge, job_id: i64) -> Result<()> {
         &wf.assert,
         &wf.skip_if,
         wf.limits.as_ref(),
+        wf.trigger.as_ref(),
         job.dry_run,
         &input_text,
         &input_fields,
@@ -1052,6 +1245,7 @@ pub async fn bench(
                 cost_usd: None,
                 verdict_json: "[]".to_string(),
                 due_at: None,
+                retry_count: 0,
             };
             let job_id = f.store.create_job(&job)?;
             let t0 = Instant::now();
@@ -1066,6 +1260,7 @@ pub async fn bench(
                 &wf.assert,
                 &wf.skip_if,
                 wf.limits.as_ref(),
+                wf.trigger.as_ref(),
                 true,
                 &input_text,
                 &input_fields,
@@ -1328,5 +1523,147 @@ mod tests {
     fn load_fixtures_errors_when_the_directory_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_fixtures(dir.path(), "nope").is_err());
+    }
+
+    fn test_job(trigger_kind: &str, trigger_ref: &str, retry_count: i64) -> Job {
+        Job {
+            trigger_kind: trigger_kind.to_string(),
+            trigger_ref: trigger_ref.to_string(),
+            retry_count,
+            ..Default::default()
+        }
+    }
+
+    fn test_trigger(contact: Option<&str>) -> workflows::Trigger {
+        workflows::Trigger {
+            on: workflows::TriggerOn::Message,
+            cron: None,
+            contact: contact.map(str::to_string),
+            name: None,
+            r#type: None,
+            delay: None,
+        }
+    }
+
+    #[test]
+    fn decide_on_failure_drops_and_never_retries_or_asks() {
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::Drop, 0, None),
+            FailureAction::Stop
+        );
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::Drop, 5, Some("mary")),
+            FailureAction::Stop
+        );
+    }
+
+    #[test]
+    fn decide_on_failure_retries_until_its_budget_is_spent_then_stops() {
+        let policy = workflows::OnFailure::Retry(1);
+        assert_eq!(decide_on_failure(&policy, 0, None), FailureAction::Retry);
+        assert_eq!(decide_on_failure(&policy, 1, None), FailureAction::Stop);
+        assert_eq!(decide_on_failure(&policy, 2, None), FailureAction::Stop);
+    }
+
+    #[test]
+    fn decide_on_failure_asks_the_operator_regardless_of_any_contact() {
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::AskOperator, 0, Some("mary")),
+            FailureAction::Ask(None)
+        );
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::AskOperator, 3, None),
+            FailureAction::Ask(None)
+        );
+    }
+
+    #[test]
+    fn decide_on_failure_asks_the_contact_when_there_is_one_else_the_operator() {
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::AskContact, 0, Some("mary")),
+            FailureAction::Ask(Some("mary".to_string()))
+        );
+        assert_eq!(
+            decide_on_failure(&workflows::OnFailure::AskContact, 0, None),
+            FailureAction::Ask(None)
+        );
+    }
+
+    #[test]
+    fn trigger_contact_prefers_the_message_triggers_own_sender() {
+        let job = test_job("message", "+15555550100", 0);
+        let trigger = test_trigger(Some("customers"));
+        assert_eq!(
+            trigger_contact(&job, Some(&trigger)).as_deref(),
+            Some("+15555550100"),
+            "a specific sender beats the workflow's own contact group"
+        );
+    }
+
+    #[test]
+    fn trigger_contact_falls_back_to_the_workflows_own_contact_field() {
+        let job = test_job("manual", "", 0);
+        let trigger = test_trigger(Some("customers"));
+        assert_eq!(
+            trigger_contact(&job, Some(&trigger)).as_deref(),
+            Some("customers")
+        );
+    }
+
+    #[test]
+    fn trigger_contact_ignores_an_empty_trigger_ref_on_a_message_job() {
+        let job = test_job("message", "", 0);
+        let trigger = test_trigger(Some("customers"));
+        assert_eq!(
+            trigger_contact(&job, Some(&trigger)).as_deref(),
+            Some("customers")
+        );
+    }
+
+    #[test]
+    fn trigger_contact_is_none_with_no_trigger_and_no_sender() {
+        let job = test_job("manual", "", 0);
+        assert_eq!(trigger_contact(&job, None), None);
+    }
+
+    #[test]
+    fn failure_reason_names_the_job_the_failed_check_and_every_effect() {
+        let verdict = vec![checks::CheckResult {
+            level: "L0".into(),
+            name: "clean".into(),
+            ok: false,
+            tail: "effect log is not empty".into(),
+            ..Default::default()
+        }];
+        let effects = vec![JobEffect {
+            job_id: 12,
+            seq: 0,
+            kind: "row".into(),
+            target: "sonnet".into(),
+            summary: "sonnet resolved to claude-sonnet-4-5 last week, claude-sonnet-5 this week"
+                .into(),
+            ..Default::default()
+        }];
+        let reason = failure_reason(12, "drift-weekly", &verdict, &effects);
+        assert!(reason.contains("job 12"), "{reason}");
+        assert!(reason.contains("drift-weekly"), "{reason}");
+        assert!(
+            reason.contains("clean: effect log is not empty"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("sonnet resolved to claude-sonnet-4-5"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn failure_reason_says_so_when_nothing_failed_or_was_logged() {
+        let reason = failure_reason(3, "wf", &[], &[]);
+        assert!(
+            reason.contains("no check recorded which one failed"),
+            "{reason}"
+        );
+        assert!(reason.contains("Effects:\nnone"), "{reason}");
     }
 }

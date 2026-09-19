@@ -118,7 +118,7 @@ already_quoted = ["scripts/skip-if-already-quoted.sh"]  # exit 0 to skip this ru
 [limits]
 budget_usd = 0.10          # per run
 per_day    = 200           # real starts in 24 hours before the next is refused
-on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed; honoured at step 5)
+on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honoured — "The human rung, per run", below)
 ```
 
 - **Trigger.** What starts a job and what it provides as input. The
@@ -225,10 +225,15 @@ A job is claimed by the worker like a task and runs in a sandbox:
    the step that did it.
 6. Run the assertions. Record the verdict, the cost, and the step
    timings.
-7. On failure, apply `on_failure`: retry, drop, or ask, where asking is
-   the human rung: a blocked question on the project, addressed to the
-   contact or the operator, carrying the job id and what failed; the
-   answer can re-run the job with the answer as an input.
+7. On a `failed` or `needs_human` verdict, apply `[limits] on_failure`
+   (`job::run_now`): `retry:N` requeues the job, up to N more times, with
+   the same input and `trigger_kind`/`trigger_ref` unchanged — the new
+   job's own `retry_count`, one more than the job it retries, is what the
+   next failure checks against N so the chain stops once its budget is
+   spent; `drop` records the state and does nothing further; `ask:operator`
+   and `ask:contact` are the human rung — see below. A skipped run never
+   reaches this step, and neither does a dry run (a fixture replay,
+   `forge job bench`): both apply none of it.
 
 ## Skipping a run
 
@@ -328,14 +333,31 @@ and the assessor read the automation like any diff.
 
 ## The human rung, per run
 
-Every job that fails its assertions and is set to ask produces one
-question, on the project, in plain words, to the contact or the
-operator, with what it was trying to do and what did not happen. The
-answer re-runs the job with the answer available as an input, or drops
-it. The supervisor stays out of questions addressed to a person, as it
-does now. The daily question cap from intake applies per contact, so a
-misbehaving automation cannot flood someone's phone; past the cap it
-holds and the operator hears.
+Every job that ends `failed` or `needs_human` and is set to ask
+(`on_failure = "ask:operator"` or `"ask:contact"`) files one blocked
+no-work task on the project — the same shape `deploy::ask` already files
+for a failed deploy check (docs/DEPLOY.md, "Rollback and the human
+rung"): `TaskState::Blocked`, `question_to` the contact, `reason` the
+question in plain words. The reason names the job id, its workflow, the
+assertion or step that failed, and every effect the run logged, so
+whoever answers can see what almost happened without re-running
+anything. `ask:operator`'s `question_to` is always the operator
+(`None`); `ask:contact`'s is the sender who actually triggered the job
+when its trigger was a message, else the workflow's own `[trigger]
+contact` group, else the operator too. `forge requests`, the portal and
+the Signal plugin surface the task exactly as they do any other blocked
+one — nothing about them needed to change for this. The job itself is
+recorded `needs_human`, the job analogue of a blocked task, whether the
+ask came from a failing assertion or, as already happened before this
+step, a budget overrun. The supervisor stays out of questions addressed
+to a person, as it does now. Skipped runs never reach `on_failure` at
+all — a skip is not a failure ("Skipping a run", above) — and neither
+does a dry run.
+
+Answering the task is a human's own action today; it records a decision
+the way any other answer does, but does not itself re-run the job. A
+daily question cap per contact, the way intake already has one, is not
+built here.
 
 ## The portal
 
@@ -396,8 +418,11 @@ Each step is an initiative on the `forge` project, sized to land.
    events. Rates per trigger.
 4. **Verification.** Fixtures and expectations, `forge job test`, the
    repository check, the tests contract for automations.
-5. **The human rung.** `on_failure`, questions carrying a job id, answers
-   that re-run, the daily cap.
+5. **The human rung (done).** `on_failure` honoured: `retry:N`, `drop`,
+   `ask:operator`/`ask:contact` filing a blocked question carrying a job
+   id, its workflow, the failed assertion and every effect logged (see
+   "The human rung, per run"). Answers that re-run the job and the daily
+   cap are not built.
 6. **The portal.** Automations in Running for you with runs and effects
    in the customer's words.
 7. **The first customer automation**, built by Forge from a confirmed

@@ -112,6 +112,12 @@ pub struct Job {
     /// `JobState::Scheduled` while this is still in the future;
     /// `claim_next_job` is the only place that reads it against now.
     pub due_at: Option<i64>,
+    /// How many times this job's lineage has already been retried by
+    /// `[limits] on_failure = "retry:N"` (docs/JOBS.md, "The human rung"):
+    /// 0 for an original run, one more on each retry's own row than its
+    /// predecessor's. Compared against `N` so a retry chain stops once it
+    /// has spent its budget, rather than requeuing forever.
+    pub retry_count: i64,
 }
 
 /// One step of a job's run: one entry of the workflow's `steps`, whether
@@ -194,6 +200,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
     "verdict_json",
     "workflow_source",
     "due_at",
+    "retry_count",
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
@@ -236,6 +243,7 @@ fn job_from_row(r: &Row) -> rusqlite::Result<Job> {
         verdict_json: r.get("verdict_json")?,
         workflow_source: r.get("workflow_source")?,
         due_at: r.get("due_at")?,
+        retry_count: r.get("retry_count")?,
     })
 }
 
@@ -319,8 +327,8 @@ impl Store {
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 j.project,
                 j.workflow,
@@ -336,6 +344,7 @@ impl Store {
                 j.cost_usd,
                 j.verdict_json,
                 j.due_at,
+                j.retry_count,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -888,6 +897,7 @@ mod tests {
             cost_usd: Some(0.42),
             verdict_json: "{}".into(),
             due_at: None,
+            retry_count: 0,
         };
         let step = JobStep {
             id: 1,
@@ -915,7 +925,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&job).unwrap(),
-            r#"{"id":7,"project":"equitizr","workflow":"quote-by-text","workflow_hash":"deadbeef","landed_sha":"cafef00d","trigger_kind":"manual","trigger_ref":"","state":"ok","workflow_source":"repo","dry_run":false,"started_at":100,"finished_at":140,"cost_usd":0.42,"verdict_json":"{}","due_at":null}"#,
+            r#"{"id":7,"project":"equitizr","workflow":"quote-by-text","workflow_hash":"deadbeef","landed_sha":"cafef00d","trigger_kind":"manual","trigger_ref":"","state":"ok","workflow_source":"repo","dry_run":false,"started_at":100,"finished_at":140,"cost_usd":0.42,"verdict_json":"{}","due_at":null,"retry_count":0}"#,
         );
         assert_eq!(
             serde_json::to_string(&step).unwrap(),

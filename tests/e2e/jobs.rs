@@ -2196,3 +2196,234 @@ fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
         "{effects:?}"
     );
 }
+
+/// docs/JOBS.md step 5 ("The human rung"): a run workflow whose one step
+/// always logs an effect and whose `[assert]` always fails, `on_failure =
+/// "ask:operator"`. The failing run ends `needs_human` (the job analogue
+/// of a blocked task) and files exactly one blocked no-work task on the
+/// project, addressed to nobody in particular (the operator), whose
+/// reason names the job's id, its workflow and the effect the run logged —
+/// so `forge requests` surfaces it the way a failed deploy's question
+/// already does.
+#[test]
+fn a_failing_assertion_with_ask_operator_leaves_one_blocked_task_naming_the_job_and_its_effect() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/always-fails.toml"),
+        r#"name = "always-fails"
+kind = "run"
+description = "writes a file and always fails its assertion, for the on_failure e2e"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+clean = ["bash", "-c", "exit 1"]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "ask:operator"
+"#,
+    )
+    .unwrap();
+
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"path":"out.txt","content":"hello"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "equitizr",
+            "always-fails",
+            "--input",
+            input_s,
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "needs_human", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "file");
+
+    let requests: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let requests = requests.as_array().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    let r = &requests[0];
+    assert!(r["to"].is_null(), "addressed to the operator: {r:?}");
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains(&format!("job {id}")), "{text:?}");
+    assert!(text.contains("always-fails"), "{text:?}");
+    assert!(text.contains("wrote 5 byte(s) to out.txt"), "{text:?}");
+}
+
+/// docs/JOBS.md step 5 ("The human rung"): the same always-fails fixture,
+/// but `on_failure = "retry:1"` — one retry allowed. The first run fails
+/// and requeues a second job with the same input; the worker claims and
+/// runs that one too, which fails again and, its one retry already spent,
+/// stops: two jobs recorded for the workflow, no third, and no blocked
+/// task (this policy never asks).
+#[test]
+fn retry_1_runs_the_job_twice_then_stops() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/always-fails-retry.toml"),
+        r#"name = "always-fails-retry"
+kind = "run"
+description = "writes a file and always fails its assertion, for the on_failure retry e2e"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+clean = ["bash", "-c", "exit 1"]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "retry:1"
+"#,
+    )
+    .unwrap();
+
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"path":"out.txt","content":"hello"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // The first run, inline: fails, and requeues a retry.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "equitizr",
+            "always-fails-retry",
+            "--input",
+            input_s,
+            "--now",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let first: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let jobs: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "list", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let jobs = jobs.as_array().unwrap();
+    assert_eq!(
+        jobs.len(),
+        2,
+        "the first failure must have queued a retry: {jobs:?}"
+    );
+    let second = jobs
+        .iter()
+        .map(|j| j["id"].as_i64().unwrap())
+        .find(|id| *id != first)
+        .unwrap();
+
+    let first_doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &first.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(first_doc["state"], "failed", "{first_doc:?}");
+    assert_eq!(first_doc["retry_count"], 0, "{first_doc:?}");
+
+    let second_doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &second.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(second_doc["state"], "queued", "{second_doc:?}");
+    assert_eq!(second_doc["retry_count"], 1, "{second_doc:?}");
+
+    // The worker claims and runs the retry: it fails too, and with its
+    // one retry already spent, does not requeue a third.
+    let o = e.forge("ok.sh", &["work", "--once"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let second_doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &second.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(second_doc["state"], "failed", "{second_doc:?}");
+
+    let jobs: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "list", "equitizr", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        jobs.as_array().unwrap().len(),
+        2,
+        "no third job: the retry budget was already spent: {jobs:?}"
+    );
+
+    assert!(
+        e.forge("ok.sh", &["requests", "--json"])
+            .stdout
+            .starts_with(b"[]"),
+        "retry never asks"
+    );
+}

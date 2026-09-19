@@ -572,6 +572,14 @@ CREATE TABLE messages (
 CREATE INDEX messages_project ON messages(project, id);
 CREATE INDEX messages_contact ON messages(project, contact, at);
 ",
+    // `[limits] on_failure = \"retry:N\"` (docs/JOBS.md, \"The human rung\"):
+    // how many times a job's lineage has already been requeued with the
+    // same input, so `job::apply_on_failure` can stop once it reaches `N`
+    // rather than retrying forever. 0 for every job recorded before this
+    // column existed, and for every original (non-retry) run.
+    "
+ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
