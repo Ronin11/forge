@@ -1,0 +1,23 @@
+name = "check-cargo-audit"
+kind = "operation"
+description = "runs `cargo audit` on the workspace, installing cargo-audit first if it is missing, and logs one row effect per advisory it reports."
+run = ["bash", "-c", '''
+set +e
+if ! command -v cargo-audit >/dev/null 2>&1; then
+  cargo install cargo-audit --locked >/dev/null 2>&1
+fi
+if ! command -v cargo-audit >/dev/null 2>&1; then
+  exit 0
+fi
+report=$(cargo audit --json 2>/dev/null)
+[ -z "$report" ] && exit 0
+suffix=""
+[ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+echo "$report" | jq -c '.vulnerabilities.list[]? // empty' 2>/dev/null | while IFS= read -r adv; do
+  id=$(echo "$adv" | jq -r '.advisory.id // "unknown"')
+  title=$(echo "$adv" | jq -r '.advisory.title // "advisory"')
+  pkg=$(echo "$adv" | jq -r '.package.name // "unknown"')
+  printf "row\t%s\t%s: %s (%s)%s\n" "$id" "$pkg" "$title" "$id" "$suffix" >> "$FORGE_EFFECT_LOG"
+done
+exit 0
+''']

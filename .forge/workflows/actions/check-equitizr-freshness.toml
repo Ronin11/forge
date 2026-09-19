@@ -1,0 +1,34 @@
+name = "check-equitizr-freshness"
+kind = "operation"
+description = "fetches https://equitizr.com/api/meta and logs an http effect if it does not return 200, has no snapshot, or its meta.built_at (epoch milliseconds) is more than 30 days old."
+run = ["bash", "-c", '''
+set +e
+url="https://equitizr.com/api/meta"
+tmp=$(mktemp)
+code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
+problem=""
+if [ "$code" != "200" ]; then
+  problem="returned status ${code:-none}, not 200"
+else
+  no_snapshot=$(jq -r 'if .noSnapshot then "1" else "" end' "$tmp" 2>/dev/null)
+  built_at=$(jq -r '.meta.built_at // empty' "$tmp" 2>/dev/null)
+  if [ -n "$no_snapshot" ]; then
+    problem="no snapshot (noSnapshot)"
+  elif [ -z "$built_at" ]; then
+    problem="response has no meta.built_at field"
+  else
+    now=$(date +%s)
+    age_days=$(( (now - built_at/1000) / 86400 ))
+    if [ "$age_days" -gt 30 ]; then
+      problem="meta.built_at ($built_at) is $age_days day(s) old, more than 30"
+    fi
+  fi
+fi
+rm -f "$tmp"
+if [ -n "$problem" ]; then
+  suffix=""
+  [ "${FORGE_DRY_RUN:-}" = "1" ] && suffix=" (dry run)"
+  printf "http\tequitizr.com/api/meta\t%s%s\n" "$problem" "$suffix" >> "$FORGE_EFFECT_LOG"
+fi
+exit 0
+''']
