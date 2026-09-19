@@ -83,6 +83,22 @@ and does not parse stdout.
 - **`forge job log <project> --json`** — a project's job effects across
   every one of its jobs, newest first. A JSON array of
   [`JobEffectRow`](#jobdoc).
+- **`forge job fire <project> --webhook NAME [--input FILE] [--ref KEY]
+  --token TOKEN`** — fire a project's webhook trigger (see docs/JOBS.md,
+  "Triggers"): queue a job for the run workflow whose `[trigger]` is
+  `on = "webhook"` with this `name`. Prints the job's id and nothing
+  else; not `--json`. `FILE` is the delivery's body, a JSON object
+  (default `{}`). `KEY` names the delivery: firing the same key again
+  starts no second job and prints the first one's id, with exit 0 (a
+  note on stderr says so); without it the key is the SHA-256 of the
+  file. A non-zero exit is refused, with these stderr texts to tell the
+  cases apart: `invalid webhook token` (missing, unknown, revoked, or
+  another hook's; nothing else about the project or hook is said),
+  `no run workflow` (no workflow claims that hook name),
+  `per_day limit` (the workflow's cap), and anything about the input
+  being JSON. `forge project webhook token|revoke|list` manage the
+  tokens and are the operator's, not a client's: a client only ever
+  holds a token it was handed.
 - **`forge trace ID --json`** — everything about one task: its full
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
@@ -396,7 +412,7 @@ verified.
 | `workflow_hash` | string | Content hash of the workflow file this job ran under. |
 | `landed_sha` | string | The project's landed commit this job ran the workflow's automation files at; empty if the project has never landed anything. |
 | `trigger_kind` | string | `manual`, `schedule`, `message`, `webhook`, or `event`. |
-| `trigger_ref` | string | What one firing was for: a schedule's due slot as a unix second, a message's id; empty for a manual trigger. |
+| `trigger_ref` | string | What one firing was for: a schedule's due slot as a unix second, a message's id, a webhook delivery's key (the caller's `--ref`, else a SHA-256 of the body); empty for a manual trigger. |
 | `state` | string | `queued`, `running`, `ok`, `failed`, `needs_human` (a blocked question addressed to the contact or the operator — see docs/JOBS.md, "The human rung"), or `dropped`. |
 | `dry_run` | bool | True when effects were only recorded, not performed (e.g. `forge job test`'s fixture replay). |
 | `started_at` | integer | Unix seconds. |
@@ -825,6 +841,24 @@ across a rotation, not to the snapshot protocol itself.
   `initiative report <id> --json` for the `/initiatives/<id>` page,
   which is the outcome, the tasks and their states, and the rest of the
   generated report all from that one document.
+  **Webhooks.** `POST /hooks/<project>/<name>` is the one route not behind
+  the web token: its credential is the hook's own token, sent as
+  `Authorization: Bearer <token>` (never in the URL or a cookie), and the
+  only reach it gives is `forge job fire`. The request body — a JSON
+  object, at most 1 MiB — is written to a private temporary file and
+  passed as `--input`; the delivery's key is `?ref=<key>` or an
+  `Idempotency-Key` header, else none, so the kernel keys it on the body.
+  `project` and `name` are letters, digits, `-`, `_` and `.`; anything
+  else is a 404. The server never judges the token: it passes it on, and
+  reads the kernel's refusal (above) back as a status —
+  `invalid webhook token` and a missing header are **401**, `no run
+  workflow` **404**, `per_day limit` **429**, a body that is not a JSON
+  object (or a hook two workflows claim) **422**, an oversized body
+  **413**, a method other than POST **405**, and any other failure
+  **502**. Success is **200** with `{"job": <id>, "output": "<id>"}`,
+  for a delivery already fired as well as for a new one: the sender's
+  retry is answered like the first, and only one job exists. An error
+  body is `{"error": "..."}` and never contains the token.
 - **`forge-portal`** (`portal/src/main.rs`): `GET /p/<token>` runs
   `project resolve-token <token> --json` to find the project, then
   `project view <name> --json` for the page's four read-only sections —

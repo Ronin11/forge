@@ -124,9 +124,10 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
 - **Trigger.** What starts a job and what it provides as input. The
   worker owns schedules; the channel plugins deliver messages; the web
   clients accept webhooks; Forge's own events (a landing, a deploy) can
-  trigger a run workflow on the `forge` project. Every trigger enters
-  through one verb, `forge job start`, so a plugin needs nothing new to
-  start a job.
+  trigger a run workflow on the `forge` project. A manual trigger is
+  `forge job start`; a message and a webhook enter through the verb that
+  records or fires them (`forge message record`, `forge job fire`), so a
+  plugin or a web client needs nothing new to start a job.
 
   A schedule is the worker's own trigger: every pass of `forge work`'s
   poll loop ticks it, once, before it fills a free slot. For every
@@ -191,6 +192,53 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   makes the job `Scheduled` with `due_at` the message's own `at` plus the
   delay ("Delayed jobs", below). An `ask:contact` failure addresses the
   message's `from`.
+  A webhook is fired by `forge job fire <project> --webhook <name> [--input
+  <file>] [--ref <key>] --token <token>`, which the web client's `POST
+  /hooks/<project>/<name>` runs (docs/CLIENT.md, "Webhooks") and anything
+  else that can run a command may too. The verb does, in this order:
+
+  1. **Checks the token first**, before saying anything about the project
+     or the hook. A token is minted for one project's one webhook by
+     `forge project webhook token <project> <name>`, which prints it once
+     (32 random bytes as hex); the `webhook_tokens` table keeps only its
+     SHA-256 (`token_hash`), with `project`, `name`, `created_at` and
+     `revoked_at`. `forge project webhook revoke <project> <name>` sets
+     `revoked_at` on every active token of that hook, and `forge project
+     webhook list <project>` shows what has been minted, never the tokens.
+     A missing, unknown, revoked or other hook's token is refused the same
+     way — `invalid webhook token for <project>/<name>` on stderr, exit 1 —
+     and starts nothing. Several tokens may be active for one hook at
+     once, which is how one is rotated. A hook name is letters, digits,
+     `-`, `_` and `.`, since it is a URL path segment.
+  2. **Finds the workflow**: among the project's run workflows, resolved
+     exactly as the schedule tick resolves them (`worker::project_run_workflows`),
+     the one whose `[trigger]` is `on = "webhook"` with this `name`
+     (`worker::webhook_workflow`). None, or more than one, is an error;
+     a hook does not guess between automations.
+  3. **Keys the delivery**: `trigger_ref` is `--ref` if the caller gave
+     one, else the SHA-256 of the input file's bytes. `job::start_webhook`
+     looks for the job this workflow already has for that key
+     (`store::job_for_trigger`) and, finding one, prints its id, says on
+     stderr that nothing new was started, and exits 0: a delivery its
+     sender retries starts one job, and the retry is answered as
+     successfully as the first. `jobs_webhook_ref`, a unique index on
+     `(project, workflow, trigger_ref)` where `trigger_kind = 'webhook'`
+     (exempting a `retry:N` requeue, as the message index does), backs
+     that when two deliveries race: the loser reports the winner's job.
+     With `--ref` the body does not matter once the key is named; without
+     it, a different body is a different delivery.
+  4. **Starts the job**: queued for the worker, never run inline, with
+     `trigger_kind = "webhook"`, the input file as its `input.json` (a JSON
+     object, as for `forge job start --input`; no file, or an empty one, is
+     `{}`; each top-level string field becomes `FORGE_INPUT_<NAME>`), and
+     the workflow's `per_day` cap applied as it is to a schedule.
+     `[trigger] delay` makes the job `Scheduled`, due that long after the
+     delivery ("Delayed jobs", below). It prints the job's id.
+
+  The token travels as an argument, so it is visible to other users on
+  the same machine for as long as `forge job fire` runs; a hook token
+  should be one the operator can rotate freely, and is worth nothing
+  beyond firing that one hook.
 - **Steps.** Operations and directives from the catalog, unchanged in
   shape. A directive in a job carries a `role`, routed to a provider
   like every role, and a schema; it is given the step's inputs and its
@@ -465,8 +513,9 @@ Each step is an initiative on the `forge` project, sized to land.
    measured on a real judgment step.
 3. **Triggers.** Schedules in the worker (done); the message trigger,
    fired by `forge message record` and so by the Signal plugin (done);
-   webhooks on the web client and the portal; Forge events. Rates per
-   trigger.
+   the webhook trigger, fired by `forge job fire` behind a per-hook token
+   and served by the web client's `POST /hooks/<project>/<name>` (done;
+   the portal serves none); Forge events. Rates per trigger.
 4. **Verification.** Fixtures and expectations, `forge job test`, the
    repository check, the tests contract for automations.
 5. **The human rung (done).** `on_failure` honoured: `retry:N`, `drop`,
