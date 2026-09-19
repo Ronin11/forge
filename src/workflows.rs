@@ -2649,6 +2649,7 @@ on_failure = "ask:contact"
         assert!(err.contains("on-landing.toml"), "{err}");
         assert!(err.contains("not a Forge event type"), "{err}");
         assert!(err.contains("task_done"), "{err}");
+        std::fs::remove_file(dir.path().join("workflows/on-landing.toml")).unwrap();
         write(
             dir.path(),
             "on-done.toml",
