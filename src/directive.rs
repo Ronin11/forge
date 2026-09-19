@@ -20,6 +20,10 @@ pub struct Spec<'a> {
     pub step: &'a str,
     pub dir: &'a Path,
     pub prompt: &'a str,
+    /// System-level content for a runner with its own system channel
+    /// (`Runner::Chat`); every other runner ignores it. Empty when the
+    /// caller has none (see `agent::Launch::system`).
+    pub system: &'a str,
     pub model: &'a str,
     pub max_turns: u32,
     pub timeout: Duration,
@@ -42,6 +46,7 @@ pub async fn launch(f: &Forge, s: Spec<'_>) -> Result<Outcome> {
         task_id: s.id,
         worktree: s.dir,
         prompt: s.prompt,
+        system: s.system,
         model: s.model,
         max_turns: s.max_turns,
         timeout: s.timeout,

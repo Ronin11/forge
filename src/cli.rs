@@ -2909,6 +2909,7 @@ fn list_providers(json: bool) -> Result<()> {
                     "runner": p.runner.as_str(),
                     "model": p.model,
                     "base_url": p.base_url,
+                    "api_key_env": p.api_key_env,
                     "env": p.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
                     "extra_args": p.extra_args,
                     "notes": p.notes,

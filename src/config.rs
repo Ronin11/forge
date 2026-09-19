@@ -258,6 +258,9 @@ struct ProviderRaw {
     runner: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    /// The environment variable that holds this provider's API key; see
+    /// `agent::Provider::api_key_env`. Never the key itself.
+    api_key_env: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -560,6 +563,28 @@ journal_control = 0.0
 # runner = \"codex-cli\"
 # notes = \"signed in with codex login\"
 
+# runner = \"chat\" spawns no agent CLI at all: one HTTP call to an
+# OpenAI-compatible /chat/completions endpoint. It is refused for anything
+# but a job's directive step (docs/JOBS.md, \"Steps\"), which has no tools
+# by design and so needs no agent to act with — a task's code step still
+# runs through claude-cli or codex-cli. `base_url` is required;
+# `api_key_env` names the environment variable holding the key (never the
+# key itself, which never lives in this file), absent for an endpoint that
+# needs none (a local model).
+#
+# [providers.devhome-chat]
+# runner = \"chat\"
+# base_url = \"http://dev.home:11434/v1\"
+# model = \"qwen3-coder:30b\"
+#
+# [providers.openai-chat]
+# runner = \"chat\"
+# base_url = \"https://api.openai.com/v1\"
+# model = \"gpt-5-mini\"
+# api_key_env = \"OPENAI_API_KEY\"
+# price_usd_per_million_input = 0.25
+# price_usd_per_million_output = 2.00
+
 [intake]
 # How many questions the `interview` directive may ask a person in a rolling
 # 24 hours. At the cap, the worker leaves its intake tasks queued rather than
@@ -701,6 +726,7 @@ fn build_providers(
                 runner,
                 model: p.model,
                 base_url: p.base_url,
+                api_key_env: p.api_key_env,
                 env: p.env.into_iter().collect(),
                 extra_args: p.extra_args,
                 notes: p.notes,
@@ -1081,6 +1107,45 @@ mod tests {
             c.providers["anthropic"].runner,
             crate::agent::Runner::ClaudeCli
         );
+    }
+
+    /// The two commented `runner = "chat"` examples in `DEFAULT_HOME_CONFIG`,
+    /// uncommented: they must parse into the fields the task said they
+    /// carry, `api_key_env` present only where the operator gave one.
+    #[test]
+    fn chat_provider_tables_parse_base_url_model_and_api_key_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[providers.devhome-chat]\n\
+             runner = \"chat\"\n\
+             base_url = \"http://dev.home:11434/v1\"\n\
+             model = \"qwen3-coder:30b\"\n\
+             \n\
+             [providers.openai-chat]\n\
+             runner = \"chat\"\n\
+             base_url = \"https://api.openai.com/v1\"\n\
+             model = \"gpt-5-mini\"\n\
+             api_key_env = \"OPENAI_API_KEY\"\n\
+             price_usd_per_million_input = 0.25\n\
+             price_usd_per_million_output = 2.00\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+
+        let devhome = &c.providers["devhome-chat"];
+        assert_eq!(devhome.runner, crate::agent::Runner::Chat);
+        assert_eq!(devhome.base_url.as_deref(), Some("http://dev.home:11434/v1"));
+        assert_eq!(devhome.model.as_deref(), Some("qwen3-coder:30b"));
+        assert_eq!(devhome.api_key_env, None);
+
+        let openai = &c.providers["openai-chat"];
+        assert_eq!(openai.runner, crate::agent::Runner::Chat);
+        assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(openai.model.as_deref(), Some("gpt-5-mini"));
+        assert_eq!(openai.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(openai.price_input_per_million, 0.25);
+        assert_eq!(openai.price_output_per_million, 2.00);
     }
 
     #[test]

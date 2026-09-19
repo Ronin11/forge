@@ -401,6 +401,7 @@ async fn launch(
             step,
             dir: worktree,
             prompt,
+            system: "",
             model: &t.model,
             max_turns: t.max_turns as u32,
             timeout: Duration::from_secs(t.timeout_secs as u64),

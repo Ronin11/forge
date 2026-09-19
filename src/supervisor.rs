@@ -451,6 +451,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             step: "supervisor",
             dir: wt,
             prompt: &prompt_text,
+            system: "",
             model: &cfg.model,
             max_turns: cfg.max_turns,
             timeout: std::time::Duration::from_secs(cfg.timeout_secs),
