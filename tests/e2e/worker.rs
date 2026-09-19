@@ -123,6 +123,93 @@ fn doctor_warns_for_a_project_with_the_migrations_placeholder_purpose() {
 }
 
 #[test]
+fn doctor_warns_about_a_held_initiative_and_names_it() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tasks.txt");
+    // Two independent tasks: the first lands and spends the whole
+    // budget, the second is left queued behind the hold.
+    std::fs::write(&file, "first task\n\nsecond task").unwrap();
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "initiative",
+            "new",
+            "demo",
+            "--outcome",
+            "both tasks land within budget",
+            "--from",
+            file.to_str().unwrap(),
+            // `ok.sh` reports total_cost_usd 0.01 per attempt, so the
+            // initiative's cost reaches this budget the moment the first
+            // task finishes.
+            "--budget",
+            "0.01",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("created initiative "))
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    assert!(
+        e.forge("ok.sh", &["work", "--once", "--max-tasks", "1"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(1).0, "succeeded");
+    assert_eq!(e.task(2).0, "queued");
+
+    // Doctor is the only place besides `forge initiative show <id>` that
+    // says this initiative is held: nothing else about an idle worker
+    // with an empty-looking queue would say so.
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("WARN initiatives"), "{out}");
+    assert!(out.contains(&format!("initiative {id}")), "{out}");
+    assert!(out.contains("budget: $0.01 of $0.01"), "{out}");
+    assert!(out.contains("1 task(s) queued behind the hold"), "{out}");
+    assert!(out.contains(&format!("forge initiative set {id}")), "{out}");
+
+    let o = e.forge("ok.sh", &["doctor", "--json"]);
+    let checks: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        checks
+            .iter()
+            .any(|c| c["name"] == "initiatives" && c["status"] == "warn"),
+        "missing initiatives row in {checks:?}"
+    );
+
+    // Raising the budget lifts the hold; doctor goes back to OK.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["initiative", "set", &id.to_string(), "--budget", "5"],
+        )
+        .status
+        .success()
+    );
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("OK   initiatives"), "{out}");
+}
+
+#[test]
 fn doctor_warns_when_attempt_logs_pass_a_gigabyte() {
     let e = Env::new();
     assert!(e.run("ok.sh", &[]).status.success());
