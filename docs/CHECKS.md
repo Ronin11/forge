@@ -6,6 +6,25 @@ engineering check. Each is a `kind = "run"` workflow on the `forge`
 project's own repository (docs/JOBS.md), so it is versioned, checked by
 `forge workflows validate`, and dry-runnable like any automation.*
 
+## `doctor-daily` — 07:00 daily
+
+One step, `doctor-json-to-effects`: runs `forge doctor --json` and logs a
+row effect for every check whose status is `WARN` or `FAIL`. `[assert]`
+is that no `FAIL` row was logged; a clean or merely-WARN day is green.
+`[skip_if]` reads a marker the action writes on a `FAIL`-free real run
+(never on a dry run) — a day already proven clean does not run again.
+`[limits] on_failure = "ask:operator"` turns a `FAIL` into a blocked
+question; `per_day = 2` allows one retry.
+
+It splices in a second, schedule-free run workflow, `disk-and-logs.toml`
+(`{ workflow = "disk-and-logs" }`, docs/JOBS.md, "Steps"), whose own
+`disk-and-logs-check` step keeps free space under `FORGE2_HOME` above 5 GB
+and the logs directory under 2 GB — running `forge gc` on the retained
+worktrees when either is breached, and logging a `FAIL` row only if that
+is not enough. `disk-and-logs.toml` has no `[trigger] on = "schedule"` of
+its own; it fires only as part of `doctor-daily`, or by hand with `forge
+job start`.
+
 ## `drift-weekly` — Monday 07:30
 
 Four operations, each an action under `.forge/workflows/actions/`:
