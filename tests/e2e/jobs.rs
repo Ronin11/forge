@@ -1566,11 +1566,8 @@ on_failure = "drop"
     let skipped_id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
 
     let doc: serde_json::Value = serde_json::from_slice(
-        &e.forge(
-            "ok.sh",
-            &["job", "show", &skipped_id.to_string(), "--json"],
-        )
-        .stdout,
+        &e.forge("ok.sh", &["job", "show", &skipped_id.to_string(), "--json"])
+            .stdout,
     )
     .unwrap();
     assert_eq!(doc["state"], "skipped", "{doc:?}");
@@ -1584,10 +1581,7 @@ on_failure = "drop"
     assert_eq!(verdict[0]["ok"], true);
     assert_eq!(verdict[0]["tail"], "already handled, nothing to do");
 
-    let skip_scratch = e
-        .home
-        .join("worktrees")
-        .join(format!("job-{skipped_id}"));
+    let skip_scratch = e.home.join("worktrees").join(format!("job-{skipped_id}"));
     assert!(
         !skip_scratch.join("out.txt").exists(),
         "the write-file step never ran"
@@ -1598,9 +1592,7 @@ on_failure = "drop"
         serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
     let rows = rows.as_array().unwrap();
     assert_eq!(
-        rows.iter()
-            .find(|r| r["id"] == skipped_id)
-            .unwrap()["state"],
+        rows.iter().find(|r| r["id"] == skipped_id).unwrap()["state"],
         "skipped"
     );
 
@@ -1734,7 +1726,13 @@ on_failure = "drop"
     let o = e.forge(
         "ok.sh",
         &[
-            "job", "start", "equitizr", "skip-once", "--input", input_s, "--now",
+            "job",
+            "start",
+            "equitizr",
+            "skip-once",
+            "--input",
+            input_s,
+            "--now",
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1749,7 +1747,13 @@ on_failure = "drop"
     let o = e.forge(
         "ok.sh",
         &[
-            "job", "start", "equitizr", "skip-once", "--input", input_s, "--now",
+            "job",
+            "start",
+            "equitizr",
+            "skip-once",
+            "--input",
+            input_s,
+            "--now",
         ],
     );
     assert!(
