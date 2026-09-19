@@ -161,6 +161,29 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (parsed
   instructions, nothing else, and it has no tools. This is the bounded
   judgment the local model is fit for: the harness controls the inputs
   and the assertion checks the output.
+
+  Because a directive has no tools, it needs no agent CLI either: a
+  provider whose `runner` is `"chat"` (`agent::Runner::Chat`) answers a
+  directive with a single call to an OpenAI-compatible
+  `/chat/completions` endpoint instead of spawning `claude` or `codex`.
+  The endpoint is named by `base_url` (ollama's
+  `http://dev.home:11434/v1` for a local model, `https://api.openai.com/v1`
+  for OpenAI), the step's instructions (the untrusted-data sentence
+  every Forge prompt carries, plus the action's own description and
+  `prompt`) go as the system message and the step's inputs as the user
+  message, and `model` picks what runs. The request asks the endpoint to
+  hold the model to the step's schema itself
+  (`response_format: {"type": "json_schema", ...}`); an endpoint that
+  does not understand that parameter gets a second request instead, with
+  no `response_format` and the schema quoted in the system message
+  asking for the JSON object alone — either way the answer is validated
+  against the schema before it is trusted, so a fallback that ignores
+  the instruction fails the step rather than passing through unchecked
+  output. Tokens and cost come from the response's own `usage` and the
+  provider's `price_usd_per_million_input/output` (see
+  "Agent backends" in the operator's `config.toml`). A `runner = "chat"`
+  provider is refused for anything but a job's directive step — a
+  task's code step still has to act, so it still needs an agent CLI.
 - **Effects.** An operation that acts on the world declares its effect
   kind. The executor logs every effect with its target. In a dry run,
   effect operations record what they would have done and do nothing.
