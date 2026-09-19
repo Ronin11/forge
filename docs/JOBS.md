@@ -123,11 +123,12 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
 
 - **Trigger.** What starts a job and what it provides as input. The
   worker owns schedules; the channel plugins deliver messages; the web
-  clients accept webhooks; Forge's own events (a landing, a deploy) can
-  trigger a run workflow on the `forge` project. A manual trigger is
-  `forge job start`; a message and a webhook enter through the verb that
-  records or fires them (`forge message record`, `forge job fire`), so a
-  plugin or a web client needs nothing new to start a job.
+  clients accept webhooks; Forge's own events (a task done, a deploy
+  finished, a job finished) start a run workflow that names them. A manual
+  trigger is `forge job start`; a message and a webhook enter through the
+  verb that records or fires them (`forge message record`, `forge job
+  fire`), so a plugin or a web client needs nothing new to start a job; an
+  event is read from the log by the worker's own tick.
 
   A schedule is the worker's own trigger: every pass of `forge work`'s
   poll loop ticks it, once, before it fills a free slot. For every
@@ -239,6 +240,60 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   the same machine for as long as `forge job fire` runs; a hook token
   should be one the operator can rotate freely, and is worth nothing
   beyond firing that one hook.
+  An event is the worker's trigger, ticked beside the schedule
+  (`worker::event_tick`, once per pass of the poll loop, right after the
+  schedule tick): a run workflow with `[trigger] on = "event"` and a
+  `type` — one of the `type` values a line of `events.jsonl` carries
+  (`report::EVENT_TYPES`: `task_done`, `deploy_finished`, `job_finished`,
+  and the rest of the enum in `src/report.rs`) — starts a job for each such
+  event emitted for its project. A `type` that is not one is refused at
+  workflow load time, with the file, the way a bad `cron` is. The tick,
+  for every project's event-triggered run workflow (resolved as the
+  schedule tick resolves them):
+
+  1. **Reads on from its own offset.** `event_cursors`, one row per
+     project and workflow (`store::event_cursor`), holds the byte offset in
+     `events.jsonl` up to which the workflow has examined events. The tick
+     reads the complete lines past it, at most 8 MiB per tick — a worker
+     that was down for a long while catches up over several — and moves the
+     offset past everything it read, whatever its type. A workflow the
+     tick sees for the first time starts at the end of the log, so a new
+     automation is never backfilled with history; a log shorter than the
+     offset has rolled (it keeps two generations), and is read again from
+     its start.
+  2. **Keeps the events that are this project's.** An event belongs to the
+     project it names (`deploy_started`, `deploy_finished`, `job_started`,
+     `job_finished`, `project_created` carry a `project`), else to its
+     task's project (`task_done`, `task_queued`, and the other task
+     events). An event that names neither, a `note` from outside any task,
+     belongs to no project's workflows.
+  3. **Skips a job's own events.** A `job_started` or `job_finished` whose
+     job ran this same workflow starts nothing, so an automation on
+     `job_finished` cannot start itself from its own finish. It does not
+     stop two automations on `job_finished` from starting each other; the
+     workflows' `per_day` caps are what bound that.
+  4. **Starts the job** (`job::start_event`): queued for the worker, never
+     run inline, with `trigger_kind = "event"`, `trigger_ref` the event's
+     byte offset in the log, and the event's own JSON line as its
+     `input.json` — its top-level string fields become `FORGE_INPUT_*`, so
+     a `task_done` job sees `FORGE_INPUT_STATE` (`succeeded`, `failed`,
+     ...), `FORGE_INPUT_BRANCH` and `FORGE_INPUT_REASON`, and reads the
+     numbers (`task`, `attempts`, `cost_usd`, `ts`) from
+     `$FORGE_INPUT_DIR/input.json`. `per_day` is applied as for a
+     schedule; a refused start, or a broken workflow file, is noted on
+     stderr and the event is not tried again. `[trigger] delay` makes the
+     job `Scheduled`, due that long after the event's own `ts`
+     ("Delayed jobs", below).
+
+  An event starts at most one job per workflow, and a restart starts none
+  twice: the offset is kept in the store, and `jobs_event_ref`, a unique
+  index on `(project, workflow, trigger_ref)` where `trigger_kind =
+  'event'` (exempting a `retry:N` requeue, as the message index does),
+  backs it even if the offset write is lost to a crash between the job and
+  the cursor — the tick then finds the job the offset already has
+  (`store::job_for_trigger`) and starts none. The one gap: after a roll of
+  the log an offset can recur for a workflow, and an event landing on an
+  offset that already started a job for it starts nothing.
 - **Steps.** Operations and directives from the catalog, unchanged in
   shape. A directive in a job carries a `role`, routed to a provider
   like every role, and a schema; it is given the step's inputs and its
@@ -511,11 +566,13 @@ Each step is an initiative on the `forge` project, sized to land.
 2. **Directive steps.** Bounded prompts with inputs and a schema, roles
    routed to providers, the per-run budget, and the local model
    measured on a real judgment step.
-3. **Triggers.** Schedules in the worker (done); the message trigger,
-   fired by `forge message record` and so by the Signal plugin (done);
-   the webhook trigger, fired by `forge job fire` behind a per-hook token
-   and served by the web client's `POST /hooks/<project>/<name>` (done;
-   the portal serves none); Forge events. Rates per trigger.
+3. **Triggers (done).** Schedules in the worker; the message trigger,
+   fired by `forge message record` and so by the Signal plugin; the
+   webhook trigger, fired by `forge job fire` behind a per-hook token and
+   served by the web client's `POST /hooks/<project>/<name>` (the portal
+   serves none); Forge events, read from `events.jsonl` by the worker's
+   tick from a per-workflow offset. Rates per trigger are the workflow's
+   own `per_day`, applied to every kind of start.
 4. **Verification.** Fixtures and expectations, `forge job test`, the
    repository check, the tests contract for automations.
 5. **The human rung (done).** `on_failure` honoured: `retry:N`, `drop`,

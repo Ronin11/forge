@@ -161,6 +161,15 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
   `forge project webhook token <project> <name>`. A name is letters,
   digits, `-`, `_` and `.`, and one run workflow per project should claim
   it: a hook two workflows claim is refused (docs/JOBS.md, "Triggers").
+  An `event` trigger's `type` is a Forge event type from `src/report.rs`
+  (`task_done`, `deploy_finished`, `job_finished`, ...), refused at load
+  time when it is not one. The worker's poll loop reads the event log past
+  the offset this workflow last examined and queues one job for each such
+  event that belongs to its project — a task, a deploy or a job of it —
+  with the event's JSON as its input (`FORGE_INPUT_STATE` is a
+  `task_done`'s `state`), once per event, so a restart starts none twice.
+  A job's own `job_finished` never starts the workflow that produced it
+  (docs/JOBS.md, "Triggers").
 - **`[skip_if]`.** Named commands, each a list like an action's `run`,
   checked in the scratch tree with the job's environment before any
   step — before `[assert]`, before any effect happens. The first to
