@@ -1102,6 +1102,105 @@ mod tests {
         assert!(message_triggers(&f, &m).await.is_empty());
     }
 
+    /// Fire `demo`'s webhook `name` the way `forge job fire` does after its
+    /// token check: resolve the workflow, then start the job.
+    async fn fire(f: &Forge, name: &str, key: &str, input: &str) -> Result<(i64, bool)> {
+        let (workflow, wf, source, sha) = webhook_workflow(f, "demo", name).await?;
+        job::start_webhook(f, "demo", &workflow, &sha, &wf, source, key, input)
+    }
+
+    #[tokio::test]
+    async fn a_webhook_starts_one_queued_job_with_the_body_as_input_and_its_key_as_the_ref() {
+        let (_dir, f) = message_fixture(&[
+            ("ship", "on = \"webhook\"\nname = \"orders\""),
+            ("other", "on = \"webhook\"\nname = \"refunds\""),
+            ("by-message", "on = \"message\"\ncontact = \"*\""),
+        ]);
+        let (id, started) = fire(&f, "orders", "delivery-1", r#"{"order":"17"}"#)
+            .await
+            .unwrap();
+        assert!(started);
+        let job = f.store.job(id).unwrap().unwrap();
+        assert_eq!(job.workflow, "ship");
+        assert_eq!(job.state, JobState::Queued);
+        assert_eq!(job.trigger_kind, "webhook");
+        assert_eq!(job.trigger_ref, "delivery-1");
+        let input =
+            std::fs::read_to_string(f.paths.worktrees.join(format!("job-{id}-input/input.json")))
+                .unwrap();
+        assert_eq!(input, r#"{"order":"17"}"#);
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_delivery_fired_again_returns_its_job_and_starts_no_second() {
+        let (_dir, f) = message_fixture(&[("ship", "on = \"webhook\"\nname = \"orders\"")]);
+        let (first, started) = fire(&f, "orders", "k", "{}").await.unwrap();
+        assert!(started);
+        let (again, started) = fire(&f, "orders", "k", r#"{"different":"body"}"#)
+            .await
+            .unwrap();
+        assert!(!started);
+        assert_eq!(again, first);
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 1);
+        // Another key is another delivery.
+        let (second, started) = fire(&f, "orders", "k2", "{}").await.unwrap();
+        assert!(started && second != first);
+        assert_eq!(f.store.jobs(Some("demo"), None).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_unique_index_backs_the_key_when_two_deliveries_race() {
+        let (_dir, f) = message_fixture(&[("ship", "on = \"webhook\"\nname = \"orders\"")]);
+        let (id, _) = fire(&f, "orders", "k", "{}").await.unwrap();
+        let mut dup = f.store.job(id).unwrap().unwrap();
+        dup.id = 0;
+        assert!(f.store.create_job(&dup).is_err(), "jobs_webhook_ref");
+        // A retry:N requeue carries the ref and is exempt.
+        dup.retry_count = 1;
+        assert!(f.store.create_job(&dup).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_webhook_nothing_or_two_workflows_claim_is_an_error() {
+        let (_dir, f) = message_fixture(&[
+            ("a", "on = \"webhook\"\nname = \"twice\""),
+            ("b", "on = \"webhook\"\nname = \"twice\""),
+            ("m", "on = \"message\"\ncontact = \"orders\""),
+        ]);
+        let none = webhook_workflow(&f, "demo", "orders").await.unwrap_err();
+        assert!(none.to_string().contains("no run workflow"), "{none}");
+        let two = webhook_workflow(&f, "demo", "twice").await.unwrap_err();
+        assert!(two.to_string().contains("a, b"), "{two}");
+    }
+
+    #[tokio::test]
+    async fn a_webhook_body_that_is_not_a_json_object_starts_nothing() {
+        let (_dir, f) = message_fixture(&[("ship", "on = \"webhook\"\nname = \"orders\"")]);
+        assert!(fire(&f, "orders", "k", "not json").await.is_err());
+        assert!(fire(&f, "orders", "k", "[1,2]").await.is_err());
+        assert!(f.store.jobs(Some("demo"), None).unwrap().is_empty());
+        // An empty body is an empty object.
+        let (id, _) = fire(&f, "orders", "k", "  ").await.unwrap();
+        let input =
+            std::fs::read_to_string(f.paths.worktrees.join(format!("job-{id}-input/input.json")))
+                .unwrap();
+        assert_eq!(input, "{}");
+    }
+
+    #[tokio::test]
+    async fn a_webhook_triggers_delay_makes_the_job_scheduled() {
+        let (_dir, f) = message_fixture(&[(
+            "later",
+            "on = \"webhook\"\nname = \"orders\"\ndelay = \"1h\"",
+        )]);
+        let before = unix_now();
+        let (id, _) = fire(&f, "orders", "k", "{}").await.unwrap();
+        let job = f.store.job(id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Scheduled);
+        assert!(job.due_at.unwrap() >= before + 3600);
+    }
+
     /// A held initiative with a queued task is announced the first time
     /// `new_holds` sees it, never again while the hold continues (even
     /// across many polls), and again once it leaves `held` and re-enters
