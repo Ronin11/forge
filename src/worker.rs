@@ -635,6 +635,13 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         }
 
         tokio::select! {
+            // With something running and a slot free, wake on the poll
+            // interval too, so a task queued (or released, or scheduled)
+            // meanwhile is claimed now rather than when the running one
+            // finishes. Before this branch the loop woke only on a join or
+            // a signal: on 2026-09-19 two tasks sat queued beside one
+            // running attempt and two free slots for an hour.
+            _ = tokio::time::sleep(Duration::from_secs(opts.poll.unwrap_or(10))), if running.len() < jobs => {}
             Some(joined) = running.join_next() => {
                 match joined {
                     Ok(WorkResult::Task(id, Ok(state))) => {
