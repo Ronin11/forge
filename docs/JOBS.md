@@ -367,18 +367,30 @@ A job is claimed by the worker like a task and runs in a sandbox:
    `FORGE2_HOME` are where that `forge` binary and the operator's own
    store live, so a step's own recursive `forge` call reaches the same
    store this one did, not a default.
-3. Run `[skip_if]`, in name order. The first command to exit 0 ends the
-   job right here — see "Skipping a run", below — before step 4 ever
+3. Run the repository's declared `setup` check (`forge.toml` `[checks]
+   setup`) once in the scratch directory, the way a task's clone has it run
+   before its steps, so an operation that needs the repository's
+   dependencies (`npm run`, a virtualenv) finds them. It is recorded as a
+   job step row of kind `operation` named `setup`, ahead of the workflow's
+   own steps, with its exit code. If it fails the job ends `failed` right
+   here with a `setup` verdict row carrying its tail: no `[skip_if]`, no
+   step, no assertion runs. A repository that declares no `setup` check runs
+   as it always did, and so does a workflow whose steps are all directives,
+   which never run a command in the tree. `forge job test` runs the same
+   setup in each fixture's replay; a failed one is reported as the
+   fixture's first difference.
+4. Run `[skip_if]`, in name order. The first command to exit 0 ends the
+   job right here — see "Skipping a run", below — before step 5 ever
    runs.
-4. Run the steps in order. Outputs are files in the scratch directory
+5. Run the steps in order. Outputs are files in the scratch directory
    and flow to the next step the way consumes and produces work today.
    A directive's structured output is validated against its schema
    before the next step sees it.
-5. Log each effect as it happens: kind, target, a short description,
+6. Log each effect as it happens: kind, target, a short description,
    the step that did it.
-6. Run the assertions. Record the verdict, the cost, and the step
+7. Run the assertions. Record the verdict, the cost, and the step
    timings.
-7. On a `failed` or `needs_human` verdict, apply `[limits] on_failure`
+8. On a `failed` or `needs_human` verdict, apply `[limits] on_failure`
    (`job::run_now`): `retry:N` requeues the job, up to N more times, with
    the same input and `trigger_kind`/`trigger_ref` unchanged — the new
    job's own `retry_count`, one more than the job it retries, is what the
@@ -386,7 +398,8 @@ A job is claimed by the worker like a task and runs in a sandbox:
    spent; `drop` records the state and does nothing further; `ask:operator`
    and `ask:contact` are the human rung — see below. A skipped run never
    reaches this step, and neither does a dry run (a fixture replay,
-   `forge job bench`): both apply none of it.
+   `forge job bench`): both apply none of it. A failed `setup` is a `failed`
+   verdict like any other, so it is retried or asked about the same way.
 
 ## Skipping a run
 

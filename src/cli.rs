@@ -2328,9 +2328,11 @@ fn job_show(id: i64, json: bool) -> Result<()> {
                 if log.exists() {
                     out!("      log    {}", log.display());
                 }
-                if let Some(c) = verdict.iter().find(|c| c.name == s.action && !c.ok) {
-                    out!("      failed {}", c.tail);
-                }
+            }
+            if (s.kind == "directive" || s.action == "setup")
+                && let Some(c) = verdict.iter().find(|c| c.name == s.action && !c.ok)
+            {
+                out!("      failed {}", c.tail);
             }
         }
     }

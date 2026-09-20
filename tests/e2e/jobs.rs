@@ -3168,3 +3168,183 @@ fn forge_job_test_with_nothing_to_replay_passes_and_a_named_gap_fails() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+const SETUP_WORKFLOW: &str = r#"name = "needs-setup"
+kind = "run"
+description = "an operation that needs what the repository's setup check leaves in the tree"
+
+steps = [
+  { action = "needs-marker", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#;
+
+const NEEDS_MARKER_ACTION: &str = r#"name = "needs-marker"
+kind = "operation"
+description = "asserts the setup marker exists before it does anything"
+run = ["bash", "-c", '''
+test -f setup.marker || { echo "no setup.marker: setup did not run first"; exit 1; }
+printf "file\tsetup.marker\tfound the marker\n" >> "$FORGE_EFFECT_LOG"
+''']
+"#;
+
+/// A job's scratch tree is set up like a task's clone: the repository's
+/// `setup` check runs once in it, ahead of the steps, recorded as an
+/// operation step row named `setup` (docs/JOBS.md, "The executor").
+#[test]
+fn a_setup_check_runs_in_the_scratch_before_the_first_operation() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[(
+            "forge.toml",
+            "[checks]\nsetup = [\"bash\", \"-c\", \"echo ready > setup.marker\"]\n",
+        )],
+    );
+    setup_needs_marker(&e);
+
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "equitizr", "needs-setup", "--now"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "show", &id, "--json"]).stdout).unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps[0]["action"], "setup");
+    assert_eq!(steps[0]["kind"], "operation");
+    assert_eq!(steps[0]["exit_code"], 0);
+    assert_eq!(steps[1]["action"], "needs-marker");
+    assert_eq!(doc["effects"].as_array().unwrap().len(), 1, "{doc:?}");
+}
+
+/// A setup that exits 1 ends the job failed before any step runs, with a
+/// `setup` verdict row carrying its tail.
+#[test]
+fn a_setup_that_exits_1_fails_the_job_with_its_tail_and_runs_no_step() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[(
+            "forge.toml",
+            "[checks]\nsetup = [\"bash\", \"-c\", \"echo npm ERR! no lockfile; exit 1\"]\n",
+        )],
+    );
+    setup_needs_marker(&e);
+
+    let o = e.forge(
+        "ok.sh",
+        &["job", "start", "equitizr", "needs-setup", "--now"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "show", &id, "--json"]).stdout).unwrap();
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(
+        steps.len(),
+        1,
+        "no step runs after a failed setup: {steps:?}"
+    );
+    assert_eq!(steps[0]["action"], "setup");
+    assert_eq!(steps[0]["exit_code"], 1);
+    assert!(doc["effects"].as_array().unwrap().is_empty(), "{doc:?}");
+    let verdict: Vec<serde_json::Value> =
+        serde_json::from_str(doc["verdict_json"].as_str().unwrap()).unwrap();
+    assert_eq!(verdict[0]["name"], "setup", "{verdict:?}");
+    assert_eq!(verdict[0]["ok"], false);
+    assert!(
+        verdict[0]["tail"]
+            .as_str()
+            .unwrap()
+            .contains("npm ERR! no lockfile"),
+        "{verdict:?}"
+    );
+}
+
+/// `forge job test` runs the same setup in its replay, and a failed one is
+/// the fixture's first difference.
+#[test]
+fn forge_job_test_runs_setup_and_reports_a_failed_one_as_the_first_difference() {
+    let e = Env::new();
+    commit_files(
+        &e,
+        &[
+            (
+                "forge.toml",
+                "[checks]\nsetup = [\"bash\", \"-c\", \"echo ready > setup.marker\"]\n",
+            ),
+            (".forge/workflows/needs-setup.toml", SETUP_WORKFLOW),
+            (
+                ".forge/workflows/actions/needs-marker.toml",
+                NEEDS_MARKER_ACTION,
+            ),
+            (
+                ".forge/fixtures/needs-setup/a.json",
+                r#"{"input": {}, "expect": {"state": "ok", "effects": [{"kind": "file", "target": "setup.marker"}]}}"#,
+            ),
+        ],
+    );
+    let o = job_test(&e, &e.repo, &["needs-setup"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("pass  needs-setup/a"),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+
+    commit_files(
+        &e,
+        &[(
+            "forge.toml",
+            "[checks]\nsetup = [\"bash\", \"-c\", \"echo no network; exit 1\"]\n",
+        )],
+    );
+    let o = job_test(&e, &e.repo, &["needs-setup"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains(
+            "FAIL  needs-setup/a: wrong state: expected ok, got failed (setup: no network)"
+        ),
+        "{out}"
+    );
+}
+
+fn setup_needs_marker(e: &Env) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(e.home.join("workflows/needs-setup.toml"), SETUP_WORKFLOW).unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/needs-marker.toml"),
+        NEEDS_MARKER_ACTION,
+    )
+    .unwrap();
+}

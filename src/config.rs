@@ -167,9 +167,29 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
 /// if it exists, else `forge.toml` at the root. Both existing is an error.
 /// Used when a task is created, before any base commit is pinned.
 pub async fn load_working(repo: &Path) -> Result<Config> {
+    let (path, config_path, text) = read_working(repo)?;
+    parse(repo, &text, &path.display().to_string(), config_path).await
+}
+
+/// Just the `[checks]` table of the config in the working tree at `dir`,
+/// which need not be a git repository: `load_working` asks git for the
+/// base branch and the push remote, and a job's scratch tree, an archive,
+/// has no `.git` to answer with.
+pub fn load_working_checks(dir: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    for (name, argv) in &raw.checks.checks {
+        if argv.is_empty() {
+            bail!("check `{name}` has an empty command");
+        }
+    }
+    Ok(raw.checks.checks)
+}
+
+fn read_working(repo: &Path) -> Result<(PathBuf, &'static str, String)> {
     let alt = repo.join(ALT_CONFIG_PATH);
     let root = repo.join(ROOT_CONFIG_PATH);
-    let (path, config_path, text) = match (alt.exists(), root.exists()) {
+    match (alt.exists(), root.exists()) {
         (true, true) => bail!(
             "both {} and {} exist; a repository must declare its checks in only one",
             alt.display(),
@@ -178,7 +198,7 @@ pub async fn load_working(repo: &Path) -> Result<Config> {
         (true, false) => {
             let text = std::fs::read_to_string(&alt)
                 .with_context(|| format!("reading {}", alt.display()))?;
-            (alt, ALT_CONFIG_PATH, text)
+            Ok((alt, ALT_CONFIG_PATH, text))
         }
         (false, _) => {
             let text = std::fs::read_to_string(&root).with_context(|| {
@@ -187,10 +207,9 @@ pub async fn load_working(repo: &Path) -> Result<Config> {
                     root.display()
                 )
             })?;
-            (root, ROOT_CONFIG_PATH, text)
+            Ok((root, ROOT_CONFIG_PATH, text))
         }
-    };
-    parse(repo, &text, &path.display().to_string(), config_path).await
+    }
 }
 
 /// The repository's config at `rev`: the trusted base for an attempt.

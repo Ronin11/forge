@@ -812,10 +812,7 @@ async fn run_now(
     );
     let scratch = scratch_dir(f, job_id);
     git::fresh_archive(repo, landed_sha, &scratch).await?;
-    let repo_checks = config::load_working(&scratch)
-        .await
-        .map(|c| c.checks)
-        .unwrap_or_default();
+    let repo_checks = config::load_working_checks(&scratch).unwrap_or_default();
 
     let idir = input_dir(f, job_id);
     let _ = std::fs::remove_dir_all(&idir);
@@ -829,11 +826,66 @@ async fn run_now(
     let timeout = Duration::from_secs(check_timeout_secs);
     let input_bytes = limits.map_or(workflows::default_input_bytes(), |l| l.input_bytes);
 
+    let mut ok = true;
+    let mut needs_human = false;
+    let mut verdict: Vec<checks::CheckResult> = Vec::new();
+    let mut step_outputs: Vec<(String, String)> = Vec::new();
+    let mut output_paths: Vec<(String, String)> = Vec::new();
+    let mut total_cost = 0.0;
+
+    // The repository's declared `setup` check, once, in the scratch tree
+    // before `[skip_if]` and the steps, the way a task's clone has it run
+    // before its steps: a step that needs the repository's dependencies
+    // finds them (docs/JOBS.md, "The executor"). A repository declaring
+    // none runs as it always did, and so does a workflow of directive steps
+    // only, which never touch the scratch tree's dependencies. It is a job
+    // step row of its own, ahead of step 0; a failure ends the job `Failed`
+    // with a `setup` verdict row carrying its tail, before anything else.
+    let wants_setup = steps.iter().any(|s| s.action.kind == Kind::Operation);
+    if wants_setup && let Some(argv) = repo_checks.get("setup") {
+        let env = step_env(
+            job_id,
+            "setup",
+            &effect_log,
+            &idir,
+            input_fields,
+            &[],
+            project,
+            repo,
+            &f.paths.home,
+            workflow_env,
+            &secrets,
+            dry_run,
+        );
+        let started_at = unix_now();
+        let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await;
+        f.store.append_job_step(&JobStep {
+            id: 0,
+            job_id,
+            seq: -1,
+            action: "setup".to_string(),
+            kind: "operation".to_string(),
+            provider: String::new(),
+            model: String::new(),
+            cost_usd: Some(0.0),
+            started_at,
+            finished_at: Some(unix_now()),
+            exit_code: r.exit,
+            output_ref: String::new(),
+        })?;
+        if !r.ok {
+            ok = false;
+            verdict.push(r);
+        }
+    }
+
+    let setup_ok = ok;
+
     // `[skip_if]`, in name order: the first command to exit 0 ends the job
     // `Skipped` before any step runs, counting against nothing — not
     // `per_day`, not `on_failure`, not the failed rollup (docs/JOBS.md,
     // "Skipping a run"). A non-zero exit means "not skipped, proceed".
-    for (name, argv) in skip_if {
+    for (name, argv) in skip_if.iter().filter(|_| setup_ok) {
         let env = step_env(
             job_id,
             name,
@@ -879,13 +931,7 @@ async fn run_now(
         }
     }
 
-    let mut ok = true;
-    let mut needs_human = false;
-    let mut verdict: Vec<checks::CheckResult> = Vec::new();
-    let mut step_outputs: Vec<(String, String)> = Vec::new();
-    let mut output_paths: Vec<(String, String)> = Vec::new();
-    let mut total_cost = 0.0;
-    for (seq, step) in steps.iter().enumerate() {
+    for (seq, step) in steps.iter().enumerate().filter(|_| setup_ok) {
         let seq = seq as i64;
         let action = &step.action;
         match action.kind {
@@ -2009,7 +2055,22 @@ async fn replay(
         .find(|c| !c.ok)
         .map(|c| format!("{}: {}", c.name, c.tail.lines().next().unwrap_or_default()))
         .unwrap_or_default();
-    Ok(differences(&fx.expect, done.state, &effects, &why))
+    let mut out = differences(&fx.expect, done.state, &effects, &why);
+    // A failed `setup` is the fixture's first difference even when the
+    // fixture expects `failed`: the run never reached its steps, so it
+    // cannot be the failure the fixture meant.
+    if let Some(c) = verdict.iter().find(|c| c.name == "setup" && !c.ok)
+        && !out.first().is_some_and(|d| d.starts_with("wrong state"))
+    {
+        out.insert(
+            0,
+            format!(
+                "setup failed: {}",
+                c.tail.lines().next().unwrap_or_default()
+            ),
+        );
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
