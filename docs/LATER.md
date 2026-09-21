@@ -8,6 +8,8 @@ what to revisit, each with the trigger that makes it worth doing.
 
 ## When Forge 2 chooses workflows or models itself
 
+**Status (2026-09-21):** the `[roles]` table exists (operator, project and task layers, `ctx::resolve_provider`); measured routing and the thermostat do not. Open.
+
 - **Model roles as a table, preference as a prior.** Forge 1 grew six
   one-off ways to name a model per job. The fix was one role table
   (decider, planner, reviewer, ...) with per-workflow overrides, and the
@@ -21,6 +23,8 @@ what to revisit, each with the trigger that makes it worth doing.
 
 ## When tasks spawn tasks
 
+**Status (2026-09-21):** `retry_of`, `--after` and `file_into_initiative` exist; `caused_by` does not. Open, low.
+
 - **Provenance.** `caused_by` and a root task id on every task, so a
   decomposition tree is walkable both ways. The root is itself a task;
   no new entity. Comes with `--after` and decomposition.
@@ -28,6 +32,8 @@ what to revisit, each with the trigger that makes it worth doing.
   Forge 1; `--after` is the Forge 2 shape.
 
 ## When a second repository exists
+
+**Status (2026-09-21):** four repositories exist (forge, equitizr, nucleosynthesis, old-forge); the cross-repo index is not built. `needs_input` of kind `workflow` is the ask channel's seed. Open, low.
 
 - **Tool library and cross-repo index.** Forge 1 found agents wrote 48
   scripts into projects and never called the shared library once; the
@@ -41,6 +47,8 @@ what to revisit, each with the trigger that makes it worth doing.
   seed; the recording rule is already ported.
 
 ## When unattended runs span redeploys
+
+**Status (2026-09-21):** the worker drains on SIGTERM with a 40-minute stop timeout and a new worker requeues orphans; what is still by hand is the rebuild and restart after every landing on the Forge repository. Self-deploy is the 1.0 item (docs/ROADMAP.md).
 
 - **Quiesce, don't kill.** Forge 1 paid to keep attempts alive across a
   restart and then killed them as orphans. Forge 2's two-signal stop is
@@ -101,6 +109,8 @@ beyond that: the assembly order should stay in one place tests can read.
 
 ## The inspector: a debugger's view of a task (2026-09-13)
 
+**Status (2026-09-21):** not built; folded into the visualiser note below. After 1.0.
+
 Lower priority, noted so it is not lost. A human view of exactly what
 happened at each step of a task, stepped through like a debugger: task,
 workflow step, attempt, then frame by frame inside the attempt (the exact
@@ -126,6 +136,8 @@ will need to answer too.
 
 ## Early-ending thresholds as config (2026-09-14, knob added 2026-09-15)
 
+**Status (2026-09-21):** knob done; the per-task override and the tuning pass from `early_signals`/`early_near` are open, low.
+
 The watcher that ends an attempt when enough signs of going nowhere trip
 (`Watch` in src/agent.rs: thirty calls without an edit, fifteen edits
 without a commit, one command run five times, any two together) had its
@@ -149,6 +161,8 @@ preference.
 
 ## A second runner for the supervisor (2026-09-14)
 
+**Status (2026-09-21):** the codex and chat runners exist behind `agent::run`; the supervisor is exempt from task routing by design. Putting it on a second provider is one config line once its rulings have outcomes to compare. Open, low.
+
 The supervisor's contract is runner-agnostic: a prompt in, a structured
 ruling out, nothing written, verified by the kernel. Today every agent
 runs through the claude CLI. Putting the supervisor on another
@@ -158,6 +172,8 @@ output and cost) or a thin adapter that does. Worth doing once the
 supervisor's decisions have an outcome record to compare models on.
 
 ## A `history` operation and per-step context budgets (2026-09-13)
+
+**Status (2026-09-21):** not built; `forge journal` and `repo-map` cover the two sources. Only if the turns-before-first-edit number asks for it.
 
 Moved here from docs/CONTEXT.md, which now carries only the status of
 what shipped. `repo-map` and the journal (`forge journal`) covered the
@@ -197,6 +213,8 @@ command in its own right.
 
 ## A retry should start from its parent's branch when that branch was verified (2026-09-14)
 
+**Status (2026-09-21):** done 2026-09-17/18: `verified_branch_of` with the base merged in, and the audit has a stopped-early arm.
+
 Task 155 verified, was demoted by review, the supervisor answered, and
 the retry (162) started from a fresh clone of main: everything 155 had
 built was thrown away and rebuilt, then 162 died and its branch had to
@@ -211,6 +229,8 @@ one grep run five times, resumed and then productive) was described as
 "the agent process failed outside Forge's rules".
 
 ## What a capped attempt costs at 100 turns (measured 2026-09-14)
+
+**Status (2026-09-21):** the sizing rule (one directive, table or view per kernel task) is the standing answer; thresholds stayed. Closed.
 
 The turn guard went from 30 to 100 on the argument that cost and wall
 time, not turns, should bound the work. The first measurements of that
@@ -240,6 +260,8 @@ answered from the store instead of by reading logs.
 
 ## Defect escape: the measurement we do not have (2026-09-15)
 
+**Status (2026-09-21):** done 2026-09-17: `forge stats --quality` (broke-base, repaired, repair cost attributed by line, true cost, churn, correlation with the assessment). Closed.
+
 We measure cost per landed piece of work, attempts, turns, and calls
 before the first edit. We do not measure whether landed work was any
 good. The independent research on agentic development (DORA, Faros,
@@ -265,6 +287,8 @@ about correctness.
 
 ## Digital twins of external dependencies (2026-09-15)
 
+**Status (2026-09-21):** not built; belongs with the first integration-heavy customer automation. After 1.0.
+
 Taken from StrongDM by way of the 2026 software-factory survey
 (docs/research/05-software-factory-2026.md), and recorded here because
 it is a verification technique we lack rather than an idea we invented.
@@ -289,6 +313,8 @@ network without saying no to the test.
 
 ## Autonomy has two axes, not one (2026-09-15)
 
+**Status (2026-09-21):** a lens, not work. Closed.
+
 The industry's ladder (spicy autocomplete, intern, pair, reviewer,
 engineering team, dark factory) measures one thing: what merges without
 a human. By that measure Forge is at the top rung, since the kernel
@@ -309,6 +335,8 @@ and which one a vendor means is usually the difference between an
 impressive claim and a true one.
 
 ## The journal measurement was ill-posed three times (2026-09-15)
+
+**Status (2026-09-21):** closed; the journal stays on. The control-arm fraction was never assigned and need not be.
 
 Three batches tried to measure whether showing an agent the journal (what
 earlier attempts in this piece of work said, and what the checks found)
@@ -352,6 +380,8 @@ then, keep the journal: it is free on the attempts where it is empty,
 and costs nothing measurable on the attempts where it is not.
 
 ## The rate-limit experiment (2026-09-15): what happened and what did not
+
+**Status (2026-09-21):** the rerun from 97% is still owed: the refusal path is exercised only by fakes. A 1.0 item (docs/ROADMAP.md). Everything the day surfaced is fixed.
 
 The question was how Forge behaves when the subscription runs out, and
 how it resumes. The weekly cap was raised from 95% to 100% at 10:20 with
@@ -405,6 +435,8 @@ experiment.
 
 ## The code visualiser, and the inspector inside it (2026-09-15)
 
+**Status (2026-09-21):** not built. After 1.0; the record it reads is complete.
+
 Three layers, in order, each on something that exists.
 
 **Structure, deterministic.** Modules, files and symbols as nodes;
@@ -440,6 +472,8 @@ Sizing: extractor plus page, three or four tasks; overlay, two more
 after delayed cost; the stepping debugger, its own initiative.
 
 ## The local model, measured (2026-09-17)
+
+**Status (2026-09-21):** done; the chat runner and the bench are the standing tools. Remaining: raise `changelog-line`'s per-run budget so a hosted provider can finish it, one line.
 
 Job step 2b (docs/JOBS.md, "Directive steps") ships the first bounded
 judgment small enough to run the same way on every candidate provider:
