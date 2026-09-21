@@ -1012,3 +1012,37 @@ fn stats_project_filters_the_workflow_rows_and_lists_every_project_when_unfilter
     names.sort();
     assert_eq!(names, vec!["other", "repo"]);
 }
+
+#[test]
+fn stats_json_carries_a_time_to_live_row_for_a_landed_workflow() {
+    let e = Env::new();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "run",
+                e.repo.to_str().unwrap(),
+                "write 42 to answer.txt",
+                "--retries",
+                "0",
+            ],
+        )
+        .status
+        .success(),
+        "a task that lands"
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["stats", "--json"]).stdout).unwrap();
+    let rows = doc["time_to_live"].as_array().expect("time_to_live array");
+    assert_eq!(rows.len(), 1, "{doc}");
+    assert_eq!(rows[0]["workflow"], "direct", "{doc}");
+    assert_eq!(rows[0]["n"], 1, "{doc}");
+    assert!(rows[0]["median_secs"].as_f64().unwrap() >= 0.0, "{doc}");
+    assert!(rows[0]["p90_secs"].as_f64().unwrap() >= 0.0, "{doc}");
+
+    let text =
+        String::from_utf8_lossy(&e.forge("ok.sh", &["stats", "--quality"]).stdout).to_string();
+    assert!(text.contains("MEDIAN"), "{text}");
+    assert!(text.contains("P90"), "{text}");
+}
