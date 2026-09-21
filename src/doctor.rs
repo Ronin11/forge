@@ -633,11 +633,12 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
         let age = unix_now() - s.seen_at;
         let worst = s.five_hour.unwrap_or(0.0).max(s.seven_day.unwrap_or(0.0));
         let detail = format!(
-            "{name}: 5h {}, 7d {} ({}m ago)",
+            "{name}: 5h {}, 7d {} (seen {}, {}m ago)",
             s.five_hour
                 .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
             s.seven_day
                 .map_or("-".into(), |u| format!("{:.0}%", u * 100.0)),
+            crate::render::utc(s.seen_at),
             age / 60
         );
         out.push(match crate::worker::window_hold(f, name) {

@@ -173,6 +173,18 @@ asserts every verb a client source file invokes appears in it):
 snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
 ```
 
+## Time
+
+Time is UTC everywhere in the kernel and the record; a time zone is a
+rendering concern of each client. Every timestamp field in every JSON
+document below (`created_at`, `finished_at`, `started_at`, `due_at`,
+`landed_at`, `settled_at`, `ts`, …) is an integer count of Unix seconds,
+UTC. A client that shows a time to a person converts it to its viewer's
+zone itself. The one legacy string, `TaskRow.created`, is also UTC. The
+CLI's own text output prints every wall-clock time as UTC with a `Z`
+suffix (`2026-09-21T07:00:00Z`), never in the process's zone. A workflow's
+schedule trigger is evaluated in UTC too (docs/WORKFLOWS.md).
+
 ## Naming: unified vs. legacy keys
 
 Several documents grew a JSON form before they had a consistent naming
@@ -224,7 +236,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `text` | string | **Preferred.** The task's text, as given. |
 | `task` | string | Legacy key for `text`; kept for compatibility. |
 | `created_at` | integer | **Preferred.** Creation time, Unix seconds. |
-| `created` | string | Legacy key for `created_at`: a localtime string, kept for compatibility. |
+| `created` | string | Legacy key for `created_at`: `YYYY-MM-DD HH:MM:SS`, UTC, kept for compatibility. |
 | `finished_at` | integer or null | When the task reached a final state, Unix seconds; null while it is queued or running. |
 | `project` | string or null | The project the task belongs to; null for a task predating projects that no migration could place. |
 | `initiative` | integer or null | The initiative the task belongs to, if any. |

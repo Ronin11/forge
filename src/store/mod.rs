@@ -898,7 +898,7 @@ impl Store {
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
         let c = self.lock();
         let mut stmt = c.prepare(
-            "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch','localtime') AS created,
+            "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch') AS created,
                     t.repo AS repo, t.task AS task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
