@@ -500,3 +500,134 @@ fn a_task_queued_while_another_runs_is_claimed_before_it_finishes() {
     assert_eq!(e.task(first).0, "succeeded");
     assert_eq!(e.task(second).0, "succeeded");
 }
+
+/// Whether this machine can give a sandbox a network namespace of its own;
+/// nested inside another bwrap it cannot, and the egress tests skip.
+fn can_unshare_net() -> bool {
+    std::process::Command::new("bwrap")
+        .args(["--unshare-net", "--ro-bind", "/", "/", "true"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A workflow that runs the built-in `egress-probe` after the agent, and
+/// the ops it left behind for task `id`.
+fn probe_workflow(e: &Env) {
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/probed.toml"),
+        "name = \"probed\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"egress-probe\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+}
+
+fn probe_detail(e: &Env, id: i64) -> (bool, String) {
+    let doc = e.trace_json(id);
+    let probe = doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "egress-probe")
+        .unwrap_or_else(|| panic!("no egress-probe op in {doc}"))
+        .clone();
+    (
+        probe["ok"].as_bool().unwrap(),
+        format!(
+            "{}{}",
+            probe["output"].as_str().unwrap_or(""),
+            probe["detail"].as_str().unwrap_or("")
+        ),
+    )
+}
+
+#[test]
+fn the_egress_probe_passes_in_the_sandbox_and_shows_the_declared_policy() {
+    let e = Env::new();
+    if e.sandbox_disabled() || !can_unshare_net() {
+        eprintln!("no bwrap network namespace here: skipping");
+        return;
+    }
+    probe_workflow(&e);
+    // The repository declares one registry; the model endpoint is implied.
+    let toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        format!("{toml}[sandbox]\negress = [\"registry.npmjs.org\"]\n"),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "declare egress"]);
+    let o = e.run("ok.sh", &["--workflow", "probed", "--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (ok, detail) = probe_detail(&e, 1);
+    assert!(ok, "{detail}");
+    assert!(
+        detail.contains("direct  1.1.1.1:443 is unreachable"),
+        "{detail}"
+    );
+    assert!(detail.contains("allow registry.npmjs.org"), "{detail}");
+    assert!(
+        detail.contains("allow *.anthropic.com"),
+        "the model endpoint is always allowed: {detail}"
+    );
+    assert!(
+        detail.contains("CONNECT to a host off the list: HTTP/1.1 403"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn an_attempt_cannot_open_a_connection_out_and_only_the_proxy_answers() {
+    let e = Env::new();
+    if e.sandbox_disabled() || !can_unshare_net() {
+        eprintln!("no bwrap network namespace here: skipping");
+        return;
+    }
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    // A check that must reach only loopback: the local server it starts is
+    // reachable (NO_PROXY), a public address is not.
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nlocal = [\"bash\", \"-c\", \"exec 3<>/dev/tcp/127.0.0.1/3128\"]\nout = [\"bash\", \"-c\", \"! timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "network checks"]);
+    let o = e.run("ok.sh", &["--retries", "0"]);
+    assert!(
+        o.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
+fn the_egress_probe_fails_when_there_is_no_sandbox() {
+    let e = Env::new();
+    probe_workflow(&e);
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE2_SANDBOX", "0")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy");
+    let o = cmd
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--no-land",
+            "--workflow",
+            "probed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let (ok, detail) = probe_detail(&e, 1);
+    assert!(!ok, "{detail}");
+    assert!(detail.contains("not in the egress sandbox"), "{detail}");
+}

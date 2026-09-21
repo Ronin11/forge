@@ -300,7 +300,11 @@ assertions), `playwright` (the hidden e2e suite from `forge-verify`, run
 with the namespace overlaid; verifies), `comments-only` (fails when the
 preceding step changed anything but comments and docs; verifies), and
 `graph-check` (docs/SYSTEM.md exists, holds a Mermaid block, and names
-only real paths; verifies), `repo-map` (produces `context`: every
+only real paths; verifies), `egress-probe` (fails unless the attempt's network is bounded: a
+connection straight to a public address is refused, the egress proxy
+answers with its policy, and a host on no allowlist gets a 403 both
+tunnelled and plain; verifies; it fails outright unsandboxed, where
+there is no proxy; see docs/SYSTEM.md, `src/egress.rs`), `repo-map` (produces `context`: every
 source file's declared symbols ranked against the task's words and the
 files earlier successful work read most, cut to a budget, by the
 deterministic `forge-repomap` tool; shown to the next directive as

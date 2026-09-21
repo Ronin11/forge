@@ -811,6 +811,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         include_str!("builtins/operations/http-post.toml"),
     ),
     (
+        "egress-probe.toml",
+        include_str!("builtins/operations/egress-probe.toml"),
+    ),
+    (
         "send-signal.toml",
         include_str!("builtins/operations/send-signal.toml"),
     ),

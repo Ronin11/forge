@@ -1,0 +1,59 @@
+name = "egress-probe"
+kind = "operation"
+description = "fails unless this attempt's network is bounded: a direct connection out is refused, the egress proxy answers with its policy, and a host off the allowlist gets a 403. Run sandboxed, it proves `[sandbox] egress` is what it says; run unsandboxed, it fails, because there is no proxy and nothing is bounded."
+consumes = ["branch"]
+verifies = true
+run = ["bash", "-c", '''
+set -u
+fail=0
+say() { printf '%s\n' "$*"; }
+
+# 1. There is no way out that is not the proxy. A public address, straight.
+if timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+  say "FAIL direct  1.1.1.1:443 answered without the proxy: this attempt has the host's network"
+  fail=1
+else
+  say "ok   direct  1.1.1.1:443 is unreachable"
+fi
+
+proxy="${HTTPS_PROXY:-${https_proxy:-}}"
+if [ -z "$proxy" ]; then
+  say "FAIL proxy   HTTPS_PROXY is not set: this attempt is not in the egress sandbox"
+  exit 1
+fi
+hp="${proxy#*://}"
+hp="${hp%%/*}"
+host="${hp%:*}"
+port="${hp##*:}"
+
+# One request to the proxy over bash's own /dev/tcp, so the probe needs no
+# curl; the proxy closes the connection after answering or refusing.
+ask() {
+  exec 3<>"/dev/tcp/$host/$port" || return 1
+  printf '%b' "$1" >&3
+  timeout 5 cat <&3
+}
+
+# 2. The proxy answers for itself: the route to it works.
+policy=$(ask 'GET http://forge-egress.invalid/ HTTP/1.1\r\nHost: forge-egress.invalid\r\nConnection: close\r\n\r\n' 2>/dev/null)
+if printf '%s' "$policy" | grep -q '^forge-egress: ok'; then
+  say "ok   policy  the proxy at $hp answers; it allows:"
+  printf '%s\n' "$policy" | grep '^allow ' | sed 's/^/                /'
+else
+  say "FAIL policy  no answer from the proxy at $hp"
+  fail=1
+fi
+
+# 3. A host that is on no allowlist is refused, tunnelled or plain.
+for req in \
+  'CONNECT egress-probe-denied.invalid:443 HTTP/1.1\r\nHost: egress-probe-denied.invalid:443\r\n\r\n' \
+  'GET http://egress-probe-denied.invalid/ HTTP/1.1\r\nHost: egress-probe-denied.invalid\r\nConnection: close\r\n\r\n'; do
+  first=$(ask "$req" 2>/dev/null | head -n 1 | tr -d '\r')
+  case "$first" in
+    *' 403 '*) say "ok   denied  ${req%% *} to a host off the list: $first" ;;
+    *) say "FAIL denied  ${req%% *} to a host off the list was not refused: ${first:-no answer}"; fail=1 ;;
+  esac
+done
+
+exit "$fail"
+''', "egress-probe"]
