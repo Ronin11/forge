@@ -407,7 +407,10 @@ fn check_plugins(paths: &Paths, store: &Store) -> Vec<Check> {
 }
 
 /// The lookback: workflows whose current version regressed against the
-/// previous, and known workflows that are mostly failing.
+/// previous, and known workflows that are mostly failing. Each is measured
+/// per (workflow, provider) and warned about per pair, naming the provider:
+/// a workflow that lands on one provider and never on another is not
+/// failing on average.
 fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
     let Ok(all) = workflows::load_all(&paths.home) else {
         return Vec::new();
@@ -415,37 +418,33 @@ fn check_learning(paths: &Paths, store: &Store) -> Vec<Check> {
     let mut bad: Vec<String> = Vec::new();
     let mut known = 0;
     for w in &all {
-        let m = crate::profile::measure(store, &w.name, &w.hash).unwrap_or_else(|_| {
-            crate::profile::Measured {
-                current: crate::profile::profile(&[]),
-                previous: None,
-                all: crate::profile::profile(&[]),
-                regressed: false,
-            }
-        });
-        let cur = &m.current;
-        if cur.known {
+        let by_provider =
+            crate::profile::measure_by_provider(store, &w.name, &w.hash).unwrap_or_default();
+        if by_provider.iter().any(|(_, m)| m.current.known) {
             known += 1;
         }
-        if let Some((prev_hash, prev)) = &m.previous
-            && m.regressed
-        {
-            bad.push(format!(
-                "{} regressed vs {} ({:.0}% vs {:.0}%)",
-                w.name,
-                &prev_hash[..8],
-                cur.rate * 100.0,
-                prev.rate * 100.0
-            ));
-        }
-        if cur.known && cur.rate_hi < 0.5 {
-            bad.push(format!(
-                "{} verifies {}/{} (95% upper {:.0}%)",
-                w.name,
-                cur.succeeded,
-                cur.n,
-                cur.rate_hi * 100.0
-            ));
+        for (provider, m) in &by_provider {
+            let cur = &m.current;
+            if let Some((prev_hash, prev)) = &m.previous
+                && m.regressed
+            {
+                bad.push(format!(
+                    "{} regressed on {provider} vs {} ({:.0}% vs {:.0}%)",
+                    w.name,
+                    &prev_hash[..8],
+                    cur.rate * 100.0,
+                    prev.rate * 100.0
+                ));
+            }
+            if cur.known && cur.rate_hi < 0.5 {
+                bad.push(format!(
+                    "{} verifies {}/{} on {provider} (95% upper {:.0}%)",
+                    w.name,
+                    cur.succeeded,
+                    cur.n,
+                    cur.rate_hi * 100.0
+                ));
+            }
         }
     }
     vec![if bad.is_empty() {
@@ -865,6 +864,53 @@ mod tests {
             initiative: Some(initiative),
             ..Default::default()
         }
+    }
+
+    /// One workflow measured on two providers, 0/10 on one and 8/10 on the
+    /// other: the learning check warns once, for the first, naming it, and
+    /// says nothing about the second (averaged, 8/20 would have read as
+    /// failing for both).
+    #[test]
+    fn check_learning_warns_per_provider_not_on_the_average() {
+        let (_dir, f) = fixture();
+        let hash = workflows::load_all(&f.paths.home)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.name == "direct")
+            .unwrap()
+            .hash;
+        for (provider, landed) in [("local", 0), ("anthropic", 8)] {
+            for i in 0..10 {
+                let state = if i < landed {
+                    TaskState::Succeeded
+                } else {
+                    TaskState::Failed
+                };
+                let mut t = fixture_task(state, "", 0, Some(crate::unix_now()));
+                t.provider = provider.into();
+                t.workflow_hash = hash.clone();
+                t.started_at = Some(crate::unix_now());
+                t.id = f.store.insert_task(&t).unwrap();
+                f.store.update_task(&t).unwrap();
+            }
+        }
+
+        let checks = check_learning(&f.paths, &f.store);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "learning");
+        assert!(checks[0].status == Status::Warn, "{}", checks[0].detail);
+        let warned: Vec<&str> = checks[0].detail.split("; ").collect();
+        assert_eq!(warned.len(), 1, "{}", checks[0].detail);
+        assert!(
+            warned[0].starts_with("direct verifies 0/10 on local"),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            !checks[0].detail.contains("anthropic"),
+            "{}",
+            checks[0].detail
+        );
     }
 
     #[test]

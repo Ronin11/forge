@@ -850,11 +850,13 @@ impl Store {
     }
 
     /// The most recent terminal tasks of a workflow, newest first, for a
-    /// profile. `hash` narrows to one version.
+    /// profile. `hash` narrows to one version, `provider` to the tasks
+    /// that ran on one provider.
     pub fn runs(
         &self,
         workflow: &str,
         hash: Option<&str>,
+        provider: Option<&str>,
         limit: usize,
     ) -> Result<Vec<crate::profile::Run>> {
         let c = self.lock();
@@ -864,12 +866,13 @@ impl Store {
                     COALESCE(t.finished_at - t.started_at, 0) AS secs,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts
              FROM tasks t WHERE t.workflow=?1 AND (?2 IS NULL OR t.workflow_hash=?2)
+               AND (?3 IS NULL OR t.provider=?3)
                AND t.state IN ('succeeded','failed','blocked','unverified')
                AND t.started_at IS NOT NULL
-             ORDER BY t.id DESC LIMIT ?3",
+             ORDER BY t.id DESC LIMIT ?4",
         )?;
         let rows: Vec<(i64, String, f64, i64, i64)> = stmt
-            .query_map(params![workflow, hash, limit as i64], |r| {
+            .query_map(params![workflow, hash, provider, limit as i64], |r| {
                 Ok((
                     r.get("id")?,
                     r.get("state")?,

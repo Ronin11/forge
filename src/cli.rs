@@ -3194,6 +3194,11 @@ async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {
                 "measured": m.as_ref().map(|m| serde_json::json!({
                     "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
                     "all_versions": m.all, "regressed": m.regressed,
+                    "by_provider": profile::measure_by_provider(&f.store, &w.name, &w.hash).ok().map(|ps| ps.into_iter().map(|(provider, pm)| serde_json::json!({
+                        "provider": provider, "current": pm.current,
+                        "previous": pm.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
+                        "regressed": pm.regressed,
+                    })).collect::<Vec<_>>()),
                     "cost_vs_direct": match (&direct, m.current.known) {
                         (Some(d), true) if d.current.known && d.current.cost_per_task > 0.0 => Some(m.current.cost_per_task / d.current.cost_per_task),
                         _ => None,
@@ -3268,6 +3273,9 @@ async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {
         }
         let m = measure(&f, w)?;
         out!("             measured   {}", m.current.line());
+        for (provider, pm) in profile::measure_by_provider(&f.store, &w.name, &w.hash)? {
+            out!("             on {:<8}  {}", provider, pm.current.line());
+        }
         if let (Some(d), true) = (&direct, m.current.known)
             && d.current.known
             && d.current.cost_per_task > 0.0

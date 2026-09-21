@@ -117,16 +117,31 @@ pub struct Measured {
 }
 
 /// Profile `workflow` at `hash` (its current version), against its
-/// previous version and against all versions combined.
+/// previous version and against all versions combined, over every
+/// provider together.
 pub fn measure(store: &Store, workflow: &str, hash: &str) -> Result<Measured> {
-    let current = profile(&store.runs(workflow, Some(hash), LOOKBACK)?);
-    let all = profile(&store.runs(workflow, None, LOOKBACK)?);
+    measure_on(store, workflow, hash, None)
+}
+
+/// `measure`, over the tasks that ran on `provider` only when one is given.
+pub fn measure_on(
+    store: &Store,
+    workflow: &str,
+    hash: &str,
+    provider: Option<&str>,
+) -> Result<Measured> {
+    let current = profile(&store.runs(workflow, Some(hash), provider, LOOKBACK)?);
+    let all = profile(&store.runs(workflow, None, provider, LOOKBACK)?);
     let previous = store
         .workflow_versions(workflow)?
         .into_iter()
         .find(|h| h != hash)
         .map(|h| {
-            let p = profile(&store.runs(workflow, Some(&h), LOOKBACK).unwrap_or_default());
+            let p = profile(
+                &store
+                    .runs(workflow, Some(&h), provider, LOOKBACK)
+                    .unwrap_or_default(),
+            );
             (h, p)
         });
     let is_regressed = previous
@@ -138,6 +153,21 @@ pub fn measure(store: &Store, workflow: &str, hash: &str) -> Result<Measured> {
         all,
         regressed: is_regressed,
     })
+}
+
+/// `measure` once per provider that ran `workflow` at `hash`, by provider
+/// name: a workflow that lands on one provider and never on another is
+/// two measurements, not their average.
+pub fn measure_by_provider(
+    store: &Store,
+    workflow: &str,
+    hash: &str,
+) -> Result<Vec<(String, Measured)>> {
+    store
+        .workflow_providers(workflow, Some(hash))?
+        .into_iter()
+        .map(|p| Ok((p.clone(), measure_on(store, workflow, hash, Some(&p))?)))
+        .collect()
 }
 
 impl Profile {

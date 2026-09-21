@@ -445,6 +445,22 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The providers that ran `workflow`'s terminal tasks (at `hash`, or at
+    /// any version), by name: the split a profile is measured over, since
+    /// a rate averaged across providers describes none of them.
+    pub fn workflow_providers(&self, workflow: &str, hash: Option<&str>) -> Result<Vec<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT DISTINCT provider FROM tasks
+             WHERE workflow=?1 AND (?2 IS NULL OR workflow_hash=?2)
+               AND state IN ('succeeded','failed','blocked','unverified')
+               AND started_at IS NOT NULL
+             ORDER BY provider",
+        )?;
+        let rows = stmt.query_map(params![workflow, hash], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Outcomes per workflow version: the table that compares workflows.
     pub fn workflow_stats(&self, scope: &StatsFilter) -> Result<Vec<WorkflowStat>> {
         let mut stats = {
