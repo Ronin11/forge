@@ -57,7 +57,7 @@ Not a feature set. A week of the following, measured from the record:
 
 **Before 1.0**
 
-1. **Self-deploy.** A deploy target on the Forge project: on landing,
+1. **Self-deploy. Done (2026-09-21):** target `self` on the forge project, method `deploy-self`; deploys 7 to 10 were automatic, one rolled back cleanly during the transition. A deploy target on the Forge project: on landing,
    `cargo build --release --workspace`, then restart `forge-worker`,
    `forge-web` and `forge-portal` after the worker drains, with the
    existing smoke check against the web client. Removes every hand
@@ -68,7 +68,7 @@ Not a feature set. A week of the following, measured from the record:
    deploy add forge self --repo ~/Projects/forge --method deploy-self
    --arg dest=$HOME/Projects/forge --on-landing`, and watch the first
    landing deploy.
-2. **The store backup job.** A daily run workflow that copies
+2. **The store backup job. Done (2026-09-21):** `backup-daily` at 03:30 UTC to the equitizr host, integrity checked there (job 23 green after two script fixes found by a hand run). A daily run workflow that copies
    `forge.db` and the operator config to the Hetzner box, asserts the
    copy opens, and keeps seven. One workflow file. Landed as
    `backup-daily`, described in docs/OPS.md.
@@ -94,7 +94,7 @@ Not a feature set. A week of the following, measured from the record:
    `rw_paths`, which is how Forge's own cargo checks run today. Left for
    a human, because forge.toml is protected: declare `*.crates.io` in
    Forge's own forge.toml so a new dependency can be fetched.
-5. **Bench the `cheap` workflow and raise `changelog-line`'s budget.**
+5. **Bench the `cheap` workflow and raise `changelog-line`'s budget. Done (2026-09-21):** four chores on the game, one landed (499) and three capped at 15 turns; `cheap` is not fit for a real project as configured. The budget is 0.60.
    `cheap` has never run; the changelog job cannot finish on a hosted
    provider under its own cap. Two small tasks that make two numbers
    real.
