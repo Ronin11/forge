@@ -438,16 +438,22 @@ pub(crate) fn resolve_deploy_method(f: &Forge, method: &str) -> anyhow::Result<R
 }
 
 /// A deploy target's method: its arguments as `FORGE_ARG_<NAME>` and its
-/// check command as `FORGE_CHECK`; `cwd` is the landed tree, already
-/// checked out by the caller.
+/// check command as `FORGE_CHECK`, the commit it deploys as
+/// `FORGE_DEPLOY_SHA`, and the data directory as `FORGE2_HOME` (an
+/// operation's environment is otherwise cleared to the agent's); `cwd` is
+/// the landed tree, already checked out by the caller.
 pub(crate) async fn run_deploy_method(
     action: &RunAction,
     target: &DeployTarget,
+    sha: &str,
+    home: &Path,
     cwd: &Path,
     timeout: Duration,
 ) -> anyhow::Result<checks::CheckResult> {
     let mut env = arg_env(&target.args);
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
+    env.push(("FORGE_DEPLOY_SHA".to_string(), sha.to_string()));
+    env.push(("FORGE2_HOME".to_string(), home.display().to_string()));
     Ok(run_action(action, cwd, timeout, &env).await)
 }
 

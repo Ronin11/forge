@@ -721,7 +721,8 @@ enum ProjectDeployCmd {
         args: Vec<String>,
         /// A shell command, run where the thing runs, whose exit status
         /// is the deploy's verdict. Required, except for deploy-static,
-        /// which defaults to fetching a url arg and requiring 200
+        /// which defaults to fetching a url arg and requiring 200, and
+        /// deploy-self, which defaults to fetching the web client's /tasks
         #[arg(long)]
         check: Option<String>,
         /// After the check passes, open this url in headless Chromium and

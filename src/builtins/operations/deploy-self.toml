@@ -1,0 +1,127 @@
+name = "deploy-self"
+kind = "operation"
+description = "deploy Forge itself on this machine: under a lock, keeps the registered checkout's current release binaries in target/release/previous, builds the landed tree with `cargo build --release --workspace` into that checkout's target directory (arg dest, so the build cache is used and the symlinks under ~/.local/bin keep pointing at it), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE2_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last, so the worker drains its running attempts, this landing included, and comes back on the new binary. A failed build or check restores the previous binaries, restarts the units on them, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
+run = ["bash", "-c", '''
+set -euo pipefail
+dest="${FORGE_ARG_DEST:-}"
+if [ -z "$dest" ]; then
+  echo "deploy-self: no dest arg (the registered checkout to build into)" >&2
+  exit 1
+fi
+if [ ! -f "$dest/Cargo.toml" ]; then
+  echo "deploy-self: $dest is not a cargo checkout" >&2
+  exit 1
+fi
+units="${FORGE_ARG_UNITS:-forge-web forge-portal}"
+units="${units//,/ }"
+worker="${FORGE_ARG_WORKER:-forge-worker}"
+url="${FORGE_ARG_URL:-http://127.0.0.1:7788/tasks}"
+tries="${FORGE_ARG_TRIES:-40}"
+home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+# An operation's environment is cleared; `systemctl --user` needs this to
+# find the user manager.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+bins="forge forge-web forge-portal forge-repomap forge-tui"
+target="$dest/target"
+rel="$target/release"
+prev="$rel/previous"
+mkdir -p "$rel"
+
+# One self-deploy at a time: two landings finishing together must not
+# build into, or restore over, the same binaries.
+exec 9>"$target/.deploy-self.lock"
+if ! flock -w 600 9; then
+  echo "deploy-self: another self-deploy held $target/.deploy-self.lock for ten minutes" >&2
+  exit 1
+fi
+
+# Keep what runs now beside what is about to replace it.
+rm -rf "$prev.new"
+mkdir -p "$prev.new"
+have_prev=0
+for b in $bins; do
+  if [ -f "$rel/$b" ]; then
+    cp -p "$rel/$b" "$prev.new/$b"
+    have_prev=1
+  fi
+done
+rm -rf "$prev"
+mv "$prev.new" "$prev"
+
+restore() {
+  if [ "$have_prev" != 1 ]; then
+    echo "deploy-self: no previous build to restore" >&2
+    return 0
+  fi
+  echo "deploy-self: restoring the previous build from $prev" >&2
+  for b in $bins; do
+    if [ -f "$prev/$b" ]; then
+      cp -p "$prev/$b" "$rel/$b.restore"
+      mv -f "$rel/$b.restore" "$rel/$b"
+    fi
+  done
+  systemctl --user restart $units || true
+}
+armed=1
+on_exit() {
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$armed" = 1 ]; then
+    restore || true
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+# The archive has no .git; build.rs takes the commit from here.
+export FORGE_BUILD_SHA="${FORGE_DEPLOY_SHA:0:7}"
+CARGO_TARGET_DIR="$target" cargo build --release --workspace
+for b in $bins; do
+  if [ ! -x "$rel/$b" ]; then
+    echo "deploy-self: the build produced no $rel/$b" >&2
+    exit 1
+  fi
+done
+echo "built ${FORGE_DEPLOY_SHA:0:8} into $target"
+
+systemctl --user restart $units
+for u in $units; do
+  n=0
+  until [ "$(systemctl --user is-active "$u" || true)" = "active" ]; do
+    n=$((n + 1))
+    if [ "$n" -ge "$tries" ]; then
+      echo "deploy-self: $u did not become active" >&2
+      exit 1
+    fi
+    sleep 0.5
+  done
+  echo "$u is active"
+done
+
+check() {
+  if [ -n "${FORGE_CHECK:-}" ]; then
+    bash -c "$FORGE_CHECK"
+    return
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat "$home/web.token")" "$url" || true)"
+  echo "GET $url: ${code:-no answer}"
+  [ "$code" = "200" ]
+}
+n=0
+until check; do
+  n=$((n + 1))
+  if [ "$n" -ge "$tries" ]; then
+    echo "deploy-self: the check did not pass after $n tries" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+
+# The worker is the process running this very deploy (a landing calls
+# it), so it is restarted last and without waiting: systemd's SIGTERM
+# makes it drain, this method returns, the landing finishes its own
+# records, and only then does the worker exit and start again on the new
+# binary. Past the check, a failed restart is not a bad build.
+armed=0
+systemctl --user restart --no-block "$worker"
+echo "asked $worker to restart once its running attempts finish"
+''', "deploy-self"]
