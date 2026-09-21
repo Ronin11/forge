@@ -65,7 +65,8 @@ Not a feature set. A week of the following, measured from the record:
    One directive and one target; the method exists.
 2. **The store backup job.** A daily run workflow that copies
    `forge.db` and the operator config to the Hetzner box, asserts the
-   copy opens, and keeps seven. One workflow file.
+   copy opens, and keeps seven. One workflow file. Landed as
+   `backup-daily`, described in docs/OPS.md.
 3. **The rate-limit rerun from 97%.** The refusal, the refund and the
    wait are exercised only by fakes. Fuel queued at the end of a weekly
    window; the write-up goes in docs/LATER.md's section.
