@@ -23,6 +23,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+pub mod time;
+
 /// What a client keeps of the stream: the last events per task, as text.
 const LIVE_PER_TASK: usize = 200;
 
@@ -657,7 +659,7 @@ fn draw_jobs(frame: &mut Frame, app: &App, area: Rect) {
             Cell::from(j.workflow.clone()),
             Cell::from(Span::styled(j.state.clone(), state_style(&j.state))),
             Cell::from(format!("${:.2}", j.cost_usd.unwrap_or(0.0))),
-            Cell::from(j.started_at.to_string()),
+            Cell::from(time::fmt_time(j.started_at)),
         ])
     });
     let table = Table::new(
@@ -706,12 +708,12 @@ fn draw_job(frame: &mut Frame, app: &App, area: Rect) {
         )));
         lines.push(Line::raw(format!(
             "started {}   finished {}   cost ${:.2}",
-            j.started_at,
-            j.finished_at.map_or("-".to_string(), |f| f.to_string()),
+            time::fmt_time(j.started_at),
+            j.finished_at.map_or("-".to_string(), time::fmt_time),
             j.cost_usd.unwrap_or(0.0)
         )));
         if let Some(due) = j.due_at {
-            lines.push(Line::raw(format!("due {due}")));
+            lines.push(Line::raw(format!("due {}", time::fmt_time(due))));
         }
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(

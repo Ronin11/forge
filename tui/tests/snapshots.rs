@@ -18,6 +18,36 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use forge_client::Forge;
 use forge_tui::{App, Screen, draw, render_text};
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// The local zone the snapshots are rendered in: half an hour off the hour and
+/// no daylight time, written as a POSIX rule so no zoneinfo database is needed.
+const LOCAL_TZ: &str = "IST-5:30";
+
+/// `TZ` is process-wide and the tests run on threads: whoever sets it holds this.
+static TZ: Mutex<()> = Mutex::new(());
+
+/// Runs `f` with `TZ` set to `tz` (or unset for `None`), then puts it back.
+fn under_tz<T>(tz: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _held = TZ.lock().unwrap_or_else(|e| e.into_inner());
+    let before = std::env::var_os("TZ");
+    // SAFETY: the only code that reads the zone from C (`tzset`) runs on the
+    // thread holding `TZ`, and std's own readers take std's environment lock.
+    unsafe {
+        match tz {
+            Some(tz) => std::env::set_var("TZ", tz),
+            None => std::env::remove_var("TZ"),
+        }
+    }
+    let out = f();
+    unsafe {
+        match before {
+            Some(v) => std::env::set_var("TZ", v),
+            None => std::env::remove_var("TZ"),
+        }
+    }
+    out
+}
 
 /// A fake `forge` binary: one `case` arm per verb the TUI calls while
 /// running these scripts, each printing fixed fixture JSON. `trace`
@@ -48,13 +78,13 @@ JSON
   job)
     case "$2" in
       list) cat <<'JSON'
-[{"id":21,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1050,"cost_usd":0.12,"verdict_json":"[]","due_at":null},{"id":20,"project":"forge","workflow":"weekly-report","workflow_hash":"h2","landed_sha":"deadbeef","trigger_kind":"manual","trigger_ref":"","state":"running","workflow_source":"catalog","dry_run":false,"started_at":900,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
+[{"id":21,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1790000000,"finished_at":1790000050,"cost_usd":0.12,"verdict_json":"[]","due_at":null},{"id":20,"project":"forge","workflow":"weekly-report","workflow_hash":"h2","landed_sha":"deadbeef","trigger_kind":"manual","trigger_ref":"","state":"running","workflow_source":"catalog","dry_run":false,"started_at":1789999900,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
 JSON
       ;;
       show)
         id="$3"
         cat <<JSON
-{"id":$id,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1050,"cost_usd":0.12,"verdict_json":"[]","due_at":null,"steps":[{"id":1,"job_id":$id,"seq":1,"action":"run-checks","kind":"directive","provider":"anthropic","model":"claude-sonnet-5","cost_usd":0.05,"started_at":1000,"finished_at":1020,"exit_code":0,"output_ref":""},{"id":2,"job_id":$id,"seq":2,"action":"notify","kind":"shell","provider":"","model":"","cost_usd":null,"started_at":1020,"finished_at":1050,"exit_code":0,"output_ref":""}],"effects":[{"id":1,"job_id":$id,"seq":1,"kind":"message","target":"ops-channel","summary":"posted the nightly summary","dry_run":false},{"id":2,"job_id":$id,"seq":2,"kind":"file","target":"reports/nightly.md","summary":"wrote the report","dry_run":false}]}
+{"id":$id,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1790000000,"finished_at":1790000050,"cost_usd":0.12,"verdict_json":"[]","due_at":1790003600,"steps":[{"id":1,"job_id":$id,"seq":1,"action":"run-checks","kind":"directive","provider":"anthropic","model":"claude-sonnet-5","cost_usd":0.05,"started_at":1000,"finished_at":1020,"exit_code":0,"output_ref":""},{"id":2,"job_id":$id,"seq":2,"action":"notify","kind":"shell","provider":"","model":"","cost_usd":null,"started_at":1020,"finished_at":1050,"exit_code":0,"output_ref":""}],"effects":[{"id":1,"job_id":$id,"seq":1,"kind":"message","target":"ops-channel","summary":"posted the nightly summary","dry_run":false},{"id":2,"job_id":$id,"seq":2,"kind":"file","target":"reports/nightly.md","summary":"wrote the report","dry_run":false}]}
 JSON
       ;;
       *) echo "unexpected job: $*" >&2; exit 2 ;;
@@ -83,12 +113,20 @@ fn fake_forge() -> Fake {
     Fake { _dir: dir, forge }
 }
 
-/// One frame, 100x40, as plain text — no real terminal.
+/// One frame, 100x40, as plain text — no real terminal — with times in the
+/// local zone `LOCAL_TZ`.
 fn frame(app: &App) -> String {
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| draw(f, app)).unwrap();
-    render_text(terminal.backend())
+    frame_in(app, Some(LOCAL_TZ))
+}
+
+/// The same frame with the environment's zone set to `tz`.
+fn frame_in(app: &App, tz: Option<&str>) -> String {
+    under_tz(tz, || {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        render_text(terminal.backend())
+    })
 }
 
 /// Compares `actual` to `tui/tests/snapshots/<name>.txt`. With
@@ -176,6 +214,45 @@ fn a_job_view_renders_its_steps_and_effects() {
     let text = frame(&app);
     app.shutdown();
     assert_snapshot("job_view", &text);
+}
+
+#[test]
+fn the_jobs_list_and_view_render_in_utc_when_the_zone_is_utc_or_unknown() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    for _ in 0..3 {
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    }
+    assert_eq!(app.screen(), Screen::Jobs);
+    let list = frame_in(&app, Some("UTC"));
+    assert_snapshot("jobs_list_utc", &list);
+    app.open_job(21);
+    let view = frame_in(&app, Some("UTC"));
+    assert_snapshot("job_view_utc", &view);
+    app.shutdown();
+    // A zone the system cannot place is UTC, not an error and not a guess.
+    assert_eq!(frame_in(&app, Some("Nowhere/Nothing")), view);
+}
+
+#[test]
+fn a_time_follows_the_local_zone_and_its_daylight_rule() {
+    use forge_tui::time::fmt_time;
+    // 2026-09-21 14:13:20 UTC and 2027-01-15 08:00:00 UTC.
+    let (summer, winter) = (1_790_000_000, 1_800_000_000);
+    let eastern = Some("EST5EDT,M3.2.0,M11.1.0");
+    under_tz(eastern, || {
+        assert_eq!(fmt_time(summer), "2026-09-21 10:13");
+        assert_eq!(fmt_time(winter), "2027-01-15 03:00");
+    });
+    under_tz(Some(LOCAL_TZ), || {
+        assert_eq!(fmt_time(summer), "2026-09-21 19:43");
+        assert_eq!(fmt_time(winter), "2027-01-15 13:30");
+    });
+    under_tz(Some("UTC"), || {
+        assert_eq!(fmt_time(summer), "2026-09-21 14:13");
+        assert_eq!(fmt_time(winter), "2027-01-15 08:00");
+    });
 }
 
 /// A scripted interaction: down, enter, back — a key event at a time,

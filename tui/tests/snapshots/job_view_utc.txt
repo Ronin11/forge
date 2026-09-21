@@ -1,17 +1,17 @@
 Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
-┌jobs, newest first────────────────────────────────────────────────────────────────────────────────┐
-│ID    PROJECT      WORKFLOW         STATE       COST    STARTED                                   │
-│21    forge        nightly-cleanup  ok          $0.12   2026-09-21 19:43                          │
-│20    forge        weekly-report    running     $0.00   2026-09-21 19:41                          │
+┌job───────────────────────────────────────────────────────────────────────────────────────────────┐
+│job 21  ok  forge  nightly-cleanup                                                                │
+│trigger schedule 0 3 * * *   source repo                                                          │
+│started 2026-09-21 14:13   finished 2026-09-21 14:14   cost $0.12                                 │
+│due 2026-09-21 15:13                                                                              │
 │                                                                                                  │
+│steps                                                                                             │
+│   1 run-checks           directive  $0.05                                                        │
+│   2 notify               shell                                                                   │
 │                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
+│effects                                                                                           │
+│  message    ops-channel posted the nightly summary                                               │
+│  file       reports/nightly.md wrote the report                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -37,4 +37,4 @@ Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2) 
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit
+j/k scroll  Esc back  r retry  R retry chain  q quit

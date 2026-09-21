@@ -2,7 +2,8 @@ Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2) 
 ┌job───────────────────────────────────────────────────────────────────────────────────────────────┐
 │job 21  ok  forge  nightly-cleanup                                                                │
 │trigger schedule 0 3 * * *   source repo                                                          │
-│started 1000   finished 1050   cost $0.12                                                         │
+│started 2026-09-21 19:43   finished 2026-09-21 19:44   cost $0.12                                 │
+│due 2026-09-21 20:43                                                                              │
 │                                                                                                  │
 │steps                                                                                             │
 │   1 run-checks           directive  $0.05                                                        │
@@ -11,7 +12,6 @@ Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2) 
 │effects                                                                                           │
 │  message    ops-channel posted the nightly summary                                               │
 │  file       reports/nightly.md wrote the report                                                  │
-│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

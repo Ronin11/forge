@@ -1484,10 +1484,18 @@ fn forge_job_start_delay_leaves_the_job_scheduled_until_due_and_zero_runs_it() {
         "due_at {due_at} is not about an hour from now ({now})"
     );
 
-    // `forge job show` names the due time in plain text too.
+    // `forge job show` names the due time in plain text too, as UTC with a Z.
+    let due_utc: String = e
+        .db()
+        .query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', ?1, 'unixepoch')",
+            [due_at],
+            |r| r.get(0),
+        )
+        .unwrap();
     let show = e.forge("ok.sh", &["job", "show", &id.to_string()]);
     let text = String::from_utf8_lossy(&show.stdout);
-    assert!(text.contains(&due_at.to_string()), "{text}");
+    assert!(text.contains(&due_utc), "{text}");
 
     // `forge job list` shows it, scheduled, with when it is due, in both
     // the machine-readable and the plain forms.
@@ -1505,7 +1513,7 @@ fn forge_job_start_delay_leaves_the_job_scheduled_until_due_and_zero_runs_it() {
     let list = e.forge("ok.sh", &["job", "list"]);
     let text = String::from_utf8_lossy(&list.stdout);
     assert!(
-        text.contains("scheduled") && text.contains(&due_at.to_string()),
+        text.contains("scheduled") && text.contains(&due_utc),
         "{text}"
     );
 

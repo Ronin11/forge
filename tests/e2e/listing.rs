@@ -1046,3 +1046,36 @@ fn stats_json_carries_a_time_to_live_row_for_a_landed_workflow() {
     assert!(text.contains("MEDIAN"), "{text}");
     assert!(text.contains("P90"), "{text}");
 }
+
+#[test]
+fn forge_log_and_show_print_times_as_utc_whatever_the_tz() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &[]).status.success());
+    // 2026-09-21T07:00:00Z
+    e.db()
+        .execute("UPDATE tasks SET created_at = 1789974000 WHERE id = 1", [])
+        .unwrap();
+    for tz in ["Asia/Tokyo", "America/Los_Angeles"] {
+        let log = e
+            .cmd("ok.sh")
+            .env("TZ", tz)
+            .args(["log"])
+            .output()
+            .expect("forge log");
+        let out = String::from_utf8_lossy(&log.stdout);
+        assert!(out.contains("2026-09-21T07:00:00Z"), "{tz}: {out}");
+        let show = e
+            .cmd("ok.sh")
+            .env("TZ", tz)
+            .args(["show", "1"])
+            .output()
+            .expect("forge show");
+        let out = String::from_utf8_lossy(&show.stdout);
+        assert!(out.contains("2026-09-21T07:00:00Z"), "{tz}: {out}");
+    }
+    // The JSON keeps its shape: the integer is the record, the legacy string is UTC too.
+    let rows: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["log", "--json"]).stdout).unwrap();
+    assert_eq!(rows[0]["created_at"], 1_789_974_000);
+    assert_eq!(rows[0]["created"], "2026-09-21 07:00:00");
+}

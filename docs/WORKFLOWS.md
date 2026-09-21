@@ -145,8 +145,11 @@ workflow, spliced inline), with the same `model`, `max_turns`, and
   `schedule`, `message`, `webhook`, `event`, and takes exactly one more
   field naming what it triggers on: `schedule` a `cron` expression,
   `message` a `contact` (a name, or `"*"`), `webhook` a `name`, `event` a Forge
-  event `type`; `manual` takes none. `cron` is parsed (with `croner`) at
-  load time, the same as an unknown `on`: an expression that cannot
+  event `type`; `manual` takes none. A `cron` expression is evaluated in
+  UTC — `0 7 * * *` fires at 07:00 UTC, whatever zone the operator or the
+  worker's machine is in; time is UTC everywhere in the kernel and the
+  record, and a zone is a rendering concern of each client. `cron` is
+  parsed (with `croner`) at load time, the same as an unknown `on`: an expression that cannot
   parse is refused with the file and the line before the workflow loads
   at all. The worker's poll loop fires a schedule; recording an inbound
   message (`forge message record --from`) fires a `message` trigger whose

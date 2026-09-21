@@ -1095,6 +1095,22 @@ mod tests {
     }
 
     #[test]
+    fn a_cron_is_evaluated_in_utc() {
+        // 2026-09-21T08:30:00Z: "0 7 * * *" last fired at 07:00 UTC that day,
+        // whatever zone the machine is in.
+        let now = 1_789_979_400;
+        let s = Schedule {
+            project: "p".into(),
+            workflow: "w".into(),
+            cron: Cron::from_str("0 7 * * *").unwrap(),
+            last_ref: None,
+        };
+        let due = due_schedules(now, vec![s]);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].slot, 1_789_974_000);
+    }
+
+    #[test]
     fn every_five_minutes_only_matches_its_own_slots() {
         let now = minute_boundary() - (minute_boundary() % 300) + 300; // a "*/5" boundary
         let cron = Cron::from_str("*/5 * * * *").unwrap();

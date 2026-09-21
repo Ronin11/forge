@@ -784,6 +784,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "forge-client",
+ "libc",
  "ratatui",
  "serde_json",
  "tempfile",
