@@ -2,16 +2,24 @@
 //! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
 //! needs: the task's clone (its .git included), the agent binary, and the
 //! claude CLI's own state. Nothing else on the host is visible, and in
-//! particular not the registered checkout or its .git. Network stays shared: the agent has to
-//! reach the API.
+//! particular not the registered checkout or its .git.
+//!
+//! The network is not shared. The sandbox has a network namespace of its
+//! own with nothing in it but loopback; the only way out is the egress
+//! proxy's unix socket, bound in and reached through a relay on
+//! 127.0.0.1:3128 that HTTP_PROXY and HTTPS_PROXY name (see `egress`). The
+//! proxy allows the model endpoint, always, and what the repository's
+//! forge.toml declares under `[sandbox] egress`, and refuses the rest.
 //!
 //! Sandboxing is on by default and refuses to run without bwrap unless
 //! `FORGE2_SANDBOX=0` is set explicitly.
 
+use crate::egress::{self, Policy, Proxies, Rule};
 use anyhow::{Context, Result, bail};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 /// Where the host's `~/.claude.json` is bound read-only inside the sandbox.
 /// Not under `/opt`: on a host with a real `/opt`, that directory is itself
@@ -19,6 +27,10 @@ use std::process::Command;
 /// `forge/seed` path inside a read-only mount to bind onto. `/run` is a
 /// tmpfs bwrap creates itself, so it always has room.
 const CLAUDE_JSON_SEED: &str = "/run/forge/seed/claude.json";
+
+/// Created by the egress relay once it is listening, in the sandbox's own
+/// tmpfs `/run`.
+const RELAY_READY: &str = "/run/forge/egress.ready";
 
 pub struct Sandbox {
     bwrap: PathBuf,
@@ -38,6 +50,17 @@ pub struct Sandbox {
     extra_ro: Vec<PathBuf>,
     /// Operator-configured package caches, read-write.
     extra_rw: Vec<PathBuf>,
+    /// The model endpoints every attempt may reach, whatever its repository
+    /// declares (see `egress::model_rules`).
+    model_hosts: Vec<Rule>,
+    /// The forge binary, bound in so the wrapper can run its egress relay.
+    relay_exe: PathBuf,
+    /// The proxies this process runs, one per distinct policy.
+    proxies: Arc<Proxies>,
+    /// A repository's declared egress, by the worktree its attempts run in
+    /// (see `set_egress`); a worktree not in here gets the model endpoints
+    /// alone.
+    declared: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
 }
 
 /// Quote `s` as a single POSIX shell argument.
@@ -74,6 +97,7 @@ impl Sandbox {
         paths: &crate::config::SandboxPaths,
         extra_ro: Vec<PathBuf>,
         extra_rw: Vec<PathBuf>,
+        model_hosts: Vec<Rule>,
     ) -> Result<Option<Sandbox>> {
         if std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
@@ -114,15 +138,50 @@ impl Sandbox {
         // codex's login and its per-thread state. Both are bound with
         // --bind-try, so a host without one of them is unaffected.
         let write_paths = vec![config_dir, home.join(".codex")];
+        // The relay is this binary, so its directory has to be visible.
+        let relay_exe = std::env::current_exe().context("finding the forge binary")?;
+        let relay_dir = relay_exe.parent().map(Path::to_path_buf);
         Ok(Some(Sandbox {
             bwrap,
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
             write_paths,
             claude_json_seed,
-            extra_ro: paths.ro.iter().cloned().chain(extra_ro).collect(),
+            extra_ro: paths
+                .ro
+                .iter()
+                .cloned()
+                .chain(extra_ro)
+                .chain(relay_dir)
+                .collect(),
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
+            model_hosts,
+            relay_exe,
+            proxies: Arc::new(Proxies::default()),
+            declared: Mutex::new(BTreeMap::new()),
         }))
+    }
+
+    /// Declare what attempts running in `worktree` may reach besides the
+    /// model endpoints: the repository's `[sandbox] egress`, read from its
+    /// trusted base. Called again whenever that config is re-read.
+    pub fn set_egress(&self, worktree: &Path, rules: &[Rule]) {
+        self.declared
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), rules.to_vec());
+    }
+
+    /// Everything a command in `worktree` (or a directory below it) may
+    /// reach: the model endpoints and what its repository declared.
+    pub fn policy_for(&self, worktree: &Path) -> Policy {
+        let declared = self.declared.lock().unwrap();
+        let extra = worktree
+            .ancestors()
+            .find_map(|d| declared.get(d))
+            .into_iter()
+            .flatten();
+        Policy::new(self.model_hosts.iter().chain(extra).cloned())
     }
 
     /// Build the bwrap command that runs `argv` inside the worktree with
@@ -133,6 +192,7 @@ impl Sandbox {
             "--die-with-parent",
             "--new-session",
             "--unshare-pid",
+            "--unshare-net",
             "--proc",
             "/proc",
             "--dev",
@@ -179,6 +239,19 @@ impl Sandbox {
         cmd.args(["--ro-bind-try"])
             .arg(&self.claude_json_seed)
             .arg(CLAUDE_JSON_SEED);
+        // The route out: the proxy for this worktree's policy, on a socket
+        // bound in beside the seed. Without a runtime to run a proxy on
+        // there is no route, and the namespace has nothing but loopback.
+        let socket = match self.proxies.socket_for(&self.policy_for(worktree)) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("egress: no route out for {}: {e:#}", worktree.display());
+                None
+            }
+        };
+        if let Some(s) = &socket {
+            cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
+        }
         cmd.arg("--bind").arg(worktree).arg(worktree);
         for p in self.write_paths.iter().chain(&self.extra_rw) {
             cmd.arg("--bind-try").arg(p).arg(p);
@@ -192,8 +265,20 @@ impl Sandbox {
         // silently does nothing, which is fine: the agent just starts
         // without one.
         let dest = self.home.join(".claude.json");
+        // Then the egress relay, in the background: it dies with the
+        // namespace when the command ends. Its ready file is what the
+        // command waits for, so its first request never beats the listener.
+        let relay = if socket.is_some() {
+            format!(
+                "{} egress-relay --ready {RELAY_READY} >/dev/null 2>&1 & \
+                 i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; ",
+                shell_quote(&self.relay_exe.to_string_lossy())
+            )
+        } else {
+            String::new()
+        };
         let script = format!(
-            "cp -f {} {} 2>/dev/null; exec \"$@\"",
+            "cp -f {} {} 2>/dev/null; {relay}exec \"$@\"",
             shell_quote(CLAUDE_JSON_SEED),
             shell_quote(&dest.to_string_lossy())
         );
@@ -202,6 +287,19 @@ impl Sandbox {
         cmd.env_clear();
         cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd.env("HOME", &self.home);
+        if socket.is_some() {
+            let proxy = format!("http://{}", egress::RELAY_ADDR);
+            for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+                cmd.env(k, &proxy);
+            }
+            // What the attempt runs on loopback (a test server) is not the
+            // proxy's business.
+            for k in ["NO_PROXY", "no_proxy"] {
+                cmd.env(k, "localhost,127.0.0.1,::1");
+            }
+            // node only honours the proxy variables when asked to.
+            cmd.env("NODE_USE_ENV_PROXY", "1");
+        }
         cmd
     }
 }
@@ -220,6 +318,10 @@ mod tests {
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![PathBuf::from("/opt/cache")],
+            model_hosts: vec![Rule::parse("api.example.com").unwrap()],
+            relay_exe: PathBuf::from("/opt/forge/forge"),
+            proxies: Arc::new(Proxies::default()),
+            declared: Mutex::new(BTreeMap::new()),
         };
         let worktree = PathBuf::from("/work/tree");
         let cmd = sandbox.command(&worktree, &["true".to_string()], &[]);
@@ -307,5 +409,96 @@ mod tests {
         );
         assert_eq!(tail[3], "sh", "argv[0] for the wrapper script is $0");
         assert_eq!(&tail[4..], &["true"], "the real argv follows the wrapper");
+    }
+
+    fn test_sandbox(model: &str) -> Sandbox {
+        Sandbox {
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            home: PathBuf::from("/home/attempt"),
+            agent_dirs: vec![],
+            write_paths: vec![],
+            claude_json_seed: PathBuf::from("/home/real/.claude.json"),
+            extra_ro: vec![],
+            extra_rw: vec![],
+            model_hosts: vec![Rule::parse(model).unwrap()],
+            relay_exe: PathBuf::from("/opt/forge/forge"),
+            proxies: Arc::new(Proxies::default()),
+            declared: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn args_of(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_worktrees_policy_is_the_model_endpoint_plus_what_its_repository_declared() {
+        let sb = test_sandbox("api.example.com");
+        let names = |p: &Policy| p.rules().iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let wt = PathBuf::from("/work/1");
+        assert_eq!(names(&sb.policy_for(&wt)), ["api.example.com"]);
+        sb.set_egress(&wt, &[Rule::parse("registry.npmjs.org").unwrap()]);
+        assert_eq!(
+            names(&sb.policy_for(&wt)),
+            ["api.example.com", "registry.npmjs.org"]
+        );
+        // A directory below the worktree shares its policy; a sibling does not.
+        assert_eq!(names(&sb.policy_for(&wt.join("scratch"))).len(), 2);
+        assert_eq!(
+            names(&sb.policy_for(Path::new("/work/2"))),
+            ["api.example.com"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_command_has_a_namespace_of_its_own_and_one_route_out() {
+        let sb = test_sandbox("api.example.com");
+        let cmd = sb.command(Path::new("/work/1"), &["true".to_string()], &[]);
+        let args = args_of(&cmd);
+        assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+        let bind = args
+            .windows(3)
+            .find(|w| w[0] == "--bind" && w[2] == "/run/forge/egress.sock")
+            .unwrap_or_else(|| panic!("the proxy socket is bound in: {args:?}"));
+        assert!(
+            Path::new(&bind[1]).exists(),
+            "the socket exists on the host"
+        );
+        let script = &args[args.iter().position(|a| a == "--").unwrap() + 3];
+        assert!(
+            script.contains("'/opt/forge/forge' egress-relay"),
+            "{script}"
+        );
+        assert!(
+            script.find("egress-relay").unwrap() < script.find("exec \"$@\"").unwrap(),
+            "the relay starts before the command: {script}"
+        );
+        let env = |k: &str| {
+            cmd.get_envs()
+                .find(|(n, _)| *n == k)
+                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+            assert_eq!(env(k).as_deref(), Some("http://127.0.0.1:3128"), "{k}");
+        }
+        assert_eq!(env("NO_PROXY").as_deref(), Some("localhost,127.0.0.1,::1"));
+    }
+
+    #[test]
+    fn without_a_runtime_there_is_no_route_but_the_network_is_still_unshared() {
+        let sb = test_sandbox("api.example.com");
+        let cmd = sb.command(Path::new("/work/1"), &["true".to_string()], &[]);
+        let args = args_of(&cmd);
+        assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+        assert!(
+            !args.iter().any(|a| a == "/run/forge/egress.sock"),
+            "{args:?}"
+        );
+        assert!(
+            cmd.get_envs().all(|(k, _)| k != "HTTPS_PROXY"),
+            "no proxy is named when there is none"
+        );
     }
 }

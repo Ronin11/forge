@@ -282,6 +282,7 @@ pub async fn integrate(
             base_sha = main_sha.clone();
         }
         let cfg_now = config::load_at(repo, wt, &base_sha).await.task()?;
+        f.allow_egress(wt, &cfg_now);
         let overlay = overlay_refs(repo, t.id, None).await;
         let v = verify_merged_tree(
             f,
@@ -734,6 +735,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         overlay.push("forge-verify".into());
     }
     let cfg_base = config::load_at(&repo, &dir, &base_sha).await?;
+    f.allow_egress(&dir, &cfg_base);
     let mut steps = Vec::new();
     let mut outcome = IntegrateOutcome::Ready;
     for (completed, t) in tasks.iter().enumerate() {

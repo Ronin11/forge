@@ -139,6 +139,41 @@ impl fmt::Display for Rule {
     }
 }
 
+/// What a URL in a provider's configuration lets through: its host, and its
+/// port when it names one (else the scheme's: 80 for http, 443 for https).
+fn rule_for_url(url: &str) -> Option<Rule> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    let entry = match (scheme, authority.contains(':')) {
+        ("http", false) => format!("{authority}:80"),
+        ("http" | "https", _) => authority.to_string(),
+        _ => return None,
+    };
+    Rule::parse(&entry).ok()
+}
+
+/// The model endpoints every attempt may reach: for each configured
+/// provider, its runner's own hosts, its `base_url`, and any URL in its
+/// `env` (a local model's OLLAMA_HOST, codex's OSS base URL). These carry
+/// the token an attempt runs with, so they are the one thing always allowed.
+pub fn model_rules(providers: &BTreeMap<String, crate::agent::Provider>) -> Vec<Rule> {
+    use crate::agent::Runner;
+    let mut rules = Vec::new();
+    for p in providers.values() {
+        let own: &[&str] = match p.runner {
+            // The API, and the sign-in the CLI refreshes its token against.
+            Runner::ClaudeCli => &["*.anthropic.com", "*.claude.com", "claude.ai"],
+            Runner::CodexCli => &["*.openai.com", "chatgpt.com"],
+            Runner::Chat => &[],
+        };
+        rules.extend(own.iter().filter_map(|h| Rule::parse(h).ok()));
+        rules.extend(p.base_url.as_deref().and_then(rule_for_url));
+        rules.extend(p.env.iter().filter_map(|(_, v)| rule_for_url(v)));
+    }
+    Policy::new(rules).rules
+}
+
 /// The rules one proxy enforces: sorted and de-duplicated, so two attempts
 /// declaring the same hosts in a different order share one proxy.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -773,6 +808,43 @@ mod tests {
         for public in ["1.1.1.1", "93.184.216.34", "2606:4700::1111"] {
             assert!(is_public(public.parse().unwrap()), "{public}");
         }
+    }
+
+    #[test]
+    fn a_url_becomes_the_rule_for_its_host_and_port() {
+        let r = |u: &str| rule_for_url(u).map(|r| r.to_string());
+        assert_eq!(
+            r("https://api.openai.com/v1"),
+            Some("api.openai.com".into())
+        );
+        assert_eq!(r("http://dev.home:11434/v1"), Some("dev.home:11434".into()));
+        assert_eq!(r("http://dev.home/v1"), Some("dev.home:80".into()));
+        assert_eq!(r("https://u:p@x.io:8443/a?b"), Some("x.io:8443".into()));
+        assert_eq!(r("file:///etc"), None);
+        assert_eq!(r("not a url"), None);
+    }
+
+    #[test]
+    fn the_model_endpoint_is_always_in_the_rules() {
+        let mut providers = BTreeMap::new();
+        providers.insert("anthropic".to_string(), crate::agent::Provider::default());
+        let rules: Vec<String> = model_rules(&providers)
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(rules.iter().any(|r| r == "*.anthropic.com"), "{rules:?}");
+        let p = crate::agent::Provider {
+            name: "devhome".into(),
+            runner: crate::agent::Runner::CodexCli,
+            env: vec![("OLLAMA_HOST".into(), "http://dev.home:11434".into())],
+            ..crate::agent::Provider::default()
+        };
+        providers.insert("devhome".to_string(), p);
+        let rules: Vec<String> = model_rules(&providers)
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(rules.iter().any(|r| r == "dev.home:11434"), "{rules:?}");
     }
 
     #[test]

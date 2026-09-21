@@ -8,7 +8,7 @@ use crate::sandbox::Sandbox;
 use crate::store::{Store, Task};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The provider a step under `role` actually runs (see `config::ROLES`):
 /// the task's own `--provider` (set, so every role for that task wins),
@@ -116,7 +116,13 @@ impl Forge {
             // written from inside the sandbox.
             let cache = paths.home.join("cache");
             let _ = std::fs::create_dir_all(&cache);
-            Sandbox::detect(&agent::agent_bin(), &home.sandbox, extra_ro, vec![cache])?
+            Sandbox::detect(
+                &agent::agent_bin(),
+                &home.sandbox,
+                extra_ro,
+                vec![cache],
+                crate::egress::model_rules(&home.providers),
+            )?
         } else {
             None
         };
@@ -155,6 +161,14 @@ impl Forge {
             sandbox: None,
             report,
         })
+    }
+
+    /// Tell the sandbox what a repository's config lets attempts in
+    /// `worktree` reach besides the model endpoint. No-op unsandboxed.
+    pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config) {
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.set_egress(worktree, &cfg.egress);
+        }
     }
 
     pub fn sandboxed(&self) -> bool {
