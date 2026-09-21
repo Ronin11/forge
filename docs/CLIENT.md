@@ -816,6 +816,11 @@ across a rotation, not to the snapshot protocol itself.
   the task currently open; `forge retry [--chain]` to act. The queue
   table's `TaskRow.project` is shown as a column; the task view shows
   `TraceDoc.task.initiative` alongside the rest of the record.
+  Every time it shows (a job's `started_at`, `finished_at`, `due_at`) is Unix
+  seconds turned into `2026-09-21 07:00` by `tui/src/time.rs` alone, in the
+  terminal's local zone: the environment's (`TZ`, else the system's), read
+  when drawn, and UTC when it names none. `tui/tests/snapshots.rs` pins a local
+  and a UTC rendering under a fixed `TZ`.
 - **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`, `web/src/time.js`): every
   route under `/api/` runs one verb and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`

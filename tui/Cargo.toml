@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow = "1"
 crossterm = "0.29"
 forge-client = { path = "../client" }
+libc = "0.2"
 ratatui = "0.30"
 serde_json = "1"
 
