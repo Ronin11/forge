@@ -642,7 +642,10 @@ supervisor's own accept-and-land), `withdrawals` (this workflow's
 tasks left `withdrawn`), and `hand_commits` (commits not authored as
 Forge, on the base branch, between this workflow's landings and the
 ones before them). `events` is the four summed; `events_per_landed` is
-`events` divided by `landed` (`null` when nothing landed). Unlike
+`events` divided by `landed` (`null` when nothing landed). Operator
+bookkeeping (`forge initiative set`, `forge project set`, `forge gc`,
+budget raises, renames) is not among the four signals by construction,
+so it never counts against landed work. Unlike
 `workflows`, a workflow whose only tasks were withdrawn still gets a
 row here, since a withdrawal is itself a human-attention signal.
 

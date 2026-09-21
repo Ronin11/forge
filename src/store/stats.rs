@@ -554,6 +554,14 @@ impl Store {
     /// `workflow_stats`, a workflow whose only tasks were withdrawn still
     /// gets a row here, since a withdrawal is itself a human-attention
     /// signal.
+    ///
+    /// Exactly four signals are counted, all of them attention to the work
+    /// itself: operator answers (decisions not answered by the supervisor),
+    /// hand landings, withdrawals, and hand commits. Operator bookkeeping
+    /// (`forge initiative set`, `forge project set`, `forge gc`, budget
+    /// raises, renames) is not among them by construction: none of those
+    /// verbs writes a decision, a hand landing, a withdrawal or a base-branch
+    /// commit, so nothing needs excluding.
     pub fn human_attention_stats(&self, scope: &StatsFilter) -> Result<Vec<HumanAttentionStat>> {
         let mut stats = {
             let c = self.lock();
