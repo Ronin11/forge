@@ -15,5 +15,5 @@ copied = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
 
 [limits]
 budget_usd = 0.0
-per_day = 2
+per_day = 6
 on_failure = "ask:operator"
