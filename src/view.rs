@@ -2356,11 +2356,13 @@ pub struct PortalInitiative {
 
 /// One open question on `PortalDoc`, addressed to the customer: the
 /// "Needs you" list. `task_id` is what answering in place posts back
-/// against (`forge answer <task_id> ...`).
+/// against (`forge answer <task_id> ...`); `asked_at` is Unix seconds, when
+/// the task blocked on it.
 #[derive(Serialize)]
 pub struct PortalQuestion {
     pub task_id: i64,
     pub text: String,
+    pub asked_at: i64,
 }
 
 /// One line on `PortalDoc`'s "Done" list, newest first, capped at ten
@@ -2495,6 +2497,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
             questions.push(PortalQuestion {
                 task_id: t.id,
                 text,
+                asked_at: t.finished_at.unwrap_or(t.created_at),
             });
             if let Some(ini) = t.initiative {
                 questioning_initiatives.insert(ini);

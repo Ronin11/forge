@@ -18,6 +18,8 @@ const FORBIDDEN: &[&str] = &[
     "look_ok",
     "task_id",
     "landed_at",
+    "asked_at",
+    "started_at",
     "created_at",
     "last_deployed_at",
     "deploy_targets",
@@ -36,7 +38,9 @@ fn fixture_doc(shot_path: &str, answered: bool, asked: bool) -> String {
     let questions: Vec<serde_json::Value> = if answered {
         vec![]
     } else {
-        vec![serde_json::json!({"task_id": 42, "text": "Should annual plans get a discount?"})]
+        vec![
+            serde_json::json!({"task_id": 42, "text": "Should annual plans get a discount?", "asked_at": 1_700_000_200_i64}),
+        ]
     };
     let mut landed = vec![
         serde_json::json!({"text": "Checkout redesign shipped", "pieces": 2, "landed_at": 1_699_999_999_i64}),
@@ -291,7 +295,32 @@ fn the_six_sections_render_in_plain_words_with_no_forbidden_keys() {
     assert!(body.contains("Checkout redesign shipped"), "{body}");
     assert!(body.contains("2 pieces of work"), "{body}");
     assert!(body.contains("Added dark mode"), "{body}");
-    assert!(body.contains("Shipped Nov 14, 2023"), "{body}");
+    // Every moment goes through the same tag: Unix seconds in a data
+    // attribute for the script, UTC text inside for a viewer without it.
+    assert!(
+        body.contains(
+            r#"<time data-ts="1699999999" data-prefix="Shipped ">Shipped Nov 14, 2023, 22:13 UTC</time>"#
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            r#"<time data-ts="1700000000" data-prefix="Last updated ">Last updated Nov 14, 2023, 22:13 UTC</time>"#
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<time data-ts="1700000100">Nov 14, 2023, 22:15 UTC</time>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            r#"<time data-ts="1700000200" data-prefix="Asked ">Asked Nov 14, 2023, 22:16 UTC</time>"#
+        ),
+        "{body}"
+    );
+    assert_eq!(body.matches("<time ").count(), 6, "{body}");
+    assert!(body.contains("<script>"), "{body}");
     assert!(body.contains("and 5 more"), "{body}");
     assert!(body.contains("on our cloud"), "{body}");
     assert!(body.contains("Order intake syncs nightly"), "{body}");

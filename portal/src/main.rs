@@ -63,6 +63,9 @@ impl RateLimiter {
 }
 
 const STYLE: &str = include_str!("style.css");
+/// Rewrites every `<time data-ts>` into the viewer's own zone (see
+/// `time_tag`); the page carries it inline so it is one request.
+const LOCAL_TIME_JS: &str = include_str!("local-time.js");
 
 fn h(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header")
@@ -117,12 +120,38 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn human_date(ts: i64) -> String {
+/// A moment as the server's fallback text: "Nov 14, 2023, 22:13 UTC".
+/// `local-time.js` renders the same shape in the viewer's zone.
+fn utc_text(ts: i64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let (y, m, d) = civil_from_days(ts.div_euclid(86400));
-    format!("{} {d}, {y}", MONTHS[(m - 1) as usize])
+    let secs = ts.rem_euclid(86400);
+    format!(
+        "{} {d}, {y}, {:02}:{:02} UTC",
+        MONTHS[(m - 1) as usize],
+        secs / 3600,
+        secs % 3600 / 60
+    )
+}
+
+/// The one way the page shows a moment: a `<time>` carrying the Unix
+/// seconds in `data-ts` for the script to render in the viewer's zone,
+/// and the UTC text inside for a viewer without JavaScript. `prefix` is
+/// static wording ("Shipped ") that stays in front of the moment either
+/// way.
+fn time_tag(prefix: &str, ts: i64) -> String {
+    let prefix_attr = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!(r#" data-prefix="{}""#, esc(prefix))
+    };
+    format!(
+        r#"<time data-ts="{ts}"{prefix_attr}>{}{}</time>"#,
+        esc(prefix),
+        utc_text(ts)
+    )
 }
 
 fn page(title: &str, body: &str) -> String {
@@ -137,6 +166,7 @@ fn page(title: &str, body: &str) -> String {
 </head>
 <body>
 {body}
+<script>{LOCAL_TIME_JS}</script>
 </body>
 </html>
 "#,
@@ -227,7 +257,7 @@ fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
     for t in targets {
         let (class, phrase) = deploy_status(t);
         let when = match t.last_deployed_at {
-            Some(ts) => format!("Last updated {}", human_date(ts)),
+            Some(ts) => time_tag("Last updated ", ts),
             None => String::new(),
         };
         let img = if t.screenshot.is_some() {
@@ -297,7 +327,7 @@ fn render_run_workflows(workflows: &[PortalWorkflow]) -> String {
             out.push_str(&format!(
                 r#"<li><div class="status {class}">{phrase}</div><div class="date">{when}</div></li>"#,
                 phrase = esc(&phrase),
-                when = human_date(j.started_at),
+                when = time_tag("", j.started_at),
             ));
         }
         out.push_str("</ul></div>");
@@ -352,9 +382,9 @@ fn render_landed(items: &[PortalLanded], more: i64) -> String {
             None => String::new(),
         };
         out.push_str(&format!(
-            r#"<li><div>{text}</div>{pieces}<div class="date">Shipped {date}</div></li>"#,
+            r#"<li><div>{text}</div>{pieces}<div class="date">{date}</div></li>"#,
             text = esc(&l.text),
-            date = human_date(l.landed_at),
+            date = time_tag("Shipped ", l.landed_at),
         ));
     }
     out.push_str(&render_more(more));
@@ -368,8 +398,12 @@ fn render_questions(items: &[PortalQuestion], token: &str) -> String {
     }
     let mut out = String::new();
     for q in items {
+        let asked = match q.asked_at {
+            Some(ts) => format!(r#"<p class="date">{}</p>"#, time_tag("Asked ", ts)),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            r#"<form class="ask" method="post" action="/p/{token}/answer"><p>{text}</p><input type="hidden" name="id" value="{id}"><input type="text" name="text" placeholder="Your answer" required><button type="submit">Send</button></form>"#,
+            r#"<form class="ask" method="post" action="/p/{token}/answer"><p>{text}</p>{asked}<input type="hidden" name="id" value="{id}"><input type="text" name="text" placeholder="Your answer" required><button type="submit">Send</button></form>"#,
             token = esc(token),
             text = esc(&q.text),
             id = q.task_id,
@@ -627,9 +661,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dates_are_plain_and_correct() {
-        assert_eq!(human_date(0), "Jan 1, 1970");
-        assert_eq!(human_date(1_726_531_200), "Sep 17, 2024");
+    fn the_utc_fallback_is_plain_and_correct() {
+        assert_eq!(utc_text(0), "Jan 1, 1970, 00:00 UTC");
+        assert_eq!(utc_text(1_726_531_200), "Sep 17, 2024, 00:00 UTC");
+        assert_eq!(utc_text(1_699_999_999), "Nov 14, 2023, 22:13 UTC");
+        assert_eq!(utc_text(-1), "Dec 31, 1969, 23:59 UTC");
+    }
+
+    #[test]
+    fn a_moment_carries_its_seconds_and_a_utc_fallback() {
+        assert_eq!(
+            time_tag("Shipped ", 1_699_999_999),
+            r#"<time data-ts="1699999999" data-prefix="Shipped ">Shipped Nov 14, 2023, 22:13 UTC</time>"#
+        );
+        assert_eq!(
+            time_tag("", 0),
+            r#"<time data-ts="0">Jan 1, 1970, 00:00 UTC</time>"#
+        );
     }
 
     #[test]
