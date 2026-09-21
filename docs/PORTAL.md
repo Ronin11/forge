@@ -40,6 +40,19 @@ logs anywhere on it.
 - **Your plan.** The brief they confirmed and the backlog cut from it,
   so they can see what they said and what is queued.
 
+## Times
+
+The kernel and the record speak UTC only; the customer reads their own
+clock. Every moment on the page — a deploy target's last update, a job's
+start, a landed line's shipping date, and when a question was asked —
+goes through one tag, `<time data-ts="<unix seconds>">`, whose text is
+the UTC fallback ("Nov 14, 2023, 22:13 UTC") for a viewer without
+JavaScript. A small inline script (`portal/src/local-time.js`) replaces
+that text with the same shape in the viewer's zone ("Nov 14, 2023, 17:13
+EST"), keeping any wording in front of it (`data-prefix`, "Shipped ").
+The server never learns the viewer's zone. `portal/tests/local_time.rs`
+snapshots the script under fixed zones.
+
 ## What it is
 
 A third client on the client contract (`docs/CLIENT.md`), beside the

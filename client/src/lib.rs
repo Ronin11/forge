@@ -599,13 +599,16 @@ pub struct PortalInitiative {
 }
 
 /// One open question on [`PortalDoc`], addressed to the customer: the
-/// "Needs you" list.
+/// "Needs you" list; `asked_at` is Unix seconds, when the task blocked on
+/// it (`None` from a `forge` that predates the field).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PortalQuestion {
     #[serde(default)]
     pub task_id: i64,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub asked_at: Option<i64>,
 }
 
 /// One line on [`PortalDoc`]'s "Done" list, newest first, capped at ten

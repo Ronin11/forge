@@ -322,6 +322,10 @@ fn portal_fixture_parses_as_a_portaldoc_with_the_fields_a_client_reads() {
         doc.questions[0].text,
         "which price sheet should this pull from?"
     );
+    assert!(
+        doc.questions[0].asked_at.is_some_and(|t| t > 0),
+        "a question says when its task blocked on it"
+    );
 
     assert_eq!(doc.landed.len(), 1);
     assert_eq!(

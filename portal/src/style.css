@@ -103,7 +103,8 @@ ul.plain li {
   border-bottom: 1px solid var(--line);
 }
 ul.plain li:last-child { border-bottom: none; }
-ul.plain .date {
+ul.plain .date,
+form.ask p.date {
   color: var(--mute);
   font-size: 15px;
   margin-top: 2px;
