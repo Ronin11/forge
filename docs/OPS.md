@@ -21,7 +21,9 @@ workflow on the Forge project, `cron = "30 3 * * *"`) runs one operation,
    `PATH` but not `SSH_AUTH_SOCK`, so the key it names must be usable
    without an agent.
 3. `ssh equitizr sqlite3 ~/backups/forge/<date>/forge.db 'pragma
-   integrity_check'` must print `ok`. Anything else fails the job.
+   integrity_check'` must print `ok`. Anything else fails the job. The
+   receiving host needs `sqlite3` installed for this check; the first run,
+   on 2026-09-21, failed on a box without it.
 4. Only then, every dated directory under `~/backups/forge/` beyond the
    seven newest is removed. Names that are not `YYYY-MM-DD` are never
    touched. Running twice on one day (`per_day = 2`) overwrites that
