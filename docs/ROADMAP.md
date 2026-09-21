@@ -62,7 +62,12 @@ Not a feature set. A week of the following, measured from the record:
    `forge-web` and `forge-portal` after the worker drains, with the
    existing smoke check against the web client. Removes every hand
    rebuild of this week and the stale-client bug it caused.
-   One directive and one target; the method exists.
+   Built: the `deploy-self` method (docs/DEPLOY.md, "Deploying Forge
+   itself"), tested end to end against a fake `cargo`, `systemctl` and
+   `curl`. Left: register the target once on the box, `forge project
+   deploy add forge self --repo ~/Projects/forge --method deploy-self
+   --arg dest=$HOME/Projects/forge --on-landing`, and watch the first
+   landing deploy.
 2. **The store backup job.** A daily run workflow that copies
    `forge.db` and the operator config to the Hetzner box, asserts the
    copy opens, and keeps seven. One workflow file.
