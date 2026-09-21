@@ -3,6 +3,7 @@
 use crate::audit;
 use crate::ctx::Forge;
 use crate::profile::{self, LOOKBACK};
+use crate::render;
 use crate::store::{Task, TaskState};
 use crate::{config, doctor, git, operation, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
@@ -1638,7 +1639,7 @@ fn message_list(
 fn print_project_row(r: &crate::view::ProjectRow) {
     out!("name       {}", r.name);
     out!("purpose    {}", r.purpose);
-    out!("created_at {}", r.created_at);
+    out!("created_at {}", render::utc(r.created_at));
     if r.repos.is_empty() {
         out!("repos      none");
     }
@@ -2041,7 +2042,12 @@ fn print_deploy_row(r: &crate::store::Deploy) {
         },
         None => "running".to_string(),
     };
-    out!("{:<5} {:<12} {sha} {status}", r.id, r.target);
+    out!(
+        "{:<5} {:<12} {sha} {status} {}",
+        r.id,
+        r.target,
+        render::utc(r.started_at)
+    );
     if !r.reason.is_empty() {
         out!("{:<19}{}", "", r.reason);
     }
@@ -2088,12 +2094,15 @@ fn print_job_row(r: &crate::store::Job) {
         r.landed_sha[..r.landed_sha.len().min(8)].to_string()
     };
     out!(
-        "{:<5} {:<20} {:<12} {sha} {}{}",
+        "{:<5} {:<20} {:<12} {sha} {} {}{}",
         r.id,
         r.workflow,
         r.state.as_str(),
         r.trigger_kind,
-        r.due_at.map(|d| format!("  due {d}")).unwrap_or_default()
+        render::utc(r.started_at),
+        r.due_at
+            .map(|d| format!("  due {}", render::utc(d)))
+            .unwrap_or_default()
     );
 }
 
@@ -2248,8 +2257,13 @@ fn webhook_list(project: String, json: bool) -> Result<()> {
     }
     for t in rows {
         match t.revoked_at {
-            Some(at) => out!("{:<20} minted {} revoked {at}", t.name, t.created_at),
-            None => out!("{:<20} minted {} active", t.name, t.created_at),
+            Some(at) => out!(
+                "{:<20} minted {} revoked {}",
+                t.name,
+                render::utc(t.created_at),
+                render::utc(at)
+            ),
+            None => out!("{:<20} minted {} active", t.name, render::utc(t.created_at)),
         }
     }
     Ok(())
@@ -2307,7 +2321,7 @@ fn job_show(id: i64, json: bool) -> Result<()> {
         if doc.dry_run { " (dry run)" } else { "" }
     );
     if let Some(due) = doc.due_at {
-        out!("due        {due}");
+        out!("due        {}", render::utc(due));
     }
     out!("cost       ${:.2}", doc.cost_usd.unwrap_or(0.0));
     if doc.state == "skipped" {
@@ -2629,7 +2643,7 @@ fn project_view(name: String, json: bool) -> Result<()> {
             t.name,
             t.where_it_runs,
             t.last_deployed_at
-                .map(|s| s.to_string())
+                .map(render::utc)
                 .unwrap_or_else(|| "never".into()),
             t.check_ok
                 .map(|ok| ok.to_string())
@@ -2661,8 +2675,13 @@ fn project_view(name: String, json: bool) -> Result<()> {
     out!("Done:");
     for l in &doc.landed {
         match l.pieces {
-            Some(n) => out!("  {} ({} pieces of work) ({})", l.text, n, l.landed_at),
-            None => out!("  {} ({})", l.text, l.landed_at),
+            Some(n) => out!(
+                "  {} ({} pieces of work) ({})",
+                l.text,
+                n,
+                render::utc(l.landed_at)
+            ),
+            None => out!("  {} ({})", l.text, render::utc(l.landed_at)),
         }
     }
     if doc.landed_more > 0 {
@@ -2729,8 +2748,9 @@ fn print_initiative_row(r: &crate::view::InitiativeRow) {
             .unwrap_or_default()
     );
     out!("stop-after {}", r.stop_after_same_rule);
+    out!("created_at {}", render::utc(r.created_at));
     if let Some(at) = r.settled_at {
-        out!("settled_at {at}");
+        out!("settled_at {}", render::utc(at));
     }
 }
 
@@ -4606,13 +4626,13 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<7} {:<3} {:<8} {:<19} {:<18} {}",
+            "{:<5} {:<11} {:<7} {:<3} {:<8} {:<20} {:<18} {}",
             s.id,
             s.state,
             s.workflow,
             s.attempts,
             format!("${:.4}", s.cost_usd),
-            s.created,
+            render::utc(s.created_at),
             repo_name,
             task_short
         );
@@ -4639,6 +4659,7 @@ fn show(id: i64) -> Result<()> {
         }
     );
     out!("repo       {}", task.repo);
+    out!("created    {}", render::utc(task.created_at));
     if let Some(pname) = &t.project {
         out!("project    {pname}");
     }
@@ -4789,7 +4810,7 @@ fn show(id: i64) -> Result<()> {
             "{:<11}{} {sha} {status} {}",
             "deploy",
             d.target,
-            d.finished_at.unwrap_or(d.started_at)
+            render::utc(d.finished_at.unwrap_or(d.started_at))
         );
     }
     for r in &task.refs {

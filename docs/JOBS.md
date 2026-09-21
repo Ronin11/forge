@@ -136,7 +136,10 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   own `.forge/workflows/*.toml` at its latest landed commit, and the
   operator's catalog, by name, the same repository-first-then-catalog
   order `forge job start` uses (above) — and keeps the ones with
-  `[trigger] on = "schedule"`. `cron` is parsed with `croner`
+  `[trigger] on = "schedule"`. `cron` is evaluated in UTC — the tick
+  matches occurrences against the UTC clock, never the machine's zone
+  (`0 7 * * *` is 07:00 UTC, which is 01:00 for an operator at UTC−6) —
+  and is parsed with `croner`
   (`Cargo.toml`) at workflow load time, the same moment an unknown `on`
   value is refused: an expression `croner` cannot parse is a load error,
   with the file and the line, before any job ever tries to run it. For

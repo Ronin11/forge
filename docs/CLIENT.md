@@ -173,6 +173,18 @@ asserts every verb a client source file invokes appears in it):
 snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
 ```
 
+## Time
+
+Time is UTC everywhere in the kernel and the record; a time zone is a
+rendering concern of each client. Every timestamp field in every JSON
+document below (`created_at`, `finished_at`, `started_at`, `due_at`,
+`landed_at`, `settled_at`, `ts`, …) is an integer count of Unix seconds,
+UTC. A client that shows a time to a person converts it to its viewer's
+zone itself. The one legacy string, `TaskRow.created`, is also UTC. The
+CLI's own text output prints every wall-clock time as UTC with a `Z`
+suffix (`2026-09-21T07:00:00Z`), never in the process's zone. A workflow's
+schedule trigger is evaluated in UTC too (docs/WORKFLOWS.md).
+
 ## Naming: unified vs. legacy keys
 
 Several documents grew a JSON form before they had a consistent naming
@@ -224,7 +236,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `text` | string | **Preferred.** The task's text, as given. |
 | `task` | string | Legacy key for `text`; kept for compatibility. |
 | `created_at` | integer | **Preferred.** Creation time, Unix seconds. |
-| `created` | string | Legacy key for `created_at`: a localtime string, kept for compatibility. |
+| `created` | string | Legacy key for `created_at`: `YYYY-MM-DD HH:MM:SS`, UTC, kept for compatibility. |
 | `finished_at` | integer or null | When the task reached a final state, Unix seconds; null while it is queued or running. |
 | `project` | string or null | The project the task belongs to; null for a task predating projects that no migration could place. |
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
@@ -356,7 +368,7 @@ operator's page (`forge trace`, `forge stats`), never to this one.
 | `run_workflows[].jobs[]` | `{started_at, state, reason}` | One job: `started_at` Unix seconds, `state` `"ok"`, `"failed"`, `"needs_human"`, or one of `JobState`'s other values for a job still in flight; `reason` a one-line cause cut from the first failing check's tail (path-like tokens stripped, 120 characters on a word boundary), set only when `state` is `"failed"` or `"needs_human"` and the verdict names one. |
 | `initiatives` | array of `{outcome, state, pieces}` | "Being built": every open initiative (never settled), newest first, capped at ten (`initiatives_more` the rest); `state` one of `"in progress"` or `"waiting on you"` (an open question on one of its tasks — see `questions`); `pieces` how many tasks make up the initiative so far. |
 | `initiatives_more` | integer | How many open initiatives past the ten in `initiatives`; 0 when nothing was cut. |
-| `questions` | array of `{task_id, text}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`. |
+| `questions` | array of `{task_id, text, asked_at}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`; `asked_at` Unix seconds, when the task blocked on it. |
 | `landed` | array of `{text, pieces, landed_at}` | "Done": one line per landed initiative (`text` its outcome, `pieces` how many tasks it took) and one line per landed task belonging to no initiative (`text` its title if it was filed in the customer's own words, else a line derived from the request's first sentence with any path-like token stripped and cut at 120 characters on a word boundary; `pieces` `null`), merged and sorted newest first, capped at ten (`landed_more` the rest). |
 | `landed_more` | integer | How many landed lines past the ten in `landed`; 0 when nothing was cut. |
 | `brief` | `{where_it_runs, workflows}` or `null` | "Your plan": the most recent confirmed intake brief, `workflows` one paragraph per workflow in the person's own words (see docs/INTAKE.md); `null` for a project with no intake behind it. |

@@ -2,6 +2,7 @@
 //! short, customer-safe lines `view.rs` assembles into documents.
 
 use crate::store::Task;
+use chrono::{DateTime, Datelike, Timelike};
 
 /// A landed task's own "Done" line: its title, given the day it was
 /// filed in the customer's own words (see docs/PORTAL.md), else a line
@@ -130,4 +131,61 @@ pub(crate) fn truncate_at_word_boundary(s: &str, max: usize) -> String {
         out = s.chars().take(max).collect();
     }
     out
+}
+
+/// A Unix-seconds timestamp as the wall-clock time every text rendering of
+/// the CLI prints: UTC, `2026-09-21T07:00:00Z`, whatever `TZ` the process
+/// runs under (docs/CLIENT.md, "Time"). The kernel and the record speak UTC
+/// only; showing a time in the viewer's own zone is a client's job, from
+/// the integer field. A value outside the calendar `chrono` can name is
+/// printed as the bare integer.
+pub(crate) fn utc(secs: i64) -> String {
+    match DateTime::from_timestamp(secs, 0) {
+        Some(t) => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            t.year(),
+            t.month(),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
+        ),
+        None => secs.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utc_prints_unix_seconds_as_iso_8601_with_a_z_suffix() {
+        assert_eq!(utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc(1_726_531_200), "2024-09-17T00:00:00Z");
+        assert_eq!(utc(1_789_974_000), "2026-09-21T07:00:00Z");
+        assert_eq!(utc(-1), "1969-12-31T23:59:59Z");
+        assert_eq!(utc(i64::MAX), i64::MAX.to_string());
+    }
+
+    #[test]
+    fn utc_ignores_the_tz_of_the_process() {
+        let saved = std::env::var_os("TZ");
+        let mut seen = Vec::new();
+        for tz in [
+            "UTC",
+            "Asia/Tokyo",
+            "America/Los_Angeles",
+            "Pacific/Kiritimati",
+        ] {
+            // SAFETY: nothing else in this test binary reads `TZ`.
+            unsafe { std::env::set_var("TZ", tz) };
+            seen.push(utc(1_789_974_000));
+        }
+        match saved {
+            // SAFETY: as above.
+            Some(v) => unsafe { std::env::set_var("TZ", v) },
+            None => unsafe { std::env::remove_var("TZ") },
+        }
+        assert!(seen.iter().all(|s| s == "2026-09-21T07:00:00Z"), "{seen:?}");
+    }
 }
