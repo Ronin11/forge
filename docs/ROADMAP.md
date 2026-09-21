@@ -98,10 +98,17 @@ Not a feature set. A week of the following, measured from the record:
    `cheap` has never run; the changelog job cannot finish on a hosted
    provider under its own cap. Two small tasks that make two numbers
    real.
-6. **A `direct` verdict.** `direct` verifies 36% of its tasks against
-   `reviewed`'s rate; either the profile says when it is worth choosing
-   or it stops being a default anywhere. A reading of the record, then
-   one line in docs/ACTIONS.md.
+6. **A `direct` verdict. Done (2026-09-21).** The 36% is the local-model
+   experiment: `direct` on Anthropic landed 45 of 58 (78%) against
+   `reviewed`'s 188 of 276 (68%), at $2.08 per landed against $4.74
+   ($4.40 against $7.93 with the quality counts), with a 3% against 1%
+   chance of breaking the base and more than twice the human attention
+   per landing. `direct` stays the default, for small, well-specified
+   tasks on a repository with strong checks; `reviewed` for the rest.
+   Written up, with the by-repository numbers, in docs/ACTIONS.md, "The
+   `direct` verdict". Left: split doctor's learning line by provider,
+   and measure `direct` by task size in files and lines, which the
+   record read here did not carry.
 
 **1.0 itself:** the week described above, measured, written up as the
 outcome section of this page.

@@ -457,24 +457,78 @@ forms, one now and one later.
 
 ## Built-in workflows
 
-| name | steps |
-|---|---|
-| `direct` | setup → repo-map → code |
-| `tdd` | tests → setup → repo-map → code |
-| `docs` | setup → docs |
-| `cheap` | setup → repo-map → fix (sonnet, 25 turns) → fmt |
-| `polish` | setup → repo-map → code → polish |
-| `reviewed` | setup → repo-map → code → review |
-| `tdd-reviewed` | tests → setup → repo-map → code → review |
-| `playable` | setup → repo-map → code → playwright (hidden suite, verifies) |
-| `documented` | setup → repo-map → code → document → comments-only (verifies) |
-| `mapped` | setup → repo-map → code → graph → graph-check (verifies) |
-| `planned` | setup → repo-map → investigate → code |
-| `intake` | setup → interview |
-| `concierge` | setup → concierge |
+| name | steps | the record (all tasks, 2026-09-21) |
+|---|---|---|
+| `direct` | setup → repo-map → code | 101 tasks, 45 landed (45%), 39 failed, 17 withdrawn; $2.08 per landed. On Anthropic 78% (45 of 58); on the local model 0 of 43. **Default**, for small tasks on a repository with strong checks |
+| `tdd` | tests → setup → repo-map → code | 61 tasks, 30% landed; $3.38 per landed |
+| `docs` | setup → docs | 11 tasks, 82% landed; $0.67 per landed |
+| `cheap` | setup → repo-map → fix (sonnet, 25 turns) → fmt | 18 tasks, 22% landed; $0.88 per landed |
+| `polish` | setup → repo-map → code → polish | not yet measured |
+| `reviewed` | setup → repo-map → code → review | 276 tasks, 188 landed (68%); $4.74 per landed. The choice for anything larger, for weak checks, or with no one to answer |
+| `tdd-reviewed` | tests → setup → repo-map → code → review | not yet measured |
+| `playable` | setup → repo-map → code → playwright (hidden suite, verifies) | not yet measured |
+| `documented` | setup → repo-map → code → document → comments-only (verifies) | not yet measured |
+| `mapped` | setup → repo-map → code → graph → graph-check (verifies) | not yet measured |
+| `planned` | setup → repo-map → investigate → code | 7 tasks, 43% landed; $1.99 per landed |
+| `intake` | setup → interview | not yet measured |
+| `concierge` | setup → concierge | not yet measured |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.
+
+### The `direct` verdict
+
+Read from `forge stats`, `forge stats --quality`, `forge workflows` and
+the store on 2026-09-21. `direct` stays the built-in default, and it is
+the right default only where the task is small and well specified and
+the repository's checks are strong. Everywhere else `reviewed` is the
+better choice, and `direct` remains available by name.
+
+The rate `forge doctor` warns about, 18 of 50 verified (36%, 95% upper
+bound 50%), is not a measure of `direct`. It is the local-model
+experiment: of `direct`'s 101 tasks, 43 ran on the local model
+(devhome) and none landed, while the 58 that ran on Anthropic landed 45
+(78%). `reviewed` has run only on Anthropic, 276 tasks, 188 landed
+(68%). Doctor's learning line is to be split by provider so the warning
+stops mixing the two; that is a separate task.
+
+On Anthropic, then, `direct` lands more often than `reviewed` and at a
+lower cost: $2.08 per landed task against $4.74 in `forge stats`, and a
+true cost per landed of $4.40 against $7.93 in `forge stats --quality`
+(current hashes; 36 and 177 landings). The price is on the other two
+measures. A landing on `direct` broke the base 3% of the time against
+1% for `reviewed`, neither was repaired afterwards (0% each), and
+`direct` costs more than twice the human attention per landing: 2.11
+events per landed against 0.91, its 36 landings drawing 17 answers to
+questions and 17 withdrawals. The answers are the questions a review
+would tend to settle before an operator is asked; that is a reading of
+them, not a measured figure.
+
+By repository the split follows the strength of the checks:
+
+| repository | `direct` | `reviewed` |
+|---|---|---|
+| forge (the kernel, about 500 tests) | 53 tasks, 75% landed | 223 tasks, 71% landed |
+| equitizr | 1 of 1 landed | 30 tasks, 73% landed |
+| nucleosynthesis | 47 tasks, 9% landed (the local-model tasks) | 23 tasks, 35% landed |
+
+- **Choose `direct`** for a small, well-specified task on a repository
+  with strong checks, which today means the Forge kernel: there it
+  landed 75% against `reviewed`'s 71%, and an operator who is around to
+  answer a question makes the extra attention cheap. The record read
+  here has no cost split by repository; the cost figures above are over
+  all tasks.
+- **Choose `reviewed`** for anything larger, for a repository with weak
+  checks (nucleosynthesis, where `reviewed` itself lands only 35%), and
+  for any task an operator will not be around to answer, since each
+  question a `direct` task asks is a stall.
+- **Task size.** The record read for this verdict carries no split of
+  `direct`'s outcomes by files or lines changed, so "small" is a
+  judgement and not a threshold: no cut-off is stated because none has
+  been measured. The split is a query over the store, to be made before
+  a number is put here.
+- **Time to live.** `reviewed` lands in a median of 3271 s (p90 22809
+  s). `direct` has one measured landing, so the two are not compared.
 
 ## In the file
 
