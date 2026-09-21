@@ -1,20 +1,31 @@
 # ---------------------------------------------------------------------
-# HOLD: do not enable this plugin yet.
+# What this plugin depends on, and that it is met.
 #
 # It is the first intake that carries text a stranger wrote into an
-# agent with unrestricted network egress. The agent cannot push (its
-# clone has no remote and its home is an empty tmpfs; the kernel lands
-# only what the checks pass), but it can send the repository's contents,
-# or the model token it runs with, anywhere on the network. That is the
-# 2026 pattern (Clinejection, RoguePilot): untrusted text making an
-# agent leak what it holds. Forge quotes the issue body and tells the
-# model it is data, which is a mitigation, not a boundary.
+# agent. The agent cannot push (its clone has no remote and its home is
+# an empty tmpfs; the kernel lands only what the checks pass), and since
+# sandbox egress was bounded (docs/ROADMAP.md item 4) it cannot send the
+# repository's contents, or the model token it runs with, anywhere it
+# likes either: an attempt runs in a network namespace whose only route
+# out is an allowlist proxy. The proxy lets through the model endpoint,
+# always, and the hosts the target repository declares in its forge.toml:
 #
-# The boundary is item 1 of docs/GTM.md: egress limited to the model
-# endpoint and the registries the setup step names, and a model token
-# scoped to the task. Enable this plugin after
-# that lands, or only against a repository whose issues only you can
-# open.
+#   [sandbox]
+#   egress = ["registry.npmjs.org"]
+#
+# and refuses everything else. Forge quotes the issue body and tells the
+# model it is data, which is a mitigation; the network policy is the
+# boundary. `forge doctor` reports each project's policy (WARN when
+# FORGE2_SANDBOX=0, which lifts it), and the built-in egress-probe
+# operation asserts it from inside an attempt.
+#
+# Two things to know before enabling it:
+#   - Keep the target repository's [sandbox] egress to the registries its
+#     checks install from. Every host listed is a place a hostile issue
+#     can send the repository's contents; a host that accepts uploads
+#     (a paste site, an object store) does not belong there.
+#   - The model token is still the operator's, not scoped to the task
+#     (docs/GTM.md item 1). It can now reach only the model endpoint.
 # ---------------------------------------------------------------------
 
 # Copy this file to "config" next to plugin.toml (or into the installed

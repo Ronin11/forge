@@ -1,5 +1,5 @@
 name = "github-issues"
-description = "HOLD until sandbox egress is bounded (see config.example): files a task for every open issue carrying a label, and reports back to the issue when the task lands"
+description = "files a task for every open issue carrying a label, and reports back to the issue when the task lands; safe to enable because an attempt's network egress is bounded (see config.example)"
 run = ["./github-issues.sh"]
 capabilities = ["intake", "events"]
 restart = "on-failure"

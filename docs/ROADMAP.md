@@ -69,11 +69,25 @@ Not a feature set. A week of the following, measured from the record:
 3. **The rate-limit rerun from 97%.** The refusal, the refund and the
    wait are exercised only by fakes. Fuel queued at the end of a weekly
    window; the write-up goes in docs/LATER.md's section.
-4. **Sandbox egress.** The github-issues plugin is held until an attempt
-   cannot reach arbitrary hosts. A bwrap network namespace with an
-   allowlist (the model endpoint, the registry mirrors the checks need),
-   declared per repository in forge.toml, measured by a probe operation.
-   Two or three tasks; the GTM exposure line depends on it.
+4. **Sandbox egress. Done (2026-09-21).** An attempt runs in a bwrap
+   network namespace whose only route out is an allowlist proxy on a
+   unix socket (`src/egress.rs`; HTTP_PROXY and HTTPS_PROXY name a relay
+   on 127.0.0.1:3128 in the namespace). It allows the model endpoint of
+   every configured provider, always, and the hosts the repository
+   declares in forge.toml as `[sandbox] egress = ["registry.npmjs.org",
+   "*.crates.io"]`, read from the base so an attempt cannot widen its
+   own list; the rest gets a 403 naming the host. The built-in
+   `egress-probe` operation asserts a direct connection is refused, the
+   proxy answers, and a denied host is refused; `forge doctor` reports
+   the policy per project. The github-issues plugin is unheld.
+   Cost, measured: the e2e suite, whose fakes are local scripts, took
+   32.2 s before and 31.5 s after (233 tests, one run each); the relay
+   adds one small process per sandboxed command. A repository whose
+   checks install packages must declare the registries (`npm ci` needs
+   `registry.npmjs.org`) or keep a warm cache in the operator's
+   `rw_paths`, which is how Forge's own cargo checks run today. Left for
+   a human, because forge.toml is protected: declare `*.crates.io` in
+   Forge's own forge.toml so a new dependency can be fetched.
 5. **Bench the `cheap` workflow and raise `changelog-line`'s budget.**
    `cheap` has never run; the changelog job cannot finish on a hosted
    provider under its own cap. Two small tasks that make two numbers

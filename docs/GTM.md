@@ -129,17 +129,23 @@ to sell; the rest are plumbing on tenancy that already exists.
    in another. An attempt's clone has no remote, its home directory is
    an empty tmpfs, and the kernel does the push, so the agent holds no
    git credentials and cannot land anything the checks did not pass.
-   But it has unrestricted network egress and the operator's model
-   token, so a hostile issue body can make it send the repository, or
-   the token, anywhere; and the only thing against that is a sentence
-   in a prompt telling the model that repository text is data. Each task must run in its own microVM or
-   container with only that customer's tree and secrets, egress limited
-   to what the task declares (the model endpoint and the registries its
-   setup names), and the model token scoped to the task and expired
-   when it ends. This touches `sandbox.rs` and the launch path
-   only; the kernel already treats the sandbox as a wrapper around one
-   command. **Until it lands, the github-issues plugin stays disabled**:
-   it is the piece that arms the pattern.
+   It held the operator's model token and, until 2026-09-21, had
+   unrestricted network egress, so a hostile issue body could make it
+   send the repository, or the token, anywhere; the only thing against
+   that was a sentence in a prompt telling the model that repository
+   text is data. **The egress half is done:** an attempt now runs in a
+   network namespace whose only route out is an allowlist proxy, which
+   lets through the model endpoint and the hosts the repository's
+   `forge.toml` declares (`[sandbox] egress`, the registries its setup
+   names) and refuses the rest; the `egress-probe` operation asserts it
+   and `forge doctor` reports it. That is what the github-issues plugin
+   was held for, and it is unheld. **Still to do for a customer:** each
+   task in its own microVM or container with only that customer's tree
+   and secrets, and the model token scoped to the task and expired when
+   it ends. Today the token an attempt holds can still reach the model
+   endpoint and whatever the repository declares, and nowhere else. This
+   touches `sandbox.rs` and the launch path only; the kernel already
+   treats the sandbox as a wrapper around one command.
 2. **Agents on API keys, metered per customer.** The claude CLI on a
    subscription cannot be resold and its rate windows are shared. The
    agent runs on the API with a key per customer; the per-attempt cost

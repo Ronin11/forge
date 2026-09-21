@@ -204,10 +204,12 @@ and records the issue as a `ref` on the task it files. When that task's
 outcome, adding a configured label if the task landed. Its configuration
 is `plugins/github-issues/config` (see `config.example`): which repo to
 watch, the label, the repo and workflow new tasks are queued against,
-and the poll interval. `config.example` currently holds this plugin back
-from being enabled until Forge bounds a task's network egress, since it
-hands untrusted issue text to an agent that already has a real git
-credential. Install with `forge plugin install plugins/github-issues`.
+and the poll interval. It hands text a stranger wrote to an agent, which
+is safe to enable because an attempt's network is bounded: its only
+route out is the egress proxy, which allows the model endpoint and the
+hosts the repository's `forge.toml` declares under `[sandbox] egress`
+(see `config.example` for what that means for this plugin). Install with
+`forge plugin install plugins/github-issues`.
 
 **signal** (`events`, `intake`, `message`) is a two-way bridge to Signal,
 run as one process with two loops so either exiting stops both. Outbound

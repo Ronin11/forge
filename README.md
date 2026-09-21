@@ -42,7 +42,11 @@ forge gc [--dry-run]                                        # remove worktrees t
 3. **Agent.** `claude --print --output-format stream-json --json-schema …`
    in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
    `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
-   the agent binary, and the claude CLI's state. Network shared. Killed at
+   the agent binary, and the claude CLI's state. Its network is its own:
+   a namespace with only loopback, and one route out, an allowlist proxy
+   that lets through the model endpoint and the hosts the repository's
+   `forge.toml` declares under `[sandbox] egress` and refuses the rest
+   (`src/egress.rs`; `forge doctor` reports the policy). Killed at
    `--timeout-secs` (default 1800); `--max-turns` (default 100) is the other
    cliff. The raw stream is the attempt's log, prompt first.
 
@@ -258,7 +262,9 @@ cargo test
 The e2e suite runs its fakes under the real sandbox, so it requires
 `bwrap`; a missing `bwrap` fails the suite loudly rather than silently
 skipping sandbox coverage. Set `FORGE2_TEST_NO_SANDBOX=1` to run the
-suite unsandboxed on a machine without bubblewrap.
+suite unsandboxed on a machine without bubblewrap. The egress tests need
+a bwrap that can create a network namespace and skip themselves where it
+cannot (bwrap inside another bwrap).
 
 ## Where this is going
 
