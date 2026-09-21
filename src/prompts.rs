@@ -508,6 +508,7 @@ mod tests {
             check_timeout_secs: 60,
             protected: vec![],
             namespace: vec![],
+            egress: vec![],
             config_path: "forge.toml".into(),
         }
     }

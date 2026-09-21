@@ -193,6 +193,7 @@ src/deploy.rs       forge deploy: run a target's method, record the result, roll
 src/deploy_look.rs  the deploy-look directive: a read-only agent looks at the deployed page
 src/directive.rs    one launcher for every bounded agent run, one reading of how it failed
 src/doctor.rs       forge doctor
+src/egress.rs       the egress allowlist and its proxy
 src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
 src/envelope.rs     the result contract: schema and parser
 src/git.rs          the few git operations Forge performs

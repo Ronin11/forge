@@ -17,6 +17,7 @@ mod deploy;
 mod deploy_look;
 mod directive;
 mod doctor;
+mod egress;
 mod engine;
 mod envelope;
 

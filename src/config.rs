@@ -17,6 +17,20 @@ struct Raw {
     defaults: Defaults,
     #[serde(default)]
     verify: VerifyRaw,
+    #[serde(default)]
+    sandbox: RepoSandboxRaw,
+}
+
+/// `[sandbox]` in the repository's forge.toml: what an attempt on this
+/// repository may reach on the network, beyond the model endpoint (always
+/// allowed). Not the operator's `[sandbox]` in config.toml, which is about
+/// paths. Read from the trusted base like everything else in forge.toml, so
+/// an attempt cannot widen its own allowlist.
+#[derive(Deserialize, Default)]
+struct RepoSandboxRaw {
+    /// `host`, `host:port`, `*.suffix` or `*.suffix:port`; see `egress::Rule`.
+    #[serde(default)]
+    egress: Vec<String>,
 }
 
 /// `[checks]`: the ordinary name -> argv entries, flattened, plus the one
@@ -69,6 +83,10 @@ pub struct Config {
     pub check_timeout_secs: u64,
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
+    /// `[sandbox] egress`: the hosts an attempt on this repository may
+    /// reach besides the model endpoint, typically the package registries
+    /// its checks install from. Empty by default: nothing else.
+    pub egress: Vec<crate::egress::Rule>,
     /// Where the repository's config actually lives: `forge.toml` or
     /// `.forge/forge.toml`. Whatever this is, it is the path every rule
     /// that used to say `forge.toml` by name now means.
@@ -120,6 +138,13 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
             bail!("checks.fixable.{name}: no such check `{name}` declared in [checks]");
         }
     }
+    let egress = raw
+        .sandbox
+        .egress
+        .iter()
+        .map(|e| crate::egress::Rule::parse(e).map_err(|e| e.context("sandbox.egress")))
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("parsing {what}"))?;
     let base_branch = match raw.defaults.base_branch {
         Some(b) => b,
         None => crate::git::current_branch(repo).await?,
@@ -159,6 +184,7 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
             .into_iter()
             .map(|d| if d.ends_with('/') { d } else { format!("{d}/") })
             .collect(),
+        egress,
         config_path: config_path.to_string(),
     })
 }
@@ -924,6 +950,53 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("fmt"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn sandbox_egress_parses_into_rules_and_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[defaults]\nbase_branch = \"main\"\n[checks]\nt = [\"true\"]\n",
+        )
+        .unwrap();
+        assert!(load_working(repo).await.unwrap().egress.is_empty());
+        std::fs::write(
+            repo.join("forge.toml"),
+            "[defaults]\nbase_branch = \"main\"\n[checks]\nt = [\"true\"]\n\
+             [sandbox]\negress = [\"registry.npmjs.org\", \"*.crates.io\", \"dev.home:11434\"]\n",
+        )
+        .unwrap();
+        let c = load_working(repo).await.unwrap();
+        let rules: Vec<String> = c.egress.iter().map(|r| r.to_string()).collect();
+        assert_eq!(
+            rules,
+            ["registry.npmjs.org", "*.crates.io", "dev.home:11434"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_egress_refuses_urls_and_wildcards_that_allow_the_world() {
+        for bad in [
+            "https://registry.npmjs.org",
+            "registry.npmjs.org/x",
+            "*",
+            "*.com",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path();
+            std::fs::write(
+                repo.join("forge.toml"),
+                format!("[defaults]\nbase_branch = \"main\"\n[checks]\nt = [\"true\"]\n[sandbox]\negress = [{bad:?}]\n"),
+            )
+            .unwrap();
+            let err = match load_working(repo).await {
+                Ok(_) => panic!("{bad:?} should be refused"),
+                Err(e) => format!("{e:#}"),
+            };
+            assert!(err.contains("egress"), "{err}");
+        }
     }
 
     #[test]
