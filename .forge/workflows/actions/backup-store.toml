@@ -1,0 +1,66 @@
+name = "backup-store"
+kind = "operation"
+description = "backs up the store to the equitizr host: takes a consistent copy of FORGE2_HOME/forge.db with sqlite3's .backup, rsyncs it and FORGE2_HOME/config.toml over ssh into ~/backups/forge/<UTC date>/, asserts the remote copy passes `pragma integrity_check`, then removes all but the seven newest dated directories there. Logs one file effect per copy. FORGE2_HOME comes from the job's environment, or $HOME/.local/share/forge2 by default; BACKUP_HOST (default equitizr) and BACKUP_KEEP (default 7) override the host and the count. In a dry run it logs what it would copy and does not run sqlite3, ssh or rsync."
+run = ["bash", "-c", '''
+home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+host="${BACKUP_HOST:-equitizr}"
+keep="${BACKUP_KEEP:-7}"
+day=$(date -u +%Y-%m-%d)
+root="~/backups/forge"
+dest="$root/$day"
+# rsync's remote paths are already relative to the remote home; only a
+# remote shell (ssh host "...") needs the ~ spelled out.
+rdest="backups/forge/$day"
+
+fail() {
+  echo "backup-store: $*" >&2
+  exit 1
+}
+
+# A store without a config.toml runs on defaults: nothing to copy.
+files=(forge.db)
+if [ -f "$home/config.toml" ] || [ "${FORGE_DRY_RUN:-}" = "1" ]; then files+=(config.toml); fi
+
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  for f in "${files[@]}"; do
+    what="$f"
+    [ "$f" = "forge.db" ] && what="a sqlite3 .backup copy of forge.db"
+    printf "file\t%s:%s/%s\twould copy %s from %s over rsync, then check it opens (dry run)\n" \
+      "$host" "$dest" "$f" "$what" "$home" >> "$FORGE_EFFECT_LOG"
+  done
+  echo "would keep the $keep newest dated directories under $host:$root and remove older ones (dry run)"
+  exit 0
+fi
+
+[ -f "$home/forge.db" ] || fail "no store at $home/forge.db"
+
+tmp=$(mktemp -d) || fail "cannot make a scratch directory"
+trap 'rm -rf "$tmp"' EXIT
+
+# .backup is sqlite's online backup: a consistent snapshot even while the
+# worker writes, where a plain cp of a WAL-mode database is not.
+sqlite3 "$home/forge.db" ".timeout 30000" ".backup '$tmp/forge.db'" \
+  || fail "sqlite3 .backup of $home/forge.db failed"
+[ -f "$home/config.toml" ] && cp "$home/config.toml" "$tmp/config.toml"
+
+ssh "$host" "mkdir -p $dest" || fail "cannot reach $host or make $dest"
+
+for f in "${files[@]}"; do
+  rsync -a -e ssh "$tmp/$f" "$host:$rdest/" || fail "rsync of $f to $host:$dest failed"
+  size=$(stat -c %s "$tmp/$f")
+  printf "file\t%s:%s/%s\tcopied %s (%s bytes)\n" "$host" "$dest" "$f" "$f" "$size" >> "$FORGE_EFFECT_LOG"
+done
+
+check=$(ssh "$host" "sqlite3 $dest/forge.db 'pragma integrity_check'") \
+  || fail "could not open $host:$dest/forge.db with sqlite3"
+[ "$check" = "ok" ] || fail "integrity_check of $host:$dest/forge.db said: $check"
+
+# Only after the new copy is proven: keep the newest dated directories.
+dirs=$(ssh "$host" "ls -1 $root") || fail "cannot list $host:$root"
+old=$(printf '%s\n' "$dirs" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | head -n "-$keep")
+for d in $old; do
+  ssh "$host" "rm -rf $root/$d" || fail "cannot remove $host:$root/$d"
+  echo "removed $host:$root/$d"
+done
+exit 0
+''']
