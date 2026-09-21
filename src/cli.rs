@@ -240,6 +240,17 @@ enum Cmd {
     },
     /// Print the crate version and, if built from a git checkout, its commit
     Version,
+    /// Inside a sandbox: pipe loopback to the egress proxy's unix socket
+    #[command(hide = true)]
+    EgressRelay {
+        #[arg(long, default_value = crate::egress::SANDBOX_SOCKET)]
+        socket: std::path::PathBuf,
+        #[arg(long, default_value = crate::egress::RELAY_ADDR)]
+        listen: String,
+        /// Created once the relay is listening
+        #[arg(long)]
+        ready: Option<std::path::PathBuf>,
+    },
     /// List the workflows a task can run, with declared metadata and measured outcomes
     Workflows {
         #[command(subcommand)]
@@ -1062,6 +1073,11 @@ pub async fn main() -> Result<()> {
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
+        Cmd::EgressRelay {
+            socket,
+            listen,
+            ready,
+        } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Requests { repo, json } => requests(repo, json),
         Cmd::Stats {

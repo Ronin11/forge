@@ -268,6 +268,8 @@ graph TD
 
 **src/sandbox.rs** builds the `bwrap` command line that isolates agent and check subprocesses behind a read-only host filesystem and a tmpfs `$HOME`, with only the task's clone, the agent binary, and configured toolchain/cache paths bound in. On by default; refuses to run without `bwrap` unless `FORGE2_SANDBOX=0`.
 
+**src/egress.rs** is the allowlist an attempt's network route enforces. A `Rule` is one `[sandbox] egress` entry (`host`, `host:port`, `*.suffix`); a `Policy` is a sorted set of them; the proxy is a tokio task on a unix socket that answers `CONNECT` and absolute-URI HTTP for hosts the policy allows and a 403 naming the host for everything else. It resolves names itself, and refuses a loopback or private address for a name only a suffix rule matched. `GET http://forge-egress.invalid/` returns the policy without touching the network, which is what the `egress-probe` operation uses to tell a working route from a missing one. `forge egress-relay` (hidden) is what runs inside the sandbox: it pipes 127.0.0.1:3128 to the proxy's socket.
+
 **src/agent.rs** spawns the `claude` CLI (or `$FORGE2_CLAUDE_BIN`) under the sandbox and reads its stream-json output under a wall-clock timeout into an `Outcome` (cost, tokens, structured envelope, rate-limit samples); the raw stream is the attempt's log.
 
 **src/config.rs** parses two configs: the repository's `forge.toml` (declared checks and their fix commands under `[checks.fixable]`, protected paths, hidden-test namespace, base branch/remote), read from the trusted base commit so the branch under test cannot change what it is verified against, and the operator's `FORGE2_HOME/config.toml` (budget, sandbox paths).
