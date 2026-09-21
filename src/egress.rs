@@ -189,6 +189,7 @@ impl Policy {
         Policy { rules }
     }
 
+    #[cfg(test)]
     pub fn rules(&self) -> &[Rule] {
         &self.rules
     }

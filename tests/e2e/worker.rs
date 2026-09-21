@@ -631,3 +631,41 @@ fn the_egress_probe_fails_when_there_is_no_sandbox() {
     assert!(!ok, "{detail}");
     assert!(detail.contains("not in the egress sandbox"), "{detail}");
 }
+
+#[test]
+fn doctor_reports_each_projects_egress_policy_and_warns_when_the_sandbox_is_off() {
+    let e = Env::new();
+    let toml = std::fs::read_to_string(e.repo.join("forge.toml")).unwrap();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        format!("{toml}[sandbox]\negress = [\"registry.npmjs.org\", \"*.crates.io\"]\n"),
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "declare egress"]);
+    // `add` creates the project that owns the repository.
+    e.add(&[]);
+
+    let mut off = e.cmd("ok.sh");
+    off.env("FORGE2_SANDBOX", "0").arg("doctor");
+    let o = off.output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("WARN egress "), "{out}");
+    assert!(out.contains("no egress policy is enforced"), "{out}");
+    assert!(
+        out.contains("WARN egress.repo") && out.contains("*.crates.io, registry.npmjs.org"),
+        "{out}"
+    );
+    assert!(out.contains("the model endpoint and"), "{out}");
+
+    if e.sandbox_disabled() || !can_unshare_net() {
+        return;
+    }
+    let o = e.forge("ok.sh", &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("OK   egress "), "{out}");
+    assert!(
+        out.contains("*.anthropic.com"),
+        "the model endpoint is named: {out}"
+    );
+    assert!(out.contains("OK   egress.repo"), "{out}");
+}

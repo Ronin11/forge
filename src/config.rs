@@ -212,6 +212,20 @@ pub fn load_working_checks(dir: &Path) -> Result<BTreeMap<String, Vec<String>>> 
     Ok(raw.checks.checks)
 }
 
+/// The `[sandbox] egress` declared in the working tree's config at `dir`:
+/// what `forge doctor` shows for each project. Sync and git-free, like
+/// `load_working_checks`; attempts read the same table from the base commit.
+pub fn load_working_egress(dir: &Path) -> Result<Vec<crate::egress::Rule>> {
+    let (path, _, text) = read_working(dir)?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    raw.sandbox
+        .egress
+        .iter()
+        .map(|e| crate::egress::Rule::parse(e))
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("{}: sandbox.egress", path.display()))
+}
+
 fn read_working(repo: &Path) -> Result<(PathBuf, &'static str, String)> {
     let alt = repo.join(ALT_CONFIG_PATH);
     let root = repo.join(ROOT_CONFIG_PATH);

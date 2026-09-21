@@ -144,6 +144,95 @@ fn check_binaries() -> Vec<Check> {
     out
 }
 
+/// What an attempt can reach: whether bwrap can give it a network namespace
+/// at all, the model endpoints that are always allowed, and each project's
+/// declared `[sandbox] egress`. Unsandboxed, none of it is enforced.
+fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
+    let mut out = Vec::new();
+    let model: Vec<String> = match config::load_home(&paths.home) {
+        Ok(c) => crate::egress::model_rules(&c.providers)
+            .iter()
+            .map(|r| r.to_string())
+            .collect(),
+        // `check_config` reports a config that does not load.
+        Err(_) => Vec::new(),
+    };
+    let sandbox_off = std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0");
+    out.push(if sandbox_off {
+        check(
+            "egress",
+            Status::Warn,
+            "FORGE2_SANDBOX=0: attempts have the host's network; no egress policy is enforced",
+            "unset FORGE2_SANDBOX",
+        )
+    } else if sandbox::resolve_binary("bwrap").is_err() {
+        check("egress", Status::Fail, "bwrap not found", "install bubblewrap")
+    } else {
+        match std::process::Command::new("bwrap")
+            .args(["--unshare-net", "--ro-bind", "/", "/", "--dev", "/dev", "true"])
+            .output()
+        {
+            Ok(o) if o.status.success() => check(
+                "egress",
+                Status::Ok,
+                format!(
+                    "attempts get a network namespace; the model endpoint is always allowed ({})",
+                    model.join(", ")
+                ),
+                "",
+            ),
+            Ok(o) => check(
+                "egress",
+                Status::Fail,
+                format!(
+                    "bwrap cannot create a network namespace: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                "attempts would not start; enable unprivileged user namespaces, or set FORGE2_SANDBOX=0 to run unsandboxed",
+            ),
+            Err(e) => check("egress", Status::Fail, format!("running bwrap: {e}"), ""),
+        }
+    });
+    let projects = match store.list_projects() {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    for p in projects {
+        let repos = store.project_repos(&p.name).unwrap_or_default();
+        let mut allowed = Vec::new();
+        let mut broken = None;
+        for r in &repos {
+            match config::load_working_egress(std::path::Path::new(&r.repo)) {
+                Ok(rules) => allowed.extend(rules.iter().map(|r| r.to_string())),
+                Err(e) => broken = Some(format!("{}: {e:#}", r.repo)),
+            }
+        }
+        allowed.sort();
+        allowed.dedup();
+        out.push(match broken {
+            Some(e) => check(
+                &format!("egress.{}", p.name),
+                Status::Warn,
+                e,
+                "fix [sandbox] egress in the repository's forge.toml",
+            ),
+            None if allowed.is_empty() => check(
+                &format!("egress.{}", p.name),
+                if sandbox_off { Status::Warn } else { Status::Ok },
+                "the model endpoint only",
+                "a repository whose checks install packages declares its registries: [sandbox] egress = [\"registry.npmjs.org\"]",
+            ),
+            None => check(
+                &format!("egress.{}", p.name),
+                if sandbox_off { Status::Warn } else { Status::Ok },
+                format!("the model endpoint and {}", allowed.join(", ")),
+                "",
+            ),
+        });
+    }
+    out
+}
+
 /// Whether FORGE2_HOME is writable, once it has already been resolved.
 fn check_home(paths: &Paths) -> Vec<Check> {
     let probe = paths.home.join(".doctor-write-probe");
@@ -702,6 +791,7 @@ pub fn run() -> Result<Vec<Check>> {
     };
     out.extend(check_schema(&store));
     out.extend(check_project_purposes(&store));
+    out.extend(check_egress(&paths, &store));
     out.extend(check_workflows(&paths));
     out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));
