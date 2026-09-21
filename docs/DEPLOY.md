@@ -51,7 +51,8 @@ running, since there would be nothing left to record the result on.
 A method is an action file under `src/builtins/operations/deploy-*.toml`,
 so it is versioned, hashed and measured like every operation, and an
 operator can add one in the workflows directory without touching Forge.
-The first four:
+The first four are for a project's own thing; the fifth, `deploy-self`, is
+for Forge:
 
 - **`deploy-command`**: the generic one. Copy the landed tree (or the
   build output the repository's `build` check produces) to the host with
@@ -76,6 +77,9 @@ The first four:
   for it to report success and run the check. This is the whole
   integration with hosted CI: Forge triggers and waits; it does not
   reimplement.
+
+- **`deploy-self`**: Forge on this machine, from a landing on its own
+  repository. See "Deploying Forge itself" below.
 
 Nothing here is an agent. A method is a script with arguments. An agent
 may be given a task to *write* a deploy script for a project; running
@@ -221,10 +225,82 @@ portal.example.com {
 `forge-portal` running: install it at
 `~/.config/systemd/user/forge-portal.service` on the operator's host,
 `loginctl enable-linger` the user so it survives a logout, then
-`systemctl --user enable --now forge-portal`. It is not one of the four
-deploy methods above; the portal is Forge's own server, not a project's,
-so it is provisioned by hand alongside the box rather than as a deploy
-target.
+`systemctl --user enable --now forge-portal`. Installing it is by hand,
+once; after that `deploy-self` restarts it with the rest of Forge.
+
+## Deploying Forge itself
+
+A landing on the Forge repository redeploys Forge the way a landing on
+equitizr deploys equitizr: nobody rebuilds by hand, nobody restarts a
+unit. It is one target on the `forge` project, declared once:
+
+```
+forge project deploy add forge self --repo ~/Projects/forge --method deploy-self --arg dest=$HOME/Projects/forge --on-landing
+```
+
+`--repo` is the repository the deploy is triggered by and whose commit is
+built; `dest` is the checkout Forge runs from, the one `~/.local/bin`'s
+symlinks and `deploy/forge-worker.service` point at. They are usually the
+same directory. No `--check` is needed: `deploy-self` supplies its own.
+
+`deploy-self` (`src/builtins/operations/deploy-self.toml`) runs, in the
+landed tree's scratch archive, under a lock so two landings never build
+over each other:
+
+1. Copy the five release binaries in `dest/target/release` (`forge`,
+   `forge-web`, `forge-portal`, `forge-repomap`, `forge-tui`) to
+   `dest/target/release/previous/`. That directory always holds what ran
+   before the current deploy.
+2. `cargo build --release --workspace` with `CARGO_TARGET_DIR` set to
+   `dest/target`, not the scratch archive, so the build cache is used and
+   the binaries land where the symlinks and the units point. The archive
+   has no `.git`, so the commit is handed to `build.rs` as
+   `FORGE_BUILD_SHA` and `forge version` still names it.
+3. `systemctl --user restart forge-web forge-portal`, then wait, bounded,
+   for both to report active.
+4. Run the check, retried while it fails, up to a bound. The default asks
+   the web client the same thing an operator's browser does: `GET
+   http://127.0.0.1:7788/tasks` with `Authorization: Bearer` and the token
+   in `FORGE2_HOME/web.token`, expecting 200. A target's own `--check`
+   replaces it.
+5. Only when the check passed, and last, `systemctl --user restart
+   --no-block forge-worker`.
+
+Args: `dest` (required), `url`, `units` (default `forge-web
+forge-portal`), `worker` (default `forge-worker`) and `tries` (default 40,
+half a second apart, for each wait). The method gets `FORGE_DEPLOY_SHA`
+and `FORGE2_HOME` from `forge deploy` like the rest of its environment.
+
+**How a deploy survives its own worker restart.** An on-landing deploy is
+not a separate process: the worker that landed the task calls
+`deploy::run` from inside the landing (`deploy_on_landing`), so the
+process being restarted is the one running the method. Three things make
+that safe. `--no-block` returns as soon as systemd has queued the
+restart, so the method finishes and exits before anything is stopped.
+The worker's stop is a drain, not a kill (`deploy/forge-worker.service`
+sends one SIGTERM to the main process, `KillMode=mixed`, and waits up to
+`TimeoutStopSec=2400`): it claims nothing new and lets every running
+attempt finish, and the landing that triggered the deploy is one of them,
+so the smoke step, the deploy row, the `DeployFinished` event and the
+on-landing assessment are all written by the old process before it exits.
+And the restart is the last thing the method does, after the check, so a
+build that fails never reaches the worker: the worker keeps running the
+old binary and no attempt is interrupted. Its replacement starts on the
+new binary. Nothing here signals the worker twice (a second SIGTERM
+aborts running attempts), and a deploy that rolls back restarts it at
+most once, from the rollback's own passing run.
+
+**Rollback.** A build or check that fails restores the binaries in
+`previous/` over the new ones (copy then rename, so a running binary is
+never written to), restarts web and portal onto them, leaves the worker
+alone and exits non-zero. The generic rollback below then redeploys the
+last passing commit through the same method, and the project gets its
+question. A first-ever deploy has no `previous/` to restore and no passing
+commit to roll back to; the record says so.
+
+The whole method has to finish inside the repository's
+`check_timeout_secs`, a cold `cargo build` included; the build cache in
+`dest/target` is what makes a warm one fit.
 
 ## Rollback and the human rung
 
@@ -237,6 +313,10 @@ attempted. Either way a person decides; the record has everything they
 need. There is no third try.
 
 ## Secrets and hosts
+
+(A method also gets `FORGE_DEPLOY_SHA`, the commit it deploys, and
+`FORGE2_HOME`, since an operation's environment is otherwise cleared to
+`PATH`, `HOME` and the like.)
 
 A method gets its host credentials the way a plugin gets its
 configuration: from the operator's environment or a file the target

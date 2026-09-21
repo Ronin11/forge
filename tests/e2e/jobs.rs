@@ -3356,3 +3356,219 @@ fn setup_needs_marker(e: &Env) {
     )
     .unwrap();
 }
+
+/// docs/ROADMAP.md item 2's `backup-daily`, copied verbatim from this
+/// repository's own `.forge/workflows/` into a throwaway project repo and
+/// committed. `ssh` and `rsync` are faked to reach a directory on this
+/// machine standing in for the equitizr host's home (the fake rsync
+/// strips `host:` and starts in that home, as a real remote rsync does),
+/// and every call they get is logged so a dry run can prove it dialled
+/// nothing.
+fn backup_env(e: &Env) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "forge",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::create_dir_all(e.repo.join(".forge/workflows/actions")).unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/backup-daily.toml"),
+        e.repo.join(".forge/workflows/backup-daily.toml"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root.join(".forge/workflows/actions/backup-store.toml"),
+        e.repo.join(".forge/workflows/actions/backup-store.toml"),
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add the backup-daily automation"],
+    );
+
+    let remote_home = e._dir.path().join("remote-home");
+    std::fs::create_dir_all(&remote_home).unwrap();
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    let calls = e._dir.path().join("calls.log");
+    write_fake(
+        &fakebin.join("ssh"),
+        &format!(
+            "#!/bin/bash\necho \"ssh $*\" >> {calls}\ncd {home} && HOME={home} bash -c \"$2\"\n",
+            calls = calls.display(),
+            home = remote_home.display()
+        ),
+    );
+    write_fake(
+        &fakebin.join("rsync"),
+        &format!(
+            r#"#!/bin/bash
+echo "rsync $*" >> {calls}
+argv=()
+for a in "$@"; do
+  case "$a" in
+    -e|ssh) ;;
+    -*) argv+=("$a") ;;
+    *:*) argv+=("${{a#*:}}") ;;
+    *) argv+=("$a") ;;
+  esac
+done
+cd {home} && /usr/bin/rsync "${{argv[@]}}"
+"#,
+            calls = calls.display(),
+            home = remote_home.display()
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (remote_home, calls, path)
+}
+
+#[test]
+fn backup_daily_parses_and_a_dry_run_records_one_file_effect_per_copy_and_dials_nothing() {
+    let e = Env::new();
+    let (remote_home, calls, path) = backup_env(&e);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let v = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
+        .args(["workflows", "validate", root.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(v.status.success(), "{}", String::from_utf8_lossy(&v.stdout));
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .args([
+            "job",
+            "start",
+            "forge",
+            "backup-daily",
+            "--now",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "show", &id, "--json"]).stdout).unwrap();
+    assert_eq!(doc["dry_run"], true);
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(doc["workflow"], "backup-daily");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0]["action"], "backup-store");
+
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "one file effect per copy: {effects:?}");
+    assert!(effects.iter().all(|e| e["kind"] == "file"), "{effects:?}");
+    for (effect, name) in effects.iter().zip(["forge.db", "config.toml"]) {
+        let target = effect["target"].as_str().unwrap();
+        assert!(
+            target.starts_with("equitizr:~/backups/forge/")
+                && target.ends_with(&format!("/{name}")),
+            "{target}"
+        );
+        assert!(effect["summary"].as_str().unwrap().contains("would copy"));
+        assert_eq!(effect["dry_run"], true);
+    }
+
+    assert!(!calls.exists(), "a dry run must not run ssh or rsync");
+    assert_eq!(std::fs::read_dir(&remote_home).unwrap().count(), 0);
+}
+
+#[test]
+fn backup_daily_copies_the_store_checks_it_opens_and_keeps_the_seven_newest() {
+    let e = Env::new();
+    let (remote_home, calls, path) = backup_env(&e);
+    std::fs::write(e.home.join("config.toml"), "# operator config\n").unwrap();
+    let forge_dir = remote_home.join("backups/forge");
+    let old = [
+        "2026-08-01",
+        "2026-08-02",
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-08-07",
+        "2026-08-08",
+    ];
+    for d in old {
+        std::fs::create_dir_all(forge_dir.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(forge_dir.join("not-a-date")).unwrap();
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .args(["job", "start", "forge", "backup-daily", "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "show", &id, "--json"]).stdout).unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert!(
+        effects
+            .iter()
+            .all(|e| e["kind"] == "file" && e["dry_run"] == false)
+    );
+
+    let mut names: Vec<String> = std::fs::read_dir(&forge_dir)
+        .unwrap()
+        .map(|d| d.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names.len(),
+        8,
+        "seven dated directories and the stray one: {names:?}"
+    );
+    assert!(names.contains(&"not-a-date".to_string()));
+    assert!(!names.contains(&"2026-08-01".to_string()));
+    assert!(!names.contains(&"2026-08-02".to_string()));
+    assert!(names.contains(&"2026-08-03".to_string()));
+
+    let today = names
+        .iter()
+        .filter(|n| n.starts_with(|c: char| c.is_ascii_digit()) && !old.contains(&n.as_str()))
+        .max()
+        .unwrap();
+    let copy = forge_dir.join(today);
+    assert_eq!(
+        std::fs::read_to_string(copy.join("config.toml")).unwrap(),
+        "# operator config\n"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .arg(copy.join("forge.db"))
+        .arg("pragma integrity_check")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    let log = std::fs::read_to_string(&calls).unwrap();
+    assert!(
+        log.contains("rsync") && log.contains("integrity_check"),
+        "{log}"
+    );
+}

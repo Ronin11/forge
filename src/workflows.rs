@@ -787,6 +787,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         include_str!("builtins/operations/deploy-user-service.toml"),
     ),
     (
+        "deploy-self.toml",
+        include_str!("builtins/operations/deploy-self.toml"),
+    ),
+    (
         "deploy-static.toml",
         include_str!("builtins/operations/deploy-static.toml"),
     ),

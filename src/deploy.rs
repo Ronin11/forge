@@ -30,11 +30,12 @@ async fn deploy_at(
     target: &DeployTarget,
     repo: &Path,
     sha: &str,
+    home: &Path,
     timeout: Duration,
     scratch: &Path,
 ) -> Result<crate::checks::CheckResult> {
     git::fresh_archive(repo, sha, scratch).await?;
-    let r = operation::run_deploy_method(action, target, scratch, timeout).await;
+    let r = operation::run_deploy_method(action, target, sha, home, scratch, timeout).await;
     let _ = std::fs::remove_dir_all(scratch);
     r
 }
@@ -145,6 +146,7 @@ pub async fn run(
         &target,
         &repo,
         &sha,
+        &f.paths.home,
         timeout,
         &scratch_dir(f, deploy_id, ""),
     )
@@ -287,6 +289,7 @@ pub async fn run(
         &target,
         &repo,
         &previous.sha,
+        &f.paths.home,
         timeout,
         &scratch_dir(f, deploy_id, "-rollback"),
     )
@@ -363,6 +366,13 @@ pub struct TargetChanges {
     pub no_on_landing: bool,
 }
 
+/// Methods that supply their own check when the target declares none:
+/// `deploy-static` fetches its url, `deploy-self` fetches the web
+/// client's `/tasks`.
+fn has_default_check(method: &str) -> bool {
+    matches!(method, "deploy-static" | "deploy-self")
+}
+
 /// A deploy target's own dedicated flags, kept out of `--arg` so a typo
 /// like `--arg method=...` fails loudly instead of landing an argument
 /// the method never reads.
@@ -398,8 +408,8 @@ pub fn parse_target_args(pairs: &[String]) -> Result<BTreeMap<String, String>> {
 /// Declare a deploy target: resolve its repository to an absolute path,
 /// its comma-separated `scope` to the JSON array the store keeps, and
 /// its `--arg`s to a map, then insert it (see docs/DEPLOY.md, "A
-/// target"). `check` is required except for `deploy-static`, which
-/// defaults to an empty check command.
+/// target"). `check` is required except for the methods that default
+/// their own (see [`has_default_check`]), which store an empty one.
 pub fn add_target(f: &Forge, spec: TargetSpec) -> Result<DeployTarget> {
     f.store
         .project(&spec.project)?
@@ -415,7 +425,7 @@ pub fn add_target(f: &Forge, spec: TargetSpec) -> Result<DeployTarget> {
     let args = parse_target_args(&spec.args)?;
     let check = match spec.check {
         Some(c) => c,
-        None if spec.method == "deploy-static" => String::new(),
+        None if has_default_check(&spec.method) => String::new(),
         None => bail!("--check is required for method {:?}", spec.method),
     };
     let target = DeployTarget {
@@ -476,7 +486,7 @@ pub fn set_target(
     } else if changes.no_on_landing {
         t.on_landing = false;
     }
-    if t.check_cmd.is_empty() && t.method != "deploy-static" {
+    if t.check_cmd.is_empty() && !has_default_check(&t.method) {
         bail!("--check is required for method {:?}", t.method);
     }
 

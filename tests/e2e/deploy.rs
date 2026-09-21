@@ -1547,3 +1547,314 @@ fn deploy_remove_deletes_the_target_and_its_future_on_landing_runs() {
         "{deploys_after:?}"
     );
 }
+
+/// A fake `cargo` for `deploy-self`: records how it was called (and the
+/// target directory and commit the method handed it), then "builds" the
+/// five release binaries into `$CARGO_TARGET_DIR/release`, each stamped
+/// with the landed tree's `flag.txt` so a test can tell which tree built it.
+const FAKE_CARGO: &str = r#"#!/bin/bash
+echo "cargo $* target=$CARGO_TARGET_DIR sha=$FORGE_BUILD_SHA cwd=$PWD" >> "$HOME/deploy-calls.log"
+mkdir -p "$CARGO_TARGET_DIR/release"
+for b in forge forge-web forge-portal forge-repomap forge-tui; do
+  printf '#!/bin/sh\n# %s sha=%s\n' "$(cat flag.txt)" "$FORGE_BUILD_SHA" > "$CARGO_TARGET_DIR/release/$b"
+  chmod +x "$CARGO_TARGET_DIR/release/$b"
+done
+"#;
+
+/// A fake `systemctl` that records every call and reports every unit
+/// active at once.
+const FAKE_SYSTEMCTL_ACTIVE: &str = r#"#!/bin/bash
+echo "systemctl $*" >> "$HOME/deploy-calls.log"
+if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then
+  echo active
+fi
+exit 0
+"#;
+
+/// A fake `curl` standing in for the web client: records the call, answers
+/// 500 while the checkout's `forge` binary is one built from a `bad` tree
+/// and 200 otherwise.
+const FAKE_CURL_WEB: &str = r#"#!/bin/bash
+echo "curl $*" >> "$HOME/deploy-calls.log"
+if grep -q bad "$(cat "$HOME/fake-dest")/target/release/forge"; then
+  printf '500'
+else
+  printf '200'
+fi
+"#;
+
+/// A registered checkout with an old release already built in it, the
+/// fakes on `PATH`, and a `forge` project whose `self` target uses
+/// `deploy-self` on it.
+struct SelfDeploy {
+    e: Env,
+    dest: std::path::PathBuf,
+    fakehome: std::path::PathBuf,
+    path: String,
+}
+
+impl SelfDeploy {
+    fn new() -> SelfDeploy {
+        let e = Env::new();
+        let repo_s = e.repo.to_str().unwrap();
+        assert!(
+            e.forge(
+                "ok.sh",
+                &[
+                    "project",
+                    "new",
+                    "forge",
+                    "--purpose",
+                    "p",
+                    "--repo",
+                    repo_s
+                ],
+            )
+            .status
+            .success()
+        );
+
+        let dest = e._dir.path().join("checkout");
+        let rel = dest.join("target/release");
+        std::fs::create_dir_all(&rel).unwrap();
+        std::fs::write(dest.join("Cargo.toml"), "[workspace]\n").unwrap();
+        for b in [
+            "forge",
+            "forge-web",
+            "forge-portal",
+            "forge-repomap",
+            "forge-tui",
+        ] {
+            write_fake(&rel.join(b), "#!/bin/sh\n# old\n");
+        }
+
+        let o = e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "deploy",
+                "add",
+                "forge",
+                "self",
+                "--repo",
+                repo_s,
+                "--method",
+                "deploy-self",
+                "--arg",
+                &format!("dest={}", dest.display()),
+                "--arg",
+                "tries=2",
+                "--on-landing",
+            ],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+        std::fs::write(e.home.join("web.token"), "tok123\n").unwrap();
+
+        let fakebin = e._dir.path().join("fakebin");
+        std::fs::create_dir_all(&fakebin).unwrap();
+        write_fake(&fakebin.join("cargo"), FAKE_CARGO);
+        write_fake(&fakebin.join("systemctl"), FAKE_SYSTEMCTL_ACTIVE);
+        write_fake(&fakebin.join("curl"), FAKE_CURL_WEB);
+        let path = format!(
+            "{}:{}",
+            fakebin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let fakehome = e._dir.path().join("fakehome");
+        std::fs::create_dir_all(&fakehome).unwrap();
+        std::fs::write(fakehome.join("fake-dest"), dest.to_str().unwrap()).unwrap();
+        SelfDeploy {
+            e,
+            dest,
+            fakehome,
+            path,
+        }
+    }
+
+    /// Commit `flag.txt` = `flag` on the repository and return the commit.
+    fn commit(&self, flag: &str) -> String {
+        std::fs::write(self.e.repo.join("flag.txt"), format!("{flag}\n")).unwrap();
+        git(&self.e.repo, &["add", "-A"]);
+        git(&self.e.repo, &["commit", "-qm", flag]);
+        git(&self.e.repo, &["rev-parse", "HEAD"])
+    }
+
+    fn deploy(&self, sha: &str) -> std::process::Output {
+        self.e
+            .cmd("ok.sh")
+            .env("PATH", &self.path)
+            .env("HOME", &self.fakehome)
+            .args(["deploy", "forge", "self", "--sha", sha])
+            .output()
+            .unwrap()
+    }
+
+    fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.fakehome.join("deploy-calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn binary(&self, name: &str) -> String {
+        std::fs::read_to_string(self.dest.join("target/release").join(name)).unwrap()
+    }
+
+    fn deploy_rows(&self) -> Vec<serde_json::Value> {
+        let rows: serde_json::Value = serde_json::from_slice(
+            &self
+                .e
+                .forge("ok.sh", &["deploy", "log", "forge", "self", "--json"])
+                .stdout,
+        )
+        .unwrap();
+        rows.as_array().unwrap().clone()
+    }
+}
+
+#[test]
+fn deploy_self_builds_into_the_checkout_restarts_web_and_portal_then_the_worker_last() {
+    let s = SelfDeploy::new();
+    let good = s.commit("good");
+
+    let o = s.deploy(&good);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Built with the workspace flags, into the registered checkout's
+    // target directory rather than the scratch archive, naming its commit
+    // since the archive has no .git.
+    let calls = s.calls();
+    let build = calls.iter().find(|c| c.starts_with("cargo ")).unwrap();
+    assert!(
+        build.starts_with("cargo build --release --workspace "),
+        "{build}"
+    );
+    assert!(
+        build.contains(&format!("target={}", s.dest.join("target").display())),
+        "{build}"
+    );
+    assert!(build.contains(&format!("sha={}", &good[..7])), "{build}");
+    assert!(
+        !build.contains(&format!("cwd={}", s.dest.display())),
+        "{build}"
+    );
+
+    // The new binaries are in place, the old ones kept beside them.
+    for b in ["forge", "forge-web", "forge-portal"] {
+        assert!(s.binary(b).contains("good"), "{b}: {}", s.binary(b));
+        assert!(
+            s.binary(&format!("previous/{b}")).contains("old"),
+            "{b}: {}",
+            s.binary(&format!("previous/{b}"))
+        );
+    }
+
+    // web and portal restart first, the check curls /tasks with the web
+    // token, and the worker is asked to restart last, without blocking.
+    let systemctl: Vec<&String> = calls
+        .iter()
+        .filter(|c| c.starts_with("systemctl") && !c.contains("is-active"))
+        .collect();
+    assert_eq!(
+        systemctl,
+        [
+            "systemctl --user restart forge-web forge-portal",
+            "systemctl --user restart --no-block forge-worker"
+        ],
+        "{calls:?}"
+    );
+    let curl = calls.iter().position(|c| c.starts_with("curl ")).unwrap();
+    assert!(
+        calls[curl].contains("Authorization: Bearer tok123")
+            && calls[curl].contains("http://127.0.0.1:7788/tasks"),
+        "{}",
+        calls[curl]
+    );
+    assert_eq!(
+        calls.last().unwrap(),
+        "systemctl --user restart --no-block forge-worker",
+        "{calls:?}"
+    );
+    assert!(curl < calls.len() - 1);
+
+    let rows = s.deploy_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["sha"], good);
+    assert_eq!(rows[0]["check_ok"], true);
+}
+
+#[test]
+fn deploy_self_restores_the_previous_binaries_and_leaves_the_worker_alone_when_the_check_fails() {
+    let s = SelfDeploy::new();
+    let bad = s.commit("bad");
+
+    let o = s.deploy(&bad);
+    assert!(!o.status.success());
+
+    // The build was in place for the check, then put back: what runs is
+    // what ran before, and the units were restarted onto it.
+    for b in [
+        "forge",
+        "forge-web",
+        "forge-portal",
+        "forge-repomap",
+        "forge-tui",
+    ] {
+        assert!(s.binary(b).contains("old"), "{b}: {}", s.binary(b));
+    }
+    let calls = s.calls();
+    assert!(calls.iter().any(|c| c.starts_with("curl ")), "{calls:?}");
+    let restarts = calls
+        .iter()
+        .filter(|c| *c == "systemctl --user restart forge-web forge-portal")
+        .count();
+    assert_eq!(restarts, 2, "{calls:?}");
+    assert!(
+        !calls.iter().any(|c| c.contains("forge-worker")),
+        "the worker must not be restarted onto a build that failed its check: {calls:?}"
+    );
+
+    // Nothing to roll back to, so the deploy row says so and the project
+    // is asked.
+    let rows = s.deploy_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["check_ok"], false);
+    assert!(
+        rows[0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no previous deploy"),
+        "{:?}",
+        rows[0]
+    );
+    let state: String =
+        s.e.db()
+            .query_row(
+                "SELECT state FROM tasks WHERE project = 'forge' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(state, "blocked");
+}
+
+#[test]
+fn deploy_self_after_a_passing_deploy_rolls_a_failing_one_back_to_it() {
+    let s = SelfDeploy::new();
+    let good = s.commit("good");
+    assert!(s.deploy(&good).status.success());
+    let bad = s.commit("bad");
+
+    let o = s.deploy(&bad);
+    assert!(!o.status.success());
+
+    // The generic rollback redeployed the last passing commit through the
+    // same method, so the checkout runs it again.
+    assert!(s.binary("forge").contains("good"), "{}", s.binary("forge"));
+    let rows = s.deploy_rows();
+    let failed = rows.iter().find(|r| r["sha"] == bad).unwrap();
+    assert_eq!(failed["check_ok"], false);
+    assert_eq!(failed["rolled_back_to"], good);
+}

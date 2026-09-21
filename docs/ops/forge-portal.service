@@ -8,18 +8,18 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now forge-portal
 #
-# `deploy-user-service` (docs/DEPLOY.md, "Methods") restarts this same
-# unit after each landing on the repository that builds `forge`, the same
-# way it restarts any other project's service.
+# `deploy-self` (docs/DEPLOY.md, "Deploying Forge itself") rebuilds and
+# restarts this unit after each landing on the Forge repository, with
+# forge-web and forge-worker.
 [Unit]
 Description=Forge customer portal
 After=network.target
 
 [Service]
-WorkingDirectory=%h/forge2
+WorkingDirectory=%h/Projects/forge
 Environment=FORGE2_HOME=%h/.local/share/forge2
-Environment=FORGE_BIN=%h/forge2/target/release/forge
-ExecStart=%h/forge2/target/release/forge-portal --bind 127.0.0.1:7799
+Environment=FORGE_BIN=%h/Projects/forge/target/release/forge
+ExecStart=%h/Projects/forge/target/release/forge-portal --bind 127.0.0.1:7799
 Restart=on-failure
 RestartSec=3
 
