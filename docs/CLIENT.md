@@ -816,7 +816,7 @@ across a rotation, not to the snapshot protocol itself.
   the task currently open; `forge retry [--chain]` to act. The queue
   table's `TaskRow.project` is shown as a column; the task view shows
   `TraceDoc.task.initiative` alongside the rest of the record.
-- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`): every
+- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`, `web/src/time.js`): every
   route under `/api/` runs one verb and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`
   (query params map to `--limit`/`--before`/`--grep`/`--state`/
@@ -833,6 +833,12 @@ across a rotation, not to the snapshot protocol itself.
   `POST /api/plugins/<name>/enable` and `.../disable` → `forge plugin
   enable|disable <name>`; `/api/plugins/<name>/logs` → `forge plugin
   logs <name>` (no `--follow`), served as plain text.
+  Every time the page shows is Unix seconds from the server (`created_at`,
+  `started_at`, `finished_at`, `due_at`, an event's `ts`), turned into text
+  by `web/src/time.js` alone: `fmtTime` renders `2026-09-21 07:00` in the
+  browser's own zone, `fmtSpan` and `fmtAgo` the relative forms (a plugin's
+  uptime, a job's due time). `web/tests/time.rs` runs it under `node` in
+  fixed zones.
   `/api/projects` → `project list --json` for the `/projects` page;
   `/api/projects/<name>` → `project show <name> --json`,
   `/api/projects/<name>/initiatives` → `initiative list <name> --json`,

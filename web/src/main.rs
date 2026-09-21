@@ -33,6 +33,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
+const TIME_JS: &str = include_str!("time.js");
 
 /// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
 fn home() -> PathBuf {
@@ -546,6 +547,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
+        "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
         "/api/stats" => json_or_error(stats_json(forge)),
