@@ -26,3 +26,9 @@ protected = ["tests/boundary.rs", "forge.toml"]
 # exist on main. Cargo discovers tests/hidden/main.rs as one integration test
 # target, so hidden tests written there run under the `test` check.
 namespace = ["tests/hidden/"]
+
+# Attempts run in a network namespace whose only route out is an allowlist
+# proxy (docs/GTM.md, src/egress.rs). The model endpoints are always allowed;
+# the checks need the crate registry.
+[sandbox]
+egress = ["index.crates.io", "static.crates.io"]
