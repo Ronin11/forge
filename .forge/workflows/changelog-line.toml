@@ -14,6 +14,6 @@ on = "manual"
 appended = ["bash", "-c", "grep -q '^file' \"$FORGE_EFFECT_LOG\""]
 
 [limits]
-budget_usd = 0.05
+budget_usd = 0.60
 per_day = 50
 on_failure = "ask:operator"
