@@ -463,15 +463,15 @@ forms, one now and one later.
 | `tdd` | tests → setup → repo-map → code | 61 tasks, 30% landed; $3.38 per landed |
 | `docs` | setup → docs | 11 tasks, 82% landed; $0.67 per landed |
 | `cheap` | setup → repo-map → fix (sonnet, 25 turns) → fmt | 18 tasks, 22% landed; $0.88 per landed |
-| `polish` | setup → repo-map → code → polish | not yet measured |
+| `polish` | setup → repo-map → code → polish | no figures in the record read |
 | `reviewed` | setup → repo-map → code → review | 276 tasks, 188 landed (68%); $4.74 per landed. The choice for anything larger, for weak checks, or with no one to answer |
-| `tdd-reviewed` | tests → setup → repo-map → code → review | not yet measured |
-| `playable` | setup → repo-map → code → playwright (hidden suite, verifies) | not yet measured |
-| `documented` | setup → repo-map → code → document → comments-only (verifies) | not yet measured |
-| `mapped` | setup → repo-map → code → graph → graph-check (verifies) | not yet measured |
+| `tdd-reviewed` | tests → setup → repo-map → code → review | no figures in the record read |
+| `playable` | setup → repo-map → code → playwright (hidden suite, verifies) | no figures in the record read |
+| `documented` | setup → repo-map → code → document → comments-only (verifies) | no figures in the record read |
+| `mapped` | setup → repo-map → code → graph → graph-check (verifies) | no figures in the record read |
 | `planned` | setup → repo-map → investigate → code | 7 tasks, 43% landed; $1.99 per landed |
-| `intake` | setup → interview | not yet measured |
-| `concierge` | setup → concierge | not yet measured |
+| `intake` | setup → interview | no figures in the record read |
+| `concierge` | setup → concierge | no figures in the record read |
 
 Each carries `[meta]` saying when to use it and when not. What each costs
 and achieves is measured, never declared; see docs/WORKFLOWS.md.
