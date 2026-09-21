@@ -635,6 +635,12 @@ CREATE TABLE event_cursors (
 );
 CREATE UNIQUE INDEX jobs_event_ref ON jobs(project, workflow, trigger_ref) WHERE trigger_kind = 'event' AND retry_count = 0;
 ",
+    // What an operation step printed (docs/JOBS.md, \"The executor\"): the
+    // last lines of its stdout and stderr, on the step's own row, so a job
+    // that failed on a step says why without the scratch tree in hand.
+    "
+ALTER TABLE job_steps ADD COLUMN tail TEXT NOT NULL DEFAULT '';
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later

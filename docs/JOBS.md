@@ -442,7 +442,10 @@ portal show it like any other run, with its reason — and rollups
 The record: `jobs` (id, project, workflow and its pinned version,
 trigger kind and payload reference, started, finished, state, cost,
 verdict, due time) and `job_steps` (job, step, provider, model, cost,
-duration, output reference) and `job_effects` (job, step, kind, target,
+duration, output reference, and for an operation step, `setup` included,
+the last 20 lines of its stdout and stderr as `tail`, with everything it
+printed in the file `output_ref` names under the job's input directory;
+`forge job show` prints both) and `job_effects` (job, step, kind, target,
 summary, dry_run). `forge job start | list | show | log | withdraw`,
 `forge job test` (below), and the shapes on the client contract.
 
@@ -590,10 +593,11 @@ no-work task on the project — the same shape `deploy::ask` already files
 for a failed deploy check (docs/DEPLOY.md, "Rollback and the human
 rung"): `TaskState::Blocked`, `question_to` the contact, `reason` the
 question in plain words. The reason names the job id, its workflow, the
-assertion or step that failed, and every effect the run logged, so
-whoever answers can see what almost happened without re-running
-anything. `ask:operator`'s `question_to` is always the operator
-(`None`); `ask:contact`'s is the sender who actually triggered the job
+assertion or step that failed with the last lines of what a failed
+operation printed to stdout and stderr (`exit N, no output` when it printed
+nothing), and every effect the run logged, so whoever answers can see
+what almost happened without re-running anything. `ask:operator`'s
+`question_to` is always the operator (`None`); `ask:contact`'s is the sender who actually triggered the job
 when its trigger was a message, else the workflow's own `[trigger]
 contact` group, else the operator too. `forge requests`, the portal and
 the Signal plugin surface the task exactly as they do any other blocked

@@ -2360,9 +2360,17 @@ fn job_show(id: i64, json: bool) -> Result<()> {
                     out!("      log    {}", log.display());
                 }
             }
-            if (s.kind == "directive" || s.action == "setup")
-                && let Some(c) = verdict.iter().find(|c| c.name == s.action && !c.ok)
-            {
+            if s.kind == "operation" {
+                if let Some(code) = s.exit_code {
+                    out!("      exit   {code}");
+                }
+                for line in s.tail.lines() {
+                    out!("      | {line}");
+                }
+                if !s.output_ref.is_empty() {
+                    out!("      output {}", s.output_ref);
+                }
+            } else if let Some(c) = verdict.iter().find(|c| c.name == s.action && !c.ok) {
                 out!("      failed {}", c.tail);
             }
         }

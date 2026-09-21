@@ -3203,6 +3203,91 @@ printf "file\tsetup.marker\tfound the marker\n" >> "$FORGE_EFFECT_LOG"
 ''']
 "#;
 
+/// An operation that prints to stderr and exits 1 leaves the last lines of
+/// its output on its step row (and in the file `output_ref` names), in
+/// `forge job show`, and in the question the human rung files: a job that
+/// fails on a step says which one and why.
+#[test]
+fn a_failed_operations_stderr_tail_is_on_its_step_and_in_the_question() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(
+        e.home.join("workflows/backup.toml"),
+        r#"name = "backup"
+kind = "run"
+description = "an operation that fails loudly, for the step tail e2e"
+
+steps = [
+  { action = "noisy-store" },
+]
+
+[trigger]
+on = "manual"
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "ask:operator"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/noisy-store.toml"),
+        r#"name = "noisy-store"
+kind = "operation"
+description = "prints to both streams and exits 1"
+run = ["bash", "-c", 'echo starting the store; echo "store: disk quota exceeded" >&2; exit 1']
+"#,
+    )
+    .unwrap();
+
+    let o = e.forge("ok.sh", &["job", "start", "equitizr", "backup", "--now"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = String::from_utf8_lossy(&o.stdout).trim().to_string();
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["job", "show", &id, "--json"]).stdout).unwrap();
+    assert_eq!(doc["state"], "needs_human", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0]["exit_code"], 1);
+    let tail = steps[0]["tail"].as_str().unwrap();
+    assert!(tail.contains("store: disk quota exceeded"), "{steps:?}");
+    assert!(tail.contains("starting the store"), "{steps:?}");
+    let full = std::fs::read_to_string(steps[0]["output_ref"].as_str().unwrap()).unwrap();
+    assert!(full.contains("store: disk quota exceeded"), "{full:?}");
+
+    let show = e.forge("ok.sh", &["job", "show", &id]);
+    let text = String::from_utf8_lossy(&show.stdout);
+    assert!(text.contains("store: disk quota exceeded"), "{text}");
+
+    let requests: serde_json::Value =
+        serde_json::from_slice(&e.forge("ok.sh", &["requests", "--json"]).stdout).unwrap();
+    let requests = requests.as_array().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    let q = requests[0]["text"].as_str().unwrap();
+    assert!(q.contains("noisy-store"), "{q:?}");
+    assert!(q.contains("store: disk quota exceeded"), "{q:?}");
+    assert!(!q.contains("no check recorded"), "{q:?}");
+}
+
 /// A job's scratch tree is set up like a task's clone: the repository's
 /// `setup` check runs once in it, ahead of the steps, recorded as an
 /// operation step row named `setup` (docs/JOBS.md, "The executor").

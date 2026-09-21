@@ -897,6 +897,8 @@ pub struct JobStepRow {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub output_ref: String,
+    #[serde(default)]
+    pub tail: String,
 }
 
 /// One row of `JobDoc.effects` and of `forge job log --json`: one effect a

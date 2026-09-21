@@ -141,9 +141,12 @@ pub struct JobStep {
     pub finished_at: Option<i64>,
     /// Set only for an operation step.
     pub exit_code: Option<i32>,
-    /// Where the step's output is on disk, relative to the job's scratch
-    /// directory.
+    /// Where the step's output is on disk: for a directive its validated
+    /// output, for an operation the full merged stdout and stderr it kept.
     pub output_ref: String,
+    /// The last lines of an operation step's stdout and stderr, pass or
+    /// fail; empty for a directive step.
+    pub tail: String,
 }
 
 /// One effect a job's step performed on the world (see docs/JOBS.md,
@@ -216,6 +219,7 @@ pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
     "finished_at",
     "exit_code",
     "output_ref",
+    "tail",
 ];
 
 pub(super) const JOB_EFFECT_COLUMNS: &[&str] = &[
@@ -261,6 +265,7 @@ fn job_step_from_row(r: &Row) -> rusqlite::Result<JobStep> {
         finished_at: r.get("finished_at")?,
         exit_code: r.get("exit_code")?,
         output_ref: r.get("output_ref")?,
+        tail: r.get("tail")?,
     })
 }
 
@@ -354,8 +359,8 @@ impl Store {
     pub fn append_job_step(&self, s: &JobStep) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO job_steps (job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 s.job_id,
                 s.seq,
@@ -368,6 +373,7 @@ impl Store {
                 s.finished_at,
                 s.exit_code,
                 s.output_ref,
+                s.tail,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -857,6 +863,7 @@ mod tests {
             finished_at: Some(102),
             exit_code: Some(0),
             output_ref: "step-1.json".into(),
+            tail: "sent".into(),
             ..Default::default()
         })
         .unwrap();
@@ -879,6 +886,8 @@ mod tests {
         assert_eq!(steps[0].provider, "anthropic");
         assert_eq!(steps[1].action, "send-quote");
         assert_eq!(steps[1].exit_code, Some(0));
+        assert_eq!(steps[1].tail, "sent");
+        assert_eq!(steps[0].tail, "");
 
         let effects = s.job_effects(id).unwrap();
         assert_eq!(effects.len(), 1);
@@ -973,6 +982,7 @@ mod tests {
             finished_at: Some(110),
             exit_code: None,
             output_ref: "step-0.json".into(),
+            tail: String::new(),
         };
         let effect = JobEffect {
             id: 2,
@@ -990,7 +1000,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&step).unwrap(),
-            r#"{"id":1,"job_id":7,"seq":0,"action":"draft-quote","kind":"directive","provider":"anthropic","model":"claude","cost_usd":0.12,"started_at":101,"finished_at":110,"exit_code":null,"output_ref":"step-0.json"}"#,
+            r#"{"id":1,"job_id":7,"seq":0,"action":"draft-quote","kind":"directive","provider":"anthropic","model":"claude","cost_usd":0.12,"started_at":101,"finished_at":110,"exit_code":null,"output_ref":"step-0.json","tail":""}"#,
         );
         assert_eq!(
             serde_json::to_string(&effect).unwrap(),

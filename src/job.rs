@@ -12,8 +12,10 @@
 //! executor reads back after every step. The `[assert]` commands then
 //! judge the run with that log and the scratch directory on disk. Unlike a
 //! deploy's, the scratch and input directories are left on disk after the
-//! run: `job_steps.output_ref` points into the scratch tree, and a dry
-//! run is proven by what is (and is not) there.
+//! run: a dry run is proven by what is (and is not) there. An operation
+//! step keeps the last lines of its stdout and stderr on its `job_steps`
+//! row (`tail`), and all it printed in a file under the input directory
+//! that `output_ref` names.
 
 use crate::ctx::Forge;
 use crate::report::Event;
@@ -45,6 +47,25 @@ fn string_fields(input: &serde_json::Value) -> Result<Vec<(String, String)>> {
         .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
         .collect())
+}
+
+/// How many trailing lines of an operation's merged stdout and stderr a
+/// job step's row keeps (its `tail`), and so what a failed step's verdict
+/// row and the human rung's question quote.
+const STEP_TAIL_LINES: usize = 20;
+
+/// What an operation step leaves of its output: the last lines on the row
+/// (`tail`), and the whole of what was kept in a file under the job's input
+/// directory that `output_ref` names — whatever the step's exit, so the
+/// record of a step is never empty for want of a check that failed.
+fn record_output(idir: &Path, label: &str, r: &checks::CheckResult) -> (String, String) {
+    let tail = checks::last_lines(&r.tail, STEP_TAIL_LINES);
+    let path = idir.join(format!("step-{label}.out"));
+    let output_ref = match std::fs::write(&path, &r.tail) {
+        Ok(()) => path.display().to_string(),
+        Err(_) => String::new(),
+    };
+    (tail, output_ref)
 }
 
 /// The environment every job step's operation runs with: the facts the
@@ -859,6 +880,7 @@ async fn run_now(
         );
         let started_at = unix_now();
         let r = checks::run_one("OP", "setup", argv, &scratch, None, timeout, &env).await;
+        let (tail, output_ref) = record_output(&idir, "setup", &r);
         f.store.append_job_step(&JobStep {
             id: 0,
             job_id,
@@ -871,11 +893,12 @@ async fn run_now(
             started_at,
             finished_at: Some(unix_now()),
             exit_code: r.exit,
-            output_ref: String::new(),
+            output_ref,
+            tail: tail.clone(),
         })?;
         if !r.ok {
             ok = false;
-            verdict.push(r);
+            verdict.push(checks::CheckResult { tail, ..r });
         }
     }
 
@@ -974,6 +997,7 @@ async fn run_now(
                         break;
                     }
                 };
+                let (tail, output_ref) = record_output(&idir, &seq.to_string(), &r);
                 f.store.append_job_step(&JobStep {
                     id: 0,
                     job_id,
@@ -986,7 +1010,8 @@ async fn run_now(
                     started_at,
                     finished_at: Some(unix_now()),
                     exit_code: r.exit,
-                    output_ref: String::new(),
+                    output_ref,
+                    tail: tail.clone(),
                 })?;
                 for line in log_lines(&effect_log).into_iter().skip(before) {
                     let mut parts = line.splitn(3, '\t');
@@ -1007,6 +1032,7 @@ async fn run_now(
                 }
                 if !r.ok {
                     ok = false;
+                    verdict.push(checks::CheckResult { tail, ..r });
                     break;
                 }
             }
@@ -1056,6 +1082,7 @@ async fn run_now(
                     started_at,
                     finished_at: Some(unix_now()),
                     exit_code: None,
+                    tail: String::new(),
                     output_ref: d
                         .output_ref
                         .as_ref()
@@ -1264,7 +1291,7 @@ fn trigger_contact(
 
 /// The question `ask:operator`/`ask:contact` files (docs/JOBS.md, "The
 /// human rung"): the job id, its workflow, the assertion or step that
-/// failed, and every effect the run logged — so whoever answers can see
+/// failed (with the tail of its output), and every effect the run logged — so whoever answers can see
 /// what almost happened without re-running anything.
 fn failure_reason(
     job_id: i64,
@@ -1275,7 +1302,16 @@ fn failure_reason(
     let failed = verdict
         .iter()
         .find(|c| !c.ok)
-        .map(|c| format!("{}: {}", c.name, c.tail))
+        .map(|c| {
+            if c.tail.trim().is_empty() {
+                let exit = c
+                    .exit
+                    .map_or("no exit status".to_string(), |x| format!("exit {x}"));
+                format!("{}: {exit}, no output", c.name)
+            } else {
+                format!("{}: {}", c.name, c.tail)
+            }
+        })
         .unwrap_or_else(|| "no check recorded which one failed".to_string());
     let effects = if effects.is_empty() {
         "none".to_string()
