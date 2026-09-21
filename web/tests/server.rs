@@ -181,6 +181,7 @@ fn without_the_token_nothing_is_served() {
         "/api/requests",
         "/api/plugins",
         "/app.js",
+        "/time.js",
         "/projects",
         "/projects/demo",
         "/initiatives/5",
@@ -226,6 +227,14 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
         "{head}"
     );
     assert!(body.contains("INVALIDATES"), "{body}");
+    // The one time helper is served ahead of the page that uses it.
+    let (status, head, body) = get(&w.addr, "/time.js", &cookie);
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("Content-Type: application/javascript"),
+        "{head}"
+    );
+    assert!(body.contains("fmtTime"), "{body}");
     // The task listing is forge log --json with the page's filters as argv.
     let (status, _, body) = get(
         &w.addr,

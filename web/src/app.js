@@ -3,6 +3,7 @@
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
   const secs = ms => ((ms || 0) / 1000).toFixed(0) + 's';
+  const { fmtTime, fmtSpan, fmtAgo } = ForgeTime;
   const PAGE = 100;
   let offset = 0, feed = [], es = null, view = null;
 
@@ -136,7 +137,7 @@
           <td class="num">${t.attempts}</td>
           <td class="num">${usd(t.cost_usd)}</td>
           <td class="num">${t.initiative != null ? `<a href="/initiatives/${t.initiative}">${t.initiative}</a>` : ''}</td>
-          <td class="mute" style="white-space:nowrap">${esc((t.created || '').slice(5, 16))}</td>
+          <td class="mute" style="white-space:nowrap">${fmtTime(t.created_at)}</td>
           <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
         </tr>`).join('');
       $('#sentinel').textContent = done ? (rows.length ? `${rows.length} task(s)` : 'no tasks match') : 'loading more…';
@@ -195,7 +196,7 @@
     function renderFeed() {
       const rowsEl = $('#feed'); if (!rowsEl) return;
       const rows = feed.filter(e => e.task === id).slice(-300);
-      rowsEl.innerHTML = rows.map(e => `<div><span class="t">${new Date((e.ts || 0) * 1000).toLocaleTimeString()}</span>${esc(e.text || e.type)}</div>`).join('');
+      rowsEl.innerHTML = rows.map(e => `<div><span class="t">${fmtTime(e.ts)}</span>${esc(e.text || e.type)}</div>`).join('');
       rowsEl.lastElementChild?.scrollIntoView({ block: 'nearest' });
     }
     async function draw() {
@@ -213,7 +214,7 @@
       const refs = (t.refs || []).map(r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.kind)}${r.label ? ': ' + esc(r.label) : ''}</a>`).join(' · ');
       const deploys = (d.deploys || []).map(dep => {
         const status = dep.check_ok === true ? 'ok' : dep.check_ok === false ? (dep.rolled_back_to ? `rolled back to ${esc(dep.rolled_back_to.slice(0, 8))}` : 'failed') : 'running';
-        return `<div>${esc(dep.target)} ${esc((dep.sha || '').slice(0, 8))} ${status}</div>`;
+        return `<div>${esc(dep.target)} ${esc((dep.sha || '').slice(0, 8))} ${status} <span class="mute">${fmtTime(dep.started_at)}${dep.finished_at ? ' → ' + fmtTime(dep.finished_at) : ''}</span></div>`;
       }).join('');
       const assessment = d.assessment ? `
         <div><span class="k">score</span>${d.assessment.score}/10 (${(d.assessment.findings || []).length} finding(s))</div>
@@ -227,6 +228,7 @@
           <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
           <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
           ${(t.project || t.initiative != null) ? `<div><span class="k">project</span>${t.project ? `<a href="/projects/${encodeURIComponent(t.project)}">${esc(t.project)}</a>` : '-'}${t.initiative != null ? ` · <a href="/initiatives/${t.initiative}">initiative ${t.initiative}</a>` : ''}</div>` : ''}
+          <div><span class="k">created</span>${fmtTime(t.created_at)}${t.started_at ? ` · started ${fmtTime(t.started_at)}` : ''}${t.finished_at ? ` · finished ${fmtTime(t.finished_at)}` : ''}</div>
           ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
           ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
           ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
@@ -258,7 +260,7 @@
   function pluginsView() {
     let rows = [];
     function running(p) {
-      if (p.state === 'running') return `running pid ${p.pid}, up ${p.uptime_secs}s`;
+      if (p.state === 'running') return `running pid ${p.pid}, up ${fmtSpan(p.uptime_secs)} (since ${fmtTime(Date.now() / 1000 - p.uptime_secs)})`;
       if (p.state === 'restarting') return `restarting (x${p.restart_count || 0})`;
       return p.last_exit ? `stopped: ${p.last_exit}` : 'stopped';
     }
@@ -333,15 +335,16 @@
           <td>${esc(j.workflow)}</td>
           <td class="state ${esc(j.state)}">${esc(j.state)}${j.dry_run ? ' <span class="mute">(dry run)</span>' : ''}</td>
           <td class="num">${usd(j.cost_usd)}</td>
-          <td class="mute" style="white-space:nowrap">${j.started_at ? new Date(j.started_at * 1000).toLocaleString() : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="6" class="mute">no jobs</td></tr>';
+          <td class="mute" style="white-space:nowrap">${fmtTime(j.started_at)}</td>
+          <td class="mute" style="white-space:nowrap">${j.due_at ? `${fmtTime(j.due_at)} (${fmtAgo(j.due_at)})` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="mute">no jobs</td></tr>';
     }
     async function refresh() { drawRows(await get('/api/jobs')); }
     return {
       async show() {
         $('#main').innerHTML = `
           <h2>Jobs</h2>
-          <table><thead><tr><th>id</th><th>project</th><th>workflow</th><th>state</th><th class="num">cost</th><th>started</th></tr></thead><tbody id="job-rows"></tbody></table>`;
+          <table><thead><tr><th>id</th><th>project</th><th>workflow</th><th>state</th><th class="num">cost</th><th>started</th><th>due</th></tr></thead><tbody id="job-rows"></tbody></table>`;
         $('#job-rows').addEventListener('click', ev => {
           const tr = ev.target.closest('tr.task');
           if (tr) go(`/jobs/${tr.dataset.id}`);
@@ -373,6 +376,7 @@
           <div><span class="k">workflow</span>${esc(d.workflow)} <span class="mute">${esc((d.workflow_hash || '').slice(0, 8))} · ${esc(d.workflow_source)}</span></div>
           <div><span class="k">trigger</span>${esc(d.trigger_kind)}${d.trigger_ref ? ' ' + esc(d.trigger_ref) : ''}</div>
           <div><span class="k">cost</span>${usd(d.cost_usd)}${d.dry_run ? ' · dry run' : ''}</div>
+          <div><span class="k">started</span>${fmtTime(d.started_at)}${d.finished_at ? ` · finished ${fmtTime(d.finished_at)}` : ''}${d.due_at ? ` · due ${fmtTime(d.due_at)} (${fmtAgo(d.due_at)})` : ''}</div>
         </div>
         <h2>Steps</h2>
         <table><thead><tr><th>seq</th><th>action</th><th>kind</th><th>provider/model</th><th class="num">cost</th><th class="num">exit</th></tr></thead>
@@ -472,7 +476,7 @@
         <h2>Initiative ${d.id} <span class="mute">· <a href="/projects/${encodeURIComponent(d.project)}">${esc(d.project)}</a></span></h2>
         <div class="card">
           <div><b>${esc(d.outcome)}</b></div>
-          <div class="mute">state ${esc(d.state)}${d.held_rule ? ' (' + esc(d.held_rule) + ')' : ''} · ${usd(d.cost_usd)}${d.budget_usd != null ? ' of ' + usd(d.budget_usd) : ''}${d.elapsed_secs != null ? ' · ' + secs(d.elapsed_secs * 1000) + ' elapsed' : ''}</div>
+          <div class="mute">state ${esc(d.state)}${d.held_rule ? ' (' + esc(d.held_rule) + ')' : ''} · ${usd(d.cost_usd)}${d.budget_usd != null ? ' of ' + usd(d.budget_usd) : ''}${d.elapsed_secs != null ? ' · ' + fmtSpan(d.elapsed_secs) + ' elapsed' : ''}</div>
         </div>
         <h2>Tasks</h2>
         <table><thead><tr><th>id</th><th>state</th><th>reason</th></tr></thead><tbody>${taskRows || '<tr><td colspan="3" class="mute">no tasks</td></tr>'}</tbody></table>
