@@ -42,7 +42,7 @@ assets and the event stream. The token is stored in `FORGE_HOME/web.token`;
 the initial token link establishes a cookie. The client binds to loopback by
 default. Keep token links private. See [web access](README.md#clients) and
 [the authentication tests](web/tests/server.rs). The separate project portal
-has its own [token-based access contract](docs/CLIENT.md#portal).
+has its own [token-based access contract](docs/CLIENT.md).
 
 **Trust by source:** once that initiative lands end to end, the authenticated
 source of a task determines its trust tier and permitted capabilities, rather
