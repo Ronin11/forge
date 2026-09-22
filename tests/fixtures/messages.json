@@ -1,0 +1,29 @@
+{
+  "messages": [
+    {"id": 3, "project": "acme", "channel": "signal", "contact": "alice", "direction": "in", "text": "can you ship the invoice fix today?", "at": 300, "task_id": 41},
+    {"id": 2, "project": "acme", "channel": "signal", "contact": "bob", "direction": "out", "text": "the release is queued, should land within the hour", "at": 200, "task_id": null},
+    {"id": 1, "project": "acme", "channel": "signal", "contact": "alice", "direction": "in", "text": "which environment should this go to?", "at": 100, "task_id": 40}
+  ],
+  "decisions": [
+    {
+      "id": 9, "task_id": 40, "repo": "/repo/acme", "question": "which environment should this go to?",
+      "answer": "production, same as last time", "created_at": 110, "answered_by": "concierge",
+      "citations": "", "retry_id": null, "outcome": null, "answered_for": "alice"
+    }
+  ],
+  "questions": [
+    {
+      "id": 41, "kind": "question", "to": "alice", "text": "should the invoice fix skip the smoke check?",
+      "question": "should the invoice fix skip the smoke check?", "tried": "", "path": "",
+      "workflow": "direct", "repo": "/repo/acme", "task": "ship the invoice fix"
+    }
+  ],
+  "jobs": [
+    {
+      "id": 7, "project": "acme", "workflow": "quote-by-text", "workflow_hash": "deadbeef",
+      "landed_sha": null, "trigger_kind": "message", "trigger_ref": "3", "state": "ok",
+      "workflow_source": "repo", "dry_run": false, "started_at": 305, "finished_at": 320,
+      "cost_usd": 0.12, "verdict_json": "{}", "due_at": null, "retry_count": 0
+    }
+  ]
+}

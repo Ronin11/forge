@@ -25,6 +25,11 @@
     // case a future kernel event narrows this, at no cost today.
     requests: ['task_blocked', 'task_done'],
     deploys: ['deploy_started', 'deploy_finished'],
+    // A message's own record never changes after the fact, but the
+    // questions/decisions/jobs sections beside it do: a blocked task
+    // going open or resolved, and a message-triggered job starting or
+    // finishing.
+    messages: ['task_blocked', 'task_done', 'job_started', 'job_finished'],
     // The activity page (web/src/activity.js's own view below) has no
     // entry here: it redraws on every event unconditionally, since it is
     // the raw stream itself and its running-attempts panel needs
@@ -141,7 +146,7 @@
       : r.page === 'initiatives-list' ? stubView('Initiatives')
       : r.page === 'deploys' ? deploysView()
       : r.page === 'activity' ? activityView()
-      : r.page === 'messages' ? stubView('Messages')
+      : r.page === 'messages' ? messagesView()
       : r.page === 'doctor' ? doctorView()
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
@@ -1130,6 +1135,56 @@
       },
       onEvent() { draw(); },
       teardown() { if (observer) observer.disconnect(); },
+    };
+  }
+
+  // ---- messages: per project the message record (`/api/messages/
+  // <project>`, `forge message list PROJECT --json`), the concierge's
+  // own decisions on inbound messages, the questions addressed to
+  // contacts and their state, and the jobs a message triggered — a
+  // filter by contact and a search over text (web UI task 10,
+  // "messages"). Rendering lives in web/src/messages.js
+  // (renderMessagesDoc), tested under node without a DOM by
+  // web/tests/messages_render.rs against tests/fixtures/messages.json.
+  function messagesView() {
+    let project = '';
+    let doc = { messages: [], decisions: [], questions: [], jobs: [] };
+    const filters = { contact: '', q: '' };
+
+    function draw() {
+      $('#messages-page').innerHTML = project
+        ? ForgeMessages.renderMessagesDoc(doc, filters, fmtTime)
+        : '<div class="mute">Pick a project.</div>';
+    }
+    async function load() {
+      if (!project) { draw(); return; }
+      doc = await get(`/api/messages/${encodeURIComponent(project)}`);
+      $('#f-m-contact').innerHTML = '<option value="">any contact</option>'
+        + ForgeMessages.contactsOf(doc.messages).map(c => `<option>${esc(c)}</option>`).join('');
+      draw();
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Messages</h2>
+          <div class="filters">
+            <select id="f-m-project"><option value="">choose a project</option></select>
+            <select id="f-m-contact"><option value="">any contact</option></select>
+            <input type="text" id="f-m-q" placeholder="search text" style="width:16em">
+          </div>
+          <div id="messages-page" class="mute">loading…</div>`;
+        $('#f-m-project').addEventListener('change', ev => { project = ev.target.value; load().catch(() => {}); });
+        $('#f-m-contact').addEventListener('change', ev => { filters.contact = ev.target.value; draw(); });
+        $('#f-m-q').addEventListener('input', ev => { filters.q = ev.target.value.trim(); draw(); });
+        try {
+          const rows = await get('/api/projects');
+          $('#f-m-project').innerHTML = '<option value="">choose a project</option>'
+            + rows.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+          if (rows.length === 1) { project = rows[0].name; $('#f-m-project').value = project; }
+        } catch { /* best-effort: an empty picker just leaves the page asking */ }
+        await load();
+      },
+      onEvent(e) { if (project && INVALIDATES.messages.includes(e.type)) load().catch(() => {}); },
     };
   }
 
