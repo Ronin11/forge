@@ -1,0 +1,22 @@
+[
+  {"type":"task_started","task":1,"ts":100,"text":"branch t1 from main @ abcd1234","worktree":"/w/1","branch":"t1","base_branch":"main","base_sha":"abcd1234efgh","model":"m","max_turns":40,"max_attempts":3,"timeout_secs":1800,"sandboxed":true},
+  {"type":"task_queued","task":2,"ts":101,"text":"queued direct","workflow":"direct","retry_of":null},
+  {"type":"attempt_started","task":1,"ts":102,"text":"attempt 1 of 3","n":1,"of":3},
+  {"type":"tool_call","task":1,"ts":103,"text":"tool Bash","name":"Bash"},
+  {"type":"tool_call","task":1,"ts":104,"text":"tool Read","name":"Read"},
+  {"type":"agent_done","task":1,"ts":105,"text":"agent exit 0 · 6 turns · 2 tool calls · 12.0s · $0.10","exit":0,"turns":6,"tools":2,"ms":12000,"cost_usd":0.1,"timed_out":false},
+  {"type":"check","task":1,"ts":106,"text":"✓ L1 test","level":"L1","name":"test","ok":true,"ms":800,"tail":""},
+  {"type":"attempt_done","task":1,"ts":107,"text":"attempt succeeded","state":"succeeded","reason":""},
+  {"type":"pushed","task":1,"ts":108,"text":"pushed t1","remote":"origin","branch":"t1"},
+  {"type":"task_done","task":1,"ts":109,"text":"succeeded","state":"succeeded","attempts":1,"cost_usd":0.1,"reason":"","branch":"t1","pushed":true,"compare":"https://example/compare/t1"},
+  {"type":"attempt_started","task":2,"ts":110,"text":"attempt 1 of 2","n":1,"of":2},
+  {"type":"tool_call","task":2,"ts":111,"text":"tool Write","name":"Write"},
+  {"type":"task_done","task":2,"ts":112,"text":"blocked: needs input: which price sheet?","state":"blocked","attempts":1,"cost_usd":0.02,"reason":"needs input: which price sheet?","branch":"t2","pushed":false,"compare":null},
+  {"type":"deploy_started","task":0,"ts":113,"text":"deploying shop/prod @ abcdef12","project":"shop","target":"prod","sha":"abcdef1234"},
+  {"type":"deploy_finished","task":0,"ts":114,"text":"shop/prod is live at abcdef12","project":"shop","target":"prod","sha":"abcdef1234","ok":true,"rolled_back_to":null},
+  {"type":"job_started","task":0,"ts":115,"text":"running shop/nightly (job 9)","project":"shop","workflow":"nightly","job_id":9,"dry_run":false},
+  {"type":"job_finished","task":0,"ts":116,"text":"job 9 (shop/nightly) ok ($0.30)","project":"shop","workflow":"nightly","job_id":9,"state":"ok","cost_usd":0.3},
+  {"type":"initiative_settled","task":3,"ts":117,"text":"initiative 4 settled done ($1.20)","id":4,"state":"done","cost_usd":1.2},
+  {"type":"note","task":1,"ts":118,"text":"a free note"},
+  {"type":"op","task":1,"ts":119,"text":"op ✓ clone","name":"clone","kernel":true,"ok":true,"ms":50,"detail":"cloned"}
+]

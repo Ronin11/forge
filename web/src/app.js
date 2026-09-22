@@ -25,6 +25,11 @@
     // case a future kernel event narrows this, at no cost today.
     requests: ['task_blocked', 'task_done'],
     deploys: ['deploy_started', 'deploy_finished'],
+    // The activity page (web/src/activity.js's own view below) has no
+    // entry here: it redraws on every event unconditionally, since it is
+    // the raw stream itself and its running-attempts panel needs
+    // `tool_call`/`agent_done` too, neither of which any other page ever
+    // treats as list-dirty.
   };
 
   async function call(method, path) {
@@ -133,7 +138,7 @@
       : r.page === 'initiative' ? initiativeView(r.id)
       : r.page === 'initiatives-list' ? stubView('Initiatives')
       : r.page === 'deploys' ? deploysView()
-      : r.page === 'activity' ? stubView('Activity')
+      : r.page === 'activity' ? activityView()
       : r.page === 'messages' ? stubView('Messages')
       : r.page === 'doctor' ? doctorView()
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
@@ -980,6 +985,86 @@
         await draw();
       },
       onEvent(e) { if (INVALIDATES.deploys.includes(e.type)) draw().catch(() => {}); },
+    };
+  }
+
+  // ---- activity: the live event stream as a feed, newest first,
+  // filtered by project/kind/task, paged back through `/api/activity`
+  // (`forge events --since`), plus a running-attempts panel built by
+  // replaying attempt events (web UI task 8, "activity"). Rendering
+  // lives in web/src/activity.js (renderFeed/reduceRunning/
+  // renderRunningAttempts), tested under node without a DOM by
+  // web/tests/activity_render.rs against tests/fixtures/activity.json.
+  // History before the snapshot's own `events_offset` comes from
+  // `/api/activity`; everything from `events_offset` on is the shared
+  // live `feed` array every other view already subscribes to — the two
+  // never overlap, so `combined()` below is just their concatenation,
+  // both ascending.
+  function activityView() {
+    const filters = { project: '', kind: '', task: '' };
+    let history = [];
+    let cursor = null, historyDone = false, loadingMore = false;
+    const taskProjects = {};
+    let observer = null;
+
+    async function loadTaskProjects() {
+      try {
+        for (const t of await get('/api/tasks?limit=500')) {
+          if (t.project) taskProjects[t.id] = t.project;
+        }
+      } catch { /* best-effort: a task outside this window just shows no project */ }
+    }
+    const combined = () => history.concat(feed);
+
+    function draw() {
+      const runningIds = (headData.tasks || []).filter(t => t.state === 'running').map(t => t.id);
+      const running = ForgeActivity.reduceRunning(combined(), runningIds);
+      $('#activity-running').innerHTML = ForgeActivity.renderRunningAttempts(running);
+      $('#activity-feed').innerHTML = ForgeActivity.renderFeed(combined(), filters, fmtTime, taskProjects);
+    }
+    async function loadMore() {
+      if (loadingMore || historyDone) return;
+      loadingMore = true;
+      try {
+        const before = cursor != null ? cursor : offset;
+        const q = new URLSearchParams({ before, limit: 200 });
+        const doc = await get(`/api/activity?${q}`);
+        history = (doc.events || []).concat(history);
+        cursor = doc.next_before;
+        historyDone = !doc.events || !doc.events.length || doc.next_before == null;
+        draw();
+        $('#activity-sentinel').textContent = historyDone ? 'start of the log' : 'loading more…';
+      } finally { loadingMore = false; }
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Activity</h2>
+          <h3>Running attempts</h3>
+          <div id="activity-running" class="mute">loading…</div>
+          <h3>Feed</h3>
+          <div class="filters">
+            <select id="f-a-kind"><option value="">any kind</option>${ForgeActivity.KINDS.map(k => `<option>${esc(k)}</option>`).join('')}</select>
+            <select id="f-a-project"><option value="">any project</option></select>
+            <input type="text" id="f-a-task" placeholder="task id" style="width:8em">
+          </div>
+          <div id="activity-feed" class="mute">loading…</div>
+          <div id="activity-sentinel" class="sentinel">loading…</div>`;
+        $('#f-a-kind').addEventListener('change', ev => { filters.kind = ev.target.value; draw(); });
+        $('#f-a-project').addEventListener('change', ev => { filters.project = ev.target.value; draw(); });
+        $('#f-a-task').addEventListener('input', ev => { filters.task = ev.target.value.trim(); draw(); });
+        get('/api/projects').then(rows => {
+          $('#f-a-project').innerHTML = '<option value="">any project</option>' + rows.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+        }).catch(() => {});
+        await snapshotHead();
+        await loadTaskProjects();
+        cursor = offset;
+        await loadMore();
+        observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) loadMore(); }, { rootMargin: '400px' });
+        observer.observe($('#activity-sentinel'));
+      },
+      onEvent() { draw(); },
+      teardown() { if (observer) observer.disconnect(); },
     };
   }
 

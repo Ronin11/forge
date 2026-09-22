@@ -50,6 +50,7 @@ const INITIATIVE_JS: &str = include_str!("initiative.js");
 const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
 const DOCTOR_JS: &str = include_str!("doctor.js");
+const ACTIVITY_JS: &str = include_str!("activity.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -429,6 +430,54 @@ fn doctor_json(forge: &Forge) -> Result<Value> {
         })
         .collect();
     Ok(Value::Array(arr))
+}
+
+/// `forge events --since 0[, --task <id>]`, replayed once per request
+/// into a newest-first page for the `/activity` page's feed (web UI task
+/// 8, "activity" — "paged back through `forge events --since`"): every
+/// event currently in `events.jsonl` (the CLI only ever reads the live
+/// file, never its rotated `.1`/`.2` — the same bound a long-running
+/// `--follow` subscription already lives with, docs/CLIENT.md's
+/// "Events"), each tagged with the running byte offset right after its
+/// own line — the same accounting `forge events --since <offset>` itself
+/// resumes from — so a `before` cursor pages backward through it without
+/// this route ever needing to remember state between requests. `task`,
+/// when set, is passed straight to the CLI's own `--task` filter, so the
+/// subprocess itself does the narrowing instead of this route reading
+/// everything just to throw most of it away.
+fn activity_json(
+    forge: &Forge,
+    before: Option<u64>,
+    limit: usize,
+    task: Option<i64>,
+) -> Result<Value> {
+    let mut args = vec!["events".to_string(), "--since".to_string(), "0".to_string()];
+    if let Some(t) = task {
+        args.push("--task".into());
+        args.push(t.to_string());
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let raw = forge.run(&argv)?;
+    let mut offset = 0u64;
+    let mut events: Vec<(u64, Value)> = Vec::new();
+    for line in raw.lines() {
+        offset += line.len() as u64 + 1;
+        if before.is_some_and(|b| offset >= b) {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            events.push((offset, v));
+        }
+    }
+    let start = events.len().saturating_sub(limit);
+    let page = events.split_off(start);
+    let next_before = page.first().map(|(off, _)| *off);
+    let done = events.is_empty();
+    Ok(serde_json::json!({
+        "events": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+        "next_before": next_before,
+        "done": done,
+    }))
 }
 
 /// `POST /api/gc`: the doctor page's gc control, run through `forge gc`
@@ -1158,6 +1207,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/deploys.js" => text(200, DEPLOYS_JS, "application/javascript"),
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/doctor.js" => text(200, DOCTOR_JS, "application/javascript"),
+        "/activity.js" => text(200, ACTIVITY_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1320,6 +1370,15 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                 .unwrap_or(0);
             events(req, forge, since);
             return;
+        }
+        "/api/activity" => {
+            let before = query_param(&query, "before").and_then(|s| s.parse::<u64>().ok());
+            let limit = query_param(&query, "limit")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(200)
+                .clamp(1, 2000);
+            let task = query_param(&query, "task").and_then(|s| s.parse::<i64>().ok());
+            json_or_error(activity_json(forge, before, limit, task))
         }
         p if p.starts_with("/api/task/") => match id_of(&p["/api/task/".len()..]) {
             Some(id) => json_or_error(forge.json(&["trace", &id.to_string(), "--json"])),
