@@ -71,33 +71,73 @@ pub fn load(catalog_dir: &Path) -> Result<Option<ExperimentFile>> {
     }
     let mut factors = BTreeMap::new();
     for (factor, levels) in raw.factors {
-        if !crate::store::ROLES.contains(&factor.as_str()) {
-            bail!(
-                "{}: [factors.{factor}] names an unknown role; see `forge stats --by-role` for what runs",
-                path.display()
-            );
-        }
-        if levels.is_empty() {
-            bail!("{}: [factors.{factor}] declares no levels", path.display());
-        }
-        if levels.values().any(|&w| w <= 0.0) {
-            bail!(
-                "{}: [factors.{factor}] every level's weight must be positive",
-                path.display()
-            );
-        }
-        let sum: f64 = levels.values().sum();
-        let normalized: BTreeMap<String, f64> =
-            levels.into_iter().map(|(l, w)| (l, w / sum)).collect();
-        if let Some((level, w)) = normalized.iter().find(|(_, w)| **w < floor - 1e-9) {
-            bail!(
-                "{}: [factors.{factor}] level {level:?} is {w:.3} of the total, under the floor ({floor:.3})",
-                path.display()
-            );
-        }
+        let normalized = validate_factor(&path, floor, &factor, levels)?;
         factors.insert(factor, normalized);
     }
     Ok(Some(ExperimentFile { floor, factors }))
+}
+
+/// One factor's declared weights, checked the way `load` checks every
+/// `[factors.*]` table in `experiment.toml`: the role must be one
+/// `store::ROLES` knows, every weight positive, and once normalized to
+/// sum to 1.0, no level under `floor`. Shared by `load` (every factor in
+/// the file) and `forge experiment set` (the one factor an operator sets
+/// by hand, applying a rebalance's held proposal) so a weight set by hand
+/// can never violate what a weight declared in the file could not.
+fn validate_factor(
+    path: &Path,
+    floor: f64,
+    factor: &str,
+    levels: BTreeMap<String, f64>,
+) -> Result<BTreeMap<String, f64>> {
+    if !crate::store::ROLES.contains(&factor) {
+        bail!(
+            "{}: [factors.{factor}] names an unknown role; see `forge stats --by-role` for what runs",
+            path.display()
+        );
+    }
+    if levels.is_empty() {
+        bail!("{}: [factors.{factor}] declares no levels", path.display());
+    }
+    if levels.values().any(|&w| w <= 0.0) {
+        bail!(
+            "{}: [factors.{factor}] every level's weight must be positive",
+            path.display()
+        );
+    }
+    let sum: f64 = levels.values().sum();
+    let normalized: BTreeMap<String, f64> = levels.into_iter().map(|(l, w)| (l, w / sum)).collect();
+    if let Some((level, w)) = normalized.iter().find(|(_, w)| **w < floor - 1e-9) {
+        bail!(
+            "{}: [factors.{factor}] level {level:?} is {w:.3} of the total, under the floor ({floor:.3})",
+            path.display()
+        );
+    }
+    Ok(normalized)
+}
+
+/// Sets one factor's weights directly (`forge experiment set`), the same
+/// validation `load` applies to every factor in the file
+/// (`validate_factor`), then returns the whole `ExperimentFile` with that
+/// factor replaced (or added) — ready for `save`. Used to apply a
+/// rebalance's proposed weights for a factor `rebalance` held back
+/// because a level's effect crossed the threshold (docs/ECONOMIST.md, "a
+/// large move is asked about before it compounds"), since a held factor's
+/// proposal is never written by `rebalance`/`save` itself.
+pub fn set_factor(
+    catalog_dir: &Path,
+    current: Option<ExperimentFile>,
+    factor: &str,
+    levels: BTreeMap<String, f64>,
+) -> Result<ExperimentFile> {
+    let path = catalog_dir.join("experiment.toml");
+    let mut exp = current.unwrap_or(ExperimentFile {
+        floor: DEFAULT_FLOOR,
+        factors: BTreeMap::new(),
+    });
+    let normalized = validate_factor(&path, exp.floor, factor, levels)?;
+    exp.factors.insert(factor.to_string(), normalized);
+    Ok(exp)
 }
 
 /// Writes `exp` to `experiment.toml` under `catalog_dir`, one `[factors.*]`
@@ -272,6 +312,13 @@ pub struct RebalanceResult {
     pub factors: BTreeMap<String, BTreeMap<String, f64>>,
     pub shifts: Vec<FactorShift>,
     pub large_moves: Vec<LargeMove>,
+    /// Factors `rebalance` left untouched because one of their levels
+    /// crossed the threshold: `before` is the current (unchanged) weights,
+    /// `after` the proposal `rebalance` computed but did not write — named
+    /// in the question so the operator can apply it with `forge experiment
+    /// set` (docs/ECONOMIST.md, "a large move is asked about before it
+    /// compounds").
+    pub held: Vec<FactorShift>,
 }
 
 /// The week's step size: level `l`'s weight is multiplied by `1 +
@@ -311,9 +358,16 @@ fn signal(effect: Option<f64>, effect_se: Option<f64>) -> f64 {
 /// rows matter here; `"workflow"` and `"size"` are not factors an
 /// experiment draws. A factor in `current` that this window's `stats`
 /// never mention (or a level within it) keeps its old weight — nothing
-/// to shift toward without data. Every level whose `effect` clears
-/// `threshold` in magnitude, regardless of whether it moved, is returned
-/// in `large_moves` — the human rung's trigger.
+/// to shift toward without data.
+///
+/// A factor with a level whose `effect` clears `threshold` in magnitude is
+/// a large move (docs/ECONOMIST.md, "a large move is asked about before it
+/// compounds"): that whole factor is left at its current weights in
+/// `factors` — nothing is written for it — and its computed proposal goes
+/// to `held` instead of `shifts`, so it never gets committed quietly. A
+/// factor with no large move is rebalanced and recorded in `shifts` (when
+/// it actually moved) as usual. Every crossing level, whichever factor
+/// it's in, is returned in `large_moves` — the human rung's trigger.
 pub fn rebalance(
     current: &BTreeMap<String, BTreeMap<String, f64>>,
     floor: f64,
@@ -330,9 +384,11 @@ pub fn rebalance(
     let mut factors = BTreeMap::new();
     let mut shifts = Vec::new();
     let mut large_moves = Vec::new();
+    let mut held = Vec::new();
     for (factor, weights) in current {
         let levels = by_factor.get(factor.as_str());
         let mut tilted: BTreeMap<String, f64> = BTreeMap::new();
+        let mut crossed = Vec::new();
         for (level, &w) in weights {
             let stat = levels.and_then(|m| m.get(level.as_str()));
             let sig = stat.map(|s| signal(s.effect, s.effect_se)).unwrap_or(0.0);
@@ -341,7 +397,7 @@ pub fn rebalance(
                 && let Some(e) = s.effect
                 && e.abs() > threshold
             {
-                large_moves.push(LargeMove {
+                crossed.push(LargeMove {
                     factor: factor.clone(),
                     level: level.clone(),
                     effect: e,
@@ -349,21 +405,69 @@ pub fn rebalance(
                 });
             }
         }
-        let after = apply_floor(&tilted, floor);
-        if &after != weights {
-            shifts.push(FactorShift {
+        let proposed = apply_floor(&tilted, floor);
+        if crossed.is_empty() {
+            if &proposed != weights {
+                shifts.push(FactorShift {
+                    factor: factor.clone(),
+                    before: weights.clone(),
+                    after: proposed.clone(),
+                });
+            }
+            factors.insert(factor.clone(), proposed);
+        } else {
+            large_moves.extend(crossed);
+            held.push(FactorShift {
                 factor: factor.clone(),
                 before: weights.clone(),
-                after: after.clone(),
+                after: proposed,
             });
+            factors.insert(factor.clone(), weights.clone());
         }
-        factors.insert(factor.clone(), after);
     }
     RebalanceResult {
         factors,
         shifts,
         large_moves,
+        held,
     }
+}
+
+/// The question a large move files (docs/ECONOMIST.md, "a large move is
+/// asked about before it compounds"): every crossing level and, per held
+/// factor, the proposed weights `rebalance` computed but did not write, as
+/// the `forge experiment set` invocation that would apply them.
+pub fn large_move_message(
+    large_moves: &[LargeMove],
+    held: &[FactorShift],
+    threshold: f64,
+) -> String {
+    let mut out = format!(
+        "{} level(s) crossed the effect threshold; asking the operator\n",
+        large_moves.len()
+    );
+    for m in large_moves {
+        out.push_str(&format!(
+            "large effect: {}:{} = {:+.2} log$ (se {}), over the {threshold:.2} threshold\n",
+            m.factor,
+            m.level,
+            m.effect,
+            m.effect_se.map_or("-".to_string(), |se| format!("{se:.2}")),
+        ));
+    }
+    for h in held {
+        let levels: Vec<String> = h
+            .after
+            .iter()
+            .map(|(level, w)| format!("{level}={w:.4}"))
+            .collect();
+        out.push_str(&format!(
+            "proposed: forge experiment set {} {}\n",
+            h.factor,
+            levels.join(" ")
+        ));
+    }
+    out
 }
 
 /// The git commit message `forge economist rebalance` writes, naming
@@ -635,6 +739,66 @@ mod tests {
         let result = rebalance(&current, DEFAULT_FLOOR, &stats, 1.0);
         assert_eq!(result.large_moves.len(), 1);
         assert_eq!(result.large_moves[0].level, "openai");
+    }
+
+    #[test]
+    fn rebalance_holds_an_over_threshold_factor_but_moves_its_sibling() {
+        let mut current = BTreeMap::new();
+        current.insert(
+            "review".to_string(),
+            w(&[("anthropic", 0.5), ("openai", 0.5)]),
+        );
+        current.insert(
+            "code".to_string(),
+            w(&[("anthropic", 0.5), ("openai", 0.5)]),
+        );
+        let stats = vec![
+            stat("provider:review", "anthropic", None, None),
+            // Crosses the 1.0 threshold: "review" must be held.
+            stat("provider:review", "openai", Some(1.4), Some(0.2)),
+            stat("provider:code", "anthropic", None, None),
+            // Cheaper, confident, but under the threshold: "code" moves.
+            stat("provider:code", "openai", Some(-0.8), Some(0.1)),
+        ];
+        let result = rebalance(&current, DEFAULT_FLOOR, &stats, 1.0);
+
+        assert_eq!(result.factors["review"], current["review"], "held factor");
+        assert!(
+            result.shifts.iter().all(|s| s.factor != "review"),
+            "{:?}",
+            result.shifts
+        );
+        assert_eq!(result.held.len(), 1);
+        assert_eq!(result.held[0].factor, "review");
+        assert_eq!(result.held[0].before, current["review"]);
+        assert_ne!(result.held[0].after, current["review"], "{:?}", result.held);
+
+        assert!(
+            result.factors["code"]["openai"] > 0.5,
+            "{:?}",
+            result.factors
+        );
+        assert!(result.shifts.iter().any(|s| s.factor == "code"));
+    }
+
+    #[test]
+    fn large_move_message_names_the_proposed_weights_for_a_held_factor() {
+        let large_moves = vec![LargeMove {
+            factor: "review".to_string(),
+            level: "openai".to_string(),
+            effect: 1.4,
+            effect_se: Some(0.2),
+        }];
+        let held = vec![FactorShift {
+            factor: "review".to_string(),
+            before: w(&[("anthropic", 0.5), ("openai", 0.5)]),
+            after: w(&[("anthropic", 0.35), ("openai", 0.65)]),
+        }];
+        let msg = large_move_message(&large_moves, &held, 1.0);
+        assert!(msg.contains("review:openai"), "{msg}");
+        assert!(msg.contains("forge experiment set review"), "{msg}");
+        assert!(msg.contains("openai=0.6500"), "{msg}");
+        assert!(msg.contains("anthropic=0.3500"), "{msg}");
     }
 
     #[test]

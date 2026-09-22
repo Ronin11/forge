@@ -194,19 +194,32 @@ swing per week, never a jump — then renormalized and floored
 level under the floor to it, shrink the rest proportionally, repeat until
 nothing more needs raising) so no level ever goes under the floor.
 
-Unless `--dry-run`, the new weights are written to `experiment.toml` and
-committed in the catalog's own git (`git::commit_path`) with a message
-naming every level that moved and its before/after weight
-(`experiment::commit_message`); `--dry-run` only prints what it would
-have written. Either way, a level whose `|effect|` clears `--threshold`
-is a large move: the command exits non-zero, dry run or not, printing
-which level and why. A real (non-dry) run's `[limits] on_failure =
-"ask:operator"` turns that non-zero exit into a blocked "job question"
-task naming the effect — the human rung, so a human sees a large move
-before the next week's shift compounds on top of it. A dry run's exit
-code is informational only: the job driver never honours `on_failure` for
-a dry run, so a fixture replay (`forge job test`) can never file a real
-question.
+A level whose `|effect|` clears `--threshold` is a large move: the
+*whole factor it belongs to* is held back (`experiment::rebalance`'s
+`held`) — its weights stay exactly as `experiment.toml` already has them,
+nothing computed for it is written, so a move large enough to ask about
+never lands in the catalog on its own. Every other factor is rebalanced
+and, unless `--dry-run`, written to `experiment.toml` and committed in the
+catalog's own git (`git::commit_path`) with a message naming every level
+that moved and its before/after weight (`experiment::commit_message`);
+`--dry-run` only prints what it would have written. Either way, the
+command exits non-zero when any level crossed the threshold, dry run or
+not, naming which level and why, and — for each held factor — the
+proposal it computed but did not write, as the `forge experiment set`
+invocation that would apply it by hand (`experiment::large_move_message`).
+A real (non-dry) run's `[limits] on_failure = "ask:operator"` turns that
+non-zero exit into a blocked "job question" task carrying that same
+message — the human rung, so a human sees a large move, and the numbers
+it would have shifted to, before the next week's shift compounds on top
+of it. A dry run's exit code is informational only: the job driver never
+honours `on_failure` for a dry run, so a fixture replay (`forge job test`)
+can never file a real question.
+
+`forge experiment set <factor> <level>=<weight>...` (`experiment::set_factor`)
+applies a held factor's proposal, or any other weight, by hand: the same
+validation `experiment::load` applies to every factor in the file (role
+known, positive weights, normalized, none under the floor), then writes
+and commits `experiment.toml` exactly like a normal rebalance.
 
 ## What it is not
 

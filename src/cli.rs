@@ -431,6 +431,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: EconomistCmd,
     },
+    /// `experiment.toml` directly, beside the workflow catalog (see
+    /// docs/ECONOMIST.md)
+    Experiment {
+        #[command(subcommand)]
+        cmd: ExperimentCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -453,6 +459,23 @@ enum EconomistCmd {
         /// rather than shifted through quietly
         #[arg(long, default_value_t = 1.0)]
         threshold: f64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExperimentCmd {
+    /// Set one factor's weights directly — e.g. to apply the `forge
+    /// experiment set ...` a rebalance's large-move question proposed
+    /// (docs/ECONOMIST.md, "a large move is asked about before it
+    /// compounds") — under the same validation `experiment::load` applies
+    /// (role known, positive weights, normalized, none under the floor),
+    /// then writes and commits `experiment.toml` in the catalog's own git.
+    Set {
+        /// The factor (role) to set, e.g. `review`
+        factor: String,
+        /// Each level's weight, as `<level>=<weight>` (repeatable)
+        #[arg(value_name = "LEVEL=WEIGHT", required = true)]
+        levels: Vec<String>,
     },
 }
 
@@ -1461,6 +1484,9 @@ pub async fn main() -> Result<()> {
                 dry_run,
                 threshold,
             } => economist_rebalance(days, dry_run, threshold).await,
+        },
+        Cmd::Experiment { cmd } => match cmd {
+            ExperimentCmd::Set { factor, levels } => experiment_set(factor, levels).await,
         },
     }
 }
@@ -3505,11 +3531,15 @@ async fn put_workflow(
 /// same numbers `forge stats --factors --json` prints
 /// (`Store::factor_stats`) over the last `days`, shifts `experiment.toml`'s
 /// weights toward the cheaper, more confidently-measured level of every
-/// factor it declares (`experiment::rebalance`), and — unless `dry_run` —
-/// writes and commits the result in the catalog's own git
-/// (`git::commit_path`), with a message naming what moved
-/// (`experiment::commit_message`). Exits non-zero when any level's effect
-/// crosses `threshold`, dry run or not, so a real run's `[limits]
+/// factor it declares, except a factor holding a level whose effect
+/// crosses `threshold`, which is left exactly as declared
+/// (`experiment::rebalance`), and — unless `dry_run` — writes and commits
+/// the result in the catalog's own git (`git::commit_path`), with a
+/// message naming what moved (`experiment::commit_message`). Exits
+/// non-zero when any level's effect crosses `threshold`, dry run or not,
+/// naming that level and, per held factor, the proposed weights as a
+/// `forge experiment set` invocation to apply them by hand
+/// (`experiment::large_move_message`), so a real run's `[limits]
 /// on_failure = "ask:operator"` catches it — a dry run never asks, since
 /// the job driver only honours `on_failure` outside dry runs.
 async fn economist_rebalance(days: i64, dry_run: bool, threshold: f64) -> Result<()> {
@@ -3537,15 +3567,6 @@ async fn economist_rebalance(days: i64, dry_run: bool, threshold: f64) -> Result
             out!("  {level:<16} {before:.3} -> {w:.3}");
         }
     }
-    for m in &result.large_moves {
-        out!(
-            "large effect: {}:{} = {:+.2} log$ (se {}), over the {threshold:.2} threshold",
-            m.factor,
-            m.level,
-            m.effect,
-            m.effect_se.map_or("-".to_string(), |se| format!("{se:.2}")),
-        );
-    }
     if !dry_run {
         let new_exp = crate::experiment::ExperimentFile {
             floor: exp.floor,
@@ -3563,10 +3584,51 @@ async fn economist_rebalance(days: i64, dry_run: bool, threshold: f64) -> Result
         }
     }
     if !result.large_moves.is_empty() {
-        bail!(
-            "{} level(s) crossed the effect threshold; asking the operator",
-            result.large_moves.len()
-        );
+        bail!(crate::experiment::large_move_message(
+            &result.large_moves,
+            &result.held,
+            threshold
+        ));
+    }
+    Ok(())
+}
+
+/// `forge experiment set <factor> <level>=<weight>...`: applies a
+/// rebalance's held proposal by hand (docs/ECONOMIST.md, "a large move is
+/// asked about before it compounds") — the same validation `experiment::load`
+/// applies to every factor in the file, then writes and commits
+/// `experiment.toml` in the catalog's own git, same as a normal rebalance.
+async fn experiment_set(factor: String, levels: Vec<String>) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let catalog = workflows::catalog_dir(&f.paths.home)?;
+    let current = crate::experiment::load(&catalog)?;
+    let mut weights = BTreeMap::new();
+    for kv in &levels {
+        let (level, w) = kv
+            .split_once('=')
+            .with_context(|| format!("{kv:?}: expected <level>=<weight>"))?;
+        let w: f64 = w
+            .trim()
+            .parse()
+            .with_context(|| format!("{kv:?}: weight must be a number"))?;
+        weights.insert(level.trim().to_string(), w);
+    }
+    let before = current
+        .as_ref()
+        .and_then(|e| e.factors.get(&factor))
+        .cloned()
+        .unwrap_or_default();
+    let new_exp = crate::experiment::set_factor(&catalog, current, &factor, weights)?;
+    let after = new_exp.factors[&factor].clone();
+    crate::experiment::save(&catalog, &new_exp)?;
+    let message = crate::experiment::commit_message(&[crate::experiment::FactorShift {
+        factor,
+        before,
+        after,
+    }]);
+    match git::commit_path(&catalog, "experiment.toml", &message).await? {
+        Some(hash) => out!("{hash}"),
+        None => out!("weights unchanged; nothing to commit"),
     }
     Ok(())
 }
