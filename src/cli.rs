@@ -1166,12 +1166,12 @@ enum InitiativeCmd {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Change a queued or blocked task's own limits in place, replacing
-    /// only the fields given; refused when none are, and refused on a
-    /// running or finished task (only its next attempt, or a retry, can
-    /// change those). Recorded as a decision on the task, so the change
-    /// is on the record; the queue's next claim reads the new values.
-    /// Prints the task afterward.
+    /// Change a queued or blocked task's spec in place, replacing only
+    /// the fields given; refused when none are, and refused on a running
+    /// or finished task (only its next attempt, or a retry, can change
+    /// those). Recorded as a decision on the task naming each field's
+    /// old and new value, so the change is on the record; the queue's
+    /// next claim reads the new values. Prints the task afterward.
     Set {
         id: i64,
         /// Cost cap for this task in USD
@@ -1186,6 +1186,27 @@ enum TaskCmd {
         /// Extra attempts after a failure, each fed the previous failure
         #[arg(long)]
         retries: Option<u32>,
+        /// Replace the task text
+        #[arg(long, conflicts_with = "text_file")]
+        text: Option<String>,
+        /// Replace the task text with this file's contents
+        #[arg(long = "text-file")]
+        text_file: Option<PathBuf>,
+        /// Replace the workflow (must exist and fit the repository)
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Replace the tasks this one waits on (repeatable)
+        #[arg(long, conflicts_with = "no_after")]
+        after: Vec<i64>,
+        /// Wait on nothing
+        #[arg(long = "no-after")]
+        no_after: bool,
+        /// Replace the task's own acceptance commands (repeatable)
+        #[arg(long = "check", conflicts_with = "no_checks")]
+        checks: Vec<String>,
+        /// Drop the task's own acceptance commands
+        #[arg(long = "no-checks")]
+        no_checks: bool,
     },
 }
 
@@ -1519,7 +1540,36 @@ pub async fn main() -> Result<()> {
                 max_turns,
                 timeout_secs,
                 retries,
-            } => task_set(id, budget, max_turns, timeout_secs, retries),
+                text,
+                text_file,
+                workflow,
+                after,
+                no_after,
+                checks,
+                no_checks,
+            } => {
+                let text = match text_file {
+                    Some(p) => Some(
+                        std::fs::read_to_string(&p)
+                            .with_context(|| format!("--text-file {}", p.display()))?,
+                    ),
+                    None => text,
+                };
+                task_set(
+                    id,
+                    crate::queue::TaskEdit {
+                        budget,
+                        max_turns,
+                        timeout_secs,
+                        retries,
+                        text,
+                        workflow,
+                        after: (no_after || !after.is_empty()).then_some(after),
+                        checks: (no_checks || !checks.is_empty()).then_some(checks),
+                    },
+                )
+                .await
+            }
         },
         Cmd::Intake { cmd } => match cmd {
             IntakeCmd::Accept {
@@ -3201,65 +3251,9 @@ fn initiative_set(
     Ok(())
 }
 
-fn task_set(
-    id: i64,
-    budget: Option<f64>,
-    max_turns: Option<u32>,
-    timeout_secs: Option<u32>,
-    retries: Option<u32>,
-) -> Result<()> {
-    if budget.is_none() && max_turns.is_none() && timeout_secs.is_none() && retries.is_none() {
-        bail!("nothing to set: pass --budget, --max-turns, --timeout-secs or --retries");
-    }
-    if let Some(b) = budget
-        && (!b.is_finite() || b <= 0.0)
-    {
-        bail!("budget must be a positive finite number");
-    }
+async fn task_set(id: i64, edit: crate::queue::TaskEdit) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let Some(old) = f.store.task(id)? else {
-        bail!("no task {id}");
-    };
-    if !matches!(old.state, TaskState::Queued | TaskState::Blocked) {
-        bail!(
-            "task {id} is {}; only a queued or blocked task's limits are set (a running attempt might still finish, and a finished task is done)",
-            old.state.as_str()
-        );
-    }
-    let mut changes = Vec::new();
-    if let Some(b) = budget {
-        changes.push(format!("budget ${b:.2}"));
-    }
-    if let Some(n) = max_turns {
-        changes.push(format!("max-turns {n}"));
-    }
-    if let Some(n) = timeout_secs {
-        changes.push(format!("timeout-secs {n}"));
-    }
-    if let Some(n) = retries {
-        changes.push(format!("retries {n}"));
-    }
-    if !f.store.set_task_limits(
-        id,
-        &crate::store::TaskLimitsUpdate {
-            budget_usd: budget,
-            max_turns: max_turns.map(|n| n as i64),
-            max_attempts: retries.map(|n| n as i64 + 1),
-            timeout_secs: timeout_secs.map(|n| n as i64),
-        },
-    )? {
-        bail!("task {id} changed state before its limits could be set");
-    }
-    let decision = f.store.insert_decision_by(
-        id,
-        &old.repo,
-        &format!("task {id}'s limits"),
-        &format!("set {}", changes.join(", ")),
-        "operator",
-        "",
-        old.question_to.as_deref(),
-    )?;
-    f.store.set_decision_retry(decision, id)?;
+    crate::queue::edit_task(&f, id, &edit).await?;
     show(id)
 }
 

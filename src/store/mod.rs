@@ -39,7 +39,7 @@ pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
-pub use tasks::{RoleRouting, Routed, Task, TaskLimitsUpdate, TaskState, Trust};
+pub use tasks::{RoleRouting, Routed, Task, TaskState, TaskUpdate, Trust};
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
 pub use migrations::MIGRATIONS;

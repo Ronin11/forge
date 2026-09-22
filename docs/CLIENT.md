@@ -279,13 +279,26 @@ and does not parse stdout.
   (`POST /api/withdraw/<id>`, task 530) calls for a request row's
   withdraw control.
 - **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
-  [--retries N]`** — write verb: changes a queued or blocked task's own
-  limits in place, replacing only the fields given; refused (non-zero
-  exit) on a running or finished task, and when none are given. Recorded
-  as a decision on the task (see [`DecisionRow`](#decisionrow)), so it
-  shows up in `forge decisions` beside an operator's answer. Not `--json`;
-  a client re-reads `forge log`/`forge trace` for the task it just
-  changed. This is the verb the web client's inbox (task 530) should
+  [--retries N] [--text TEXT | --text-file PATH] [--workflow NAME]
+  [--after ID... | --no-after] [--check CMD... | --no-checks]`** — write
+  verb: changes a queued or blocked task's spec in place, replacing only
+  the fields given; refused (non-zero exit) on a running or finished
+  task, and when none are given. `--after` and `--check` repeat and
+  replace the whole list; `--no-after` and `--no-checks` clear it. Every
+  new value is held to what `forge add` holds it to: a positive budget,
+  non-empty text, a workflow that exists, resolves, fits the repository
+  and is allowed at the task's trust level, dependencies that exist, will
+  land and do not already wait on this task, and checks that leave
+  something to verify the work (`--no-checks` is refused when the
+  repository declares no `[checks]`). State is untouched: a blocked task
+  stays blocked, and a queued one is claimed with its new spec. Recorded
+  as a decision on the task (see [`DecisionRow`](#decisionrow)) whose
+  `question` is `task ID's spec` and whose `answer` names each field's
+  old and new value (`set budget $1.00 → $5.00, after [3] → [4, 5]`; text
+  by length and content hash, `text 120 chars 1a2b3c4d5e6f → 340 chars
+  …`), so it shows up in `forge decisions` beside an operator's answer.
+  Not `--json`; a client re-reads `forge log`/`forge show --json` for the
+  task it just changed. This is the verb the web client's inbox (task 530) should
   call to raise a stuck task's budget or turn cap in place, instead of
   withdrawing it (which releases its dependents) or waiting for a hand
   retry: the motivating case is a task that verified its own code and

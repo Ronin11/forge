@@ -197,7 +197,10 @@ fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     assert_eq!(d["task_id"], id);
     assert_eq!(d["answered_by"], "operator");
     assert!(
-        d["answer"].as_str().unwrap().contains("budget $20.00"),
+        d["answer"]
+            .as_str()
+            .unwrap()
+            .contains("budget unset → $20.00"),
         "{d}"
     );
     assert_eq!(d["retry_id"], id);
@@ -216,6 +219,172 @@ fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     assert!(err.contains("running"), "{err}");
     let (budget, ..) = limits(&e);
     assert_eq!(budget, Some(20.0), "left untouched");
+}
+
+/// `forge task set` edits the spec, not only the limits: text, workflow,
+/// dependencies and checks, each held to what `forge add` holds it to,
+/// each recorded old → new on the decision row.
+#[test]
+fn forge_task_set_replaces_text_workflow_after_and_checks_and_records_old_and_new() {
+    let e = Env::new();
+    let dep = e.add(&[]);
+    let id = e.add(&["--check", "test -f answer.txt"]);
+    let sid = id.to_string();
+    let spec = |e: &Env| -> (String, String, String, String) {
+        e.db()
+            .query_row(
+                "SELECT task, workflow, after_json, checks_json FROM tasks WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42 to answer.txt".into(),
+            "direct".into(),
+            "[]".into(),
+            "[\"test -f answer.txt\"]".into()
+        )
+    );
+
+    let text_file = e.repo.join("new-text.txt");
+    std::fs::write(&text_file, "write 43 to answer.txt and src/lib.rs\n").unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &sid,
+            "--text-file",
+            text_file.to_str().unwrap(),
+            "--workflow",
+            "reviewed",
+            "--after",
+            &dep.to_string(),
+            "--check",
+            "test -f answer.txt",
+            "--check",
+            "grep -qx 43 answer.txt",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        spec(&e),
+        (
+            "write 43 to answer.txt and src/lib.rs\n".into(),
+            "reviewed".into(),
+            format!("[{dep}]"),
+            "[\"test -f answer.txt\",\"grep -qx 43 answer.txt\"]".into()
+        )
+    );
+    let (len, paths, hash): (i64, i64, String) = e
+        .db()
+        .query_row(
+            "SELECT shape_text_len, shape_path_tokens, workflow_hash FROM tasks WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((len, paths), (38, 2), "the shape follows the text");
+    assert!(!hash.is_empty(), "the workflow hash follows the workflow");
+    assert_eq!(e.task(id).0, "queued", "the change does not touch state");
+
+    let d = e.decisions_json();
+    let d = d
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["task_id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(d["question"], format!("task {id}'s spec"));
+    let answer = d["answer"].as_str().unwrap();
+    for part in [
+        "text 22 chars ",
+        " → 38 chars ",
+        "workflow direct → reviewed",
+        &format!("after [] → [{dep}]"),
+        "checks [\"test -f answer.txt\"] → [\"test -f answer.txt\",\"grep -qx 43 answer.txt\"]",
+    ] {
+        assert!(answer.contains(part), "{part:?} missing from {answer:?}");
+    }
+
+    // `--text` and `--no-after` / `--no-checks`: the repository declares
+    // checks, so a task with none is still verified.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &sid,
+            "--text",
+            "write 42",
+            "--no-after",
+            "--no-checks",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42".into(),
+            "reviewed".into(),
+            "[]".into(),
+            "[]".into()
+        )
+    );
+
+    // Refusals, each leaving the spec as it was.
+    for (bad, why) in [
+        (vec!["--workflow", "no-such-workflow"], "unknown workflow"),
+        (vec!["--after", "999"], "no such task"),
+        (vec!["--after", &sid], "wait on itself"),
+        (vec!["--text", "  "], "empty"),
+        (vec!["--check", ""], "empty"),
+    ] {
+        let mut args = vec!["task", "set", &sid];
+        args.extend(bad.iter());
+        let o = e.forge("ok.sh", &args);
+        assert!(!o.status.success(), "{bad:?} must be refused");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(why), "{bad:?}: {err}");
+    }
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42".into(),
+            "reviewed".into(),
+            "[]".into(),
+            "[]".into()
+        )
+    );
+
+    // A cycle: dep waits on id, so id may not wait on dep.
+    assert!(
+        e.forge("ok.sh", &["task", "set", &dep.to_string(), "--after", &sid])
+            .status
+            .success()
+    );
+    let o = e.forge("ok.sh", &["task", "set", &sid, "--after", &dep.to_string()]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("wait on each other"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // `--no-checks` on a repository that declares no checks leaves
+    // nothing to verify the work, so it is refused.
+    std::fs::write(e.repo.join("forge.toml"), "").unwrap();
+    let o = e.forge("ok.sh", &["task", "set", &sid, "--no-checks"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("nothing would verify"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }
 
 #[test]

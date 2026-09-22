@@ -696,7 +696,7 @@ impl Store {
     /// nothing needs excluding. `forge task set` is the deliberate
     /// exception: raising a stuck task's own budget or turn cap in place
     /// is exactly the kind of friction this signal exists to surface, so
-    /// it writes a decision (see `Store::set_task_limits`) and is counted
+    /// it writes a decision (see `Store::set_task_fields`) and is counted
     /// here like any other operator answer.
     pub fn human_attention_stats(&self, scope: &StatsFilter) -> Result<Vec<HumanAttentionStat>> {
         let mut stats = {
