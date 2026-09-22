@@ -199,6 +199,13 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge graph REPO --json`: the module graph for a repository at
+    /// its working tree, with the record's overlay on each file node.
+    pub fn graph(&self, repo: &str) -> Result<GraphDoc> {
+        let v = self.json(&["graph", repo, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge workflows show NAME --json`: one workflow in full — its file
     /// text, where it came from, kind, every resolved step, and its
     /// measured profile.
@@ -1321,6 +1328,80 @@ pub struct StatsRoleRow {
 pub struct StatsDoc {
     #[serde(default)]
     pub by_role: Vec<StatsRoleRow>,
+}
+
+/// The document `forge graph REPO --json` prints: the module graph
+/// (docs/LATER.md, "The code visualiser") for a repository at its
+/// working tree, with each file node's overlay from the record laid on
+/// top (docs/LATER.md, "The overlay, from the record").
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GraphDoc {
+    #[serde(default)]
+    pub nodes: Vec<GraphNode>,
+    #[serde(default)]
+    pub edges: Vec<GraphEdge>,
+}
+
+/// One node of `GraphDoc`: a source file `forge-repomap` extracts, or a
+/// directory that groups files directly under it (`kind` is `"file"` or
+/// `"module"`). `overlay` is only ever populated for a `"file"` node.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GraphNode {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub symbols: i64,
+    #[serde(default)]
+    pub lines: i64,
+    #[serde(default)]
+    pub overlay: Overlay,
+}
+
+/// One edge of `GraphDoc`: an import that resolves to another file in
+/// the tree.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GraphEdge {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+}
+
+/// What the record knows about one file node (`GraphNode::overlay`):
+/// empty for a file no task ever touched.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Overlay {
+    #[serde(default)]
+    pub tasks: Vec<TaskTouch>,
+    #[serde(default)]
+    pub demotions: Vec<Demotion>,
+    #[serde(default)]
+    pub repair_cost_usd: f64,
+}
+
+/// One task that touched a file node, from its attempts' recorded
+/// `changes`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TaskTouch {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
+/// One review demotion whose evidence names a file node.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Demotion {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// One workflow's declared metadata and measured outcomes, one entry of

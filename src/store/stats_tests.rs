@@ -719,3 +719,342 @@ fn role_stats_unions_a_directive_job_step_under_its_own_role_and_kind() {
     let total: f64 = draft_quote.iter().map(|r| r.mean_cost_usd).sum();
     assert!((total - 0.05).abs() < 1e-9, "both costs count: {total}");
 }
+
+/// Fills in every `FinishAttempt` field the three graph-overlay query
+/// tests below never vary.
+#[allow(clippy::too_many_arguments)]
+fn finish_overlay_attempt(
+    s: &Store,
+    id: i64,
+    state: AttemptState,
+    reason: &str,
+    finished_at: i64,
+    cost_usd: f64,
+    envelope_json: &str,
+) {
+    s.finish_attempt(&FinishAttempt {
+        id,
+        state,
+        reason: reason.into(),
+        finished_at: Some(finished_at),
+        agent_exit: Some(0),
+        timed_out: false,
+        num_turns: 1,
+        tool_calls: 1,
+        cost_usd: Some(cost_usd),
+        agent_ms: 0,
+        commits: 0,
+        files_changed: 0,
+        dirty: false,
+        verdict_json: "[]".into(),
+        result_text: String::new(),
+        envelope_json: envelope_json.into(),
+        rl_five_hour: None,
+        rl_seven_day: None,
+        rl_five_hour_resets: None,
+        rl_seven_day_resets: None,
+        end_sha: String::new(),
+        outputs_json: String::new(),
+        session_id: String::new(),
+        first_edit: None,
+        input_tokens: None,
+        output_tokens: None,
+        cache_read_input_tokens: None,
+        cache_creation_input_tokens: None,
+        early_signals: "[]".into(),
+        early_near: "[]".into(),
+    })
+    .unwrap();
+}
+
+/// The graph overlay's `tasks` (see `docs/LATER.md`, "The overlay, from
+/// the record"): `file_changes` groups an attempt's recorded `changes`
+/// by path and task, summing cost only over the attempts of that task
+/// that actually touched the path, and keeping the latest touch's time.
+#[test]
+fn file_changes_groups_by_path_and_task_and_sums_only_the_touching_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+    let task = |repo: &str| Task {
+        repo: repo.into(),
+        task: "t".into(),
+        base_branch: "main".into(),
+        model: "m".into(),
+        max_turns: 1,
+        max_attempts: 1,
+        timeout_secs: 1,
+        state: TaskState::Succeeded,
+        created_at: 1,
+        started_at: Some(1),
+        finished_at: Some(1),
+        workflow: "direct".into(),
+        ..Default::default()
+    };
+    let insert = |mut t: Task| {
+        t.id = s.insert_task(&t).unwrap();
+        t
+    };
+
+    // Task A, on "r": attempt 1 touches only a.rs, attempt 2 touches
+    // both a.rs and b.rs.
+    let a = insert(task("r"));
+    let a1 = s
+        .insert_attempt(&Attempt {
+            task_id: a.id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        a1,
+        AttemptState::Succeeded,
+        "",
+        100,
+        1.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":null,"changes":[{"path":"src/a.rs","kind":"modified","summary":""}],"checks_run":[],"claims":[]}"#,
+    );
+    let a2 = s
+        .insert_attempt(&Attempt {
+            task_id: a.id,
+            attempt_no: 2,
+            step: "code".into(),
+            started_at: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        a2,
+        AttemptState::Succeeded,
+        "",
+        200,
+        2.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":null,"changes":[{"path":"src/a.rs","kind":"modified","summary":""},{"path":"src/b.rs","kind":"added","summary":""}],"checks_run":[],"claims":[]}"#,
+    );
+
+    // Task B, also on "r": its own attempt touches only b.rs.
+    let b = insert(task("r"));
+    let b1 = s
+        .insert_attempt(&Attempt {
+            task_id: b.id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at: 50,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        b1,
+        AttemptState::Succeeded,
+        "",
+        50,
+        0.5,
+        r#"{"schema_version":1,"summary":"s","needs_input":null,"changes":[{"path":"src/b.rs","kind":"modified","summary":""}],"checks_run":[],"claims":[]}"#,
+    );
+
+    // Task C, on a different repo: never shows up in "r"'s query.
+    let c = insert(task("other"));
+    let c1 = s
+        .insert_attempt(&Attempt {
+            task_id: c.id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        c1,
+        AttemptState::Succeeded,
+        "",
+        1,
+        9.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":null,"changes":[{"path":"src/a.rs","kind":"modified","summary":""}],"checks_run":[],"claims":[]}"#,
+    );
+
+    let mut rows = s.file_changes("r").unwrap();
+    rows.sort_by(|x, y| (&x.path, x.task_id).cmp(&(&y.path, y.task_id)));
+    assert_eq!(rows.len(), 3, "{rows:?}");
+
+    let a_on_a = rows
+        .iter()
+        .find(|r| r.path == "src/a.rs" && r.task_id == a.id)
+        .unwrap();
+    assert_eq!(
+        (a_on_a.at, a_on_a.cost_usd),
+        (200, 3.0),
+        "both of A's attempts touched a.rs"
+    );
+
+    let a_on_b = rows
+        .iter()
+        .find(|r| r.path == "src/b.rs" && r.task_id == a.id)
+        .unwrap();
+    assert_eq!(
+        (a_on_b.at, a_on_b.cost_usd),
+        (200, 2.0),
+        "only attempt 2 touched b.rs"
+    );
+
+    let b_on_b = rows
+        .iter()
+        .find(|r| r.path == "src/b.rs" && r.task_id == b.id)
+        .unwrap();
+    assert_eq!((b_on_b.at, b_on_b.cost_usd), (50, 0.5));
+}
+
+/// The graph overlay's `demotions`: `task_demotions` finds every attempt
+/// that ended a review demotion and carries its claims' evidence text
+/// verbatim, leaving the "does this evidence name a given path" match
+/// to the caller. A question that is not a review demotion, and a
+/// demotion on another repository, are both excluded.
+#[test]
+fn task_demotions_only_review_demotions_on_the_repo_with_their_claims_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+    let task = |repo: &str| Task {
+        repo: repo.into(),
+        task: "t".into(),
+        base_branch: "main".into(),
+        model: "m".into(),
+        max_turns: 1,
+        max_attempts: 1,
+        timeout_secs: 1,
+        state: TaskState::Blocked,
+        created_at: 1,
+        started_at: Some(1),
+        finished_at: Some(1),
+        workflow: "direct".into(),
+        ..Default::default()
+    };
+    let insert = |mut t: Task| {
+        t.id = s.insert_task(&t).unwrap();
+        t
+    };
+
+    // Demoted: a review that ran a command citing a.rs as its evidence.
+    let d = insert(task("r"));
+    let d1 = s
+        .insert_attempt(&Attempt {
+            task_id: d.id,
+            attempt_no: 1,
+            step: "review".into(),
+            started_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        d1,
+        AttemptState::NeedsInput,
+        "review demoted: off by one",
+        10,
+        0.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":{"question":"off by one","tried":"","kind":"review"},"changes":[],"checks_run":[],"claims":[{"claim":"off by one","evidence":"ran cat -n src/a.rs, line 12 is wrong"}]}"#,
+    );
+
+    // Not a demotion: an ordinary operator question on the same repo.
+    let q = insert(task("r"));
+    let q1 = s
+        .insert_attempt(&Attempt {
+            task_id: q.id,
+            attempt_no: 1,
+            step: "code".into(),
+            started_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        q1,
+        AttemptState::NeedsInput,
+        "needs input: which config?",
+        10,
+        0.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":{"question":"which config?","tried":"","kind":"question"},"changes":[],"checks_run":[],"claims":[]}"#,
+    );
+
+    // A demotion, but on a different repository.
+    let e = insert(task("other"));
+    let e1 = s
+        .insert_attempt(&Attempt {
+            task_id: e.id,
+            attempt_no: 1,
+            step: "review".into(),
+            started_at: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    finish_overlay_attempt(
+        &s,
+        e1,
+        AttemptState::NeedsInput,
+        "review demoted: also wrong",
+        10,
+        0.0,
+        r#"{"schema_version":1,"summary":"s","needs_input":{"question":"also wrong","tried":"","kind":"review"},"changes":[],"checks_run":[],"claims":[{"claim":"c","evidence":"e"}]}"#,
+    );
+
+    let rows = s.task_demotions("r").unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].task_id, d.id);
+    assert_eq!(rows[0].reason, "review demoted: off by one");
+    assert_eq!(
+        rows[0].evidence,
+        vec!["ran cat -n src/a.rs, line 12 is wrong".to_string()]
+    );
+}
+
+/// The graph overlay's `repair_cost_usd`: `task_repair_costs` reads the
+/// same `task_repair_cost` cache `WorkflowStat::repair_cost` sums,
+/// scoped to one repository's landed tasks.
+#[test]
+fn task_repair_costs_only_landed_tasks_on_the_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+    let landed = |repo: &str, landed_sha: &str| Task {
+        repo: repo.into(),
+        task: "t".into(),
+        base_branch: "main".into(),
+        model: "m".into(),
+        max_turns: 1,
+        max_attempts: 1,
+        timeout_secs: 1,
+        state: TaskState::Succeeded,
+        created_at: 1,
+        started_at: Some(1),
+        finished_at: Some(1),
+        workflow: "direct".into(),
+        landed_sha: landed_sha.into(),
+        ..Default::default()
+    };
+    let insert = |mut t: Task| {
+        t.id = s.insert_task(&t).unwrap();
+        s.update_task(&t).unwrap();
+        t
+    };
+
+    let a = insert(landed("r", "asha"));
+    let b = insert(landed("r", "bsha"));
+    let other = insert(landed("other", "csha"));
+    let mut not_landed = landed("r", "");
+    not_landed.state = TaskState::Failed;
+    let not_landed = insert(not_landed);
+
+    s.set_repair_cost_cache(a.id, 3.5, 9999).unwrap();
+    s.set_repair_cost_cache(b.id, 1.5, 9999).unwrap();
+    s.set_repair_cost_cache(other.id, 7.0, 9999).unwrap();
+    s.set_repair_cost_cache(not_landed.id, 2.0, 9999).unwrap();
+
+    let mut rows = s.task_repair_costs("r").unwrap();
+    rows.sort_by_key(|(id, _)| *id);
+    assert_eq!(rows, vec![(a.id, 3.5), (b.id, 1.5)], "{rows:?}");
+}

@@ -595,12 +595,27 @@ of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 The document `forge graph REPO --json` prints: the module graph
 (docs/LATER.md, "The code visualiser") for a repository at its working
 tree, built deterministically from `forge-repomap edges` (docs/ACTIONS.md)
-— no model, no task, no store.
+— no model, no task, no store — with an overlay of what the record
+knows laid onto each file node (docs/LATER.md, "The overlay, from the
+record"), read from the operator's own store when one is open and
+scoped to tasks whose `repo` matches `REPO`'s canonicalized path; a
+store that cannot be opened, or one with no task on this repository,
+just leaves every overlay at its empty default.
 
 | field | type | meaning |
 |---|---|---|
-| `nodes` | array of `{path, kind, symbols, lines}` | One entry per source file `forge-repomap` extracts, plus one entry per directory that groups files directly under it. `kind` is `"file"` or `"module"`. For a file, `symbols` is its declared symbol count and `lines` its line count; for a module, both are the sum over the files grouped under it. A root-level file joins no module. |
+| `nodes` | array of `{path, kind, symbols, lines, overlay}` | One entry per source file `forge-repomap` extracts, plus one entry per directory that groups files directly under it. `kind` is `"file"` or `"module"`. For a file, `symbols` is its declared symbol count and `lines` its line count; for a module, both are the sum over the files grouped under it. A root-level file joins no module. `overlay` (see below) is only ever populated for a `"file"` node; a module node's is always empty. |
 | `edges` | array of `{from, to}` | One entry per import that resolves to another file in the tree (Rust `use`/`mod`, TypeScript/JavaScript relative imports and `require`, Python `import`/`from ... import`, Go imports within the module path); an import that resolves outside the repository is never an edge. |
+
+**`overlay`** — `{tasks, demotions, repair_cost_usd}`, empty (`{"tasks":
+[], "demotions": [], "repair_cost_usd": 0.0}`) for a file no task ever
+touched:
+
+| field | type | meaning |
+|---|---|---|
+| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose recorded `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
+| `demotions` | array of `{id, at, reason}` | One entry per task whose attempt ended a review demotion (`reason` starting `"review demoted: "`) with at least one claim whose evidence text names this path as a substring. `at` is that attempt's finish time. |
+| `repair_cost_usd` | number | This file's share of the quality statistics' repair cost (`StatsWorkflowRow.repair_cost_usd` above): each task's own cached repair cost, divided evenly across every file its attempts touched, summed over every task that touched this one. |
 
 ### `WorkflowShowDoc`
 
