@@ -38,6 +38,11 @@ pub struct TaskRow {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// Only under `forge log --touches`: `"changes"` when an attempt
+    /// recorded a change at the path, `"text"` when only the task's text
+    /// mentions it (`--touches-text`). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub touch: Option<String>,
 }
 
 impl From<&TaskSummary> for TaskRow {
@@ -57,6 +62,7 @@ impl From<&TaskSummary> for TaskRow {
             project: s.project.clone(),
             initiative: s.initiative,
             trust: s.trust.clone(),
+            touch: s.touch.clone(),
         }
     }
 }

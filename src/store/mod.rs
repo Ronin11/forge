@@ -59,6 +59,17 @@ pub struct TaskFilter {
     pub project: Option<String>,
     /// Only this initiative's tasks.
     pub initiative: Option<i64>,
+    /// Only tasks whose attempts' recorded changes include one of these
+    /// paths, or anything under one that names a directory: a `/`
+    /// boundary, so `src/cli` matches `src/cli/tasks.rs` and not
+    /// `src/client.rs`. Empty means no such filter. Read from
+    /// `stats::CHANGE_ROWS`, the rows `file_changes` reads.
+    pub touches: Vec<String>,
+    /// With `touches`: also tasks whose text mentions one of the paths
+    /// (a queued or running task has no changes yet), marked
+    /// `TaskSummary::touch == "text"` so a guess is never mistaken for a
+    /// record.
+    pub touches_text: bool,
 }
 
 /// What `forge decisions` filters on, and what the supervisor's prompt
@@ -86,6 +97,11 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// With `TaskFilter::touches`: how the row matched, `"changes"` (an
+    /// attempt recorded a change under the path) or `"text"` (only the
+    /// task's text mentions it, `touches_text`). `None` without the
+    /// filter.
+    pub touch: Option<String>,
 }
 
 pub struct Store {
@@ -385,22 +401,46 @@ impl Store {
     /// The listing behind `forge log`: newest first, filtered, and paged by
     /// `before` (ids strictly below it) so a client can scroll back.
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
+        // `?9` is the `touches` paths as a JSON array (NULL for none),
+        // each without a trailing slash; `touched` holds where an attempt
+        // recorded a change at one of them or under it (`/` boundary).
+        let touches: Vec<&str> = q
+            .touches
+            .iter()
+            .map(|p| p.trim_end_matches('/'))
+            .filter(|p| !p.is_empty())
+            .collect();
+        let touches_json = (!touches.is_empty())
+            .then(|| serde_json::to_string(&touches))
+            .transpose()?;
+        let touched = format!(
+            "EXISTS (SELECT 1 FROM {}, json_each(?9) p
+                     WHERE a.task_id = t.id AND {}
+                       AND ({path} = p.value
+                            OR substr({path}, 1, length(p.value) + 1) = p.value || '/'))",
+            stats::CHANGE_ROWS,
+            stats::CHANGE_ROWS_VALID,
+            path = stats::CHANGE_PATH
+        );
+        let mentioned = "EXISTS (SELECT 1 FROM json_each(?9) p WHERE instr(t.task, p.value) > 0)";
         let c = self.lock();
-        let mut stmt = c.prepare(
+        let mut stmt = c.prepare(&format!(
             "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch') AS created,
                     t.repo AS repo, t.task AS task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
-                    t.project AS project, t.initiative AS initiative, t.trust AS trust
+                    t.project AS project, t.initiative AS initiative, t.trust AS trust,
+                    CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
                AND (?6 IS NULL OR t.workflow = ?6)
                AND (?7 IS NULL OR t.project = ?7)
                AND (?8 IS NULL OR t.initiative = ?8)
-             ORDER BY t.id DESC LIMIT ?1",
-        )?;
+               AND (?9 IS NULL OR {touched} OR (?10 = 1 AND {mentioned}))
+             ORDER BY t.id DESC LIMIT ?1"
+        ))?;
         let rows = stmt.query_map(
             params![
                 q.limit,
@@ -411,6 +451,8 @@ impl Store {
                 q.workflow.as_deref(),
                 q.project.as_deref(),
                 q.initiative,
+                touches_json,
+                q.touches_text as i64,
             ],
             |r| {
                 Ok(TaskSummary {
@@ -427,6 +469,7 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    touch: r.get("touch")?,
                 })
             },
         )?;

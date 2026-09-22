@@ -514,6 +514,101 @@ fn add_json_names_the_task_and_show_json_round_trips_the_spec_through_add() {
     assert!(!o.status.success());
 }
 
+/// `forge log --touches PATH` lists tasks by the files their attempts
+/// recorded changing, on a `/` boundary; `--touches-text` adds tasks
+/// whose text only mentions the path, marked so.
+#[test]
+fn forge_log_touches_finds_tasks_by_recorded_changes_on_a_slash_boundary() {
+    let e = Env::new();
+    let mentions = e.add(&[]);
+    e.db()
+        .execute(
+            "UPDATE tasks SET task = 'later, tidy a/b.rs' WHERE id = ?1",
+            [mentions],
+        )
+        .unwrap();
+    let seed = |path: &str| -> i64 {
+        let id = e.add(&[]);
+        e.db()
+            .execute("UPDATE tasks SET state = 'succeeded' WHERE id = ?1", [id])
+            .unwrap();
+        e.db()
+            .execute(
+                "INSERT INTO attempts (task_id, attempt_no, step, state, started_at, finished_at, cost_usd, envelope_json)
+                 VALUES (?1, 1, 'code', 'succeeded', 1, 2, 0.1,
+                 json_object('schema_version', 1, 'summary', 's', 'needs_input', NULL,
+                             'changes', json_array(json_object('path', ?2, 'kind', 'modified', 'summary', '')),
+                             'checks_run', json_array(), 'claims', json_array()))",
+                rusqlite::params![id, path],
+            )
+            .unwrap();
+        id
+    };
+    let changed_b = seed("a/b.rs");
+    let changed_bc = seed("a/bc.rs");
+
+    let ids = |args: &[&str]| -> Vec<(i64, Option<String>)> {
+        let mut a = vec!["log", "--json"];
+        a.extend_from_slice(args);
+        let o = e.forge("ok.sh", &a);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_i64().unwrap(),
+                    r["touch"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    };
+    let changes = Some("changes".to_string());
+    assert_eq!(
+        ids(&["--touches", "a/b.rs"]),
+        vec![(changed_b, changes.clone())]
+    );
+    assert_eq!(
+        ids(&["--touches", "a"]),
+        vec![(changed_bc, changes.clone()), (changed_b, changes.clone())],
+        "a directory matches everything under it"
+    );
+    assert_eq!(
+        ids(&["--touches", "a/b"]),
+        vec![],
+        "a/b names neither a/b.rs nor a directory above it: the boundary is /"
+    );
+    assert_eq!(
+        ids(&["--touches", "a/b.rs", "--touches", "a/bc.rs"]),
+        vec![(changed_bc, changes.clone()), (changed_b, changes.clone())]
+    );
+    assert_eq!(
+        ids(&["--touches", "a/b.rs", "--touches-text"]),
+        vec![
+            (changed_b, changes.clone()),
+            (mentions, Some("text".to_string()))
+        ],
+        "the queued task that only mentions the path is marked by text"
+    );
+    assert_eq!(
+        ids(&["--touches", "a/b.rs", "--touches-text", "--state", "queued"]),
+        vec![(mentions, Some("text".to_string()))],
+        "combines with the other filters"
+    );
+    let plain = ids(&["--limit", "1"]);
+    assert_eq!(plain[0].1, None, "no touch field without the filter");
+
+    let text = String::from_utf8_lossy(
+        &e.forge("ok.sh", &["log", "--touches", "a/b.rs", "--touches-text"])
+            .stdout,
+    )
+    .to_string();
+    let by_text: Vec<&str> = text.lines().filter(|l| l.contains("(by text)")).collect();
+    assert_eq!(by_text.len(), 1, "{text}");
+    assert!(by_text[0].starts_with(&mentions.to_string()), "{text}");
+}
+
 #[test]
 fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
     let e = Env::new();

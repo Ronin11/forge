@@ -178,6 +178,19 @@ enum Cmd {
         /// Only tasks in this initiative
         #[arg(long)]
         initiative: Option<i64>,
+        /// Only tasks whose recorded changes include this path, or
+        /// anything under it when it names a directory (repeatable; a /
+        /// boundary, so src/cli matches src/cli/tasks.rs and not
+        /// src/client.rs). The changes are what the attempts' envelopes
+        /// recorded: derived from git where the provider reports from
+        /// git, else what the agent itself reported.
+        #[arg(long = "touches")]
+        touches: Vec<String>,
+        /// With --touches: also tasks whose text mentions the path (a
+        /// queued or running task has no changes yet); such rows are
+        /// marked "by text"
+        #[arg(long = "touches-text", requires = "touches")]
+        touches_text: bool,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -1257,6 +1270,8 @@ pub async fn main() -> Result<()> {
             workflow,
             project,
             initiative,
+            touches,
+            touches_text,
         } => log(
             LogArgs {
                 limit,
@@ -1267,6 +1282,8 @@ pub async fn main() -> Result<()> {
                 workflow,
                 project,
                 initiative,
+                touches,
+                touches_text,
             },
             json,
         ),
@@ -5468,6 +5485,8 @@ struct LogArgs {
     workflow: Option<String>,
     project: Option<String>,
     initiative: Option<i64>,
+    touches: Vec<String>,
+    touches_text: bool,
 }
 
 fn log(args: LogArgs, json: bool) -> Result<()> {
@@ -5480,6 +5499,8 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         workflow,
         project,
         initiative,
+        touches,
+        touches_text,
     } = args;
     let state = state
         .map(|s| {
@@ -5504,6 +5525,8 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         workflow,
         project,
         initiative,
+        touches,
+        touches_text,
     };
     let rows = tasks_json(&f, &q)?;
     if json {
@@ -5533,7 +5556,7 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}",
             s.id,
             s.state,
             s.trust,
@@ -5542,7 +5565,12 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             format!("${:.4}", s.cost_usd),
             render::utc(s.created_at),
             repo_name,
-            task_short
+            task_short,
+            if s.touch.as_deref() == Some("text") {
+                " (by text)"
+            } else {
+                ""
+            }
         );
     }
     Ok(())

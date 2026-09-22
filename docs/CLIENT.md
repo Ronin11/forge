@@ -24,11 +24,23 @@ and does not parse stdout.
   plus the point in the event log to subscribe from. See
   [Snapshot](#snapshot-document).
 - **`forge log --json [--limit N] [--state S] [--repo P] [--before ID]
-  [--grep TEXT] [--workflow W] [--project NAME] [--initiative ID]`** —
+  [--grep TEXT] [--workflow W] [--project NAME] [--initiative ID]
+  [--touches PATH]... [--touches-text]`** —
   tasks, newest first. A JSON array of [`TaskRow`](#taskrow). `--limit`
   defaults to 20; `--before` pages backward by id; `--grep` matches the
   task text or an exact id; `--state` is one of `queued`, `running`,
-  `succeeded`, `failed`, `blocked`, `unverified`, `withdrawn`.
+  `succeeded`, `failed`, `blocked`, `unverified`, `withdrawn`. `--touches
+  PATH` (repeatable) keeps tasks with an attempt whose recorded changes
+  include the path, or anything under it when it names a directory: a
+  `/` boundary, so `src/cli` matches `src/cli/tasks.rs` and not
+  `src/client.rs`. The changes are the attempts' envelopes' `changes`,
+  the same rows the graph overlay's `file_changes` reads: derived from
+  git where the provider reports from git, else what the agent reported.
+  A queued or running task has no changes yet; `--touches-text` also
+  keeps tasks whose text mentions one of the paths, and each row's
+  `touch` says which (`"changes"` or `"text"`; the text form appends
+  `(by text)`), so a guess is never mistaken for a record. Combines with
+  every other filter.
 - **`forge requests --json [--repo P]`** — blocked tasks and what each
   is waiting on. A JSON array of [`RequestRow`](#requestrow).
 - **`forge decisions --json [--repo P]`** — operator and supervisor
@@ -483,6 +495,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `project` | string or null | The project the task belongs to; null for a task predating projects that no migration could place. |
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
 | `trust` | string | Trust the caller earned by the path it queued through: `"operator"` (`forge add`/`forge run` and the CLI, the default), `"contact"` (a known contact through the Signal plugin, the portal, or another message through the concierge's `forge ask`), or `"public"` (the github-issues plugin, or any other caller a stranger can reach). Set once at enqueue and never revisited; a retry keeps the trust of the task it retries. `"operator"` for every task that predates this column. Also on `TraceDoc.task.trust`, shown by `forge show` and `forge trace`. |
+| `touch` | string, only under `--touches` | How the row matched `--touches`: `"changes"` (an attempt recorded a change at the path or under it) or `"text"` (only the task's text mentions it, `--touches-text`). Absent without the filter. |
 
 ### `RequestRow`
 
