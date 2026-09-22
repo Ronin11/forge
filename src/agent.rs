@@ -1099,6 +1099,24 @@ fn apply_codex_event(
             }
             _ => {}
         },
+        // A failed turn, or a top-level error frame: codex reports a spent
+        // usage window this way ("You've hit your usage limit ... try
+        // again at 3:37 AM"), not as a rate-limit event, and until
+        // 2026-09-22 that was read as an ordinary agent failure: the
+        // attempt counted, and the worker kept launching into the closed
+        // window. It is a refusal: the attempt is refunded and the
+        // provider held until the time the message names.
+        Some("turn.failed") | Some("error") => {
+            let msg = v["error"]["message"]
+                .as_str()
+                .or(v["message"].as_str())
+                .unwrap_or("");
+            out.is_error = true;
+            if let Some(reset) = usage_limit_reset(msg, crate::unix_now()) {
+                out.rate_limited = true;
+                out.rate_limits.five_hour = Some((1.0, reset));
+            }
+        }
         Some("turn.completed") => {
             out.num_turns += 1;
             let u = &v["usage"];
@@ -1113,6 +1131,52 @@ fn apply_codex_event(
         _ => {}
     }
     None
+}
+
+/// When a codex error message says the usage window is spent, the unix
+/// time it can be tried again: the "try again at H:MM AM" it names, read
+/// in this machine's local zone (the next such time after `now`), or an
+/// hour from now when the message names none. `None` for any other error.
+pub fn usage_limit_reset(msg: &str, now: i64) -> Option<i64> {
+    let lower = msg.to_ascii_lowercase();
+    if !(lower.contains("usage limit") || lower.contains("rate limit")) {
+        return None;
+    }
+    let Some(i) = lower.find("try again at ") else {
+        return Some(now + 3600);
+    };
+    let rest = &lower[i + "try again at ".len()..];
+    let mut parts = rest.split_whitespace();
+    let (Some(hm), Some(ampm)) = (parts.next(), parts.next()) else {
+        return Some(now + 3600);
+    };
+    let (h, m) = hm.split_once(':')?;
+    let (h, m): (i64, i64) = (h.parse().ok()?, m.trim_end_matches('.').parse().ok()?);
+    let h = match ampm.trim_end_matches('.') {
+        "am" => h % 12,
+        "pm" => h % 12 + 12,
+        _ => return Some(now + 3600),
+    };
+    Some(next_local_time(now, h, m))
+}
+
+/// The next unix time at local `hour:minute` strictly after `now`.
+fn next_local_time(now: i64, hour: i64, minute: i64) -> i64 {
+    // SAFETY: libc::localtime_r and mktime write only into the tm we own.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let t = now as libc::time_t;
+        libc::localtime_r(&t, &mut tm);
+        tm.tm_hour = hour as libc::c_int;
+        tm.tm_min = minute as libc::c_int;
+        tm.tm_sec = 0;
+        let mut at = libc::mktime(&mut tm) as i64;
+        if at <= now {
+            tm.tm_mday += 1;
+            at = libc::mktime(&mut tm) as i64;
+        }
+        at
+    }
 }
 
 /// The schema as OpenAI's strict structured output accepts it: every
@@ -1546,6 +1610,38 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_codex_usage_limit_message_is_a_refusal_with_a_reset() {
+        let now = crate::unix_now();
+        let msg = "You've hit your usage limit. Upgrade to Pro, or try again at 3:37 AM.";
+        let reset = usage_limit_reset(msg, now).unwrap();
+        assert!(
+            reset > now && reset <= now + 86_400,
+            "next 3:37 within a day: {reset} vs {now}"
+        );
+        // The named time, read in the local zone.
+        let secs_of_day = {
+            // SAFETY: as in next_local_time.
+            unsafe {
+                let mut tm: libc::tm = std::mem::zeroed();
+                let t = reset as libc::time_t;
+                libc::localtime_r(&t, &mut tm);
+                (tm.tm_hour as i64, tm.tm_min as i64)
+            }
+        };
+        assert_eq!(secs_of_day, (3, 37));
+        // No time named: an hour's hold. Not a limit at all: nothing.
+        assert_eq!(
+            usage_limit_reset("usage limit reached", now),
+            Some(now + 3600)
+        );
+        assert_eq!(usage_limit_reset("something else broke", now), None);
+        assert_eq!(
+            usage_limit_reset("rate limit exceeded, try again at 11:05 PM", 0).map(|r| r > 0),
+            Some(true)
+        );
+    }
 
     #[test]
     fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
