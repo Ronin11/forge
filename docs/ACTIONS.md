@@ -34,7 +34,14 @@ Pins can be added the day a real need shows up. Nothing here prevents it.
 
 ## Directives
 
-A directive is a prompt template, a capability set, and a contract.
+A directive is a prompt template, a capability set, and a contract. The
+capability set is the same for every directive on the claude runner and
+is fixed at launch: Bash, Read, Edit, Write, Glob and Grep, plus the
+StructuredOutput tool the result schema adds, and nothing else: no MCP
+server, no skill, no plugin, none of the operator's user settings (the
+launch passes `--strict-mcp-config --disable-slash-commands
+--setting-sources project,local --exclude-dynamic-system-prompt-sections`;
+see `agent::claude_argv`). A job's directive step gets no tools at all.
 
 - Capabilities: what the agent can see and touch. Whether the verification
   namespace is hidden, whether the acceptance checks are visible, which
