@@ -654,6 +654,22 @@ pub struct StatsWorkflowRow {
     /// 30 days (`task_churn`, cached per task). `None` when nothing was
     /// added yet to measure.
     pub churn_share: Option<f64>,
+    /// Verified rate: `succeeded / pieces` (0 when `pieces` is 0) — the
+    /// same quantity `crate::profile::Profile::rate` reports, over this
+    /// version's own tasks in scope rather than a lookback window.
+    pub rate: f64,
+    /// Wilson 95% interval on `rate` (`crate::profile::wilson`), the
+    /// interval the `/stats` workflows tab draws as a bar.
+    pub rate_lo: f64,
+    pub rate_hi: f64,
+    /// Set on a workflow's current version (`Store::workflow_versions`'s
+    /// first hash) when its `rate` interval sits entirely below its
+    /// previous version's — `crate::profile::regressed`'s rule, applied
+    /// to this row's own counts; see `mark_workflow_regressions`. Always
+    /// `false` on every other version, and on a current version with no
+    /// previous one, or with fewer than `crate::profile::MIN_N` pieces
+    /// on either side.
+    pub regressed: bool,
     #[serde(flatten)]
     pub legacy: serde_json::Map<String, Value>,
 }
@@ -668,6 +684,12 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             (w.landed > 0).then(|| (w.cost + w.repair_cost) / w.landed as f64);
         let churn_share =
             (w.added_lines > 0).then(|| w.churned_lines as f64 / w.added_lines as f64);
+        let rate = if w.tasks > 0 {
+            w.succeeded as f64 / w.tasks as f64
+        } else {
+            0.0
+        };
+        let (rate_lo, rate_hi) = crate::profile::wilson(w.succeeded as usize, w.tasks as usize);
         let mut legacy = serde_json::Map::new();
         legacy.insert("WF".into(), Value::from(w.workflow.clone()));
         legacy.insert("HASH".into(), Value::from(w.hash.clone()));
@@ -701,6 +723,10 @@ impl From<&WorkflowStat> for StatsWorkflowRow {
             repair_cost_usd: w.repair_cost,
             true_cost_per_landed_usd,
             churn_share,
+            rate,
+            rate_lo,
+            rate_hi,
+            regressed: false,
             legacy,
         }
     }
@@ -1066,6 +1092,26 @@ impl From<&crate::store::RoleStat> for StatsRoleRow {
     }
 }
 
+/// One row of `StatsDoc.daily`: one UTC date's landings and spend, the
+/// `/stats` page's 30-day chart source. See `Store::DailyStat` and
+/// `Store::daily_stats`.
+#[derive(Serialize)]
+pub struct StatsDailyRow {
+    pub date: String,
+    pub landed: i64,
+    pub cost_usd: f64,
+}
+
+impl From<&crate::store::DailyStat> for StatsDailyRow {
+    fn from(d: &crate::store::DailyStat) -> Self {
+        StatsDailyRow {
+            date: d.date.clone(),
+            landed: d.landed,
+            cost_usd: d.cost_usd,
+        }
+    }
+}
+
 /// Everything `forge stats` shows: outcomes per workflow, outcomes per
 /// step, the journal control arm's retrospective split (with `--journal`),
 /// and (with `--tools`) tool usage per step. `forge stats --json`
@@ -1112,6 +1158,9 @@ pub struct StatsDoc {
     /// tasks in the window `--days` names (every one of them, absent a
     /// window); see `forge stats --factors` and `StatsFactorRow`.
     pub factors: Vec<StatsFactorRow>,
+    /// The last 30 UTC days' landings and spend, oldest first — the
+    /// `/stats` page's chart source (see `StatsDailyRow`).
+    pub daily: Vec<StatsDailyRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
 }
@@ -1573,13 +1622,15 @@ pub async fn stats_doc(
     } else {
         Vec::new()
     };
+    let mut workflows: Vec<StatsWorkflowRow> = f
+        .store
+        .workflow_stats(scope)?
+        .iter()
+        .map(Into::into)
+        .collect();
+    mark_workflow_regressions(f, &mut workflows)?;
     Ok(StatsDoc {
-        workflows: f
-            .store
-            .workflow_stats(scope)?
-            .iter()
-            .map(Into::into)
-            .collect(),
+        workflows,
         steps: f.store.step_stats(scope)?.iter().map(Into::into).collect(),
         journal,
         no_journal,
@@ -1602,8 +1653,50 @@ pub async fn stats_doc(
             .iter()
             .map(Into::into)
             .collect(),
+        daily: f.store.daily_stats(scope)?.iter().map(Into::into).collect(),
         tools: None,
     })
+}
+
+/// Marks each `StatsWorkflowRow` whose hash is its workflow's current
+/// version (`Store::workflow_versions`'s first entry) as `regressed` when
+/// its own verified-rate interval sits entirely below the immediately
+/// previous version's — `crate::profile::regressed`'s separated-intervals
+/// rule, `crate::profile::MIN_N` gating both sides, applied to this row's
+/// own in-scope counts rather than `crate::profile::measure`'s separate
+/// lookback window, so the `/stats` workflows tab's regression mark
+/// matches the numbers it sits beside.
+fn mark_workflow_regressions(f: &Forge, rows: &mut [StatsWorkflowRow]) -> Result<()> {
+    let names: std::collections::BTreeSet<String> =
+        rows.iter().map(|r| r.workflow.clone()).collect();
+    for name in names {
+        let versions = f.store.workflow_versions(&name)?;
+        let (Some(current_hash), Some(previous_hash)) = (versions.first(), versions.get(1)) else {
+            continue;
+        };
+        let current = rows
+            .iter()
+            .find(|r| r.workflow == name && &r.hash == current_hash)
+            .map(|r| (r.pieces, r.rate_hi));
+        let previous = rows
+            .iter()
+            .find(|r| r.workflow == name && &r.hash == previous_hash)
+            .map(|r| (r.pieces, r.rate_lo));
+        let Some(((current_n, current_hi), (previous_n, previous_lo))) = current.zip(previous)
+        else {
+            continue;
+        };
+        if current_n as usize >= crate::profile::MIN_N
+            && previous_n as usize >= crate::profile::MIN_N
+            && current_hi < previous_lo
+            && let Some(r) = rows
+                .iter_mut()
+                .find(|r| r.workflow == name && &r.hash == current_hash)
+        {
+            r.regressed = true;
+        }
+    }
+    Ok(())
 }
 
 /// One row of `forge plugin list` / `forge plugin list --json`: a plugin as
@@ -3234,6 +3327,7 @@ mod stats_tests {
             time_to_live: vec![],
             time_to_live_projects: vec![],
             factors: vec![],
+            daily: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();

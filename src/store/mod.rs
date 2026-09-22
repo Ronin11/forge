@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod attempts;
+mod daily;
 mod deploys;
 mod events;
 mod jobs;
@@ -23,6 +24,7 @@ mod tasks;
 mod webhooks;
 
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op};
+pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget};
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
 pub use messages::{Direction, Message, MessageFilter};

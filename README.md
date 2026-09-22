@@ -230,6 +230,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
+  daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
 src/supervisor.rs   the rung between a blocked task and the human
 src/tools.rs        what an attempt ran, read back from its stream
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
