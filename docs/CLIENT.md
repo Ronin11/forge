@@ -650,7 +650,7 @@ full.
 The document `forge stats --json` prints: `{workflows, steps, journal,
 no_journal, projects, jobs, by_role, assessment_correlation,
 human_attention, human_attention_projects, time_to_live,
-time_to_live_projects, tools}`.
+time_to_live_projects, factors, tools}`.
 `tools` is present only with `--tools` (an object keyed by step name);
 otherwise it is omitted. `projects` and `jobs` are present only when
 `forge stats` is not itself scoped to one project or initiative.
@@ -799,6 +799,55 @@ in the window), `ok`, `failed`, `needs_human` (of those, how many
 reached that state) — counted separately from `projects`'s task rollup,
 since a job is not a task (docs/JOBS.md step 1d). `forge stats` prints
 the same numbers as a table under the projects one.
+
+**`factors`** — array of `StatsFactorRow`, `forge stats --factors`
+(docs/ECONOMIST.md, "The decisions, in the order to build them" — the
+inputs the second and third decisions there read): one row per level of
+each of three factors, over this scope's landed and failed tasks
+(`state` in `succeeded`/`failed`/`blocked`/`unverified`, `started_at`
+set) — every one of them, or only those that finished in the last
+`--days N` days when given.
+
+- `"provider:<role>"`, one factor per role in `code`, `tests`, `review`,
+  `plan`, `assess` that ran on at least one in-scope task — `level` is
+  the provider that role's first attempt ran under
+  (`attempts.provider`, not `Task::routing`, so a task predating the
+  routing record still counts). A task whose workflow never runs that
+  role carries no row for it.
+- `"workflow"` — `level` is the task's `workflow` name (not its hash;
+  every version of a workflow is one level here).
+- `"size"` — `level` is `"small"`, `"medium"`, or `"large"`: a plain,
+  hand-picked score over the two task-shape fields piece 1 recorded
+  (`shape_text_len` plus 80 times `shape_path_tokens`, split at 150 and
+  400 — see `crate::store::size_class` in [`src/store/stats.rs`](../src/store/stats.rs)).
+
+Every row carries `factor`, `level`, `tasks`, `landed`, `rate` (landing
+rate, `landed / tasks`) with its Wilson 95% interval (`rate_lo`,
+`rate_hi` — the same construction as [`Profile`](../src/profile.rs)'s
+`rate_lo`/`rate_hi`, so a level with only two or three tasks reads as a
+wide interval, not a confident number), and `mean_true_cost_usd` (mean
+of `attempts.cost_usd` summed per task plus that task's cached repair
+cost, over this level's own landed tasks; `null` when none landed).
+
+`effect` and `effect_se` come from one joint fit, not one per factor:
+plain least squares (normal equations solved by hand, no library — see
+`fit_main_effects` in `src/store/stats.rs`) of `ln(true cost)` on every
+factor and level in scope at once, main effects only, over every landed
+task in this scope and window. Each factor's reference level
+(`is_reference: true`, whichever level has the most landed tasks,
+ties broken alphabetically) is absorbed into the intercept; every other
+level's `effect` is the change in log cost it carries against that
+reference, `effect_se` its standard error. A task with no value for a
+factor (a role that never ran on it) counts as 0 on every one of that
+factor's dummies — indistinguishable from the reference level for that
+factor, not a claim that it ran there. Both fields are `null` for the
+reference level itself, and for every level of a factor the fit
+dropped: stuck at one level among the tasks that landed, too little
+data for the columns in play, or perfectly confounded with another
+factor in this scope (a singular fit reports no effect rather than a
+number it cannot stand behind). `forge stats --factors` is the
+text-mode view of the same rows, one table, `ref` where `is_reference`
+is true.
 
 ### `PluginRow`
 

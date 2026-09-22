@@ -31,8 +31,8 @@ pub use projects::{
 };
 pub use record::{Decision, TaskRef};
 pub use stats::{
-    HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
-    TaskTtl, WorkflowStat,
+    FactorLevelStat, HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat,
+    StatsFilter, StepStat, TaskTtl, WorkflowStat,
 };
 pub use tasks::{RoleRouting, Routed, Task, TaskLimitsUpdate, TaskState};
 

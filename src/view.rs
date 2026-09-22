@@ -1107,8 +1107,64 @@ pub struct StatsDoc {
     /// Time to live per project; same scoping rule as `projects`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub time_to_live_projects: Vec<TimeToLiveProjectRow>,
+    /// One row per factor level, over this scope's landed and failed
+    /// tasks in the window `--days` names (every one of them, absent a
+    /// window); see `forge stats --factors` and `StatsFactorRow`.
+    pub factors: Vec<StatsFactorRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Value>,
+}
+
+/// One row of `StatsDoc.factors`: one level of one factor in `forge
+/// stats --factors` (docs/ECONOMIST.md, piece 3) — `factor` is
+/// `"provider:<role>"` (the provider a role ran under, one factor per
+/// role that ran in scope), `"workflow"`, or `"size"` (the task-shape
+/// bin from `crate::store::size_class`); `level` is that factor's value
+/// (a provider name, a workflow name, or `"small"`/`"medium"`/`"large"`).
+///
+/// `tasks`, `landed`, `rate` (with its Wilson 95% interval, `rate_lo`/
+/// `rate_hi`) and `mean_true_cost_usd` (null when nothing in this level
+/// landed) describe this level's own tasks. `effect` and `effect_se`
+/// come from one joint least-squares fit of `ln(true cost)` on every
+/// factor and level in scope at once (main effects only, no
+/// interactions): the change in log cost this level carries against its
+/// factor's reference level (`is_reference`), with a standard error.
+/// Both are null for the reference level itself, and for any level
+/// whose factor the fit could not identify (stuck at one level among
+/// the tasks that landed, too little data for the columns in play, or
+/// perfectly confounded with another factor) — see
+/// `crate::store::Store::factor_stats`.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct StatsFactorRow {
+    pub factor: String,
+    pub level: String,
+    pub tasks: i64,
+    pub landed: i64,
+    pub rate: f64,
+    pub rate_lo: f64,
+    pub rate_hi: f64,
+    pub mean_true_cost_usd: Option<f64>,
+    pub is_reference: bool,
+    pub effect: Option<f64>,
+    pub effect_se: Option<f64>,
+}
+
+impl From<&crate::store::FactorLevelStat> for StatsFactorRow {
+    fn from(f: &crate::store::FactorLevelStat) -> Self {
+        StatsFactorRow {
+            factor: f.factor.clone(),
+            level: f.level.clone(),
+            tasks: f.tasks,
+            landed: f.landed,
+            rate: f.rate,
+            rate_lo: f.rate_lo,
+            rate_hi: f.rate_hi,
+            mean_true_cost_usd: f.mean_true_cost_usd,
+            is_reference: f.is_reference,
+            effect: f.effect,
+            effect_se: f.effect_se,
+        }
+    }
 }
 
 /// One row of `StatsDoc.assessment_correlation`: how well the assess
@@ -1467,7 +1523,14 @@ fn time_to_live_project_rows(ttls: &[crate::store::TaskTtl]) -> Vec<TimeToLivePr
         .collect()
 }
 
-pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<StatsDoc> {
+/// `days`, when given, is `forge stats --factors --days N`'s window: only
+/// `factors` reads it, narrowed to tasks that finished in the last `days`
+/// days; every other section reads this scope's whole history, as before.
+pub async fn stats_doc(
+    f: &Forge,
+    scope: &crate::store::StatsFilter,
+    days: Option<i64>,
+) -> Result<StatsDoc> {
     refresh_churn(f).await?;
     refresh_hand_commits(f).await?;
     refresh_repair_cost(f).await?;
@@ -1532,6 +1595,12 @@ pub async fn stats_doc(f: &Forge, scope: &crate::store::StatsFilter) -> Result<S
         human_attention_projects,
         time_to_live: time_to_live_rows(&ttls),
         time_to_live_projects,
+        factors: f
+            .store
+            .factor_stats(scope, days.map(|d| crate::unix_now() - d * 86_400))?
+            .iter()
+            .map(Into::into)
+            .collect(),
         tools: None,
     })
 }
@@ -2889,7 +2958,7 @@ mod stats_tests {
         assert_eq!(stat.added_lines, 3);
         assert_eq!(stat.churned_lines, 1);
 
-        let doc = stats_doc(&f, &crate::store::StatsFilter::default())
+        let doc = stats_doc(&f, &crate::store::StatsFilter::default(), None)
             .await
             .unwrap();
         let w = doc
@@ -3151,6 +3220,7 @@ mod stats_tests {
             human_attention_projects: vec![],
             time_to_live: vec![],
             time_to_live_projects: vec![],
+            factors: vec![],
             tools: None,
         };
         let v = serde_json::to_value(&doc).unwrap();
@@ -3974,7 +4044,7 @@ mod time_to_live_tests {
         landed(&f, "direct", "h-direct", 100);
         landed(&f, "tdd", "h-tdd", 700);
 
-        let doc = stats_doc(&f, &crate::store::StatsFilter::default())
+        let doc = stats_doc(&f, &crate::store::StatsFilter::default(), None)
             .await
             .unwrap();
         assert_eq!(doc.time_to_live.len(), 2, "one row per workflow");

@@ -69,6 +69,16 @@ routing. The night shifts that follow this note exist to fill that row.
   answerable from the record rather than asserted: a decision the
   economist makes can be explained by naming the row that shows why the
   step before it ran where it did.
+- Factors: `forge stats --factors [--days N]` (`src/store/stats.rs`,
+  documented in docs/CLIENT.md) — over landed and failed tasks in the
+  window, per factor level (provider per role, workflow, task size in
+  three bins) the task count, the landing rate with a Wilson 95%
+  interval, and the mean true cost per landed task; plus one joint
+  least-squares fit of log true cost across every level at once, each
+  reported against its factor's reference level with a standard error.
+  What decisions 2–4 below read before they choose anything: an interval
+  that does not clear the alternative's is not a decision yet, only a
+  level with too few tasks under it.
 
 ## The decisions, in the order to build them
 

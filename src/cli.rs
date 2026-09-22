@@ -321,6 +321,14 @@ enum Cmd {
         /// model), role being the attempt step
         #[arg(long)]
         by_role: bool,
+        /// Landing rate and true cost per factor level (provider per
+        /// role, workflow, size class), with a main-effects fit of log
+        /// true cost across all of them (see docs/ECONOMIST.md)
+        #[arg(long)]
+        factors: bool,
+        /// With --factors, only tasks that finished in the last N days
+        #[arg(long)]
+        days: Option<i64>,
         /// Only this project's tasks (also adds the per-project section
         /// when neither this nor --initiative is given)
         #[arg(long)]
@@ -1181,12 +1189,14 @@ pub async fn main() -> Result<()> {
             quality,
             journal,
             by_role,
+            factors,
+            days,
             project,
             initiative,
             json,
         } => {
             stats(
-                tools, step, quality, journal, by_role, project, initiative, json,
+                tools, step, quality, journal, by_role, factors, days, project, initiative, json,
             )
             .await
         }
@@ -4363,6 +4373,8 @@ async fn stats(
     quality: bool,
     journal: bool,
     by_role: bool,
+    factors: bool,
+    days: Option<i64>,
     project: Option<String>,
     initiative: Option<i64>,
     json: bool,
@@ -4373,7 +4385,7 @@ async fn stats(
         initiative,
     };
     if json {
-        let mut doc = crate::view::stats_doc(&f, &scope).await?;
+        let mut doc = crate::view::stats_doc(&f, &scope, days).await?;
         if tools {
             doc.tools = Some(tools_json(&f, step.as_deref())?);
         }
@@ -4392,7 +4404,10 @@ async fn stats(
     if by_role {
         return by_role_stats(&f).await;
     }
-    let doc = crate::view::stats_doc(&f, &scope).await?;
+    if factors {
+        return factor_stats_cmd(&f, &scope, days).await;
+    }
+    let doc = crate::view::stats_doc(&f, &scope, None).await?;
     out!(
         "{:<8} {:<16} {:>5} {:>4} {:>4} {:>4} {:>4} {:>5} {:>9} {:>9} {:>6} {:>9}",
         "WF",
@@ -4520,7 +4535,7 @@ async fn stats(
 /// the next task's base or were later repaired, plus delayed cost
 /// (repair cost, true cost per landed piece, and churn).
 async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<()> {
-    let doc = crate::view::stats_doc(f, scope).await?;
+    let doc = crate::view::stats_doc(f, scope, None).await?;
     out!(
         "{:<8} {:<16} {:>6} {:>10} {:>9} {:>8} {:>9} {:>10} {:>10} {:>7}",
         "WF",
@@ -4669,7 +4684,7 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
 /// role being the attempt's step; landed, broke-base and delayed-cost
 /// columns for the `code` role only.
 async fn by_role_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default(), None).await?;
     out!(
         "{:<10} {:<10} {:<16} {:<9} {:>5} {:>8} {:>6} {:>9} {:>7} {:>6} {:>9} {:>7} {:>10} {:>10} {:>7}",
         "ROLE",
@@ -4726,11 +4741,67 @@ async fn by_role_stats(f: &Forge) -> Result<()> {
     Ok(())
 }
 
+/// Landing rate and true cost per factor level, and each level's effect
+/// against its factor's reference level from the one joint main-effects
+/// fit of log true cost (see docs/ECONOMIST.md, piece 3, and
+/// `crate::store::Store::factor_stats`).
+async fn factor_stats_cmd(
+    f: &Forge,
+    scope: &crate::store::StatsFilter,
+    days: Option<i64>,
+) -> Result<()> {
+    let doc = crate::view::stats_doc(f, scope, days).await?;
+    out!(
+        "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8}",
+        "FACTOR",
+        "LEVEL",
+        "N",
+        "LANDED",
+        "RATE (95% CI)",
+        "TRUECOST",
+        "EFFECT(log$)",
+        "SE"
+    );
+    let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
+    for r in &doc.factors {
+        let rate = format!(
+            "{:.0}% ({:.0}-{:.0}%)",
+            r.rate * 100.0,
+            r.rate_lo * 100.0,
+            r.rate_hi * 100.0
+        );
+        let effect = if r.is_reference {
+            "ref".to_string()
+        } else {
+            match r.effect {
+                Some(e) => format!("{e:+.2}"),
+                None => "-".into(),
+            }
+        };
+        let se = r.effect_se.map_or("-".to_string(), |v| format!("{v:.2}"));
+        out!(
+            "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8}",
+            r.factor,
+            r.level,
+            r.tasks,
+            r.landed,
+            rate,
+            dollar(r.mean_true_cost_usd),
+            effect,
+            se
+        );
+    }
+    if let Some(d) = days {
+        out!("* window: last {d} day(s)");
+    }
+    Ok(())
+}
+
 /// The journal control arm's retrospective split: code attempts after the
 /// first (`attempt_no > 1`), by whether they were handed a journal. See
 /// docs/LATER.md, "The journal measurement was ill-posed three times".
 async fn journal_control_stats(f: &Forge) -> Result<()> {
-    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default()).await?;
+    let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default(), None).await?;
     out!(
         "{:<11} {:>5} {:>6} {:>7} {:>10} {:>9}",
         "ARM",
