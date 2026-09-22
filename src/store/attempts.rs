@@ -179,6 +179,11 @@ pub struct Op {
     pub output: String,
 }
 
+/// Every column of the `attempts` table (`store::column_tests::
+/// the_column_lists_agree_with_the_schema` enforces the two agree).
+/// `repriced_at` has no field on `Attempt`: `Store::reprice_attempts` is
+/// the only reader, and it queries the column directly rather than going
+/// through this struct.
 pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "id",
     "task_id",
@@ -220,6 +225,7 @@ pub(super) const ATTEMPT_COLUMNS: &[&str] = &[
     "early_near",
     "runner",
     "provider",
+    "repriced_at",
 ];
 
 pub(super) const OP_COLUMNS: &[&str] = &[
