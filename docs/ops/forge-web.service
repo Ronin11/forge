@@ -1,14 +1,14 @@
 # The operator's web client (web/, see docs/CLIENT.md): binds loopback,
 # reads through the `forge` binary, never opens forge.db itself. Reached
 # on the tailnet through `tailscale serve` (https://omarchy.<tailnet>:7788),
-# every request carrying the token from FORGE2_HOME/web.token.
+# every request carrying the token from FORGE_HOME/web.token.
 [Unit]
 Description=Forge web client
 After=network.target
 
 [Service]
 WorkingDirectory=%h/Projects/forge
-Environment=FORGE2_HOME=%h/.local/share/forge2
+Environment=FORGE_HOME=%h/.local/share/forge
 Environment=FORGE_BIN=%h/Projects/forge/target/release/forge
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/Projects/forge/target/release/forge-web --bind 127.0.0.1:7788

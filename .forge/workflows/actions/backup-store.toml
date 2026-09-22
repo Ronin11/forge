@@ -1,8 +1,8 @@
 name = "backup-store"
 kind = "operation"
-description = "backs up the store to the equitizr host: takes a consistent copy of FORGE2_HOME/forge.db with sqlite3's .backup, rsyncs it and FORGE2_HOME/config.toml over ssh into ~/backups/forge/<UTC date>/, asserts the remote copy passes `pragma integrity_check`, then removes all but the seven newest dated directories there. Logs one file effect per copy. FORGE2_HOME comes from the job's environment, or $HOME/.local/share/forge2 by default; BACKUP_HOST (default equitizr) and BACKUP_KEEP (default 7) override the host and the count. In a dry run it logs what it would copy and does not run sqlite3, ssh or rsync."
+description = "backs up the store to the equitizr host: takes a consistent copy of FORGE_HOME/forge.db with sqlite3's .backup, rsyncs it and FORGE_HOME/config.toml over ssh into ~/backups/forge/<UTC date>/, asserts the remote copy passes `pragma integrity_check`, then removes all but the seven newest dated directories there. Logs one file effect per copy. FORGE_HOME comes from the job's environment, or $HOME/.local/share/forge by default; BACKUP_HOST (default equitizr) and BACKUP_KEEP (default 7) override the host and the count. In a dry run it logs what it would copy and does not run sqlite3, ssh or rsync."
 run = ["bash", "-c", '''
-home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
 host="${BACKUP_HOST:-equitizr}"
 keep="${BACKUP_KEEP:-7}"
 day=$(date -u +%Y-%m-%d)

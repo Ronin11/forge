@@ -183,23 +183,20 @@ impl Default for Provider {
 }
 
 pub fn agent_bin() -> String {
-    std::env::var("FORGE2_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
+    crate::config::env("CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string())
 }
 
-/// The codex CLI, `FORGE2_CODEX_BIN` overridden (the codex-cli fake in
+/// The codex CLI, `FORGE_CODEX_BIN` overridden (the codex-cli fake in
 /// tests, an alternate build on an operator's machine).
 pub fn codex_bin() -> String {
-    std::env::var("FORGE2_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
+    crate::config::env("CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
 }
 
-/// `codex_bin`'s per-step override, `FORGE2_CODEX_BIN_<STEP>`; see
+/// `codex_bin`'s per-step override, `FORGE_CODEX_BIN_<STEP>`; see
 /// `agent_bin_for`, which does the same for the claude CLI.
 pub fn codex_bin_for(step: &str) -> String {
-    let key = format!(
-        "FORGE2_CODEX_BIN_{}",
-        step.to_ascii_uppercase().replace('-', "_")
-    );
-    std::env::var(key).unwrap_or_else(|_| codex_bin())
+    let suffix = format!("CODEX_BIN_{}", step.to_ascii_uppercase().replace('-', "_"));
+    crate::config::env(&suffix).unwrap_or_else(|_| codex_bin())
 }
 
 /// The binary behind a bare name, past any version-manager shim or wrapper:
@@ -224,15 +221,12 @@ pub fn real_bin(name: &str) -> String {
         .unwrap_or_else(|_| name.to_string())
 }
 
-/// A step may run a different agent binary through FORGE2_CLAUDE_BIN_<STEP>
+/// A step may run a different agent binary through FORGE_CLAUDE_BIN_<STEP>
 /// (upper-cased action name), which is how the test suite plays every
 /// role in a workflow with a different script.
 pub fn agent_bin_for(step: &str) -> String {
-    let key = format!(
-        "FORGE2_CLAUDE_BIN_{}",
-        step.to_ascii_uppercase().replace('-', "_")
-    );
-    std::env::var(key).unwrap_or_else(|_| agent_bin())
+    let suffix = format!("CLAUDE_BIN_{}", step.to_ascii_uppercase().replace('-', "_"));
+    crate::config::env(&suffix).unwrap_or_else(|_| agent_bin())
 }
 
 /// The environment the agent and the checks see, sandboxed or not. This is
@@ -1432,7 +1426,7 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
     // tmpfs. The worktree is the one directory bound read-write for the
     // attempt, and its `.git` is invisible to `git status`, so the file
     // lives there (tasks 274-286 exited at launch: "Failed to read output
-    // schema file", written beside the log under FORGE2_HOME).
+    // schema file", written beside the log under FORGE_HOME).
     let schema_path = l
         .worktree
         .join(".git")
@@ -2059,7 +2053,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let fake = write_fake(scratch.path(), script);
         let key = format!(
-            "FORGE2_CODEX_BIN_{}",
+            "FORGE_CODEX_BIN_{}",
             step.to_ascii_uppercase().replace('-', "_")
         );
         // SAFETY: `step` (and so `key`) is unique to each test in this file,

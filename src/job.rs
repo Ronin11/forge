@@ -80,7 +80,7 @@ fn record_output(idir: &Path, label: &str, r: &checks::CheckResult) -> (String, 
 /// on the project itself — filing a task with `forge add`, say — knows
 /// where; `FORGE_BIN_DIR` is where that `forge` binary lives, the fact
 /// `operation::operation_env` already gives a task's own operations.
-/// `FORGE2_HOME` is set for the same reason: `agent::command_in` clears
+/// `FORGE_HOME` is set for the same reason: `agent::command_in` clears
 /// the child's environment down to an allowlist that does not include it
 /// (so an operation never inherits stray operator state by accident), and
 /// without it a recursive `forge` call would open a default store instead
@@ -115,7 +115,7 @@ fn step_env(
         ),
         ("FORGE_PROJECT".to_string(), project.to_string()),
         ("FORGE_REPO_DIR".to_string(), repo.display().to_string()),
-        ("FORGE2_HOME".to_string(), home.display().to_string()),
+        ("FORGE_HOME".to_string(), home.display().to_string()),
         (
             "FORGE_BIN_DIR".to_string(),
             std::env::current_exe()
@@ -266,7 +266,7 @@ async fn run_directive(
     let system = directive_instructions(action);
     let prompt = directive_prompt(action, input_text, step_outputs, input_bytes);
     // Like an attempt's own log (`attempt::run_attempt`): the event stream
-    // and stderr on disk under `FORGE2_HOME/logs`, named so `forge job show`
+    // and stderr on disk under `FORGE_HOME/logs`, named so `forge job show`
     // can point a failed step's tail at it.
     let log_path = f.paths.logs.join(format!("job-{job_id}-{seq}.jsonl"));
     // Guaranteed present and valid JSON Schema by `workflows::job_steps`
@@ -1939,7 +1939,7 @@ const TEST_PROJECT: &str = "job-test";
 /// Nothing of the operator's is read or written: the replay has a scratch
 /// home of its own, holding a store the job rows go into and are thrown
 /// away with, and a copy of the working tree at `root` committed as one
-/// revision for the executor to archive from, so no `FORGE2_HOME` is
+/// revision for the executor to archive from, so no `FORGE_HOME` is
 /// needed and the built-in actions are all the catalog there is. A
 /// directive step named in a fixture's `outputs` takes that output in
 /// place of a model call; any other runs the model live, under the
@@ -2224,7 +2224,7 @@ mod tests {
             )],
             "acme",
             Path::new("/repo/acme"),
-            Path::new("/home/forge2"),
+            Path::new("/home/forge"),
             &workflow_env,
             &secrets,
             false,
@@ -2241,7 +2241,7 @@ mod tests {
                 ("FORGE_INPUT_DIR".to_string(), "/scratch/input".to_string()),
                 ("FORGE_PROJECT".to_string(), "acme".to_string()),
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
-                ("FORGE2_HOME".to_string(), "/home/forge2".to_string()),
+                ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
                 ("FORGE_INPUT_NAME".to_string(), "bob".to_string()),
                 (
@@ -2268,7 +2268,7 @@ mod tests {
             &[],
             "acme",
             Path::new("/repo/acme"),
-            Path::new("/home/forge2"),
+            Path::new("/home/forge"),
             &workflow_env,
             &secrets,
             true,
@@ -2282,7 +2282,7 @@ mod tests {
                 ("FORGE_INPUT_DIR".to_string(), "/in".to_string()),
                 ("FORGE_PROJECT".to_string(), "acme".to_string()),
                 ("FORGE_REPO_DIR".to_string(), "/repo/acme".to_string()),
-                ("FORGE2_HOME".to_string(), "/home/forge2".to_string()),
+                ("FORGE_HOME".to_string(), "/home/forge".to_string()),
                 ("FORGE_BIN_DIR".to_string(), bin_dir()),
                 ("FORGE_DRY_RUN".to_string(), "1".to_string()),
             ]
@@ -2297,7 +2297,7 @@ mod tests {
             &[],
             "acme",
             Path::new("/repo/acme"),
-            Path::new("/home/forge2"),
+            Path::new("/home/forge"),
             &workflow_env,
             &secrets,
             false,

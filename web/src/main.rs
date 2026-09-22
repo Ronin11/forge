@@ -23,7 +23,7 @@
 //! page serves all of these; the path picks the view.
 //!
 //! Every request carries a token. It is generated once into
-//! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
+//! `FORGE_HOME/web.token` and printed at start as a link; the first visit
 //! with `?token=` sets a cookie. The server binds loopback unless told
 //! otherwise, and there are no routes without the token: Forge 1's web
 //! server had open operator routes and a tailnet proxy made every peer the
@@ -54,9 +54,13 @@ const ACTIVITY_JS: &str = include_str!("activity.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
-/// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
+/// Where Forge keeps its data: `FORGE_HOME` (`FORGE2_HOME` for one release),
+/// else the XDG default — falling back to the pre-rename
+/// `~/.local/share/forge2` when the new `~/.local/share/forge` does not
+/// exist yet but the old one does, same as the kernel's own
+/// `ctx::Paths::resolve`.
 fn home() -> PathBuf {
-    if let Ok(h) = std::env::var("FORGE2_HOME") {
+    if let Ok(h) = std::env::var("FORGE_HOME").or_else(|_| std::env::var("FORGE2_HOME")) {
         return PathBuf::from(h);
     }
     let base = std::env::var("XDG_DATA_HOME")
@@ -64,7 +68,13 @@ fn home() -> PathBuf {
         .unwrap_or_else(|_| {
             PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share")
         });
-    base.join("forge2")
+    let new = base.join("forge");
+    let old = base.join("forge2");
+    if !new.exists() && old.exists() {
+        old
+    } else {
+        new
+    }
 }
 
 /// The token: read from `web.token` under the data dir, generated on
@@ -364,7 +374,7 @@ fn deploy_project_target(rest: &str) -> Option<(&str, &str)> {
 }
 
 /// `GET /api/deploys/shot/<id>`: the deploy-look step's own screenshot,
-/// `<FORGE2_HOME>/deploys/<id>/screenshot.png` — the exact file
+/// `<FORGE_HOME>/deploys/<id>/screenshot.png` — the exact file
 /// `deploy-smoke` wrote and `deploy-look` read (src/deploy_look.rs), the
 /// same one `forge-portal`'s `/p/<token>/shot/<target>` streams for a
 /// customer. `id` is parsed as a bare integer (`id_of`), so there is no
@@ -1455,7 +1465,7 @@ fn main() -> Result<()> {
             "--bind" => bind = args.next().context("--bind needs an address")?,
             "-h" | "--help" => {
                 println!(
-                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE2_HOME honoured)"
+                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
                 );
                 return Ok(());
             }

@@ -1,9 +1,9 @@
 name = "disk-and-logs-check"
 kind = "operation"
-description = "free space under FORGE2_HOME (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default) and the size of its logs directory; below 5 GB free or at/above 2 GB of logs, runs `forge gc` to reclaim retained worktrees and logs a row effect, FAIL if that is not enough."
+description = "free space under FORGE_HOME (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default) and the size of its logs directory; below 5 GB free or at/above 2 GB of logs, runs `forge gc` to reclaim retained worktrees and logs a row effect, FAIL if that is not enough."
 run = ["bash", "-c", '''
 set +e
-home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
 mkdir -p "$home"
 logs="$home/logs"
 mkdir -p "$logs"

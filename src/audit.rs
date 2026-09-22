@@ -165,7 +165,7 @@ pub fn diagnose(t: &Task, attempts: &[Attempt]) -> Vec<Diagnosis> {
                 return out;
             }
             if t.reason.starts_with("needs workflow") {
-                out.push(d(&t.reason, "A workflow request. Add or adjust a workflow file in <FORGE2_HOME>/workflows/ and re-add the task with --workflow."));
+                out.push(d(&t.reason, "A workflow request. Add or adjust a workflow file in <FORGE_HOME>/workflows/ and re-add the task with --workflow."));
             } else {
                 out.push(d(&t.reason, "The agent needs the operator. `forge answer <id> <text>` records the answer and re-queues the task with it appended."));
             }

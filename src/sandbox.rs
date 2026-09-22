@@ -12,7 +12,7 @@
 //! forge.toml declares under `[sandbox] egress`, and refuses the rest.
 //!
 //! Sandboxing is on by default and refuses to run without bwrap unless
-//! `FORGE2_SANDBOX=0` is set explicitly.
+//! `FORGE_SANDBOX=0` is set explicitly.
 
 use crate::egress::{self, Policy, Proxies, Rule};
 use anyhow::{Context, Result, bail};
@@ -88,7 +88,7 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
 }
 
 impl Sandbox {
-    /// `Ok(None)` only when the operator opted out with FORGE2_SANDBOX=0.
+    /// `Ok(None)` only when the operator opted out with FORGE_SANDBOX=0.
     /// `extra_ro` and `extra_rw` are bound alongside `paths.ro`/`paths.rw`;
     /// the caller resolves them (the executable's own directory, the cache
     /// directory) so detection stays a pure read of its inputs.
@@ -99,17 +99,21 @@ impl Sandbox {
         extra_rw: Vec<PathBuf>,
         model_hosts: Vec<Rule>,
     ) -> Result<Option<Sandbox>> {
-        if std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0") {
+        if crate::config::env("SANDBOX").as_deref() == Ok("0") {
             return Ok(None);
         }
         let Ok((bwrap, _)) = resolve_binary("bwrap") else {
-            bail!("bwrap not found; install bubblewrap or set FORGE2_SANDBOX=0 to run unsandboxed");
+            bail!("bwrap not found; install bubblewrap or set FORGE_SANDBOX=0 to run unsandboxed");
         };
         let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
         let mut agent_dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut bins = vec![agent_bin.to_string()];
         for (k, v) in std::env::vars() {
-            if k.starts_with("FORGE2_CLAUDE_BIN_") || k.starts_with("FORGE2_CODEX_BIN") {
+            if k.starts_with("FORGE_CLAUDE_BIN_")
+                || k.starts_with("FORGE_CODEX_BIN")
+                || k.starts_with("FORGE2_CLAUDE_BIN_")
+                || k.starts_with("FORGE2_CODEX_BIN")
+            {
                 bins.push(v);
             }
         }

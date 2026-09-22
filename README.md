@@ -157,7 +157,7 @@ Signals: the first SIGINT or SIGTERM stops claiming and lets running
 attempts finish. A second aborts them, the sandbox tree dies with the
 child, and their tasks go back in the queue.
 
-Budgets live in `<FORGE2_HOME>/config.toml`, written with defaults on first
+Budgets live in `<FORGE_HOME>/config.toml`, written with defaults on first
 use. `per_task_usd` stops a task's retries; `per_day_usd` stops the worker
 claiming once the rolling 24-hour spend reaches it. `--budget` overrides
 the task cap for one task.
@@ -248,12 +248,12 @@ web/      forge-web: the same seat in a browser
 
 ## Environment
 
-- `FORGE2_HOME` (default `$XDG_DATA_HOME/forge2` or `~/.local/share/forge2`)
+- `FORGE_HOME` (default `$XDG_DATA_HOME/forge` or `~/.local/share/forge`)
   holds `forge.db`, `config.toml`, `worktrees/`, `logs/`. Separate from
   Forge 1's `FORGE_HOME`.
-- `FORGE2_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
+- `FORGE_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
   same flags and emits stream-json works; the tests use shell scripts.
-- `FORGE2_SANDBOX=0` runs the agent and checks directly on the host.
+- `FORGE_SANDBOX=0` runs the agent and checks directly on the host.
   Without it, missing `bwrap` is an error.
 
 ## Building
@@ -265,7 +265,7 @@ cargo test
 
 The e2e suite runs its fakes under the real sandbox, so it requires
 `bwrap`; a missing `bwrap` fails the suite loudly rather than silently
-skipping sandbox coverage. Set `FORGE2_TEST_NO_SANDBOX=1` to run the
+skipping sandbox coverage. Set `FORGE_TEST_NO_SANDBOX=1` to run the
 suite unsandboxed on a machine without bubblewrap. The egress tests need
 a bwrap that can create a network namespace and skip themselves where it
 cannot (bwrap inside another bwrap).
@@ -294,7 +294,7 @@ retries it with everything that waited on it. It is a client of the CLI
 and nothing else: it reads `log --json`, `requests --json`, and
 `trace --json`, acts through `forge retry`, and never opens the database
 or links the kernel (`tests/boundary.rs` enforces that). Run it with
-`forge` on PATH or `FORGE_BIN` set; `FORGE2_HOME` passes through.
+`forge` on PATH or `FORGE_BIN` set; `FORGE_HOME` passes through.
 `forge-tui --dump` prints one frame without a terminal.
 
 `forge-web` (in `web/`) is the same seat in a browser: the queue, the open
@@ -304,12 +304,12 @@ client: every route is a forge verb's JSON passed through (`snapshot`,
 `log`, `trace`, `journal`), and the feed is `events --follow` as
 server-sent events. Read-only for now. It binds `127.0.0.1:7788` unless
 told `--bind`, and every request needs the token it generates once into
-`FORGE2_HOME/web.token`: it prints the link at start, the first visit
+`FORGE_HOME/web.token`: it prints the link at start, the first visit
 sets a cookie. There are no routes without the token, so a tailnet proxy
 in front of it exposes nothing by itself.
 
 Clients never poll. Every event the engine emits is appended as one JSON
-line to `events.jsonl` under `FORGE2_HOME`; `forge snapshot` returns the
+line to `events.jsonl` under `FORGE_HOME`; `forge snapshot` returns the
 tasks, the requests, the worker, and the log's byte offset at that
 instant, and `forge events --since <offset> --follow` is the subscription
 from there. A client applies events to its own state and re-reads a task

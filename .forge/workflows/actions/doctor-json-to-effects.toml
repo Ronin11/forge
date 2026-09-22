@@ -1,9 +1,9 @@
 name = "doctor-json-to-effects"
 kind = "operation"
-description = "runs `forge doctor --json` and logs a row effect for every WARN or FAIL row it reports. When no row is a FAIL, marks today (UTC) as doctor's last clean day under FORGE2_HOME (FORGE2_HOME from the job's environment, or $HOME/.local/share/forge2 by default), the marker doctor-daily's own [skip_if] reads."
+description = "runs `forge doctor --json` and logs a row effect for every WARN or FAIL row it reports. When no row is a FAIL, marks today (UTC) as doctor's last clean day under FORGE_HOME (FORGE_HOME from the job's environment, or $HOME/.local/share/forge by default), the marker doctor-daily's own [skip_if] reads."
 run = ["bash", "-c", '''
 set +e
-home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
 mkdir -p "$home"
 
 suffix=""

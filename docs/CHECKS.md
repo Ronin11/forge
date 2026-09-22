@@ -19,7 +19,7 @@ question; `per_day = 2` allows one retry.
 
 It splices in a second, schedule-free run workflow, `disk-and-logs.toml`
 (`{ workflow = "disk-and-logs" }`, docs/JOBS.md, "Steps"), whose own
-`disk-and-logs-check` step keeps free space under `FORGE2_HOME` above 5 GB
+`disk-and-logs-check` step keeps free space under `FORGE_HOME` above 5 GB
 and the logs directory under 2 GB — running `forge gc` on the retained
 worktrees when either is breached, and logging a `FAIL` row only if that
 is not enough. `disk-and-logs.toml` has no `[trigger] on = "schedule"` of
@@ -33,7 +33,7 @@ Four operations, each an action under `.forge/workflows/actions/`:
 | step | what it checks |
 |---|---|
 | `check-claude-cli-version` | the installed `claude` CLI's version against npm's latest `@anthropic-ai/claude-code`, logging both when the installed one is behind |
-| `check-model-drift` | a model family's (opus/sonnet/haiku) resolved id this week against last week, read from the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in attempt logs under `FORGE2_HOME/logs` |
+| `check-model-drift` | a model family's (opus/sonnet/haiku) resolved id this week against last week, read from the `model` field of the `system`/`init` frame (and `message.model` of assistant frames) in attempt logs under `FORGE_HOME/logs` |
 | `check-cargo-audit` | `cargo audit` on the workspace, installing `cargo-audit` first if it is missing, one effect per advisory |
 | `check-equitizr-freshness` | `https://equitizr.com/api/meta` returns 200, has a snapshot, and its `meta.built_at` (epoch milliseconds) is within 30 days |
 

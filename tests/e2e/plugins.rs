@@ -119,7 +119,7 @@ fn a_shadowed_plugin_dirs_entry_and_a_missing_root_are_non_blocking_problems() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0]["description"], "home copy",
-        "the earlier root (FORGE2_HOME/plugins) wins"
+        "the earlier root (FORGE_HOME/plugins) wins"
     );
 
     let text = String::from_utf8_lossy(&e.forge("ok.sh", &["plugin", "list"]).stdout).to_string();
@@ -383,7 +383,7 @@ fn the_reference_plugin_runs_its_command_on_task_done() {
 
     let o = e
         .cmd("ok.sh")
-        .env("FORGE2_CLAUDE_BIN", &claude_fake)
+        .env("FORGE_CLAUDE_BIN", &claude_fake)
         .env("FAKE_SLEEP", "1")
         .args(["work", "--once"])
         .output()
@@ -1283,7 +1283,7 @@ fn the_signal_plugin_sends_a_contact_their_portal_link_on_intake_accept_and_on_r
 /// this runs `plugins/signal/signal.sh` directly rather than through
 /// `forge plugin install`/`forge work`, because a live plugin's own
 /// child processes only get the production agent env
-/// (`agent::agent_env`), which never carries the `FORGE2_CLAUDE_BIN`
+/// (`agent::agent_env`), which never carries the `FORGE_CLAUDE_BIN`
 /// test seam — and this is the first plugin behavior that needs one,
 /// since `forge ask` runs the concierge directive as a real agent turn.
 /// A contact's plain message, not a command and not an answer to an
@@ -1388,9 +1388,9 @@ esac
     let mut cmd = Command::new("sh");
     cmd.arg(&signal_sh)
         .env("FORGE_BIN", env!("CARGO_BIN_EXE_forge"))
-        .env("FORGE2_HOME", &e.home)
-        .env("FORGE2_CLAUDE_BIN", &claude_fake)
-        .env("FORGE2_SUPERVISOR", "0")
+        .env("FORGE_HOME", &e.home)
+        .env("FORGE_CLAUDE_BIN", &claude_fake)
+        .env("FORGE_SUPERVISOR", "0")
         .env("FORGE_PLUGIN_DIR", &plugin_dir)
         .env("FORGE_PLUGIN_STATE", &state_dir)
         .env("SIGNAL_CLI", &signal_cli)
@@ -1399,7 +1399,7 @@ esac
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if e.sandbox_disabled() {
-        cmd.env("FORGE2_SANDBOX", "0");
+        cmd.env("FORGE_SANDBOX", "0");
     }
 
     let mut child = cmd.spawn().unwrap();

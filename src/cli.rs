@@ -388,7 +388,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Plugins: integrations discovered under FORGE2_HOME/plugins and plugin_dirs
+    /// Plugins: integrations discovered under FORGE_HOME/plugins and plugin_dirs
     Plugin {
         #[command(subcommand)]
         cmd: PluginCmd,
@@ -555,7 +555,7 @@ enum WorkflowsCmd {
     /// Load every `.forge/workflows/*.toml` and `.forge/workflows/actions/*.toml`
     /// under a path (default: the current directory) with the catalog's own
     /// parser, and report every problem with file, line, and message. No
-    /// store, no FORGE2_HOME: a repository's own check, run wherever the
+    /// store, no FORGE_HOME: a repository's own check, run wherever the
     /// `forge` binary is (see docs/WORKFLOWS.md)
     Validate {
         /// Directory to check (default: the current directory)
@@ -638,13 +638,13 @@ enum PluginCmd {
     /// this is the way to pick up a config edit without ever changing
     /// whether the plugin is enabled.
     Restart { name: String },
-    /// Copy a plugin directory into FORGE2_HOME/plugins and run its build
+    /// Copy a plugin directory into FORGE_HOME/plugins and run its build
     Install {
         /// The plugin's own directory, holding plugin.toml
         path: PathBuf,
     },
     /// Stop a plugin, clear its enabled flag, and remove the installed
-    /// copy; its FORGE2_HOME/plugins-state is left alone
+    /// copy; its FORGE_HOME/plugins-state is left alone
     Uninstall { name: String },
     /// A plugin's stdout/stderr log
     Logs {

@@ -4,7 +4,7 @@ use std::process::Output;
 
 fn supervised(e: &Env, supervisor: &str, task: &str) -> Output {
     let mut c = e.with_role("needsinput.sh", "SUPERVISOR", supervisor);
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     let o = c
         .args(["run", e.repo.to_str().unwrap(), task, "--retries", "0"])
         .output()
@@ -231,7 +231,7 @@ fn the_supervisor_stops_answering_after_its_share_of_a_piece_of_work() {
     // never changes) and the supervisor answers again as 3; task 3 asks
     // again and the supervisor must step aside.
     let mut c = e.with_role("needsinput.sh", "SUPERVISOR", "supervisor-answer.sh");
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     let o = c.args(["work", "--once"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     eprintln!("--- work ---\n{err}");
@@ -267,7 +267,7 @@ fn forge_supervise_by_hand_answers_a_blocked_task_and_re_queues_it() {
 
     // A human runs the supervisor on it by hand.
     let mut c = e.with_role("ok.sh", "SUPERVISOR", "supervisor-answer.sh");
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     let o = c.args(["supervise", "1"]).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let err = String::from_utf8_lossy(&o.stderr);
@@ -303,13 +303,13 @@ fn forge_supervise_by_hand_answers_a_blocked_task_and_re_queues_it() {
 fn the_supervisor_accepts_a_demotion_that_names_no_defect_and_the_branch_lands() {
     let e = Env::new();
     let mut c = e.cmd("ok.sh");
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     for (role, fake) in [
         ("REVIEW", "reviewer-approves-wrongly.sh"),
         ("SUPERVISOR", "supervisor-accept.sh"),
     ] {
         c.env(
-            format!("FORGE2_CLAUDE_BIN_{role}"),
+            format!("FORGE_CLAUDE_BIN_{role}"),
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fakes")
                 .join(fake),
@@ -367,9 +367,9 @@ fn the_supervisor_accepts_a_question_whose_checks_already_passed_and_lands_it() 
     // the same as it would a review demotion that names no defect.
     let e = Env::new();
     let mut c = e.cmd("commitneedsinput.sh");
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     c.env(
-        "FORGE2_CLAUDE_BIN_SUPERVISOR",
+        "FORGE_CLAUDE_BIN_SUPERVISOR",
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fakes")
             .join("supervisor-accept-question.sh"),
@@ -425,7 +425,7 @@ fn a_question_addressed_to_someone_else_never_gets_a_supervisor_attempt() {
     // A supervisor fake that would answer is wired in, so a failure to
     // skip would show up as an answer, not silence.
     let mut c = e.with_role("needsinput-to.sh", "SUPERVISOR", "supervisor-answer.sh");
-    c.env("FORGE2_SUPERVISOR", "1");
+    c.env("FORGE_SUPERVISOR", "1");
     let o = c
         .args([
             "run",

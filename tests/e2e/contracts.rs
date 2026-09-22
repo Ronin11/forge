@@ -9,7 +9,7 @@ fn the_review_contract_demotes_only_with_executed_evidence_and_never_writes() {
         !run_wf(
             &e,
             "ok.sh",
-            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+            &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
             "reviewed",
             "write 42"
         )
@@ -38,7 +38,7 @@ fn the_review_contract_demotes_only_with_executed_evidence_and_never_writes() {
         run_wf(
             &e,
             "ok.sh",
-            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-lazy.sh")],
+            &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-lazy.sh")],
             "reviewed",
             "write 42"
         )
@@ -55,7 +55,7 @@ fn the_review_contract_demotes_only_with_executed_evidence_and_never_writes() {
         run_wf(
             &e,
             "ok.sh",
-            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-ok.sh")],
+            &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-ok.sh")],
             "reviewed",
             "write 42"
         )
@@ -68,7 +68,7 @@ fn the_review_contract_demotes_only_with_executed_evidence_and_never_writes() {
         !run_wf(
             &e,
             "ok.sh",
-            &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-meddles.sh")],
+            &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-meddles.sh")],
             "reviewed",
             "write 42"
         )
@@ -131,7 +131,7 @@ fn polish_runs_a_second_code_pass_with_its_brief() {
         run_wf(
             &e,
             "ok.sh",
-            &[("FORGE2_CLAUDE_BIN_POLISH", "noop.sh")],
+            &[("FORGE_CLAUDE_BIN_POLISH", "noop.sh")],
             "polish",
             "write 42"
         )
@@ -158,7 +158,7 @@ fn a_reviewer_that_cannot_finish_leaves_the_verified_branch_for_a_human() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE2_CLAUDE_BIN_REVIEW", "crash.sh")],
+        &[("FORGE_CLAUDE_BIN_REVIEW", "crash.sh")],
         "reviewed",
         "write 42",
     );
@@ -224,7 +224,7 @@ fn the_document_directive_is_held_to_comments_and_docs() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE2_CLAUDE_BIN_DOCUMENT", "documenter.sh")],
+        &[("FORGE_CLAUDE_BIN_DOCUMENT", "documenter.sh")],
         "documented",
         "write 42",
     );
@@ -275,7 +275,7 @@ fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_pla
     let o = run_wf(
         &e,
         "promptdump.sh",
-        &[("FORGE2_CLAUDE_BIN_INVESTIGATE", "planner.sh")],
+        &[("FORGE_CLAUDE_BIN_INVESTIGATE", "planner.sh")],
         "planned",
         "make the answer 42",
     );
@@ -330,7 +330,7 @@ fn the_investigate_directive_plans_without_writing_and_the_coder_follows_the_pla
         let o = run_wf(
             &e,
             "promptdump.sh",
-            &[("FORGE2_CLAUDE_BIN_INVESTIGATE", fake)],
+            &[("FORGE_CLAUDE_BIN_INVESTIGATE", fake)],
             "planned",
             "make the answer 42 again",
         );
@@ -368,7 +368,7 @@ fn a_readme_rule_that_contradicts_the_task_stops_at_investigate_before_any_code_
         &e,
         "neverrun.sh",
         &[(
-            "FORGE2_CLAUDE_BIN_INVESTIGATE",
+            "FORGE_CLAUDE_BIN_INVESTIGATE",
             "investigate-contradiction.sh",
         )],
         "planned",
@@ -397,7 +397,7 @@ fn the_graph_directive_keeps_a_system_map_that_names_only_real_paths() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE2_CLAUDE_BIN_GRAPH", "grapher.sh")],
+        &[("FORGE_CLAUDE_BIN_GRAPH", "grapher.sh")],
         "mapped",
         "write 42",
     );

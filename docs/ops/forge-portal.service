@@ -17,7 +17,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=%h/Projects/forge
-Environment=FORGE2_HOME=%h/.local/share/forge2
+Environment=FORGE_HOME=%h/.local/share/forge
 Environment=FORGE_BIN=%h/Projects/forge/target/release/forge
 ExecStart=%h/Projects/forge/target/release/forge-portal --bind 127.0.0.1:7799
 Restart=on-failure

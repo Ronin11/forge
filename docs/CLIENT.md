@@ -153,7 +153,7 @@ and does not parse stdout.
   until a client depends on it.
 - **`forge workflows show NAME --json`** — one workflow in full, for the
   operator's own workflow page: the file's exact text, `source`
-  (`"catalog"`, the operator's own `<FORGE2_HOME>/workflows/`, or `"repo"`,
+  (`"catalog"`, the operator's own `<FORGE_HOME>/workflows/`, or `"repo"`,
   a project's own `.forge/workflows/` at its latest landed commit, found
   with `--project P` when the catalog has no workflow of that name), its
   `kind` (`"build"` or `"run"`), `path`, every resolved `steps[]` entry
@@ -185,15 +185,15 @@ and does not parse stdout.
   with no span of its own. Empty and exit 0 when the candidate is clean,
   non-empty and **exit 1** otherwise — the same "print everything, one
   exit code" shape as `forge workflows validate` for a repository's files.
-  Reads the operator's catalog (`FORGE2_HOME`) to resolve against, unlike
+  Reads the operator's catalog (`FORGE_HOME`) to resolve against, unlike
   `forge workflows validate`, which needs neither — a candidate is checked
   against the live catalog it would join, not a bare parse — but **writes
   nothing**, not even to a fresh, not-yet-initialized home: linting never
   has the side effect `forge workflows` and every other catalog command
-  have of writing the built-in workflows and actions into `FORGE2_HOME`.
+  have of writing the built-in workflows and actions into `FORGE_HOME`.
 - **`forge workflows put NAME --stdin --message TEXT [--repo PATH]`** —
   write verb: writes a candidate workflow file into the operator's
-  catalog (`<FORGE2_HOME>/workflows/NAME.toml`) once it lints clean (the
+  catalog (`<FORGE_HOME>/workflows/NAME.toml`) once it lints clean (the
   same checks `forge workflows lint --stdin` runs, against `NAME`), then
   commits just that file in the catalog's own git — already a repository,
   the same one `forge workflows` itself creates on first use — with
@@ -235,7 +235,7 @@ and does not parse stdout.
   [`DecisionRow`](#decisionrow)), so it shows up in `forge decisions`
   with no task named.
 - **`forge plugin list --json`** — every plugin found under
-  `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
+  `<FORGE_HOME>/plugins` and the operator's `plugin_dirs`, where it came
   from, and whether it is enabled. A JSON array of
   [`PluginRow`](#pluginrow).
 - **`forge plugin status [<name>] --json`** — whether a plugin (or, with
@@ -539,7 +539,7 @@ every verdict along the way (see docs/DEPLOY.md, "When a deploy runs").
 
 | field | type | meaning |
 |---|---|---|
-| `id` | integer | The deploy's id. Also names its own directory, `<FORGE2_HOME>/deploys/<id>/`, where the smoke step's files (`smoke.json`, `screenshot.png`) live. |
+| `id` | integer | The deploy's id. Also names its own directory, `<FORGE_HOME>/deploys/<id>/`, where the smoke step's files (`smoke.json`, `screenshot.png`) live. |
 | `project`, `target` | string | Which project and target. |
 | `sha` | string | The commit deployed. |
 | `started_at` | integer | Unix seconds. |
@@ -761,7 +761,7 @@ full.
 | field | type | meaning |
 |---|---|---|
 | `name` | string | The workflow's name. |
-| `source` | string | `"catalog"` (the operator's own `<FORGE2_HOME>/workflows/`) or `"repo"` (found via `--project`, in that project's own `.forge/workflows/` at its latest landed commit). |
+| `source` | string | `"catalog"` (the operator's own `<FORGE_HOME>/workflows/`) or `"repo"` (found via `--project`, in that project's own `.forge/workflows/` at its latest landed commit). |
 | `path` | string | Where the file lives: an absolute path for `"catalog"`, a path relative to the repository's root for `"repo"`. |
 | `kind` | string | `"build"` or `"run"`. |
 | `text` | string | The workflow file's exact text. |
@@ -1004,7 +1004,7 @@ One row of `forge plugin list --json`: a plugin as discovered.
 | `name` | string | The plugin's name (its manifest name, which matches its directory's base name). |
 | `description` | string | From its `plugin.toml`. |
 | `dir` | string | Absolute path to the plugin's directory. |
-| `source` | string | Absolute path to the root it was discovered under: `<FORGE2_HOME>/plugins`, or one of the operator's `plugin_dirs`. |
+| `source` | string | Absolute path to the root it was discovered under: `<FORGE_HOME>/plugins`, or one of the operator's `plugin_dirs`. |
 | `capabilities` | array of string | any combination of `events`, `intake`, `annotate`. |
 | `restart` | string | `always`, `on-failure`, or `never`. |
 | `enabled` | bool | Whether the operator has enabled it. |
@@ -1276,7 +1276,7 @@ across a rotation, not to the snapshot protocol itself.
   fixed zones.
   **The code visualiser** (docs/LATER.md, "The code visualiser").
   `/api/graph?repo=` → `forge-repomap edges REPO --cache
-  $FORGE2_HOME/cache/repomap` (not a `forge` verb — a separate tool the
+  $FORGE_HOME/cache/repomap` (not a `forge` verb — a separate tool the
   kernel ships beside it), the raw file graph the `/graph` page's file
   view draws in columns by top-level directory.
   `/api/graph/modules?repo=` → `forge graph REPO --json`
@@ -1336,7 +1336,7 @@ across a rotation, not to the snapshot protocol itself.
   row's own last-deploy verdicts and the head of the log, so the page
   never makes a second read for either. `GET /api/deploys/shot/<id>`
   streams one deploy's look-step screenshot,
-  `<FORGE2_HOME>/deploys/<id>/screenshot.png` — the same file
+  `<FORGE_HOME>/deploys/<id>/screenshot.png` — the same file
   `deploy-smoke` wrote (src/deploy_look.rs) and `forge-portal`'s `/p/
   <token>/shot/<target>` streams for a customer. `id` is parsed as a bare
   integer, so there is no path segment left to escape with: this route

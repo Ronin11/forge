@@ -30,7 +30,7 @@ not nicer workflows; it is no bypass.
 
 ## The workflows
 
-Data, not code: one TOML file per workflow in `<FORGE2_HOME>/workflows/`,
+Data, not code: one TOML file per workflow in `<FORGE_HOME>/workflows/`,
 written with the built-ins on first use and edited by the operator.
 
 ```toml
@@ -222,7 +222,7 @@ directory) is the fix: it loads every `.forge/workflows/*.toml` and
 parser, checks a run workflow's trigger, that its steps each resolve to
 a real action, and that `effect` is set on an operation step only, and
 prints every problem with its file and line where the parser can place
-one. It opens no store and needs no FORGE2_HOME, so it runs as a plain
+one. It opens no store and needs no FORGE_HOME, so it runs as a plain
 repository check, in `forge.toml`'s `[checks]` or in CI, on any host
 that has the `forge` binary.
 
@@ -237,7 +237,7 @@ output per directive step standing in for its model call
 `forge job test [<workflow>] [<path>]` replays every fixture of the named
 workflow, or of every run workflow in the repository, through the executor
 in dry-run mode, in a scratch directory, without recording a job and
-without needing FORGE2_HOME, and prints each fixture as `pass` or by its
+without needing FORGE_HOME, and prints each fixture as `pass` or by its
 first difference: a missing effect, an extra effect, a wrong state. It
 exits 1 on any difference, so a repository that holds automations lists it
 in its own `forge.toml` (which Forge never edits for you), next to

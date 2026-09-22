@@ -439,7 +439,7 @@ pub(crate) fn resolve_deploy_method(f: &Forge, method: &str) -> anyhow::Result<R
 
 /// A deploy target's method: its arguments as `FORGE_ARG_<NAME>` and its
 /// check command as `FORGE_CHECK`, the commit it deploys as
-/// `FORGE_DEPLOY_SHA`, and the data directory as `FORGE2_HOME` (an
+/// `FORGE_DEPLOY_SHA`, and the data directory as `FORGE_HOME` (an
 /// operation's environment is otherwise cleared to the agent's); `cwd` is
 /// the landed tree, already checked out by the caller.
 pub(crate) async fn run_deploy_method(
@@ -453,7 +453,7 @@ pub(crate) async fn run_deploy_method(
     let mut env = arg_env(&target.args);
     env.push(("FORGE_CHECK".to_string(), target.check_cmd.clone()));
     env.push(("FORGE_DEPLOY_SHA".to_string(), sha.to_string()));
-    env.push(("FORGE2_HOME".to_string(), home.display().to_string()));
+    env.push(("FORGE_HOME".to_string(), home.display().to_string()));
     Ok(run_action(action, cwd, timeout, &env).await)
 }
 
@@ -467,7 +467,7 @@ pub(crate) fn resolve_deploy_smoke(f: &Forge) -> anyhow::Result<RunAction> {
 /// After a deploy's check passes, open its target's smoke url in headless
 /// Chromium through the `deploy-smoke` operation (see
 /// src/builtins/operations/deploy-smoke.toml) and record what it saw
-/// under `out_dir` (`FORGE2_HOME/deploys/<id>/`; see docs/DEPLOY.md, "A
+/// under `out_dir` (`FORGE_HOME/deploys/<id>/`; see docs/DEPLOY.md, "A
 /// deterministic smoke step").
 pub(crate) async fn run_deploy_smoke(
     action: &RunAction,

@@ -10,7 +10,7 @@ arm (`--no-journal`, `--no-context`) and are measured by calls before the
 first edit, attempts, and cost per piece of work.
 
 The map is incremental by construction. Symbols are cached per blob in a
-shared, content-addressed store under `FORGE2_HOME/cache/repomap` (one
+shared, content-addressed store under `FORGE_HOME/cache/repomap` (one
 small file per blob, written atomically, so parallel tasks never fight),
 and every clone of a repository reads and seeds the same store. A task's
 map therefore costs parsing only the blobs its branch or the latest
