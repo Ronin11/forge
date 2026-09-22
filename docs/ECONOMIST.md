@@ -245,6 +245,34 @@ would move by more than the threshold keep their weights, the question
 carries the proposed numbers, and `forge experiment set` applies them
 when a person agrees.
 
+### Repricing a free-reporting provider
+
+Codex reports token usage but no dollar cost, so every attempt recorded
+under it carries `cost_usd` 0 rather than a missing row — worse than the
+gap "What the record says today" describes, since `forge stats --factors`
+reads a landed OpenAI task as free rather than as unmeasured, which is
+what sent the first economist run over its `--threshold` on 2026-09-21/22
+(146 such attempts by then).
+
+`forge stats --reprice [--provider NAME] [--force] [--json]` fixes the
+record after the fact rather than the launch path (docs/CLIENT.md,
+"Verbs"): for every attempt with `cost_usd` 0 or NULL, recorded
+`input_tokens`/`output_tokens`, and a provider the operator config gives
+a nonzero `price_usd_per_million_input`/`_output` (`Store::
+reprice_attempts`, `src/store/attempts.rs`), it sets `cost_usd` to tokens
+times price — the exact arithmetic `agent.rs` uses when a provider
+reports cost live. `--provider` narrows to one provider's attempts.
+`repriced_at` (nullable, set alongside `cost_usd`) is what makes a rerun
+idempotent: without `--force` a row this already repriced is skipped even
+though its `cost_usd` still reads 0 whenever the configured price is
+itself 0, so idempotency never depends on the row happening to end up
+nonzero. The run is recorded as a decision row (`Store::
+insert_reprice_decision`) naming how many rows changed and their total —
+like any other (docs/SUPERVISOR.md, "Every answer is a decision row"),
+except with no `task_id`: repricing touches attempts across many tasks,
+or none, so it names no single one; `decisions.task_id` is nullable for
+exactly this case.
+
 ## What it is not
 
 Not a learning system, not a scheduler, not a spend cap (those exist).

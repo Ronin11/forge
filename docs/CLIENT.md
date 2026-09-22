@@ -189,6 +189,18 @@ and does not parse stdout.
   mode only; the JSON form always carries `by_role`) prints the runner
   breakdown instead: attempts, outcomes, cost and wall time per (role,
   provider, model).
+- **`forge stats --reprice [--provider NAME] [--force] [--json]`** — write
+  verb: sets `cost_usd` from recorded tokens on every attempt whose
+  provider reported no cost (`cost_usd` 0 or NULL) but whose provider has
+  a nonzero price in the operator config, the same arithmetic `agent.rs`
+  uses when a provider reports cost live (see docs/ECONOMIST.md,
+  "Repricing a free-reporting provider"). `--provider` narrows to one
+  provider; without `--force`, an attempt this already repriced is
+  skipped on a rerun. Text mode prints how many rows changed and their
+  total; `--json` prints `{changed, total_usd, decision_id}`. Either way
+  the run is recorded as a decision row with no `task_id` (see
+  [`DecisionRow`](#decisionrow)), so it shows up in `forge decisions`
+  with no task named.
 - **`forge plugin list --json`** — every plugin found under
   `<FORGE2_HOME>/plugins` and the operator's `plugin_dirs`, where it came
   from, and whether it is enabled. A JSON array of
@@ -370,12 +382,13 @@ waiting on.
 ### `DecisionRow`
 
 One row of `forge decisions --json`: an operator's or the supervisor's
-answer to a blocked task's question.
+answer to a blocked task's question, or a task-less administrative
+decision such as `forge stats --reprice`.
 
 | field | type | meaning |
 |---|---|---|
 | `id` | integer | Decision id. |
-| `task_id` | integer | The task the question came from. |
+| `task_id` | integer or null | The task the question came from; null for a task-less decision (`forge stats --reprice`), whose `repo` is also empty. |
 | `repo` | string | Absolute path to the repository. |
 | `question` | string | The question that was answered. |
 | `answer` | string | The answer's text. |
