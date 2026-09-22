@@ -1,7 +1,7 @@
 //! Piece 4 of the economist (docs/ECONOMIST.md, "What is built"):
 //! `experiment.toml`, beside the workflow catalog, draws a level per
-//! unpinned factor for a task that names no provider and resolves no
-//! workflow of its own, recorded on the task's own routing with source
+//! unpinned factor for a task that names no provider, whatever its
+//! workflow's source, recorded on the task's own routing with source
 //! `"experiment"` (piece 2's `ctx::resolve_provider_routed`).
 
 use crate::support::*;
@@ -39,6 +39,33 @@ fn a_queued_task_without_pins_gets_an_experiment_source_on_its_routing() {
     assert_eq!(
         doc["task"]["explore"]["code"].as_str().unwrap(),
         "anthropic",
+        "{doc}"
+    );
+}
+
+/// The draw does not care where the workflow came from: a task that names
+/// its workflow (as every initiative-filed task does) still gets its
+/// providers drawn. Until 2026-09-22 the draw also required the default
+/// workflow, and so never fired on a real task.
+#[test]
+fn a_task_that_names_its_workflow_still_draws_its_providers() {
+    let e = Env::new();
+    write_experiment(&e, "[factors.code]\nanthropic = 1.0\n");
+
+    let o = e.run("ok.sh", &["--workflow", "direct"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let doc = e.trace_json(1);
+    assert_eq!(
+        doc["task"]["routing"]["code"]["provider"]["source"]
+            .as_str()
+            .unwrap(),
+        "experiment",
+        "{doc}"
+    );
+    assert_eq!(
+        doc["task"]["workflow_source"].as_str().unwrap_or("flag"),
+        "flag",
         "{doc}"
     );
 }
