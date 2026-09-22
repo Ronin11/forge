@@ -784,8 +784,7 @@ async fn run_directive_step(
             .envelope
             .as_ref()
             .and_then(|e| e.needs_input.as_ref())
-            .and_then(|q| q.to.clone())
-            .filter(|s| !s.trim().is_empty());
+            .and_then(|q| crate::envelope::addressee(q.to.as_deref()));
         // The provider refused the run: not an attempt the agent
         // spent. The hold at the top of the loop waits for the
         // window; the same feedback and session go again.

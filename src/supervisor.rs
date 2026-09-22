@@ -326,8 +326,10 @@ fn prompt(
 /// interview): `None` when the question is the operator's (and so the
 /// supervisor's) to rule on.
 pub fn addressed_elsewhere(t: &Task) -> Option<String> {
-    let to = t.question_to.as_deref()?;
-    (!to.is_empty()).then(|| format!("question addressed to {to}; not the supervisor's to answer"))
+    let to = crate::envelope::addressee(t.question_to.as_deref())?;
+    Some(format!(
+        "question addressed to {to}; not the supervisor's to answer"
+    ))
 }
 
 /// Supervise one blocked task. Returns what was done; `Skipped` when the
