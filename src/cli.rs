@@ -277,6 +277,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The module graph as data (docs/LATER.md, "The code visualiser"):
+    /// files and symbols as nodes, import edges between them, files
+    /// grouped under their directories as module nodes. Reads the
+    /// repository at its working tree; no task, no store.
+    Graph {
+        /// The repository's working tree
+        repo: PathBuf,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Blocked tasks: questions for the operator and workflow requests
     Requests {
         /// Only requests for this repository
@@ -494,6 +505,27 @@ enum WorkflowsCmd {
         /// its own declared `name`
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Write a candidate workflow file into the operator's catalog once
+    /// it lints clean, commit it in the catalog's own git, and print the
+    /// new commit hash; or, with `--repo`, file a direct task on that
+    /// repository's project that lands the same content through review
+    /// instead of writing it directly (docs/CLIENT.md, "write verb")
+    Put {
+        /// The file name (without `.toml`) to save the candidate under;
+        /// must match its own declared `name`
+        name: String,
+        /// Read the candidate file's text from stdin (the only source
+        /// today)
+        #[arg(long)]
+        stdin: bool,
+        /// Commit message in the catalog's git; must not be empty
+        #[arg(long)]
+        message: String,
+        /// File a direct task on this repository's project instead of
+        /// writing to the operator's catalog
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
 }
 
@@ -1107,6 +1139,7 @@ pub async fn main() -> Result<()> {
             ready,
         } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
         Cmd::Trace { id, json } => trace(id, json),
+        Cmd::Graph { repo, json } => graph(repo, json),
         Cmd::Requests { repo, json } => requests(repo, json),
         Cmd::Stats {
             tools,
@@ -1140,6 +1173,12 @@ pub async fn main() -> Result<()> {
                 json,
             }) => show_workflow(name, project, json).await,
             Some(WorkflowsCmd::Lint { stdin, name }) => lint_workflow(stdin, name),
+            Some(WorkflowsCmd::Put {
+                name,
+                stdin,
+                message,
+                repo,
+            }) => put_workflow(name, stdin, message, repo).await,
             None => list_workflows(project, json).await,
         },
         Cmd::Providers { json } => list_providers(json),
@@ -3230,6 +3269,83 @@ fn lint_workflow(stdin: bool, name: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// `forge workflows put NAME --stdin --message TEXT [--repo PATH]`: see
+/// docs/CLIENT.md, "write verb". Reads the candidate from stdin and
+/// lints it against the operator's catalog exactly as `forge workflows
+/// lint` does, refusing (writing nothing) on any lint problem, a NAME
+/// that doesn't match the candidate's own declared `name`, or an empty
+/// `--message`. With no `--repo`, writes the file into the catalog and
+/// commits just that file in the catalog's own git (already a
+/// repository; `commit_path` leaves any other dirty file in there
+/// untouched), printing the new commit hash. With `--repo PATH`, files a
+/// direct task on that repository's project instead of touching the
+/// catalog: the task adds or replaces `.forge/workflows/NAME.toml` with
+/// the candidate's exact content, so a repository's own automation still
+/// lands through the normal build-and-verify path rather than a direct
+/// write; prints the new task's id.
+async fn put_workflow(
+    name: String,
+    stdin: bool,
+    message: String,
+    repo: Option<PathBuf>,
+) -> Result<()> {
+    anyhow::ensure!(
+        stdin,
+        "forge workflows put needs --stdin; that is the only source of the candidate text today"
+    );
+    anyhow::ensure!(!message.trim().is_empty(), "--message must not be empty");
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .context("reading the candidate workflow's text from stdin")?;
+    let paths = crate::ctx::Paths::resolve()?;
+    let problems = workflows::lint(&paths.home, Some(&name), &text)?;
+    if !problems.is_empty() {
+        for p in &problems {
+            match p.line {
+                Some(line) => out!("{name}.toml:{line}: {}", p.message),
+                None => out!("{name}.toml: {}", p.message),
+            }
+        }
+        bail!("{name} fails lint; nothing written");
+    }
+    let declared = workflows::declared_name(&text);
+    anyhow::ensure!(
+        declared.as_deref() == Some(name.as_str()),
+        "{name} does not match the candidate's own declared name ({declared:?}); refusing to write"
+    );
+
+    match repo {
+        Some(repo) => {
+            let f = Forge::open(false, false)?;
+            let req = crate::queue::TaskRequest {
+                repo,
+                task: format!(
+                    "Add or replace the file `.forge/workflows/{name}.toml` in this repository with exactly this content, byte for byte (create it if it doesn't exist, overwrite it if it does):\n\n```toml\n{text}\n```"
+                ),
+                max_turns: 100,
+                retries: 1,
+                timeout_secs: 1800,
+                ..Default::default()
+            };
+            let t = crate::queue::enqueue(&f, &req, None).await?;
+            out!("{}", t.id);
+        }
+        None => {
+            let dir = workflows::catalog_dir(&paths.home)?;
+            let file = format!("{name}.toml");
+            std::fs::write(dir.join(&file), &text)
+                .with_context(|| format!("writing {file} into the catalog"))?;
+            let hash = match git::commit_path(&dir, &file, &message).await? {
+                Some(h) => h,
+                None => git::rev_parse(&dir, "HEAD").await?,
+            };
+            out!("{hash}");
+        }
+    }
+    Ok(())
+}
+
 async fn show_workflow(name: String, project: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let mut found: Option<(workflows::Workflow, &'static str)> =
@@ -3741,6 +3857,22 @@ fn plugin_logs(name: String, follow: bool) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn graph(repo: PathBuf, json: bool) -> Result<()> {
+    let bin = crate::graph::repomap_bin()?;
+    let g = crate::graph::build(&repo, &bin)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&g)?);
+        return Ok(());
+    }
+    let files = g.nodes.iter().filter(|n| n.kind == "file").count();
+    let modules = g.nodes.iter().filter(|n| n.kind == "module").count();
+    out!(
+        "{files} file(s), {modules} module(s), {} edge(s)",
+        g.edges.len()
+    );
     Ok(())
 }
 

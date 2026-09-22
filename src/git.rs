@@ -427,6 +427,37 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<Option<String>> {
     Ok(Some(g.line(&["rev-parse", "HEAD"]).await?))
 }
 
+/// Stage one path, relative to `dir`, and commit as Forge — unlike
+/// `commit_all`, nothing else already dirty in `dir` rides along, which
+/// matters for a directory a person edits by hand alongside Forge (the
+/// operator's workflow catalog: `forge workflows put` writing one file
+/// must never sweep up some other in-progress, unvetted edit sitting
+/// next to it). Returns the new commit, or `None` when `path` was
+/// already exactly this content at `HEAD`.
+pub async fn commit_path(dir: &Path, path: &str, message: &str) -> Result<Option<String>> {
+    let g = Git::new(dir);
+    g.line(&["add", "--", path]).await?;
+    let staged = g
+        .output(&["diff", "--cached", "--quiet", "--", path])
+        .await?;
+    if staged.status.success() {
+        return Ok(None);
+    }
+    Git::new(dir)
+        .with_identity()
+        .line(&[
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            message,
+            "--",
+            path,
+        ])
+        .await?;
+    Ok(Some(g.line(&["rev-parse", "HEAD"]).await?))
+}
+
 /// Make `dir` a fresh repository holding everything already in it as one
 /// commit, and return that commit: how `forge job test` gives its scratch
 /// copy of a working tree the revision the job executor archives from.
@@ -869,6 +900,37 @@ mod tests {
             ]
         );
         assert_eq!(removed, vec![("a.txt".to_string(), "two".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn commit_path_leaves_other_dirty_files_uncommitted() {
+        let dir = init_repo();
+        let wt = dir.path();
+        std::fs::write(wt.join("a.toml"), "a\n").unwrap();
+        std::fs::write(wt.join("b.toml"), "b\n").unwrap();
+        let sha = commit_path(wt, "a.toml", "add a").await.unwrap().unwrap();
+        let status = Git::new(wt).line(&["status", "--porcelain"]).await.unwrap();
+        assert_eq!(status, "?? b.toml");
+        let log = Git::new(wt)
+            .line(&["log", "--format=%s", &sha])
+            .await
+            .unwrap();
+        assert_eq!(log, "add a");
+        let files = Git::new(wt)
+            .line(&["show", "--name-only", "--format=", &sha])
+            .await
+            .unwrap();
+        assert_eq!(files, "a.toml");
+    }
+
+    #[tokio::test]
+    async fn commit_path_is_none_when_that_path_is_unchanged() {
+        let dir = init_repo();
+        let wt = dir.path();
+        std::fs::write(wt.join("a.toml"), "a\n").unwrap();
+        commit_path(wt, "a.toml", "add a").await.unwrap().unwrap();
+        let again = commit_path(wt, "a.toml", "add a again").await.unwrap();
+        assert_eq!(again, None);
     }
 
     #[tokio::test]

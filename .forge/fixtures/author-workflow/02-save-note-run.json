@@ -1,0 +1,23 @@
+{
+  "input": {
+    "description": "A webhook will deliver a note's path and its content; for now just write it to disk exactly where it says, nothing fancier."
+  },
+  "expect": {
+    "state": "ok",
+    "effects": []
+  },
+  "outputs": {
+    "draft-workflow": {
+      "name": "save-note",
+      "kind": "run",
+      "description": "a webhook delivers a note's path and content; it is written to disk",
+      "toml": "name = \"save-note\"\nkind = \"run\"\ndescription = \"a webhook delivers a note's path and content; it is written to disk\"\n\nsteps = [\n  { action = \"write-file\", effect = \"file\" },\n]\n\n[trigger]\non = \"webhook\"\nname = \"save-note\"\n\n[assert]\nwritten = [\"bash\", \"-c\", \"grep -q '^file' \\\"$FORGE_EFFECT_LOG\\\"\"]\n\n[limits]\nbudget_usd = 0.0\nper_day = 100\non_failure = \"ask:operator\"\n",
+      "rationale": "The catalog's \"write-file\" operation is exactly this: it writes FORGE_INPUT_CONTENT to FORGE_INPUT_PATH and logs a file effect, honouring a dry run already. A webhook trigger is what \"a webhook will deliver\" names; the assert checks the file effect was logged. No new action needed.",
+      "open_questions": [
+        "the webhook's own name (\"save-note\") is guessed from the description; the operator may want a different one",
+        "the per_day rate (100) and on_failure (ask:operator) are guessed defaults, since the description gave no rate or failure policy",
+        "budget_usd 0.0 assumes this step never calls a paid provider; confirm before raising it"
+      ]
+    }
+  }
+}

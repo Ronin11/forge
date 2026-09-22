@@ -291,6 +291,66 @@ than one worker machine or a wait measured in days. What is borrowed from
 Temporal is the discipline: definitions as data, an event history per run,
 idempotent resumption, explicit timeouts.
 
+## Authoring
+
+The first agent that needs to author a workflow is a run workflow itself:
+`.forge/workflows/author-workflow.toml` (`kind = "run"`, `[trigger] on =
+"manual"`) turns an operator's plain-language description of an
+automation or a change into a draft workflow file the same `check` every
+other one goes through, so there is still one definition of validity, not
+a second.
+
+```toml
+steps = [
+  { action = "dump-workflow-catalog" },
+  { action = "draft-workflow",       role = "author" },
+  { action = "lint-workflow-draft" },
+]
+```
+
+- **`dump-workflow-catalog`** (operation, `produces = ["interface"]`)
+  prints a condensed `forge workflows --json` — every action's and
+  workflow's name, kind, description, what it consumes and produces, a
+  run workflow's trigger — followed by one existing build workflow and
+  one existing run workflow in full, as examples of the exact TOML shape.
+  `produces = ["interface"]` is what makes an operation's stdout, not
+  only a directive's structured output, become a later job step's input:
+  `job::run_now` reads `ActionDef::yields_interface()` for an operation
+  step exactly as `operation::run_operation` already did for a build
+  workflow's code step, and folds it into the same `step_outputs` a
+  directive's own output joins — a job directive step's prompt is "the
+  input document, then every earlier step's output" (docs/JOBS.md,
+  "Steps"), operation or directive alike, not directive-only.
+- **`draft-workflow`** (directive, `role = "author"`, no tools) sees the
+  operator's `description` (the trigger's input document,
+  `FORGE_INPUT_DESCRIPTION`) and the catalog dump as its inputs, and
+  returns `{name, kind, description, toml, rationale, open_questions}`
+  (its `schema`): `toml` is the whole candidate file's text; `rationale`
+  says why, and carries a new action's proposed TOML on the rare step the
+  catalog has nothing for (named `New action:` and its path, in the
+  prompt's own words); `open_questions` is everything the description
+  left the model to guess — a schedule, a contact, a budget, which
+  action best fits. It is told to compose from the catalog before ever
+  inventing an action, since `lint` (below) only knows the operator's own
+  catalog, never a repository's local ones (`lint_catalog` reads `home`
+  alone) — the same catalog `dump-workflow-catalog` dumped, so what the
+  directive is shown is exactly what its draft will be held to.
+- **`lint-workflow-draft`** (operation) writes the directive's `toml` to
+  a scratch path under `$FORGE_INPUT_DIR` and runs `forge workflows lint
+  --stdin` on it — the identical check an editor runs on every keystroke
+  (`docs/CLIENT.md`) — failing the step, and so the job, with the lint
+  output when it does not pass. A job that ends `ok` therefore always
+  drafted a workflow that lints clean; naming an action that does not
+  exist yet is an honest `failed`, not a silently broken draft, and
+  `[limits] on_failure = "ask:operator"` is where that question lands.
+
+`.forge/fixtures/author-workflow/*.json` fixes two directive outputs so
+`forge job test` replays both without a model: one drafts a `kind =
+"build"` workflow (a documentation-only change, composed from the
+catalog's own `setup` and `docs`), one a `kind = "run"` workflow (a
+webhook that writes what it is sent, composed from the catalog's own
+`write-file`) — both lint clean, so both fixtures expect `state = "ok"`.
+
 ## Visibility
 
 Every attempt records `inputs` (workflow and its exact text, step, model,

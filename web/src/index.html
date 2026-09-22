@@ -55,6 +55,12 @@
   #graph-svg { background:var(--panel); border:1px solid var(--line); border-radius:6px }
   #graph-svg .gnode { cursor:pointer }
   #graph-svg .gnode rect:hover { stroke:var(--run) }
+  /* workflows view */
+  .step-card { display:inline-block; padding:1px 6px; margin:1px 0; border:1px solid var(--line); border-radius:3px; background:var(--panel); font-size:12px }
+  .step-arrow { color:var(--mute); margin:0 2px }
+  #wf-steps .step-card { display:block; margin-bottom:4px }
+  #wf-text { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding:8px; border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--fg); resize:vertical }
+  .lint-problem { font-size:12px; padding:2px 0; color:var(--bad) }
 </style>
 </head>
 <body>
@@ -68,6 +74,7 @@
 </header>
 <main id="main"></main>
 <script src="/time.js"></script>
+<script src="/workflows.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

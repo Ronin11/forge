@@ -22,6 +22,7 @@ mod engine;
 mod envelope;
 
 mod git;
+mod graph;
 mod intake;
 mod job;
 mod journal;

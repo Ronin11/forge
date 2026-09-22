@@ -1,0 +1,5 @@
+name = "dump-workflow-catalog"
+kind = "operation"
+description = "prints a condensed action-and-workflow catalog (forge workflows --json) plus one existing build workflow and one existing run workflow in full, as examples for the author directive to compose from"
+produces = ["interface"]
+run = ["bash", ".forge/workflows/actions/dump-workflow-catalog.sh"]

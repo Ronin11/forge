@@ -1,0 +1,7 @@
+name = "repo-graph"
+kind = "operation"
+description = "the module graph as data (docs/LATER.md, \"The code visualiser\"): every source file and the directories that group them as nodes, the import edges between files, written fresh to the cache directory on every attempt so a landing always has an up to date graph. Deterministic: forge graph, no model."
+consumes = ["branch"]
+run = ["bash", "-c", '''
+exec "$FORGE_BIN_DIR/forge" graph . --json > "$FORGE_CACHE_DIR/graph.json"
+''', "repo-graph"]

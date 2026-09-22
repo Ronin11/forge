@@ -1,0 +1,19 @@
+{
+  "input": {
+    "description": "Whenever someone asks for a documentation-only fix — a README, a CHANGELOG entry, a design note — draft a small build workflow confined to docs and Markdown files, nothing else."
+  },
+  "expect": {
+    "state": "ok",
+    "effects": []
+  },
+  "outputs": {
+    "draft-workflow": {
+      "name": "docs-only",
+      "kind": "build",
+      "description": "documentation only: the agent may change docs/ and Markdown files, nothing else",
+      "toml": "name = \"docs-only\"\ndescription = \"documentation only: the agent may change docs/ and Markdown files, nothing else\"\nsteps = [\n  { action = \"setup\" },\n  { action = \"docs\" },\n]\n",
+      "rationale": "The catalog already has a \"docs\" directive whose code contract is confined to docs/ and *.md (paths), which is exactly the write scope the description asks for; \"setup\" ahead of it is what every build workflow runs first so the directive starts check-ready. No new action needed.",
+      "open_questions": []
+    }
+  }
+}
