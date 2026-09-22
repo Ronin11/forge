@@ -824,7 +824,7 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
+pub(crate) const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "planned.toml",
         include_str!("builtins/workflows/planned.toml"),
@@ -1085,7 +1085,7 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
     })
 }
 
-fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
+pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
     let raw: WorkflowRaw =
         toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
     let stem = path.file_stem().unwrap().to_string_lossy();
@@ -1183,6 +1183,36 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
         hash,
         path: path.to_path_buf(),
         text: text.to_string(),
+    })
+}
+
+/// Whether the workflow named `name`, with its own raw text `text`, writes
+/// hidden tests: a step with `action = "tests"`, directly or through a
+/// `workflow = ...` reference resolved against `known` (workflow name →
+/// its own text). Used where the filesystem resolution `resolve` depends
+/// on is not available — the task-shape schema backfill (see
+/// docs/ECONOMIST.md, "Task shape"), which only has what a task's own row
+/// already stored, never the live workflow directory. Best-effort: a
+/// nested reference to a workflow missing from `known`, or text that no
+/// longer parses, resolves to `false`; `depth` guards against a cycle.
+pub(crate) fn text_writes_hidden_tests(
+    name: &str,
+    text: &str,
+    known: &std::collections::BTreeMap<String, String>,
+    depth: u8,
+) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    let Ok(wf) = parse_workflow(Path::new(&format!("{name}.toml")), text, String::new()) else {
+        return false;
+    };
+    wf.steps.iter().any(|s| match (&s.action, &s.workflow) {
+        (Some(a), _) => a.as_str() == "tests",
+        (None, Some(child)) => known
+            .get(child)
+            .is_some_and(|t| text_writes_hidden_tests(child, t, known, depth + 1)),
+        _ => false,
     })
 }
 
@@ -2265,6 +2295,40 @@ mod tests {
             before.pins.iter().find(|p| p.name == "setup"),
             after.pins.iter().find(|p| p.name == "setup"),
             "setup is unchanged"
+        );
+    }
+
+    #[test]
+    fn text_writes_hidden_tests_sees_through_composition_but_not_a_missing_child() {
+        let known: std::collections::BTreeMap<String, String> = BUILTIN_WORKFLOWS
+            .iter()
+            .map(|(file, text)| (file.trim_end_matches(".toml").to_string(), text.to_string()))
+            .collect();
+        assert!(
+            text_writes_hidden_tests("tdd", known["tdd"].as_str(), &known, 0),
+            "declares the tests step directly"
+        );
+        assert!(
+            text_writes_hidden_tests(
+                "tdd-reviewed",
+                known["tdd-reviewed"].as_str(),
+                &known,
+                0
+            ),
+            "nests tdd, which declares it"
+        );
+        assert!(
+            !text_writes_hidden_tests("direct", known["direct"].as_str(), &known, 0),
+            "no tests step anywhere in it"
+        );
+        assert!(
+            !text_writes_hidden_tests(
+                "tdd-reviewed",
+                known["tdd-reviewed"].as_str(),
+                &std::collections::BTreeMap::new(),
+                0
+            ),
+            "the nested workflow is unknown, so it resolves to false rather than guessing"
         );
     }
 

@@ -177,6 +177,22 @@ pub struct Task {
     pub proposal_answer: Option<String>,
     /// The initiative a "yes" answer filed; `None` for a "no" or a still-open proposal.
     pub proposal_initiative: Option<i64>,
+    /// Task shape at intake (see docs/ECONOMIST.md, "Task shape"): what the
+    /// economist must condition on before the task even runs, computed
+    /// once at enqueue (`queue::task_shape`) and never revisited. The
+    /// text's length in characters.
+    pub shape_text_len: i64,
+    /// How many of the text's whitespace-separated words look like a path
+    /// (see `render::is_path_like_word`).
+    pub shape_path_tokens: i64,
+    /// Whether the resolved workflow writes hidden tests: a step whose
+    /// action is `"tests"` (directly, or through composition).
+    pub shape_tdd: bool,
+    /// The repository's own `[checks]` count at enqueue time, from
+    /// `forge.toml` (or `.forge/forge.toml`); 0 for a task enqueued before
+    /// this column existed, since backfilling it needs the repository's
+    /// config as it stood at the time, which the record does not keep.
+    pub shape_declared_checks: i64,
 }
 
 /// One task in a lineage: parent is what it retries.
@@ -253,13 +269,74 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
     Ok(released)
 }
 
+/// Task-shape backfill (see docs/ECONOMIST.md, "Task shape"): every task
+/// enqueued before `shape_text_len` and its neighbors existed gets them
+/// recomputed from what its own row already carries — its text, and its
+/// workflow's own stored text — never the filesystem, since a migration
+/// only has the connection, and a workflow file may since have changed or
+/// gone. Nested composition (a workflow that names another rather than
+/// declaring `"tests"` itself, e.g. `tdd-reviewed`) resolves against
+/// `known`, seeded with the built-ins and every distinct workflow text
+/// already on hand in the table, so a task's own history can stand in for
+/// a workflow that changed since. `shape_declared_checks` has no such
+/// source — it needs the repository's `[checks]` as it stood at enqueue
+/// time — and is left at its column default, 0.
+pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
+    let mut known: BTreeMap<String, String> = crate::workflows::BUILTIN_WORKFLOWS
+        .iter()
+        .map(|(file, text)| (file.trim_end_matches(".toml").to_string(), (*text).to_string()))
+        .collect();
+    {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT workflow, workflow_text FROM tasks WHERE workflow_text != ''")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get("workflow")?, r.get("workflow_text")?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, text) in rows {
+            known.entry(name).or_insert(text);
+        }
+    }
+    let rows: Vec<(i64, String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, task, workflow, workflow_text FROM tasks")?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get("id")?,
+                r.get("task")?,
+                r.get("workflow")?,
+                r.get("workflow_text")?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, text, workflow, workflow_text) in rows {
+        let text_len = text.chars().count() as i64;
+        let path_tokens = text
+            .split_whitespace()
+            .filter(|w| crate::render::is_path_like_word(w))
+            .count() as i64;
+        let source = if workflow_text.is_empty() {
+            known.get(&workflow).cloned()
+        } else {
+            Some(workflow_text)
+        };
+        let tdd = source
+            .is_some_and(|t| crate::workflows::text_writes_hidden_tests(&workflow, &t, &known, 0));
+        conn.execute(
+            "UPDATE tasks SET shape_text_len=?1, shape_path_tokens=?2, shape_tdd=?3 WHERE id=?4",
+            params![text_len, path_tokens, tdd as i64, id],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn insert_task(&self, t: &Task) -> Result<i64> {
         let c = self.lock();
         c.execute(
             "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
-                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                                state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
+                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             params![
                 t.repo,
                 t.task,
@@ -287,6 +364,10 @@ impl Store {
                 t.resume_on_failure as i64,
                 t.journal_arm,
                 serde_json::to_string(&t.explore)?,
+                t.shape_text_len,
+                t.shape_path_tokens,
+                t.shape_tdd as i64,
+                t.shape_declared_checks,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -305,7 +386,8 @@ impl Store {
              context_enabled=?33, resume_on_failure=?34, plan=?35, landed_sha=?36, journal_arm=?37,
              project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
-             title=?47, landed_at=?48, hand_landed=?49 WHERE id=?1",
+             title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
+             shape_tdd=?52, shape_declared_checks=?53 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -356,6 +438,10 @@ impl Store {
                 t.title,
                 t.landed_at,
                 t.hand_landed as i64,
+                t.shape_text_len,
+                t.shape_path_tokens,
+                t.shape_tdd as i64,
+                t.shape_declared_checks,
             ],
         )?;
         Ok(())
@@ -737,8 +823,82 @@ mod tests {
         t.initiative = Some(11);
         t.landed_at = Some(4);
         t.hand_landed = true;
+        t.shape_text_len = 42;
+        t.shape_path_tokens = 3;
+        t.shape_tdd = true;
+        t.shape_declared_checks = 5;
         store.update_task(&t).unwrap();
         let back = store.task(t.id).unwrap().unwrap();
         assert_eq!(format!("{back:?}"), format!("{t:?}"));
+    }
+
+    #[test]
+    fn migration_backfills_task_shape_from_stored_text_and_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let builtin = |file: &str| {
+            crate::workflows::BUILTIN_WORKFLOWS
+                .iter()
+                .find(|(f, _)| *f == file)
+                .unwrap()
+                .1
+        };
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..(super::TASK_SHAPE_MIGRATION_VERSION as usize - 1)] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(&format!(
+                "PRAGMA user_version={}",
+                super::TASK_SHAPE_MIGRATION_VERSION - 1
+            ))
+            .unwrap();
+            // A bare tdd task: hidden tests declared directly in its own
+            // stored workflow text, and a request naming two paths.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r', 'fix src/queue.rs and src/store/mod.rs', 'main', 'sonnet', 10, 1, 60, 'succeeded', 1, 'tdd', ?1)",
+                params![builtin("tdd.toml")],
+            )
+            .unwrap();
+            // A composed workflow that nests tdd, without this table ever
+            // having run bare "tdd" itself: only the compiled-in built-ins
+            // let it resolve.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r', 'polish the docs', 'main', 'sonnet', 10, 1, 60, 'succeeded', 2, 'tdd-reviewed', ?1)",
+                params![builtin("tdd-reviewed.toml")],
+            )
+            .unwrap();
+            // No hidden tests, no path-like tokens.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r', 'rename the button', 'main', 'sonnet', 10, 1, 60, 'succeeded', 3, 'direct', ?1)",
+                params![builtin("direct.toml")],
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+
+        let t1 = s.task(1).unwrap().unwrap();
+        assert_eq!(
+            t1.shape_text_len,
+            "fix src/queue.rs and src/store/mod.rs".chars().count() as i64
+        );
+        assert_eq!(t1.shape_path_tokens, 2, "two paths named, counts two");
+        assert!(t1.shape_tdd, "declares the tests step directly");
+        assert_eq!(
+            t1.shape_declared_checks, 0,
+            "no source to backfill this from"
+        );
+
+        let t2 = s.task(2).unwrap().unwrap();
+        assert!(t2.shape_tdd, "nests tdd, resolved from the built-ins");
+
+        let t3 = s.task(3).unwrap().unwrap();
+        assert!(!t3.shape_tdd, "direct writes no hidden tests");
+        assert_eq!(t3.shape_path_tokens, 0);
     }
 }
