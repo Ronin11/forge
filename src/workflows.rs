@@ -2309,12 +2309,7 @@ mod tests {
             "declares the tests step directly"
         );
         assert!(
-            text_writes_hidden_tests(
-                "tdd-reviewed",
-                known["tdd-reviewed"].as_str(),
-                &known,
-                0
-            ),
+            text_writes_hidden_tests("tdd-reviewed", known["tdd-reviewed"].as_str(), &known, 0),
             "nests tdd, which declares it"
         );
         assert!(

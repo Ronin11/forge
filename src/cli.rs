@@ -3583,6 +3583,13 @@ fn trace(id: i64, json: bool) -> Result<()> {
         out!("  | {l}");
     }
     out!("text       {}", t.task);
+    out!(
+        "shape      text_len={} path_tokens={} tdd={} declared_checks={}",
+        t.shape_text_len,
+        t.shape_path_tokens,
+        t.shape_tdd,
+        t.shape_declared_checks
+    );
     if let Ok(r) = serde_json::from_value::<workflows::Resolved>(doc.resolved.clone()) {
         out!(
             "resolved   {}",

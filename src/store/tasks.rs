@@ -284,11 +284,17 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
 pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
     let mut known: BTreeMap<String, String> = crate::workflows::BUILTIN_WORKFLOWS
         .iter()
-        .map(|(file, text)| (file.trim_end_matches(".toml").to_string(), (*text).to_string()))
+        .map(|(file, text)| {
+            (
+                file.trim_end_matches(".toml").to_string(),
+                (*text).to_string(),
+            )
+        })
         .collect();
     {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT workflow, workflow_text FROM tasks WHERE workflow_text != ''")?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT workflow, workflow_text FROM tasks WHERE workflow_text != ''",
+        )?;
         let rows: Vec<(String, String)> = stmt
             .query_map([], |r| Ok((r.get("workflow")?, r.get("workflow_text")?)))?
             .collect::<rusqlite::Result<_>>()?;

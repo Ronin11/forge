@@ -867,11 +867,7 @@ mod tests {
     #[test]
     fn task_shape_counts_length_paths_and_declared_checks() {
         let resolved = workflows::Resolved::default();
-        let shape = task_shape(
-            "fix src/queue.rs and src/store/mod.rs please",
-            &resolved,
-            3,
-        );
+        let shape = task_shape("fix src/queue.rs and src/store/mod.rs please", &resolved, 3);
         assert_eq!(
             shape.text_len,
             "fix src/queue.rs and src/store/mod.rs please"
