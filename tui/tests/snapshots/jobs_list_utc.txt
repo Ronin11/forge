@@ -1,4 +1,4 @@
-Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
 ┌jobs, newest first────────────────────────────────────────────────────────────────────────────────┐
 │ID    PROJECT      WORKFLOW         STATE       COST    STARTED                                   │
 │21    forge        nightly-cleanup  ok          $0.12   2026-09-21 14:13                          │

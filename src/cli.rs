@@ -24,7 +24,7 @@ macro_rules! out {
 }
 
 #[derive(Parser)]
-#[command(name = "forge", about = "Forge 2")]
+#[command(name = "forge", about = "Forge")]
 pub struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

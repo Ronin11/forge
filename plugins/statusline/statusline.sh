@@ -13,7 +13,7 @@ if [ -f "$config" ]; then
 fi
 
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
-out_dir="$state_home/forge2"
+out_dir="$state_home/forge"
 mkdir -p "$out_dir"
 out_file="$out_dir/status.json"
 

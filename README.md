@@ -250,7 +250,10 @@ web/      forge-web: the same seat in a browser
 
 - `FORGE_HOME` (default `$XDG_DATA_HOME/forge` or `~/.local/share/forge`)
   holds `forge.db`, `config.toml`, `worktrees/`, `logs/`. Separate from
-  Forge 1's `FORGE_HOME`.
+  Forge 1's `FORGE_HOME`. For one release, an old install with no
+  `FORGE_HOME` set and no new default directory yet falls back to its
+  pre-rename data directory and old-named environment variables; `forge
+  doctor` says exactly what to move and rename.
 - `FORGE_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
   same flags and emits stream-json works; the tests use shell scripts.
 - `FORGE_SANDBOX=0` runs the agent and checks directly on the host.

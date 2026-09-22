@@ -1,7 +1,7 @@
 //! The statusline plugin end to end: it maintains a status file a bar
 //! widget can read, atomically, driven only by `forge snapshot` and
 //! `forge requests --json`. The plugin writes into
-//! `$XDG_STATE_HOME/forge2/status.json` (or `~/.local/state/forge2/status.json`
+//! `$XDG_STATE_HOME/forge/status.json` (or `~/.local/state/forge/status.json`
 //! when unset), so each test points a scratch `HOME` at the spawned worker
 //! rather than touching the real one.
 
@@ -25,7 +25,7 @@ fn enable_statusline(e: &Env) {
 }
 
 fn status_path(fake_home: &Path) -> PathBuf {
-    fake_home.join(".local/state/forge2/status.json")
+    fake_home.join(".local/state/forge/status.json")
 }
 
 fn read_status(path: &Path) -> Option<serde_json::Value> {
