@@ -60,6 +60,7 @@ case "$1" in
 {"events_offset":0,"tasks":[{"id":12,"state":"running","workflow":"tdd","attempts":2,"cost_usd":1.35,"project":"forge","task":"add snapshot tests for the tui"},{"id":11,"state":"succeeded","workflow":"direct","attempts":1,"cost_usd":0.1,"project":"forge","task":"fix typo in docs"}],"requests":[],"worker":{"running":true,"pid":555,"exe":"","stale_binary":false}}
 JSON
   ;;
+  log | requests) echo '[]' ;;
   events) exit 0 ;;
   initiative)
     case "$2" in
@@ -275,5 +276,86 @@ fn a_scripted_interaction_moves_down_opens_a_task_and_goes_back() {
     assert_eq!(app.screen(), Screen::Queue);
     assert_snapshot("scripted_4_back_to_queue", &frame(&app));
 
+    app.shutdown();
+}
+
+fn inbox_fake() -> Fake {
+    let fake = fake_forge();
+    let script = FAKE.replace("  log | requests) echo '[]' ;;", r#"
+  log) echo '[{"id":44,"state":"unverified","task":"Ready to land","workflow":"direct"}]' ;;
+  requests) cat "$(dirname "$0")/requests.json" ;;
+  answer | withdraw | land)
+    printf '%s\n' "$@" > "$(dirname "$0")/action"
+    if [ -f "$(dirname "$0")/fail" ]; then echo refused >&2; exit 1; fi
+    echo done ;;
+"#).replace(r#""reason":"","verdict":[]"#, r#""reason":"fallback summary","outputs":{"summary":"Checked the settings; need a product decision."},"verdict":[]"#);
+    std::fs::write(&fake.forge.bin, script).unwrap();
+    std::fs::write(
+        fake._dir.path().join("requests.json"),
+        include_str!("fixtures/inbox.json"),
+    )
+    .unwrap();
+    fake
+}
+
+#[test]
+fn inbox_lists_two_questions_and_supports_cli_actions() {
+    let fake = inbox_fake();
+    let mut app = App::new(fake.forge.clone());
+    app.refresh();
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_snapshot("inbox", &frame(&app));
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!fake._dir.path().join("action").exists());
+    for c in "Use \"blue\"; $HOME".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    assert_snapshot("inbox_answer", &frame(&app));
+    // Refreshing while typing must not redirect the answer to another task.
+    app.apply(serde_json::from_str(r#"{"type":"task_blocked"}"#).unwrap());
+    app.pump();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        std::fs::read_to_string(fake._dir.path().join("action")).unwrap(),
+        "answer\n41\nUse \"blue\"; $HOME\n"
+    );
+    app.down();
+    app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE);
+    for c in "Superseded".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    std::fs::write(fake._dir.path().join("fail"), "").unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(frame(&app).contains("refused"));
+    std::fs::remove_file(fake._dir.path().join("fail")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fake._dir.path().join("action")).unwrap(),
+        "withdraw\n42\n--reason\nSuperseded\n"
+    );
+    app.down();
+    app.down();
+    app.down();
+    app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(
+        std::fs::read_to_string(fake._dir.path().join("action")).unwrap(),
+        "land\n44\n"
+    );
+    std::fs::write(fake._dir.path().join("requests.json"), "[]").unwrap();
+    app.apply(serde_json::from_str(r#"{"type":"task_blocked"}"#).unwrap());
+    app.pump();
+    assert!(!frame(&app).contains("Which color"));
+    std::fs::write(
+        fake._dir.path().join("requests.json"),
+        include_str!("fixtures/inbox.json"),
+    )
+    .unwrap();
+    app.apply(
+        serde_json::from_str(r#"{"type":"task_done","task":41,"state":"blocked","text":""}"#)
+            .unwrap(),
+    );
+    app.pump();
+    assert!(frame(&app).contains("Which color"));
     app.shutdown();
 }
