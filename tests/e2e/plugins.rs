@@ -1445,6 +1445,25 @@ esac
         std::fs::read_to_string(&sent)
     );
 
+    // `record_message` for the "on it" reply runs after `signal_send`
+    // writes to `sent`, as its own `forge message record` call: wait for
+    // it to land before killing the plugin, so a slow scheduler doesn't
+    // race the message-record assertion below.
+    assert!(
+        wait_until(
+            || {
+                let rows: serde_json::Value = serde_json::from_slice(
+                    &e.forge("ok.sh", &["message", "list", "demo", "--json"])
+                        .stdout,
+                )
+                .unwrap_or(serde_json::Value::Array(vec![]));
+                rows.as_array().is_some_and(|r| r.len() >= 2)
+            },
+            Duration::from_secs(30),
+        ),
+        "expected both sides of the exchange to be recorded"
+    );
+
     Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
