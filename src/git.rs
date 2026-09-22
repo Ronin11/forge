@@ -579,7 +579,15 @@ fn parse_status_line(line: &str) -> Option<GitChange> {
 /// an add that happen to land in the same diff.
 pub async fn changed_with_status(wt: &Path, from: &str, to: &str) -> Result<Vec<GitChange>> {
     let out = Git::new(wt)
-        .line(&["diff", "--name-status", "-M", from, to])
+        .line(&[
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "--name-status",
+            "-M",
+            from,
+            to,
+        ])
         .await?;
     Ok(out
         .lines()

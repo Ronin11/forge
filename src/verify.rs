@@ -1473,6 +1473,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_stray_files_rejects_non_ascii_backup_names() {
+        let (dir, base) = commit_fixture().await;
+        std::fs::write(dir.path().join("résumé.bak"), "cv").unwrap();
+        crate::git::commit_all(dir.path(), "add non-ascii backup")
+            .await
+            .unwrap();
+        let row = no_stray_files(dir.path(), &base).await.unwrap();
+        assert!(!row.ok);
+        assert!(row.tail.contains("résumé.bak"));
+    }
+
+    #[tokio::test]
     async fn no_stray_files_accepts_non_matching_additions_and_existing_backups() {
         let (dir, _) = commit_fixture().await;
         std::fs::write(dir.path().join("existing.bak"), "old").unwrap();
