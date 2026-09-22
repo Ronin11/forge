@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -197,6 +197,62 @@ impl Forge {
         args.push("--json");
         let v = self.json(&args)?;
         Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge workflows show NAME --json`: one workflow in full — its file
+    /// text, where it came from, kind, every resolved step, and its
+    /// measured profile.
+    pub fn workflow_show(&self, name: &str) -> Result<WorkflowShowDoc> {
+        let v = self.json(&["workflows", "show", name, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge workflows lint --stdin [--name NAME]`: validate a candidate
+    /// workflow file's `text` against the catalog without writing it
+    /// anywhere, so an editor can check as the operator types. Unlike
+    /// [`Forge::run`]/[`Forge::json`], a non-zero exit here (1, on any lint
+    /// problem) is the answer, not a failure, so this bypasses both and
+    /// spawns directly to pipe `text` in on stdin.
+    pub fn workflow_lint(
+        &self,
+        name: Option<&str>,
+        text: &str,
+    ) -> Result<Vec<WorkflowLintProblem>> {
+        let mut args = vec!["workflows", "lint", "--stdin"];
+        if let Some(n) = name {
+            args.push("--name");
+            args.push(n);
+        }
+        let mut child = retry_on_etxtbsy(|| {
+            Command::new(&self.bin)
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        })
+        .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
+        child
+            .stdin
+            .take()
+            .context("lint stdin")?
+            .write_all(text.as_bytes())
+            .context("writing the candidate text to forge workflows lint")?;
+        let out = child.wait_with_output().context("forge workflows lint")?;
+        if !out.status.success() && out.status.code() != Some(1) {
+            anyhow::bail!(
+                "forge workflows lint: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        #[derive(Deserialize)]
+        struct Doc {
+            #[serde(default)]
+            problems: Vec<WorkflowLintProblem>,
+        }
+        let doc: Doc = serde_json::from_slice(&out.stdout)
+            .with_context(|| format!("parsing forge {}", args.join(" ")))?;
+        Ok(doc.problems)
     }
 
     /// `forge stats --json`: see [`StatsDoc`].
@@ -1234,6 +1290,63 @@ pub struct Workflow {
     pub meta: Value,
     #[serde(default)]
     pub measured: Value,
+}
+
+/// One resolved step of `forge workflows show --json`'s `"steps"` array:
+/// the action's name, kind, contract, model, turns, timeout and
+/// description, in the order the workflow runs them.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkflowStepDoc {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub contract: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// The document `forge workflows show NAME --json` prints: one workflow in
+/// full. `measured` stays raw JSON, the same informal shape as
+/// [`Workflow::measured`].
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkflowShowDoc {
+    #[serde(default)]
+    pub name: String,
+    /// `"catalog"` (the operator's own) or `"repo"` (a project's own
+    /// `.forge/workflows/`).
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub path: String,
+    /// `"build"` or `"run"`.
+    #[serde(default)]
+    pub kind: String,
+    /// The workflow file's exact text.
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub steps: Vec<WorkflowStepDoc>,
+    #[serde(default)]
+    pub measured: Value,
+}
+
+/// One problem `forge workflows lint --stdin` found in a candidate
+/// workflow file's text: the line the parser could place it at (`None` for
+/// a semantic error found only after a clean parse), and the message.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkflowLintProblem {
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub message: String,
 }
 
 /// One line of `forge events`/`forge events --follow`: the fields of one

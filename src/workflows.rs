@@ -824,7 +824,7 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
+pub(crate) const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "planned.toml",
         include_str!("builtins/workflows/planned.toml"),
@@ -1085,7 +1085,7 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
     })
 }
 
-fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
+pub(crate) fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
     let raw: WorkflowRaw =
         toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
     let stem = path.file_stem().unwrap().to_string_lossy();
@@ -1183,6 +1183,36 @@ fn parse_workflow(path: &Path, text: &str, hash: String) -> Result<Workflow> {
         hash,
         path: path.to_path_buf(),
         text: text.to_string(),
+    })
+}
+
+/// Whether the workflow named `name`, with its own raw text `text`, writes
+/// hidden tests: a step with `action = "tests"`, directly or through a
+/// `workflow = ...` reference resolved against `known` (workflow name →
+/// its own text). Used where the filesystem resolution `resolve` depends
+/// on is not available — the task-shape schema backfill (see
+/// docs/ECONOMIST.md, "Task shape"), which only has what a task's own row
+/// already stored, never the live workflow directory. Best-effort: a
+/// nested reference to a workflow missing from `known`, or text that no
+/// longer parses, resolves to `false`; `depth` guards against a cycle.
+pub(crate) fn text_writes_hidden_tests(
+    name: &str,
+    text: &str,
+    known: &std::collections::BTreeMap<String, String>,
+    depth: u8,
+) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    let Ok(wf) = parse_workflow(Path::new(&format!("{name}.toml")), text, String::new()) else {
+        return false;
+    };
+    wf.steps.iter().any(|s| match (&s.action, &s.workflow) {
+        (Some(a), _) => a.as_str() == "tests",
+        (None, Some(child)) => known
+            .get(child)
+            .is_some_and(|t| text_writes_hidden_tests(child, t, known, depth + 1)),
+        _ => false,
     })
 }
 
@@ -1984,6 +2014,160 @@ pub fn validate_repo(root: &Path) -> Result<ValidateReport> {
     })
 }
 
+/// One problem `forge workflows lint --stdin` found in a candidate
+/// workflow file's text: the line the parser could place it at (a syntax
+/// or shape error has one; a semantic error found only after a clean
+/// parse — an unknown action, a data-flow violation — does not), and the
+/// message. No `file`, unlike `ValidateProblem`: a candidate as typed has
+/// none.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LintProblem {
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+/// The catalog `forge workflows lint --stdin` checks a candidate against:
+/// every built-in action, operation and workflow, parsed once in memory
+/// from `BUILTIN_ACTIONS`/`BUILTIN_OPERATIONS`/`BUILTIN_WORKFLOWS`
+/// (`builtin_actions_map` already does this for actions to avoid
+/// `ensure`'s side effect), overlaid with the operator's own
+/// `<home>/workflows/actions/*.toml` and `<home>/workflows/*.toml` when
+/// `dir_of(home)` already exists. Never calls `ensure`: a fresh home lints
+/// against the built-ins alone and gains no files from linting. A sibling
+/// file that fails to parse is skipped rather than failing the whole
+/// catalog, the same best-effort `lint` has always given a candidate.
+fn lint_catalog(home: &Path) -> Result<(BTreeMap<String, Workflow>, BTreeMap<String, ActionDef>)> {
+    let mut actions = builtin_actions_map()?;
+    let mut workflows: BTreeMap<String, Workflow> = BTreeMap::new();
+    for (file, text) in BUILTIN_WORKFLOWS {
+        let wf = parse_workflow(Path::new(file), text, String::new())
+            .with_context(|| format!("built-in {file}"))?;
+        workflows.insert(wf.name.clone(), wf);
+    }
+
+    let dir = dir_of(home);
+    if dir.exists() {
+        for path in toml_files_if_present(&dir.join("actions"))? {
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(a) = parse_action(&path, &text, String::new())
+            {
+                actions.insert(a.name.clone(), a);
+            }
+        }
+        for path in toml_files_if_present(&dir)? {
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(wf) = parse_workflow(&path, &text, String::new())
+            {
+                workflows.insert(wf.name.clone(), wf);
+            }
+        }
+    }
+    Ok((workflows, actions))
+}
+
+/// The line of the first still-unconsumed `<field> = "<name>"` in `text`
+/// at or after `*after` (a byte offset), advancing `*after` past the
+/// match so a second step naming the same action or workflow lands on its
+/// own line rather than the first one's, repeated. `*after` starts at the
+/// `steps` key so a name that also appears in, say, the description does
+/// not steal the line.
+fn step_ref_line(text: &str, field: &str, name: &str, after: &mut usize) -> Option<usize> {
+    let needle = format!("{field} = {name:?}");
+    let pos = text[*after..].find(&needle)? + *after;
+    *after = pos + needle.len();
+    Some(text[..pos].matches('\n').count() + 1)
+}
+
+/// The line of the `steps` key itself: where a whole-flow problem with no
+/// span of its own (a data-flow violation from `check_flow`, a job-step
+/// shape error from `job_steps`) is placed.
+fn steps_key_line(text: &str) -> Option<usize> {
+    let pos = text.find("steps")?;
+    Some(text[..pos].matches('\n').count() + 1)
+}
+
+/// `forge workflows lint --stdin [--name <name>]`: parse a candidate
+/// workflow file's text and check it resolves against the operator's own
+/// catalog — every action or workflow reference it names known, the
+/// data-flow rule holding, `[trigger]` well-formed for a run workflow —
+/// without writing anything, not even to a fresh home, so an editor can
+/// lint on every keystroke (docs/WORKFLOWS.md). `name` is the file name
+/// the candidate would be saved under, used the way `parse_workflow` uses
+/// a real file's stem (its own `name = "..."` must match); when absent,
+/// the candidate's own declared name stands in for it, so a fresh draft
+/// lints clean before the operator has chosen where to save it.
+/// Every unknown action or workflow reference is reported, one problem
+/// each with its own line, not just the first: `wf.steps` is walked by
+/// hand before resolving. Only once every reference is known is the
+/// candidate actually resolved (`job_steps` for a run workflow, else
+/// `splice` and `check_flow`), and that result's error, if any, is
+/// appended as a further problem — a whole-flow error with no span of its
+/// own is placed at the `steps` key's line.
+pub fn lint(home: &Path, name: Option<&str>, text: &str) -> Result<Vec<LintProblem>> {
+    let (mut workflows, actions) = lint_catalog(home)?;
+    let stem = match name {
+        Some(n) => n.to_string(),
+        None => toml::from_str::<toml::Value>(text)
+            .ok()
+            .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+            .unwrap_or_else(|| "candidate".to_string()),
+    };
+    let path = PathBuf::from(format!("{stem}.toml"));
+
+    let wf = match parse_workflow(&path, text, String::new()) {
+        Ok(wf) => wf,
+        Err(e) => {
+            return Ok(vec![LintProblem {
+                line: error_line(&e, text),
+                message: format!("{e:#}"),
+            }]);
+        }
+    };
+
+    workflows.insert(wf.name.clone(), wf.clone());
+
+    let mut problems = Vec::new();
+    let mut unknown = false;
+    let mut after = text.find("steps").unwrap_or(0);
+    for s in &wf.steps {
+        if let Some(a) = &s.action {
+            if !actions.contains_key(a) {
+                problems.push(LintProblem {
+                    line: step_ref_line(text, "action", a, &mut after),
+                    message: format!("workflow {:?} references unknown action {:?}", wf.name, a),
+                });
+                unknown = true;
+            }
+        } else if let Some(w) = &s.workflow
+            && !workflows.contains_key(w)
+        {
+            problems.push(LintProblem {
+                line: step_ref_line(text, "workflow", w, &mut after),
+                message: format!("workflow {:?} references unknown workflow {:?}", wf.name, w),
+            });
+            unknown = true;
+        }
+    }
+
+    if !unknown {
+        let result = if wf.kind == WorkflowKind::Run {
+            job_steps(&wf, &workflows, &actions).map(|_| ())
+        } else {
+            let mut out = Resolved::default();
+            splice(&wf, &workflows, &actions, &mut Vec::new(), &mut out)
+                .and_then(|()| check_flow(&out.steps))
+        };
+        if let Err(e) = result {
+            problems.push(LintProblem {
+                line: error_line(&e, text).or_else(|| steps_key_line(text)),
+                message: format!("{e:#}"),
+            });
+        }
+    }
+
+    Ok(problems)
+}
+
 /// Every run workflow under `<root>/.forge/workflows`, each resolved the
 /// way `validate_repo` resolves one — against the built-in actions and the
 /// tree's own `.forge/workflows/actions/*.toml`, with no home directory —
@@ -2265,6 +2449,35 @@ mod tests {
             before.pins.iter().find(|p| p.name == "setup"),
             after.pins.iter().find(|p| p.name == "setup"),
             "setup is unchanged"
+        );
+    }
+
+    #[test]
+    fn text_writes_hidden_tests_sees_through_composition_but_not_a_missing_child() {
+        let known: std::collections::BTreeMap<String, String> = BUILTIN_WORKFLOWS
+            .iter()
+            .map(|(file, text)| (file.trim_end_matches(".toml").to_string(), text.to_string()))
+            .collect();
+        assert!(
+            text_writes_hidden_tests("tdd", known["tdd"].as_str(), &known, 0),
+            "declares the tests step directly"
+        );
+        assert!(
+            text_writes_hidden_tests("tdd-reviewed", known["tdd-reviewed"].as_str(), &known, 0),
+            "nests tdd, which declares it"
+        );
+        assert!(
+            !text_writes_hidden_tests("direct", known["direct"].as_str(), &known, 0),
+            "no tests step anywhere in it"
+        );
+        assert!(
+            !text_writes_hidden_tests(
+                "tdd-reviewed",
+                known["tdd-reviewed"].as_str(),
+                &std::collections::BTreeMap::new(),
+                0
+            ),
+            "the nested workflow is unknown, so it resolves to false rather than guessing"
         );
     }
 

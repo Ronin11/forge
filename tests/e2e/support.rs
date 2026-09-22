@@ -90,6 +90,30 @@ impl Drop for Worker {
     }
 }
 
+/// True if `dir` does not exist, or exists but holds no regular file
+/// anywhere under it — an empty subdirectory doesn't count as a file.
+/// What `forge workflows lint --stdin` must leave a fresh `FORGE2_HOME`,
+/// unlike every other catalog command, which writes the built-ins into it.
+pub fn holds_no_files(dir: &Path) -> bool {
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return true;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !walk(&path) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+    !dir.exists() || walk(dir)
+}
+
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -192,6 +216,35 @@ impl Env {
         let o = self.cmd(fake).args(args).output().expect("forge");
         eprintln!(
             "--- forge {} ---\n{}{}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o
+    }
+
+    /// `forge <args>` with `stdin` piped to the process, for
+    /// `forge workflows lint --stdin`.
+    pub fn forge_stdin(&self, fake: &str, args: &[&str], stdin: &str) -> Output {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let mut child = self
+            .cmd(fake)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn forge");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let o = child.wait_with_output().expect("forge");
+        eprintln!(
+            "--- forge {} <stdin ---\n{}{}",
             args.join(" "),
             String::from_utf8_lossy(&o.stdout),
             String::from_utf8_lossy(&o.stderr)

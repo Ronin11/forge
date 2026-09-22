@@ -1,4 +1,5 @@
 use crate::support::*;
+use forge_client::{WorkflowLintProblem, WorkflowShowDoc};
 use std::time::Duration;
 
 #[test]
@@ -349,4 +350,215 @@ fn forge_workflows_validate_runs_with_no_store_and_no_forge2_home() {
         out.contains("publish-snapshot.toml:4:"),
         "expected file and line: {out}"
     );
+}
+
+/// `forge workflows show NAME --json`: a catalog workflow in full — its
+/// file text, source, kind, every resolved step with the action's name,
+/// kind, contract, model, turns, timeout and description, and its
+/// measured profile in the same shape `forge workflows --json` computes.
+#[test]
+fn forge_workflows_show_prints_a_catalog_workflow_in_full() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let o = e.forge("ok.sh", &["workflows", "show", "direct", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["name"], "direct");
+    assert_eq!(doc["source"], "catalog");
+    assert_eq!(doc["kind"], "build");
+    assert!(
+        doc["text"]
+            .as_str()
+            .unwrap()
+            .contains("one agent writes the change"),
+        "{doc}"
+    );
+    let steps = doc["steps"].as_array().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["setup", "repo-map", "code"]);
+    let code = steps.iter().find(|s| s["name"] == "code").unwrap();
+    assert_eq!(code["kind"], "directive");
+    assert_eq!(code["contract"], "code");
+    assert!(!code["description"].as_str().unwrap().is_empty(), "{doc}");
+    // steps carries max_turns/timeout_secs/model keys even when unset by
+    // this action, so a client never has to guess whether they're absent.
+    assert!(code.get("max_turns").is_some());
+    assert!(code.get("timeout_secs").is_some());
+    assert_eq!(doc["measured"]["current"]["known"], false);
+    assert_eq!(doc["measured"]["regressed"], false);
+
+    let o = e.forge("ok.sh", &["workflows", "show", "no-such-workflow"]);
+    assert!(!o.status.success());
+}
+
+/// `forge workflows show NAME --project P --json`: a run workflow that
+/// lives in a project's own repository rather than the operator catalog
+/// (docs/JOBS.md, "Where an automation lives") — `source` says so, and its
+/// steps still resolve against the operator's built-in actions.
+#[test]
+fn forge_workflows_show_finds_a_run_workflow_in_a_projects_repository() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    std::fs::create_dir_all(e.repo.join(".forge/workflows")).unwrap();
+    std::fs::write(
+        e.repo.join(".forge/workflows/publish-snapshot.toml"),
+        r#"name = "publish-snapshot"
+kind = "run"
+description = "publishes equitizr's snapshot"
+
+steps = [
+  { action = "write-file", effect = "file" },
+]
+
+[trigger]
+on = "manual"
+"#,
+    )
+    .unwrap();
+    git(&e.repo, &["add", "-A"]);
+    git(
+        &e.repo,
+        &["commit", "-qm", "add publish-snapshot automation"],
+    );
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "workflows",
+            "show",
+            "publish-snapshot",
+            "--project",
+            "equitizr",
+            "--json",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["name"], "publish-snapshot");
+    assert_eq!(doc["source"], "repo");
+    assert_eq!(doc["kind"], "run");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["name"], "write-file");
+    assert_eq!(steps[0]["kind"], "operation");
+}
+
+/// `forge workflows lint --stdin`: a candidate file that resolves cleanly
+/// against the catalog prints no problems and exits 0.
+#[test]
+fn forge_workflows_lint_a_clean_candidate_exits_zero() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
+    let o = e.forge_stdin("ok.sh", &["workflows", "lint", "--stdin"], text);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(doc["problems"].as_array().unwrap().len(), 0, "{doc}");
+}
+
+/// `forge workflows lint --stdin`: a candidate naming two unknown actions
+/// is two lint problems, not a crash and not just the first — each on its
+/// own line, each message naming its own action — and lint writes nothing
+/// into a fresh `FORGE2_HOME`, unlike every other catalog command.
+#[test]
+fn forge_workflows_lint_reports_an_unknown_action() {
+    let e = Env::new();
+    // A wholly empty FORGE2_HOME: no prior catalog command has written
+    // anything into it, so lint must resolve against the built-ins alone
+    // and still must not write anything itself.
+    let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [\n{ action = \"missing-one\" },\n{ action = \"missing-two\" },\n]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
+    let o = e.forge_stdin("ok.sh", &["workflows", "lint", "--stdin"], text);
+    assert!(!o.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let problems = doc["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 2, "{doc}");
+    assert_eq!(problems[0]["line"], 4, "{doc}");
+    assert!(
+        problems[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown action \"missing-one\""),
+        "{doc}"
+    );
+    assert_eq!(problems[1]["line"], 5, "{doc}");
+    assert!(
+        problems[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown action \"missing-two\""),
+        "{doc}"
+    );
+    assert!(
+        holds_no_files(&e.home),
+        "lint must not write into FORGE2_HOME: {:?}",
+        std::fs::read_dir(&e.home).map(|d| d
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect::<Vec<_>>())
+    );
+
+    // A --name that disagrees with the candidate's own `name` is refused
+    // the same way a real file's name mismatch is (`parse_workflow`).
+    let o = e.forge_stdin(
+        "ok.sh",
+        &["workflows", "lint", "--stdin", "--name", "other"],
+        text,
+    );
+    assert!(!o.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        doc["problems"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match the file name"),
+        "{doc}"
+    );
+}
+
+/// `forge-client`'s own typed `WorkflowShowDoc`/`WorkflowLintProblem`
+/// parse what `forge workflows show --json`/`forge workflows lint --stdin`
+/// actually print, the same way `forge_client_parses_trace_snapshot_log_and_requests`
+/// (tests/e2e/listing.rs) checks the client crate's other types against
+/// live output rather than a hand-maintained fixture.
+#[test]
+fn forge_client_parses_workflow_show_and_lint() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    let show: WorkflowShowDoc = serde_json::from_slice(
+        &e.forge("ok.sh", &["workflows", "show", "direct", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(show.name, "direct");
+    assert_eq!(show.source, "catalog");
+    assert_eq!(show.kind, "build");
+    let names: Vec<&str> = show.steps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["setup", "repo-map", "code"]);
+
+    let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [{ action = \"nope\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
+    let o = e.forge_stdin("ok.sh", &["workflows", "lint", "--stdin"], text);
+    assert!(!o.status.success());
+    let problems: Vec<WorkflowLintProblem> = serde_json::from_value(
+        serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["problems"].clone(),
+    )
+    .unwrap();
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].message.contains("unknown action \"nope\""));
 }
