@@ -4,7 +4,8 @@ Forge is thirteen days old and has landed 490 tasks on itself and two
 products. This page says what "1.0" means for it, marks what is done,
 and lists what remains in the order it should go, so the queue can be
 filled from here without a conversation. docs/LATER.md keeps the parked
-ideas with a status line each; this is the short list.
+ideas with a status line each; this is the short list. What only the
+operator can decide or do is docs/NATE.md.
 
 ## What 1.0 means
 
