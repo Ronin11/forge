@@ -168,6 +168,36 @@ fn unescape(v: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The 401 page: not a bare line, since a visitor with no token isn't
+/// necessarily an intruder — often it's the operator, on a fresh browser
+/// or a tailnet peer, who hasn't seen the link yet. Explains why every
+/// route needs a token (so the page can sit on a tailnet with no other
+/// guard in front of it), names `forge web link` as where to get one,
+/// and offers a plain GET form: submitting it puts `?token=...` on the
+/// current URL, which `handle` already turns into the cookie the same
+/// way a printed link does.
+const UNAUTHORIZED_PAGE: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>forge-web: a token is required</title>
+<style>body{font:14px sans-serif;max-width:32em;margin:4em auto;line-height:1.5;padding:0 1em}
+input{font:inherit;padding:.3em}button{font:inherit;padding:.3em .8em}</style>
+</head>
+<body>
+<h1>A token is required</h1>
+<p>Every request to forge-web carries a token, so this page can safely sit
+on a tailnet: there are no routes an unauthenticated peer can reach.</p>
+<p>Run <code>forge web link</code> (or <code>forge web open</code>, which
+opens it) to print the link it carries, or paste the token here:</p>
+<form method="get">
+<input type="text" name="token" placeholder="token" autofocus>
+<button type="submit">Enter</button>
+</form>
+</body>
+</html>
+"#;
+
 fn h(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header")
 }
@@ -1163,11 +1193,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     }
     let ok = presented(&req, &query).is_some_and(|t| same(&t, secret));
     if !ok {
-        let _ = req.respond(text(
-            401,
-            "forge-web: open the link forge-web printed when it started (it carries the token).",
-            "text/plain",
-        ));
+        let _ = req.respond(text(401, UNAUTHORIZED_PAGE, "text/html; charset=utf-8"));
         return;
     }
     if query_param(&query, "token").is_some() && !path.starts_with("/api/") {
@@ -1461,15 +1487,40 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     let _ = req.respond(resp);
 }
 
+/// Whether `Server::http` failed because something else already holds
+/// `bind`, rather than a permission problem or a bad address: checked by
+/// substring on the OS's own wording (`tiny_http`'s error is a boxed
+/// `std::io::Error`, whose `Display` already carries it) since neither
+/// `tiny_http` nor `std::io::Error::kind()` gives a typed reason through
+/// the trait object `Server::http` returns.
+fn address_in_use(e: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    e.to_string().contains("already in use")
+}
+
+/// The one line `forge-web` prints in place of a bare OS error when
+/// `--bind ADDR` is already held: not "binding ... Address already in
+/// use", which sends the operator hunting for the process, but the link
+/// for whatever is already listening there — the same link `forge web
+/// link` prints (2026-09-22: an operator hit exactly this and had to run
+/// `forge-web` by hand just to see the link a running instance already
+/// had).
+fn busy_message(bind: &str, secret: &str) -> String {
+    format!(
+        "forge-web: {bind} is already in use, likely by another forge-web already running \u{2014} its link: http://{bind}/?token={secret} (or run `forge web link`)"
+    )
+}
+
 fn main() -> Result<()> {
     let mut bind = "127.0.0.1:7788".to_string();
+    let mut print_link = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--bind" => bind = args.next().context("--bind needs an address")?,
+            "--print-link" => print_link = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
+                    "usage: forge-web [--bind ADDR] [--print-link]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
                 );
                 return Ok(());
             }
@@ -1477,8 +1528,21 @@ fn main() -> Result<()> {
         }
     }
     let secret = token(&home())?;
+    if print_link {
+        println!("http://{bind}/?token={secret}");
+        return Ok(());
+    }
     let forge = Forge::new();
-    let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("binding {bind}: {e}"))?;
+    let server = match Server::http(&bind) {
+        Ok(s) => s,
+        Err(e) => {
+            if address_in_use(e.as_ref()) {
+                eprintln!("{}", busy_message(&bind, &secret));
+                std::process::exit(1);
+            }
+            anyhow::bail!("binding {bind}: {e}");
+        }
+    };
     let addr = server.server_addr();
     eprintln!("forge-web listening on {addr}");
     println!("http://{addr}/?token={secret}");
@@ -1562,5 +1626,57 @@ mod tests {
         let b = token(dir.path()).unwrap();
         assert_eq!(a.len(), 64);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_busy_port_is_one_line_naming_the_running_instances_link() {
+        let msg = busy_message("127.0.0.1:7788", "abc123");
+        assert_eq!(msg.lines().count(), 1, "{msg}");
+        assert!(msg.contains("127.0.0.1:7788"), "{msg}");
+        assert!(msg.contains("http://127.0.0.1:7788/?token=abc123"), "{msg}");
+        assert!(!msg.to_lowercase().contains("os error"), "{msg}");
+    }
+
+    #[test]
+    fn address_in_use_is_recognized_from_the_os_wording() {
+        let held: std::io::Error =
+            std::io::Error::new(std::io::ErrorKind::AddrInUse, "Address already in use");
+        let held: Box<dyn std::error::Error + Send + Sync> = Box::new(held);
+        assert!(address_in_use(held.as_ref()));
+        let other: std::io::Error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let other: Box<dyn std::error::Error + Send + Sync> = Box::new(other);
+        assert!(!address_in_use(other.as_ref()));
+    }
+
+    #[test]
+    fn the_401_page_is_a_snapshot() {
+        assert_eq!(
+            UNAUTHORIZED_PAGE,
+            r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>forge-web: a token is required</title>
+<style>body{font:14px sans-serif;max-width:32em;margin:4em auto;line-height:1.5;padding:0 1em}
+input{font:inherit;padding:.3em}button{font:inherit;padding:.3em .8em}</style>
+</head>
+<body>
+<h1>A token is required</h1>
+<p>Every request to forge-web carries a token, so this page can safely sit
+on a tailnet: there are no routes an unauthenticated peer can reach.</p>
+<p>Run <code>forge web link</code> (or <code>forge web open</code>, which
+opens it) to print the link it carries, or paste the token here:</p>
+<form method="get">
+<input type="text" name="token" placeholder="token" autofocus>
+<button type="submit">Enter</button>
+</form>
+</body>
+</html>
+"#
+        );
+        assert!(UNAUTHORIZED_PAGE.contains("forge web link"));
+        assert!(UNAUTHORIZED_PAGE.contains(r#"<form method="get">"#));
+        assert!(UNAUTHORIZED_PAGE.contains(r#"name="token""#));
     }
 }

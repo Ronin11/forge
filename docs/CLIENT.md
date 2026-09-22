@@ -336,6 +336,30 @@ asserts every verb a client source file invokes appears in it):
 snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc
 ```
 
+## Reaching forge-web (operator)
+
+`forge web link [--bind ADDR]` and `forge web open [--bind ADDR]` are not
+part of the client contract above — they print no JSON and no client
+invokes them — but they are how an operator reaches a running (or
+not-yet-started) `forge-web` without starting a second one just to read
+the link it prints at start (2026-09-22: an operator opened
+`localhost:7788`, was told to open the link `forge-web` printed, and ran
+`forge-web` by hand to see it, only to get `binding 127.0.0.1:7788:
+Address already in use`). Both read `FORGE_HOME/web.token`, creating it
+first (the same 32 bytes of OS randomness as hex, mode 0600) if
+`forge-web` has never run, and print `http://ADDR/?token=<token>` for
+`--bind`'s address (default `127.0.0.1:7788`, matching `forge-web`'s
+own default); `forge web open` additionally hands that link to
+`xdg-open`. Neither binds a socket or talks to a running `forge-web` at
+all — the address is only ever used to build the link's text.
+
+`forge-web` itself also takes `--print-link`: print the link and exit
+without binding, for a script that wants the link without starting the
+server. And when `--bind ADDR` is already held — usually by another
+`forge-web` — it no longer prints a bare OS error; one line names the
+address and prints the link for whatever already holds it, the same
+link `forge web link` would print.
+
 ## Time
 
 Time is UTC everywhere in the kernel and the record; a time zone is a

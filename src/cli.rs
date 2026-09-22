@@ -455,6 +455,34 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ExperimentCmd,
     },
+    /// The operator's own way to reach a running (or not-yet-started)
+    /// `forge-web`: the tokened link it prints at start, without having
+    /// to start a second one just to see it (see docs/CLIENT.md,
+    /// "Reaching forge-web")
+    Web {
+        #[command(subcommand)]
+        cmd: WebCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebCmd {
+    /// Print the tokened link for `forge-web` at `--bind` (default
+    /// `127.0.0.1:7788`): `http://ADDR/?token=...`. Reads
+    /// `FORGE_HOME/web.token`, creating it the same way `forge-web`
+    /// itself does if it is not there yet, so this works whether
+    /// `forge-web` is already running or not started yet.
+    Link {
+        /// The address forge-web binds (or will bind)
+        #[arg(long, default_value = "127.0.0.1:7788")]
+        bind: String,
+    },
+    /// The same link as `forge web link`, handed to `xdg-open`
+    Open {
+        /// The address forge-web binds (or will bind)
+        #[arg(long, default_value = "127.0.0.1:7788")]
+        bind: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1510,6 +1538,10 @@ pub async fn main() -> Result<()> {
         Cmd::Experiment { cmd } => match cmd {
             ExperimentCmd::Set { factor, levels } => experiment_set(factor, levels).await,
         },
+        Cmd::Web { cmd } => match cmd {
+            WebCmd::Link { bind } => web_link(bind),
+            WebCmd::Open { bind } => web_open(bind),
+        },
     }
 }
 
@@ -2500,6 +2532,57 @@ fn webhook_list(project: String, json: bool) -> Result<()> {
             None => out!("{:<20} minted {} active", t.name, render::utc(t.created_at)),
         }
     }
+    Ok(())
+}
+
+/// The token `forge-web` gates every request on: read from
+/// `FORGE_HOME/web.token`, or generated the same way `forge-web` itself
+/// generates it (32 bytes of OS randomness as hex, file mode 0600) if it
+/// is not there yet — so `forge web link` works whether `forge-web` has
+/// ever run or not.
+fn web_token(dir: &Path) -> Result<String> {
+    let path = dir.join("web.token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim().to_string();
+        if t.len() >= 32 {
+            return Ok(t);
+        }
+    }
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
+        .context("reading /dev/urandom")?;
+    let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(dir).ok();
+    std::fs::write(&path, &t).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(t)
+}
+
+/// `forge web link [--bind ADDR]`: the tokened link for a running or
+/// future `forge-web`, without starting a second one to see it.
+fn web_link(bind: String) -> Result<()> {
+    let home = crate::ctx::Paths::resolve()?.home;
+    let secret = web_token(&home)?;
+    out!("http://{bind}/?token={secret}");
+    Ok(())
+}
+
+/// `forge web open [--bind ADDR]`: the same link as `forge web link`,
+/// handed to `xdg-open`.
+fn web_open(bind: String) -> Result<()> {
+    let home = crate::ctx::Paths::resolve()?.home;
+    let secret = web_token(&home)?;
+    let link = format!("http://{bind}/?token={secret}");
+    std::process::Command::new("xdg-open")
+        .arg(&link)
+        .status()
+        .context("running xdg-open")?;
+    out!("{link}");
     Ok(())
 }
 
