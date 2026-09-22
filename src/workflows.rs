@@ -911,6 +911,24 @@ fn ensure(home: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// The operator's catalog directory (`<home>/workflows`), created, made a
+/// git repository, and seeded with built-ins if it doesn't hold them yet
+/// — the same directory `load_catalog` reads. `forge workflows put`
+/// writes a candidate file directly into this path.
+pub fn catalog_dir(home: &Path) -> Result<PathBuf> {
+    ensure(home)
+}
+
+/// The `name` a candidate workflow's TOML declares, if it parses far
+/// enough to have one — the same fallback `lint` uses when `forge
+/// workflows lint --stdin` is given no `--name`, reused by `forge
+/// workflows put` to refuse a NAME that doesn't match the file's own.
+pub fn declared_name(text: &str) -> Option<String> {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+}
+
 /// The git blob hash of a file: the identity git gives this version.
 fn blob_hash(dir: &Path, path: &Path) -> Result<String> {
     let o = std::process::Command::new("git")
@@ -2107,10 +2125,7 @@ pub fn lint(home: &Path, name: Option<&str>, text: &str) -> Result<Vec<LintProbl
     let (mut workflows, actions) = lint_catalog(home)?;
     let stem = match name {
         Some(n) => n.to_string(),
-        None => toml::from_str::<toml::Value>(text)
-            .ok()
-            .and_then(|v| v.get("name")?.as_str().map(str::to_string))
-            .unwrap_or_else(|| "candidate".to_string()),
+        None => declared_name(text).unwrap_or_else(|| "candidate".to_string()),
     };
     let path = PathBuf::from(format!("{stem}.toml"));
 
