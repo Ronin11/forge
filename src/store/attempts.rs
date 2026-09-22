@@ -456,9 +456,14 @@ impl Store {
     /// per million output tokens), the operator config's own numbers),
     /// sets `cost_usd` to tokens times price — the same arithmetic
     /// `agent.rs` uses when a provider reports it live. `provider`
-    /// narrows to one provider's attempts; without `force`, an attempt
-    /// this already repriced (`repriced_at` not NULL) is skipped, so a
-    /// rerun is a no-op once every row it can reach has a real cost.
+    /// narrows to one provider's attempts. Without `force`, only a row
+    /// that has never been repriced (`repriced_at` NULL) and still reads
+    /// `cost_usd` 0 or NULL is touched; a row whose provider reported a
+    /// real cost at launch is never selected, repriced or not. With
+    /// `force`, every row this verb repriced before (`repriced_at` not
+    /// NULL) is redone from its tokens and the current price, whatever
+    /// its `cost_usd` reads now — a repriced row's `cost_usd` no longer
+    /// gates whether `--force` can reach it.
     pub fn reprice_attempts(
         &self,
         provider: Option<&str>,
@@ -469,10 +474,10 @@ impl Store {
         let candidates: Vec<(i64, String, i64, i64)> = {
             let mut stmt = c.prepare(
                 "SELECT id, provider, input_tokens, output_tokens FROM attempts
-                 WHERE (cost_usd = 0 OR cost_usd IS NULL)
-                   AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+                 WHERE input_tokens IS NOT NULL AND output_tokens IS NOT NULL
                    AND (?1 IS NULL OR provider = ?1)
-                   AND (?2 = 1 OR repriced_at IS NULL)",
+                   AND (((cost_usd = 0 OR cost_usd IS NULL) AND repriced_at IS NULL)
+                        OR (?2 = 1 AND repriced_at IS NOT NULL))",
             )?;
             stmt.query_map(params![provider, force as i64], |r| {
                 Ok((
@@ -748,15 +753,8 @@ mod tests {
             Some(500_000),
         );
         // never got a cost at all.
-        let null_cost = reprice_attempt(
-            &s,
-            task_id,
-            2,
-            "openai",
-            None,
-            Some(200_000),
-            Some(100_000),
-        );
+        let null_cost =
+            reprice_attempt(&s, task_id, 2, "openai", None, Some(200_000), Some(100_000));
         // a real, nonzero reported cost: never touched.
         let real_cost = reprice_attempt(
             &s,
@@ -786,7 +784,11 @@ mod tests {
         ]);
         let result = s.reprice_attempts(None, false, &prices).unwrap();
         assert_eq!(result.changed, 2);
-        assert!((result.total_usd - 6.0).abs() < 1e-9, "{}", result.total_usd);
+        assert!(
+            (result.total_usd - 6.0).abs() < 1e-9,
+            "{}",
+            result.total_usd
+        );
 
         let cost = |id: i64| {
             s.attempts(task_id)
@@ -806,7 +808,15 @@ mod tests {
     #[test]
     fn reprice_attempts_narrows_to_the_named_provider() {
         let (_dir, s, task_id) = reprice_fixture();
-        reprice_attempt(&s, task_id, 1, "openai", Some(0.0), Some(1_000_000), Some(0));
+        reprice_attempt(
+            &s,
+            task_id,
+            1,
+            "openai",
+            Some(0.0),
+            Some(1_000_000),
+            Some(0),
+        );
         reprice_attempt(
             &s,
             task_id,
@@ -831,7 +841,15 @@ mod tests {
         // priced at exactly zero, so the row's cost_usd stays 0 after
         // repricing too — repriced_at, not the cost value, is what a
         // rerun must check to skip it.
-        reprice_attempt(&s, task_id, 1, "openai", Some(0.0), Some(1_000_000), Some(0));
+        reprice_attempt(
+            &s,
+            task_id,
+            1,
+            "openai",
+            Some(0.0),
+            Some(1_000_000),
+            Some(0),
+        );
         let prices = BTreeMap::from([("openai".to_string(), (0.0, 0.0))]);
 
         let first = s.reprice_attempts(None, false, &prices).unwrap();
@@ -842,5 +860,67 @@ mod tests {
 
         let forced = s.reprice_attempts(None, true, &prices).unwrap();
         assert_eq!(forced.changed, 1, "--force redoes an already-repriced row");
+    }
+
+    #[test]
+    fn reprice_attempts_force_redoes_a_row_priced_nonzero_but_never_touches_a_reported_cost() {
+        let (_dir, s, task_id) = reprice_fixture();
+        // repriced once, lands on a real nonzero cost — the normal case.
+        let repriced = reprice_attempt(
+            &s,
+            task_id,
+            1,
+            "openai",
+            Some(0.0),
+            Some(1_000_000),
+            Some(500_000),
+        );
+        // a real cost the provider itself reported at launch: never repriced,
+        // forced or not.
+        let reported = reprice_attempt(
+            &s,
+            task_id,
+            2,
+            "openai",
+            Some(1.23),
+            Some(1_000_000),
+            Some(500_000),
+        );
+        let prices = BTreeMap::from([("openai".to_string(), (2.0, 6.0))]);
+
+        let cost = |id: i64| {
+            s.attempts(task_id)
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .cost_usd
+        };
+
+        let first = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(first.changed, 1);
+        assert!((first.total_usd - 5.0).abs() < 1e-9, "{}", first.total_usd);
+        assert!((cost(repriced).unwrap() - 5.0).abs() < 1e-9);
+        assert_eq!(cost(reported), Some(1.23));
+
+        let second = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(second.changed, 0, "already repriced; a rerun is a no-op");
+
+        let forced = s.reprice_attempts(None, true, &prices).unwrap();
+        assert_eq!(
+            forced.changed, 1,
+            "--force redoes the row despite its nonzero cost_usd"
+        );
+        assert!(
+            (forced.total_usd - 5.0).abs() < 1e-9,
+            "{}",
+            forced.total_usd
+        );
+        assert!((cost(repriced).unwrap() - 5.0).abs() < 1e-9);
+        assert_eq!(
+            cost(reported),
+            Some(1.23),
+            "a reported cost is never overwritten"
+        );
     }
 }

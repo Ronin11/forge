@@ -266,7 +266,11 @@ reports cost live. `--provider` narrows to one provider's attempts.
 idempotent: without `--force` a row this already repriced is skipped even
 though its `cost_usd` still reads 0 whenever the configured price is
 itself 0, so idempotency never depends on the row happening to end up
-nonzero. The run is recorded as a decision row (`Store::
+nonzero. `--force` goes further: it reprices every row this verb
+repriced before, from its tokens and the current price, even once that
+row's `cost_usd` reads nonzero from an earlier reprice — a cost a
+provider reported itself at launch, though, is never overwritten,
+forced or not. The run is recorded as a decision row (`Store::
 insert_reprice_decision`) naming how many rows changed and their total —
 like any other (docs/SUPERVISOR.md, "Every answer is a decision row"),
 except with no `task_id`: repricing touches attempts across many tasks,

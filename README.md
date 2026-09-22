@@ -217,7 +217,8 @@ src/render.rs       text rendering for documents: first sentence, path-like toke
 src/report.rs       typed events; the stderr printer is one consumer
 src/sandbox.rs      bubblewrap
 src/store/          SQLite, forward-only migrations by user_version, one file per table family
-  mod.rs            types, column lists, open, schema_version, MIGRATIONS, the migration runner
+  mod.rs            types, column lists, open, schema_version, the migration runner
+  migrations.rs     MIGRATIONS: every forward-only schema migration, in order
   tasks.rs          tasks: claim, queue, dependents, lineage
   attempts.rs       attempts and ops: insert, finish, rate limits, tool facts
   jobs.rs           jobs, job_steps, job_effects

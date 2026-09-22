@@ -196,8 +196,11 @@ and does not parse stdout.
   uses when a provider reports cost live (see docs/ECONOMIST.md,
   "Repricing a free-reporting provider"). `--provider` narrows to one
   provider; without `--force`, an attempt this already repriced is
-  skipped on a rerun. Text mode prints how many rows changed and their
-  total; `--json` prints `{changed, total_usd, decision_id}`. Either way
+  skipped on a rerun. `--force` reprices every row this verb repriced
+  before, from its tokens and the current price, even when its `cost_usd`
+  is now nonzero; a cost a provider reported itself is never overwritten.
+  Text mode prints how many rows changed and their total; `--json` prints
+  `{changed, total_usd, decision_id}`. Either way
   the run is recorded as a decision row with no `task_id` (see
   [`DecisionRow`](#decisionrow)), so it shows up in `forge decisions`
   with no task named.
