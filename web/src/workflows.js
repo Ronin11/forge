@@ -75,5 +75,46 @@
     return problems.map(p => `<div class="lint-problem" data-line="${p.line ?? ''}">${p.line ? `<b>line ${p.line}</b> ` : ''}${esc(p.message)}</div>`).join('');
   }
 
-  return { renderWorkflowRows, renderWorkflowRow, renderSteps, renderLintProblems, stepChain, profileLine };
+  // The prompter's draft result (`/workflows/new`): the `draft-workflow`
+  // step's structured output from a finished job's doc — `/api/job/<id>`,
+  // augmented server-side with each step's `output_ref` file parsed onto
+  // it as `output` — or `null` when the job has none (still running, or
+  // ended without ever reaching that step).
+  function draftOutput(job) {
+    const step = (job && job.steps || []).find(s => s.action === 'draft-workflow');
+    return (step && step.output) || null;
+  }
+
+  // The prompter's result panel, above the editor once a draft loads: the
+  // rationale and every open question, one per line, so a draft with two
+  // open questions renders both. A job that ended `needs_human` shows the
+  // human rung's question text instead, and a link to the task it was
+  // filed as when one is known; `question` is `{text, task_id}` or `null`
+  // (still resolving, or none found).
+  function renderDraftPanel(job, question) {
+    if (!job) return '';
+    if (job.state === 'needs_human') {
+      return `<div class="card">
+        <b>needs a human</b>
+        <div>${esc((question && question.text) || 'no question recorded')}</div>
+        ${question && question.task_id ? `<div><a href="/tasks/${question.task_id}">task ${question.task_id}</a></div>` : ''}
+      </div>`;
+    }
+    const d = draftOutput(job);
+    if (!d) {
+      if (job.state === 'ok') return '<div class="failed">the job ended ok but left no draft</div>';
+      if (job.state === 'failed' || job.state === 'dropped') return `<div class="failed">job ${esc(job.state)}</div>`;
+      return '';
+    }
+    const qs = d.open_questions || [];
+    return `<div class="card">
+      <div><b>rationale</b><div>${esc(d.rationale)}</div></div>
+      ${qs.length ? `<div><b>open questions</b><ul>${qs.map(q => `<li>${esc(q)}</li>`).join('')}</ul></div>` : ''}
+    </div>`;
+  }
+
+  return {
+    renderWorkflowRows, renderWorkflowRow, renderSteps, renderLintProblems, stepChain, profileLine,
+    draftOutput, renderDraftPanel,
+  };
 });

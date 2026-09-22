@@ -5,6 +5,11 @@
   const secs = ms => ((ms || 0) / 1000).toFixed(0) + 's';
   const { fmtTime, fmtSpan, fmtAgo } = ForgeTime;
   const PAGE = 100;
+  // The project and run workflow the prompter starts (docs/WORKFLOWS.md,
+  // "Authoring"): this repository's own project, self-registered so its
+  // own `.forge/workflows/author-workflow.toml` can run against it.
+  const DRAFT_PROJECT = 'forge';
+  const DRAFT_WORKFLOW = 'author-workflow';
   let offset = 0, feed = [], es = null, view = null;
 
   // Which events invalidate which view — matches docs/CLIENT.md's "What
@@ -47,7 +52,11 @@
     m = location.pathname.match(/^\/jobs(?:\/(\d+))?\/?$/);
     if (m) return { page: 'jobs', id: m[1] ? Number(m[1]) : null };
     m = location.pathname.match(/^\/workflows(?:\/([^/]+))?\/?$/);
-    if (m) return { page: 'workflows', name: m[1] ? decodeURIComponent(m[1]) : null, project: new URLSearchParams(location.search).get('project') || null };
+    if (m) {
+      const name = m[1] ? decodeURIComponent(m[1]) : null;
+      if (name === 'new') return { page: 'workflow-new' };
+      return { page: 'workflows', name, project: new URLSearchParams(location.search).get('project') || null };
+    }
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
     return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
@@ -64,7 +73,8 @@
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
     const projects = r.page === 'projects' || r.page === 'project';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${r.page === 'workflows' ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
+    const onWorkflows = r.page === 'workflows' || r.page === 'workflow-new';
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${onWorkflows ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
   }
 
   async function render() {
@@ -78,6 +88,7 @@
       : r.page === 'graph' ? graphView(r.repo)
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
+      : r.page === 'workflow-new' ? promptView()
       : r.page === 'workflows' ? (r.name === null ? workflowsView() : workflowView(r.name, r.project))
       : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
@@ -413,7 +424,7 @@
     return {
       async show() {
         $('#main').innerHTML = `
-          <h2>Workflows</h2>
+          <h2>Workflows <a href="/workflows/new">+ new</a></h2>
           <table><thead><tr><th>name</th><th>kind</th><th>source</th><th>steps</th><th>measured</th></tr></thead><tbody id="workflow-rows"></tbody></table>`;
         $('#workflow-rows').addEventListener('click', ev => {
           if (ev.target.closest('a')) return;
@@ -428,36 +439,25 @@
     };
   }
 
-  // ---- one workflow: the file text in a textarea, linted on every
-  // change (debounced through the server's lint verb), the resolved
-  // steps and measured profile beside it, and a Save control
-  function workflowView(name, project) {
+  // ---- the candidate editor: textarea, lint problems (debounced through
+  // the server's lint verb), and Save — shared by the /workflows/<name>
+  // editor and the /workflows/new prompter once its draft has loaded, so
+  // Save behaves identically either way.
+  function editorHtml(text, saveLabel) {
+    return `
+      <div class="card"><textarea id="wf-text" spellcheck="false" style="width:100%;height:50vh">${esc(text)}</textarea></div>
+      <div class="card" id="wf-problems"></div>
+      <div class="card">
+        <input id="wf-message" placeholder="commit message" style="width:50%">
+        <button id="wf-save">${saveLabel}</button>
+        <span id="wf-save-result" class="mute"></span>
+      </div>`;
+  }
+  // Wires the elements `editorHtml` renders (assumed already in the DOM),
+  // linting once immediately; returns a teardown that cancels the pending
+  // debounce.
+  function wireEditor(name, project) {
     let lintTimer = null, lintSeq = 0;
-    function draw(d) {
-      const saveLabel = d.source === 'repo' ? 'file as a task' : 'save';
-      $('#main').innerHTML = `
-        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows">← workflows</a></h2>
-        <div class="two">
-          <section>
-            <div class="card"><textarea id="wf-text" spellcheck="false" style="width:100%;height:50vh">${esc(d.text)}</textarea></div>
-            <div class="card" id="wf-problems"></div>
-            <div class="card">
-              <input id="wf-message" placeholder="commit message" style="width:50%">
-              <button id="wf-save">${saveLabel}</button>
-              <span id="wf-save-result" class="mute"></span>
-            </div>
-          </section>
-          <section>
-            <h2>Steps</h2>
-            <div class="card" id="wf-steps">${ForgeWorkflows.renderSteps(d.steps)}</div>
-            <h2>Measured</h2>
-            <div class="card" id="wf-profile">${ForgeWorkflows.profileLine(d.measured)}</div>
-          </section>
-        </div>`;
-      $('#wf-text').addEventListener('input', () => { clearTimeout(lintTimer); lintTimer = setTimeout(lint, 400); });
-      $('#wf-save').addEventListener('click', save);
-      lint();
-    }
     async function lint() {
       const mySeq = ++lintSeq;
       const candidate = $('#wf-text').value;
@@ -482,6 +482,31 @@
         $('#wf-save-result').textContent = String(e);
       } finally { btn.disabled = false; }
     }
+    $('#wf-text').addEventListener('input', () => { clearTimeout(lintTimer); lintTimer = setTimeout(lint, 400); });
+    $('#wf-save').addEventListener('click', save);
+    lint();
+    return () => clearTimeout(lintTimer);
+  }
+
+  // ---- one workflow: the file text in the shared editor, the resolved
+  // steps and measured profile beside it
+  function workflowView(name, project) {
+    let teardownEditor = null;
+    function draw(d) {
+      const saveLabel = d.source === 'repo' ? 'file as a task' : 'save';
+      $('#main').innerHTML = `
+        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows">← workflows</a></h2>
+        <div class="two">
+          <section>${editorHtml(d.text, saveLabel)}</section>
+          <section>
+            <h2>Steps</h2>
+            <div class="card" id="wf-steps">${ForgeWorkflows.renderSteps(d.steps)}</div>
+            <h2>Measured</h2>
+            <div class="card" id="wf-profile">${ForgeWorkflows.profileLine(d.measured)}</div>
+          </section>
+        </div>`;
+      teardownEditor = wireEditor(name, project);
+    }
     async function refreshMeasured() {
       const q = project ? `?project=${encodeURIComponent(project)}` : '';
       let d;
@@ -496,7 +521,100 @@
         draw(await get(`/api/workflows/${encodeURIComponent(name)}${q}`));
       },
       onEvent(e) { if (INVALIDATES.workflows.includes(e.type)) refreshMeasured().catch(() => {}); },
-      teardown() { clearTimeout(lintTimer); },
+      teardown() { if (teardownEditor) teardownEditor(); },
+    };
+  }
+
+  // ---- the prompter: /workflows/new, a description box and a "Draft it"
+  // control that starts the author-workflow job (docs/WORKFLOWS.md,
+  // "Authoring") and shows its progress from the live event stream;
+  // when the job ends `ok` the draft loads into the shared editor above
+  // its rationale and open questions, and when it ends `needs_human` the
+  // human rung's question and a link to it show instead.
+  function promptView() {
+    let jobId = null, gotFinal = false, teardownEditor = null;
+
+    function setStatus(text, cls) {
+      const el = $('#draft-status');
+      if (el) { el.textContent = text; el.className = cls || 'mute'; }
+    }
+
+    // The task `job::ask` files for a `needs_human` job: the newest
+    // blocked "job question" task in the job's project — the human
+    // rung's own question text is that task's `reason` (docs/JOBS.md,
+    // "The human rung"). A one-shot read, not polling: triggered once by
+    // this job's own `job_finished`.
+    async function findQuestion(project) {
+      let rows;
+      try { rows = await get(`/api/tasks?project=${encodeURIComponent(project)}&state=blocked`); }
+      catch { return null; }
+      const row = (rows || []).filter(t => t.task === 'job question').sort((a, b) => b.id - a.id)[0];
+      if (!row) return null;
+      const t = await get(`/api/task/${row.id}`).catch(() => null);
+      if (!t || !t.task) return null;
+      return { text: t.task.reason, task_id: row.id };
+    }
+
+    async function finish(id) {
+      gotFinal = true;
+      let doc;
+      try { doc = await get(`/api/job/${id}`); }
+      catch { setStatus('could not load the job', 'failed'); return; }
+      setStatus(`job ${id} ${doc.state}`, doc.state === 'ok' ? 'succeeded' : (doc.state === 'running' || doc.state === 'queued' ? 'mute' : 'failed'));
+      let question = null;
+      if (doc.state === 'needs_human') question = await findQuestion(doc.project);
+      $('#draft-result').innerHTML = ForgeWorkflows.renderDraftPanel(doc, question);
+      const d = ForgeWorkflows.draftOutput(doc);
+      const editorEl = $('#draft-editor');
+      if (d && editorEl) {
+        editorEl.style.display = '';
+        editorEl.innerHTML = editorHtml(d.toml, 'save');
+        if (teardownEditor) teardownEditor();
+        teardownEditor = wireEditor(d.name, null);
+      }
+    }
+
+    async function start() {
+      const btn = $('#draft-go'); if (!btn) return;
+      const description = $('#draft-desc').value.trim();
+      if (!description) return;
+      btn.disabled = true;
+      jobId = null; gotFinal = false;
+      $('#draft-result').innerHTML = '';
+      const editorEl = $('#draft-editor');
+      if (editorEl) { editorEl.style.display = 'none'; editorEl.innerHTML = ''; }
+      setStatus('starting…');
+      try {
+        const r = await postBody('/api/workflows/draft', JSON.stringify({ description }), 'application/json');
+        if (r.error) { setStatus(r.error, 'failed'); return; }
+        jobId = r.job;
+        if (!gotFinal && jobId != null) await finish(jobId);
+      } catch (e) {
+        setStatus(String(e), 'failed');
+      } finally { btn.disabled = false; }
+    }
+
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>New workflow <a href="/workflows">← workflows</a></h2>
+          <div class="card">
+            <textarea id="draft-desc" placeholder="describe the automation or the change you want" style="width:100%;height:8em"></textarea>
+            <div><button id="draft-go">Draft it</button> <span id="draft-status" class="mute"></span></div>
+          </div>
+          <div id="draft-result"></div>
+          <section id="draft-editor" style="display:none"></section>`;
+        $('#draft-go').addEventListener('click', start);
+      },
+      onEvent(e) {
+        if (jobId === null && e.type === 'job_started' && e.project === DRAFT_PROJECT && e.workflow === DRAFT_WORKFLOW) {
+          jobId = e.job_id;
+          setStatus(`job ${jobId} running…`);
+        } else if (jobId !== null && !gotFinal && e.type === 'job_finished' && e.job_id === jobId) {
+          finish(jobId).catch(() => {});
+        }
+      },
+      teardown() { if (teardownEditor) teardownEditor(); },
     };
   }
 
