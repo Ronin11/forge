@@ -166,7 +166,8 @@ enum Cmd {
         /// Only tasks with ids below this one: the next page when scrolling back
         #[arg(long)]
         before: Option<i64>,
-        /// Only tasks whose text contains this, or whose id is exactly this
+        /// Only tasks whose text, title, plan or last result summary
+        /// contains this, or whose id is exactly this
         #[arg(long)]
         grep: Option<String>,
         /// Only tasks that ran this workflow
@@ -5585,7 +5586,7 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -5599,6 +5600,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
                 " (by text)"
             } else {
                 ""
+            },
+            match s.matched.as_deref() {
+                Some(m) if m != "text" => format!(" (by {m})"),
+                _ => String::new(),
             },
             failed_suffix(&s.failures)
         );

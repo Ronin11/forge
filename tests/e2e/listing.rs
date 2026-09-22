@@ -830,6 +830,89 @@ fn decisions_and_requests_grep_their_own_fields() {
     assert!(!text.contains(&format!("{waits} ")), "{text}");
 }
 
+/// `forge log --grep` reaches past the task text: a task found only
+/// through its title, its stored plan or its last result summary, each
+/// row saying which field matched.
+#[test]
+fn forge_log_grep_matches_title_plan_and_last_summary_and_says_which() {
+    let e = Env::new();
+    let titled = e.add(&["--title", "Customer wording"]);
+    let planned = e.add(&[]);
+    e.db()
+        .execute(
+            "UPDATE tasks SET plan = 'rewrite the parser' WHERE id = ?1",
+            [planned],
+        )
+        .unwrap();
+    let summarised = e.add(&[]);
+    for (no, summary) in [(1, "an early try"), (2, "tightened the lexer")] {
+        e.db()
+            .execute(
+                "INSERT INTO attempts (task_id, attempt_no, step, state, started_at, finished_at, cost_usd, envelope_json)
+                 VALUES (?1, ?2, 'code', 'succeeded', 1, 2, 0.1,
+                 json_object('schema_version', 1, 'summary', ?3, 'needs_input', NULL,
+                             'changes', json_array(), 'checks_run', json_array(), 'claims', json_array()))",
+                rusqlite::params![summarised, no, summary],
+            )
+            .unwrap();
+    }
+    let hits = |q: &str| -> Vec<(i64, Option<String>)> {
+        let o = e.forge("ok.sh", &["log", "--json", "--grep", q]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["id"].as_i64().unwrap(),
+                    r["matched"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    };
+    let m = |s: &str| Some(s.to_string());
+    assert_eq!(hits("WORDING"), vec![(titled, m("title"))]);
+    assert_eq!(hits("parser"), vec![(planned, m("plan"))]);
+    assert_eq!(
+        hits("lexer"),
+        vec![(summarised, m("summary"))],
+        "the last envelope's summary"
+    );
+    assert_eq!(
+        hits("early try"),
+        vec![],
+        "an earlier attempt's summary is not the result"
+    );
+    assert_eq!(
+        hits("answer.txt"),
+        vec![
+            (summarised, m("text")),
+            (planned, m("text")),
+            (titled, m("text"))
+        ]
+    );
+    assert_eq!(
+        hits(&titled.to_string()),
+        vec![(titled, m("text"))],
+        "an exact id"
+    );
+    let o = e.forge("ok.sh", &["log", "--json", "--limit", "1"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        v[0].get("matched").is_none(),
+        "no matched field without --grep"
+    );
+
+    let text =
+        String::from_utf8_lossy(&e.forge("ok.sh", &["log", "--grep", "parser"]).stdout).to_string();
+    assert!(text.contains("(by plan)"), "{text}");
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["log", "--grep", "answer.txt"]).stdout)
+        .to_string();
+    assert!(!text.contains("(by "), "{text}");
+}
+
 #[test]
 fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
     let e = Env::new();
