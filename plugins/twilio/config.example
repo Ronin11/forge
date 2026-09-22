@@ -24,3 +24,38 @@ MAX_NUMBERS=2
 
 # Country to search and buy in, Twilio's ISO country code (e.g. US, GB).
 COUNTRY=US
+
+# The inbound SMS loop (docs/PLUGINS.md): every POLL_SECS, each owned
+# number's new messages are fetched, recorded in the message record and
+# routed. Reuses the Signal plugin's config names (plugins/signal/config.example)
+# where the same idea applies.
+
+# How often to poll for new inbound messages.
+POLL_SECS=30
+
+# Senders allowed to drive Forge over SMS (space-separated E.164
+# numbers): a plain message queues work (`forge add TARGET_REPO
+# <text>`), and `/answer <id> <text>` answers an open question. A
+# message from anyone else is ignored (recorded and logged, nothing
+# queued) unless it answers an open question addressed to a CONTACTS
+# name (see below).
+ALLOWED=+15555550199
+
+# Intake's addressee mechanism (docs/INTAKE.md): a blocked question can
+# name who it is for. When that name matches one here, a reply from
+# their number while their question is open is submitted as their
+# answer (`forge answer ID TEXT --by NAME`), not queued as a new task.
+# Space-separated "name:number" pairs.
+CONTACTS=alice:+15555550111
+
+# Which project a CONTACTS name's plain message (not an answer to their
+# open question) is routed to through the concierge (`forge ask`).
+# Space-separated "name:project" pairs; a name this doesn't list falls
+# to TARGET_REPO's own project.
+PROJECTS=alice:demo
+
+# Repo and workflow `forge add` uses for an ALLOWED sender's plain
+# message; also PROJECTS' fallback project for a CONTACTS name's
+# message.
+TARGET_REPO=/path/to/repo
+WORKFLOW=direct

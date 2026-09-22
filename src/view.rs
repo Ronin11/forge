@@ -43,6 +43,11 @@ pub struct TaskRow {
     /// mentions it (`--touches-text`). Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub touch: Option<String>,
+    /// Only under `forge log --grep`: which field matched, the first of
+    /// `"text"` (the task text, or an exact id), `"title"`, `"plan"`,
+    /// `"summary"` (the last attempt with an envelope). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched: Option<String>,
     /// Only under `forge log --failed-on` or `--reason`: the attempts
     /// that matched, each `{attempt_no, step, reason, name, tail}` with
     /// `name` the failing verdict row (null for a reason match) and
@@ -98,6 +103,7 @@ impl From<&TaskSummary> for TaskRow {
             initiative: s.initiative,
             trust: s.trust.clone(),
             touch: s.touch.clone(),
+            matched: s.matched.clone(),
             failures: s.failures.clone(),
         }
     }
@@ -2584,23 +2590,37 @@ pub struct PortalDeployTarget {
 /// One of a run workflow's last three jobs on `PortalDoc`, "Running for
 /// you" continued (see docs/PORTAL.md): when it ran, whether it went
 /// `"ok"`, `"failed"` or `"needs_human"` (`store::JobState::as_str()`),
-/// and, on failure, a one-line reason cut from the first failing check's
-/// tail. No job id, no cost, no trigger, no verdict rows — the
+/// whether it was only rehearsed (`store::Job::dry_run`), and every
+/// effect it logged, each cut to its own one-line `summary` — never its
+/// `kind` or `target` (see `store::JobEffect`). `reason`, on a failure or
+/// a needs-human run, is a one-line cause cut from the first failing
+/// check's tail: the human rung's question, in the customer's own words.
+/// `None` on a needs-human run whose question did not actually go to this
+/// project's own contact — its resolved workflow's `[limits] on_failure`
+/// is anything but `"ask:contact"`, or is `"ask:contact"` but
+/// `job::trigger_contact` found no one to ask (see `job_trigger_contact`)
+/// — means the operator got the question instead, and the portal shows
+/// "we're on it" rather than a reason the customer was never asked to
+/// answer. No job id, no cost, no trigger, no verdict rows — the
 /// operator's `forge job show` carries those.
 #[derive(Serialize)]
 pub struct PortalJobRun {
     pub started_at: i64,
     pub state: String,
+    pub dry_run: bool,
+    pub effects: Vec<String>,
     pub reason: Option<String>,
 }
 
 /// One run workflow on `PortalDoc`: an automation this project's jobs
-/// run through, and its last three jobs, newest first, from the same
-/// job rows `forge job list` serves (see docs/PORTAL.md, "What they
-/// see").
+/// run through, its own workflow file's `description` (empty when the
+/// file can no longer be resolved), and its last three jobs, newest
+/// first, from the same job rows `forge job list` serves (see
+/// docs/PORTAL.md, "What they see").
 #[derive(Serialize)]
 pub struct PortalWorkflow {
     pub name: String,
+    pub description: String,
     pub jobs: Vec<PortalJobRun>,
 }
 
@@ -2720,23 +2740,60 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
     // docs/PORTAL.md). `f.store.jobs` already orders newest first, so a
     // single pass building each workflow's entry in first-seen order
     // keeps both the workflow order and each one's job order correct.
+    // Each workflow's file is resolved once, the same repository-then-
+    // catalog lookup `forge job start` uses, for its `description` and
+    // its `[limits] on_failure` policy (whether a needs-human run's
+    // question was addressed to this project's contact or to the
+    // operator).
+    let repo = f.store.first_repo(&p.name)?;
+    let mut resolved: std::collections::HashMap<String, Option<crate::workflows::Workflow>> =
+        Default::default();
     let mut run_workflows: Vec<PortalWorkflow> = Vec::new();
     for j in f.store.jobs(Some(&p.name), None)? {
+        let wf = resolved
+            .entry(j.workflow.clone())
+            .or_insert_with(|| run_workflow(f, repo.as_deref(), &j));
         let entry = match run_workflows.iter().position(|w| w.name == j.workflow) {
             Some(i) => &mut run_workflows[i],
             None => {
                 run_workflows.push(PortalWorkflow {
                     name: j.workflow.clone(),
+                    description: wf
+                        .as_ref()
+                        .map(|w| w.description.clone())
+                        .unwrap_or_default(),
                     jobs: Vec::new(),
                 });
                 run_workflows.last_mut().expect("just pushed")
             }
         };
         if entry.jobs.len() < 3 {
+            // A needs-human run carries a customer-facing reason only when
+            // the question actually went to this project's own contact:
+            // its resolved workflow's `[limits] on_failure = "ask:contact"`
+            // *and* `job::trigger_contact` finds someone to ask (the same
+            // two facts `job::run_now` used to decide who to ask). Every
+            // other needs-human run — `ask:operator`, an `ask:contact` run
+            // with no contact to ask, an unresolved workflow, or a
+            // needs-human run with no `[limits]` at all (a budget overrun,
+            // say) — is the operator's, and carries no reason at all; the
+            // portal shows "we're on it" for it instead (see
+            // `PortalJobRun`).
+            let to_operator = j.state == crate::store::JobState::NeedsHuman
+                && !(matches!(
+                    wf.as_ref()
+                        .and_then(|w| w.limits.as_ref())
+                        .map(|l| &l.on_failure),
+                    Some(crate::workflows::OnFailure::AskContact)
+                ) && job_trigger_contact(f, &j, wf.as_ref()).is_some());
+            let reason = if to_operator { None } else { job_reason(&j) };
+            let effects = f.store.job_effects(j.id).unwrap_or_default();
             entry.jobs.push(PortalJobRun {
                 started_at: j.started_at,
                 state: j.state.as_str().to_string(),
-                reason: job_reason(&j),
+                dry_run: j.dry_run,
+                effects: effects.into_iter().map(|e| e.summary).collect(),
+                reason,
             });
         }
     }
@@ -2860,6 +2917,52 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         brief,
         backlog,
     })
+}
+
+/// The workflow one job ran, resolved the same way `forge job start`
+/// resolves it (docs/JOBS.md, "Where an automation lives"): the
+/// project's own repository at the job's `landed_sha` when the job came
+/// from there, else the operator's catalog by name. `None` when neither
+/// has a workflow of that name any more — an edited-away or removed file
+/// leaves "Running for you" with no description and no `on_failure`
+/// policy to gate a needs-human reason on, rather than failing the read.
+fn run_workflow(
+    f: &Forge,
+    repo: Option<&str>,
+    j: &crate::store::Job,
+) -> Option<crate::workflows::Workflow> {
+    if j.workflow_source == crate::workflows::JobSource::Repo.as_str()
+        && !j.landed_sha.is_empty()
+        && let Some(repo) = repo
+        && let Ok(all) = crate::workflows::load_all_at(std::path::Path::new(repo), &j.landed_sha)
+        && let Some(w) = all.into_iter().find(|w| w.name == j.workflow)
+    {
+        return Some(w);
+    }
+    crate::workflows::get(&f.paths.home, &j.workflow)
+        .ok()
+        .flatten()
+}
+
+/// Who a needs-human run's question actually went to, the same fact
+/// `job::run_now` decided it with: the job's saved input (`input.json`
+/// under its input directory, the same file `job::run_now` wrote before
+/// the run and later re-reads for a retry) and the resolved workflow's
+/// own `[trigger]`, fed to `job::trigger_contact`. `None` when the
+/// workflow could not be resolved, carries no trigger, or the contact
+/// can't be determined — the caller then knows the question went to the
+/// operator instead.
+fn job_trigger_contact(
+    f: &Forge,
+    j: &crate::store::Job,
+    wf: Option<&crate::workflows::Workflow>,
+) -> Option<String> {
+    let idir = crate::job::input_dir(f, j.id);
+    let input_text =
+        std::fs::read_to_string(idir.join("input.json")).unwrap_or_else(|_| "{}".into());
+    let input_json: serde_json::Value =
+        serde_json::from_str(&input_text).unwrap_or(serde_json::Value::Null);
+    crate::job::trigger_contact(j, wf.and_then(|w| w.trigger.as_ref()), &input_json)
 }
 
 /// A failed, needs-human, or skipped job's one-line reason on `PortalDoc`:
@@ -4128,8 +4231,9 @@ mod portal_tests {
         assert_eq!(doc.run_workflows[0].jobs.len(), 2);
         assert_eq!(doc.run_workflows[0].jobs[0].state, "needs_human");
         assert_eq!(
-            doc.run_workflows[0].jobs[0].reason.as_deref(),
-            Some("over the per-run budget")
+            doc.run_workflows[0].jobs[0].reason, None,
+            "an unresolved workflow's on_failure policy can't be told apart \
+             from the operator's, so the run is the operator's"
         );
         assert_eq!(doc.run_workflows[0].jobs[1].state, "failed");
         assert_eq!(
@@ -4143,6 +4247,271 @@ mod portal_tests {
         assert_eq!(doc.run_workflows[1].jobs[0].started_at, 1_700_000_003);
         assert_eq!(doc.run_workflows[1].jobs[0].state, "ok");
         assert_eq!(doc.run_workflows[1].jobs[0].reason, None);
+
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_no_forbidden_keys(&v);
+    }
+
+    /// A needs-human run's `reason` is the customer's only when the
+    /// question really went to this project's own contact: the resolved
+    /// workflow's `[limits] on_failure = "ask:contact"` *and*
+    /// `job::trigger_contact` actually finds someone to ask. A manual
+    /// `forge job start` run of an `ask:contact` workflow with no
+    /// `[trigger] contact` resolves no one — the job driver hands the
+    /// question to the operator instead (`src/job.rs`, `decide_on_failure`
+    /// / `trigger_contact`), so the portal must too.
+    #[test]
+    fn a_needs_human_run_is_the_operators_when_ask_contact_resolves_no_one() {
+        use crate::store::{Job, JobState};
+
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "acme".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let workflows_dir = f.paths.home.join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("quote-by-text.toml"),
+            "name = \"quote-by-text\"\nkind = \"run\"\ndescription = \"a customer texts a photo of a job and gets a quote back\"\nsteps = [{ action = \"fmt\" }]\n[trigger]\non = \"manual\"\n[limits]\nbudget_usd = 1.0\nper_day = 10\non_failure = \"ask:contact\"\n",
+        )
+        .unwrap();
+
+        f.store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "quote-by-text".into(),
+                workflow_source: crate::workflows::JobSource::Catalog.as_str().to_string(),
+                state: JobState::NeedsHuman,
+                started_at: 1_700_000_100,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "OP".into(),
+                    name: "quoted".into(),
+                    ok: false,
+                    tail: "no price sheet entry for this job".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let p = f.store.project("acme").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+
+        let run = &doc.run_workflows[0].jobs[0];
+        assert_eq!(run.state, "needs_human");
+        assert_eq!(
+            run.reason, None,
+            "a manual run of an ask:contact workflow with no contact to ask is the operator's"
+        );
+    }
+
+    /// The other half: a message-triggered job whose input carries `from`
+    /// resolves a real contact (`job::trigger_contact`'s first case), so
+    /// its needs-human run's `reason` is the customer's.
+    #[test]
+    fn a_needs_human_run_is_the_customers_when_a_message_triggered_job_names_a_sender() {
+        use crate::store::{Job, JobState};
+
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "acme".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let workflows_dir = f.paths.home.join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("quote-by-text.toml"),
+            "name = \"quote-by-text\"\nkind = \"run\"\ndescription = \"a customer texts a photo of a job and gets a quote back\"\nsteps = [{ action = \"fmt\" }]\n[trigger]\non = \"message\"\ncontact = \"customers\"\n[limits]\nbudget_usd = 1.0\nper_day = 10\non_failure = \"ask:contact\"\n",
+        )
+        .unwrap();
+
+        let job_id = f
+            .store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "quote-by-text".into(),
+                workflow_source: crate::workflows::JobSource::Catalog.as_str().to_string(),
+                trigger_kind: crate::workflows::TriggerOn::Message.as_str().to_string(),
+                state: JobState::NeedsHuman,
+                started_at: 1_700_000_100,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "OP".into(),
+                    name: "quoted".into(),
+                    ok: false,
+                    tail: "no price sheet entry for this job".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+        let idir = crate::job::input_dir(&f, job_id);
+        std::fs::create_dir_all(&idir).unwrap();
+        std::fs::write(idir.join("input.json"), r#"{"from": "+15551234567"}"#).unwrap();
+
+        let p = f.store.project("acme").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+
+        let run = &doc.run_workflows[0].jobs[0];
+        assert_eq!(run.state, "needs_human");
+        assert_eq!(
+            run.reason.as_deref(),
+            Some("no price sheet entry for this job"),
+            "a message-triggered job whose input names a sender is the customer's"
+        );
+    }
+
+    /// "Running for you", continued: an automation's own workflow
+    /// `description`, a rehearsal's runs marked `dry_run`, each run's
+    /// effects carried as plain sentences (`summary` only — never `kind`
+    /// or `target`), and a needs-human run's `reason` present only when
+    /// the workflow's own `[limits] on_failure` addresses the question to
+    /// this project's contact, `None` when it addresses the operator
+    /// instead (see `PortalJobRun`).
+    #[test]
+    fn running_for_you_carries_a_description_effects_a_rehearsal_flag_and_gates_the_needs_human_reason()
+     {
+        use crate::store::{Job, JobEffect, JobState};
+
+        let (_dir, f) = fixture();
+        f.store
+            .create_project(&Project {
+                name: "acme".into(),
+                purpose: "p".into(),
+                created_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let workflows_dir = f.paths.home.join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("quote-by-text.toml"),
+            "name = \"quote-by-text\"\nkind = \"run\"\ndescription = \"a customer texts a photo of a job and gets a quote back\"\nsteps = [{ action = \"fmt\" }]\n[trigger]\non = \"message\"\ncontact = \"+15550000\"\n[limits]\nbudget_usd = 1.0\nper_day = 10\non_failure = \"ask:contact\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workflows_dir.join("nightly-sync.toml"),
+            "name = \"nightly-sync\"\nkind = \"run\"\ndescription = \"syncs last night's orders into the book\"\nsteps = [{ action = \"fmt\" }]\n[trigger]\non = \"manual\"\n[limits]\nbudget_usd = 1.0\nper_day = 10\non_failure = \"ask:operator\"\n",
+        )
+        .unwrap();
+
+        let quote_ok = f
+            .store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "quote-by-text".into(),
+                workflow_source: crate::workflows::JobSource::Catalog.as_str().to_string(),
+                state: JobState::Ok,
+                dry_run: true,
+                started_at: 1_700_000_100,
+                ..Default::default()
+            })
+            .unwrap();
+        f.store
+            .append_job_effect(&JobEffect {
+                id: 0,
+                job_id: quote_ok,
+                seq: 0,
+                kind: "message".into(),
+                target: "+15550000".into(),
+                summary: "quoted the Hendersons' fence job at $1,240".into(),
+                dry_run: true,
+            })
+            .unwrap();
+
+        f.store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "quote-by-text".into(),
+                workflow_source: crate::workflows::JobSource::Catalog.as_str().to_string(),
+                state: JobState::NeedsHuman,
+                started_at: 1_700_000_200,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "OP".into(),
+                    name: "quoted".into(),
+                    ok: false,
+                    tail: "no price sheet entry for this job".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        f.store
+            .create_job(&Job {
+                project: "acme".into(),
+                workflow: "nightly-sync".into(),
+                workflow_source: crate::workflows::JobSource::Catalog.as_str().to_string(),
+                state: JobState::NeedsHuman,
+                started_at: 1_700_000_300,
+                verdict_json: serde_json::to_string(&[crate::checks::CheckResult {
+                    level: "L0".into(),
+                    name: "budget".into(),
+                    ok: false,
+                    tail: "over the per-run budget".into(),
+                    ..Default::default()
+                }])
+                .unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let p = f.store.project("acme").unwrap().unwrap();
+        let doc = portal_doc(&f, &p).unwrap();
+
+        let quote = doc
+            .run_workflows
+            .iter()
+            .find(|w| w.name == "quote-by-text")
+            .unwrap();
+        assert_eq!(
+            quote.description,
+            "a customer texts a photo of a job and gets a quote back"
+        );
+        let ok_run = quote.jobs.iter().find(|j| j.state == "ok").unwrap();
+        assert!(ok_run.dry_run);
+        assert_eq!(
+            ok_run.effects,
+            vec!["quoted the Hendersons' fence job at $1,240".to_string()]
+        );
+        let asked_run = quote
+            .jobs
+            .iter()
+            .find(|j| j.state == "needs_human")
+            .unwrap();
+        assert!(!asked_run.dry_run);
+        assert_eq!(
+            asked_run.reason.as_deref(),
+            Some("no price sheet entry for this job"),
+            "ask:contact carries the question in the customer's own terms"
+        );
+
+        let sync = doc
+            .run_workflows
+            .iter()
+            .find(|w| w.name == "nightly-sync")
+            .unwrap();
+        assert_eq!(sync.description, "syncs last night's orders into the book");
+        let sync_run = &sync.jobs[0];
+        assert_eq!(sync_run.state, "needs_human");
+        assert_eq!(
+            sync_run.reason, None,
+            "ask:operator addresses the operator, not the customer — no reason to leak"
+        );
 
         let v = serde_json::to_value(&doc).unwrap();
         assert_no_forbidden_keys(&v);

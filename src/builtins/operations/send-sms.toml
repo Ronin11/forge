@@ -1,0 +1,32 @@
+name = "send-sms"
+kind = "operation"
+description = "a job step's `message` effect: sends FORGE_INPUT_TEXT to FORGE_INPUT_CONTACT over Twilio, from TWILIO_FROM (project secrets TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM). Honours FORGE_DRY_RUN by logging the message to FORGE_EFFECT_LOG without sending it. A Twilio error response exits non-zero, quoting its own code and message (30034 is an unregistered 10DLC sender — a human step, not something a retry fixes)."
+run = ["bash", "-c", '''
+set -e
+contact="$FORGE_INPUT_CONTACT"
+summary="sent to $contact"
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  printf "message\t%s\t%s (dry run)\n" "$contact" "$summary" >> "$FORGE_EFFECT_LOG"
+else
+  resp=$(mktemp)
+  code=$(curl -s -o "$resp" -w '%{http_code}' -X POST \
+    -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
+    "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_ACCOUNT_SID/Messages.json" \
+    --data-urlencode "From=$TWILIO_FROM" \
+    --data-urlencode "To=$contact" \
+    --data-urlencode "Body=$FORGE_INPUT_TEXT")
+  if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+    err_code=$(jq -r '.code // empty' "$resp")
+    err_message=$(jq -r '.message // empty' "$resp")
+    rm -f "$resp"
+    if [ "$err_code" = "30034" ]; then
+      echo "twilio error 30034: ${err_message:-unregistered 10DLC sender} (an operator must complete A2P 10DLC registration for $TWILIO_FROM before it can send; this is not something a retry fixes)" >&2
+    else
+      echo "twilio error ${err_code:-$code}: ${err_message:-unknown error}" >&2
+    fi
+    exit 1
+  fi
+  rm -f "$resp"
+  printf "message\t%s\t%s\n" "$contact" "$summary" >> "$FORGE_EFFECT_LOG"
+fi
+''']

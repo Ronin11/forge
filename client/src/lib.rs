@@ -772,7 +772,12 @@ pub struct PortalDeployTarget {
 
 /// One of a run workflow's last three jobs on [`PortalDoc`], "Running
 /// for you" continued: when it ran, whether it went `"ok"`, `"failed"`
-/// or `"needs_human"`, and, on failure, a one-line reason.
+/// or `"needs_human"`, whether it was a dry run (a rehearsal), and every
+/// effect it logged, each one sentence, never a kind or a target.
+/// `reason`, on a failure or a needs-human run, is the human rung's
+/// question in the customer's own terms; `None` on a needs-human run
+/// means the question is addressed to the operator, not them — the
+/// portal shows "we're on it" instead.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PortalJobRun {
     #[serde(default)]
@@ -780,15 +785,22 @@ pub struct PortalJobRun {
     #[serde(default)]
     pub state: String,
     #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub effects: Vec<String>,
+    #[serde(default)]
     pub reason: Option<String>,
 }
 
 /// One run workflow on [`PortalDoc`]: an automation this project's jobs
-/// run through, and its last three jobs, newest first.
+/// run through, described in its own workflow file's words, and its last
+/// three jobs, newest first.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PortalWorkflow {
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(default)]
     pub jobs: Vec<PortalJobRun>,
 }
