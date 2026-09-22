@@ -210,6 +210,18 @@ and does not parse stdout.
   naming the contact when the answer came through a channel (the portal
   passes its contact name). Stdout is the new task's id; a non-zero exit
   is the error on stderr. Not JSON.
+- **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
+  [--retries N]`** — write verb: changes a queued or blocked task's own
+  limits in place, replacing only the fields given; refused (non-zero
+  exit) on a running or finished task, and when none are given. Recorded
+  as a decision on the task (see [`DecisionRow`](#decisionrow)), so it
+  shows up in `forge decisions` beside an operator's answer. Not `--json`;
+  a client re-reads `forge log`/`forge trace` for the task it just
+  changed. This is the verb the web client's inbox (task 530) should
+  call to raise a stuck task's budget or turn cap in place, instead of
+  withdrawing it (which releases its dependents) or waiting for a hand
+  retry: the motivating case is a task that verified its own code and
+  ran out of budget before review.
 - **`forge ask PROJECT MESSAGE [--from NAME]`** — write verb: the front
   door (docs/INTAKE.md), sorting a customer message into a request, a
   question, a need or unclear and acting on it. Stdout is the one-line
@@ -235,7 +247,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
+snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative task job deploy answer ask message
 ```
 
 ## Time
@@ -546,6 +558,7 @@ the store's column names):
 | `project` | string or null | the project the task belongs to. |
 | `initiative` | integer or null | the initiative the task belongs to, if any. |
 | `inputs` | `TraceTaskShape` | task shape at intake (see docs/ECONOMIST.md, "Task shape"): what the economist must condition on before the task even runs, computed once at enqueue and never revisited. `{text_len, path_tokens, tdd, declared_checks, project}`: `text_len` the task's text length in characters; `path_tokens` how many of its whitespace-separated words look like a path (a request naming two paths counts two); `tdd` whether the resolved workflow writes hidden tests (a step whose action is `"tests"`, directly or through composition); `declared_checks` the repository's own `[checks]` count in `forge.toml` at that moment (0 for a task enqueued before this field existed, since backfilling it needs the repository's config as it stood at the time, which the record does not keep); `project` the same value as the top-level `project` field above, repeated here so the economist's inputs live in one place. |
+| `routing` | object of `RoleRouting`, keyed by role | the routing record (see docs/ECONOMIST.md, "The routing record"): per role that actually ran (`"code"`, `"tests"`, `"review"`, `"plan"`, `"assess"`), the provider, model, and workflow it ran under. A role that never ran (a task that failed before review, say) has no key. Each of the three is `{value, source}`: `value` what actually ran, `source` which layer decided it — `"flag"` (the task's own `--provider`/`--model`/`--workflow`), `"project"` (the project's `[roles]` table named the provider; on the Claude runner, when no `--model` was given, the model inherits this source too, since it is that provider's configured model), `"operator"` (the operator's `[roles]` table, or a provider's own configured `model` off the Claude runner), `"default"` (the built-in fallback: `"anthropic"`, a workflow action's own declared model, or `"direct"`), or `"experiment"` (an explore draw, see `queue::assign_explore`; provider only — piece 4 assigns workflow and model experiments). Built by `engine::run_directive_step` (code, tests, review, plan) and `assess::try_run` (assess), recorded before each role's first attempt so even a step that never verifies still shows why it ran where it did; written where the provider is resolved (`src/engine.rs`) and where the model is chosen (`src/attempt.rs`, `attempt_model_source`). Shown by `forge trace` and `forge show`. |
 
 **`attempts`** — array of `TraceAttempt`, one per attempt:
 `attempt_no`, `step`, `step_seq`, `state`, `reason`, `started_at`,

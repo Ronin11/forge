@@ -145,6 +145,115 @@ fn a_blocked_task_is_withdrawn_and_a_dependent_blocks_with_the_reason() {
 }
 
 #[test]
+fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
+    let e = Env::new();
+    let id = e.add(&[]);
+    let limits = |e: &Env| -> (Option<f64>, i64, i64, i64) {
+        e.db()
+            .query_row(
+                "SELECT budget_usd, max_turns, max_attempts, timeout_secs FROM tasks WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    };
+    let (budget, ..) = limits(&e);
+    assert_eq!(budget, None);
+
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &id.to_string(),
+            "--budget",
+            "20",
+            "--max-turns",
+            "50",
+            "--timeout-secs",
+            "900",
+            "--retries",
+            "3",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("max 50 turns, max 4 attempts, 900s timeout"),
+        "{out}"
+    );
+    assert!(out.contains("task cap $20.00"), "{out}");
+
+    let (budget, max_turns, max_attempts, timeout_secs) = limits(&e);
+    assert_eq!(budget, Some(20.0));
+    assert_eq!(max_turns, 50);
+    assert_eq!(max_attempts, 4);
+    assert_eq!(timeout_secs, 900);
+    assert_eq!(e.task(id).0, "queued", "the change does not touch state");
+
+    // The change is on the record as a decision, like an operator's answer.
+    let ds: serde_json::Value = e.decisions_json();
+    let d = &ds.as_array().unwrap()[0];
+    assert_eq!(d["task_id"], id);
+    assert_eq!(d["answered_by"], "operator");
+    assert!(
+        d["answer"].as_str().unwrap().contains("budget $20.00"),
+        "{d}"
+    );
+    assert_eq!(d["retry_id"], id);
+
+    // A nonsense limits set is refused up front, before anything changes.
+    let bad = e.forge("ok.sh", &["task", "set", &id.to_string()]);
+    assert!(!bad.status.success());
+
+    // Setting a running task's limits is refused, and nothing changes.
+    e.db()
+        .execute("UPDATE tasks SET state='running' WHERE id=?1", [id])
+        .unwrap();
+    let bad = e.forge("ok.sh", &["task", "set", &id.to_string(), "--budget", "99"]);
+    assert!(!bad.status.success());
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(err.contains("running"), "{err}");
+    let (budget, ..) = limits(&e);
+    assert_eq!(budget, Some(20.0), "left untouched");
+}
+
+#[test]
+fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
+    let e = Env::new();
+    let id = e.add(&["--budget", "12"]);
+    let budget = |e: &Env| -> Option<f64> {
+        e.db()
+            .query_row("SELECT budget_usd FROM tasks WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(budget(&e), Some(12.0));
+
+    for bad_budget in ["NaN", "inf"] {
+        let o = e.forge(
+            "ok.sh",
+            &["task", "set", &id.to_string(), "--budget", bad_budget],
+        );
+        assert!(
+            !o.status.success(),
+            "--budget {bad_budget} should be refused"
+        );
+        assert_eq!(
+            budget(&e),
+            Some(12.0),
+            "--budget {bad_budget} must not change the task's budget"
+        );
+        let ds = e.decisions_json();
+        assert!(
+            ds.as_array().unwrap().iter().all(|d| d["task_id"] != id),
+            "--budget {bad_budget} must not record a decision: {ds}"
+        );
+    }
+}
+
+#[test]
 fn stats_json_is_the_text_form_as_one_object() {
     let e = Env::new();
     assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());

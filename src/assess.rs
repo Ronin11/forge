@@ -53,7 +53,7 @@ fn prompt(t: &Task, diff: &str) -> String {
 /// store the row. Never returns an error to the caller: every failure is
 /// reported as a note and swallowed, exactly as a deploy target's own
 /// failure never touches the task (see `landing::deploy_on_landing`).
-pub async fn run_on_landing(f: &Forge, t: &Task, landed_sha: &str) {
+pub async fn run_on_landing(f: &Forge, t: &mut Task, landed_sha: &str) {
     match try_run(f, t, landed_sha).await {
         Ok(Some(r)) => {
             f.report.emit(
@@ -104,7 +104,7 @@ fn check_severity(findings: &[Finding]) -> Result<()> {
 
 /// `Ok(None)` when the task's workflow does not opt in; `Ok(Some(_))` with
 /// the row it stored otherwise.
-async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>> {
+async fn try_run(f: &Forge, t: &mut Task, landed_sha: &str) -> Result<Option<Ruling>> {
     let Some(wf) = workflows::get(&f.paths.home, &t.workflow)? else {
         return Ok(None);
     };
@@ -118,8 +118,35 @@ async fn try_run(f: &Forge, t: &Task, landed_sha: &str) -> Result<Option<Ruling>
     let wt = Path::new(&t.worktree);
     let diff = git::diff_text(wt, &t.base_sha, landed_sha).await?;
     let prompt_text = prompt(t, &diff);
-    let provider = f.effective_provider(t, "assess")?;
+    let (provider, provider_source) = f.effective_provider_routed(t, "assess")?;
     let model = action.model.clone().unwrap_or_else(|| t.model.clone());
+    // The routing record (docs/ECONOMIST.md, "The routing record"),
+    // before the run so even a failed one still shows why it ran where it
+    // did; `assess` never sits in the workflow's own steps, so it has no
+    // `ResolvedStep` to fold a model override into the way the others do,
+    // and reads `action.model` (its own built-in default) directly.
+    t.routing.insert(
+        "assess".to_string(),
+        crate::store::RoleRouting {
+            provider: crate::store::Routed {
+                value: provider.name.clone(),
+                source: provider_source.to_string(),
+            },
+            model: crate::store::Routed {
+                value: model.clone(),
+                source: crate::attempt::attempt_model_source(
+                    action.model.as_deref(),
+                    provider,
+                    &t.model_source,
+                ),
+            },
+            workflow: crate::store::Routed {
+                value: t.workflow.clone(),
+                source: t.workflow_source.clone(),
+            },
+        },
+    );
+    f.store.update_task(t)?;
     let max_turns = action.max_turns.unwrap_or(t.max_turns as u32);
     let timeout_secs = action.timeout_secs.unwrap_or(t.timeout_secs as u32) as u64;
     let log_path = f
