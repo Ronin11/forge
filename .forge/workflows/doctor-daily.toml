@@ -1,10 +1,11 @@
 name = "doctor-daily"
 kind = "run"
-description = "daily unattended `forge doctor --json` at 07:00: every WARN or FAIL row becomes an effect, disk space and log volume are kept in bounds by disk-and-logs.toml (spliced in), and a FAIL blocks the run and asks the operator (docs/JOBS.md, docs/CHECKS.md)."
+description = "daily unattended `forge doctor --json` at 07:00: every WARN or FAIL row becomes an effect, disk space and log volume are kept in bounds by disk-and-logs.toml (spliced in), a retained worktree older than GC_OLDER_THAN_DAYS (default 7) is pushed and removed even when unpublished by gc-worktree-retention, and a FAIL blocks the run and asks the operator (docs/JOBS.md, docs/CHECKS.md)."
 
 steps = [
   { action = "doctor-json-to-effects", effect = "row" },
   { workflow = "disk-and-logs" },
+  { action = "gc-worktree-retention", effect = "row" },
 ]
 
 [trigger]

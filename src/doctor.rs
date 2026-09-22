@@ -649,18 +649,28 @@ fn check_worktrees(store: &Store) -> Vec<Check> {
         Ok(t) => t,
         Err(e) => return vec![check("worktrees", Status::Fail, format!("{e:#}"), "")],
     };
-    let retained: Vec<i64> = tasks
+    let held: Vec<_> = tasks
         .into_iter()
         .filter(|t| t.state != TaskState::Running && t.state != TaskState::Queued)
-        .map(|t| t.id)
         .collect();
+    let retained: Vec<i64> = held.iter().map(|t| t.id).collect();
+    let oldest_days = held
+        .iter()
+        .filter_map(|t| t.finished_at)
+        .min()
+        .map(|fin| (unix_now() - fin).max(0) / 86_400);
     vec![if retained.is_empty() {
         check("worktrees", Status::Ok, "none retained", "")
     } else {
         let mut c = check(
             "worktrees",
             Status::Warn,
-            format!("{} retained: {:?}", retained.len(), retained),
+            format!(
+                "{} retained: {:?}, oldest {}d",
+                retained.len(),
+                retained,
+                oldest_days.unwrap_or(0)
+            ),
             "forge gc removes the published ones and explains the rest",
         );
         c.worktree_ids = Some(retained);

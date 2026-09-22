@@ -432,6 +432,51 @@ fn gc_removes_only_what_is_published_and_clean() {
     assert!(!e.home.join("worktrees/1").exists());
 }
 
+/// `--older-than` pushes and removes a retained worktree whose task
+/// finished long enough ago even though it was never published, so
+/// nothing sits on disk forever just because it was never merged; a
+/// young unpublished worktree is left exactly as plain `forge gc` would
+/// leave it.
+#[test]
+fn gc_older_than_pushes_and_removes_an_old_unpublished_worktree_but_keeps_a_young_one() {
+    let e = Env::new();
+    assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+    assert!(!e.run("wrong.sh", &["--retries", "0"]).status.success());
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    e.db()
+        .execute(
+            "UPDATE tasks SET finished_at=?1 WHERE id=1",
+            [now - 30 * 86_400],
+        )
+        .unwrap();
+    assert!(
+        !e.origin_branches().contains("forge/1-"),
+        "task 1's branch starts out unpublished"
+    );
+
+    let o = e.forge("ok.sh", &["gc", "--older-than", "7"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("task 1    removed"), "{out}");
+    assert!(
+        out.contains("task 2    kept (1 commit(s) not on the remote)"),
+        "{out}"
+    );
+    assert!(!e.home.join("worktrees/1").exists());
+    assert!(e.home.join("worktrees/2").exists());
+    assert!(
+        e.origin_branches().contains("forge/1-"),
+        "the old task's branch was pushed before its worktree was removed"
+    );
+    assert!(
+        !e.origin_branches().contains("forge/2-"),
+        "the young task's unpublished branch is left alone"
+    );
+}
+
 #[test]
 fn gc_treats_a_blocked_task_superseded_by_a_later_success_like_a_failed_one() {
     let e = Env::new();

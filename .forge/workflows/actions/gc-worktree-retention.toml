@@ -1,0 +1,33 @@
+name = "gc-worktree-retention"
+kind = "operation"
+description = "runs `forge gc --older-than GC_OLDER_THAN_DAYS` (default 7) so a retained worktree whose task finished more than that long ago is removed even when unpublished, after its branch is pushed so nothing is lost, and logs the disk space freed under FORGE_HOME/worktrees as a row effect. FORGE_HOME comes from the job's environment, or $HOME/.local/share/forge by default. In a dry run it runs `forge gc --dry-run --older-than GC_OLDER_THAN_DAYS` and logs what would be freed."
+run = ["bash", "-c", '''
+set +e
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
+worktrees="$home/worktrees"
+days="${GC_OLDER_THAN_DAYS:-7}"
+
+before=0
+[ -d "$worktrees" ] && before=$(du -sb "$worktrees" 2>/dev/null | cut -f1)
+[ -z "$before" ] && before=0
+
+if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
+  out=$(forge gc --dry-run --older-than "$days" 2>&1)
+  printf "row\tgc\twould remove retained worktrees older than %sd (dry run): %s\n" \
+    "$days" "$(echo "$out" | tail -n1)" >> "$FORGE_EFFECT_LOG"
+  exit 0
+fi
+
+out=$(forge gc --older-than "$days" 2>&1)
+
+after=0
+[ -d "$worktrees" ] && after=$(du -sb "$worktrees" 2>/dev/null | cut -f1)
+[ -z "$after" ] && after=0
+
+freed=$((before - after))
+[ "$freed" -lt 0 ] && freed=0
+
+printf "row\tgc\tfreed %s bytes of retained worktrees older than %sd: %s\n" \
+  "$freed" "$days" "$(echo "$out" | tail -n1)" >> "$FORGE_EFFECT_LOG"
+exit 0
+''']

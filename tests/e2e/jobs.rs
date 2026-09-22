@@ -2210,11 +2210,13 @@ printf 200
 /// repository's own `.forge/workflows/` into a throwaway project repo and
 /// committed: `doctor-daily.toml` splices in the schedule-free
 /// `disk-and-logs.toml` (`{ workflow = "disk-and-logs" }`, `job_steps`'
-/// new run-workflow composition), so a dry run resolves both files into
-/// one flat two-step job — `doctor-json-to-effects` (from doctor-daily.toml
-/// itself) then `disk-and-logs-check` (spliced in from disk-and-logs.toml)
-/// — proving the splice actually flattened rather than merely parsing. The
-/// nested `forge doctor --json` this job's first step shells out to only
+/// run-workflow composition), so a dry run resolves both files plus its
+/// own trailing step into one flat three-step job —
+/// `doctor-json-to-effects` (from doctor-daily.toml itself), then
+/// `disk-and-logs-check` (spliced in from disk-and-logs.toml), then
+/// `gc-worktree-retention` (from doctor-daily.toml again) — proving the
+/// splice actually flattened rather than merely parsing. The nested
+/// `forge doctor --json` this job's first step shells out to only
 /// inherits a whitelisted environment (agent::agent_env — PATH, HOME, ...),
 /// so `claude` is faked on PATH the same way the drift-weekly test fakes
 /// its externals, and `df`/`du` are faked so disk-and-logs-check's free
@@ -2251,7 +2253,11 @@ fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
         )
         .unwrap();
     }
-    for action in ["doctor-json-to-effects", "disk-and-logs-check"] {
+    for action in [
+        "doctor-json-to-effects",
+        "disk-and-logs-check",
+        "gc-worktree-retention",
+    ] {
         std::fs::copy(
             root.join(format!(".forge/workflows/actions/{action}.toml")),
             e.repo
@@ -2325,8 +2331,12 @@ fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
             .iter()
             .map(|s| s["action"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["doctor-json-to-effects", "disk-and-logs-check"],
-        "the splice must flatten disk-and-logs.toml's own step in after doctor-daily.toml's: {steps:?}"
+        vec![
+            "doctor-json-to-effects",
+            "disk-and-logs-check",
+            "gc-worktree-retention"
+        ],
+        "the splice must flatten disk-and-logs.toml's own step in after doctor-daily.toml's, with gc-worktree-retention last: {steps:?}"
     );
     assert!(steps.iter().all(|s| s["kind"] == "operation"));
 
