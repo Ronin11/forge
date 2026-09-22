@@ -51,7 +51,8 @@ pub struct ProjectDefaults {
     pub protected: Option<Vec<String>>,
     /// Role/provider pairs to merge into the project's existing
     /// `role_providers`; a role already set keeps its old value unless
-    /// named again here. Empty changes nothing.
+    /// named again here, and a value of `-` removes the role's pin. Empty
+    /// changes nothing.
     pub role_providers: BTreeMap<String, String>,
 }
 
@@ -264,7 +265,13 @@ impl Store {
                 .as_deref()
                 .map(|j| serde_json::from_str(j).unwrap_or_default())
                 .unwrap_or_default();
-            merged.extend(d.role_providers.clone());
+            for (role, provider) in &d.role_providers {
+                if provider == "-" {
+                    merged.remove(role);
+                } else {
+                    merged.insert(role.clone(), provider.clone());
+                }
+            }
             Some(serde_json::to_string(&merged)?)
         };
         let n = self.lock().execute(
@@ -626,6 +633,34 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_role_pin_set_with_a_dash_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        s.create_project(&Project {
+            name: "p".into(),
+            purpose: "purpose".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut set = ProjectDefaults::default();
+        set.role_providers.insert("review".into(), "openai".into());
+        s.set_project_defaults("p", &set).unwrap();
+        assert_eq!(
+            s.project("p")
+                .unwrap()
+                .unwrap()
+                .role_providers
+                .get("review")
+                .map(String::as_str),
+            Some("openai")
+        );
+        let mut unset = ProjectDefaults::default();
+        unset.role_providers.insert("review".into(), "-".into());
+        s.set_project_defaults("p", &unset).unwrap();
+        assert!(s.project("p").unwrap().unwrap().role_providers.is_empty());
+    }
     use super::*;
 
     #[test]

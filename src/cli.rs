@@ -1933,6 +1933,9 @@ fn project_new(name: String, purpose: String, repos: Vec<String>) -> Result<()> 
 
 /// Parse `forge project set --role`'s `<role>=<provider>` pairs: the role
 /// must be one of `config::ROLES`, and the provider must be configured.
+/// `<role>=-` removes the role's pin, so the operator's `[roles]` (or the
+/// experiment's draw, docs/ECONOMIST.md) applies to it again; until
+/// 2026-09-22 a pin could be set and never cleared.
 fn parse_role_providers(
     f: &Forge,
     role: &[String],
@@ -1948,7 +1951,7 @@ fn parse_role_providers(
                 config::ROLES.join(", ")
             );
         }
-        if !f.providers.contains_key(provider) {
+        if provider != "-" && !f.providers.contains_key(provider) {
             bail!("--role {pair:?}: unknown provider {provider:?}; see `forge providers`");
         }
         out.insert(role.to_string(), provider.to_string());
