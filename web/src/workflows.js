@@ -10,6 +10,12 @@
   const pct = v => v == null ? '-' : (v * 100).toFixed(0) + '%';
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
 
+  // The project and run workflow the prompter starts (docs/WORKFLOWS.md,
+  // "Authoring"): this repository's own project, self-registered so its
+  // own `.forge/workflows/author-workflow.toml` can run against it.
+  const DRAFT_PROJECT = 'forge';
+  const DRAFT_WORKFLOW = 'author-workflow';
+
   // The step chain as a row of small action cards: the resolved steps
   // when present (a catalog build workflow), else the raw declared refs
   // (a repo workflow, or a run workflow — neither resolved in the list).
@@ -113,8 +119,28 @@
     </div>`;
   }
 
+  // Whether a live SSE event belongs to the prompter's own in-flight
+  // request (`/workflows/new`, promptView in app.js): the events carry no
+  // request token (src/report.rs's `JobStarted` has only
+  // project/workflow/job_id/dry_run), so the stream alone cannot tell
+  // whose job a `job_started` is. `state` is `{pending}` — true only
+  // between the POST to `/api/workflows/draft` and that request's own
+  // response landing. A matching `job_started` seen while pending gives a
+  // provisional "job N running…" to show; everything else — not pending,
+  // the wrong project/workflow, a dry run, or any `job_finished` at all —
+  // claims nothing and returns `null`. The draft is never loaded from
+  // here: only the id the POST response itself returns is authoritative,
+  // so the caller loads the draft from that id, not from a stream event.
+  function draftStatusFor(state, event) {
+    if (!state || !state.pending) return null;
+    if (!event || event.type !== 'job_started') return null;
+    if (event.project !== DRAFT_PROJECT || event.workflow !== DRAFT_WORKFLOW || event.dry_run) return null;
+    return `job ${event.job_id} running…`;
+  }
+
   return {
+    DRAFT_PROJECT, DRAFT_WORKFLOW,
     renderWorkflowRows, renderWorkflowRow, renderSteps, renderLintProblems, stepChain, profileLine,
-    draftOutput, renderDraftPanel,
+    draftOutput, renderDraftPanel, draftStatusFor,
   };
 });

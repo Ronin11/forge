@@ -4,12 +4,8 @@
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
   const secs = ms => ((ms || 0) / 1000).toFixed(0) + 's';
   const { fmtTime, fmtSpan, fmtAgo } = ForgeTime;
+  const { draftStatusFor } = ForgeWorkflows;
   const PAGE = 100;
-  // The project and run workflow the prompter starts (docs/WORKFLOWS.md,
-  // "Authoring"): this repository's own project, self-registered so its
-  // own `.forge/workflows/author-workflow.toml` can run against it.
-  const DRAFT_PROJECT = 'forge';
-  const DRAFT_WORKFLOW = 'author-workflow';
   let offset = 0, feed = [], es = null, view = null;
 
   // Which events invalidate which view — matches docs/CLIENT.md's "What
@@ -532,7 +528,14 @@
   // its rationale and open questions, and when it ends `needs_human` the
   // human rung's question and a link to it show instead.
   function promptView() {
-    let jobId = null, gotFinal = false, teardownEditor = null;
+    // `pending` is true only between the POST to `/api/workflows/draft`
+    // and that same request's own response landing — the window in which
+    // a live `job_started` for this workflow is worth showing as a
+    // provisional status (draftStatusFor, web/src/workflows.js). The id
+    // that response returns is the only authoritative one: `finish` is
+    // driven by it alone, never by the stream, since a `job_finished`
+    // event carries no token saying whose request it belongs to.
+    let jobId = null, pending = false, teardownEditor = null;
 
     function setStatus(text, cls) {
       const el = $('#draft-status');
@@ -556,7 +559,6 @@
     }
 
     async function finish(id) {
-      gotFinal = true;
       let doc;
       try { doc = await get(`/api/job/${id}`); }
       catch { setStatus('could not load the job', 'failed'); return; }
@@ -579,19 +581,25 @@
       const description = $('#draft-desc').value.trim();
       if (!description) return;
       btn.disabled = true;
-      jobId = null; gotFinal = false;
+      jobId = null;
       $('#draft-result').innerHTML = '';
       const editorEl = $('#draft-editor');
       if (editorEl) { editorEl.style.display = 'none'; editorEl.innerHTML = ''; }
       setStatus('starting…');
       try {
+        pending = true;
         const r = await postBody('/api/workflows/draft', JSON.stringify({ description }), 'application/json');
         if (r.error) { setStatus(r.error, 'failed'); return; }
+        // `r.job` (from the route's own blocked-until-finished `forge job
+        // start`, web/src/main.rs's draft_workflow_route) is the only
+        // authoritative id — it may differ from any provisional id an
+        // event set above, in which case `finish` below replaces whatever
+        // status that showed with this job's real one.
         jobId = r.job;
-        if (!gotFinal && jobId != null) await finish(jobId);
+        if (jobId != null) await finish(jobId);
       } catch (e) {
         setStatus(String(e), 'failed');
-      } finally { btn.disabled = false; }
+      } finally { btn.disabled = false; pending = false; }
     }
 
     return {
@@ -607,12 +615,8 @@
         $('#draft-go').addEventListener('click', start);
       },
       onEvent(e) {
-        if (jobId === null && e.type === 'job_started' && e.project === DRAFT_PROJECT && e.workflow === DRAFT_WORKFLOW) {
-          jobId = e.job_id;
-          setStatus(`job ${jobId} running…`);
-        } else if (jobId !== null && !gotFinal && e.type === 'job_finished' && e.job_id === jobId) {
-          finish(jobId).catch(() => {});
-        }
+        const text = draftStatusFor({ pending }, e);
+        if (text !== null) { jobId = e.job_id; setStatus(text); }
       },
       teardown() { if (teardownEditor) teardownEditor(); },
     };

@@ -367,14 +367,21 @@ repository's own project, self-registered so its own
 project's automations run against that project's own repository.
 
 Both routes block until the job ends, so the id either returns always
-names a finished job. The page does not wait on that response alone to
-show something happening, though, because a job's `job_started` fires
-before the model is even called and reaches the page over the same live
-event stream every other view re-reads on (docs/CLIENT.md, "What to
-re-read on which event") — the page shows "job N running…" from that
-event alone, with no request of its own. `job_finished`, on the same
-stream, or the blocking POST resolving (whichever the page sees first)
-is what ends the wait.
+names a finished job. While that request is in flight the page shows
+something happening sooner than its own response, because a job's
+`job_started` fires before the model is even called and reaches the page
+over the same live event stream every other view re-reads on
+(docs/CLIENT.md, "What to re-read on which event") — a `job_started` for
+`forge`/`author-workflow` seen while the request is pending shows "job N
+running…" as a provisional status. But the stream carries no request
+token (`Event::JobStarted` and `JobFinished`, src/report.rs, have only
+project/workflow/job_id/dry_run, nothing naming whose request started
+them), so it can never end the wait or say whose draft to load: the page
+follows only the job its own request started, identified by the id that
+request's response returns, and loads the draft from that id alone once
+the response lands — never from a `job_finished` on the stream, which
+could belong to any other tab, operator, or a plain `forge job start`
+from the CLI.
 
 A job that ends `ok` always drafted a workflow that lints clean (the
 `lint-workflow-draft` step's own job, above) — its `toml` loads straight

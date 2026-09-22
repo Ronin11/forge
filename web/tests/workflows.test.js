@@ -2,7 +2,10 @@
 // — a fixture of two workflows renders two rows, and a lint problem
 // renders at its line.
 const assert = require('node:assert/strict');
-const { renderWorkflowRows, renderLintProblems, profileLine, draftOutput, renderDraftPanel } = require('../src/workflows.js');
+const {
+  renderWorkflowRows, renderLintProblems, profileLine, draftOutput, renderDraftPanel,
+  draftStatusFor, DRAFT_PROJECT, DRAFT_WORKFLOW,
+} = require('../src/workflows.js');
 
 const FIXTURE = [
   {
@@ -99,3 +102,24 @@ assert.match(needsHuman, /href="\/tasks\/9"/);
 const needsHumanNoLink = renderDraftPanel(NEEDS_HUMAN_JOB, null);
 assert.match(needsHumanNoLink, /no question recorded/);
 assert.doesNotMatch(needsHumanNoLink, /href="\/tasks\//);
+
+// `draftStatusFor` decides which SSE event, if any, belongs to the
+// prompter's own in-flight request — the events carry no request token
+// (src/report.rs's `JobStarted` has only project/workflow/job_id/dry_run),
+// so this is the only thing standing between an idle tab and rendering
+// someone else's job as if the operator had asked for it.
+const STARTED = { type: 'job_started', project: DRAFT_PROJECT, workflow: DRAFT_WORKFLOW, job_id: 41, dry_run: false };
+const FINISHED = { type: 'job_finished', project: DRAFT_PROJECT, workflow: DRAFT_WORKFLOW, job_id: 41, state: 'ok', cost_usd: 0.1 };
+
+// Not pending (no request this tab sent is in flight): a matching
+// job_started/job_finished pair claims nothing at all.
+assert.equal(draftStatusFor({ pending: false }, STARTED), null);
+assert.equal(draftStatusFor({ pending: false }, FINISHED), null);
+
+// Pending plus a matching job_started: a provisional "job N running…".
+assert.equal(draftStatusFor({ pending: true }, STARTED), 'job 41 running…');
+
+// A job_finished never triggers the load — draftStatusFor answers only
+// for job_started; the draft itself loads from the POST response's own
+// id, never from the stream.
+assert.equal(draftStatusFor({ pending: true }, FINISHED), null);
