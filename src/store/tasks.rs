@@ -276,13 +276,17 @@ fn release_or_reblock(c: &Connection, candidates: Vec<(i64, String)>) -> Result<
 /// only has the connection, and a workflow file may since have changed or
 /// gone. Nested composition (a workflow that names another rather than
 /// declaring `"tests"` itself, e.g. `tdd-reviewed`) resolves against
-/// `known`, seeded with the built-ins and every distinct workflow text
-/// already on hand in the table, so a task's own history can stand in for
-/// a workflow that changed since. `shape_declared_checks` has no such
-/// source — it needs the repository's `[checks]` as it stood at enqueue
-/// time — and is left at its column default, 0.
+/// `known`, seeded with the built-ins, then overwritten per repository with
+/// that repository's own most recent recorded text for each workflow name
+/// as of the task being backfilled — a repository's own recorded workflow
+/// text takes precedence over the built-in of the same name, so a
+/// customized `tdd` (or a workflow that composes it) is never mistaken for
+/// the stock one. `shape_declared_checks` has no such source — it needs the
+/// repository's `[checks]` as it stood at enqueue time — and is left at its
+/// column default, 0.
+#[allow(clippy::type_complexity)]
 pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
-    let mut known: BTreeMap<String, String> = crate::workflows::BUILTIN_WORKFLOWS
+    let builtins: BTreeMap<String, String> = crate::workflows::BUILTIN_WORKFLOWS
         .iter()
         .map(|(file, text)| {
             (
@@ -291,35 +295,64 @@ pub(super) fn backfill_task_shape(conn: &Connection) -> rusqlite::Result<()> {
             )
         })
         .collect();
+    // History of every recorded (repo, workflow) text, oldest first within
+    // each group, so we can find "the most recent one at or before" a task.
+    let mut history: BTreeMap<(String, String), Vec<(i64, i64, String)>> = BTreeMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT workflow, workflow_text FROM tasks WHERE workflow_text != ''",
+            "SELECT repo, workflow, workflow_text, created_at, id FROM tasks WHERE workflow_text != '' ORDER BY created_at, id",
         )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get("workflow")?, r.get("workflow_text")?)))?
+        let rows: Vec<(String, String, String, i64, i64)> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get("repo")?,
+                    r.get("workflow")?,
+                    r.get("workflow_text")?,
+                    r.get("created_at")?,
+                    r.get("id")?,
+                ))
+            })?
             .collect::<rusqlite::Result<_>>()?;
-        for (name, text) in rows {
-            known.entry(name).or_insert(text);
+        for (repo, workflow, text, created_at, id) in rows {
+            history
+                .entry((repo, workflow))
+                .or_default()
+                .push((created_at, id, text));
         }
     }
-    let rows: Vec<(i64, String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, task, workflow, workflow_text FROM tasks")?;
+    let rows: Vec<(i64, String, String, String, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, task, workflow, workflow_text, repo, created_at FROM tasks")?;
         stmt.query_map([], |r| {
             Ok((
                 r.get("id")?,
                 r.get("task")?,
                 r.get("workflow")?,
                 r.get("workflow_text")?,
+                r.get("repo")?,
+                r.get("created_at")?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?
     };
-    for (id, text, workflow, workflow_text) in rows {
+    for (id, text, workflow, workflow_text, repo, created_at) in rows {
         let text_len = text.chars().count() as i64;
         let path_tokens = text
             .split_whitespace()
             .filter(|w| crate::render::is_path_like_word(w))
             .count() as i64;
+        let mut known = builtins.clone();
+        for ((repo2, name), entries) in &history {
+            if repo2 != &repo {
+                continue;
+            }
+            if let Some((_, _, text)) = entries
+                .iter()
+                .rfind(|(c, i, _)| (*c, *i) <= (created_at, id))
+            {
+                known.insert(name.clone(), text.clone());
+            }
+        }
         let source = if workflow_text.is_empty() {
             known.get(&workflow).cloned()
         } else {
@@ -906,5 +939,72 @@ mod tests {
         let t3 = s.task(3).unwrap().unwrap();
         assert!(!t3.shape_tdd, "direct writes no hidden tests");
         assert_eq!(t3.shape_path_tokens, 0);
+    }
+
+    #[test]
+    fn migration_backfills_task_shape_from_the_repos_own_recorded_workflow_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let builtin = |file: &str| {
+            crate::workflows::BUILTIN_WORKFLOWS
+                .iter()
+                .find(|(f, _)| *f == file)
+                .unwrap()
+                .1
+        };
+        let customized_tdd = "name = \"tdd\"\ndescription = \"customized, no hidden tests\"\nsteps = [\n{ action = \"code\" },\n]\n";
+        let composed = "name = \"onlytdd\"\ndescription = \"wraps this repo's own tdd\"\nsteps = [\n{ workflow = \"tdd\" },\n]\n";
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..(super::TASK_SHAPE_MIGRATION_VERSION as usize - 1)] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(&format!(
+                "PRAGMA user_version={}",
+                super::TASK_SHAPE_MIGRATION_VERSION - 1
+            ))
+            .unwrap();
+            // Task A: repo r2's own customized "tdd", no tests step.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r2', 'change the code', 'main', 'sonnet', 10, 1, 60, 'succeeded', 1, 'tdd', ?1)",
+                params![customized_tdd],
+            )
+            .unwrap();
+            // Task B: created later in the same repo, on a composed workflow
+            // that nests "tdd" by name rather than declaring "tests" itself.
+            // It must resolve against r2's own customized tdd above, not the
+            // built-in.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r2', 'wrap it', 'main', 'sonnet', 10, 1, 60, 'succeeded', 2, 'onlytdd', ?1)",
+                params![composed],
+            )
+            .unwrap();
+            // Task C: a different repo, on the built-in tdd-reviewed, with no
+            // history of its own to override it.
+            c.execute(
+                "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow, workflow_text)
+                 VALUES ('r3', 'reviewed change', 'main', 'sonnet', 10, 1, 60, 'succeeded', 1, 'tdd-reviewed', ?1)",
+                params![builtin("tdd-reviewed.toml")],
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+
+        let a = s.task(1).unwrap().unwrap();
+        assert!(!a.shape_tdd, "the repo's own tdd has no tests step");
+        let b = s.task(2).unwrap().unwrap();
+        assert!(
+            !b.shape_tdd,
+            "composed workflow resolves tdd against this repo's own customized text, not the built-in"
+        );
+        let c = s.task(3).unwrap().unwrap();
+        assert!(
+            c.shape_tdd,
+            "a different repo with no history of its own still backfills from the built-in"
+        );
     }
 }
