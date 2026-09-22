@@ -35,6 +35,9 @@ pub struct TaskRow {
     pub finished_at: Option<i64>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
+    /// Trust the caller earned by the path it queued through: `"operator"`,
+    /// `"contact"`, or `"public"` (see `store::Trust`).
+    pub trust: String,
 }
 
 impl From<&TaskSummary> for TaskRow {
@@ -53,6 +56,7 @@ impl From<&TaskSummary> for TaskRow {
             finished_at: s.finished_at,
             project: s.project.clone(),
             initiative: s.initiative,
+            trust: s.trust.clone(),
         }
     }
 }
@@ -230,6 +234,9 @@ pub struct TraceTask {
     pub repo: String,
     pub text: String,
     pub state: String,
+    /// Trust the caller earned by the path it queued through: `"operator"`,
+    /// `"contact"`, or `"public"` (see `store::Trust`).
+    pub trust: String,
     pub reason: String,
     pub workflow: String,
     pub workflow_hash: String,
@@ -449,6 +456,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         repo: t.repo.clone(),
         text: t.task.clone(),
         state: t.state.as_str().to_string(),
+        trust: t.trust.as_str().to_string(),
         reason: t.reason.clone(),
         workflow: t.workflow.clone(),
         workflow_hash: t.workflow_hash.clone(),

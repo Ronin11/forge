@@ -569,6 +569,8 @@ pub struct TaskRow {
     pub project: Option<String>,
     #[serde(default)]
     pub initiative: Option<i64>,
+    #[serde(default)]
+    pub trust: String,
 }
 
 /// One row of `forge requests --json`: a blocked task and what it is

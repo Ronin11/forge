@@ -637,6 +637,15 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         .parse()
         .unwrap();
 
+    // A stranger's issue body reaches the agent through this plugin, so the
+    // task it files must carry public trust (docs/GTM.md item 1).
+    let trace: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["trace", &task_id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(trace["task"]["trust"], "public");
+
     let refs: serde_json::Value = serde_json::from_slice(
         &e.forge("ok.sh", &["ref", "list", &task_id.to_string(), "--json"])
             .stdout,

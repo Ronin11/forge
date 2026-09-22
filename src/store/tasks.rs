@@ -71,6 +71,50 @@ impl TryFrom<&str> for TaskState {
     }
 }
 
+/// Where a task's request came from, carried as the trust a caller earns
+/// by the path it queued through (see docs/GTM.md item 1, docs/ROADMAP.md):
+/// `Operator` for `forge add`/`forge run` and every other CLI-driven
+/// filing (the default when nothing says otherwise), `Contact` for a known
+/// contact through the Signal plugin or the portal (both reach the store
+/// through the concierge's `forge ask`), and `Public` for the
+/// github-issues plugin or any other caller a stranger can reach. No
+/// enforcement reads this yet; the `[trust.<level>]` table in the
+/// operator's config (`config::TrustPolicies`) declares the policy each
+/// level will be judged against once something does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Trust {
+    #[default]
+    Operator,
+    Contact,
+    Public,
+}
+
+impl Trust {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trust::Operator => "operator",
+            Trust::Contact => "contact",
+            Trust::Public => "public",
+        }
+    }
+}
+
+impl TryFrom<&str> for Trust {
+    type Error = std::io::Error;
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match s {
+            "operator" => Trust::Operator,
+            "contact" => Trust::Contact,
+            "public" => Trust::Public,
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "unknown trust level {other:?}"
+                )));
+            }
+        })
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Task {
     pub id: i64,
@@ -97,6 +141,14 @@ pub struct Task {
     /// Operator-declared acceptance commands, run as L2 after the repo's checks.
     pub checks: Vec<String>,
     pub state: TaskState,
+    /// Trust the caller that filed this task earned by its path: operator
+    /// (`forge add`/`forge run` and the CLI, the default), contact (the
+    /// Signal plugin, the portal, or any other message through the
+    /// concierge's `forge ask`), or public (the github-issues plugin, a
+    /// webhook whose caller is not a contact). Set once at enqueue
+    /// (`queue::enqueue`), never revisited; a retry keeps the trust of the
+    /// task it retries (`queue::retry_request`). See `Trust`.
+    pub trust: Trust,
     pub reason: String,
     /// Who a blocked question is addressed to (a channel contact's name,
     /// e.g. from the Signal plugin's `CONTACTS`); `None` means the
@@ -425,8 +477,8 @@ impl Store {
         c.execute(
             "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                                 state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json, trust)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
             params![
                 t.repo,
                 t.task,
@@ -461,14 +513,16 @@ impl Store {
                 t.model_source,
                 t.workflow_source,
                 serde_json::to_string(&t.routing)?,
+                t.trust.as_str(),
             ],
         )?;
         Ok(c.last_insert_rowid())
     }
 
     /// Persist every column the struct carries, except the id, the
-    /// creation time, and `worktree_removed_at`, which gc owns. A field
-    /// mutated after insert used to be silently dropped here.
+    /// creation time, `trust` (set once at insert and never revisited),
+    /// and `worktree_removed_at`, which gc owns. A field mutated after
+    /// insert used to be silently dropped here.
     pub fn update_task(&self, t: &Task) -> Result<()> {
         self.lock().execute(
             "UPDATE tasks SET repo=?2, task=?3, base_branch=?4, base_sha=?5, branch=?6, worktree=?7, model=?8,

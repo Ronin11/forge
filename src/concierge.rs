@@ -73,6 +73,9 @@ fn base(project: &str, repo: &str, task: String, workflow: Option<&str>) -> Task
         max_turns: 100,
         retries: 1,
         timeout_secs: 1800,
+        // `forge ask` is the front door a known contact reaches through
+        // (the Signal plugin, the portal); see docs/GTM.md item 1.
+        trust: Some(crate::store::Trust::Contact.as_str().to_string()),
         ..Default::default()
     }
 }

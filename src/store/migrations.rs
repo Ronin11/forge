@@ -617,4 +617,12 @@ DROP TABLE decisions;
 ALTER TABLE decisions_new RENAME TO decisions;
 CREATE INDEX decisions_task ON decisions(task_id, id);
 ",
+    // Trust by source (see docs/GTM.md item 1, docs/ROADMAP.md): where a
+    // task's request came from, set once at enqueue from the caller
+    // (`store::Trust`) and never revisited. `DEFAULT 'operator'` both
+    // backfills every task that predates this column and is the CLI's own
+    // default when a request names no `--trust`.
+    "
+ALTER TABLE tasks ADD COLUMN trust TEXT NOT NULL DEFAULT 'operator';
+",
 ];

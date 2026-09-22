@@ -289,6 +289,10 @@ struct HomeRaw {
     measure: MeasureRaw,
     #[serde(default)]
     intake: IntakeRaw,
+    /// `[trust.<level>]`: the policy each trust level a task can carry is
+    /// judged against, once something enforces it (see `build_trust`).
+    #[serde(default)]
+    trust: TrustRaw,
     /// Agent backends beyond the built-in "anthropic" default; see
     /// `agent::Provider`.
     #[serde(default)]
@@ -421,6 +425,12 @@ pub struct HomeConfig {
     pub plugin_dirs: Vec<PathBuf>,
     pub measure: Measure,
     pub intake: Intake,
+    /// `[trust.<level>]`: the policy per trust level, defaulted per
+    /// `build_trust`. No caller yet: this is task 1 of 4 (the column and
+    /// the policy, see docs/ROADMAP.md); enforcement reads this starting
+    /// with a later task.
+    #[allow(dead_code)]
+    pub trust: TrustPolicies,
     /// Agent backends by name, the built-in "anthropic" always present
     /// (overridable, but never absent) so a task naming no `--provider`
     /// always resolves to one.
@@ -518,6 +528,140 @@ pub struct ExploreRole {
 #[derive(Deserialize, Default)]
 struct IntakeRaw {
     max_questions_per_day: Option<u32>,
+}
+
+/// `[trust.operator]`, `[trust.contact]`, `[trust.public]`: the policy
+/// each of the three trust levels a task can carry (`store::Trust`) is
+/// judged against, once something enforces it (see docs/GTM.md item 1,
+/// docs/ROADMAP.md). No enforcement reads this table yet; it exists so
+/// the discipline is declared and testable ahead of the code that reads
+/// it.
+#[derive(Deserialize, Default)]
+struct TrustRaw {
+    #[serde(default)]
+    operator: TrustLevelRaw,
+    #[serde(default)]
+    contact: TrustLevelRaw,
+    #[serde(default)]
+    public: TrustLevelRaw,
+}
+
+#[derive(Deserialize, Default)]
+struct TrustLevelRaw {
+    budget_usd: Option<f64>,
+    workflows: Option<Vec<String>>,
+    allow_protected: Option<bool>,
+    egress: Option<String>,
+    per_day: Option<u32>,
+    auto_land: Option<bool>,
+}
+
+/// An attempt's network policy at one trust level, once egress reads this
+/// (see docs/ROADMAP.md item 4): `Model` reaches only the configured
+/// providers' model endpoints; `Declared` also reaches the hosts the
+/// repository's own `forge.toml` names under `[sandbox] egress`, today's
+/// behavior for every task regardless of trust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrustEgress {
+    Model,
+    Declared,
+}
+
+impl TrustEgress {
+    /// No caller yet; see `HomeConfig::trust`.
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrustEgress::Model => "model",
+            TrustEgress::Declared => "declared",
+        }
+    }
+}
+
+/// One trust level's policy: what a task queued at that level may do,
+/// once something enforces it. See `TrustPolicies`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrustPolicy {
+    /// Cost cap for a task at this level; `None` is the operator's own
+    /// `[budget] per_task_usd` (no tighter cap at this level).
+    pub budget_usd: Option<f64>,
+    /// Workflow names a task at this level may run under; `None` is every
+    /// workflow.
+    pub workflows: Option<Vec<String>>,
+    /// Whether a task at this level may change the repository's protected
+    /// paths.
+    pub allow_protected: bool,
+    pub egress: TrustEgress,
+    /// How many tasks may start at this level per day; `None` is no cap.
+    pub per_day: Option<u32>,
+    /// Whether a task at this level may land itself once verified.
+    pub auto_land: bool,
+}
+
+/// `[trust.<level>]` in full: the policy for each of the three levels a
+/// task can carry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrustPolicies {
+    pub operator: TrustPolicy,
+    pub contact: TrustPolicy,
+    pub public: TrustPolicy,
+}
+
+fn parse_trust_egress(
+    level: &str,
+    raw: Option<String>,
+    default: TrustEgress,
+) -> Result<TrustEgress> {
+    match raw.as_deref() {
+        None => Ok(default),
+        Some("model") => Ok(TrustEgress::Model),
+        Some("declared") => Ok(TrustEgress::Declared),
+        Some(other) => {
+            bail!("trust.{level}.egress: must be \"model\" or \"declared\", got {other:?}")
+        }
+    }
+}
+
+/// The three trust levels' policy: the operator's own `[trust.<level>]`
+/// tables, defaulted per level (see `DEFAULT_HOME_CONFIG`'s own
+/// `[trust.*]` comments, which this must agree with) when a field or a
+/// whole table is absent. `operator` is unrestricted by default; `contact`
+/// requires a reviewed-or-stricter workflow and may not touch protected
+/// paths; `public` is tighter on every field, with `auto_land = false`
+/// and `per_day = 5`.
+fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
+    Ok(TrustPolicies {
+        operator: TrustPolicy {
+            budget_usd: raw.operator.budget_usd,
+            workflows: raw.operator.workflows,
+            allow_protected: raw.operator.allow_protected.unwrap_or(true),
+            egress: parse_trust_egress("operator", raw.operator.egress, TrustEgress::Declared)?,
+            per_day: raw.operator.per_day,
+            auto_land: raw.operator.auto_land.unwrap_or(true),
+        },
+        contact: TrustPolicy {
+            budget_usd: raw.contact.budget_usd,
+            workflows: raw
+                .contact
+                .workflows
+                .or_else(|| Some(vec!["reviewed".to_string(), "tdd-reviewed".to_string()])),
+            allow_protected: raw.contact.allow_protected.unwrap_or(false),
+            egress: parse_trust_egress("contact", raw.contact.egress, TrustEgress::Declared)?,
+            per_day: raw.contact.per_day,
+            auto_land: raw.contact.auto_land.unwrap_or(true),
+        },
+        public: TrustPolicy {
+            budget_usd: Some(raw.public.budget_usd.unwrap_or(1.0)),
+            workflows: raw
+                .public
+                .workflows
+                .or_else(|| Some(vec!["reviewed".to_string()])),
+            allow_protected: raw.public.allow_protected.unwrap_or(false),
+            egress: parse_trust_egress("public", raw.public.egress, TrustEgress::Model)?,
+            per_day: Some(raw.public.per_day.unwrap_or(5)),
+            auto_land: raw.public.auto_land.unwrap_or(false),
+        },
+    })
 }
 
 /// The `interview` directive's own cap, separate from `[budget]`: how
@@ -650,6 +794,42 @@ journal_control = 0.0
 # start a turn that would ask another; see docs/INTAKE.md.
 max_questions_per_day = 8
 
+# Every task carries the trust of its source: operator (forge add and the
+# CLI), contact (a known contact through the Signal plugin, the portal, or a
+# message trigger), or public (the github-issues plugin, a webhook whose
+# caller is not a contact, anything a stranger can send). Each level's own
+# table below is the policy it is judged against: budget_usd (a per-task cost
+# cap, unset means [budget]'s own per_task_usd), workflows (allowed workflow
+# names, unset means every workflow), allow_protected, egress (\"model\": only
+# the configured providers' model endpoints, or \"declared\": also the hosts
+# forge.toml's own [sandbox] egress names), per_day (how many tasks may start
+# at this level per day, unset means no cap), and auto_land (may a verified
+# task at this level land itself). Nothing enforces this yet; see
+# docs/ROADMAP.md and docs/GTM.md item 1.
+[trust.operator]
+allow_protected = true
+egress = \"declared\"
+auto_land = true
+
+[trust.contact]
+# Reviewed or stricter: a contact's task may not run under a workflow with
+# no review step.
+workflows = [\"reviewed\", \"tdd-reviewed\"]
+allow_protected = false
+egress = \"declared\"
+auto_land = true
+
+[trust.public]
+# Tighter on every field: a stranger's task costs less, runs under the one
+# workflow this operator trusts unattended, cannot land itself, and is
+# capped at five a day.
+budget_usd = 1.0
+workflows = [\"reviewed\"]
+allow_protected = false
+egress = \"model\"
+per_day = 5
+auto_land = false
+
 # Which provider each role runs under by default: the four contracts
 # (code, tests, review, plan) and the supervisor. \"anthropic\" where a
 # role names none. A project can override a role with `forge project set
@@ -742,6 +922,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         intake: Intake {
             max_questions_per_day: raw.intake.max_questions_per_day.unwrap_or(8),
         },
+        trust: build_trust(raw.trust)?,
         providers,
         roles,
         project_secrets: raw
@@ -1141,6 +1322,94 @@ mod tests {
             from_template.early_ending.signals_to_end,
             from_defaults.early_ending.signals_to_end
         );
+        assert_eq!(from_template.trust, from_defaults.trust);
+    }
+
+    #[test]
+    fn trust_defaults_are_operator_unrestricted_contact_reviewed_and_public_tightest() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(
+            c.trust.operator,
+            TrustPolicy {
+                budget_usd: None,
+                workflows: None,
+                allow_protected: true,
+                egress: TrustEgress::Declared,
+                per_day: None,
+                auto_land: true,
+            }
+        );
+        assert_eq!(
+            c.trust.contact,
+            TrustPolicy {
+                budget_usd: None,
+                workflows: Some(vec!["reviewed".to_string(), "tdd-reviewed".to_string()]),
+                allow_protected: false,
+                egress: TrustEgress::Declared,
+                per_day: None,
+                auto_land: true,
+            }
+        );
+        assert_eq!(
+            c.trust.public,
+            TrustPolicy {
+                budget_usd: Some(1.0),
+                workflows: Some(vec!["reviewed".to_string()]),
+                allow_protected: false,
+                egress: TrustEgress::Model,
+                per_day: Some(5),
+                auto_land: false,
+            }
+        );
+    }
+
+    #[test]
+    fn trust_levels_can_be_overridden_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[trust.public]\n\
+             budget_usd = 0.5\n\
+             workflows = [\"direct\"]\n\
+             allow_protected = true\n\
+             egress = \"declared\"\n\
+             per_day = 10\n\
+             auto_land = true\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        assert_eq!(c.trust.public.budget_usd, Some(0.5));
+        assert_eq!(c.trust.public.workflows, Some(vec!["direct".to_string()]));
+        assert!(c.trust.public.allow_protected);
+        assert_eq!(c.trust.public.egress, TrustEgress::Declared);
+        assert_eq!(c.trust.public.per_day, Some(10));
+        assert!(c.trust.public.auto_land);
+        // Untouched levels keep their own defaults.
+        assert_eq!(c.trust.operator.egress, TrustEgress::Declared);
+        assert!(c.trust.operator.allow_protected);
+    }
+
+    #[test]
+    fn trust_egress_as_str_matches_the_config_spelling() {
+        assert_eq!(TrustEgress::Model.as_str(), "model");
+        assert_eq!(TrustEgress::Declared.as_str(), "declared");
+    }
+
+    #[test]
+    fn an_unknown_trust_egress_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[trust.public]\negress = \"anywhere\"\n",
+        )
+        .unwrap();
+        let err = match load_home(dir.path()) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("trust.public.egress"), "{err}");
+        assert!(err.contains("anywhere"), "{err}");
     }
 
     #[test]

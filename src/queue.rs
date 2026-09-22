@@ -56,6 +56,11 @@ pub struct TaskRequest {
     pub journal_choice: Option<bool>,
     pub no_context: bool,
     pub resume_on_failure: bool,
+    /// The trust the caller earned by the path it queued through:
+    /// `"operator"`, `"contact"`, or `"public"` (see `store::Trust`).
+    /// `None` is the CLI's own default, operator. A retry propagates the
+    /// task it retries' own trust rather than resolving this again.
+    pub trust: Option<String>,
 }
 
 /// The task's journal flag and how it got that value. An explicit
@@ -306,6 +311,11 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         code_provider_source
     };
     let shape = task_shape(&args.task, &resolved, cfg.checks.len());
+    let trust = match &args.trust {
+        Some(s) => crate::store::Trust::try_from(s.as_str())
+            .with_context(|| format!("--trust {s:?}: must be operator, contact, or public"))?,
+        None => crate::store::Trust::Operator,
+    };
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -341,6 +351,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         shape_declared_checks: shape.declared_checks,
         model_source: model_source.to_string(),
         workflow_source: workflow_source.to_string(),
+        trust,
         ..Default::default()
     };
     for &dep in &t.after {
@@ -727,6 +738,9 @@ pub fn retry_request(
         journal_choice: Some(t.journal),
         no_context: !t.context_enabled,
         resume_on_failure: t.resume_on_failure,
+        // A retry keeps the trust of the task it retries: the caller
+        // running `forge retry` did not file the original request.
+        trust: Some(t.trust.as_str().to_string()),
         after,
     }
 }

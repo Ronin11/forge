@@ -103,6 +103,11 @@ pub struct TaskArgs {
     /// same CLI session instead of starting a fresh one
     #[arg(long)]
     resume_on_failure: bool,
+    /// Trust this task is filed at: operator, contact, or public (default:
+    /// operator; see docs/GTM.md item 1). A plugin reaching a stranger's
+    /// input, such as github-issues, should pass --trust public.
+    #[arg(long)]
+    trust: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1537,6 +1542,7 @@ impl From<&TaskArgs> for crate::queue::TaskRequest {
             },
             no_context: a.no_context,
             resume_on_failure: a.resume_on_failure,
+            trust: a.trust.clone(),
         }
     }
 }
@@ -4202,6 +4208,7 @@ fn trace(id: i64, json: bool) -> Result<()> {
         return Ok(());
     }
     out!("task {}  {}  {}", t.id, t.state.as_str(), t.reason);
+    out!("trust      {}", t.trust.as_str());
     out!("repo       {}", t.repo);
     out!(
         "branch     {} from {} @ {}",
@@ -5406,9 +5413,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         return Ok(());
     }
     out!(
-        "{:<5} {:<11} {:<7} {:<3} {:<8} {:<19} {:<18} TASK",
+        "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<19} {:<18} TASK",
         "ID",
         "STATE",
+        "TRUST",
         "WF",
         "ATT",
         "COST",
@@ -5427,9 +5435,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<7} {:<3} {:<8} {:<20} {:<18} {}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}",
             s.id,
             s.state,
+            s.trust,
             s.workflow,
             s.attempts,
             format!("${:.4}", s.cost_usd),
@@ -5459,6 +5468,7 @@ fn show(id: i64) -> Result<()> {
             format!(" ({})", task.reason)
         }
     );
+    out!("trust      {}", t.trust.as_str());
     out!("repo       {}", task.repo);
     out!("created    {}", render::utc(task.created_at));
     if let Some(pname) = &t.project {

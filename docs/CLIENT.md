@@ -403,6 +403,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `finished_at` | integer or null | When the task reached a final state, Unix seconds; null while it is queued or running. |
 | `project` | string or null | The project the task belongs to; null for a task predating projects that no migration could place. |
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
+| `trust` | string | Trust the caller earned by the path it queued through: `"operator"` (`forge add`/`forge run` and the CLI, the default), `"contact"` (a known contact through the Signal plugin, the portal, or another message through the concierge's `forge ask`), or `"public"` (the github-issues plugin, or any other caller a stranger can reach). Set once at enqueue and never revisited; a retry keeps the trust of the task it retries. `"operator"` for every task that predates this column. Also on `TraceDoc.task.trust`, shown by `forge show` and `forge trace`. |
 
 ### `RequestRow`
 

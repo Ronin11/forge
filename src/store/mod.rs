@@ -37,7 +37,7 @@ pub use stats::{
     FactorLevelStat, HumanAttentionProjectStat, HumanAttentionStat, JournalStat, ROLES, RoleStat,
     StatsFilter, StepStat, TaskTtl, WorkflowStat,
 };
-pub use tasks::{RoleRouting, Routed, Task, TaskLimitsUpdate, TaskState};
+pub use tasks::{RoleRouting, Routed, Task, TaskLimitsUpdate, TaskState, Trust};
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
 pub use migrations::MIGRATIONS;
@@ -83,6 +83,7 @@ pub struct TaskSummary {
     pub cost: f64,
     pub project: Option<String>,
     pub initiative: Option<i64>,
+    pub trust: String,
 }
 
 pub struct Store {
@@ -175,6 +176,7 @@ const TASK_COLUMNS: &[&str] = &[
     "model_source",
     "workflow_source",
     "routing_json",
+    "trust",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -263,6 +265,11 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
             r,
             "routing_json",
             serde_json::from_str(&r.get::<_, String>("routing_json")?),
+        )?,
+        trust: conv(
+            r,
+            "trust",
+            Trust::try_from(r.get::<_, String>("trust")?.as_str()),
         )?,
     })
 }
@@ -383,7 +390,7 @@ impl Store {
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
-                    t.project AS project, t.initiative AS initiative
+                    t.project AS project, t.initiative AS initiative, t.trust AS trust
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
@@ -417,6 +424,7 @@ impl Store {
                     finished_at: r.get("finished_at")?,
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
+                    trust: r.get("trust")?,
                 })
             },
         )?;
