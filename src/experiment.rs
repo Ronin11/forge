@@ -61,8 +61,7 @@ pub fn load(catalog_dir: &Path) -> Result<Option<ExperimentFile>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).context(format!("reading {}", path.display())),
     };
-    let raw: Raw =
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let raw: Raw = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let floor = raw.floor.unwrap_or(DEFAULT_FLOOR);
     if !(0.0..0.5).contains(&floor) {
         bail!(
@@ -206,7 +205,10 @@ pub fn apply_floor(weights: &BTreeMap<String, f64>, floor: f64) -> BTreeMap<Stri
             .map(|(k, &v)| (k.clone(), v.max(0.0) / sum))
             .collect()
     } else {
-        weights.keys().map(|k| (k.clone(), 1.0 / n as f64)).collect()
+        weights
+            .keys()
+            .map(|k| (k.clone(), 1.0 / n as f64))
+            .collect()
     };
     let mut fixed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
@@ -467,7 +469,12 @@ mod tests {
         let n = 20_000;
         for id in 0..n {
             let level = draw_level(id, "review", &weights).unwrap();
-            *counts.entry(if level == "anthropic" { "anthropic" } else { "openai" })
+            *counts
+                .entry(if level == "anthropic" {
+                    "anthropic"
+                } else {
+                    "openai"
+                })
                 .or_insert(0) += 1;
         }
         let share_anthropic = counts["anthropic"] as f64 / n as f64;
@@ -553,7 +560,10 @@ mod tests {
     #[test]
     fn rebalance_shifts_weight_toward_the_cheaper_confident_level() {
         let mut current = BTreeMap::new();
-        current.insert("review".to_string(), w(&[("anthropic", 0.5), ("openai", 0.5)]));
+        current.insert(
+            "review".to_string(),
+            w(&[("anthropic", 0.5), ("openai", 0.5)]),
+        );
         let stats = vec![
             stat("provider:review", "anthropic", None, None), // reference
             stat("provider:review", "openai", Some(-0.8), Some(0.1)), // cheaper, confident
@@ -569,7 +579,10 @@ mod tests {
     #[test]
     fn rebalance_shifts_weight_away_from_a_confident_costlier_level() {
         let mut current = BTreeMap::new();
-        current.insert("review".to_string(), w(&[("anthropic", 0.5), ("openai", 0.5)]));
+        current.insert(
+            "review".to_string(),
+            w(&[("anthropic", 0.5), ("openai", 0.5)]),
+        );
         let stats = vec![
             stat("provider:review", "anthropic", None, None),
             stat("provider:review", "openai", Some(0.8), Some(0.1)), // costlier, confident
@@ -599,7 +612,10 @@ mod tests {
     #[test]
     fn rebalance_leaves_a_factor_with_no_stats_this_window_untouched() {
         let mut current = BTreeMap::new();
-        current.insert("plan".to_string(), w(&[("anthropic", 0.6), ("openai", 0.4)]));
+        current.insert(
+            "plan".to_string(),
+            w(&[("anthropic", 0.6), ("openai", 0.4)]),
+        );
         let result = rebalance(&current, DEFAULT_FLOOR, &[], 10.0);
         assert_eq!(result.factors["plan"], current["plan"]);
         assert!(result.shifts.is_empty());
@@ -608,7 +624,10 @@ mod tests {
     #[test]
     fn rebalance_flags_a_level_whose_effect_crosses_the_threshold() {
         let mut current = BTreeMap::new();
-        current.insert("review".to_string(), w(&[("anthropic", 0.5), ("openai", 0.5)]));
+        current.insert(
+            "review".to_string(),
+            w(&[("anthropic", 0.5), ("openai", 0.5)]),
+        );
         let stats = vec![
             stat("provider:review", "anthropic", None, None),
             stat("provider:review", "openai", Some(1.4), Some(0.2)),
