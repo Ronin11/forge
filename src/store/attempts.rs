@@ -653,4 +653,188 @@ mod tests {
         );
         assert!(s.latest_rate_limit("openai").unwrap().is_none());
     }
+
+    /// Fixture for the reprice tests: one task, and a helper to insert an
+    /// attempt under it with a given provider, cost, and token counts.
+    fn reprice_fixture() -> (tempfile::TempDir, Store, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 2,
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let task_id = s.insert_task(&t).unwrap();
+        (dir, s, task_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reprice_attempt(
+        s: &Store,
+        task_id: i64,
+        attempt_no: i64,
+        provider: &str,
+        cost_usd: Option<f64>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    ) -> i64 {
+        let id = s
+            .insert_attempt(&Attempt {
+                task_id,
+                attempt_no,
+                started_at: attempt_no,
+                provider: provider.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.finish_attempt(&FinishAttempt {
+            id,
+            state: AttemptState::Succeeded,
+            reason: String::new(),
+            finished_at: Some(attempt_no),
+            agent_exit: Some(0),
+            timed_out: false,
+            num_turns: 1,
+            tool_calls: 1,
+            cost_usd,
+            agent_ms: 0,
+            commits: 0,
+            files_changed: 0,
+            dirty: false,
+            verdict_json: "[]".into(),
+            result_text: String::new(),
+            envelope_json: String::new(),
+            rl_five_hour: None,
+            rl_seven_day: None,
+            rl_five_hour_resets: None,
+            rl_seven_day_resets: None,
+            end_sha: String::new(),
+            outputs_json: String::new(),
+            session_id: String::new(),
+            first_edit: None,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            early_signals: "[]".into(),
+            early_near: "[]".into(),
+        })
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn reprice_attempts_prices_tokens_for_zero_cost_rows_with_a_priced_provider() {
+        let (_dir, s, task_id) = reprice_fixture();
+        // codex-style: cost_usd 0, tokens recorded.
+        let zero_cost = reprice_attempt(
+            &s,
+            task_id,
+            1,
+            "openai",
+            Some(0.0),
+            Some(1_000_000),
+            Some(500_000),
+        );
+        // never got a cost at all.
+        let null_cost = reprice_attempt(
+            &s,
+            task_id,
+            2,
+            "openai",
+            None,
+            Some(200_000),
+            Some(100_000),
+        );
+        // a real, nonzero reported cost: never touched.
+        let real_cost = reprice_attempt(
+            &s,
+            task_id,
+            3,
+            "anthropic",
+            Some(1.23),
+            Some(1_000_000),
+            Some(1_000_000),
+        );
+        // no price configured for this provider: left as it was.
+        let unpriced = reprice_attempt(
+            &s,
+            task_id,
+            4,
+            "devhome",
+            Some(0.0),
+            Some(1_000_000),
+            Some(1_000_000),
+        );
+        // no recorded tokens: nothing to price it from.
+        let no_tokens = reprice_attempt(&s, task_id, 5, "openai", Some(0.0), None, None);
+
+        let prices = BTreeMap::from([
+            ("openai".to_string(), (2.0, 6.0)),
+            ("anthropic".to_string(), (3.0, 15.0)),
+        ]);
+        let result = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(result.changed, 2);
+        assert!((result.total_usd - 6.0).abs() < 1e-9, "{}", result.total_usd);
+
+        let cost = |id: i64| {
+            s.attempts(task_id)
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .cost_usd
+        };
+        assert!((cost(zero_cost).unwrap() - 5.0).abs() < 1e-9);
+        assert!((cost(null_cost).unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(cost(real_cost), Some(1.23));
+        assert_eq!(cost(unpriced), Some(0.0));
+        assert_eq!(cost(no_tokens), Some(0.0));
+    }
+
+    #[test]
+    fn reprice_attempts_narrows_to_the_named_provider() {
+        let (_dir, s, task_id) = reprice_fixture();
+        reprice_attempt(&s, task_id, 1, "openai", Some(0.0), Some(1_000_000), Some(0));
+        reprice_attempt(
+            &s,
+            task_id,
+            2,
+            "anthropic",
+            Some(0.0),
+            Some(1_000_000),
+            Some(0),
+        );
+        let prices = BTreeMap::from([
+            ("openai".to_string(), (1.0, 1.0)),
+            ("anthropic".to_string(), (1.0, 1.0)),
+        ]);
+        let result = s.reprice_attempts(Some("openai"), false, &prices).unwrap();
+        assert_eq!(result.changed, 1);
+        assert!((result.total_usd - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reprice_attempts_is_idempotent_unless_forced() {
+        let (_dir, s, task_id) = reprice_fixture();
+        // priced at exactly zero, so the row's cost_usd stays 0 after
+        // repricing too — repriced_at, not the cost value, is what a
+        // rerun must check to skip it.
+        reprice_attempt(&s, task_id, 1, "openai", Some(0.0), Some(1_000_000), Some(0));
+        let prices = BTreeMap::from([("openai".to_string(), (0.0, 0.0))]);
+
+        let first = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(first.changed, 1);
+
+        let second = s.reprice_attempts(None, false, &prices).unwrap();
+        assert_eq!(second.changed, 0, "already repriced; a rerun is a no-op");
+
+        let forced = s.reprice_attempts(None, true, &prices).unwrap();
+        assert_eq!(forced.changed, 1, "--force redoes an already-repriced row");
+    }
 }

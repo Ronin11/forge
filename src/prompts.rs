@@ -929,7 +929,7 @@ mod tests {
         step.action.prompt = Some("End by thanking them for their time.".into());
         let decisions = vec![Decision {
             id: 1,
-            task_id: t.id,
+            task_id: Some(t.id),
             repo: String::new(),
             question: "What's the last job that went wrong?".into(),
             answer: "A quote got sent to the wrong customer.".into(),
