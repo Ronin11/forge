@@ -69,3 +69,14 @@ the task's facts in their environment, `FORGE_TASK_ID`, `FORGE_BASE_SHA`,
 `FORGE_START_SHA` and `FORGE_BRANCH`, built by the same function that
 gives an operation its environment. docs/ACTIONS.md, "Checks and known
 fixes", has the list and what it is for.
+
+## L0: `no-stray-files`
+
+Fails when the attempt's net additions match `*.bak`, `*.backup`,
+`*.orig`, `*.rej`, `*~`, `temp_*`, `tmp_*`, or `scratch_*`. Patterns
+match filenames at any directory depth, including rename destinations.
+The check compares the attempt's starting commit with HEAD; existing
+files are not rejected for being modified, and a stray file added and
+deleted within the same attempt passes. Uncommitted files are handled
+by `clean-tree`. Failure details name the stray files and tell the agent
+to delete them and commit the removal.

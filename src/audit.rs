@@ -395,6 +395,10 @@ pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
             ),
             "Usually a one-off; a retry fixes it. If it repeats with the same model, that model is weak at the contract and the workflow should give it fewer, smaller steps.",
         ),
+        Rule::NoStrayFiles => d(
+            &format!("the attempt left backup, temporary or scratch files ({tail1})"),
+            "Delete the named stray files and commit their removal before retrying verification.",
+        ),
         Rule::ProtectedPaths => d(
             &format!("the agent changed a protected path ({tail1})"),
             "If the task legitimately needs it, re-add with --allow-protected; otherwise the task text is steering the agent at the tests.",
