@@ -369,13 +369,18 @@ and does not parse stdout.
   configured under `[providers.<name>]`, plus the built-in `anthropic`.
   A JSON array of [`ProviderRow`](#providerrow).
 
-- **`forge gc [--dry-run]`** — write verb: removes a task's worktree once
-  it is clean and every commit it added is reachable from a remote ref
-  (or it added none); everything else is kept, with the reason and the
-  `rm -rf` a human would run printed beside it. Branches are never
+- **`forge gc [--dry-run] [--older-than <days>]`** — write verb: removes
+  a task's worktree once it is clean and every commit it added is
+  reachable from a remote ref (or it added none); everything else is
+  kept, with the reason and the `rm -rf` a human would run printed
+  beside it. With `--older-than`, a worktree whose task finished at
+  least that many days ago is also removed even when unpublished, after
+  its branch is pushed first (to the remote when the repo has one, else
+  into the registered repository) so nothing is lost. Branches are never
   deleted. Not `--json`; a client re-reads `forge doctor --json`'s
-  `worktrees` check for what is still retained. This is the write verb
-  the doctor page's gc control (`POST /api/gc`, web UI task 7) calls.
+  `worktrees` check for what is still retained, whose own detail now
+  names the oldest retained worktree's age. This is the write verb the
+  doctor page's gc control (`POST /api/gc`, web UI task 7) calls.
 
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`, plus a handful of optional structured

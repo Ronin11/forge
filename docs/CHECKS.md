@@ -26,6 +26,14 @@ is not enough. `disk-and-logs.toml` has no `[trigger] on = "schedule"` of
 its own; it fires only as part of `doctor-daily`, or by hand with `forge
 job start`.
 
+A third step, `gc-worktree-retention`, runs `forge gc --older-than
+GC_OLDER_THAN_DAYS` (default 7): a retained worktree whose task finished
+at least that many days ago is removed even when unpublished, after its
+branch is pushed (to the remote when the repo has one, else into the
+registered repository) so nothing is lost. It logs the bytes freed under
+`FORGE_HOME/worktrees` as a row effect (121 GB was retained there on
+2026-09-22, mostly build directories, before this step existed).
+
 ## `drift-weekly` — Monday 07:30
 
 Four operations, each an action under `.forge/workflows/actions/`:
