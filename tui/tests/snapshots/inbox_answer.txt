@@ -1,0 +1,40 @@
+Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jobs (2)  task  job
+┌blocked tasks: decisions waiting on you───────────────────────────────────────────────────────────┐
+│ID    KIND        WF            TO           REQUEST                                              │
+│41    question    reviewed      designer     Which color should we use?                           │
+│42    question    tdd           operator     Keep the old endpoint?                               │
+│43    dependency  direct        operator     waits on task 14 (failed: checks)                    │
+│45    workflow    reviewed      operator     The deploy step is missing                           │
+│44    unverified  direct        operator     Verified work waiting to land                        │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌request───────────────────────────────────────────────────────────────────────────────────────────┐
+│task 41  Choose the palette                                                                       │
+│to: designer                                                                                      │
+│                                                                                                  │
+│Which color should we use?                                                                        │
+│last attempt: Checked the settings; need a product decision.                                      │
+│                                                                                                  │
+│did: Inspected the theme settings                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Answer #41: Use "blue"; $HOME▏  Enter submit  Esc cancel
