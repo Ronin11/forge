@@ -40,9 +40,20 @@ protected. See [verification](src/verify.rs) and [checks](docs/CHECKS.md).
 **Every request to the operator web client requires its token**, including
 assets and the event stream. The token is stored in `FORGE_HOME/web.token`;
 the initial token link establishes a cookie. The client binds to loopback by
-default. Keep token links private. See [web access](README.md#clients) and
-[the authentication tests](web/tests/server.rs). The separate project portal
-has its own [token-based access contract](docs/CLIENT.md).
+default. Keep token links private. There are two exceptions: `/hooks/` does
+not use the operator token, it takes a webhook's own bearer token, and that
+token can do nothing beyond `forge job fire`. And `[web] tailscale_login` in
+`<FORGE_HOME>/config.toml` is opt-in and unset by default; when set, a
+request whose `Tailscale-User-Login` header equals it is treated as the
+operator without the token, and a header that doesn't match is ignored, so
+the token rule still applies. Any process on the host can send that header
+to the loopback port; it is safe only because an attempt's sandbox has its
+own network namespace and cannot reach host loopback, so leave it unset if
+anything else untrusted runs on the host. See [web
+access](README.md#clients), [the passwordless-tailnet
+details](docs/CLIENT.md#passwordless-from-the-operators-own-tailnet-devices),
+and [the authentication tests](web/tests/server.rs). The separate project
+portal has its own [token-based access contract](docs/CLIENT.md).
 
 **Trust by source:** once that initiative lands end to end, the authenticated
 source of a task determines its trust tier and permitted capabilities, rather
