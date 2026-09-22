@@ -135,7 +135,7 @@
       : r.page === 'deploys' ? deploysView()
       : r.page === 'activity' ? stubView('Activity')
       : r.page === 'messages' ? stubView('Messages')
-      : r.page === 'doctor' ? stubView('Doctor')
+      : r.page === 'doctor' ? doctorView()
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
@@ -980,6 +980,74 @@
         await draw();
       },
       onEvent(e) { if (INVALIDATES.deploys.includes(e.type)) draw().catch(() => {}); },
+    };
+  }
+
+  // ---- doctor: every `forge doctor --json` check as a row, held
+  // initiatives with the same budget/stop-after control the initiative
+  // page uses (task 4's `POST /api/initiatives/<id>`), retained
+  // worktrees with a gc control (`POST /api/gc`, `forge gc`), the rate
+  // windows, spend, and the learning lines — refreshed on demand and
+  // every 60 seconds (web UI task 7, "doctor"). Rendering lives in
+  // web/src/doctor.js (renderDoctorDoc), tested under node without a DOM
+  // by web/tests/doctor_render.rs against tests/fixtures/doctor.json.
+  function doctorView() {
+    let timer = null;
+    async function draw() {
+      const [checks, initiatives] = await Promise.all([
+        get('/api/doctor'),
+        get('/api/initiatives').catch(() => []),
+      ]);
+      const held = (initiatives || []).filter(i => i.state === 'held');
+      $('#doctor-page').innerHTML = ForgeDoctor.renderDoctorDoc(checks, held, fmtTime);
+    }
+    async function onSubmit(ev) {
+      const refreshForm = ev.target.closest('form.doctor-refresh');
+      const gcForm = ev.target.closest('form.doctor-gc');
+      const iniForm = ev.target.closest('form.ini-set');
+      if (refreshForm) {
+        ev.preventDefault();
+        await draw();
+        return;
+      }
+      if (gcForm) {
+        ev.preventDefault();
+        if (!confirm('Run forge gc now?')) return;
+        const btn = gcForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await post('/api/gc');
+          if (r.error) alert(r.error);
+          await draw();
+        } finally { btn.disabled = false; }
+        return;
+      }
+      if (iniForm) {
+        ev.preventDefault();
+        const budget = iniForm.querySelector('.ini-budget').value.trim();
+        const stopAfter = iniForm.querySelector('.ini-stop-after').value.trim();
+        const body = {};
+        if (budget !== '') body.budget = Number(budget);
+        if (stopAfter !== '') body.stop_after = Number(stopAfter);
+        if (!Object.keys(body).length) return;
+        const btn = iniForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/initiatives/${iniForm.dataset.id}`, JSON.stringify(body), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      }
+    }
+    return {
+      async show() {
+        // A wrapper div, not `#main` itself, carries the delegated
+        // listener — same reasoning as `requestsView`'s `#req-page`.
+        $('#main').innerHTML = '<div id="doctor-page" class="mute" style="margin:16px">loading…</div>';
+        $('#doctor-page').addEventListener('submit', onSubmit);
+        await draw();
+        timer = setInterval(() => draw().catch(() => {}), 60000);
+      },
+      teardown() { if (timer) clearInterval(timer); },
     };
   }
 

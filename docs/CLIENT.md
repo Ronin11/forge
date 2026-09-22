@@ -306,24 +306,34 @@ and does not parse stdout.
   [--direction in|out] --json`** — a project's recorded messages, newest
   first. A JSON array of [`MessageRow`](#messagerow).
 
+- **`forge gc [--dry-run]`** — write verb: removes a task's worktree once
+  it is clean and every commit it added is reachable from a remote ref
+  (or it added none); everything else is kept, with the reason and the
+  `rm -rf` a human would run printed beside it. Branches are never
+  deleted. Not `--json`; a client re-reads `forge doctor --json`'s
+  `worktrees` check for what is still retained. This is the write verb
+  the doctor page's gc control (`POST /api/gc`, web UI task 7) calls.
+
 `forge doctor --json` also exists (a JSON array of
 `{name, status, detail, hint}`, plus a handful of optional structured
 fields a few checks carry alongside their prose so a client can draw a
 gauge instead of parsing it: `rate_limit` also sets `provider`,
 `five_hour_pct`, `five_hour_resets_at`, `seven_day_pct`,
 `seven_day_resets_at`; `spend` also sets `spend_usd`, `spend_cap_usd`;
-`queue` also sets `queued`, `running` — every other check leaves these
-`None`/absent). `forge-web`'s header strip (below) is now its one
-caller, but it is still not part of the stable contract: exit code 1
-means a check is FAIL, not that the read failed, so a caller reads
-stdout regardless of the exit code.
+`queue` also sets `queued`, `running`; `worktrees` also sets
+`worktree_ids`, the retained tasks' ids its prose already names — every
+other check leaves these `None`/absent). `forge-web`'s header strip
+(below) and its `/doctor` page are now its callers, but it is still not
+part of the stable contract: exit code 1 means a check is FAIL, not
+that the read failed, so a caller reads stdout regardless of the exit
+code.
 
 The verb names above, as a plain fenced list a test can parse without
 scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message
+snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc
 ```
 
 ## Time
@@ -1347,6 +1357,36 @@ across a rotation, not to the snapshot protocol itself.
   `tests/fixtures/deploys.json`, one target with two deploys, so both
   deploys' verdicts and the screenshot `<img>` tag are checked to render,
   not just the newest one.
+  **The doctor page** (web UI task 7, "doctor"). `GET /api/doctor` is
+  `forge doctor --json` passed straight through — the same read the
+  header strip already used — rendered as one row per check: its name,
+  its state, its detail, and, whenever it carries one, its fix line
+  underneath (`hint`). Held initiatives get their own section: `GET
+  /api/initiatives` is `forge initiative list --json` with no project
+  (every initiative across every project), filtered client-side to
+  `state === "held"`, each drawn with the same budget/stop-after control
+  the initiative page uses — `POST /api/initiatives/<id>` (task 4's
+  route), unchanged. Retained worktrees get their own section too, off
+  the `worktrees` check's own `worktree_ids` (above), with a gc control:
+  `POST /api/gc` runs `forge gc` (no `--dry-run`; the page already shows
+  which tasks are retained and why, before the click) and returns
+  `{"output": ...}` or `{"error": ...}` (`502`) exactly like the other
+  write routes, after which the page re-reads `/api/doctor` the same as
+  `forge retry`'s own caller does for the task list. The rate windows
+  (each `rate_limit` check's `five_hour_pct`/`seven_day_pct` and their
+  own reset times, through `web/src/time.js`'s `fmtTime`), spend
+  (`spend_usd`/`spend_cap_usd`), and the `learning` check's regression
+  lines (split on the `"; "` `check_learning` already joins them with,
+  one per line, only while the check is WARN) each get their own
+  readout beside the plain row. A refresh control re-reads everything on
+  demand, and the page also refreshes itself every 60 seconds
+  (`setInterval`, cleared on navigating away) since nothing on the event
+  stream names a doctor check going bad. Rendering
+  (`web/src/doctor.js`'s `renderDoctorDoc`) is pure — no DOM, no fetch —
+  tested under `node` by `web/tests/doctor_render.rs` against
+  `tests/fixtures/doctor.json`, a doctor document with one WARN check
+  (`worktrees`) among a page of OK ones, checked specifically to render
+  that check's own fix line.
   **Webhooks.** `POST /hooks/<project>/<name>` is the one route not behind
   the web token: its credential is the hook's own token, sent as
   `Authorization: Bearer <token>` (never in the URL or a cookie), and the

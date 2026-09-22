@@ -1,0 +1,120 @@
+[
+  {
+    "name": "binary.codex",
+    "status": "ok",
+    "detail": "/usr/bin/codex",
+    "hint": ""
+  },
+  {
+    "name": "git",
+    "status": "ok",
+    "detail": "/usr/bin/git",
+    "hint": ""
+  },
+  {
+    "name": "sandbox",
+    "status": "ok",
+    "detail": "bwrap at /usr/bin/bwrap",
+    "hint": ""
+  },
+  {
+    "name": "home",
+    "status": "ok",
+    "detail": "/home/x/.local/share/forge2",
+    "hint": ""
+  },
+  {
+    "name": "cache",
+    "status": "ok",
+    "detail": "42 blob file(s) totaling 1.2 MB",
+    "hint": ""
+  },
+  {
+    "name": "config",
+    "status": "ok",
+    "detail": "windows 5h <= 80% / 7d <= 90%, per_task_usd 5.00, per_day_usd 50.00; sandbox ro 3/3 present, rw 2/2 present",
+    "hint": ""
+  },
+  {
+    "name": "schema",
+    "status": "ok",
+    "detail": "version 14",
+    "hint": ""
+  },
+  {
+    "name": "purposes",
+    "status": "ok",
+    "detail": "every project has a real purpose",
+    "hint": ""
+  },
+  {
+    "name": "workflows",
+    "status": "ok",
+    "detail": "6 file(s), 0 blocking, 0 warning(s), 0 uncommitted",
+    "hint": ""
+  },
+  {
+    "name": "plugins",
+    "status": "ok",
+    "detail": "1 plugin(s) found, 0 problem(s)",
+    "hint": ""
+  },
+  {
+    "name": "learning",
+    "status": "ok",
+    "detail": "3 of 3 workflow(s) measured; no regressions",
+    "hint": ""
+  },
+  {
+    "name": "worker",
+    "status": "ok",
+    "detail": "pid 4242 running",
+    "hint": ""
+  },
+  {
+    "name": "queue",
+    "status": "ok",
+    "detail": "2 queued, 1 running",
+    "hint": "",
+    "queued": 2,
+    "running": 1
+  },
+  {
+    "name": "worktrees",
+    "status": "warn",
+    "detail": "2 retained: [3, 7]",
+    "hint": "forge gc removes the published ones and explains the rest",
+    "worktree_ids": [3, 7]
+  },
+  {
+    "name": "logs",
+    "status": "ok",
+    "detail": "events.jsonl 340.0 KB; 12 attempt log(s) totaling 8.4 MB, oldest 2026-08-01",
+    "hint": ""
+  },
+  {
+    "name": "initiatives",
+    "status": "ok",
+    "detail": "none held",
+    "hint": ""
+  },
+  {
+    "name": "spend",
+    "status": "ok",
+    "detail": "$3.50 of $50.00 in the last 24h",
+    "hint": "",
+    "spend_usd": 3.5,
+    "spend_cap_usd": 50.0
+  },
+  {
+    "name": "rate_limit",
+    "status": "ok",
+    "detail": "anthropic: 5h 42%, 7d 18% (seen 2026-09-22 05:00, 2m ago)",
+    "hint": "",
+    "provider": "anthropic",
+    "five_hour_pct": 0.42,
+    "five_hour_resets_at": 2000003600,
+    "seven_day_pct": 0.18,
+    "seven_day_resets_at": 2000600000
+  }
+]

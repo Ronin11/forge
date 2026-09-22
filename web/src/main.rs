@@ -9,9 +9,10 @@
 //! (`forge initiative set`), the initiative page's budget/stop-after
 //! control (`web/src/initiative.js`) — `POST
 //! /api/deploys/run/<project>/<target>` (`forge deploy`), the deploys
-//! page's "deploy now" control (`web/src/deploys.js`) — and `POST
-//! /hooks/<project>/<name>`, a webhook delivery handed to `forge job
-//! fire` (docs/CLIENT.md).
+//! page's "deploy now" control (`web/src/deploys.js`) — `POST /api/gc`
+//! (`forge gc`), the doctor page's gc control for retained worktrees
+//! (`web/src/doctor.js`) — and `POST /hooks/<project>/<name>`, a webhook
+//! delivery handed to `forge job fire` (docs/CLIENT.md).
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
 //! `/tasks/<id>` (one task: trace, diagnosis, journal, its events),
@@ -48,6 +49,7 @@ const TASK_JS: &str = include_str!("task.js");
 const INITIATIVE_JS: &str = include_str!("initiative.js");
 const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
+const DOCTOR_JS: &str = include_str!("doctor.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -401,8 +403,8 @@ fn deploy_run_route(forge: &Forge, project: &str, target: &str) -> Result<Value>
 }
 
 /// `forge doctor --json`, through the client crate's typed `DoctorCheck`,
-/// for the header strip's worker/rate-window/spend/queue readout (and,
-/// later, the `/doctor` page itself).
+/// for the header strip's worker/rate-window/spend/queue readout and the
+/// `/doctor` page (web UI task 7, "doctor") itself.
 fn doctor_json(forge: &Forge) -> Result<Value> {
     let checks = forge.doctor()?;
     let arr: Vec<Value> = checks
@@ -422,10 +424,22 @@ fn doctor_json(forge: &Forge) -> Result<Value> {
                 "spend_cap_usd": c.spend_cap_usd,
                 "queued": c.queued,
                 "running": c.running,
+                "worktree_ids": c.worktree_ids,
             })
         })
         .collect();
     Ok(Value::Array(arr))
+}
+
+/// `POST /api/gc`: the doctor page's gc control, run through `forge gc`
+/// (no `--dry-run`: the page already shows exactly which tasks' worktrees
+/// are retained, and why, before the operator clicks it) — the same verb
+/// `forge gc` on the command line runs, so a worktree it removes stops
+/// showing up in the `worktrees` check's `worktree_ids` on the page's own
+/// next read.
+fn gc_route(forge: &Forge) -> Result<Value> {
+    let out = forge.run(&["gc"])?;
+    Ok(serde_json::json!({ "output": out }))
 }
 
 /// `forge plugin list --json` and `forge plugin status --json`, through
@@ -1077,6 +1091,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
             || path.starts_with("/api/initiatives/")
+            || path == "/api/gc"
             || path.starts_with("/api/deploys/run/")
             || matches!(
                 plugin_action(&path),
@@ -1142,6 +1157,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/initiative.js" => text(200, INITIATIVE_JS, "application/javascript"),
         "/deploys.js" => text(200, DEPLOYS_JS, "application/javascript"),
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
+        "/doctor.js" => text(200, DOCTOR_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1257,6 +1273,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             }
             _ => text(404, "not found", "text/plain"),
         },
+        "/api/initiatives" => json_or_error(forge.json(&["initiative", "list", "--json"])),
         p if p.starts_with("/api/initiatives/") => match id_of(&p["/api/initiatives/".len()..]) {
             Some(id) => match req.method() {
                 Method::Get => {
@@ -1270,6 +1287,13 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             },
             None => text(404, "no such initiative", "text/plain"),
         },
+        "/api/gc" => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                json_or_error(gc_route(forge))
+            }
+        }
         "/api/deploys" => json_or_error(deploys_merged(forge)),
         p if p.starts_with("/api/deploys/shot/") => match id_of(&p["/api/deploys/shot/".len()..]) {
             Some(id) => {

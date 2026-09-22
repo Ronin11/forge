@@ -116,7 +116,14 @@ case "$1" in
     esac ;;
   initiative)
     case "$2" in
-      list) echo "[{\"id\":5,\"project\":\"$3\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"queued\":1,\"running\":0,\"succeeded\":0,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":1.25,\"budget_usd\":null,\"stop_after_same_rule\":3,\"created_at\":1,\"settled_at\":null}]" ;;
+      list)
+        if [ "$3" = "--json" ]; then
+          # No project: every project's initiatives, as the doctor page's
+          # `/api/initiatives` reads for its held-initiatives section.
+          echo '[{"id":5,"project":"demo","outcome":"ship it","state":"open","held_rule":null,"queued":1,"running":0,"succeeded":0,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":1.25,"budget_usd":null,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":6,"project":"demo","outcome":"held one","state":"held","held_rule":"budget","queued":2,"running":0,"succeeded":0,"failed":1,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":10.0,"budget_usd":10.0,"stop_after_same_rule":3,"created_at":1,"settled_at":null}]'
+        else
+          echo "[{\"id\":5,\"project\":\"$3\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"queued\":1,\"running\":0,\"succeeded\":0,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":1.25,\"budget_usd\":null,\"stop_after_same_rule\":3,\"created_at\":1,\"settled_at\":null}]"
+        fi ;;
       report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\",\"retries\":0,\"score\":null,\"cost_usd\":1.25}],\"refused\":[],\"rulings\":[],\"questions\":[],\"deployed\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
       set)
         id="$3"; shift 3
@@ -176,6 +183,7 @@ JSON
 {"workflows":[],"steps":[],"journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"no_journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"by_role":[{"role":"code","provider":"anthropic","model":"claude-sonnet-5","attempts":10,"succeeded":8,"succeeded_share":0.8,"mean_turns":12.5,"mean_cost_usd":1.23,"mean_secs":340.0,"landed":6,"broke_base":1,"broke_base_share":0.16666666666666666},{"role":"review","provider":"anthropic","model":"claude-haiku-4-5","attempts":4,"succeeded":4,"succeeded_share":1.0,"mean_turns":3.0,"mean_cost_usd":0.1,"mean_secs":20.0}]}
 JSON
   ;;
+  gc) echo "task 3       removed      /wt/3"; echo "task 7 kept (uncommitted changes)" ;;
   graph) cat <<'JSON'
 {"nodes":[{"path":"src","kind":"module","symbols":4,"lines":120,"overlay":{"tasks":[],"demotions":[],"repair_cost_usd":0.0}},{"path":"src/a.rs","kind":"file","symbols":3,"lines":80,"overlay":{"tasks":[{"id":1,"at":1,"cost_usd":0.5}],"demotions":[],"repair_cost_usd":0.0}},{"path":"src/b.rs","kind":"file","symbols":1,"lines":40,"overlay":{"tasks":[],"demotions":[{"id":2,"at":2,"reason":"off by one"}],"repair_cost_usd":1.25}}],"edges":[{"from":"src/a.rs","to":"src/b.rs"}]}
 JSON
@@ -314,7 +322,10 @@ fn without_the_token_nothing_is_served() {
         "/initiatives/5",
         "/api/projects",
         "/api/projects/demo",
+        "/api/initiatives",
         "/api/initiatives/5",
+        "/api/gc",
+        "/doctor.js",
         "/graph",
         "/api/graph?repo=%2Fsome%2Frepo",
         "/graph/modules",
@@ -581,6 +592,45 @@ fn the_shared_shell_serves_its_assets_and_the_doctor_route_passes_forge_json_thr
     assert_eq!(rate["provider"], "anthropic");
     assert_eq!(rate["five_hour_pct"], 0.82);
     assert_eq!(rate["five_hour_resets_at"], 2000000200_i64);
+}
+
+#[test]
+fn the_doctor_page_lists_held_initiatives_and_runs_gc() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, head, body) = get(&w.addr, "/doctor.js", &cookie);
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("Content-Type: application/javascript"),
+        "{head}"
+    );
+    assert!(body.contains("renderDoctorDoc"), "{body}");
+
+    // GET /api/initiatives: `forge initiative list --json` with no
+    // project, every initiative across every project — the doctor page
+    // filters this client-side to the held ones for its own controls.
+    let (status, _, body) = get(&w.addr, "/api/initiatives", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{body}");
+    let held = rows.iter().find(|r| r["state"] == "held").unwrap();
+    assert_eq!(held["id"], 6);
+    assert_eq!(held["held_rule"], "budget");
+    assert_eq!(held["budget_usd"], 10.0);
+
+    // GET /api/gc is refused; POST runs `forge gc` and returns its
+    // output untouched, the same shape as every other write route.
+    let (status, _, _) = get(&w.addr, "/api/gc", &cookie);
+    assert_eq!(status, 405);
+    let (status, _, body) = post(&w.addr, "/api/gc", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let out = v["output"].as_str().unwrap();
+    assert!(out.contains("task 3"), "{out}");
+    assert!(out.contains("removed"), "{out}");
+    assert!(out.contains("task 7 kept"), "{out}");
 }
 
 #[test]

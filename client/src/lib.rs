@@ -507,7 +507,7 @@ pub struct Snapshot {
 /// optional structured numbers a few checks carry alongside their prose
 /// (`src/doctor.rs`'s `Check`) — `rate_limit` sets `provider` and the
 /// window fields, `spend` sets `spend_usd`/`spend_cap_usd`, `queue` sets
-/// `queued`/`running`.
+/// `queued`/`running`, `worktrees` sets `worktree_ids`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DoctorCheck {
     #[serde(default)]
@@ -536,6 +536,8 @@ pub struct DoctorCheck {
     pub queued: Option<i64>,
     #[serde(default)]
     pub running: Option<i64>,
+    #[serde(default)]
+    pub worktree_ids: Option<Vec<i64>>,
 }
 
 /// One row of `forge log --json`: a task as the queue lists it.

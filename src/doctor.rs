@@ -19,9 +19,9 @@ pub enum Status {
 /// a handful of checks carry the same numbers structured, so a client can
 /// draw a gauge instead of parsing prose: `rate_limit` sets `provider` and
 /// the window fields, `spend` sets `spend_usd`/`spend_cap_usd`, `queue`
-/// sets `queued`/`running`. `forge doctor --json` is explicitly not part
-/// of the stable contract (docs/CLIENT.md), so these are additive and
-/// every other check simply leaves them `None`.
+/// sets `queued`/`running`, `worktrees` sets `worktree_ids`. `forge doctor
+/// --json` is explicitly not part of the stable contract (docs/CLIENT.md),
+/// so these are additive and every other check simply leaves them `None`.
 #[derive(Serialize)]
 pub struct Check {
     pub name: String,
@@ -46,6 +46,11 @@ pub struct Check {
     pub queued: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running: Option<i64>,
+    /// `worktrees` sets this to the retained tasks' ids, the same list
+    /// its prose detail already names, so a client can draw a gc control
+    /// per id without parsing `Vec<i64>`'s `{:?}` out of the text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_ids: Option<Vec<i64>>,
 }
 
 fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<String>) -> Check {
@@ -63,6 +68,7 @@ fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<
         spend_cap_usd: None,
         queued: None,
         running: None,
+        worktree_ids: None,
     }
 }
 
@@ -607,12 +613,14 @@ fn check_worktrees(store: &Store) -> Vec<Check> {
     vec![if retained.is_empty() {
         check("worktrees", Status::Ok, "none retained", "")
     } else {
-        check(
+        let mut c = check(
             "worktrees",
             Status::Warn,
             format!("{} retained: {:?}", retained.len(), retained),
             "forge gc removes the published ones and explains the rest",
-        )
+        );
+        c.worktree_ids = Some(retained);
+        c
     }]
 }
 
@@ -866,6 +874,30 @@ mod tests {
         assert_eq!(checks[0].name, "worktrees");
         assert!(checks[0].status == Status::Ok);
         assert_eq!(checks[0].detail, "none retained");
+    }
+
+    /// A finished task whose worktree is still on disk: WARN, and the
+    /// structured `worktree_ids` a client (the doctor page's gc control)
+    /// reads instead of parsing the `{:?}`-formatted list out of `detail`.
+    #[test]
+    fn check_worktrees_warns_and_carries_the_retained_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("forge.db")).unwrap();
+        let mut t = fixture_task(TaskState::Failed, "", 0, Some(crate::unix_now()));
+        t.worktree = "/wt/1".into();
+        t.id = store.insert_task(&t).unwrap();
+        store.update_task(&t).unwrap();
+
+        let checks = check_worktrees(&store);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "worktrees");
+        assert!(checks[0].status == Status::Warn);
+        assert_eq!(checks[0].worktree_ids, Some(vec![t.id]));
+        assert!(
+            checks[0].detail.contains(&t.id.to_string()),
+            "{}",
+            checks[0].detail
+        );
     }
 
     /// A `Forge` over a fresh, empty store in a throwaway home (the same
