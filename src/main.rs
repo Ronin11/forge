@@ -1,4 +1,4 @@
-//! Forge 2: one binary, no daemon. `forge run <repo> "<task>"` creates a
+//! Forge: one binary, no daemon. `forge run <repo> "<task>"` creates a
 //! worktree, runs the agent in it under bubblewrap with a wall-clock
 //! timeout, verifies the result at three levels, retries with the failure
 //! as feedback, pushes on success, and records every attempt. `forge add`

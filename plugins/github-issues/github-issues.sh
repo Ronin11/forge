@@ -12,7 +12,9 @@ fi
 : "${LABEL:=forge}"
 : "${DONE_LABEL:=}"
 : "${POLL_SECONDS:=120}"
-: "${WORKFLOW:=direct}"
+# Matches trust.public's own default policy (workflows = ["reviewed"]),
+# so a task this plugin files is not refused at the door by default.
+: "${WORKFLOW:=reviewed}"
 
 case "$POLL_SECONDS" in
     ''|*[!0-9]*) POLL_SECONDS=120 ;;

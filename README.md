@@ -229,6 +229,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
+  factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
 src/supervisor.rs   the rung between a blocked task and the human
@@ -250,7 +251,10 @@ web/      forge-web: the same seat in a browser
 
 - `FORGE_HOME` (default `$XDG_DATA_HOME/forge` or `~/.local/share/forge`)
   holds `forge.db`, `config.toml`, `worktrees/`, `logs/`. Separate from
-  Forge 1's `FORGE_HOME`.
+  Forge 1's `FORGE_HOME`. For one release, an old install with no
+  `FORGE_HOME` set and no new default directory yet falls back to its
+  pre-rename data directory and old-named environment variables; `forge
+  doctor` says exactly what to move and rename.
 - `FORGE_CLAUDE_BIN` overrides the agent binary. Anything that accepts the
   same flags and emits stream-json works; the tests use shell scripts.
 - `FORGE_SANDBOX=0` runs the agent and checks directly on the host.

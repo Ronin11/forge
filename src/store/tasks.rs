@@ -865,6 +865,18 @@ impl Store {
             })?)
     }
 
+    /// How many tasks at `trust` were filed (`created_at`) since `since`
+    /// (a unix second): what `queue::apply_trust_policy` checks a level's
+    /// own `per_day` against, the way `Store::jobs_started_since` backs a
+    /// job's own `per_day`.
+    pub fn tasks_filed_since(&self, trust: Trust, since: i64) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*) FROM tasks WHERE trust=?1 AND created_at >= ?2",
+            params![trust.as_str(), since],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Put a running task back in the queue, closing its open attempt as
     /// agent_failed with `why`, so the next worker resumes at the following
     /// attempt number.

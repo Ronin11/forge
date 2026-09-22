@@ -2,7 +2,7 @@
 name = "forge-tui"
 version = "0.1.0"
 edition = "2024"
-description = "A terminal client for Forge 2. Speaks only the JSON the forge CLI emits and acts only through forge verbs."
+description = "A terminal client for Forge. Speaks only the JSON the forge CLI emits and acts only through forge verbs."
 
 [lib]
 name = "forge_tui"

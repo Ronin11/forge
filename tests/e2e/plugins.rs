@@ -10,6 +10,7 @@
 use crate::support::*;
 use rusqlite::OptionalExtension;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -590,7 +591,7 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
     std::fs::write(
         e.home.join("plugins/github-issues/config"),
         format!(
-            "GH_REPO=acme/widgets\nLABEL=forge\nDONE_LABEL=forge-done\nPOLL_SECONDS=30\nTARGET_REPO={}\nWORKFLOW=direct\n",
+            "GH_REPO=acme/widgets\nLABEL=forge\nDONE_LABEL=forge-done\nPOLL_SECONDS=30\nTARGET_REPO={}\nWORKFLOW=reviewed\n",
             e.repo.display()
         ),
     )
@@ -606,11 +607,19 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut worker = Worker::spawn(
-        e.cmd("ok.sh")
-            .env("PATH", path)
-            .args(["work", "--poll", "1"]),
+    // The plugin's own default workflow is now "reviewed" (matching
+    // trust.public's own default policy), so the run needs a REVIEW fake
+    // that approves without writing (its own contract) and an ASSESS fake
+    // (the workflow's own `assess = true`), the same pair
+    // tests/e2e/landing.rs uses for the reviewed workflow.
+    let mut worker_cmd = e.with_role("ok.sh", "REVIEW", "reviewer-ok.sh");
+    worker_cmd.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fakes")
+            .join("assessor.sh"),
     );
+    let mut worker = Worker::spawn(worker_cmd.env("PATH", path).args(["work", "--poll", "1"]));
 
     // Wait on the plugin's own `filed` state file rather than the tasks
     // table: `intake_once` writes it only after both `forge add` and
@@ -1317,6 +1326,17 @@ fn the_signal_plugin_routes_a_contacts_message_through_the_concierge() {
                 "--repo",
                 repo,
             ],
+        )
+        .status
+        .success()
+    );
+    // A contact's own requested work must run under a workflow
+    // trust.contact's default policy allows (see `build_trust`), which
+    // "direct" is not.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "set", "demo", "--workflow", "reviewed"],
         )
         .status
         .success()

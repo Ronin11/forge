@@ -140,6 +140,10 @@ pub struct Forge {
     pub early_ending: config::EarlyEnding,
     pub measure: config::Measure,
     pub intake: config::Intake,
+    /// `[trust.<level>]`: the policy each of the three trust levels a
+    /// task can carry is judged against at enqueue (see
+    /// `queue::apply_trust_policy`).
+    pub trust: config::TrustPolicies,
     /// Agent backends by name, the built-in "anthropic" always present
     /// (see `config::load_home`).
     pub providers: std::collections::BTreeMap<String, agent::Provider>,
@@ -190,6 +194,7 @@ impl Forge {
             early_ending: home.early_ending,
             measure: home.measure,
             intake: home.intake,
+            trust: home.trust,
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
@@ -210,6 +215,7 @@ impl Forge {
             early_ending: home.early_ending,
             measure: home.measure,
             intake: home.intake,
+            trust: home.trust,
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,

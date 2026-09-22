@@ -312,7 +312,8 @@ struct HomeRaw {
     #[serde(default)]
     intake: IntakeRaw,
     /// `[trust.<level>]`: the policy each trust level a task can carry is
-    /// judged against, once something enforces it (see `build_trust`).
+    /// judged against at enqueue (see `build_trust`,
+    /// `queue::apply_trust_policy`).
     #[serde(default)]
     trust: TrustRaw,
     /// Agent backends beyond the built-in "anthropic" default; see
@@ -448,10 +449,7 @@ pub struct HomeConfig {
     pub measure: Measure,
     pub intake: Intake,
     /// `[trust.<level>]`: the policy per trust level, defaulted per
-    /// `build_trust`. No caller yet: this is task 1 of 4 (the column and
-    /// the policy, see docs/ROADMAP.md); enforcement reads this starting
-    /// with a later task.
-    #[allow(dead_code)]
+    /// `build_trust`; enforced at enqueue (`queue::apply_trust_policy`).
     pub trust: TrustPolicies,
     /// Agent backends by name, the built-in "anthropic" always present
     /// (overridable, but never absent) so a task naming no `--provider`
@@ -554,10 +552,9 @@ struct IntakeRaw {
 
 /// `[trust.operator]`, `[trust.contact]`, `[trust.public]`: the policy
 /// each of the three trust levels a task can carry (`store::Trust`) is
-/// judged against, once something enforces it (see docs/GTM.md item 1,
-/// docs/ROADMAP.md). No enforcement reads this table yet; it exists so
-/// the discipline is declared and testable ahead of the code that reads
-/// it.
+/// judged against at enqueue (see docs/GTM.md item 1, docs/ROADMAP.md,
+/// `queue::apply_trust_policy`). `egress` and `auto_land` are declared
+/// here but enforced by a later task.
 #[derive(Deserialize, Default)]
 struct TrustRaw {
     #[serde(default)]
@@ -590,7 +587,8 @@ pub enum TrustEgress {
 }
 
 impl TrustEgress {
-    /// No caller yet; see `HomeConfig::trust`.
+    /// No caller yet: egress enforcement is a later task (see
+    /// `HomeConfig::trust`, docs/ROADMAP.md item 4).
     #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -601,7 +599,7 @@ impl TrustEgress {
 }
 
 /// One trust level's policy: what a task queued at that level may do,
-/// once something enforces it. See `TrustPolicies`.
+/// enforced at enqueue by `queue::apply_trust_policy`. See `TrustPolicies`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrustPolicy {
     /// Cost cap for a task at this level; `None` is the operator's own
@@ -648,9 +646,12 @@ fn parse_trust_egress(
 /// tables, defaulted per level (see `DEFAULT_HOME_CONFIG`'s own
 /// `[trust.*]` comments, which this must agree with) when a field or a
 /// whole table is absent. `operator` is unrestricted by default; `contact`
-/// requires a reviewed-or-stricter workflow and may not touch protected
-/// paths; `public` is tighter on every field, with `auto_land = false`
-/// and `per_day = 5`.
+/// requires a reviewed-or-stricter workflow for its own requested work,
+/// plus the front door itself (`concierge`, the decision `forge ask`
+/// runs to sort a message, and `intake`, the interview a `need` decision
+/// files — neither ever writes code, and without both a contact could not
+/// reach `forge ask` at all), and may not touch protected paths; `public`
+/// is tighter on every field, with `auto_land = false` and `per_day = 5`.
 fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
     Ok(TrustPolicies {
         operator: TrustPolicy {
@@ -663,10 +664,14 @@ fn build_trust(raw: TrustRaw) -> Result<TrustPolicies> {
         },
         contact: TrustPolicy {
             budget_usd: raw.contact.budget_usd,
-            workflows: raw
-                .contact
-                .workflows
-                .or_else(|| Some(vec!["reviewed".to_string(), "tdd-reviewed".to_string()])),
+            workflows: raw.contact.workflows.or_else(|| {
+                Some(vec![
+                    "reviewed".to_string(),
+                    "tdd-reviewed".to_string(),
+                    "concierge".to_string(),
+                    "intake".to_string(),
+                ])
+            }),
             allow_protected: raw.contact.allow_protected.unwrap_or(false),
             egress: parse_trust_egress("contact", raw.contact.egress, TrustEgress::Declared)?,
             per_day: raw.contact.per_day,
@@ -697,7 +702,7 @@ pub struct Intake {
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
-# Forge 2 operator config.
+# Forge operator config.
 [budget]
 # The subscription's rate windows, as fractions of each window the claude CLI
 # reports after every attempt. At or above a cap the worker holds until the
@@ -826,7 +831,8 @@ max_questions_per_day = 8
 # the configured providers' model endpoints, or \"declared\": also the hosts
 # forge.toml's own [sandbox] egress names), per_day (how many tasks may start
 # at this level per day, unset means no cap), and auto_land (may a verified
-# task at this level land itself). Nothing enforces this yet; see
+# task at this level land itself). budget_usd, workflows, allow_protected and
+# per_day are enforced at enqueue; egress and auto_land by a later task. See
 # docs/ROADMAP.md and docs/GTM.md item 1.
 [trust.operator]
 allow_protected = true
@@ -834,9 +840,10 @@ egress = \"declared\"
 auto_land = true
 
 [trust.contact]
-# Reviewed or stricter: a contact's task may not run under a workflow with
-# no review step.
-workflows = [\"reviewed\", \"tdd-reviewed\"]
+# Reviewed or stricter for a contact's own requested work, plus concierge
+# and intake, the front door itself (forge ask's own decision, and the
+# interview a need files) — neither ever writes code.
+workflows = [\"reviewed\", \"tdd-reviewed\", \"concierge\", \"intake\"]
 allow_protected = false
 egress = \"declared\"
 auto_land = true
@@ -1291,16 +1298,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "plugin_dirs = [\"~/.config/forge2/plugins\", \"relative/plugins\", \"/opt/forge2/plugins\"]\n",
+            "plugin_dirs = [\"~/.config/forge/plugins\", \"relative/plugins\", \"/opt/forge/plugins\"]\n",
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(
             c.plugin_dirs,
             vec![
-                PathBuf::from(std::env::var("HOME").unwrap()).join(".config/forge2/plugins"),
+                PathBuf::from(std::env::var("HOME").unwrap()).join(".config/forge/plugins"),
                 dir.path().join("relative/plugins"),
-                PathBuf::from("/opt/forge2/plugins"),
+                PathBuf::from("/opt/forge/plugins"),
             ]
         );
     }
@@ -1395,7 +1402,12 @@ mod tests {
             c.trust.contact,
             TrustPolicy {
                 budget_usd: None,
-                workflows: Some(vec!["reviewed".to_string(), "tdd-reviewed".to_string()]),
+                workflows: Some(vec![
+                    "reviewed".to_string(),
+                    "tdd-reviewed".to_string(),
+                    "concierge".to_string(),
+                    "intake".to_string(),
+                ]),
                 allow_protected: false,
                 egress: TrustEgress::Declared,
                 per_day: None,
