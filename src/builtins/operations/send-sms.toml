@@ -9,7 +9,7 @@ if [ "${FORGE_DRY_RUN:-}" = "1" ]; then
   printf "message\t%s\t%s (dry run)\n" "$contact" "$summary" >> "$FORGE_EFFECT_LOG"
 else
   resp=$(mktemp)
-  code=$(curl -s -o "$resp" -w '%{http_code}' \
+  code=$(curl -s -o "$resp" -w '%{http_code}' -X POST \
     -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
     "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_ACCOUNT_SID/Messages.json" \
     --data-urlencode "From=$TWILIO_FROM" \

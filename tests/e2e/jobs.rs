@@ -3654,3 +3654,241 @@ fn backup_daily_copies_the_store_checks_it_opens_and_keeps_the_seven_newest() {
         "{log}"
     );
 }
+
+/// `send-sms.toml` (docs/PLUGINS.md, "twilio"; docs/ACTIONS.md,
+/// "Operations"): the `message` effect over Twilio, the way
+/// `send-signal.toml` is the same effect over Signal. A dry run logs
+/// the message to the effect log and never calls Twilio at all — the
+/// same posture `forge_job_start_now_runs_operations_inline_and_dry_run_writes_nothing`
+/// checks for the two other built-in effects.
+#[test]
+fn send_sms_dry_run_logs_and_does_not_call_the_api() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("workflows/sms.toml"),
+        r#"name = "sms"
+kind = "run"
+description = "sends a text through Twilio"
+
+steps = [
+  { action = "send-sms", effect = "message" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+sent = ["bash", "-c", "grep -q '^message' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"contact":"+15555550111","text":"hello"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    // A stub `curl` on `PATH`: if send-sms.toml's dry-run branch ever
+    // actually calls it, this records the call so the test can catch it.
+    let stub_dir = e._dir.path().join("stub-bin");
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let calls = e._dir.path().join("curl-calls.log");
+    std::fs::write(
+        stub_dir.join("curl"),
+        format!("#!/bin/sh\necho \"$@\" >> {}\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        stub_dir.join("curl"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", path)
+        .args([
+            "job", "start", "equitizr", "sms", "--input", input_s, "--dry-run", "--now",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "ok", "{doc:?}");
+    assert_eq!(doc["dry_run"], true);
+    let effects = doc["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0]["kind"], "message");
+    assert_eq!(effects[0]["target"], "+15555550111");
+    assert!(effects[0]["dry_run"].as_bool().unwrap());
+    assert!(
+        effects[0]["summary"].as_str().unwrap().contains("dry run"),
+        "{effects:?}"
+    );
+
+    assert!(
+        !calls.exists(),
+        "a dry run must never call the API: {:?}",
+        std::fs::read_to_string(&calls)
+    );
+}
+
+/// A Twilio error response fails the step and surfaces the error's own
+/// code and message rather than a generic failure — 30034 (an
+/// unregistered 10DLC sender) says plainly that this is a human step,
+/// not something a retry fixes (docs/PLUGINS.md, "twilio").
+#[test]
+fn send_sms_error_30034_surfaces_its_message() {
+    let e = Env::new();
+    let repo_s = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "equitizr",
+                "--purpose",
+                "p",
+                "--repo",
+                repo_s
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+
+    std::fs::write(
+        e.home.join("config.toml"),
+        "[projects.equitizr.secrets]\n\
+         TWILIO_ACCOUNT_SID = \"ACtest\"\n\
+         TWILIO_AUTH_TOKEN = \"tokentest\"\n\
+         TWILIO_FROM = \"+15555550100\"\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        e.home.join("workflows/sms.toml"),
+        r#"name = "sms"
+kind = "run"
+description = "sends a text through Twilio"
+
+steps = [
+  { action = "send-sms", effect = "message" },
+]
+
+[trigger]
+on = "manual"
+
+[assert]
+sent = ["bash", "-c", "grep -q '^message' \"$FORGE_EFFECT_LOG\""]
+
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "drop"
+"#,
+    )
+    .unwrap();
+
+    let input = e.home.join("input.json");
+    std::fs::write(&input, r#"{"contact":"+15555550111","text":"hello"}"#).unwrap();
+    let input_s = input.to_str().unwrap();
+
+    let fake_dir = e._dir.path().join("fake-twilio");
+    std::fs::create_dir_all(&fake_dir).unwrap();
+    std::fs::write(
+        fake_dir.join("send_error.json"),
+        serde_json::json!({
+            "code": 30034,
+            "message": "Unregistered 10DLC number",
+            "more_info": "https://www.twilio.com/docs/errors/30034",
+            "status": 400
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let stub_dir = e._dir.path().join("stub-bin");
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let fake_curl = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/curl.sh");
+    std::fs::write(
+        stub_dir.join("curl"),
+        format!(
+            "#!/bin/sh\nFAKE_TWILIO_DIR={} exec {} \"$@\"\n",
+            fake_dir.display(),
+            fake_curl.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        stub_dir.join("curl"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap());
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", path)
+        .args(["job", "start", "equitizr", "sms", "--input", input_s, "--now"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id: i64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+
+    let doc: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["job", "show", &id.to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(doc["state"], "failed", "{doc:?}");
+    let steps = doc["steps"].as_array().unwrap();
+    let step = steps
+        .iter()
+        .find(|s| s["action"] == "send-sms")
+        .unwrap_or_else(|| panic!("no send-sms step: {steps:?}"));
+    assert!(
+        step["tail"].as_str().unwrap().contains("30034")
+            && step["tail"]
+                .as_str()
+                .unwrap()
+                .contains("Unregistered 10DLC number"),
+        "expected the Twilio error's own code and message: {step:?}"
+    );
+    assert!(
+        doc["effects"].as_array().unwrap().is_empty(),
+        "a failed send must record no effect: {doc:?}"
+    );
+}
