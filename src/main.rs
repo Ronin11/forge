@@ -20,6 +20,7 @@ mod doctor;
 mod egress;
 mod engine;
 mod envelope;
+mod experiment;
 
 mod git;
 mod graph;

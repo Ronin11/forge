@@ -425,6 +425,35 @@ enum Cmd {
         #[command(subcommand)]
         cmd: IntakeCmd,
     },
+    /// The economist: randomized assignment and its weekly rebalance (see
+    /// docs/ECONOMIST.md, "What is built")
+    Economist {
+        #[command(subcommand)]
+        cmd: EconomistCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum EconomistCmd {
+    /// Shift `experiment.toml`'s weights toward the cheaper level of
+    /// every factor, by the last N days of `forge stats --factors`,
+    /// commit the result in the catalog's git, and exit non-zero (for
+    /// `[limits] on_failure = "ask:operator"` to catch, see
+    /// `.forge/workflows/economist-weekly.toml`) when any level's effect
+    /// crosses --threshold
+    Rebalance {
+        /// Only tasks that finished in the last N days
+        #[arg(long, default_value_t = 14)]
+        days: i64,
+        /// Print the weights it would write; never writes or commits
+        #[arg(long)]
+        dry_run: bool,
+        /// A level whose |effect| (log true cost against its factor's
+        /// reference level) exceeds this is a large move: asked about
+        /// rather than shifted through quietly
+        #[arg(long, default_value_t = 1.0)]
+        threshold: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1425,6 +1454,13 @@ pub async fn main() -> Result<()> {
                 project,
                 repo,
             } => intake_accept(task, project, repo),
+        },
+        Cmd::Economist { cmd } => match cmd {
+            EconomistCmd::Rebalance {
+                days,
+                dry_run,
+                threshold,
+            } => economist_rebalance(days, dry_run, threshold).await,
         },
     }
 }
@@ -3457,6 +3493,77 @@ async fn put_workflow(
             };
             out!("{hash}");
         }
+    }
+    Ok(())
+}
+
+/// `forge economist rebalance` (docs/ECONOMIST.md, "What is built"): the
+/// weekly step `.forge/workflows/economist-weekly.toml` runs. Reads the
+/// same numbers `forge stats --factors --json` prints
+/// (`Store::factor_stats`) over the last `days`, shifts `experiment.toml`'s
+/// weights toward the cheaper, more confidently-measured level of every
+/// factor it declares (`experiment::rebalance`), and — unless `dry_run` —
+/// writes and commits the result in the catalog's own git
+/// (`git::commit_path`), with a message naming what moved
+/// (`experiment::commit_message`). Exits non-zero when any level's effect
+/// crosses `threshold`, dry run or not, so a real run's `[limits]
+/// on_failure = "ask:operator"` catches it — a dry run never asks, since
+/// the job driver only honours `on_failure` outside dry runs.
+async fn economist_rebalance(days: i64, dry_run: bool, threshold: f64) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let catalog = workflows::catalog_dir(&f.paths.home)?;
+    let Some(exp) = crate::experiment::load(&catalog)? else {
+        out!(
+            "no experiment.toml in {}; nothing to rebalance",
+            catalog.display()
+        );
+        return Ok(());
+    };
+    let since = unix_now() - days * 86_400;
+    let stats = f
+        .store
+        .factor_stats(&crate::store::StatsFilter::default(), Some(since))?;
+    let result = crate::experiment::rebalance(&exp.factors, exp.floor, &stats, threshold);
+    if result.shifts.is_empty() {
+        out!("no factor's weights moved");
+    }
+    for shift in &result.shifts {
+        out!("{}:", shift.factor);
+        for (level, w) in &shift.after {
+            let before = shift.before.get(level).copied().unwrap_or(0.0);
+            out!("  {level:<16} {before:.3} -> {w:.3}");
+        }
+    }
+    for m in &result.large_moves {
+        out!(
+            "large effect: {}:{} = {:+.2} log$ (se {}), over the {threshold:.2} threshold",
+            m.factor,
+            m.level,
+            m.effect,
+            m.effect_se.map_or("-".to_string(), |se| format!("{se:.2}")),
+        );
+    }
+    if !dry_run {
+        let new_exp = crate::experiment::ExperimentFile {
+            floor: exp.floor,
+            factors: result.factors.clone(),
+        };
+        if new_exp.factors != exp.factors {
+            crate::experiment::save(&catalog, &new_exp)?;
+            let message = crate::experiment::commit_message(&result.shifts);
+            match git::commit_path(&catalog, "experiment.toml", &message).await? {
+                Some(hash) => out!("{hash}"),
+                None => out!("weights unchanged; nothing to commit"),
+            }
+        } else {
+            out!("weights unchanged; nothing to commit");
+        }
+    }
+    if !result.large_moves.is_empty() {
+        bail!(
+            "{} level(s) crossed the effect threshold; asking the operator",
+            result.large_moves.len()
+        );
     }
     Ok(())
 }

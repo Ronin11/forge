@@ -1,0 +1,20 @@
+name = "economist-rebalance"
+kind = "operation"
+description = "runs `forge economist rebalance`: shifts experiment.toml's weights toward the cheaper, more confidently-measured level of every factor it declares, by the last ECONOMIST_DAYS days of forge stats --factors, and commits the result in the workflow catalog's own git. Honours FORGE_DRY_RUN (forge economist rebalance --dry-run: prints the weights it would write, writes and commits nothing). Fails (non-zero exit) when a level's effect crosses ECONOMIST_LARGE_EFFECT_THRESHOLD, which [limits] on_failure = \"ask:operator\" turns into a question naming the effect."
+run = ["bash", "-c", '''
+set -uo pipefail
+forge_bin="forge"
+[ -n "${FORGE_BIN_DIR:-}" ] && forge_bin="$FORGE_BIN_DIR/forge"
+
+args=(economist rebalance --days "${ECONOMIST_DAYS:-14}" --threshold "${ECONOMIST_LARGE_EFFECT_THRESHOLD:-1.0}")
+[ "${FORGE_DRY_RUN:-}" = "1" ] && args+=(--dry-run)
+
+out=$("$forge_bin" "${args[@]}" 2>&1)
+status=$?
+esc=$(printf '%s' "$out" | tr '\n' ' ')
+printf 'row\teconomist\t%s\n' "$esc" >> "$FORGE_EFFECT_LOG"
+if [ $status -ne 0 ]; then
+  echo "$out" >&2
+fi
+exit $status
+''']

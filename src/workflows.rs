@@ -1289,6 +1289,12 @@ fn toml_files(d: &Path) -> Result<Vec<PathBuf>> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        // `experiment.toml` (piece 4, docs/ECONOMIST.md) is a reserved
+        // name: it lives beside the workflow files in the same catalog
+        // directory but is never one itself, so it is never offered to
+        // the workflow parser (which would otherwise flag it as a
+        // broken workflow and block every task, `check`'s `blocking`).
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("experiment.toml"))
         .collect();
     v.sort();
     Ok(v)

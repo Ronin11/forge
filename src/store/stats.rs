@@ -159,8 +159,9 @@ pub struct StatsFilter {
 /// The roles `Task::routing` (and every `code`/`tests`/`review`/`plan`/
 /// `assess` attempt) can name: what `forge stats --factors`'s "provider
 /// per role" factor iterates over (see docs/ECONOMIST.md, "The inputs,
-/// and where each lives" and "Provider per role").
-const ROLES: [&str; 5] = ["code", "tests", "review", "plan", "assess"];
+/// and where each lives" and "Provider per role"), and the factor names
+/// `experiment.toml` may declare (piece 4, `crate::experiment::load`).
+pub const ROLES: [&str; 5] = ["code", "tests", "review", "plan", "assess"];
 
 /// Below this, a task's size class is `"small"`; below `SIZE_MEDIUM_MAX`
 /// it is `"medium"`; at or above, `"large"` (see `size_class`).

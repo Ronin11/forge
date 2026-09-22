@@ -1,0 +1,20 @@
+name = "economist-weekly"
+kind = "run"
+description = "Monday 06:00: shifts experiment.toml's per-role provider weights toward the level with lower true cost per landed task over the last two weeks (forge stats --factors), never below the floor; commits the result in the workflow catalog's own git with a message naming the effects; asks the operator when a level's effect is large enough to want a look before it compounds (docs/ECONOMIST.md, 'What is built')"
+
+steps = [
+  { action = "economist-rebalance", effect = "row" },
+]
+
+[trigger]
+on = "schedule"
+cron = "0 6 * * 1"
+
+[env]
+ECONOMIST_DAYS = "14"
+ECONOMIST_LARGE_EFFECT_THRESHOLD = "1.0"
+
+[limits]
+budget_usd = 0.0
+per_day = 1
+on_failure = "ask:operator"
