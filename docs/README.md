@@ -47,6 +47,8 @@ file is added or removed here without a matching change on disk.
   else keeps moving on its own.
 - **ROADMAP.md** — what "1.0" means for Forge, what is done, and what is
   left, in the order it should land.
+- **ops/** — the systemd units `forge-portal.service` and `forge-web.service`
+  and the Hetzner cloud-init file used to run Forge.
 
 ## Measurements
 
@@ -67,5 +69,8 @@ documentation.
   which of them have already been ported.
 - **CONTEXT.md** — a running status note on what a coding agent is told
   before it starts looking at a task.
+- **history/DESIGN-2026-09-08.md** and **history/COLD_DESIGN-2026-09-08.md**
+  — the design documents as of 2026-09-08, describing what was, and not
+  maintained.
 - **research/** — four external reports on verification and merge queues,
   and a synthesis of what they mean for Forge.
