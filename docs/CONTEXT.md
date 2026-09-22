@@ -51,6 +51,14 @@ introduced this section. The unit test
 pins the shared length against the pack and that the shared prefix
 names no task.
 
+The C4 prompt reduction is already implemented by `dca182f`: the fixed
+preamble went from 2,036 to 1,751 characters (285 fewer, a 14.0% reduction).
+These counts measure the decoded `PREAMBLE` string, including spaces and
+newlines, before and after that commit. It removed the instructions to
+list changed paths, include lockfiles, and describe renames or moves;
+the remaining result contract stays intact. The early-feedback note also
+no longer asks for a list of paths changed during the session.
+
 The map itself, when ranked with no words, leads with the files that
 declare the most and leaves out files that declare nothing, since a map
 ranked by nothing has no other signal than what a file carries.

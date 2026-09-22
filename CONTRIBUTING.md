@@ -37,6 +37,18 @@ runs attempts unsandboxed and does not prove sandbox isolation. Egress tests
 also require permission to create network namespaces and may skip in a nested
 sandbox. See [security posture](SECURITY.md).
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request, on
+`ubuntu-latest` with bubblewrap installed (`apt-get install bubblewrap`) so
+the sandboxed e2e tests run for real. It runs the same three commands the
+commit gate above runs — `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, and `cargo test --workspace` — caching the
+cargo registry and `target` directory between runs. No fake agent or e2e
+support script launches the real `claude` CLI; every test that exercises the
+agent path points `FORGE_CLAUDE_BIN` (or `PATH`) at a fake under
+`tests/fakes/`, so CI needs no model credentials.
+
 ## What a change must preserve
 
 - **Workflows are mandatory.** Every task runs a workflow; verification and
