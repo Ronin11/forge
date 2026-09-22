@@ -221,6 +221,30 @@ validation `experiment::load` applies to every factor in the file (role
 known, positive weights, normalized, none under the floor), then writes
 and commits `experiment.toml` exactly like a normal rebalance.
 
+## Subscriptions: price at list, spend by the window (2026-09-22)
+
+The first real rebalance (job 26) proposed moving OpenAI up on both
+roles by a wide margin. The fit was honest and the input was wrong: the
+subscription reports tokens but no dollars, so 146 OpenAI attempts sat
+in the record at $0 and the economist saw a free provider. Two rules
+follow, and both are now in place.
+
+- **Price every provider at its API list**, whatever the operator pays.
+  Cost in the record is a measure of the work's weight, used to compare
+  quality per dollar across providers; `[providers.<name>]` carries the
+  prices and `forge stats --reprice` fills in rows that were recorded
+  before they were set.
+- **A subscription's marginal cost is zero until its window closes, and
+  that belongs to the pace decision, not the cost.** The economist's
+  first decision (pace) is where "use the OpenAI window while it is
+  open" lives; its cost comparison never sees a zero.
+
+And one rule of conduct that the same run taught: a rebalance whose
+effect crosses the threshold **asks before it writes**. The factors it
+would move by more than the threshold keep their weights, the question
+carries the proposed numbers, and `forge experiment set` applies them
+when a person agrees.
+
 ## What it is not
 
 Not a learning system, not a scheduler, not a spend cap (those exist).
