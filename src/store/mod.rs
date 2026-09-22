@@ -34,7 +34,7 @@ pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
-pub use tasks::{Task, TaskState};
+pub use tasks::{Task, TaskLimitsUpdate, TaskState};
 
 /// What `forge log` filters on.
 #[derive(Default, Debug, Clone)]

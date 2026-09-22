@@ -195,6 +195,16 @@ pub struct Task {
     pub shape_declared_checks: i64,
 }
 
+/// `Store::set_task_limits`: only a field that is `Some` replaces the
+/// stored value, the rest are left alone.
+#[derive(Default)]
+pub struct TaskLimitsUpdate {
+    pub budget_usd: Option<f64>,
+    pub max_turns: Option<i64>,
+    pub max_attempts: Option<i64>,
+    pub timeout_secs: Option<i64>,
+}
+
 /// One task in a lineage: parent is what it retries.
 #[derive(Debug, Clone)]
 pub struct LineageRow {
@@ -561,6 +571,31 @@ impl Store {
         let n = self.lock().execute(
             "UPDATE tasks SET state='withdrawn', reason=?2, finished_at=?3 WHERE id=?1 AND state IN ('blocked', 'queued')",
             params![id, reason, crate::unix_now()],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Change a queued or blocked task's own limits in place: only the
+    /// fields `d` gives replace the stored value, the rest are left alone
+    /// (see `set_initiative`'s `InitiativeUpdate`). Atomic on state, like
+    /// `withdraw`, so a task the worker claims in between is left alone;
+    /// the queue's next claim reads whatever this leaves behind. Returns
+    /// whether it changed anything.
+    pub fn set_task_limits(&self, id: i64, d: &TaskLimitsUpdate) -> Result<bool> {
+        let n = self.lock().execute(
+            "UPDATE tasks SET
+                budget_usd = COALESCE(?2, budget_usd),
+                max_turns = COALESCE(?3, max_turns),
+                max_attempts = COALESCE(?4, max_attempts),
+                timeout_secs = COALESCE(?5, timeout_secs)
+             WHERE id=?1 AND state IN ('queued', 'blocked')",
+            params![
+                id,
+                d.budget_usd,
+                d.max_turns,
+                d.max_attempts,
+                d.timeout_secs
+            ],
         )?;
         Ok(n == 1)
     }
@@ -1006,5 +1041,98 @@ mod tests {
             c.shape_tdd,
             "a different repo with no history of its own still backfills from the built-in"
         );
+    }
+
+    #[test]
+    fn set_task_limits_changes_only_given_fields_on_a_queued_or_blocked_task_and_refuses_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let t = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 10,
+            max_attempts: 2,
+            timeout_secs: 100,
+            budget_usd: Some(5.0),
+            state: TaskState::Queued,
+            ..Default::default()
+        };
+        let id = store.insert_task(&t).unwrap();
+
+        // Only the given field changes; the rest are left alone.
+        assert!(
+            store
+                .set_task_limits(
+                    id,
+                    &TaskLimitsUpdate {
+                        budget_usd: Some(20.0),
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+        );
+        let got = store.task(id).unwrap().unwrap();
+        assert_eq!(got.budget_usd, Some(20.0));
+        assert_eq!(got.max_turns, 10);
+        assert_eq!(got.max_attempts, 2);
+        assert_eq!(got.timeout_secs, 100);
+
+        // Every field at once.
+        assert!(
+            store
+                .set_task_limits(
+                    id,
+                    &TaskLimitsUpdate {
+                        budget_usd: Some(30.0),
+                        max_turns: Some(50),
+                        max_attempts: Some(4),
+                        timeout_secs: Some(900),
+                    }
+                )
+                .unwrap()
+        );
+        let got = store.task(id).unwrap().unwrap();
+        assert_eq!(got.budget_usd, Some(30.0));
+        assert_eq!(got.max_turns, 50);
+        assert_eq!(got.max_attempts, 4);
+        assert_eq!(got.timeout_secs, 900);
+
+        // A blocked task takes the change too.
+        store
+            .lock()
+            .execute("UPDATE tasks SET state='blocked' WHERE id=?1", params![id])
+            .unwrap();
+        assert!(
+            store
+                .set_task_limits(
+                    id,
+                    &TaskLimitsUpdate {
+                        max_turns: Some(60),
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+        );
+        assert_eq!(store.task(id).unwrap().unwrap().max_turns, 60);
+
+        // A running task refuses: nothing changes.
+        store
+            .lock()
+            .execute("UPDATE tasks SET state='running' WHERE id=?1", params![id])
+            .unwrap();
+        assert!(
+            !store
+                .set_task_limits(
+                    id,
+                    &TaskLimitsUpdate {
+                        max_turns: Some(999),
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+        );
+        assert_eq!(store.task(id).unwrap().unwrap().max_turns, 60);
     }
 }

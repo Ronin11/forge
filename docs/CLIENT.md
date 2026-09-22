@@ -210,6 +210,18 @@ and does not parse stdout.
   naming the contact when the answer came through a channel (the portal
   passes its contact name). Stdout is the new task's id; a non-zero exit
   is the error on stderr. Not JSON.
+- **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
+  [--retries N]`** — write verb: changes a queued or blocked task's own
+  limits in place, replacing only the fields given; refused (non-zero
+  exit) on a running or finished task, and when none are given. Recorded
+  as a decision on the task (see [`DecisionRow`](#decisionrow)), so it
+  shows up in `forge decisions` beside an operator's answer. Not `--json`;
+  a client re-reads `forge log`/`forge trace` for the task it just
+  changed. This is the verb the web client's inbox (task 530) should
+  call to raise a stuck task's budget or turn cap in place, instead of
+  withdrawing it (which releases its dependents) or waiting for a hand
+  retry: the motivating case is a task that verified its own code and
+  ran out of budget before review.
 - **`forge ask PROJECT MESSAGE [--from NAME]`** — write verb: the front
   door (docs/INTAKE.md), sorting a customer message into a request, a
   question, a need or unclear and acting on it. Stdout is the one-line
@@ -235,7 +247,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
+snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative task job deploy answer ask message
 ```
 
 ## Time
