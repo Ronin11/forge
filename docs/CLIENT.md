@@ -520,6 +520,7 @@ the store's column names):
 | `created_at`, `started_at`, `finished_at` | integer / integer or null | Unix seconds. |
 | `project` | string or null | the project the task belongs to. |
 | `initiative` | integer or null | the initiative the task belongs to, if any. |
+| `inputs` | `TraceTaskShape` | task shape at intake (see docs/ECONOMIST.md, "Task shape"): what the economist must condition on before the task even runs, computed once at enqueue and never revisited. `{text_len, path_tokens, tdd, declared_checks, project}`: `text_len` the task's text length in characters; `path_tokens` how many of its whitespace-separated words look like a path (a request naming two paths counts two); `tdd` whether the resolved workflow writes hidden tests (a step whose action is `"tests"`, directly or through composition); `declared_checks` the repository's own `[checks]` count in `forge.toml` at that moment (0 for a task enqueued before this field existed, since backfilling it needs the repository's config as it stood at the time, which the record does not keep); `project` the same value as the top-level `project` field above, repeated here so the economist's inputs live in one place. |
 
 **`attempts`** — array of `TraceAttempt`, one per attempt:
 `attempt_no`, `step`, `step_seq`, `state`, `reason`, `started_at`,

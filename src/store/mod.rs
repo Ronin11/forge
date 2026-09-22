@@ -641,6 +641,22 @@ CREATE UNIQUE INDEX jobs_event_ref ON jobs(project, workflow, trigger_ref) WHERE
     "
 ALTER TABLE job_steps ADD COLUMN tail TEXT NOT NULL DEFAULT '';
 ",
+    // Task shape at intake (see docs/ECONOMIST.md, "Task shape"): what the
+    // economist must condition on before a task even runs, recorded once
+    // at enqueue (`queue::task_shape`) rather than derived later from
+    // fields that can drift (a workflow file can change; a task's own
+    // text never does). `shape_declared_checks` is the repository's own
+    // `[checks]` count at that moment; the others are read off the task's
+    // text and its resolved workflow. `migrate` backfills every existing
+    // task's first three columns from what its row already carries
+    // (`tasks::backfill_task_shape`) when it applies this entry;
+    // `shape_declared_checks` has no such source and stays 0 for them.
+    "
+ALTER TABLE tasks ADD COLUMN shape_text_len INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN shape_path_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN shape_tdd INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN shape_declared_checks INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -662,6 +678,13 @@ const PROJECTS_MIGRATION_VERSION: i64 = 28;
 /// production code needs to name this migration by version.
 #[cfg(test)]
 const SUPERVISOR_MODEL_BACKFILL_MIGRATION_VERSION: i64 = 36;
+
+/// The version this migration brings the schema to; `migrate` also runs
+/// `tasks::backfill_task_shape` in Rust when it applies this entry, since
+/// the tdd flag needs to parse a workflow's TOML text and, for a nested
+/// one, walk into another workflow's — no SQL string can do either. Keep
+/// in sync with its position above.
+const TASK_SHAPE_MIGRATION_VERSION: i64 = 57;
 
 const TASK_COLUMNS: &[&str] = &[
     "id",
@@ -715,6 +738,10 @@ const TASK_COLUMNS: &[&str] = &[
     "proposal_initiative",
     "landed_at",
     "hand_landed",
+    "shape_text_len",
+    "shape_path_tokens",
+    "shape_tdd",
+    "shape_declared_checks",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -793,6 +820,10 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         proposal_initiative: r.get("proposal_initiative")?,
         landed_at: r.get("landed_at")?,
         hand_landed: r.get::<_, i64>("hand_landed")? != 0,
+        shape_text_len: r.get("shape_text_len")?,
+        shape_path_tokens: r.get("shape_path_tokens")?,
+        shape_tdd: r.get::<_, i64>("shape_tdd")? != 0,
+        shape_declared_checks: r.get("shape_declared_checks")?,
     })
 }
 
@@ -1043,6 +1074,9 @@ fn migrate(conn: &Connection) -> Result<()> {
             conn.execute_batch(sql)?;
             if v == PROJECTS_MIGRATION_VERSION {
                 seed_projects_from_tasks(conn)?;
+            }
+            if v == TASK_SHAPE_MIGRATION_VERSION {
+                tasks::backfill_task_shape(conn)?;
             }
             conn.execute_batch(&format!("PRAGMA user_version={v}"))
         })();

@@ -113,6 +113,36 @@ fn assign_explore(
         .collect()
 }
 
+/// Task shape at intake (see docs/ECONOMIST.md, "Task shape"): what the
+/// economist must condition on before the task even runs, computed once
+/// at `enqueue` and recorded on the task's own `shape_*` columns.
+pub struct TaskShape {
+    /// The text's length, in characters.
+    pub text_len: i64,
+    /// How many of the text's whitespace-separated words look like a path
+    /// (see `render::is_path_like_word`) — a request naming two paths
+    /// counts two.
+    pub path_tokens: i64,
+    /// Whether the resolved workflow writes hidden tests: a step whose
+    /// action is `"tests"`, directly or through composition.
+    pub tdd: bool,
+    /// The repository's own `[checks]` count, from `forge.toml` (or
+    /// `.forge/forge.toml`) at this moment.
+    pub declared_checks: i64,
+}
+
+fn task_shape(text: &str, resolved: &workflows::Resolved, declared_checks: usize) -> TaskShape {
+    TaskShape {
+        text_len: text.chars().count() as i64,
+        path_tokens: text
+            .split_whitespace()
+            .filter(|w| crate::render::is_path_like_word(w))
+            .count() as i64,
+        tdd: resolved.steps.iter().any(|s| s.action.name == "tests"),
+        declared_checks: declared_checks as i64,
+    }
+}
+
 pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Result<Task> {
     if let Some(b) = args.budget
         && b <= 0.0
@@ -256,6 +286,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         .model
         .clone()
         .unwrap_or_else(|| code_provider.model.clone().unwrap_or_default());
+    let shape = task_shape(&args.task, &resolved, cfg.checks.len());
     let mut t = Task {
         repo: repo.display().to_string(),
         task: args.task.clone(),
@@ -285,6 +316,10 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         retry_of,
         project: Some(project_name),
         initiative: initiative.as_ref().map(|i| i.id),
+        shape_text_len: shape.text_len,
+        shape_path_tokens: shape.path_tokens,
+        shape_tdd: shape.tdd,
+        shape_declared_checks: shape.declared_checks,
         ..Default::default()
     };
     for &dep in &t.after {
@@ -827,6 +862,33 @@ mod tests {
         for (l, h) in lo.iter().zip(hi.iter()) {
             assert!(!l || *h, "raising the fraction dropped a control draw");
         }
+    }
+
+    #[test]
+    fn task_shape_counts_length_paths_and_declared_checks() {
+        let resolved = workflows::Resolved::default();
+        let shape = task_shape("fix src/queue.rs and src/store/mod.rs please", &resolved, 3);
+        assert_eq!(
+            shape.text_len,
+            "fix src/queue.rs and src/store/mod.rs please"
+                .chars()
+                .count() as i64
+        );
+        assert_eq!(shape.path_tokens, 2, "a text naming two paths counts two");
+        assert!(!shape.tdd, "no steps at all resolved");
+        assert_eq!(shape.declared_checks, 3);
+    }
+
+    #[test]
+    fn task_shape_flags_a_tdd_workflow_but_not_direct() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdd = workflows::resolve(dir.path(), "tdd").unwrap();
+        assert!(
+            task_shape("add a feature", &tdd, 0).tdd,
+            "a tdd workflow flags hidden tests"
+        );
+        let direct = workflows::resolve(dir.path(), "direct").unwrap();
+        assert!(!task_shape("add a feature", &direct, 0).tdd);
     }
 
     #[test]

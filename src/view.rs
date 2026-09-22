@@ -274,10 +274,26 @@ pub struct TraceTask {
     pub finished_at: Option<i64>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
+    /// The economist's task-shape inputs (see docs/ECONOMIST.md, "Task
+    /// shape"), computed once at enqueue and never revisited.
+    pub inputs: TraceTaskShape,
     #[serde(skip)]
     pub worktree_removed_at: Option<i64>,
     #[serde(skip)]
     pub decisions: Vec<Decision>,
+}
+
+/// `TraceTask.inputs`: what the economist must condition on before the
+/// task even runs (docs/ECONOMIST.md, "Task shape"), grouped here even
+/// though `project` also has its own top-level field, so a reader doesn't
+/// have to hunt across the rest of the document for the rest of them.
+#[derive(Serialize)]
+pub struct TraceTaskShape {
+    pub text_len: i64,
+    pub path_tokens: i64,
+    pub tdd: bool,
+    pub declared_checks: i64,
+    pub project: Option<String>,
 }
 
 /// Token counts from an attempt's result frame, as `TraceDoc` nests them.
@@ -479,6 +495,13 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         finished_at: t.finished_at,
         project: t.project.clone(),
         initiative: t.initiative,
+        inputs: TraceTaskShape {
+            text_len: t.shape_text_len,
+            path_tokens: t.shape_path_tokens,
+            tdd: t.shape_tdd,
+            declared_checks: t.shape_declared_checks,
+            project: t.project.clone(),
+        },
         worktree_removed_at: t.worktree_removed_at,
         decisions: f.store.decisions_in_lineage(t.id)?,
     };
