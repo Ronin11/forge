@@ -439,7 +439,14 @@ pub fn score(
     if changed.iter().any(|c| c == path) {
         s += 6.0;
     }
-    s - (syms.len() as f64 * 0.01)
+    if words.is_empty() {
+        // No task to rank against (the shared map every task on a base
+        // gets, docs/CONTEXT.md): a file that declares more is worth more,
+        // capped so one giant file cannot crowd the map.
+        s + (syms.len().min(40) as f64 * 0.05)
+    } else {
+        s - (syms.len() as f64 * 0.01)
+    }
 }
 
 /// The map: files by score, each on one line, until the budget in
@@ -466,6 +473,11 @@ pub fn render(
     for (s, path, syms) in scored {
         if any && s <= 0.0 {
             break;
+        }
+        if words.is_empty() && syms.is_empty() {
+            // A file with nothing declared says nothing in a map ranked by
+            // nothing; leave the budget for files that do.
+            continue;
         }
         let names: Vec<String> = syms
             .iter()
@@ -625,6 +637,26 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// With no task words (the shared map), files that declare more lead and
+    /// files that declare nothing are left out, instead of the reverse.
+    #[test]
+    fn without_task_words_files_with_symbols_lead_and_empty_files_are_omitted() {
+        let sym = |n: &str| Symbol {
+            name: n.into(),
+            kind: "fn".into(),
+        };
+        let files = vec![
+            ("scripts/empty.sh".to_string(), vec![]),
+            ("src/small.rs".to_string(), vec![sym("one")]),
+            ("src/big.rs".to_string(), vec![sym("a"), sym("b"), sym("c")]),
+        ];
+        let out = render(&files, &[], &[], &[], 10_000);
+        let big = out.find("src/big.rs").unwrap();
+        let small = out.find("src/small.rs").unwrap();
+        assert!(big < small, "{out}");
+        assert!(!out.contains("scripts/empty.sh"), "{out}");
+    }
     use super::*;
 
     #[test]
