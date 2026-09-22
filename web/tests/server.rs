@@ -41,7 +41,24 @@ case "$1" in
       list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"repos":[{"repo":"/repos/demo","scope":null}],"created_at":1}]' ;;
       show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[{\"repo\":\"/repos/$3\",\"scope\":null}],\"created_at\":1}" ;;
       backlog) echo "[{\"id\":1,\"project\":\"$3\",\"text\":\"do the thing\",\"created_at\":1,\"done_at\":null}]" ;;
+      deploy)
+        case "$3" in
+          list) echo "[{\"project\":\"$4\",\"name\":\"prod\",\"repo\":\"/repos/$4\",\"scope\":null,\"method\":\"rsync\",\"args\":{\"host\":\"example.com\"},\"check_cmd\":\"curl -f https://example.com\",\"on_landing\":true,\"smoke_url\":\"https://example.com\"}]" ;;
+          *) echo "unexpected project deploy: $*" >&2; exit 2 ;;
+        esac ;;
       *) echo "unexpected project: $*" >&2; exit 2 ;;
+    esac ;;
+  deploy)
+    case "$2" in
+      log)
+        proj="$3"; shift 3
+        target=""
+        if [ "$1" != "--json" ]; then target="$1"; fi
+        echo "[{\"id\":9,\"project\":\"$proj\",\"target\":\"${target:-prod}\",\"sha\":\"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\",\"started_at\":100,\"finished_at\":140,\"check_ok\":true,\"check_output\":\"ok\",\"rolled_back_to\":null,\"reason\":\"\",\"smoke_ok\":true,\"smoke_json\":\"{}\",\"look_ok\":true,\"look_json\":\"[]\"}]" ;;
+      *)
+        # `forge deploy <project> <target>`: no "log", no "--json".
+        proj="$2"; target="$3"
+        echo "deployed $proj/$target" ;;
     esac ;;
   workflows)
     shift
@@ -312,6 +329,10 @@ fn without_the_token_nothing_is_served() {
         "/workflows/direct",
         "/api/workflows",
         "/api/workflows/direct",
+        "/deploys",
+        "/api/deploys",
+        "/api/deploys/shot/9",
+        "/api/deploys/run/demo/prod",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -960,6 +981,90 @@ fn the_graph_modules_page_and_route_run_forge_graph_and_pass_its_overlaid_json_t
 
     let (status, _, body) = get(&w.addr, "/api/graph/modules", &cookie);
     assert_eq!(status, 400, "{body}");
+}
+
+#[test]
+fn the_deploys_page_merges_targets_with_their_full_log_and_the_run_route_calls_forge_deploy() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, _, body) = get(&w.addr, "/deploys", &cookie);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+    assert!(body.contains(r#"<script src="/deploys.js">"#), "{body}");
+
+    let (_, _, deploys_js) = get(&w.addr, "/deploys.js", &cookie);
+    assert!(deploys_js.contains("renderDeploys"), "{deploys_js}");
+
+    // forge project list --json, then forge project deploy list <project>
+    // --json, then forge deploy log <project> <target> --json per target,
+    // merged: one target, its method/host, and its full deploy log
+    // embedded whole, verdicts and all.
+    let (status, _, body) = get(&w.addr, "/api/deploys", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(v[0]["project"], "demo");
+    assert_eq!(v[0]["name"], "prod");
+    assert_eq!(v[0]["method"], "rsync");
+    assert_eq!(v[0]["host"], "example.com");
+    assert_eq!(v[0]["on_landing"], true);
+    assert_eq!(v[0]["deploys"][0]["id"], 9);
+    assert_eq!(v[0]["deploys"][0]["check_ok"], true);
+    assert_eq!(v[0]["deploys"][0]["smoke_ok"], true);
+    assert_eq!(v[0]["deploys"][0]["look_ok"], true);
+    assert_eq!(v[0]["deploys"][0]["target"], "prod");
+
+    // POST /api/deploys/run/<project>/<target> calls `forge deploy
+    // <project> <target>`; GET on the same route is refused.
+    let (status, _, body) = post(&w.addr, "/api/deploys/run/demo/prod", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        v["output"].as_str().unwrap().contains("deployed demo/prod"),
+        "{body}"
+    );
+    let (status, _, _) = get(&w.addr, "/api/deploys/run/demo/prod", &cookie);
+    assert_eq!(status, 405);
+    let (status, _, _) = post(&w.addr, "/api/deploys/run/demo", &cookie);
+    assert_eq!(status, 404);
+}
+
+#[test]
+fn the_deploy_screenshot_route_serves_only_its_own_ids_file_under_deploys_and_nothing_else() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+    let dir = w.home.path().join("deploys").join("9");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Plain ASCII stand-in for PNG bytes: the test's `get` helper reads
+    // the response as a lossy UTF-8 `String`, which would mangle real
+    // binary (e.g. a leading 0x89) — the point here is which file gets
+    // served, not the codec, so the fixture content stays byte-safe.
+    std::fs::write(dir.join("screenshot.png"), b"FAKE-PNG-BYTES").unwrap();
+    // A sibling file in the same deploy directory must never be reachable
+    // through this route: only screenshot.png, ever.
+    std::fs::write(dir.join("smoke.json"), b"{\"ok\":true}").unwrap();
+
+    let (status, head, body) = get(&w.addr, "/api/deploys/shot/9", &cookie);
+    assert_eq!(status, 200, "{body}");
+    assert!(head.contains("Content-Type: image/png"), "{head}");
+    assert_eq!(body.as_bytes(), b"FAKE-PNG-BYTES");
+
+    // No such deploy id: 404, never a directory listing.
+    let (status, _, _) = get(&w.addr, "/api/deploys/shot/123", &cookie);
+    assert_eq!(status, 404);
+
+    // Nothing but a bare integer id is ever accepted, so there is no path
+    // segment left to smuggle a traversal or another file's name through.
+    for bad in [
+        "/api/deploys/shot/..",
+        "/api/deploys/shot/9%2Fsmoke.json",
+        "/api/deploys/shot/9/../smoke.json",
+        "/api/deploys/shot/",
+    ] {
+        let (status, _, _) = get(&w.addr, bad, &cookie);
+        assert_eq!(status, 404, "{bad}");
+    }
 }
 
 #[test]

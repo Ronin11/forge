@@ -7,8 +7,11 @@
 //! (`forge withdraw`), `POST /api/land/<id>` (`forge land`) — the inbox's
 //! own controls (`web/src/requests.js`) — `POST /api/initiatives/<id>`
 //! (`forge initiative set`), the initiative page's budget/stop-after
-//! control (`web/src/initiative.js`) — and `POST /hooks/<project>/<name>`,
-//! a webhook delivery handed to `forge job fire` (docs/CLIENT.md).
+//! control (`web/src/initiative.js`) — `POST
+//! /api/deploys/run/<project>/<target>` (`forge deploy`), the deploys
+//! page's "deploy now" control (`web/src/deploys.js`) — and `POST
+//! /hooks/<project>/<name>`, a webhook delivery handed to `forge job
+//! fire` (docs/CLIENT.md).
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
 //! `/tasks/<id>` (one task: trace, diagnosis, journal, its events),
@@ -43,6 +46,7 @@ const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
 const TASK_JS: &str = include_str!("task.js");
 const INITIATIVE_JS: &str = include_str!("initiative.js");
+const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
@@ -299,6 +303,101 @@ fn graph_modules(forge: &Forge, repo: &str) -> Result<Value> {
 /// forwards whatever the CLI gives it, present or not.
 fn stats_json(forge: &Forge) -> Result<Value> {
     forge.json(&["stats", "--json"])
+}
+
+/// One `Deploy` (`forge deploy log --json`'s rows), as a JSON doc: every
+/// field the store carries, including the smoke and look verdicts
+/// `TraceDoc.deploys`'s own prose leaves out (docs/CLIENT.md's `Deploy`).
+fn deploy_doc(d: &forge_client::Deploy) -> Value {
+    serde_json::json!({
+        "id": d.id, "project": d.project, "target": d.target, "sha": d.sha,
+        "started_at": d.started_at, "finished_at": d.finished_at,
+        "check_ok": d.check_ok, "check_output": d.check_output,
+        "rolled_back_to": d.rolled_back_to, "reason": d.reason,
+        "smoke_ok": d.smoke_ok, "smoke_json": d.smoke_json,
+        "look_ok": d.look_ok, "look_json": d.look_json,
+    })
+}
+
+/// Every project's deploy targets, each with its own full deploy log
+/// (docs/CLIENT.md, "forge-web", "The deploys page"): `forge project
+/// list --json`, then per project `forge project deploy list <project>
+/// --json` (`forge-client`'s typed `deploy_targets`), then per target
+/// `forge deploy log <project> <target> --json` (`deploy_log`) embedded
+/// whole as `deploys` — newest first, so a target's most recent deploy
+/// (`deploys[0]`) is both the summary row's own verdicts and the head of
+/// its log, with no second read for the `/deploys` page to make.
+fn deploys_merged(forge: &Forge) -> Result<Value> {
+    let mut out = Vec::new();
+    for p in forge.project_list()? {
+        for t in forge.deploy_targets(&p.name)? {
+            let deploys: Vec<Value> = forge
+                .deploy_log(&p.name, Some(&t.name))?
+                .iter()
+                .map(deploy_doc)
+                .collect();
+            out.push(serde_json::json!({
+                "project": t.project,
+                "name": t.name,
+                "repo": t.repo,
+                "method": t.method,
+                "host": t.args.get("host"),
+                "on_landing": t.on_landing,
+                "smoke_url": t.smoke_url,
+                "deploys": deploys,
+            }));
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `/api/deploys/run/<project>/<target>` split into `(project, target)`;
+/// `None` for anything else, including a segment that would smuggle a
+/// further path.
+fn deploy_project_target(rest: &str) -> Option<(&str, &str)> {
+    let (project, target) = rest.split_once('/')?;
+    (!project.is_empty() && !target.is_empty() && !target.contains('/'))
+        .then_some((project, target))
+}
+
+/// `GET /api/deploys/shot/<id>`: the deploy-look step's own screenshot,
+/// `<FORGE2_HOME>/deploys/<id>/screenshot.png` — the exact file
+/// `deploy-smoke` wrote and `deploy-look` read (src/deploy_look.rs), the
+/// same one `forge-portal`'s `/p/<token>/shot/<target>` streams for a
+/// customer. `id` is parsed as a bare integer (`id_of`), so there is no
+/// path segment left to escape with: this can only ever open
+/// `deploys/<id>/screenshot.png`, nothing else under `deploys/`, and
+/// nothing outside it. Read-only, and not gated by the target's own
+/// project — any operator holding the web token may already see every
+/// screenshot through the `/deploys` page itself.
+fn deploy_screenshot(req: Request, id: i64) {
+    let path = home()
+        .join("deploys")
+        .join(id.to_string())
+        .join("screenshot.png");
+    let resp = match std::fs::File::open(&path) {
+        Ok(f) => Response::from_file(f)
+            .with_header(h("Content-Type", "image/png"))
+            .with_header(h("Cache-Control", "no-store")),
+        Err(_) => {
+            let _ = req.respond(text(404, "not found", "text/plain"));
+            return;
+        }
+    };
+    let _ = req.respond(resp);
+}
+
+/// `POST /api/deploys/run/<project>/<target>`: the deploys page's "deploy
+/// now" control, run through `forge deploy <project> <target>` (no
+/// `--sha`: always the repository's current base-branch commit). A
+/// failed check (and, when there was nothing to roll back to, a failed
+/// rollback) makes `forge deploy` exit non-zero, which surfaces here as
+/// `{"error": ...}` the same as any other write route's refusal; the
+/// deploy still ran and recorded itself, so the page re-reads
+/// `/api/deploys` regardless of this route's own outcome.
+fn deploy_run_route(forge: &Forge, project: &str, target: &str) -> Result<Value> {
+    let out = forge.run(&["deploy", project, target])?;
+    Ok(serde_json::json!({ "output": out }))
 }
 
 /// `forge doctor --json`, through the client crate's typed `DoctorCheck`,
@@ -978,6 +1077,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
             || path.starts_with("/api/initiatives/")
+            || path.starts_with("/api/deploys/run/")
             || matches!(
                 plugin_action(&path),
                 Some((_, "enable")) | Some((_, "disable"))
@@ -1040,6 +1140,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
         "/task.js" => text(200, TASK_JS, "application/javascript"),
         "/initiative.js" => text(200, INITIATIVE_JS, "application/javascript"),
+        "/deploys.js" => text(200, DEPLOYS_JS, "application/javascript"),
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
@@ -1169,6 +1270,26 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             },
             None => text(404, "no such initiative", "text/plain"),
         },
+        "/api/deploys" => json_or_error(deploys_merged(forge)),
+        p if p.starts_with("/api/deploys/shot/") => match id_of(&p["/api/deploys/shot/".len()..]) {
+            Some(id) => {
+                deploy_screenshot(req, id);
+                return;
+            }
+            None => text(404, "not found", "text/plain"),
+        },
+        p if p.starts_with("/api/deploys/run/") => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                match deploy_project_target(&p["/api/deploys/run/".len()..]) {
+                    Some((project, target)) => {
+                        json_or_error(deploy_run_route(forge, project, target))
+                    }
+                    None => text(404, "not found", "text/plain"),
+                }
+            }
+        }
         "/api/events" => {
             let since = query_param(&query, "since")
                 .and_then(|s| s.parse().ok())

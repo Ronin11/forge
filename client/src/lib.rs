@@ -10,6 +10,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -197,6 +198,14 @@ impl Forge {
     /// every one of its jobs, newest first.
     pub fn job_log(&self, project: &str) -> Result<Vec<JobEffectRow>> {
         let v = self.json(&["job", "log", project, "--json"])?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `forge project deploy list <project> --json`: a project's deploy
+    /// targets, alphabetically, each a [`DeployTargetRow`] (see
+    /// docs/DEPLOY.md, "A target").
+    pub fn deploy_targets(&self, project: &str) -> Result<Vec<DeployTargetRow>> {
+        let v = self.json(&["project", "deploy", "list", project, "--json"])?;
         Ok(serde_json::from_value(v)?)
     }
 
@@ -1238,6 +1247,30 @@ pub struct Attempt {
     pub verdict: Value,
     #[serde(default)]
     pub envelope: Value,
+}
+
+/// One row of `forge project deploy list <project> --json`: a deploy
+/// target as declared (see docs/DEPLOY.md, "A target").
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DeployTargetRow {
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub args: BTreeMap<String, String>,
+    #[serde(default)]
+    pub check_cmd: String,
+    #[serde(default)]
+    pub on_landing: bool,
+    #[serde(default)]
+    pub smoke_url: Option<String>,
 }
 
 /// One entry of `TraceDoc.deploys`: one deploy the task triggered on

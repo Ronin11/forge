@@ -1,0 +1,45 @@
+[
+  {
+    "project": "equitizr",
+    "name": "prod",
+    "repo": "/repo",
+    "method": "rsync",
+    "host": "equitizr.example.com",
+    "on_landing": true,
+    "smoke_url": "https://equitizr.example.com/",
+    "deploys": [
+      {
+        "id": 12,
+        "project": "equitizr",
+        "target": "prod",
+        "sha": "cdcce8adba0629506cf8e6c6e8f3cb56479ce850",
+        "started_at": 200,
+        "finished_at": 240,
+        "check_ok": true,
+        "check_output": "active",
+        "rolled_back_to": null,
+        "reason": "",
+        "smoke_ok": true,
+        "smoke_json": "{\"url\":\"https://equitizr.example.com/\",\"ok\":true,\"screenshot\":\"screenshot.png\"}",
+        "look_ok": true,
+        "look_json": "[]"
+      },
+      {
+        "id": 11,
+        "project": "equitizr",
+        "target": "prod",
+        "sha": "aaaaaaabaaaaaaabaaaaaaabaaaaaaabaaaaaaab",
+        "started_at": 100,
+        "finished_at": 140,
+        "check_ok": false,
+        "check_output": "connection refused",
+        "rolled_back_to": "999999999999999999999999999999999999999a",
+        "reason": "the deploy of aaaaaaab failed its check and was rolled back to 999999999",
+        "smoke_ok": null,
+        "smoke_json": null,
+        "look_ok": null,
+        "look_json": null
+      }
+    ]
+  }
+]

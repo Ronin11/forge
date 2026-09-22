@@ -64,6 +64,27 @@ and does not parse stdout.
   `forge-portal` turns `/p/<token>` into the name it then passes to
   `forge project view`. Prints `{"project": NAME}`; exits non-zero if the
   token is unknown or revoked.
+- **`forge project deploy list <project> --json`** — a project's deploy
+  targets, alphabetically (see docs/DEPLOY.md, "A target"). A JSON array
+  of [`DeployTarget`](#deploytarget).
+- **`forge deploy log <project> [<target>] --json`** — a project's
+  deploys, newest first, only `<target>`'s when given (see docs/DEPLOY.md,
+  "When a deploy runs"). A JSON array of [`Deploy`](#deploy) — the same
+  shape `TraceDoc.deploys` carries.
+- **`forge deploy <project> <target> [--sha SHA]`** — write verb: run a
+  deploy target now (see docs/DEPLOY.md, "When a deploy runs"). `SHA`
+  defaults to the target's repository's current base-branch commit.
+  Checks out the commit, runs the target's method, and records the
+  result; on a failed check it redeploys the last passing commit for the
+  same target and asks a human (see docs/DEPLOY.md, "Rollback and the
+  human rung"). Exits non-zero when the deploy's own check did not pass
+  (whether or not a rollback then succeeded) — the deploy still ran and
+  recorded itself, so a client should re-read `forge deploy log` for the
+  outcome rather than treat the non-zero exit as nothing having happened.
+  Not `--json`; a client re-reads `forge deploy log <project> <target>
+  --json` for the deploy it just started. This is the write verb the web
+  UI's deploys page (task 534, `POST /api/deploys/run/<project>/<target>`)
+  calls for its "deploy now" control.
 - **`forge initiative list [<project>] --json`** — every initiative, or
   only `<project>`'s, oldest first. A JSON array of
   [`InitiativeRow`](#initiativerow).
@@ -483,6 +504,45 @@ is not yet queued (see docs/PROJECTS.md, "Backlog").
 | `created_at` | integer | Unix seconds. |
 | `done_at` | integer or null | Unix seconds it was marked done, or `null` while open. |
 
+### `DeployTarget`
+
+One row of `forge project deploy list <project> --json`: a deploy target
+as declared (see docs/DEPLOY.md, "A target").
+
+| field | type | meaning |
+|---|---|---|
+| `project` | string | The project it belongs to. |
+| `name` | string | The target's name, unique within its project. |
+| `repo` | string | Absolute path to the repository this target deploys. |
+| `scope` | string or null | A JSON-encoded array of paths within `repo` this target deploys; `null` for the whole repository. |
+| `method` | string | The action file this target runs, e.g. `"deploy-command"`, `"deploy-static"`, `"rsync"`. |
+| `args` | object of string | The method's own arguments, e.g. `host`, `unit`, `dest` — whatever the method reads. The web deploys page shows `args.host` as where it runs. |
+| `check_cmd` | string | The command that proves the deploy is up; empty for a method that supplies its own default check (`deploy-static`, `deploy-self`). |
+| `on_landing` | bool | Whether this target deploys automatically when a task lands on `repo` (within `scope`, if set). |
+| `smoke_url` | string or null | A url the deploy-smoke operation opens in headless Chromium after the check passes; `null` to skip the smoke step, and the deploy-look step after it, entirely. |
+
+### `Deploy`
+
+One row of `forge deploy log <project> [<target>] --json`, and of
+`TraceDoc.deploys`: one deploy — the commit deployed, when it ran, and
+every verdict along the way (see docs/DEPLOY.md, "When a deploy runs").
+
+| field | type | meaning |
+|---|---|---|
+| `id` | integer | The deploy's id. Also names its own directory, `<FORGE2_HOME>/deploys/<id>/`, where the smoke step's files (`smoke.json`, `screenshot.png`) live. |
+| `project`, `target` | string | Which project and target. |
+| `sha` | string | The commit deployed. |
+| `started_at` | integer | Unix seconds. |
+| `finished_at` | integer or null | Unix seconds; `null` while the deploy is still running. |
+| `check_ok` | bool or null | Whether the target's `check_cmd` passed; `null` while running. |
+| `check_output` | string | The check's own output tail. |
+| `rolled_back_to` | string or null | The previous passing commit this deploy fell back to, when `check_ok` is false and one existed; `null` otherwise. |
+| `reason` | string | Set on a failed check: what happened and why (rolled back, or nothing to roll back to). |
+| `smoke_ok` | bool or null | Whether the deploy-smoke operation passed; `null` when the target declares no `smoke_url`, or `check_ok` never passed for it to run. |
+| `smoke_json` | string or null | The smoke operation's own record, raw JSON: `{url, title, ok, console_errors, failed_requests, screenshot}` — `screenshot` is always the literal `"screenshot.png"`, the file `GET /api/deploys/shot/<id>` (below) serves. Set whenever the smoke step ran, regardless of whether it passed — the signal a client reads to know a screenshot exists at all. |
+| `look_ok` | bool or null | Whether the deploy-look directive found the deployed page fit to show anyone; `null` when smoke never ran or left no screenshot to look at. |
+| `look_json` | string or null | The deploy-look directive's findings, raw JSON: `[{severity: "blocking"\|"notable", finding: string}]`. |
+
 ### `PortalDoc`
 
 The document `forge project view NAME --json` prints: everything the
@@ -643,13 +703,10 @@ landing), `output`.
 **`diagnosis`** — array of `{what, action}`: the kernel's own read of
 why the task ended as it did, and what a human or a retry could try.
 
-**`deploys`** — array of `Deploy`, this task's deploys newest first: the
-on-landing targets it triggered when it landed (see docs/DEPLOY.md, "When
-a deploy runs"), empty for a task that never landed one. Same shape as
-`forge deploy log --json`'s rows: `id`, `project`, `target`, `sha`,
-`started_at`, `finished_at`, `check_ok` (null while running),
-`check_output`, `rolled_back_to` (the previous passing commit, or null),
-`reason`.
+**`deploys`** — array of [`Deploy`](#deploy), this task's deploys newest
+first: the on-landing targets it triggered when it landed (see
+docs/DEPLOY.md, "When a deploy runs"), empty for a task that never landed
+one.
 
 **`assessment`** — `Assessment` or null: the assess directive's most
 recent run against this task's own landing (see docs/ACTIONS.md,
@@ -1257,6 +1314,39 @@ across a rotation, not to the snapshot protocol itself.
   any task in its own `tasks` list — the same re-read rule as a task's
   detail page, applied to every task the initiative carries rather than
   just one.
+  **The deploys page** (task 534, "deploys"). `GET /api/deploys` is
+  `forge project list --json`, then per project `forge project deploy
+  list <project> --json` (`forge-client`'s typed `deploy_targets`), then
+  per target `forge deploy log <project> <target> --json`
+  (`deploy_log`), merged into one array for the `/deploys` page: each
+  target's own `project`, `name`, `repo`, `method`, `host` (its `args.
+  host`), `on_landing`, `smoke_url`, and `deploys` — that target's whole
+  log, newest first, each a [`Deploy`](#deploy) with its check/smoke/look
+  verdicts and rollback information. `deploys[0]` is both the summary
+  row's own last-deploy verdicts and the head of the log, so the page
+  never makes a second read for either. `GET /api/deploys/shot/<id>`
+  streams one deploy's look-step screenshot,
+  `<FORGE2_HOME>/deploys/<id>/screenshot.png` — the same file
+  `deploy-smoke` wrote (src/deploy_look.rs) and `forge-portal`'s `/p/
+  <token>/shot/<target>` streams for a customer. `id` is parsed as a bare
+  integer, so there is no path segment left to escape with: this route
+  can only ever open `deploys/<id>/screenshot.png`, never another file
+  under `deploys/`, a directory listing, or anything outside that tree;
+  an unknown id or a missing screenshot is a plain **404**.
+  `POST /api/deploys/run/<project>/<target>` is the page's "deploy now"
+  control (a confirmation dialog in `web/src/app.js`'s `deploysView`
+  gates the request client-side before it is sent): no body, runs `forge
+  deploy <project> <target>`, and returns `{"output": ...}` or
+  `{"error": ...}` (`502`) exactly like the other write routes above — a
+  failed check (and possibly a rollback) still counts as the verb having
+  run, so the page re-reads `/api/deploys` after either outcome, the same
+  as `forge retry`'s own caller does for the task list. The page
+  refreshes on `deploy_started` and `deploy_finished`. Rendering
+  (`web/src/deploys.js`'s `renderDeploys`) is pure — no DOM, no fetch —
+  tested under `node` by `web/tests/deploys_render.rs` against
+  `tests/fixtures/deploys.json`, one target with two deploys, so both
+  deploys' verdicts and the screenshot `<img>` tag are checked to render,
+  not just the newest one.
   **Webhooks.** `POST /hooks/<project>/<name>` is the one route not behind
   the web token: its credential is the hook's own token, sent as
   `Authorization: Bearer <token>` (never in the URL or a cookie), and the

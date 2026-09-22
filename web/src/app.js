@@ -24,6 +24,7 @@
     // separate "blocked" variant); `task_blocked` is listened for too in
     // case a future kernel event narrows this, at no cost today.
     requests: ['task_blocked', 'task_done'],
+    deploys: ['deploy_started', 'deploy_finished'],
   };
 
   async function call(method, path) {
@@ -131,7 +132,7 @@
       : r.page === 'project' ? projectView(r.name)
       : r.page === 'initiative' ? initiativeView(r.id)
       : r.page === 'initiatives-list' ? stubView('Initiatives')
-      : r.page === 'deploys' ? stubView('Deploys')
+      : r.page === 'deploys' ? deploysView()
       : r.page === 'activity' ? stubView('Activity')
       : r.page === 'messages' ? stubView('Messages')
       : r.page === 'doctor' ? stubView('Doctor')
@@ -942,6 +943,43 @@
         if (e.type === 'initiative_settled' && e.id === id) { draw().catch(() => {}); return; }
         if (taskIds.has(e.task) && INVALIDATES.detail.includes(e.type)) draw().catch(() => {});
       },
+    };
+  }
+
+  // ---- deploys: every project's targets — method, host, the last
+  // deploy's check/smoke/look verdicts — each with its own full deploy
+  // log and, per deploy, the deploy-look screenshot shown inline (task
+  // 534, "deploys"). Rendering lives in web/src/deploys.js
+  // (renderDeploys), tested under node without a DOM by
+  // web/tests/deploys_render.rs against tests/fixtures/deploys.json.
+  function deploysView() {
+    async function draw() {
+      const targets = await get('/api/deploys');
+      $('#deploys-page').innerHTML = ForgeDeploys.renderDeploys(targets, fmtTime);
+    }
+    async function onSubmit(ev) {
+      const form = ev.target.closest('form.deploy-now');
+      if (!form) return;
+      ev.preventDefault();
+      const { project, target } = form.dataset;
+      if (!confirm(`Deploy ${project}/${target} now?`)) return;
+      const btn = form.querySelector('button');
+      btn.disabled = true;
+      try {
+        const r = await post(`/api/deploys/run/${encodeURIComponent(project)}/${encodeURIComponent(target)}`);
+        if (r.error) alert(r.error);
+        await draw();
+      } finally { btn.disabled = false; }
+    }
+    return {
+      async show() {
+        // A wrapper div, not `#main` itself, carries the delegated
+        // listener — same reasoning as `requestsView`'s `#req-page`.
+        $('#main').innerHTML = '<h2>Deploys</h2><div id="deploys-page" class="mute" style="margin:16px">loading…</div>';
+        $('#deploys-page').addEventListener('submit', onSubmit);
+        await draw();
+      },
+      onEvent(e) { if (INVALIDATES.deploys.includes(e.type)) draw().catch(() => {}); },
     };
   }
 
