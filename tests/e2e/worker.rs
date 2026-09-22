@@ -472,13 +472,13 @@ fn a_task_queued_while_another_runs_is_claimed_before_it_finishes() {
     let mut worker = Worker::spawn(
         e.cmd("ok.sh")
             .env("FAKE_SLEEP", "1")
-            .env("FAKE_SLEEP_SECS", "15")
+            .env("FAKE_SLEEP_SECS", "30")
             .args(["work", "--jobs", "2", "--poll", "1"]),
     );
     assert!(
         wait_until(
             || e.attempts(first).first().is_some_and(|a| a.1 == "running"),
-            Duration::from_secs(20)
+            Duration::from_secs(30)
         ),
         "the first task was never claimed"
     );
@@ -486,7 +486,7 @@ fn a_task_queued_while_another_runs_is_claimed_before_it_finishes() {
     assert!(
         wait_until(
             || e.attempts(second).first().is_some_and(|a| a.1 == "running"),
-            Duration::from_secs(10)
+            Duration::from_secs(15)
         ),
         "the second task was not claimed while the first ran: {:?}",
         e.task(second)

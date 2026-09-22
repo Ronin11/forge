@@ -142,6 +142,15 @@ case "$1" in
       *) echo "unexpected project: $*" >&2; exit 2 ;;
     esac
     ;;
+  message)
+    case "$2" in
+      list) echo '[]' ;;
+      *) echo "unexpected message: $*" >&2; exit 2 ;;
+    esac
+    ;;
+  decisions)
+    echo '[]'
+    ;;
   answer)
     printf 'answer|%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
     touch "$ANSWERED"
@@ -319,7 +328,10 @@ fn the_six_sections_render_in_plain_words_with_no_forbidden_keys() {
         ),
         "{body}"
     );
-    assert_eq!(body.matches("<time ").count(), 6, "{body}");
+    // Seven: the six the earlier assertions cover, plus the open
+    // question's own `<time>`, rendered a second time inline in the
+    // conversation thread (see `render_conversation`).
+    assert_eq!(body.matches("<time ").count(), 7, "{body}");
     assert!(body.contains("<script>"), "{body}");
     assert!(body.contains("and 5 more"), "{body}");
     assert!(body.contains("on our cloud"), "{body}");

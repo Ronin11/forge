@@ -9,10 +9,18 @@
 //! of why. `GET /p/<token>/shot/<target>` streams that deploy target's
 //! last-look screenshot file.
 //!
+//! Ask is a conversation, not a box on its own: every message on the
+//! project's record (`forge message list --json`, both directions) and
+//! every concierge reply (`forge decisions --json`, narrowed to the
+//! rows addressed to this portal's own contact) render as one thread,
+//! oldest first, with any question still open at the point it was
+//! asked rendered inline as the same answerable form "Needs you"
+//! carries (see `render_conversation`).
+//!
 //! `POST /p/<token>/answer` (`id`, `text`) runs `forge answer <id> <text>
 //! --by customer`, re-queuing the blocked task; `POST /p/<token>/ask`
 //! (`message`) runs `forge ask <project> <message> --from customer` and
-//! shows its stdout back as the reply line. Both are token-scoped (the
+//! appends the exchange to the same thread. Both are token-scoped (the
 //! same 404 an unknown token gets elsewhere) and rate-limited to ten
 //! writes a minute per token; over that, and any failure from `forge`
 //! itself, is the same fixed error page, so nothing about why leaks.
@@ -22,6 +30,7 @@ use forge_client::{
     Forge, PortalBacklogItem, PortalBrief, PortalDeployTarget, PortalDoc, PortalInitiative,
     PortalJobRun, PortalLanded, PortalQuestion, PortalWorkflow,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
@@ -412,14 +421,135 @@ fn render_questions(items: &[PortalQuestion], token: &str) -> String {
     out
 }
 
-/// The Ask box: one text field posting to `/p/<token>/ask`. `reply`, when
-/// set, is the line the last submission's `forge ask` printed back.
-fn render_ask(token: &str, reply: Option<&str>) -> String {
-    let banner = reply
-        .map(|r| format!(r#"<p class="reply">{}</p>"#, esc(r)))
-        .unwrap_or_default();
+/// One row of `forge message list --json`, trimmed to what the
+/// conversation thread renders. The portal keeps its own copy of this
+/// shape (see docs/CLIENT.md, `MessageRow`) rather than growing
+/// `forge-client`, whose `PortalDoc` carries no messages of its own.
+#[derive(Deserialize, Default)]
+struct ConvMessage {
+    #[serde(default)]
+    direction: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    at: i64,
+}
+
+/// One row of `forge decisions --json`, trimmed the same way: a reply
+/// the concierge (or an operator, answering in its place) gave to a
+/// question the customer asked. `answered_for` is who the question was
+/// addressed to; only a row addressed to this portal's own contact
+/// (`CONTACT`) belongs in the customer's own thread.
+#[derive(Deserialize, Default)]
+struct ConvReply {
+    #[serde(default)]
+    question: String,
+    #[serde(default)]
+    answer: String,
+    #[serde(default)]
+    created_at: i64,
+    #[serde(default)]
+    answered_for: Option<String>,
+}
+
+/// `forge message list <project> --json`, both directions: the customer's
+/// side of every channel exchange on record for this project.
+fn conversation_messages(forge: &Forge, project: &str) -> Result<Vec<ConvMessage>> {
+    let v = forge.json(&["message", "list", project, "--json"])?;
+    Ok(serde_json::from_value(v)?)
+}
+
+/// `forge decisions --project <project> --json`, narrowed to the rows
+/// addressed to this portal's own contact: every concierge (or operator)
+/// reply that belongs in the customer's own thread, not an internal
+/// decision on some other task of theirs.
+fn conversation_replies(forge: &Forge, project: &str) -> Result<Vec<ConvReply>> {
+    let v = forge.json(&["decisions", "--project", project, "--json"])?;
+    let rows: Vec<ConvReply> = serde_json::from_value(v)?;
+    Ok(rows
+        .into_iter()
+        .filter(|d| d.answered_for.as_deref() == Some(CONTACT))
+        .collect())
+}
+
+/// The conversation thread: every message on the record (both
+/// directions), every concierge reply, and every open question still
+/// addressed to the customer, merged in the order they happened. A
+/// question renders as the same answerable form "Needs you" carries, so
+/// answering it in either place settles the same task.
+fn render_conversation(
+    doc: &PortalDoc,
+    token: &str,
+    messages: &[ConvMessage],
+    replies: &[ConvReply],
+) -> String {
+    let mut entries: Vec<(i64, String)> = Vec::new();
+    for m in messages {
+        let class = if m.direction == "in" { "in" } else { "out" };
+        entries.push((
+            m.at,
+            format!(
+                r#"<div class="msg {class}"><p>{}</p><p class="date">{}</p></div>"#,
+                esc(&m.text),
+                time_tag("", m.at),
+            ),
+        ));
+    }
+    for d in replies {
+        entries.push((
+            d.created_at,
+            format!(
+                r#"<div class="msg in"><p>{}</p></div><div class="msg out"><p>{}</p><p class="date">{}</p></div>"#,
+                esc(&d.question),
+                esc(&d.answer),
+                time_tag("", d.created_at),
+            ),
+        ));
+    }
+    for q in &doc.questions {
+        let at = q.asked_at.unwrap_or(0);
+        entries.push((
+            at,
+            format!(
+                r#"<form class="ask msg question" method="post" action="/p/{token}/answer"><p>{text}</p><p class="date">{when}</p><input type="hidden" name="id" value="{id}"><input type="text" name="text" placeholder="Your answer" required><button type="submit">Send</button></form>"#,
+                token = esc(token),
+                text = esc(&q.text),
+                when = time_tag("", at),
+                id = q.task_id,
+            ),
+        ));
+    }
+    entries.sort_by_key(|(at, _)| *at);
+    if entries.is_empty() {
+        return r#"<p class="empty">No conversation yet.</p>"#.to_string();
+    }
+    entries.into_iter().map(|(_, html)| html).collect()
+}
+
+/// The conversation thread, then the Ask box at its foot: what the
+/// customer types posts into this same thread (`/p/<token>/ask`), and
+/// `pending`, when set (the message just submitted and the reply it
+/// got back), is appended after the persisted thread so the exchange
+/// shows immediately, before the next read of the record would carry it
+/// forward on its own.
+fn render_ask(
+    doc: &PortalDoc,
+    token: &str,
+    messages: &[ConvMessage],
+    replies: &[ConvReply],
+    pending: Option<(&str, &str)>,
+) -> String {
+    let thread = render_conversation(doc, token, messages, replies);
+    let banner = match pending {
+        Some((message, reply)) => format!(
+            r#"<div class="msg in"><p>{}</p></div><div class="msg out"><p>{}</p></div>"#,
+            esc(message),
+            esc(reply),
+        ),
+        None => String::new(),
+    };
     format!(
-        r#"{banner}<form class="ask" method="post" action="/p/{token}/ask"><textarea name="message" placeholder="Ask us anything" required></textarea><button type="submit">Send</button></form>"#,
+        r#"{thread}{banner}<form class="ask" method="post" action="/p/{token}/ask"><textarea name="message" placeholder="Ask us anything" required></textarea><button type="submit">Send</button></form>"#,
         token = esc(token),
     )
 }
@@ -467,7 +597,13 @@ fn render_running(
     )
 }
 
-fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String {
+fn render_page(
+    doc: &PortalDoc,
+    token: &str,
+    messages: &[ConvMessage],
+    replies: &[ConvReply],
+    pending: Option<(&str, &str)>,
+) -> String {
     // No purpose paragraph: a project's purpose is the operator's own
     // words, never the customer's (see docs/PORTAL.md).
     let header = format!(r#"<header><h1>{}</h1></header>"#, esc(&doc.project));
@@ -484,10 +620,26 @@ fn render_page(doc: &PortalDoc, token: &str, ask_reply: Option<&str>) -> String 
         initiatives = render_initiatives(&doc.initiatives, doc.initiatives_more),
         questions = render_questions(&doc.questions, token),
         landed = render_landed(&doc.landed, doc.landed_more),
-        ask = render_ask(token, ask_reply),
+        ask = render_ask(doc, token, messages, replies, pending),
         plan = render_plan(&doc.brief, &doc.backlog),
     );
     page(&doc.project, &format!("{header}{main}"))
+}
+
+/// Reads the project's whole record — the view document plus its
+/// conversation thread — and renders the page. The one place `handle`'s
+/// three routes (the GET page, `answer`, `ask`) share, so all three fail
+/// the same way when any one read does.
+fn render_full(
+    forge: &Forge,
+    project: &str,
+    token: &str,
+    pending: Option<(&str, &str)>,
+) -> Result<String> {
+    let doc = forge.project_view(project)?;
+    let messages = conversation_messages(forge, project)?;
+    let replies = conversation_replies(forge, project)?;
+    Ok(render_page(&doc, token, &messages, &replies, pending))
 }
 
 fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
@@ -514,9 +666,9 @@ fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
         let _ = req.respond(write_error(502));
         return;
     }
-    match forge.project_view(project) {
-        Ok(doc) => {
-            let _ = req.respond(html(200, &render_page(&doc, token, None)));
+    match render_full(forge, project, token, None) {
+        Ok(page) => {
+            let _ = req.respond(html(200, &page));
         }
         Err(_) => {
             let _ = req.respond(write_error(502));
@@ -540,9 +692,9 @@ fn handle_ask(mut req: Request, forge: &Forge, project: &str, token: &str) {
             return;
         }
     };
-    match forge.project_view(project) {
-        Ok(doc) => {
-            let _ = req.respond(html(200, &render_page(&doc, token, Some(&reply))));
+    match render_full(forge, project, token, Some((&message, &reply))) {
+        Ok(page) => {
+            let _ = req.respond(html(200, &page));
         }
         Err(_) => {
             let _ = req.respond(write_error(502));
@@ -594,18 +746,23 @@ fn handle(req: Request, forge: &Forge, limiter: &RateLimiter) {
         }
         return;
     }
-    let doc = match forge.project_view(&project) {
-        Ok(d) => d,
-        Err(_) => {
-            let _ = req.respond(not_found());
-            return;
-        }
-    };
     match sub {
-        None => {
-            let _ = req.respond(html(200, &render_page(&doc, token, None)));
-        }
+        None => match render_full(forge, &project, token, None) {
+            Ok(page) => {
+                let _ = req.respond(html(200, &page));
+            }
+            Err(_) => {
+                let _ = req.respond(not_found());
+            }
+        },
         Some(sub) => {
+            let doc = match forge.project_view(&project) {
+                Ok(d) => d,
+                Err(_) => {
+                    let _ = req.respond(not_found());
+                    return;
+                }
+            };
             let target = sub
                 .strip_prefix("shot/")
                 .filter(|t| !t.is_empty() && !t.contains('/'));
