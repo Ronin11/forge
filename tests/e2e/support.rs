@@ -199,6 +199,35 @@ impl Env {
         o
     }
 
+    /// `forge <args>` with `stdin` piped to the process, for
+    /// `forge workflows lint --stdin`.
+    pub fn forge_stdin(&self, fake: &str, args: &[&str], stdin: &str) -> Output {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let mut child = self
+            .cmd(fake)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn forge");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let o = child.wait_with_output().expect("forge");
+        eprintln!(
+            "--- forge {} <stdin ---\n{}{}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o
+    }
+
     pub fn trace_json(&self, id: impl std::fmt::Display) -> serde_json::Value {
         serde_json::from_slice(
             &self

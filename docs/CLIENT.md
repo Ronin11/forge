@@ -112,6 +112,41 @@ and does not parse stdout.
   agent choosing a workflow, not documented field-by-field here since no
   client (`tui/`, `web/`) reads it today — treat its shape as informal
   until a client depends on it.
+- **`forge workflows show NAME --json`** — one workflow in full, for the
+  operator's own workflow page: the file's exact text, `source`
+  (`"catalog"`, the operator's own `<FORGE2_HOME>/workflows/`, or `"repo"`,
+  a project's own `.forge/workflows/` at its latest landed commit, found
+  with `--project P` when the catalog has no workflow of that name), its
+  `kind` (`"build"` or `"run"`), `path`, every resolved `steps[]` entry
+  (`{name, kind, contract, model, max_turns, timeout_secs, description}`,
+  the action each step actually runs, in order — a `kind = "run"`
+  workflow's steps resolve the way `forge job start` resolves them,
+  splicing in any sibling run workflow), and `measured`, the same
+  per-workflow profile object `forge workflows --json`'s own
+  `workflows[].measured` carries (`current`/`previous`/`all_versions`
+  profiles — verified rate with its 95% interval, cost per verified
+  success, run count — `regressed`, and `by_provider`); see
+  [`WorkflowShowDoc`](#workflowshowdoc). Exits non-zero if `NAME` names no
+  known workflow.
+- **`forge workflows lint --stdin [--name NAME]`** — validate a candidate
+  workflow file's text against the catalog without writing it anywhere, so
+  an editor can lint as the operator types: reads the candidate from
+  stdin, parses it the same way a real file would be, and resolves it
+  against the operator's own catalog (every action or workflow reference
+  it names, the data-flow rule, `[trigger]` for a `kind = "run"` file).
+  `NAME` is the file name the candidate would be saved under (its own
+  `name` must match, exactly as a real file's stem must); omitted, the
+  candidate's own declared name stands in, so a fresh draft lints clean
+  before the operator has chosen where to save it. Prints
+  `{"problems": [{"line", "message"}, ...]}`, one entry per problem found,
+  `line` the 1-based line a syntax or shape error points at (`null` for a
+  semantic error caught only after a clean parse, e.g. an unknown action);
+  empty and exit 0 when the candidate is clean, non-empty and **exit 1**
+  otherwise — the same "print everything, one exit code" shape as `forge
+  workflows validate` for a repository's files. Opens the operator's
+  catalog (`FORGE2_HOME`), unlike `forge workflows validate`, which needs
+  neither: a candidate is checked against the live catalog it would join,
+  not a bare parse.
 - **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
@@ -523,6 +558,21 @@ landed, or the run failed. `{score, findings, model, provider, cost_usd,
 created_at}` — `score` is 0 (worst) to 10 (best); `findings` is an array
 of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 `model` and `provider` are what ran it; `cost_usd` is what it cost.
+
+### `WorkflowShowDoc`
+
+The document `forge workflows show NAME --json` prints: one workflow in
+full.
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | The workflow's name. |
+| `source` | string | `"catalog"` (the operator's own `<FORGE2_HOME>/workflows/`) or `"repo"` (found via `--project`, in that project's own `.forge/workflows/` at its latest landed commit). |
+| `path` | string | Where the file lives: an absolute path for `"catalog"`, a path relative to the repository's root for `"repo"`. |
+| `kind` | string | `"build"` or `"run"`. |
+| `text` | string | The workflow file's exact text. |
+| `steps` | array of `{name, kind, contract, model, max_turns, timeout_secs, description}` | Every step, resolved to the exact action it runs, in order. `kind` is `"directive"` or `"operation"`; `model`, `max_turns`, `timeout_secs` are `null` when neither the step nor its action sets one. A `kind = "run"` workflow's steps are resolved the way `forge job start` resolves them (splicing in any sibling run workflow); a `kind = "build"` workflow's the way a task resolves them at creation. |
+| `measured` | object | The same per-workflow profile object as one entry of `forge workflows --json`'s `workflows[].measured`: `{current, previous, all_versions, regressed, by_provider}`, each a [`Profile`](../src/profile.rs) — `known`, `n` (runs), `rate`/`rate_lo`/`rate_hi` (verified rate with its 95% interval), `cost_per_task`, `cost_per_success`, and so on; `regressed` is the same flag `forge doctor` warns on. Informal, like `Workflow::measured` above — read the named fields, since no client depends on the exact shape yet. |
 
 ### `StatsDoc`
 

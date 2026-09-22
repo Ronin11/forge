@@ -9,7 +9,7 @@ use crate::{config, doctor, git, operation, unix_now, worker, workflows};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -467,6 +467,33 @@ enum WorkflowsCmd {
     Validate {
         /// Directory to check (default: the current directory)
         path: Option<PathBuf>,
+    },
+    /// Print one workflow in full: its file text, where it came from, kind,
+    /// every resolved step (the action's name, kind, contract, model,
+    /// turns, timeout, description), and its measured profile
+    Show {
+        name: String,
+        /// Also look in this project's own repository workflows
+        /// (`.forge/workflows/`, at its latest landed commit) if the
+        /// operator catalog has no workflow of this name
+        #[arg(long)]
+        project: Option<String>,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a candidate workflow file's text against the catalog
+    /// without writing anything: every problem with line and message, so
+    /// an editor can check as the operator types
+    Lint {
+        /// Read the candidate file's text from stdin (the only source
+        /// today)
+        #[arg(long)]
+        stdin: bool,
+        /// The file name the candidate would be saved under; defaults to
+        /// its own declared `name`
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -1107,6 +1134,12 @@ pub async fn main() -> Result<()> {
         Cmd::Journal { id, json } => journal(id, json),
         Cmd::Workflows { cmd, project, json } => match cmd {
             Some(WorkflowsCmd::Validate { path }) => validate_workflows(path),
+            Some(WorkflowsCmd::Show {
+                name,
+                project,
+                json,
+            }) => show_workflow(name, project, json).await,
+            Some(WorkflowsCmd::Lint { stdin, name }) => lint_workflow(stdin, name),
             None => list_workflows(project, json).await,
         },
         Cmd::Providers { json } => list_providers(json),
@@ -3157,6 +3190,157 @@ fn validate_workflows(path: Option<PathBuf>) -> Result<()> {
     std::process::exit(1);
 }
 
+/// The `"measured"` object `forge workflows --json` and `forge workflows
+/// show --json` both print for one workflow: current version, previous
+/// version if any (with regression flag), all versions combined, and the
+/// same breakdown per provider.
+fn measured_doc(f: &Forge, w: &workflows::Workflow) -> Result<serde_json::Value> {
+    let m = measure(f, w)?;
+    Ok(serde_json::json!({
+        "current": m.current, "previous": m.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
+        "all_versions": m.all, "regressed": m.regressed,
+        "by_provider": profile::measure_by_provider(&f.store, &w.name, &w.hash).ok().map(|ps| ps.into_iter().map(|(provider, pm)| serde_json::json!({
+            "provider": provider, "current": pm.current,
+            "previous": pm.previous.as_ref().map(|(h, p)| serde_json::json!({"hash": h, "profile": p})),
+            "regressed": pm.regressed,
+        })).collect::<Vec<_>>()),
+    }))
+}
+
+fn lint_workflow(stdin: bool, name: Option<String>) -> Result<()> {
+    anyhow::ensure!(
+        stdin,
+        "forge workflows lint needs --stdin; that is the only source of the candidate text today"
+    );
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .context("reading the candidate workflow's text from stdin")?;
+    let f = Forge::open(false, false)?;
+    let problems = workflows::lint(&f.paths.home, name.as_deref(), &text)?;
+    out!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "problems": problems.iter().map(|p| serde_json::json!({"line": p.line, "message": p.message})).collect::<Vec<_>>(),
+        }))?
+    );
+    if !problems.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn show_workflow(name: String, project: Option<String>, json: bool) -> Result<()> {
+    let f = Forge::open(false, false)?;
+    let mut found: Option<(workflows::Workflow, &'static str)> =
+        workflows::get(&f.paths.home, &name)?.map(|w| (w, "catalog"));
+    let mut repo_ctx: Option<(PathBuf, String)> = None;
+    if let Some(p) = &project {
+        f.store
+            .project(p)?
+            .with_context(|| format!("no project {p}"))?;
+        let repo = f
+            .store
+            .first_repo(p)?
+            .with_context(|| format!("project {p} has no registered repository"))?;
+        let repo_path = PathBuf::from(&repo);
+        let cfg = config::load_working(&repo_path).await?;
+        let landed_sha = git::rev_parse(&repo_path, &format!("refs/heads/{}", cfg.base_branch))
+            .await
+            .with_context(|| format!("resolving {} on {}", cfg.base_branch, repo_path.display()))?;
+        if found.is_none() {
+            let repo_workflows = workflows::load_all_at(&repo_path, &landed_sha)?;
+            found = repo_workflows
+                .into_iter()
+                .find(|w| w.name == name)
+                .map(|w| (w, "repo"));
+        }
+        repo_ctx = Some((repo_path, landed_sha));
+    }
+    let (wf, source) = found.with_context(|| {
+        format!("unknown workflow {name:?}; see `forge workflows` for what is configured")
+    })?;
+
+    let step_doc = |action: &workflows::ActionDef,
+                    model: Option<String>,
+                    max_turns: Option<u32>,
+                    timeout_secs: Option<u32>| {
+        serde_json::json!({
+            "name": action.name, "kind": action.kind, "contract": action.contract,
+            "model": model, "max_turns": max_turns, "timeout_secs": timeout_secs,
+            "description": action.description,
+        })
+    };
+    let steps: Vec<serde_json::Value> = if wf.kind == workflows::WorkflowKind::Run {
+        let run_steps = if source == "repo" {
+            let (repo_path, landed_sha) = repo_ctx.as_ref().unwrap();
+            workflows::resolve_job_at(&f.paths.home, repo_path, landed_sha, &name)?
+                .context("the workflow disappeared from the repository while resolving it")?
+                .1
+        } else {
+            workflows::resolve_job(&f.paths.home, &name)?.1
+        };
+        run_steps
+            .iter()
+            .map(|s| step_doc(&s.action, s.model.clone(), s.max_turns, s.timeout_secs))
+            .collect()
+    } else if source == "catalog" {
+        workflows::resolve(&f.paths.home, &name)
+            .with_context(|| format!("resolving workflow {name:?}"))?
+            .steps
+            .iter()
+            .map(|s| step_doc(&s.action, s.model.clone(), s.max_turns, s.timeout_secs))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let measured = measured_doc(&f, &wf)?;
+
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "name": wf.name, "source": source, "path": wf.path, "kind": wf.kind,
+                "text": wf.text, "steps": steps, "measured": measured,
+            }))?
+        );
+        return Ok(());
+    }
+
+    out!(
+        "{} [{}] {} ({})",
+        wf.name,
+        wf.kind,
+        source,
+        wf.path.display()
+    );
+    out!("{}", wf.description);
+    for s in &steps {
+        out!(
+            "  {:<12} {:<10} model={:<10} turns={:<4} timeout={:<6} {}",
+            s["name"].as_str().unwrap_or_default(),
+            s["contract"].as_str().unwrap_or_default(),
+            s["model"].as_str().unwrap_or("-"),
+            s["max_turns"]
+                .as_u64()
+                .map_or("-".into(), |n| n.to_string()),
+            s["timeout_secs"]
+                .as_u64()
+                .map_or("-".into(), |n| n.to_string()),
+            s["description"].as_str().unwrap_or_default(),
+        );
+    }
+    let m = measure(&f, &wf)?;
+    out!(
+        "measured   {}{}",
+        m.current.line(),
+        if m.regressed { "  REGRESSION" } else { "" }
+    );
+    out!();
+    out!("{}", wf.text);
+    Ok(())
+}
+
 async fn list_workflows(project: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let all = workflows::load_all(&f.paths.home)?;
@@ -5116,6 +5300,10 @@ mod tests {
         (
             "list_workflows",
             "renders the workflow and action catalog, text and json",
+        ),
+        (
+            "show_workflow",
+            "finds one workflow (catalog or repo), resolves its steps, renders text and json",
         ),
         (
             "stats",

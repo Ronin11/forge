@@ -1984,6 +1984,69 @@ pub fn validate_repo(root: &Path) -> Result<ValidateReport> {
     })
 }
 
+/// One problem `forge workflows lint --stdin` found in a candidate
+/// workflow file's text: the line the parser could place it at (a syntax
+/// or shape error has one; a semantic error found only after a clean
+/// parse — an unknown action, a data-flow violation — does not), and the
+/// message. No `file`, unlike `ValidateProblem`: a candidate as typed has
+/// none.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LintProblem {
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+/// `forge workflows lint --stdin [--name <name>]`: parse a candidate
+/// workflow file's text and check it resolves against the operator's own
+/// catalog — every action or workflow reference it names known, the
+/// data-flow rule holding, `[trigger]` well-formed for a run workflow —
+/// without writing the file anywhere, so an editor can lint on every
+/// keystroke (docs/WORKFLOWS.md). `name` is the file name the candidate
+/// would be saved under, used the way `parse_workflow` uses a real file's
+/// stem (its own `name = "..."` must match); when absent, the candidate's
+/// own declared name stands in for it, so a fresh draft lints clean before
+/// the operator has chosen where to save it. Best-effort against whatever
+/// of the catalog itself still loads: a broken sibling file elsewhere does
+/// not stop a candidate from being checked.
+pub fn lint(home: &Path, name: Option<&str>, text: &str) -> Result<Vec<LintProblem>> {
+    let cat = load_catalog(home)?;
+    let stem = match name {
+        Some(n) => n.to_string(),
+        None => toml::from_str::<toml::Value>(text)
+            .ok()
+            .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+            .unwrap_or_else(|| "candidate".to_string()),
+    };
+    let path = PathBuf::from(format!("{stem}.toml"));
+
+    let wf = match parse_workflow(&path, text, String::new()) {
+        Ok(wf) => wf,
+        Err(e) => {
+            return Ok(vec![LintProblem {
+                line: error_line(&e, text),
+                message: format!("{e:#}"),
+            }]);
+        }
+    };
+
+    let mut workflows = cat.workflows.clone();
+    workflows.insert(wf.name.clone(), wf.clone());
+    let result = if wf.kind == WorkflowKind::Run {
+        job_steps(&wf, &workflows, &cat.actions).map(|_| ())
+    } else {
+        let mut out = Resolved::default();
+        splice(&wf, &workflows, &cat.actions, &mut Vec::new(), &mut out)
+            .and_then(|()| check_flow(&out.steps))
+    };
+    Ok(match result {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![LintProblem {
+            line: error_line(&e, text),
+            message: format!("{e:#}"),
+        }],
+    })
+}
+
 /// Every run workflow under `<root>/.forge/workflows`, each resolved the
 /// way `validate_repo` resolves one — against the built-in actions and the
 /// tree's own `.forge/workflows/actions/*.toml`, with no home directory —
