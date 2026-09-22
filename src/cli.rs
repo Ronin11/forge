@@ -191,6 +191,16 @@ enum Cmd {
         /// marked "by text"
         #[arg(long = "touches-text", requires = "touches")]
         touches_text: bool,
+        /// Only tasks with an attempt that failed this verdict row
+        /// (repeatable): a rule name such as changes-match-git or
+        /// clean-tree, or a check name as the record spells it, such as
+        /// test, clippy or task-check-1. An unknown name is refused,
+        /// listing the known ones.
+        #[arg(long = "failed-on")]
+        failed_on: Vec<String>,
+        /// Only tasks with an attempt whose reason contains this text
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -1272,6 +1282,8 @@ pub async fn main() -> Result<()> {
             initiative,
             touches,
             touches_text,
+            failed_on,
+            reason,
         } => log(
             LogArgs {
                 limit,
@@ -1284,6 +1296,8 @@ pub async fn main() -> Result<()> {
                 initiative,
                 touches,
                 touches_text,
+                failed_on,
+                reason,
             },
             json,
         ),
@@ -5205,11 +5219,7 @@ async fn journal_control_stats(f: &Forge) -> Result<()> {
 }
 
 fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<crate::view::TaskRow>> {
-    Ok(f.store
-        .list_tasks_where(q)?
-        .iter()
-        .map(crate::view::TaskRow::from)
-        .collect())
+    crate::view::task_rows(f, q)
 }
 
 fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<crate::view::RequestRow>> {
@@ -5487,6 +5497,8 @@ struct LogArgs {
     initiative: Option<i64>,
     touches: Vec<String>,
     touches_text: bool,
+    failed_on: Vec<String>,
+    reason: Option<String>,
 }
 
 fn log(args: LogArgs, json: bool) -> Result<()> {
@@ -5501,6 +5513,8 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         initiative,
         touches,
         touches_text,
+        failed_on,
+        reason,
     } = args;
     let state = state
         .map(|s| {
@@ -5527,6 +5541,8 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         initiative,
         touches,
         touches_text,
+        failed_on,
+        reason,
     };
     let rows = tasks_json(&f, &q)?;
     if json {
@@ -5556,7 +5572,7 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -5570,10 +5586,27 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
                 " (by text)"
             } else {
                 ""
-            }
+            },
+            failed_suffix(&s.failures)
         );
     }
     Ok(())
+}
+
+/// The listing's mark for a `--failed-on`/`--reason` match: the distinct
+/// failing row names, `reason` for a reason match; empty without one.
+fn failed_suffix(failures: &[crate::store::FailedAttempt]) -> String {
+    if failures.is_empty() {
+        return String::new();
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for f in failures {
+        let n = f.name.as_deref().unwrap_or("reason");
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    format!(" (failed: {})", names.join(", "))
 }
 
 fn show(id: i64, json: bool) -> Result<()> {

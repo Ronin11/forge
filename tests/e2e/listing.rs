@@ -609,6 +609,92 @@ fn forge_log_touches_finds_tasks_by_recorded_changes_on_a_slash_boundary() {
     assert!(by_text[0].starts_with(&mentions.to_string()), "{text}");
 }
 
+/// `forge log --failed-on NAME` and `--reason TEXT` list tasks by what
+/// failed on an attempt, straight from the verdict rows; unknown names
+/// are refused with the known ones.
+#[test]
+fn forge_log_failed_on_and_reason_find_tasks_by_their_attempts_failures() {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nanswer = [\"bash\", \"-c\", \"grep -qx 42 answer.txt\"]\ntest = [\"bash\", \"-c\", \"grep -qx 42 answer.txt\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "a test check"]);
+    // 1 fails `test` on its first attempt and passes on its second.
+    assert!(
+        e.run("flaky.sh", &["--retries", "3", "--budget", "1.0"])
+            .status
+            .success()
+    );
+    assert_eq!(e.task(1).0, "succeeded");
+    // 2 fails the L0 rule clean-tree; 3 dies with agent exit 1.
+    assert!(!e.run("dirty.sh", &["--retries", "0"]).status.success());
+    assert!(!e.run("crash.sh", &["--retries", "0"]).status.success());
+
+    let rows = |args: &[&str]| -> Vec<serde_json::Value> {
+        let mut a = vec!["log", "--json"];
+        a.extend_from_slice(args);
+        let o = e.forge("ok.sh", &a);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let ids = |rows: &[serde_json::Value]| -> Vec<i64> {
+        rows.iter().map(|r| r["id"].as_i64().unwrap()).collect()
+    };
+
+    let r = rows(&["--failed-on", "test"]);
+    assert_eq!(ids(&r), vec![1]);
+    let f = r[0]["failures"].as_array().unwrap();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0]["attempt_no"], 1);
+    assert_eq!(f[0]["step"], "code");
+    assert_eq!(f[0]["name"], "test");
+    assert!(f[0]["tail"].is_string());
+
+    assert_eq!(ids(&rows(&["--failed-on", "clean-tree"])), vec![2]);
+    assert_eq!(
+        ids(&rows(&["--failed-on", "test", "--failed-on", "clean-tree"])),
+        vec![2, 1]
+    );
+    assert_eq!(
+        ids(&rows(&[
+            "--failed-on",
+            "clean-tree",
+            "--state",
+            "succeeded"
+        ])),
+        Vec::<i64>::new(),
+        "combines with the other filters"
+    );
+
+    let r = rows(&["--reason", "agent exit 1"]);
+    assert_eq!(ids(&r), vec![3]);
+    let f = r[0]["failures"].as_array().unwrap();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert!(f[0]["name"].is_null());
+    assert!(
+        f[0]["reason"].as_str().unwrap().contains("agent exit 1"),
+        "{f:?}"
+    );
+    assert!(rows(&["--limit", "1"])[0].get("failures").is_none());
+
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["log", "--failed-on", "test"]).stdout)
+        .to_string();
+    assert!(text.contains("(failed: test)"), "{text}");
+
+    let o = e.forge("ok.sh", &["log", "--failed-on", "no-such-row"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    for known in ["clean-tree", "changes-match-git", "test", "answer"] {
+        assert!(err.contains(known), "{known} missing from {err}");
+    }
+}
+
 #[test]
 fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
     let e = Env::new();

@@ -25,7 +25,8 @@ and does not parse stdout.
   [Snapshot](#snapshot-document).
 - **`forge log --json [--limit N] [--state S] [--repo P] [--before ID]
   [--grep TEXT] [--workflow W] [--project NAME] [--initiative ID]
-  [--touches PATH]... [--touches-text]`** —
+  [--touches PATH]... [--touches-text] [--failed-on NAME]... [--reason
+  TEXT]`** —
   tasks, newest first. A JSON array of [`TaskRow`](#taskrow). `--limit`
   defaults to 20; `--before` pages backward by id; `--grep` matches the
   task text or an exact id; `--state` is one of `queued`, `running`,
@@ -40,7 +41,17 @@ and does not parse stdout.
   keeps tasks whose text mentions one of the paths, and each row's
   `touch` says which (`"changes"` or `"text"`; the text form appends
   `(by text)`), so a guess is never mistaken for a record. Combines with
-  every other filter.
+  every other filter. `--failed-on NAME` (repeatable) keeps tasks with an
+  attempt whose verdict has a row of that name with `ok: false`: a rule
+  name (`changes-match-git`, `clean-tree`, …, the registry in
+  `src/verify.rs`) or a check name as the record spells it (`test`,
+  `clippy`, `task-check-1`); an unknown name is refused, listing the
+  rules and the check names the record has seen. `--reason TEXT` keeps
+  tasks with an attempt whose reason contains the text
+  (case-insensitive). Under either, each row carries `failures`, the
+  matching attempts, so no client opens `verdict_json` again; the text
+  form appends `(failed: test, clean-tree)`. SQLite walks the verdict
+  JSON (`json_each`), as it does the envelopes for `--touches`.
 - **`forge requests --json [--repo P]`** — blocked tasks and what each
   is waiting on. A JSON array of [`RequestRow`](#requestrow).
 - **`forge decisions --json [--repo P]`** — operator and supervisor
@@ -496,6 +507,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
 | `trust` | string | Trust the caller earned by the path it queued through: `"operator"` (`forge add`/`forge run` and the CLI, the default), `"contact"` (a known contact through the Signal plugin, the portal, or another message through the concierge's `forge ask`), or `"public"` (the github-issues plugin, or any other caller a stranger can reach). Set once at enqueue and never revisited; a retry keeps the trust of the task it retries. `"operator"` for every task that predates this column. Also on `TraceDoc.task.trust`, shown by `forge show` and `forge trace`. |
 | `touch` | string, only under `--touches` | How the row matched `--touches`: `"changes"` (an attempt recorded a change at the path or under it) or `"text"` (only the task's text mentions it, `--touches-text`). Absent without the filter. |
+| `failures` | array, only under `--failed-on`/`--reason` | The attempts that matched, by attempt number: `{attempt_no, step, reason, name, tail}` with `name` the failing verdict row's name (null for a `--reason` match) and `tail` that row's first line of output (empty for a reason match). Absent without those filters. |
 
 ### `RequestRow`
 
