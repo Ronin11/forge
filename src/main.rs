@@ -108,3 +108,53 @@ mod readme_layout {
         );
     }
 }
+
+#[cfg(test)]
+mod docs_readme_index {
+    use std::fs;
+    use std::path::Path;
+
+    // docs/README.md is the hand-written index of everything under docs/.
+    // This is the stop that keeps it from going stale: every docs/*.md file
+    // has to be named there, and every *.md name it mentions has to exist.
+    #[test]
+    fn every_doc_is_indexed_and_the_index_names_only_real_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let docs = root.join("docs");
+        let index = fs::read_to_string(docs.join("README.md")).expect("read docs/README.md");
+
+        let mut missing = Vec::new();
+        for entry in fs::read_dir(&docs).expect("read_dir docs") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            if name == "README.md" {
+                continue;
+            }
+            if !index.contains(&name) {
+                missing.push(name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "docs/README.md doesn't index: {missing:?}"
+        );
+
+        let mut dangling = Vec::new();
+        for word in index.split(|c: char| c.is_whitespace() || "[]()`,*:/".contains(c)) {
+            let Some(stem) = word.strip_suffix(".md") else {
+                continue;
+            };
+            let name = format!("{stem}.md");
+            if !docs.join(&name).is_file() {
+                dangling.push(name);
+            }
+        }
+        assert!(
+            dangling.is_empty(),
+            "docs/README.md names files that don't exist: {dangling:?}"
+        );
+    }
+}
