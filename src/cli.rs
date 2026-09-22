@@ -24,7 +24,7 @@ macro_rules! out {
 }
 
 #[derive(Parser)]
-#[command(name = "forge", about = "Forge 2")]
+#[command(name = "forge", about = "Forge")]
 pub struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -115,7 +115,13 @@ enum Cmd {
     /// Run one task now
     Run(TaskArgs),
     /// Queue a task for `forge work`
-    Add(TaskArgs),
+    Add {
+        #[command(flatten)]
+        args: TaskArgs,
+        /// Print `{"id", "queued"}` instead of the sentence
+        #[arg(long)]
+        json: bool,
+    },
     /// The front door: sort a customer message into a request, a
     /// question, a need, or unclear, and act on it (see docs/INTAKE.md,
     /// "The front door is not the interview")
@@ -234,7 +240,12 @@ enum Cmd {
         json: bool,
     },
     /// Show one task and its attempts
-    Show { id: i64 },
+    Show {
+        id: i64,
+        /// The task's full record as one JSON object (`TraceDoc.task`)
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the supervisor on a task blocked with a question, now
     Supervise { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
@@ -454,6 +465,34 @@ enum Cmd {
     Experiment {
         #[command(subcommand)]
         cmd: ExperimentCmd,
+    },
+    /// The operator's own way to reach a running (or not-yet-started)
+    /// `forge-web`: the tokened link it prints at start, without having
+    /// to start a second one just to see it (see docs/CLIENT.md,
+    /// "Reaching forge-web")
+    Web {
+        #[command(subcommand)]
+        cmd: WebCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebCmd {
+    /// Print the tokened link for `forge-web` at `--bind` (default
+    /// `127.0.0.1:7788`): `http://ADDR/?token=...`. Reads
+    /// `FORGE_HOME/web.token`, creating it the same way `forge-web`
+    /// itself does if it is not there yet, so this works whether
+    /// `forge-web` is already running or not started yet.
+    Link {
+        /// The address forge-web binds (or will bind)
+        #[arg(long, default_value = "127.0.0.1:7788")]
+        bind: String,
+    },
+    /// The same link as `forge web link`, handed to `xdg-open`
+    Open {
+        /// The address forge-web binds (or will bind)
+        #[arg(long, default_value = "127.0.0.1:7788")]
+        bind: String,
     },
 }
 
@@ -1138,12 +1177,12 @@ enum InitiativeCmd {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Change a queued or blocked task's own limits in place, replacing
-    /// only the fields given; refused when none are, and refused on a
-    /// running or finished task (only its next attempt, or a retry, can
-    /// change those). Recorded as a decision on the task, so the change
-    /// is on the record; the queue's next claim reads the new values.
-    /// Prints the task afterward.
+    /// Change a queued or blocked task's spec in place, replacing only
+    /// the fields given; refused when none are, and refused on a running
+    /// or finished task (only its next attempt, or a retry, can change
+    /// those). Recorded as a decision on the task naming each field's
+    /// old and new value, so the change is on the record; the queue's
+    /// next claim reads the new values. Prints the task afterward.
     Set {
         id: i64,
         /// Cost cap for this task in USD
@@ -1158,13 +1197,34 @@ enum TaskCmd {
         /// Extra attempts after a failure, each fed the previous failure
         #[arg(long)]
         retries: Option<u32>,
+        /// Replace the task text
+        #[arg(long, conflicts_with = "text_file")]
+        text: Option<String>,
+        /// Replace the task text with this file's contents
+        #[arg(long = "text-file")]
+        text_file: Option<PathBuf>,
+        /// Replace the workflow (must exist and fit the repository)
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Replace the tasks this one waits on (repeatable)
+        #[arg(long, conflicts_with = "no_after")]
+        after: Vec<i64>,
+        /// Wait on nothing
+        #[arg(long = "no-after")]
+        no_after: bool,
+        /// Replace the task's own acceptance commands (repeatable)
+        #[arg(long = "check", conflicts_with = "no_checks")]
+        checks: Vec<String>,
+        /// Drop the task's own acceptance commands
+        #[arg(long = "no-checks")]
+        no_checks: bool,
     },
 }
 
 pub async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(args) => run(args).await,
-        Cmd::Add(args) => add(args).await,
+        Cmd::Add { args, json } => add(args, json).await,
         Cmd::Ask {
             project,
             message,
@@ -1240,7 +1300,7 @@ pub async fn main() -> Result<()> {
             initiative,
             json,
         } => decisions(repo, project, initiative, json),
-        Cmd::Show { id } => show(id),
+        Cmd::Show { id, json } => show(id, json),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
@@ -1491,7 +1551,36 @@ pub async fn main() -> Result<()> {
                 max_turns,
                 timeout_secs,
                 retries,
-            } => task_set(id, budget, max_turns, timeout_secs, retries),
+                text,
+                text_file,
+                workflow,
+                after,
+                no_after,
+                checks,
+                no_checks,
+            } => {
+                let text = match text_file {
+                    Some(p) => Some(
+                        std::fs::read_to_string(&p)
+                            .with_context(|| format!("--text-file {}", p.display()))?,
+                    ),
+                    None => text,
+                };
+                task_set(
+                    id,
+                    crate::queue::TaskEdit {
+                        budget,
+                        max_turns,
+                        timeout_secs,
+                        retries,
+                        text,
+                        workflow,
+                        after: (no_after || !after.is_empty()).then_some(after),
+                        checks: (no_checks || !checks.is_empty()).then_some(checks),
+                    },
+                )
+                .await
+            }
         },
         Cmd::Intake { cmd } => match cmd {
             IntakeCmd::Accept {
@@ -1509,6 +1598,10 @@ pub async fn main() -> Result<()> {
         },
         Cmd::Experiment { cmd } => match cmd {
             ExperimentCmd::Set { factor, levels } => experiment_set(factor, levels).await,
+        },
+        Cmd::Web { cmd } => match cmd {
+            WebCmd::Link { bind } => web_link(bind),
+            WebCmd::Open { bind } => web_open(bind),
         },
     }
 }
@@ -2503,6 +2596,57 @@ fn webhook_list(project: String, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The token `forge-web` gates every request on: read from
+/// `FORGE_HOME/web.token`, or generated the same way `forge-web` itself
+/// generates it (32 bytes of OS randomness as hex, file mode 0600) if it
+/// is not there yet — so `forge web link` works whether `forge-web` has
+/// ever run or not.
+fn web_token(dir: &Path) -> Result<String> {
+    let path = dir.join("web.token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim().to_string();
+        if t.len() >= 32 {
+            return Ok(t);
+        }
+    }
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))
+        .context("reading /dev/urandom")?;
+    let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(dir).ok();
+    std::fs::write(&path, &t).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(t)
+}
+
+/// `forge web link [--bind ADDR]`: the tokened link for a running or
+/// future `forge-web`, without starting a second one to see it.
+fn web_link(bind: String) -> Result<()> {
+    let home = crate::ctx::Paths::resolve()?.home;
+    let secret = web_token(&home)?;
+    out!("http://{bind}/?token={secret}");
+    Ok(())
+}
+
+/// `forge web open [--bind ADDR]`: the same link as `forge web link`,
+/// handed to `xdg-open`.
+fn web_open(bind: String) -> Result<()> {
+    let home = crate::ctx::Paths::resolve()?.home;
+    let secret = web_token(&home)?;
+    let link = format!("http://{bind}/?token={secret}");
+    std::process::Command::new("xdg-open")
+        .arg(&link)
+        .status()
+        .context("running xdg-open")?;
+    out!("{link}");
+    Ok(())
+}
+
 /// `forge job withdraw <id>` (see docs/JOBS.md, "Delayed jobs").
 fn job_withdraw(id: i64) -> Result<()> {
     let f = Forge::open(false, false)?;
@@ -3118,66 +3262,10 @@ fn initiative_set(
     Ok(())
 }
 
-fn task_set(
-    id: i64,
-    budget: Option<f64>,
-    max_turns: Option<u32>,
-    timeout_secs: Option<u32>,
-    retries: Option<u32>,
-) -> Result<()> {
-    if budget.is_none() && max_turns.is_none() && timeout_secs.is_none() && retries.is_none() {
-        bail!("nothing to set: pass --budget, --max-turns, --timeout-secs or --retries");
-    }
-    if let Some(b) = budget
-        && (!b.is_finite() || b <= 0.0)
-    {
-        bail!("budget must be a positive finite number");
-    }
+async fn task_set(id: i64, edit: crate::queue::TaskEdit) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let Some(old) = f.store.task(id)? else {
-        bail!("no task {id}");
-    };
-    if !matches!(old.state, TaskState::Queued | TaskState::Blocked) {
-        bail!(
-            "task {id} is {}; only a queued or blocked task's limits are set (a running attempt might still finish, and a finished task is done)",
-            old.state.as_str()
-        );
-    }
-    let mut changes = Vec::new();
-    if let Some(b) = budget {
-        changes.push(format!("budget ${b:.2}"));
-    }
-    if let Some(n) = max_turns {
-        changes.push(format!("max-turns {n}"));
-    }
-    if let Some(n) = timeout_secs {
-        changes.push(format!("timeout-secs {n}"));
-    }
-    if let Some(n) = retries {
-        changes.push(format!("retries {n}"));
-    }
-    if !f.store.set_task_limits(
-        id,
-        &crate::store::TaskLimitsUpdate {
-            budget_usd: budget,
-            max_turns: max_turns.map(|n| n as i64),
-            max_attempts: retries.map(|n| n as i64 + 1),
-            timeout_secs: timeout_secs.map(|n| n as i64),
-        },
-    )? {
-        bail!("task {id} changed state before its limits could be set");
-    }
-    let decision = f.store.insert_decision_by(
-        id,
-        &old.repo,
-        &format!("task {id}'s limits"),
-        &format!("set {}", changes.join(", ")),
-        "operator",
-        "",
-        old.question_to.as_deref(),
-    )?;
-    f.store.set_decision_retry(decision, id)?;
-    show(id)
+    crate::queue::edit_task(&f, id, &edit).await?;
+    show(id, false)
 }
 
 fn initiative_list(project: Option<String>, json: bool) -> Result<()> {
@@ -3331,10 +3419,15 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn add(args: TaskArgs) -> Result<()> {
+async fn add(args: TaskArgs, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
-    out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    let queued = f.store.queued_count()?;
+    if json {
+        out!("{}", serde_json::json!({ "id": t.id, "queued": queued }));
+    } else {
+        out!("queued task {} ({queued} queued)", t.id);
+    }
     Ok(())
 }
 
@@ -5011,7 +5104,7 @@ async fn factor_stats_cmd(
 ) -> Result<()> {
     let doc = crate::view::stats_doc(f, scope, days).await?;
     out!(
-        "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8}",
+        "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10}",
         "FACTOR",
         "LEVEL",
         "N",
@@ -5019,7 +5112,9 @@ async fn factor_stats_cmd(
         "RATE (95% CI)",
         "TRUECOST",
         "EFFECT(log$)",
-        "SE"
+        "SE",
+        "FIRSTEDIT",
+        "CALLS/TURN"
     );
     let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for r in &doc.factors {
@@ -5038,8 +5133,9 @@ async fn factor_stats_cmd(
             }
         };
         let se = r.effect_se.map_or("-".to_string(), |v| format!("{v:.2}"));
+        let num = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("{n:.1}"));
         out!(
-            "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8}",
+            "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10}",
             r.factor,
             r.level,
             r.tasks,
@@ -5047,7 +5143,9 @@ async fn factor_stats_cmd(
             rate,
             dollar(r.mean_true_cost_usd),
             effect,
-            se
+            se,
+            num(r.mean_first_edit_call),
+            num(r.mean_calls_per_turn)
         );
     }
     if let Some(d) = days {
@@ -5450,12 +5548,16 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn show(id: i64) -> Result<()> {
+fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
         bail!("no task {id}")
     };
     let doc = crate::view::trace_doc(&f, &t)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc.task)?);
+        return Ok(());
+    }
     let task = &doc.task;
     let cost: f64 = doc.attempts.iter().filter_map(|a| a.cost_usd).sum();
     out!("task       {}", task.id);

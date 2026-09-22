@@ -67,6 +67,18 @@ fn setup(e: &Env) {
         .status
         .success()
     );
+    // A contact's own requested work must run under a workflow
+    // trust.contact's default policy allows (see `build_trust`): the
+    // demo project's default is set here rather than left at "direct",
+    // which a stranger's or a contact's own trust level would refuse.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "set", "demo", "--workflow", "reviewed"],
+        )
+        .status
+        .success()
+    );
     assert!(
         e.forge(
             "ok.sh",
@@ -192,7 +204,7 @@ fn a_request_files_a_task_on_the_projects_default_workflow_and_records_the_decis
     assert_eq!(state, "queued");
     let (task, workflow, _, concierge_json) = row(&e, filed);
     assert!(task.contains("usually same day"), "{task}");
-    assert_eq!(workflow, "direct", "the project's default workflow");
+    assert_eq!(workflow, "reviewed", "the project's default workflow");
     let d: serde_json::Value =
         serde_json::from_str(&concierge_json.expect("concierge_json is recorded")).unwrap();
     assert_eq!(d["kind"], "request");
@@ -412,6 +424,17 @@ fn a_pattern_files_a_proposal_and_a_yes_creates_the_initiative() {
                 "--repo",
                 repo,
             ],
+        )
+        .status
+        .success()
+    );
+    // A contact's own requested work must run under a workflow
+    // trust.contact's default policy allows (see `build_trust`), which
+    // "direct" is not.
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "set", "escalate", "--workflow", "reviewed"],
         )
         .status
         .success()

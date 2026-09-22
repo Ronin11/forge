@@ -197,7 +197,10 @@ fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     assert_eq!(d["task_id"], id);
     assert_eq!(d["answered_by"], "operator");
     assert!(
-        d["answer"].as_str().unwrap().contains("budget $20.00"),
+        d["answer"]
+            .as_str()
+            .unwrap()
+            .contains("budget unset → $20.00"),
         "{d}"
     );
     assert_eq!(d["retry_id"], id);
@@ -216,6 +219,299 @@ fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     assert!(err.contains("running"), "{err}");
     let (budget, ..) = limits(&e);
     assert_eq!(budget, Some(20.0), "left untouched");
+}
+
+/// `forge task set` edits the spec, not only the limits: text, workflow,
+/// dependencies and checks, each held to what `forge add` holds it to,
+/// each recorded old → new on the decision row.
+#[test]
+fn forge_task_set_replaces_text_workflow_after_and_checks_and_records_old_and_new() {
+    let e = Env::new();
+    let dep = e.add(&[]);
+    let id = e.add(&["--check", "test -f answer.txt"]);
+    let sid = id.to_string();
+    let spec = |e: &Env| -> (String, String, String, String) {
+        e.db()
+            .query_row(
+                "SELECT task, workflow, after_json, checks_json FROM tasks WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42 to answer.txt".into(),
+            "direct".into(),
+            "[]".into(),
+            "[\"test -f answer.txt\"]".into()
+        )
+    );
+
+    let text_file = e.repo.join("new-text.txt");
+    std::fs::write(&text_file, "write 43 to answer.txt and src/lib.rs\n").unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &sid,
+            "--text-file",
+            text_file.to_str().unwrap(),
+            "--workflow",
+            "reviewed",
+            "--after",
+            &dep.to_string(),
+            "--check",
+            "test -f answer.txt",
+            "--check",
+            "grep -qx 43 answer.txt",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        spec(&e),
+        (
+            "write 43 to answer.txt and src/lib.rs\n".into(),
+            "reviewed".into(),
+            format!("[{dep}]"),
+            "[\"test -f answer.txt\",\"grep -qx 43 answer.txt\"]".into()
+        )
+    );
+    let (len, paths, hash): (i64, i64, String) = e
+        .db()
+        .query_row(
+            "SELECT shape_text_len, shape_path_tokens, workflow_hash FROM tasks WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((len, paths), (38, 2), "the shape follows the text");
+    assert!(!hash.is_empty(), "the workflow hash follows the workflow");
+    assert_eq!(e.task(id).0, "queued", "the change does not touch state");
+
+    let d = e.decisions_json();
+    let d = d
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["task_id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(d["question"], format!("task {id}'s spec"));
+    let answer = d["answer"].as_str().unwrap();
+    for part in [
+        "text 22 chars ",
+        " → 38 chars ",
+        "workflow direct → reviewed",
+        &format!("after [] → [{dep}]"),
+        "checks [\"test -f answer.txt\"] → [\"test -f answer.txt\",\"grep -qx 43 answer.txt\"]",
+    ] {
+        assert!(answer.contains(part), "{part:?} missing from {answer:?}");
+    }
+
+    // `--text` and `--no-after` / `--no-checks`: the repository declares
+    // checks, so a task with none is still verified.
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "task",
+            "set",
+            &sid,
+            "--text",
+            "write 42",
+            "--no-after",
+            "--no-checks",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42".into(),
+            "reviewed".into(),
+            "[]".into(),
+            "[]".into()
+        )
+    );
+
+    // Refusals, each leaving the spec as it was.
+    for (bad, why) in [
+        (vec!["--workflow", "no-such-workflow"], "unknown workflow"),
+        (vec!["--after", "999"], "no such task"),
+        (vec!["--after", &sid], "wait on itself"),
+        (vec!["--text", "  "], "empty"),
+        (vec!["--check", ""], "empty"),
+    ] {
+        let mut args = vec!["task", "set", &sid];
+        args.extend(bad.iter());
+        let o = e.forge("ok.sh", &args);
+        assert!(!o.status.success(), "{bad:?} must be refused");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(why), "{bad:?}: {err}");
+    }
+    assert_eq!(
+        spec(&e),
+        (
+            "write 42".into(),
+            "reviewed".into(),
+            "[]".into(),
+            "[]".into()
+        )
+    );
+
+    // A cycle: dep waits on id, so id may not wait on dep.
+    assert!(
+        e.forge("ok.sh", &["task", "set", &dep.to_string(), "--after", &sid])
+            .status
+            .success()
+    );
+    let o = e.forge("ok.sh", &["task", "set", &sid, "--after", &dep.to_string()]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("wait on each other"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // `--no-checks` on a repository that declares no checks leaves
+    // nothing to verify the work, so it is refused.
+    std::fs::write(e.repo.join("forge.toml"), "").unwrap();
+    let o = e.forge("ok.sh", &["task", "set", &sid, "--no-checks"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("nothing would verify"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+/// `forge add --json` names the task it queued; `forge show --json` is
+/// the task's record with every field of its spec, so a client can feed
+/// one task's spec back into `forge add` and get the same spec.
+#[test]
+fn add_json_names_the_task_and_show_json_round_trips_the_spec_through_add() {
+    let e = Env::new();
+    let dep = e.add(&[]);
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo,
+            "write 42 to answer.txt",
+            "--workflow",
+            "reviewed",
+            "--check",
+            "test -f answer.txt",
+            "--check",
+            "grep -qx 42 answer.txt",
+            "--after",
+            &dep.to_string(),
+            "--budget",
+            "7.5",
+            "--max-turns",
+            "40",
+            "--retries",
+            "2",
+            "--timeout-secs",
+            "600",
+            "--show-checks",
+            "--allow-protected",
+            "--no-land",
+            "--json",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let added: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(added["id"], dep + 1);
+    assert_eq!(added["queued"], 2, "{added}");
+    let id = added["id"].as_i64().unwrap();
+
+    let show = |id: i64| -> serde_json::Value {
+        let o = e.forge("ok.sh", &["show", &id.to_string(), "--json"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let t = show(id);
+    assert_eq!(t, e.trace_json(id)["task"], "show --json is TraceDoc.task");
+    assert_eq!(t["text"], "write 42 to answer.txt");
+    assert_eq!(t["workflow"], "reviewed");
+    assert_eq!(t["after"], serde_json::json!([dep]));
+    assert_eq!(t["budget_usd"], 7.5);
+    assert_eq!(t["land"], false);
+
+    // Feed the spec back into `forge add`, then compare the two records.
+    let text = t["text"].as_str().unwrap().to_string();
+    let workflow = t["workflow"].as_str().unwrap().to_string();
+    let budget = t["budget_usd"].as_f64().unwrap().to_string();
+    let max_turns = t["max_turns"].as_i64().unwrap().to_string();
+    let retries = (t["max_attempts"].as_i64().unwrap() - 1).to_string();
+    let timeout = t["timeout_secs"].as_i64().unwrap().to_string();
+    let mut args: Vec<String> = vec![
+        "add".into(),
+        repo.into(),
+        text,
+        "--workflow".into(),
+        workflow,
+        "--budget".into(),
+        budget,
+        "--max-turns".into(),
+        max_turns,
+        "--retries".into(),
+        retries,
+        "--timeout-secs".into(),
+        timeout,
+        "--json".into(),
+    ];
+    for c in t["checks"].as_array().unwrap() {
+        args.push("--check".into());
+        args.push(c.as_str().unwrap().into());
+    }
+    for a in t["after"].as_array().unwrap() {
+        args.push("--after".into());
+        args.push(a.to_string());
+    }
+    for (flag, on) in [
+        ("--show-checks", t["show_checks"] == true),
+        ("--allow-protected", t["allow_protected"] == true),
+        ("--no-land", t["land"] == false),
+    ] {
+        if on {
+            args.push(flag.into());
+        }
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = e.forge("ok.sh", &argv);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let again: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let copy = show(again["id"].as_i64().unwrap());
+    for field in [
+        "text",
+        "workflow",
+        "checks",
+        "after",
+        "budget_usd",
+        "max_turns",
+        "max_attempts",
+        "timeout_secs",
+        "show_checks",
+        "allow_protected",
+        "land",
+        "provider",
+        "model",
+        "project",
+        "initiative",
+        "trust",
+        "repo",
+    ] {
+        assert_eq!(copy[field], t[field], "{field} did not round-trip");
+    }
+    assert_ne!(copy["id"], t["id"]);
+
+    let o = e.forge("ok.sh", &["show", "999", "--json"]);
+    assert!(!o.status.success());
 }
 
 #[test]

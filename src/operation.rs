@@ -17,39 +17,72 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// What an operation is told about its task, as environment. Facts only,
-/// each one already recorded on the task.
+/// The facts every command Forge runs on a task's tree is told, as
+/// environment: an operation, a repository check (L1), a task check (L2),
+/// a fix command, the tests contract's red-on-base run. One list, built
+/// here and nowhere else, so a check and an operation never disagree.
+/// `start_sha` is HEAD before the attempt (or the operation) began.
+pub(crate) fn task_facts(
+    task_id: i64,
+    base_sha: &str,
+    start_sha: &str,
+    branch: &str,
+) -> Vec<(String, String)> {
+    [
+        ("FORGE_TASK_ID", task_id.to_string()),
+        ("FORGE_BASE_SHA", base_sha.to_string()),
+        ("FORGE_START_SHA", start_sha.to_string()),
+        ("FORGE_BRANCH", branch.to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// What an operation is told about its task, as environment: the task
+/// facts (`task_facts`) followed by the operation's own. Facts only, each
+/// one already recorded on the task.
 fn operation_env(
     t: &Task,
     cfg: &config::Config,
     step: &ResolvedStep,
+    start_sha: &str,
     prev_sha: &str,
     hot_files: &[String],
     cache_dir: &Path,
 ) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = [
-        ("FORGE_TASK_ID", t.id.to_string()),
-        ("FORGE_WORKFLOW", t.workflow.clone()),
-        ("FORGE_STEP", step.action.name.clone()),
-        ("FORGE_BASE_BRANCH", t.base_branch.clone()),
-        ("FORGE_BASE_SHA", t.base_sha.clone()),
-        ("FORGE_BRANCH", t.branch.clone()),
-        ("FORGE_NAMESPACE", cfg.namespace.join(" ")),
-        ("FORGE_PREV_SHA", prev_sha.to_string()),
-        ("FORGE_TASK", t.task.clone()),
-        (
-            "FORGE_BIN_DIR",
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.display().to_string()))
-                .unwrap_or_default(),
-        ),
-        ("FORGE_HOT_FILES", hot_files.join(",")),
-        ("FORGE_CACHE_DIR", cache_dir.display().to_string()),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect();
+    let mut env = task_facts(t.id, &t.base_sha, start_sha, &t.branch);
+    env.extend(
+        [
+            ("FORGE_WORKFLOW", t.workflow.clone()),
+            ("FORGE_STEP", step.action.name.clone()),
+            ("FORGE_BASE_BRANCH", t.base_branch.clone()),
+            ("FORGE_NAMESPACE", cfg.namespace.join(" ")),
+            ("FORGE_PREV_SHA", prev_sha.to_string()),
+            ("FORGE_TASK", t.task.clone()),
+            (
+                "FORGE_BIN_DIR",
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.display().to_string()))
+                    .unwrap_or_default(),
+            ),
+            ("FORGE_HOT_FILES", hot_files.join(",")),
+            ("FORGE_CACHE_DIR", cache_dir.display().to_string()),
+            // The map's arm from the experiment (docs/CONTEXT.md, the map
+            // factor): `spans` renders `name@start-end`, `names` renders names
+            // only; spans when no experiment drew it.
+            (
+                "FORGE_MAP_STYLE",
+                t.explore
+                    .get("map")
+                    .cloned()
+                    .unwrap_or_else(|| "spans".to_string()),
+            ),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v)),
+    );
     if step.action.reads_verify_ref() {
         env.push(("FORGE_VERIFY_REF".into(), format!("verify/{}", t.id)));
     }
@@ -131,7 +164,8 @@ pub(crate) async fn run_operation(
     let hot_files = f.store.hot_files(&t.repo, 8).env()?;
     let cache_dir = f.paths.home.join("cache");
     let _ = std::fs::create_dir_all(&cache_dir);
-    let env = operation_env(t, cfg, step, &prev_sha, &hot_files, &cache_dir);
+    let start_sha = git::head(&wt).await.task()?;
+    let env = operation_env(t, cfg, step, &start_sha, &prev_sha, &hot_files, &cache_dir);
     let scratch = step
         .action
         .reads_verify_ref()
@@ -146,7 +180,6 @@ pub(crate) async fn run_operation(
         }
         None => wt.clone(),
     };
-    let start_sha = git::head(&wt).await.task()?;
     // A hidden suite: overlay the verification namespace for the run, then
     // take it away again so the next directive starts blind.
     let placed = if step.action.overlay && scratch.is_none() {
@@ -311,6 +344,7 @@ pub(crate) async fn run_operation(
             worktree: &wt,
             base_sha: &t.base_sha,
             start_sha: &start_sha,
+            branch: &t.branch,
             cfg,
             task_checks: &t.checks,
             paths: &[],
@@ -586,7 +620,15 @@ mod tests {
         let step = test_step(test_action("fmt", false));
         let hot_files = vec!["a.rs".to_string(), "b.rs".to_string()];
         let cache_dir = PathBuf::from("/tmp/forge-cache");
-        let env = operation_env(&t, &cfg, &step, "prevsha123", &hot_files, &cache_dir);
+        let env = operation_env(
+            &t,
+            &cfg,
+            &step,
+            "start456",
+            "prevsha123",
+            &hot_files,
+            &cache_dir,
+        );
 
         let bin_dir = std::env::current_exe()
             .ok()
@@ -597,11 +639,12 @@ mod tests {
             env,
             vec![
                 ("FORGE_TASK_ID".to_string(), "42".to_string()),
+                ("FORGE_BASE_SHA".to_string(), "abcdef0".to_string()),
+                ("FORGE_START_SHA".to_string(), "start456".to_string()),
+                ("FORGE_BRANCH".to_string(), "forge/42".to_string()),
                 ("FORGE_WORKFLOW".to_string(), "direct".to_string()),
                 ("FORGE_STEP".to_string(), "fmt".to_string()),
                 ("FORGE_BASE_BRANCH".to_string(), "main".to_string()),
-                ("FORGE_BASE_SHA".to_string(), "abcdef0".to_string()),
-                ("FORGE_BRANCH".to_string(), "forge/42".to_string()),
                 ("FORGE_NAMESPACE".to_string(), "tests src".to_string()),
                 ("FORGE_PREV_SHA".to_string(), "prevsha123".to_string()),
                 ("FORGE_TASK".to_string(), "do the thing".to_string()),
@@ -611,6 +654,7 @@ mod tests {
                     "FORGE_CACHE_DIR".to_string(),
                     "/tmp/forge-cache".to_string()
                 ),
+                ("FORGE_MAP_STYLE".to_string(), "spans".to_string()),
             ]
         );
     }
@@ -625,15 +669,45 @@ mod tests {
         let cache_dir = PathBuf::from("/cache");
 
         let reading = test_step(test_action("act", true));
-        let env = operation_env(&t, &cfg, &reading, "x", &[], &cache_dir);
+        let env = operation_env(&t, &cfg, &reading, "s", "x", &[], &cache_dir);
         assert_eq!(
             env.last(),
             Some(&("FORGE_VERIFY_REF".to_string(), "verify/7".to_string()))
         );
 
         let not_reading = test_step(test_action("act", false));
-        let env = operation_env(&t, &cfg, &not_reading, "x", &[], &cache_dir);
+        let env = operation_env(&t, &cfg, &not_reading, "s", "x", &[], &cache_dir);
         assert!(!env.iter().any(|(k, _)| k == "FORGE_VERIFY_REF"));
+    }
+
+    /// The facts a check is promised (docs/ACTIONS.md) are exactly the
+    /// head of what an operation gets: one builder, no second list, and
+    /// no key without a value.
+    #[test]
+    fn task_facts_has_no_gaps_and_heads_the_operation_env() {
+        let facts = task_facts(9, "base1", "start2", "forge/9-x");
+        let keys: Vec<&str> = facts.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "FORGE_TASK_ID",
+                "FORGE_BASE_SHA",
+                "FORGE_START_SHA",
+                "FORGE_BRANCH"
+            ]
+        );
+        assert!(facts.iter().all(|(_, v)| !v.is_empty()), "{facts:?}");
+
+        let t = Task {
+            id: 9,
+            base_sha: "base1".into(),
+            branch: "forge/9-x".into(),
+            ..Default::default()
+        };
+        let cfg = test_cfg(vec![]);
+        let step = test_step(test_action("act", false));
+        let env = operation_env(&t, &cfg, &step, "start2", "x", &[], &PathBuf::from("/c"));
+        assert_eq!(&env[..facts.len()], &facts[..]);
     }
 
     #[test]

@@ -90,7 +90,16 @@ fn validate_factor(
     factor: &str,
     levels: BTreeMap<String, f64>,
 ) -> Result<BTreeMap<String, f64>> {
-    if !crate::store::ROLES.contains(&factor) {
+    if factor == "map" {
+        for level in levels.keys() {
+            if level != "spans" && level != "names" {
+                bail!(
+                    "{}: [factors.map] level {level:?} is not one of spans, names (docs/CONTEXT.md, the map factor)",
+                    path.display()
+                );
+            }
+        }
+    } else if !crate::store::ROLES.contains(&factor) {
         bail!(
             "{}: [factors.{factor}] names an unknown role; see `forge stats --by-role` for what runs",
             path.display()
@@ -519,6 +528,8 @@ mod tests {
             is_reference: effect.is_none(),
             effect,
             effect_se: se,
+            mean_first_edit_call: None,
+            mean_calls_per_turn: None,
         }
     }
 

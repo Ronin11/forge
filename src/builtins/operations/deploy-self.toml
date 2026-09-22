@@ -17,7 +17,14 @@ units="${units//,/ }"
 worker="${FORGE_ARG_WORKER:-forge-worker}"
 url="${FORGE_ARG_URL:-http://127.0.0.1:7788/tasks}"
 tries="${FORGE_ARG_TRIES:-40}"
-home="${FORGE_HOME:-$HOME/.local/share/forge}"
+# The data directory under either name: the kernel that runs this script
+# during a self-deploy is the one being replaced, so for one release it
+# may still export FORGE2_HOME (the rename, 2026-09-22), and the
+# directory may still carry the old name.
+home="${FORGE_HOME:-${FORGE2_HOME:-}}"
+if [ -z "$home" ]; then
+  if [ -d "$HOME/.local/share/forge" ]; then home="$HOME/.local/share/forge"; else home="$HOME/.local/share/forge2"; fi
+fi
 # An operation's environment is cleared; `systemctl --user` needs this to
 # find the user manager.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

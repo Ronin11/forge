@@ -288,14 +288,22 @@ pub struct Task {
     pub routing: BTreeMap<String, RoleRouting>,
 }
 
-/// `Store::set_task_limits`: only a field that is `Some` replaces the
+/// `Store::set_task_fields`: only a field that is `Some` replaces the
 /// stored value, the rest are left alone.
 #[derive(Default)]
-pub struct TaskLimitsUpdate {
+pub struct TaskUpdate {
     pub budget_usd: Option<f64>,
     pub max_turns: Option<i64>,
     pub max_attempts: Option<i64>,
     pub timeout_secs: Option<i64>,
+    /// The task text, with the shape columns derived from it.
+    pub task: Option<(String, i64, i64)>,
+    /// Workflow name, its hash and its text, as `enqueue` records them.
+    pub workflow: Option<(String, String, String)>,
+    /// Whether the workflow has a `tests` step (`shape_tdd`).
+    pub tdd: Option<bool>,
+    pub after: Option<Vec<i64>>,
+    pub checks: Option<Vec<String>>,
 }
 
 /// One task in a lineage: parent is what it retries.
@@ -677,26 +685,54 @@ impl Store {
         Ok(n == 1)
     }
 
-    /// Change a queued or blocked task's own limits in place: only the
-    /// fields `d` gives replace the stored value, the rest are left alone
-    /// (see `set_initiative`'s `InitiativeUpdate`). Atomic on state, like
+    /// Change a queued or blocked task's spec in place: only the fields
+    /// `d` gives replace the stored value, the rest are left alone (see
+    /// `set_initiative`'s `InitiativeUpdate`). Atomic on state, like
     /// `withdraw`, so a task the worker claims in between is left alone;
     /// the queue's next claim reads whatever this leaves behind. Returns
-    /// whether it changed anything.
-    pub fn set_task_limits(&self, id: i64, d: &TaskLimitsUpdate) -> Result<bool> {
+    /// whether it changed anything. Validation is `queue::edit_task`'s.
+    pub fn set_task_fields(&self, id: i64, d: &TaskUpdate) -> Result<bool> {
+        let (task, text_len, path_tokens) = match &d.task {
+            Some((t, l, p)) => (Some(t.as_str()), Some(*l), Some(*p)),
+            None => (None, None, None),
+        };
+        let (workflow, wf_hash, wf_text) = match &d.workflow {
+            Some((w, h, t)) => (Some(w.as_str()), Some(h.as_str()), Some(t.as_str())),
+            None => (None, None, None),
+        };
+        let after_json = d.after.as_ref().map(serde_json::to_string).transpose()?;
+        let checks_json = d.checks.as_ref().map(serde_json::to_string).transpose()?;
         let n = self.lock().execute(
             "UPDATE tasks SET
                 budget_usd = COALESCE(?2, budget_usd),
                 max_turns = COALESCE(?3, max_turns),
                 max_attempts = COALESCE(?4, max_attempts),
-                timeout_secs = COALESCE(?5, timeout_secs)
+                timeout_secs = COALESCE(?5, timeout_secs),
+                task = COALESCE(?6, task),
+                shape_text_len = COALESCE(?7, shape_text_len),
+                shape_path_tokens = COALESCE(?8, shape_path_tokens),
+                workflow = COALESCE(?9, workflow),
+                workflow_hash = COALESCE(?10, workflow_hash),
+                workflow_text = COALESCE(?11, workflow_text),
+                shape_tdd = COALESCE(?12, shape_tdd),
+                after_json = COALESCE(?13, after_json),
+                checks_json = COALESCE(?14, checks_json)
              WHERE id=?1 AND state IN ('queued', 'blocked')",
             params![
                 id,
                 d.budget_usd,
                 d.max_turns,
                 d.max_attempts,
-                d.timeout_secs
+                d.timeout_secs,
+                task,
+                text_len,
+                path_tokens,
+                workflow,
+                wf_hash,
+                wf_text,
+                d.tdd.map(|b| b as i64),
+                after_json,
+                checks_json,
             ],
         )?;
         Ok(n == 1)
@@ -863,6 +899,18 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM tasks WHERE state='queued'", [], |r| {
                 r.get(0)
             })?)
+    }
+
+    /// How many tasks at `trust` were filed (`created_at`) since `since`
+    /// (a unix second): what `queue::apply_trust_policy` checks a level's
+    /// own `per_day` against, the way `Store::jobs_started_since` backs a
+    /// job's own `per_day`.
+    pub fn tasks_filed_since(&self, trust: Trust, since: i64) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*) FROM tasks WHERE trust=?1 AND created_at >= ?2",
+            params![trust.as_str(), since],
+            |r| r.get(0),
+        )?)
     }
 
     /// Put a running task back in the queue, closing its open attempt as
@@ -1146,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn set_task_limits_changes_only_given_fields_on_a_queued_or_blocked_task_and_refuses_running() {
+    fn set_task_fields_changes_only_given_fields_on_a_queued_or_blocked_task_and_refuses_running() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         let t = Task {
@@ -1166,9 +1214,9 @@ mod tests {
         // Only the given field changes; the rest are left alone.
         assert!(
             store
-                .set_task_limits(
+                .set_task_fields(
                     id,
-                    &TaskLimitsUpdate {
+                    &TaskUpdate {
                         budget_usd: Some(20.0),
                         ..Default::default()
                     }
@@ -1184,13 +1232,18 @@ mod tests {
         // Every field at once.
         assert!(
             store
-                .set_task_limits(
+                .set_task_fields(
                     id,
-                    &TaskLimitsUpdate {
+                    &TaskUpdate {
                         budget_usd: Some(30.0),
                         max_turns: Some(50),
                         max_attempts: Some(4),
                         timeout_secs: Some(900),
+                        task: Some(("fix src/a.rs".into(), 12, 1)),
+                        workflow: Some(("reviewed".into(), "h1".into(), "[wf]".into())),
+                        tdd: Some(true),
+                        after: Some(vec![3, 4]),
+                        checks: Some(vec!["true".into()]),
                     }
                 )
                 .unwrap()
@@ -1200,6 +1253,19 @@ mod tests {
         assert_eq!(got.max_turns, 50);
         assert_eq!(got.max_attempts, 4);
         assert_eq!(got.timeout_secs, 900);
+        assert_eq!(got.task, "fix src/a.rs");
+        assert_eq!((got.shape_text_len, got.shape_path_tokens), (12, 1));
+        assert_eq!(
+            (
+                got.workflow.as_str(),
+                got.workflow_hash.as_str(),
+                got.workflow_text.as_str()
+            ),
+            ("reviewed", "h1", "[wf]")
+        );
+        assert!(got.shape_tdd);
+        assert_eq!(got.after, vec![3, 4]);
+        assert_eq!(got.checks, vec!["true".to_string()]);
 
         // A blocked task takes the change too.
         store
@@ -1208,9 +1274,9 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .set_task_limits(
+                .set_task_fields(
                     id,
-                    &TaskLimitsUpdate {
+                    &TaskUpdate {
                         max_turns: Some(60),
                         ..Default::default()
                     }
@@ -1226,9 +1292,9 @@ mod tests {
             .unwrap();
         assert!(
             !store
-                .set_task_limits(
+                .set_task_fields(
                     id,
-                    &TaskLimitsUpdate {
+                    &TaskUpdate {
                         max_turns: Some(999),
                         ..Default::default()
                     }

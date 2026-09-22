@@ -193,6 +193,19 @@ for a check that only checks (`fmt = ["cargo", "fmt", "--all",
 "--check"]`), the command that fixes what it flags (`fmt = ["cargo",
 "fmt", "--all"]`); every key must already be a `[checks]` entry.
 
+Every check runs with the task's facts in its environment, the same
+four an operation gets first (below, "It is told the task's facts"):
+`FORGE_TASK_ID`, `FORGE_BASE_SHA`, `FORGE_START_SHA` (HEAD before this
+attempt began) and `FORGE_BRANCH`. That holds for a repository check
+(L1), a task's own `--check` command (L2), a fix command, and the
+tests contract's red-on-base run in its scratch tree, so a check can
+judge the change rather than the tree: `git diff --stat
+"$FORGE_BASE_SHA"`, or a task check that asserts the branch still
+builds on the base it was queued against. One builder in
+`src/operation.rs` (`task_facts`) produces the list for checks and
+operations alike. The hidden-test overlay and the namespace rules are
+unchanged by it.
+
 When a `code` attempt's checks fail and every failing one is named in
 `[checks.fixable]` — never `setup`, whose failure means nothing else ran
 — the engine runs those fix commands in the worktree before any retry,
@@ -258,9 +271,11 @@ Decided 2026-09-10: three things an operation may do beyond gating, each
 declared in its file and each enforced by the kernel.
 
 - **It is told the task's facts.** Every operation runs with
-  `FORGE_TASK_ID`, `FORGE_WORKFLOW`, `FORGE_STEP`, `FORGE_BASE_BRANCH`,
-  `FORGE_BASE_SHA`, `FORGE_BRANCH`, `FORGE_PREV_SHA` (HEAD before the
-  preceding directive ran, so an operation can judge that step alone),
+  `FORGE_TASK_ID`, `FORGE_BASE_SHA`, `FORGE_START_SHA` (HEAD when the
+  operation began; the four every check gets too, above), `FORGE_BRANCH`,
+  `FORGE_WORKFLOW`, `FORGE_STEP`, `FORGE_BASE_BRANCH`, `FORGE_PREV_SHA`
+  (HEAD before the preceding directive ran, so an operation can judge
+  that step alone),
   `FORGE_TASK` (the task text), `FORGE_BIN_DIR` (where forge and its
   tools live), `FORGE_HOT_FILES` (the files successful attempts on this
   repository read most, comma-separated), `FORGE_CACHE_DIR` (a shared,

@@ -117,8 +117,10 @@ pub fn failing_tests(out: &str) -> Vec<String> {
     names
 }
 
-/// `env` is added to the agent environment; checks get none, operations
-/// get the task's facts (`FORGE_BASE_SHA` and friends).
+/// `env` is added to the command's environment: the task's facts
+/// (`operation::task_facts`: `FORGE_TASK_ID`, `FORGE_BASE_SHA`,
+/// `FORGE_START_SHA`, `FORGE_BRANCH`) for a check, those plus the
+/// operation's own for an operation. A job step's checks pass the job's.
 pub async fn run_one(
     level: &str,
     name: &str,

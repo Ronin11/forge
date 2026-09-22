@@ -1,7 +1,7 @@
 //! The statusline plugin end to end: it maintains a status file a bar
 //! widget can read, atomically, driven only by `forge snapshot` and
 //! `forge requests --json`. The plugin writes into
-//! `$XDG_STATE_HOME/forge2/status.json` (or `~/.local/state/forge2/status.json`
+//! `$XDG_STATE_HOME/forge/status.json` (or `~/.local/state/forge/status.json`
 //! when unset), so each test points a scratch `HOME` at the spawned worker
 //! rather than touching the real one.
 
@@ -25,7 +25,7 @@ fn enable_statusline(e: &Env) {
 }
 
 fn status_path(fake_home: &Path) -> PathBuf {
-    fake_home.join(".local/state/forge2/status.json")
+    fake_home.join(".local/state/forge/status.json")
 }
 
 fn read_status(path: &Path) -> Option<serde_json::Value> {
@@ -140,9 +140,17 @@ fn a_blocked_task_moves_the_state_to_attention() {
         wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(15)),
         "the task never blocked"
     );
+    // The plugin reads the counts and the open questions in two calls, so a
+    // status can say "attention" from the question a beat before its
+    // blocked count catches up; wait for the whole expectation, not the
+    // first field of it (this raced one run in three under a load of 30).
     assert!(
-        wait_until(|| state_is(&path, "attention"), Duration::from_secs(15)),
-        "expected attention once a question is open: {:?}",
+        wait_until(
+            || state_is(&path, "attention")
+                && read_status(&path).and_then(|v| v["blocked"].as_i64()) == Some(1),
+            Duration::from_secs(15)
+        ),
+        "expected attention with one blocked task once a question is open: {:?}",
         read_status(&path)
     );
     let doc: StatusDoc = serde_json::from_value(read_status(&path).unwrap()).unwrap();

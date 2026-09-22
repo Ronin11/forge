@@ -100,7 +100,7 @@ A plugin may declare more than one, and most useful ones do: watch for
 a blocked task, ask a person, file the answer with `forge answer`.
 
 **Not yet: tools.** Forge 1 aggregated plugin MCP servers into the tool
-list the agent sees. Forge 2's agent is the claude CLI, which loads its
+list the agent sees. Forge's agent is the claude CLI, which loads its
 own MCP servers, so the shape here would be a generated per-task config
 rather than an aggregator, and it is deferred because a plugin tool
 with network access is a new path out of what the verification rules
@@ -118,7 +118,7 @@ arbitrary shell command the operator chose to install. Install a plugin
 the way you would install a shell script that runs on a timer as you.
 
 Forge 1 had scoped tokens because it had a daemon with an HTTP API and a
-socket to put them on. Forge 2 has neither: the CLI is the interface and
+socket to put them on. Forge has neither: the CLI is the interface and
 it runs as you. Scopes would mean building a mediated surface, and that
 work belongs with multi-tenancy, not here.
 
@@ -253,7 +253,7 @@ and the portal's public URL. Install with `forge plugin install
 plugins/signal`.
 
 **statusline** (`events`) maintains a status document, not a bar itself:
-it writes `$XDG_STATE_HOME/forge2/status.json` atomically on every event
+it writes `$XDG_STATE_HOME/forge/status.json` atomically on every event
 that changes the picture and on a five-second heartbeat otherwise, so a
 widget can tell a stale file from an idle one. The document carries an
 overall state (`attention`, `working`, or `idle`, derived from open

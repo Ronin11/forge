@@ -14,6 +14,7 @@ mod attempts;
 mod daily;
 mod deploys;
 mod events;
+mod factors;
 mod jobs;
 mod messages;
 mod migrations;
@@ -26,6 +27,7 @@ mod webhooks;
 pub use attempts::{Attempt, AttemptState, FinishAttempt, Op};
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget};
+pub use factors::{FactorLevelStat, ROLES};
 pub use jobs::{Job, JobEffect, JobStat, JobState, JobStep};
 pub use messages::{Direction, Message, MessageFilter};
 pub use projects::{
@@ -34,10 +36,10 @@ pub use projects::{
 };
 pub use record::{Decision, TaskRef};
 pub use stats::{
-    FactorLevelStat, HumanAttentionProjectStat, HumanAttentionStat, JournalStat, ROLES, RoleStat,
-    StatsFilter, StepStat, TaskTtl, WorkflowStat,
+    HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
+    TaskTtl, WorkflowStat,
 };
-pub use tasks::{RoleRouting, Routed, Task, TaskLimitsUpdate, TaskState, Trust};
+pub use tasks::{RoleRouting, Routed, Task, TaskState, TaskUpdate, Trust};
 
 /// Forward-only. Index = version - 1. Never edit a shipped entry; append.
 pub use migrations::MIGRATIONS;

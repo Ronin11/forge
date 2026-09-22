@@ -59,3 +59,13 @@ blocked question naming the effect, so a human sees a large move before
 the next week's shift compounds on top of it. Honours `FORGE_DRY_RUN`:
 `forge economist rebalance --dry-run` prints the weights it would write
 and writes nothing.
+
+## What a repository or task check is told
+
+Not a scheduled check but the other meaning of the word, recorded here
+so the two are not confused: a `[checks]` entry in a repository's
+`forge.toml` (L1) and a task's own `--check` command (L2) both run with
+the task's facts in their environment, `FORGE_TASK_ID`, `FORGE_BASE_SHA`,
+`FORGE_START_SHA` and `FORGE_BRANCH`, built by the same function that
+gives an operation its environment. docs/ACTIONS.md, "Checks and known
+fixes", has the list and what it is for.

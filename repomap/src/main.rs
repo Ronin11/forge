@@ -18,6 +18,15 @@ mod edges;
 pub struct Symbol {
     pub name: String,
     pub kind: String,
+    /// The line the declaration starts on (1-based) and the last line
+    /// before the next declaration in the file (or the file's last
+    /// line): a cheap span a reader can hand to Read offset/limit. Zero
+    /// on an entry cached before spans existed, which `Index` treats as
+    /// a miss so the blob re-parses.
+    #[serde(default)]
+    pub start: usize,
+    #[serde(default)]
+    pub end: usize,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -62,7 +71,9 @@ impl BlobCache {
 
     pub fn get(&self, blob: &str) -> Option<Vec<Symbol>> {
         let text = std::fs::read_to_string(self.path(blob)).ok()?;
-        serde_json::from_str(&text).ok()
+        serde_json::from_str::<Vec<Symbol>>(&text)
+            .ok()
+            .filter(|syms| syms.iter().all(|x| x.start > 0))
     }
 
     pub fn put(&self, blob: &str, syms: &[Symbol]) {
@@ -86,6 +97,8 @@ impl BlobCache {
 struct Sink {
     out: Vec<Symbol>,
     seen: HashSet<(String, String)>,
+    /// The 1-based line the extractor is on; every push records it.
+    line: usize,
 }
 
 impl Sink {
@@ -98,6 +111,8 @@ impl Sink {
             self.out.push(Symbol {
                 name: name.to_string(),
                 kind: kind.to_string(),
+                start: self.line,
+                end: self.line,
             });
         }
     }
@@ -113,7 +128,8 @@ fn words_of(line: &str) -> Vec<&str> {
 
 fn extract_rust(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
-    for raw in text.lines() {
+    for (li, raw) in text.lines().enumerate() {
+        sink.line = li + 1;
         let line = raw.trim_start();
         let words = words_of(line);
         let mut i = 0;
@@ -161,7 +177,8 @@ fn extract_rust(text: &str) -> Vec<Symbol> {
 
 fn extract_typescript(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
-    for raw in text.lines() {
+    for (li, raw) in text.lines().enumerate() {
+        sink.line = li + 1;
         let line = raw.trim_start();
         let words = words_of(line);
         let mut i = 0;
@@ -193,7 +210,8 @@ fn extract_typescript(text: &str) -> Vec<Symbol> {
 
 fn extract_python(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
-    for raw in text.lines() {
+    for (li, raw) in text.lines().enumerate() {
+        sink.line = li + 1;
         let line = raw.trim_start();
         let words = words_of(line);
         if (line.starts_with("def ") || line.starts_with("async def ")) && words.len() > 1 {
@@ -207,7 +225,8 @@ fn extract_python(text: &str) -> Vec<Symbol> {
 
 fn extract_shell(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
-    for raw in text.lines() {
+    for (li, raw) in text.lines().enumerate() {
+        sink.line = li + 1;
         let line = raw.trim_start();
         if let Some(rest) = line.strip_prefix("function ") {
             sink.push(
@@ -228,7 +247,8 @@ fn extract_shell(text: &str) -> Vec<Symbol> {
 
 fn extract_go(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
-    for raw in text.lines() {
+    for (li, raw) in text.lines().enumerate() {
+        sink.line = li + 1;
         let line = raw.trim_start();
         let words = words_of(line);
         if line.starts_with("func ") && words.len() > 1 {
@@ -258,7 +278,7 @@ const EXTRACTORS: &[(&[&str], Extractor)] = &[
 
 /// Symbols in one file, by its extension. Regex-free, line-oriented: the
 /// declarations a reader would scan for, never bodies.
-pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
+fn extract_names(path: &str, text: &str) -> Vec<Symbol> {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -268,6 +288,25 @@ pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
         .find(|(exts, _)| exts.contains(&ext))
         .map(|(_, f)| f(text))
         .unwrap_or_default()
+}
+
+/// The declarations of a file with their spans closed: each symbol ends
+/// on the line before the next declaration, the last on the file's last
+/// line. Declarations come out in file order, so the spans are disjoint
+/// and cover the file from the first declaration on.
+pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
+    let mut syms = extract_names(path, text);
+    let last_line = text.lines().count().max(1);
+    let n = syms.len();
+    for i in 0..n {
+        let end = if i + 1 < n {
+            syms[i + 1].start.saturating_sub(1).max(syms[i].start)
+        } else {
+            last_line.max(syms[i].start)
+        };
+        syms[i].end = end;
+    }
+    syms
 }
 
 /// Tracked files with their blob hashes: what the tree holds, from git.
@@ -458,6 +497,7 @@ pub fn render(
     hot: &[String],
     changed: &[String],
     budget: usize,
+    spans: bool,
 ) -> String {
     let mut scored: Vec<(f64, &String, &Vec<Symbol>)> = files
         .iter()
@@ -482,17 +522,34 @@ pub fn render(
         let names: Vec<String> = syms
             .iter()
             .map(|x| {
-                if x.kind == "impl" {
+                let name = if x.kind == "impl" {
                     format!("impl {}", x.name)
                 } else {
                     x.name.clone()
+                };
+                if spans && x.start > 0 {
+                    format!("{name}@{}-{}", x.start, x.end)
+                } else {
+                    name
                 }
             })
             .collect();
-        let mut line = format!("{path}: {}", names.join(", "));
-        if line.len() > 220 {
-            line.truncate(217);
-            line.push('…');
+        // One line per file, at most 220 characters: when the symbols do
+        // not fit, the trailing ones are dropped whole (with an ellipsis),
+        // never cut mid-name and never stripped of their spans.
+        let mut line = format!("{path}:");
+        let mut dropped = false;
+        for (i, name) in names.iter().enumerate() {
+            let sep = if i == 0 { " " } else { ", " };
+            if line.len() + sep.len() + name.len() > 218 {
+                dropped = true;
+                break;
+            }
+            line.push_str(sep);
+            line.push_str(name);
+        }
+        if dropped {
+            line.push_str(", …");
         }
         if out.len() + line.len() + 1 > budget {
             break;
@@ -503,13 +560,16 @@ pub fn render(
     out
 }
 
-const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA]\n       forge-repomap edges <root> [--cache DIR]";
+const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA] [--no-spans]\n       forge-repomap edges <root> [--cache DIR]";
 
 #[derive(Debug)]
 struct Args {
     dir: PathBuf,
     task: String,
     budget: usize,
+    /// Render `name@start-end` (the default); `--no-spans` renders names
+    /// only, the control arm of the `map` experiment factor.
+    spans: bool,
     hot: Vec<String>,
     cache: Option<PathBuf>,
     since: Option<String>,
@@ -528,6 +588,7 @@ fn parse_args(args: &[String]) -> Result<Args> {
     let mut dir = PathBuf::from(".");
     let mut task = String::new();
     let mut budget = 6000usize;
+    let mut spans = true;
     let mut hot: Vec<String> = Vec::new();
     let mut cache: Option<PathBuf> = None;
     let mut since: Option<String> = None;
@@ -539,6 +600,11 @@ fn parse_args(args: &[String]) -> Result<Args> {
             "--dir" => {
                 dir = PathBuf::from(flag_value(args, i, "--dir")?);
                 i += 1;
+            }
+            "--no-spans" => {
+                spans = false;
+                i += 1;
+                continue;
             }
             "--task" => {
                 task = flag_value(args, i, "--task")?.to_string();
@@ -581,6 +647,7 @@ fn parse_args(args: &[String]) -> Result<Args> {
         cache,
         since,
         cmd,
+        spans,
     })
 }
 
@@ -594,6 +661,7 @@ fn main() -> Result<()> {
         cache,
         since,
         cmd,
+        spans,
     } = parse_args(&args)?;
     let shared = cache
         .as_deref()
@@ -614,7 +682,7 @@ fn main() -> Result<()> {
                 .map(|b| changed_since(&dir, b))
                 .unwrap_or_default();
             let words = task_words(&task);
-            print!("{}", render(&files, &words, &hot, &changed, budget));
+            print!("{}", render(&files, &words, &hot, &changed, budget, spans));
             eprintln!(
                 "{} file(s), {parsed} parsed, {} changed since base",
                 files.len(),
@@ -638,6 +706,80 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
 
+    /// Every declaration carries the line it starts on and ends the line
+    /// before the next one (the last on the file's last line), in Rust,
+    /// TypeScript and shell alike; the map renders `name@start-end`.
+    #[test]
+    fn spans_cover_the_file_from_the_first_declaration_in_three_languages() {
+        let rs = "use x;\n\npub fn a() {\n  1\n}\n\nstruct B {\n  x: i32,\n}\n";
+        let syms = extract("m.rs", rs);
+        let a = syms.iter().find(|s| s.name == "a").unwrap();
+        let b = syms.iter().find(|s| s.name == "B").unwrap();
+        assert_eq!((a.start, a.end), (3, 6));
+        assert_eq!((b.start, b.end), (7, 9));
+        let ts = "import x from 'y';\nexport function f() {}\nexport class C {}\n";
+        let syms = extract("m.ts", ts);
+        let f = syms.iter().find(|s| s.name == "f").unwrap();
+        let c = syms.iter().find(|s| s.name == "C").unwrap();
+        assert_eq!((f.start, f.end), (2, 2));
+        assert_eq!((c.start, c.end), (3, 3));
+        let sh = "#!/bin/bash\nfoo() {\n  :\n}\nbar() {\n  :\n}\n";
+        let syms = extract("m.sh", sh);
+        let foo = syms.iter().find(|s| s.name == "foo").unwrap();
+        let bar = syms.iter().find(|s| s.name == "bar").unwrap();
+        assert_eq!((foo.start, foo.end), (2, 4));
+        assert_eq!((bar.start, bar.end), (5, 7));
+        let out = render(
+            &[("m.rs".to_string(), extract("m.rs", rs))],
+            &["a".to_string()],
+            &[],
+            &[],
+            1000,
+            true,
+        );
+        assert!(out.contains("a@3-6"), "{out}");
+        let plain = render(
+            &[("m.rs".to_string(), extract("m.rs", rs))],
+            &["a".to_string()],
+            &[],
+            &[],
+            1000,
+            false,
+        );
+        assert!(
+            plain.contains("m.rs: a, B") && !plain.contains('@'),
+            "{plain}"
+        );
+    }
+
+    /// A long file drops its trailing symbols whole, spans intact, rather
+    /// than cutting a name in the middle.
+    #[test]
+    fn a_long_line_drops_trailing_symbols_before_touching_spans() {
+        let syms: Vec<Symbol> = (0..60)
+            .map(|i| Symbol {
+                name: format!("symbol_number_{i}"),
+                kind: "fn".into(),
+                start: i * 3 + 1,
+                end: i * 3 + 3,
+            })
+            .collect();
+        let out = render(&[("big.rs".to_string(), syms)], &[], &[], &[], 1000, true);
+        let line = out.lines().next().unwrap();
+        assert!(line.len() <= 222, "{}", line.len());
+        assert!(line.ends_with(", …"), "{line}");
+        for piece in line
+            .trim_start_matches("big.rs: ")
+            .trim_end_matches(", …")
+            .split(", ")
+        {
+            assert!(
+                piece.contains('@') && piece.split('@').nth(1).unwrap().contains('-'),
+                "{piece}"
+            );
+        }
+    }
+
     /// With no task words (the shared map), files that declare more lead and
     /// files that declare nothing are left out, instead of the reverse.
     #[test]
@@ -645,13 +787,15 @@ mod tests {
         let sym = |n: &str| Symbol {
             name: n.into(),
             kind: "fn".into(),
+            start: 0,
+            end: 0,
         };
         let files = vec![
             ("scripts/empty.sh".to_string(), vec![]),
             ("src/small.rs".to_string(), vec![sym("one")]),
             ("src/big.rs".to_string(), vec![sym("a"), sym("b"), sym("c")]),
         ];
-        let out = render(&files, &[], &[], &[], 10_000);
+        let out = render(&files, &[], &[], &[], 10_000, true);
         let big = out.find("src/big.rs").unwrap();
         let small = out.find("src/small.rs").unwrap();
         assert!(big < small, "{out}");
@@ -734,10 +878,14 @@ mod tests {
                     Symbol {
                         name: "tick".into(),
                         kind: "fn".into(),
+                        start: 0,
+                        end: 0,
                     },
                     Symbol {
                         name: "rates".into(),
                         kind: "fn".into(),
+                        start: 0,
+                        end: 0,
                     },
                 ],
             ),
@@ -746,6 +894,8 @@ mod tests {
                 vec![Symbol {
                     name: "serialize".into(),
                     kind: "fn".into(),
+                    start: 0,
+                    end: 0,
                 }],
             ),
             (
@@ -753,22 +903,24 @@ mod tests {
                 vec![Symbol {
                     name: "render".into(),
                     kind: "fn".into(),
+                    start: 0,
+                    end: 0,
                 }],
             ),
         ];
         let words =
             task_words("Stars decay each tick into remnants; keep the tick size independent");
         assert!(words.contains(&"tick".to_string()) && !words.contains(&"the".to_string()));
-        let map = render(&files, &words, &[], &[], 10_000);
+        let map = render(&files, &words, &[], &[], 10_000, true);
         assert!(map.starts_with("src/sim/tick.rs: tick, rates\n"), "{map}");
         assert!(!map.contains("main.rs"), "unscored files stay out: {map}");
         let hot = vec!["src/ui/main.rs".to_string()];
-        let map = render(&files, &words, &hot, &[], 10_000);
+        let map = render(&files, &words, &hot, &[], 10_000, true);
         assert!(
             map.contains("main.rs"),
             "the prior brings a hot file in: {map}"
         );
-        let tiny = render(&files, &words, &[], &[], 30);
+        let tiny = render(&files, &words, &[], &[], 30, true);
         assert_eq!(tiny.lines().count(), 1, "{tiny}");
         let nothing = render(
             &files,
@@ -776,6 +928,7 @@ mod tests {
             &hot,
             &[],
             10_000,
+            true,
         );
         assert!(
             nothing.starts_with("src/ui/main.rs"),
@@ -868,6 +1021,7 @@ mod tests {
             &[],
             &changed,
             10_000,
+            true,
         );
         assert!(map.starts_with("b.py:"), "{map}");
     }

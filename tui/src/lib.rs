@@ -53,6 +53,8 @@ pub struct App {
     job_sel: usize,
     scroll: u16,
     status: String,
+    prompt: Option<(i64, bool, String)>,
+    summaries: HashMap<i64, String>,
     refreshed: Instant,
     worker: Worker,
     live: HashMap<i64, VecDeque<String>>,
@@ -81,6 +83,8 @@ impl App {
             job_sel: 0,
             scroll: 0,
             status: String::new(),
+            prompt: None,
+            summaries: HashMap::new(),
             refreshed: Instant::now() - Duration::from_secs(60),
             worker: Worker::default(),
             live: HashMap::new(),
@@ -114,6 +118,7 @@ impl App {
             }
             Err(e) => self.status = format!("{e:#}"),
         }
+        self.load_inbox();
         self.load_initiatives();
         self.load_jobs();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
@@ -145,7 +150,11 @@ impl App {
             Event::Op { task, text, .. } => (*task, "op", text.as_str()),
             Event::JobStarted { task, text, .. } => (*task, "job_started", text.as_str()),
             Event::JobFinished { task, text, .. } => (*task, "job_finished", text.as_str()),
-            Event::Other => return,
+            Event::Other => {
+                // Includes task_blocked from newer CLI versions.
+                self.dirty_lists = true;
+                return;
+            }
         };
         let line = format!("{kind:<15} {text}");
         let buf = self.live.entry(task).or_default();
@@ -159,7 +168,8 @@ impl App {
         }
         if matches!(
             event,
-            Event::TaskStarted { .. }
+            Event::TaskQueued { .. }
+                | Event::TaskStarted { .. }
                 | Event::TaskDone { .. }
                 | Event::AttemptStarted { .. }
                 | Event::AttemptDone { .. }
@@ -233,6 +243,7 @@ impl App {
             Ok(rows) => self.requests = rows,
             Err(e) => self.status = format!("{e:#}"),
         }
+        self.load_inbox();
         self.load_initiatives();
         self.load_jobs();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
@@ -298,6 +309,82 @@ impl App {
         }
     }
 
+    fn load_inbox(&mut self) {
+        self.requests.retain(|r| r.kind != "unverified");
+        let result = (|| -> Result<Vec<TaskRow>> {
+            let mut rows = Vec::new();
+            let mut before = String::new();
+            loop {
+                let mut args = vec!["log", "--json", "--state", "unverified", "--limit", "100"];
+                if !before.is_empty() {
+                    args.extend(["--before", before.as_str()]);
+                }
+                let page: Vec<TaskRow> = serde_json::from_value(self.forge.json(&args)?)?;
+                let count = page.len();
+                if let Some(last) = page.last() {
+                    before = last.id.to_string();
+                }
+                rows.extend(page);
+                if count < 100 {
+                    break;
+                }
+            }
+            Ok(rows)
+        })();
+        match result {
+            Ok(rows) => self.requests.extend(rows.into_iter().map(|t| RequestRow {
+                id: t.id,
+                kind: "unverified".into(),
+                task: t.task,
+                workflow: t.workflow,
+                text: "Verified work waiting to land".into(),
+                ..RequestRow::default()
+            })),
+            Err(e) => self.status = format!("{e:#}"),
+        }
+        self.summaries.clear();
+        for request in &self.requests {
+            match self
+                .forge
+                .json(&["trace", &request.id.to_string(), "--json"])
+            {
+                Ok(trace) => {
+                    if let Some(last) = trace["attempts"].as_array().and_then(|a| a.last()) {
+                        let summary = last["outputs"]["summary"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| last["reason"].as_str())
+                            .unwrap_or("");
+                        self.summaries.insert(request.id, summary.to_owned());
+                    }
+                }
+                Err(e) => {
+                    self.status = format!("{e:#}");
+                }
+            }
+        }
+    }
+
+    fn inbox_action(&mut self, id: i64, answer: bool, text: &str) -> bool {
+        let id = id.to_string();
+        let args = if answer {
+            vec!["answer", id.as_str(), text]
+        } else {
+            vec!["withdraw", id.as_str(), "--reason", text]
+        };
+        match self.forge.run(&args) {
+            Ok(out) => {
+                self.status = out.trim().to_owned();
+                self.refresh();
+                true
+            }
+            Err(e) => {
+                self.status = format!("{e:#}");
+                false
+            }
+        }
+    }
+
     pub fn retry(&mut self, chain: bool) {
         let Some(id) = self.current_id() else {
             return;
@@ -348,7 +435,48 @@ impl App {
     /// `run()`'s event loop uses, exposed so a test can drive it with a
     /// synthetic `KeyCode` and no terminal at all.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if let Some((id, answer, mut text)) = self.prompt.take() {
+            match code {
+                KeyCode::Esc => return false,
+                KeyCode::Enter if !text.trim().is_empty() => {
+                    if self.inbox_action(id, answer, &text) {
+                        return false;
+                    }
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => text.push(c),
+                _ => {}
+            }
+            self.prompt = Some((id, answer, text));
+            return false;
+        }
         match code {
+            KeyCode::Char('a' | 'w') if self.screen == Screen::Requests => {
+                if let Some(r) = self.requests.get(self.req_sel) {
+                    let answer = code == KeyCode::Char('a');
+                    if !answer || r.kind == "question" {
+                        self.prompt = Some((r.id, answer, String::new()));
+                        self.status.clear();
+                    }
+                }
+            }
+            KeyCode::Char('l') if self.screen == Screen::Requests => {
+                if let Some(r) = self
+                    .requests
+                    .get(self.req_sel)
+                    .filter(|r| r.kind == "unverified")
+                {
+                    match self.forge.run(&["land", &r.id.to_string()]) {
+                        Ok(out) => {
+                            self.status = out.trim().to_owned();
+                            self.refresh();
+                        }
+                        Err(e) => self.status = format!("{e:#}"),
+                    }
+                }
+            }
             KeyCode::Char('q') => return true,
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('j') | KeyCode::Down => self.down(),
@@ -464,7 +592,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Span::styled("no worker", Style::default().fg(Color::Red))
     };
     let header = Line::from(vec![
-        Span::styled("Forge 2", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Forge", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  {queued} queued, {running} running  ")),
         worker,
         Span::raw("  "),
@@ -492,9 +620,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     let keys = match app.screen {
         Screen::Task | Screen::JobView => "j/k scroll  Esc back  r retry  R retry chain  q quit",
+        Screen::Requests => {
+            "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
+        }
         _ => "j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit",
     };
-    let foot_line = if app.status.is_empty() {
+    let foot_line = if let Some((id, answer, text)) = &app.prompt {
+        Line::raw(format!(
+            "{} #{id}: {text}▏  Enter submit  Esc cancel",
+            if *answer { "Answer" } else { "Withdraw reason" }
+        ))
+    } else if app.status.is_empty() {
         Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
     } else {
         Line::from(vec![
@@ -559,7 +695,15 @@ fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
             Cell::from(r.id.to_string()),
             Cell::from(r.kind.clone()),
             Cell::from(r.workflow.clone()),
-            Cell::from(short(&r.text, 200)),
+            Cell::from(r.to.clone().unwrap_or_else(|| "operator".into())),
+            Cell::from(short(
+                if r.question.is_empty() {
+                    &r.text
+                } else {
+                    &r.question
+                },
+                200,
+            )),
         ])
     });
     let table = Table::new(
@@ -568,11 +712,12 @@ fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(5),
             Constraint::Length(11),
             Constraint::Length(13),
+            Constraint::Length(12),
             Constraint::Min(20),
         ],
     )
     .header(
-        Row::new(vec!["ID", "KIND", "WF", "REQUEST"])
+        Row::new(vec!["ID", "KIND", "WF", "TO", "REQUEST"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -587,11 +732,22 @@ fn draw_requests(frame: &mut Frame, app: &App, area: Rect) {
             format!("task {}  {}", r.id, r.task),
             Style::default().add_modifier(Modifier::BOLD),
         )));
+        lines.push(Line::raw(format!(
+            "to: {}",
+            r.to.as_deref().unwrap_or("operator")
+        )));
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            r.text.clone(),
+            if r.question.is_empty() {
+                r.text.clone()
+            } else {
+                r.question.clone()
+            },
             Style::default().fg(Color::Yellow),
         )));
+        if let Some(summary) = app.summaries.get(&r.id).filter(|s| !s.is_empty()) {
+            lines.push(Line::raw(format!("last attempt: {summary}")));
+        }
         if !r.path.is_empty() {
             lines.push(Line::raw(format!("path: {}", r.path)));
         }

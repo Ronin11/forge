@@ -2,6 +2,32 @@ use crate::support::*;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// A task check (L2) is told the task's facts: the base it was queued
+/// against, this attempt's start, its id and its branch, so it can judge
+/// the change rather than the tree.
+#[test]
+fn a_task_check_runs_with_the_tasks_facts_in_its_environment() {
+    let e = Env::new();
+    let cmd = concat!(
+        "test \"$FORGE_BASE_SHA\" = \"$(git rev-parse main)\"",
+        " && test \"$FORGE_TASK_ID\" = 1",
+        " && test \"$FORGE_BRANCH\" = \"$(git rev-parse --abbrev-ref HEAD)\"",
+        " && git merge-base --is-ancestor \"$FORGE_START_SHA\" HEAD",
+        " && test \"$FORGE_START_SHA\" != \"$(git rev-parse HEAD)\"",
+    );
+    let o = e.run("ok.sh", &["--retries", "0", "--check", cmd]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let a = e.attempts(1);
+    assert_eq!(
+        check(&a[0].4, "L2", "task-check-1"),
+        Some(true),
+        "{}",
+        a[0].4
+    );
+}
+
 #[test]
 fn success_is_verified_at_l0_and_l1_and_pushed() {
     let e = Env::new();

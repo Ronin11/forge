@@ -585,7 +585,14 @@ mod tests {
             "common prefix {common} bytes, preamble plus pack {shared}"
         );
         let prefix = &pa[..shared];
-        for needle in ["4242", "9191", "forge/", "First task", "why a", "attempt 1 of"] {
+        for needle in [
+            "4242",
+            "9191",
+            "forge/",
+            "First task",
+            "why a",
+            "attempt 1 of",
+        ] {
             assert!(
                 !prefix.contains(needle),
                 "the shared prefix names a task: {needle}"

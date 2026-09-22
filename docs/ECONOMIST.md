@@ -221,6 +221,11 @@ validation `experiment::load` applies to every factor in the file (role
 known, positive weights, normalized, none under the floor), then writes
 and commits `experiment.toml` exactly like a normal rebalance.
 
+One factor is not a role: `[factors.map]` with levels `spans` and
+`names` draws how the repository map is rendered for the task
+(docs/CONTEXT.md, "Line spans and the map factor"). It rides the same
+draw, the same record and the same `--factors` table.
+
 ## Subscriptions: price at list, spend by the window (2026-09-22)
 
 The first real rebalance (job 26) proposed moving OpenAI up on both

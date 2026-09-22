@@ -54,6 +54,10 @@ pub struct Subject<'a> {
     pub worktree: &'a Path,
     pub base_sha: &'a str,
     pub start_sha: &'a str,
+    /// The branch checked out in `worktree`: the task's, or at a joint
+    /// integration the integration branch. Told to every check as
+    /// `FORGE_BRANCH`.
+    pub branch: &'a str,
     pub cfg: &'a Config,
     pub task_checks: &'a [String],
     /// The directive's write scope; empty means anywhere not otherwise forbidden.
@@ -82,6 +86,14 @@ pub struct Subject<'a> {
     /// either a question, a brief, or a plain sentence ending the
     /// conversation, none of which is a file plan.
     pub plan_rows: bool,
+}
+
+impl Subject<'_> {
+    /// The task's facts as environment for every check run on its tree:
+    /// the same list an operation gets (`operation::task_facts`).
+    fn facts(&self) -> Vec<(String, String)> {
+        crate::operation::task_facts(self.task_id, self.base_sha, self.start_sha, self.branch)
+    }
 }
 
 /// What git says about the branch at verdict time.
@@ -652,11 +664,12 @@ async fn l1_l2(
         );
     }
     let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let facts = s.facts();
     let mut names: Vec<&String> = s.cfg.checks.keys().collect();
     names.sort_by_key(|n| (n.as_str() != "setup", n.as_str()));
     for name in names {
         let argv = &s.cfg.checks[name];
-        let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout, &[]).await;
+        let r = run_one("L1", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
         s.report.emit(
             s.task_id,
             Event::Check {
@@ -713,7 +726,7 @@ async fn l1_l2(
         for (i, cmd) in s.task_checks.iter().enumerate() {
             let name = format!("task-check-{}", i + 1);
             let argv = vec!["bash".to_string(), "-c".to_string(), cmd.clone()];
-            let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout, &[]).await;
+            let mut r = run_one("L2", &name, &argv, s.worktree, s.sandbox, timeout, &facts).await;
             if !r.ok {
                 r.tail = format!("$ {cmd}\n{}", r.tail);
             }
@@ -766,10 +779,11 @@ async fn try_known_fix(s: &Subject<'_>, checks: &[CheckResult]) -> Result<Option
     }
     let before = crate::git::head(s.worktree).await?;
     let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let facts = s.facts();
     let mut ok = true;
     for name in &failing {
         let argv = &s.cfg.fixable[*name];
-        let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &[]).await;
+        let r = run_one("fix", name, argv, s.worktree, s.sandbox, timeout, &facts).await;
         ok &= r.ok;
         s.report.emit(
             s.task_id,
@@ -1148,9 +1162,10 @@ async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<(
     let files = crate::git::ls_tree(s.worktree, "HEAD", &s.cfg.namespace).await?;
     crate::git::archive_into(s.worktree, "HEAD", &files, scratch).await?;
     let timeout = Duration::from_secs(s.cfg.check_timeout_secs);
+    let facts = s.facts();
     let mut setup_ok = true;
     if let Some(argv) = s.cfg.checks.get("setup") {
-        let r = run_one("L1", "setup", argv, scratch, s.sandbox, timeout, &[]).await;
+        let r = run_one("L1", "setup", argv, scratch, s.sandbox, timeout, &facts).await;
         emit_check(s.report, s.task_id, &r);
         setup_ok = r.ok;
         checks.push(r);
@@ -1164,7 +1179,7 @@ async fn red_on_base(s: &Subject<'_>, checks: &mut Vec<CheckResult>) -> Result<(
             scratch,
             s.sandbox,
             timeout,
-            &[],
+            &facts,
         )
         .await;
         let failed_on_base = !r.ok && !r.timed_out;
@@ -1671,6 +1686,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: &base,
             start_sha: &base,
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],
@@ -1709,6 +1725,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: &base,
             start_sha: &base,
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],
@@ -1768,6 +1785,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: "",
             start_sha: "",
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],
@@ -1814,6 +1832,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: "",
             start_sha: "",
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],
@@ -1846,6 +1865,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: "",
             start_sha: "",
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],
@@ -1878,6 +1898,7 @@ mod tests {
             worktree: dir.path(),
             base_sha: "",
             start_sha: "",
+            branch: "forge/1",
             cfg: &cfg,
             task_checks: &[],
             paths: &[],

@@ -133,6 +133,18 @@ and does not parse stdout.
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
   non-zero if the task does not exist.
+- **`forge show ID --json`** — the task's full record alone: exactly
+  the `task` member of [`TraceDoc`](#tracedoc), one object, with every
+  field of the spec a client would feed back into `forge add` (`text`,
+  `workflow`, `checks`, `after`, `budget_usd`, `max_turns`,
+  `max_attempts`, `timeout_secs`, `show_checks`, `allow_protected`,
+  `land`, `provider`, `model`, `project`, `initiative`, `trust`) beside
+  the run's state. No attempts, ops or diagnosis: a client that needs
+  those reads `forge trace`. Exits non-zero if the task does not exist.
+- **`forge add REPO TEXT [flags] --json`** — write verb: queues the task
+  as without `--json` and prints `{"id": <the new task's id>, "queued":
+  <how many tasks are queued now, this one included>}` on one line.
+  Refusals are stderr and a non-zero exit, as for every verb.
 - **`forge journal ID --json`** — what ran earlier in the task's piece
   of work. A JSON array of [`JournalEntry`](#journalentry) objects
   (`{task, attempt, step, state, said, found, reason}`), oldest first.
@@ -279,13 +291,26 @@ and does not parse stdout.
   (`POST /api/withdraw/<id>`, task 530) calls for a request row's
   withdraw control.
 - **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
-  [--retries N]`** — write verb: changes a queued or blocked task's own
-  limits in place, replacing only the fields given; refused (non-zero
-  exit) on a running or finished task, and when none are given. Recorded
-  as a decision on the task (see [`DecisionRow`](#decisionrow)), so it
-  shows up in `forge decisions` beside an operator's answer. Not `--json`;
-  a client re-reads `forge log`/`forge trace` for the task it just
-  changed. This is the verb the web client's inbox (task 530) should
+  [--retries N] [--text TEXT | --text-file PATH] [--workflow NAME]
+  [--after ID... | --no-after] [--check CMD... | --no-checks]`** — write
+  verb: changes a queued or blocked task's spec in place, replacing only
+  the fields given; refused (non-zero exit) on a running or finished
+  task, and when none are given. `--after` and `--check` repeat and
+  replace the whole list; `--no-after` and `--no-checks` clear it. Every
+  new value is held to what `forge add` holds it to: a positive budget,
+  non-empty text, a workflow that exists, resolves, fits the repository
+  and is allowed at the task's trust level, dependencies that exist, will
+  land and do not already wait on this task, and checks that leave
+  something to verify the work (`--no-checks` is refused when the
+  repository declares no `[checks]`). State is untouched: a blocked task
+  stays blocked, and a queued one is claimed with its new spec. Recorded
+  as a decision on the task (see [`DecisionRow`](#decisionrow)) whose
+  `question` is `task ID's spec` and whose `answer` names each field's
+  old and new value (`set budget $1.00 → $5.00, after [3] → [4, 5]`; text
+  by length and content hash, `text 120 chars 1a2b3c4d5e6f → 340 chars
+  …`), so it shows up in `forge decisions` beside an operator's answer.
+  Not `--json`; a client re-reads `forge log`/`forge show --json` for the
+  task it just changed. This is the verb the web client's inbox (task 530) should
   call to raise a stuck task's budget or turn cap in place, instead of
   withdrawing it (which releases its dependents) or waiting for a hand
   retry: the motivating case is a task that verified its own code and
@@ -335,6 +360,56 @@ asserts every verb a client source file invokes appears in it):
 ```text
 snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc
 ```
+
+## Reaching forge-web (operator)
+
+`forge web link [--bind ADDR]` and `forge web open [--bind ADDR]` are not
+part of the client contract above — they print no JSON and no client
+invokes them — but they are how an operator reaches a running (or
+not-yet-started) `forge-web` without starting a second one just to read
+the link it prints at start (2026-09-22: an operator opened
+`localhost:7788`, was told to open the link `forge-web` printed, and ran
+`forge-web` by hand to see it, only to get `binding 127.0.0.1:7788:
+Address already in use`). Both read `FORGE_HOME/web.token`, creating it
+first (the same 32 bytes of OS randomness as hex, mode 0600) if
+`forge-web` has never run, and print `http://ADDR/?token=<token>` for
+`--bind`'s address (default `127.0.0.1:7788`, matching `forge-web`'s
+own default); `forge web open` additionally hands that link to
+`xdg-open`. Neither binds a socket or talks to a running `forge-web` at
+all — the address is only ever used to build the link's text.
+
+`forge-web` itself also takes `--print-link`: print the link and exit
+without binding, for a script that wants the link without starting the
+server. And when `--bind ADDR` is already held — usually by another
+`forge-web` — it no longer prints a bare OS error; one line names the
+address and prints the link for whatever already holds it, the same
+link `forge web link` would print.
+
+### Passwordless from the operator's own tailnet devices
+
+`[web] tailscale_login = "<login>"` in the operator's config
+(`<FORGE_HOME>/config.toml`) is unset by default, so nothing changes for
+an operator who never sets it. When set, a request whose
+`Tailscale-User-Login` header equals it is treated as the operator
+without the token — the cookie is still set, on the same first-visit page
+load that pins a `?token=` value, so the browser keeps working the same
+way after — and the first such request for that login is logged; a
+header that doesn't match is ignored, not refused, so the token path
+still stands for everyone else.
+
+This is safe only because of where the header comes from and where
+`forge-web` runs. A request proxied through `tailscale serve` carries
+`Tailscale-User-Login` (and `-Name`, `-Profile-Pic`) set by `tailscaled`
+itself, which a plain client reaching the box from outside cannot spoof.
+But **any process on the box can send that header straight to
+`forge-web`'s loopback port** — `tailscaled` only guarantees the header
+on traffic that actually came through its own proxy, not on a direct
+request to `127.0.0.1:7788`. That is why this is opt-in rather than the
+default, and why it is only trustworthy at all when nothing untrusted
+shares the box: an attempt's sandbox has its own network namespace and
+cannot reach the host's loopback, so the model driving a task can never
+forge the header to authenticate itself as the operator. An operator who
+runs anything else untrusted on the same host should leave this unset.
 
 ## Time
 
@@ -952,6 +1027,10 @@ set) — every one of them, or only those that finished in the last
   role carries no row for it.
 - `"workflow"` — `level` is the task's `workflow` name (not its hash;
   every version of a workflow is one level here).
+- `"map"` — `level` is `"spans"` or `"names"`: the arm the experiment
+  drew for the repository map's rendering (`name@start-end` or names
+  only; docs/CONTEXT.md, "Line spans and the map factor"). Only tasks
+  that carry a draw have a row.
 - `"size"` — `level` is `"small"`, `"medium"`, or `"large"`: a plain,
   hand-picked score over the two task-shape fields piece 1 recorded
   (`shape_text_len` plus 80 times `shape_path_tokens`, split at 150 and
@@ -964,6 +1043,12 @@ rate, `landed / tasks`) with its Wilson 95% interval (`rate_lo`,
 wide interval, not a confident number), and `mean_true_cost_usd` (mean
 of `attempts.cost_usd` summed per task plus that task's cached repair
 cost, over this level's own landed tasks; `null` when none landed).
+Two exploration measures ride along, over the level's tasks' code
+attempts: `mean_first_edit_call` (the tool call at which the first edit
+came, `attempts.first_edit`, the first attempt that recorded one per
+task) and `mean_calls_per_turn` (tool calls over turns); `null` when no
+attempt recorded them. The text table shows them as FIRSTEDIT and
+CALLS/TURN.
 
 `effect` and `effect_se` come from one joint fit, not one per factor:
 plain least squares (normal equations solved by hand, no library — see

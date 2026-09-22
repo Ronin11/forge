@@ -228,6 +228,13 @@ impl Drop for Web {
 }
 
 fn start() -> Web {
+    start_with_config(None)
+}
+
+/// Like `start`, but writes `config` (if given) as `config.toml` under the
+/// server's own `FORGE_HOME` before it starts, so a test can exercise an
+/// operator setting like `[web] tailscale_login`.
+fn start_with_config(config: Option<&str>) -> Web {
     let home = tempfile::tempdir().unwrap();
     let fake = home.path().join("forge");
     std::fs::write(&fake, FAKE).unwrap();
@@ -240,6 +247,9 @@ fn start() -> Web {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::set_permissions(&fake_repomap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    if let Some(config) = config {
+        std::fs::write(home.path().join("config.toml"), config).unwrap();
     }
     let path = format!(
         "{}:{}",
@@ -363,6 +373,47 @@ fn without_the_token_nothing_is_served() {
         assert_eq!(status, 401, "{path}");
     }
     let (status, _, _) = get(&w.addr, "/api/snapshot", "Cookie: forge_token=wrong\r\n");
+    assert_eq!(status, 401);
+}
+
+#[test]
+fn a_configured_tailscale_login_authenticates_a_matching_header_and_ignores_others() {
+    let w = start_with_config(Some("[web]\ntailscale_login = \"alice@github\"\n"));
+
+    // A request through `tailscale serve` carries the header tailscaled
+    // itself set; no token needed when it matches the configured login.
+    let (status, _, body) = get(
+        &w.addr,
+        "/api/snapshot",
+        "Tailscale-User-Login: alice@github\r\n",
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // A different login is ignored, not trusted: the token path still
+    // stands and this request carries none.
+    let (status, _, _) = get(
+        &w.addr,
+        "/api/snapshot",
+        "Tailscale-User-Login: bob@github\r\n",
+    );
+    assert_eq!(status, 401);
+
+    // A page load still pins the cookie, the same first-visit flow the
+    // `?token=` query value gets.
+    let (status, head, _) = get(&w.addr, "/tasks", "Tailscale-User-Login: alice@github\r\n");
+    assert_eq!(status, 303, "{head}");
+    assert!(head.contains(&format!("forge_token={}", w.token)), "{head}");
+    assert!(head.contains("Location: /tasks"), "{head}");
+}
+
+#[test]
+fn with_tailscale_login_unset_the_header_changes_nothing() {
+    let w = start();
+    let (status, _, _) = get(
+        &w.addr,
+        "/api/snapshot",
+        "Tailscale-User-Login: alice@github\r\n",
+    );
     assert_eq!(status, 401);
 }
 

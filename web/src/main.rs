@@ -1,4 +1,4 @@
-//! forge-web: a browser client for Forge 2, the same seam as the TUI. It
+//! forge-web: a browser client for Forge, the same seam as the TUI. It
 //! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
 //! `log`, `trace`, `journal`, `requests`) and the live feed is
 //! `events --follow` piped through as server-sent events. Almost entirely
@@ -29,6 +29,13 @@
 //! server had open operator routes and a tailnet proxy made every peer the
 //! operator. The one exception is `/hooks/`, which takes a webhook's own
 //! bearer token instead and gives it no reach past `forge job fire`.
+//!
+//! The other exception is opt-in: `[web] tailscale_login` in the
+//! operator's config (`<FORGE_HOME>/config.toml`), unset by default. When
+//! set, a request whose `Tailscale-User-Login` header equals it is treated
+//! as the operator without the token (`handle`, `tailscale_login`); a
+//! header that does not match is ignored and the token path stands. See
+//! docs/CLIENT.md, "Reaching forge-web (operator)".
 
 use anyhow::{Context, Result};
 use forge_client::{Forge, Workflow, WorkflowPutResult};
@@ -36,7 +43,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const INDEX: &str = include_str!("index.html");
@@ -104,6 +111,29 @@ fn token(dir: &std::path::Path) -> Result<String> {
     Ok(t)
 }
 
+/// `[web] tailscale_login` from the operator's config
+/// (`<FORGE_HOME>/config.toml`): unset by default, so nothing changes for
+/// an operator who never sets it. Read straight as TOML rather than
+/// through the kernel's own config module — `tests/boundary.rs` forbids a
+/// client from depending on `forge` at all — so this reads only the one
+/// field it needs and ignores everything else in the file, including a
+/// missing or unparsable one (the token path still works either way).
+fn tailscale_login(dir: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+    let doc: toml::Value = toml::from_str(&text).ok()?;
+    doc.get("web")?
+        .get("tailscale_login")?
+        .as_str()
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// Every Tailscale login `handle` has already logged a passwordless
+/// request for, so the first one per login gets one line and the rest are
+/// silent.
+static LOGGED_TAILSCALE_LOGINS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
 /// Equal without leaking where they differ.
 fn same(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
@@ -168,6 +198,36 @@ fn unescape(v: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+/// The 401 page: not a bare line, since a visitor with no token isn't
+/// necessarily an intruder — often it's the operator, on a fresh browser
+/// or a tailnet peer, who hasn't seen the link yet. Explains why every
+/// route needs a token (so the page can sit on a tailnet with no other
+/// guard in front of it), names `forge web link` as where to get one,
+/// and offers a plain GET form: submitting it puts `?token=...` on the
+/// current URL, which `handle` already turns into the cookie the same
+/// way a printed link does.
+const UNAUTHORIZED_PAGE: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>forge-web: a token is required</title>
+<style>body{font:14px sans-serif;max-width:32em;margin:4em auto;line-height:1.5;padding:0 1em}
+input{font:inherit;padding:.3em}button{font:inherit;padding:.3em .8em}</style>
+</head>
+<body>
+<h1>A token is required</h1>
+<p>Every request to forge-web carries a token, so this page can safely sit
+on a tailnet: there are no routes an unauthenticated peer can reach.</p>
+<p>Run <code>forge web link</code> (or <code>forge web open</code>, which
+opens it) to print the link it carries, or paste the token here:</p>
+<form method="get">
+<input type="text" name="token" placeholder="token" autofocus>
+<button type="submit">Enter</button>
+</form>
+</body>
+</html>
+"#;
 
 fn h(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("static header")
@@ -1194,8 +1254,10 @@ fn hook_refusal_status(stderr: &str) -> u16 {
 }
 
 /// One request: authenticate, then route. Everything but `/` with a
-/// token in the query is refused without a valid token.
-fn handle(req: Request, forge: &Forge, secret: &str) {
+/// token in the query is refused without a valid token, unless
+/// `tailscale_login` is set and the request's own `Tailscale-User-Login`
+/// header matches it.
+fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&str>) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let (path, query) = (path.to_string(), query.to_string());
@@ -1228,17 +1290,33 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         let _ = req.respond(text(405, "read-only for now", "text/plain"));
         return;
     }
-    let ok = presented(&req, &query).is_some_and(|t| same(&t, secret));
-    if !ok {
-        let _ = req.respond(text(
-            401,
-            "forge-web: open the link forge-web printed when it started (it carries the token).",
-            "text/plain",
-        ));
+    let via_token = presented(&req, &query).is_some_and(|t| same(&t, secret));
+    // Trustworthy only because tailscaled itself sets this header on a
+    // request proxied through `tailscale serve`, and an attempt's sandbox
+    // has its own network namespace and cannot reach the host's loopback
+    // to spoof it (docs/CLIENT.md, "Reaching forge-web (operator)"); a
+    // login that doesn't match the configured one is ignored, not refused,
+    // so the token path still stands for everyone else.
+    let via_tailscale = !via_token
+        && tailscale_login
+            .is_some_and(|want| header(&req, "Tailscale-User-Login").as_deref() == Some(want));
+    if via_tailscale {
+        let login = tailscale_login.expect("via_tailscale implies Some");
+        if LOGGED_TAILSCALE_LOGINS
+            .lock()
+            .unwrap()
+            .insert(login.to_string())
+        {
+            eprintln!("forge-web: passwordless login from tailscale user {login}");
+        }
+    }
+    if !via_token && !via_tailscale {
+        let _ = req.respond(text(401, UNAUTHORIZED_PAGE, "text/html; charset=utf-8"));
         return;
     }
-    if query_param(&query, "token").is_some() && !path.starts_with("/api/") {
-        // First visit: pin the token in a cookie and drop it from the URL.
+    if (query_param(&query, "token").is_some() || via_tailscale) && !path.starts_with("/api/") {
+        // First visit: pin the token in a cookie (from the `?token=` query
+        // value, or the trusted Tailscale login) and drop it from the URL.
         let resp = Response::empty(StatusCode(303))
             .with_header(h("Location", if path == "/" { "/tasks" } else { &path }))
             .with_header(h(
@@ -1537,24 +1615,64 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     let _ = req.respond(resp);
 }
 
+/// Whether `Server::http` failed because something else already holds
+/// `bind`, rather than a permission problem or a bad address: checked by
+/// substring on the OS's own wording (`tiny_http`'s error is a boxed
+/// `std::io::Error`, whose `Display` already carries it) since neither
+/// `tiny_http` nor `std::io::Error::kind()` gives a typed reason through
+/// the trait object `Server::http` returns.
+fn address_in_use(e: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    e.to_string().contains("already in use")
+}
+
+/// The one line `forge-web` prints in place of a bare OS error when
+/// `--bind ADDR` is already held: not "binding ... Address already in
+/// use", which sends the operator hunting for the process, but the link
+/// for whatever is already listening there — the same link `forge web
+/// link` prints (2026-09-22: an operator hit exactly this and had to run
+/// `forge-web` by hand just to see the link a running instance already
+/// had).
+fn busy_message(bind: &str, secret: &str) -> String {
+    format!(
+        "forge-web: {bind} is already in use, likely by another forge-web already running \u{2014} its link: http://{bind}/?token={secret} (or run `forge web link`)"
+    )
+}
+
 fn main() -> Result<()> {
     let mut bind = "127.0.0.1:7788".to_string();
+    let mut print_link = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--bind" => bind = args.next().context("--bind needs an address")?,
+            "--print-link" => print_link = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
+                    "usage: forge-web [--bind ADDR] [--print-link]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
                 );
                 return Ok(());
             }
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
-    let secret = token(&home())?;
+    let home_dir = home();
+    let secret = token(&home_dir)?;
+    if print_link {
+        println!("http://{bind}/?token={secret}");
+        return Ok(());
+    }
+    let tailscale_login = tailscale_login(&home_dir);
     let forge = Forge::new();
-    let server = Server::http(&bind).map_err(|e| anyhow::anyhow!("binding {bind}: {e}"))?;
+    let server = match Server::http(&bind) {
+        Ok(s) => s,
+        Err(e) => {
+            if address_in_use(e.as_ref()) {
+                eprintln!("{}", busy_message(&bind, &secret));
+                std::process::exit(1);
+            }
+            anyhow::bail!("binding {bind}: {e}");
+        }
+    };
     let addr = server.server_addr();
     eprintln!("forge-web listening on {addr}");
     println!("http://{addr}/?token={secret}");
@@ -1562,7 +1680,8 @@ fn main() -> Result<()> {
     for req in server.incoming_requests() {
         let forge = forge.clone();
         let secret = secret.clone();
-        std::thread::spawn(move || handle(req, &forge, &secret));
+        let tailscale_login = tailscale_login.clone();
+        std::thread::spawn(move || handle(req, &forge, &secret, tailscale_login.as_deref()));
     }
     Ok(())
 }
@@ -1638,5 +1757,91 @@ mod tests {
         let b = token(dir.path()).unwrap();
         assert_eq!(a.len(), 64);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn tailscale_login_is_read_from_the_web_table_and_absent_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(tailscale_login(dir.path()), None, "no config.toml at all");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[budget]\nper_task_usd = 2.0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            tailscale_login(dir.path()),
+            None,
+            "a config.toml with no [web] table"
+        );
+        std::fs::write(dir.path().join("config.toml"), "[web]\n").unwrap();
+        assert_eq!(
+            tailscale_login(dir.path()),
+            None,
+            "a [web] table with no tailscale_login"
+        );
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[web]\ntailscale_login = \"\"\n",
+        )
+        .unwrap();
+        assert_eq!(tailscale_login(dir.path()), None, "an empty login");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[web]\ntailscale_login = \"alice@github\"\n",
+        )
+        .unwrap();
+        assert_eq!(tailscale_login(dir.path()).as_deref(), Some("alice@github"));
+    }
+
+    #[test]
+    fn a_busy_port_is_one_line_naming_the_running_instances_link() {
+        let msg = busy_message("127.0.0.1:7788", "abc123");
+        assert_eq!(msg.lines().count(), 1, "{msg}");
+        assert!(msg.contains("127.0.0.1:7788"), "{msg}");
+        assert!(msg.contains("http://127.0.0.1:7788/?token=abc123"), "{msg}");
+        assert!(!msg.to_lowercase().contains("os error"), "{msg}");
+    }
+
+    #[test]
+    fn address_in_use_is_recognized_from_the_os_wording() {
+        let held: std::io::Error =
+            std::io::Error::new(std::io::ErrorKind::AddrInUse, "Address already in use");
+        let held: Box<dyn std::error::Error + Send + Sync> = Box::new(held);
+        assert!(address_in_use(held.as_ref()));
+        let other: std::io::Error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let other: Box<dyn std::error::Error + Send + Sync> = Box::new(other);
+        assert!(!address_in_use(other.as_ref()));
+    }
+
+    #[test]
+    fn the_401_page_is_a_snapshot() {
+        assert_eq!(
+            UNAUTHORIZED_PAGE,
+            r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>forge-web: a token is required</title>
+<style>body{font:14px sans-serif;max-width:32em;margin:4em auto;line-height:1.5;padding:0 1em}
+input{font:inherit;padding:.3em}button{font:inherit;padding:.3em .8em}</style>
+</head>
+<body>
+<h1>A token is required</h1>
+<p>Every request to forge-web carries a token, so this page can safely sit
+on a tailnet: there are no routes an unauthenticated peer can reach.</p>
+<p>Run <code>forge web link</code> (or <code>forge web open</code>, which
+opens it) to print the link it carries, or paste the token here:</p>
+<form method="get">
+<input type="text" name="token" placeholder="token" autofocus>
+<button type="submit">Enter</button>
+</form>
+</body>
+</html>
+"#
+        );
+        assert!(UNAUTHORIZED_PAGE.contains("forge web link"));
+        assert!(UNAUTHORIZED_PAGE.contains(r#"<form method="get">"#));
+        assert!(UNAUTHORIZED_PAGE.contains(r#"name="token""#));
     }
 }
