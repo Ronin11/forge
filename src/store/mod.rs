@@ -102,6 +102,9 @@ pub struct DecisionFilter {
     pub repo: Option<String>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
+    /// A case-insensitive substring of the question, the answer or the
+    /// citations.
+    pub grep: Option<String>,
 }
 
 pub struct TaskSummary {
@@ -363,15 +366,28 @@ impl Store {
 
     /// Blocked tasks: the demand signal for workflows and the questions
     /// waiting on the operator.
-    pub fn blocked(&self, repo: Option<&str>) -> Result<Vec<Task>> {
+    /// The blocked tasks `forge requests` lists, oldest first, less any
+    /// already retried. `grep` is a case-insensitive substring of what the
+    /// request shows: the task's reason (the question, as `view::
+    /// request_kind` reads it) or, on its last attempt's envelope, the
+    /// `needs_input` question, what it tried, and its options.
+    pub fn blocked(&self, repo: Option<&str>, grep: Option<&str>) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
             "SELECT {} FROM tasks t WHERE t.state='blocked'
                AND (?1 IS NULL OR t.repo = ?1)
+               AND (?2 IS NULL OR t.reason LIKE '%' || ?2 || '%'
+                    OR EXISTS (SELECT 1 FROM attempts a
+                               WHERE a.id = (SELECT id FROM attempts WHERE task_id = t.id
+                                             ORDER BY attempt_no DESC, id DESC LIMIT 1)
+                                 AND json_valid(a.envelope_json)
+                                 AND (json_extract(a.envelope_json, '$.needs_input.question') LIKE '%' || ?2 || '%'
+                                      OR json_extract(a.envelope_json, '$.needs_input.tried') LIKE '%' || ?2 || '%'
+                                      OR json_extract(a.envelope_json, '$.needs_input.options') LIKE '%' || ?2 || '%')))
                AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id",
             TASK_COLUMNS.join(", ")
         ))?;
-        let rows = stmt.query_map(params![repo], task_from_row)?;
+        let rows = stmt.query_map(params![repo, grep], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

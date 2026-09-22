@@ -695,6 +695,141 @@ fn forge_log_failed_on_and_reason_find_tasks_by_their_attempts_failures() {
     }
 }
 
+/// `--grep` on `forge decisions` (question, answer, citations) and on
+/// `forge requests` (question, tried, options): each finds a matching
+/// row and skips a non-matching one, alongside the existing filters.
+#[test]
+fn decisions_and_requests_grep_their_own_fields() {
+    let e = Env::new();
+    let a = e.add(&[]);
+    let b = e.add(&[]);
+    assert!(
+        e.forge("ok.sh", &["task", "set", &a.to_string(), "--budget", "9"])
+            .status
+            .success()
+    );
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["task", "set", &b.to_string(), "--max-turns", "9"]
+        )
+        .status
+        .success()
+    );
+    e.db()
+        .execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations)
+             VALUES (?1, ?2, 'which file?', 'the script', 3, 'supervisor', 'hello.sh, forge.toml')",
+            rusqlite::params![a, e.repo.to_str().unwrap()],
+        )
+        .unwrap();
+    let decision_ids = |args: &[&str]| -> Vec<i64> {
+        let mut argv = vec!["decisions", "--json"];
+        argv.extend_from_slice(args);
+        let o = e.forge("ok.sh", &argv);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["task_id"].as_i64().unwrap())
+            .collect()
+    };
+    assert_eq!(
+        decision_ids(&["--grep", "BUDGET"]),
+        vec![a],
+        "the answer, case-insensitive"
+    );
+    assert_eq!(decision_ids(&["--grep", "max-turns"]), vec![b]);
+    assert_eq!(
+        decision_ids(&["--grep", "which file"]),
+        vec![a],
+        "the question"
+    );
+    assert_eq!(
+        decision_ids(&["--grep", "hello.sh"]),
+        vec![a],
+        "the citations"
+    );
+    assert_eq!(decision_ids(&["--grep", "'s spec"]), vec![b, a]);
+    assert_eq!(
+        decision_ids(&["--grep", "nothing like this"]),
+        Vec::<i64>::new()
+    );
+    assert_eq!(
+        decision_ids(&["--grep", "'s spec", "--repo", e.repo.to_str().unwrap()]),
+        vec![b, a],
+        "combines with --repo"
+    );
+    assert_eq!(
+        decision_ids(&["--grep", "'s spec", "--project", "no-such-project"]),
+        Vec::<i64>::new()
+    );
+
+    // Two blocked tasks: one with a question and its envelope, one
+    // waiting on a failed task.
+    let asks = e.add(&[]);
+    let waits = e.add(&[]);
+    e.db()
+        .execute(
+            "UPDATE tasks SET state='blocked', reason='needs input: which colour?' WHERE id=?1",
+            [asks],
+        )
+        .unwrap();
+    e.db()
+        .execute(
+            "INSERT INTO attempts (task_id, attempt_no, step, state, started_at, finished_at, cost_usd, envelope_json)
+             VALUES (?1, 1, 'code', 'needs_input', 1, 2, 0.1,
+             json_object('schema_version', 1, 'summary', 's',
+                         'needs_input', json_object('question', 'which colour?', 'tried', 'looked at the palette', 'kind', 'question', 'options', json_array('red', 'blue')),
+                         'changes', json_array(), 'checks_run', json_array(), 'claims', json_array()))",
+            [asks],
+        )
+        .unwrap();
+    e.db()
+        .execute(
+            "UPDATE tasks SET state='blocked', reason='waits on task 99 (failed: agent exit 1)' WHERE id=?1",
+            [waits],
+        )
+        .unwrap();
+    let request_ids = |args: &[&str]| -> Vec<i64> {
+        let mut argv = vec!["requests", "--json"];
+        argv.extend_from_slice(args);
+        let o = e.forge("ok.sh", &argv);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect()
+    };
+    assert_eq!(request_ids(&[]), vec![asks, waits]);
+    assert_eq!(
+        request_ids(&["--grep", "COLOUR"]),
+        vec![asks],
+        "the question, case-insensitive"
+    );
+    assert_eq!(request_ids(&["--grep", "palette"]), vec![asks], "tried");
+    assert_eq!(request_ids(&["--grep", "blue"]), vec![asks], "an option");
+    assert_eq!(request_ids(&["--grep", "waits on"]), vec![waits]);
+    assert_eq!(
+        request_ids(&["--grep", "nothing like this"]),
+        Vec::<i64>::new()
+    );
+    assert_eq!(
+        request_ids(&["--grep", "blue", "--repo", e.repo.to_str().unwrap()]),
+        vec![asks],
+        "combines with --repo"
+    );
+    let text = String::from_utf8_lossy(&e.forge("ok.sh", &["requests", "--grep", "blue"]).stdout)
+        .to_string();
+    assert!(text.contains(&format!("{asks} ")), "{text}");
+    assert!(!text.contains(&format!("{waits} ")), "{text}");
+}
+
 #[test]
 fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
     let e = Env::new();

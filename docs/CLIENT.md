@@ -52,10 +52,16 @@ and does not parse stdout.
   matching attempts, so no client opens `verdict_json` again; the text
   form appends `(failed: test, clean-tree)`. SQLite walks the verdict
   JSON (`json_each`), as it does the envelopes for `--touches`.
-- **`forge requests --json [--repo P]`** — blocked tasks and what each
-  is waiting on. A JSON array of [`RequestRow`](#requestrow).
-- **`forge decisions --json [--repo P]`** — operator and supervisor
-  answers, newest first. A JSON array of [`DecisionRow`](#decisionrow).
+- **`forge requests --json [--repo P] [--grep TEXT]`** — blocked tasks
+  and what each is waiting on. A JSON array of [`RequestRow`](#requestrow).
+  `--grep` keeps requests whose question, `tried` or options contain the
+  text (case-insensitive, like `forge log --grep`), read from the task's
+  reason and its last attempt's `needs_input`; combines with `--repo`.
+- **`forge decisions --json [--repo P] [--project NAME] [--initiative
+  ID] [--grep TEXT]`** — operator and supervisor answers, newest first. A
+  JSON array of [`DecisionRow`](#decisionrow). `--grep` keeps decisions
+  whose question, answer or citations contain the text
+  (case-insensitive); combines with the other three.
 - **`forge ref list ID --json`** — external references recorded on one
   task: the pull request it landed as, the issue it came from. A JSON
   array of [`RefRow`](#refrow). They are also carried on `TraceDoc.task`

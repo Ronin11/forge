@@ -258,6 +258,9 @@ enum Cmd {
         /// Only decisions on this initiative's tasks
         #[arg(long)]
         initiative: Option<i64>,
+        /// Only decisions whose question, answer or citations contain this (case-insensitive)
+        #[arg(long)]
+        grep: Option<String>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -336,6 +339,9 @@ enum Cmd {
         /// Only requests for this repository
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Only requests whose question, tried or options contain this (case-insensitive)
+        #[arg(long)]
+        grep: Option<String>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -1329,8 +1335,9 @@ pub async fn main() -> Result<()> {
             repo,
             project,
             initiative,
+            grep,
             json,
-        } => decisions(repo, project, initiative, json),
+        } => decisions(repo, project, initiative, grep, json),
         Cmd::Show { id, json } => show(id, json),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
@@ -1343,7 +1350,7 @@ pub async fn main() -> Result<()> {
         } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Graph { repo, json } => graph(repo, json),
-        Cmd::Requests { repo, json } => requests(repo, json),
+        Cmd::Requests { repo, grep, json } => requests(repo, grep, json),
         Cmd::Stats {
             tools,
             step,
@@ -1802,6 +1809,7 @@ fn decisions(
     repo: Option<PathBuf>,
     project: Option<String>,
     initiative: Option<i64>,
+    grep: Option<String>,
     json: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
@@ -1815,6 +1823,7 @@ fn decisions(
             repo,
             project,
             initiative,
+            grep,
         })?
         .iter()
         .map(|d| {
@@ -4493,13 +4502,13 @@ fn trace(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
+fn requests(repo: Option<PathBuf>, grep: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let repo = repo
         .map(|p| p.canonicalize().context("repo path"))
         .transpose()?
         .map(|p| p.display().to_string());
-    let rows = requests_json(&f, repo.as_deref())?;
+    let rows = requests_json(&f, repo.as_deref(), grep.as_deref())?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -5222,9 +5231,13 @@ fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<crate::view
     crate::view::task_rows(f, q)
 }
 
-fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<crate::view::RequestRow>> {
+fn requests_json(
+    f: &Forge,
+    repo: Option<&str>,
+    grep: Option<&str>,
+) -> Result<Vec<crate::view::RequestRow>> {
     Ok(f.store
-        .blocked(repo)?
+        .blocked(repo, grep)?
         .iter()
         .map(|t| {
             let q = f
@@ -5430,7 +5443,7 @@ fn snapshot() -> Result<()> {
         .unwrap_or(0);
     let doc = serde_json::json!({
         "tasks": tasks_json(&f, &crate::store::TaskFilter { limit: 200, ..Default::default() })?,
-        "requests": requests_json(&f, None)?,
+        "requests": requests_json(&f, None, None)?,
         "worker": worker_json(&f),
         "events_offset": offset,
     });
