@@ -42,7 +42,7 @@ fn forge_graph_groups_files_under_module_nodes_and_prints_the_two_import_edges()
     let repo = dir.path();
 
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
-        .env_remove("FORGE2_HOME")
+        .env_remove("FORGE_HOME")
         .args(["graph", repo.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
@@ -88,7 +88,7 @@ fn forge_graph_groups_files_under_module_nodes_and_prints_the_two_import_edges()
 fn without_json_forge_graph_prints_a_one_line_count() {
     let dir = three_file_repo();
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
-        .env_remove("FORGE2_HOME")
+        .env_remove("FORGE_HOME")
         .args(["graph", dir.path().to_str().unwrap()])
         .output()
         .unwrap();

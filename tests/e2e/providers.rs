@@ -27,7 +27,7 @@ fn a_task_on_a_codex_provider_runs_end_to_end_and_records_runner_and_provider() 
         "[providers.fake-codex]\nrunner = \"codex-cli\"\nmodel = \"codex-fake-model\"\n",
     );
     let mut cmd = e.cmd("ok.sh");
-    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
     cmd.args([
         "run",
         e.repo.to_str().unwrap(),
@@ -237,7 +237,7 @@ fn a_projects_role_wins_over_the_operators_and_a_tasks_flag_wins_over_both() {
     );
 
     let mut cmd = e.cmd("ok.sh");
-    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
     cmd.args([
         "run",
         repo,
@@ -260,7 +260,7 @@ fn a_projects_role_wins_over_the_operators_and_a_tasks_flag_wins_over_both() {
     );
 
     let mut cmd = e.cmd("ok.sh");
-    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
     cmd.args([
         "run",
         repo,
@@ -352,7 +352,7 @@ fn a_task_routed_to_another_provider_runs_while_anthropics_window_is_at_its_cap(
     let other_task = e.add(&["--no-land", "--provider", "fake-codex"]);
 
     let mut cmd = e.cmd("ratelimited.sh");
-    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-ok.sh"));
+    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-ok.sh"));
     cmd.args(["work", "--once"]);
     let o = cmd.output().expect("forge work");
     eprintln!(
@@ -417,7 +417,7 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
     let planned_task = e.add(&["--no-land", "--workflow", "planned"]);
 
     let mut cmd = e.cmd("ratelimited.sh");
-    cmd.env("FORGE2_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
+    cmd.env("FORGE_CODEX_BIN", codex_fake("codex-plan-ok.sh"));
     cmd.args(["work", "--once"]);
     let o = cmd.output().expect("forge work");
     let stdout = String::from_utf8_lossy(&o.stdout).to_string();

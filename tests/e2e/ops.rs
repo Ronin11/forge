@@ -361,7 +361,7 @@ fn operations_are_told_the_task_facts_and_diff_size_caps_the_change() {
     // An operation that checks every fact it is handed, with git against base.
     std::fs::write(
         e.home.join("workflows/actions/facts.toml"),
-        "name = \"facts\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; [[ $FORGE_TASK_ID =~ ^[0-9]+$ ]]; test \\\"$FORGE_WORKFLOW\\\" = capped; test \\\"$FORGE_STEP\\\" = facts; test \\\"$FORGE_BASE_BRANCH\\\" = main; [[ $FORGE_BRANCH == forge/$FORGE_TASK_ID-* ]]; test \\\"$FORGE_NAMESPACE\\\" = ''; git diff --quiet \\\"$FORGE_BASE_SHA\\\" -- hello.sh; ! git diff --quiet \\\"$FORGE_BASE_SHA\\\" -- answer.txt; test -z \\\"$FORGE2_HOME\\\"\"]\n",
+        "name = \"facts\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; [[ $FORGE_TASK_ID =~ ^[0-9]+$ ]]; test \\\"$FORGE_WORKFLOW\\\" = capped; test \\\"$FORGE_STEP\\\" = facts; test \\\"$FORGE_BASE_BRANCH\\\" = main; [[ $FORGE_BRANCH == forge/$FORGE_TASK_ID-* ]]; test \\\"$FORGE_NAMESPACE\\\" = ''; git diff --quiet \\\"$FORGE_BASE_SHA\\\" -- hello.sh; ! git diff --quiet \\\"$FORGE_BASE_SHA\\\" -- answer.txt; test -z \\\"$FORGE_HOME\\\"\"]\n",
     )
     .unwrap();
     std::fs::write(
@@ -440,7 +440,7 @@ fn an_operation_sees_prev_sha_verify_ref_hot_files_and_cache_dir() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE2_CLAUDE_BIN_TESTS", "testwriter.sh")],
+        &[("FORGE_CLAUDE_BIN_TESTS", "testwriter.sh")],
         "env-wf",
         "write 42 to answer.txt",
     );
@@ -613,7 +613,7 @@ fn an_operation_can_extract_the_interface_from_the_hidden_tests() {
     let o = run_wf(
         &e,
         "promptdump.sh",
-        &[("FORGE2_CLAUDE_BIN_TESTS", "testwriter.sh")],
+        &[("FORGE_CLAUDE_BIN_TESTS", "testwriter.sh")],
         "tdd-fact",
         "write 42 to answer.txt",
     );

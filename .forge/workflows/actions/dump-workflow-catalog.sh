@@ -27,7 +27,7 @@ echo "$catalog" | jq '{
 echo '```'
 echo
 
-home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
 build_example="$home/workflows/direct.toml"
 if [ -f "$build_example" ]; then
   echo "## Example: an existing build workflow (kind = \"build\" is the default)"

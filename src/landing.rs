@@ -100,7 +100,7 @@ pub enum Integrate {
 }
 
 /// One landing at a time per repository, across every worker process:
-/// an advisory lock on a file under FORGE2_HOME, held until dropped.
+/// an advisory lock on a file under FORGE_HOME, held until dropped.
 pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
     let dir = f.paths.home.join("locks");
     std::fs::create_dir_all(&dir).env()?;

@@ -759,7 +759,7 @@ fn a_directives_schema_invalid_output_fails_the_job_with_the_validation_message(
 /// structured output, a `result` frame carrying an error subtype, and a line
 /// on stderr — what a job step run through `run_directive` leaves behind is
 /// like an attempt's own record: an event stream and stderr under
-/// `FORGE2_HOME/logs/job-<id>-<seq>.jsonl`, the prompt as its first line,
+/// `FORGE_HOME/logs/job-<id>-<seq>.jsonl`, the prompt as its first line,
 /// the text the agent did return (there is no structured output to prefer)
 /// as the step's `output_ref`, and a verdict tail that quotes the result's
 /// own subtype and the stderr tail rather than a bare exit code. `forge job
@@ -874,7 +874,7 @@ fn forge_job_start_resolves_a_run_workflow_from_the_projects_repository_and_reco
     assert!(!e.home.join("workflows/publish-snapshot.toml").exists());
 
     // The automation lives in the project's own repository, committed on
-    // its base branch — not written into FORGE2_HOME/workflows.
+    // its base branch — not written into FORGE_HOME/workflows.
     std::fs::create_dir_all(e.repo.join(".forge/workflows")).unwrap();
     std::fs::write(
         e.repo.join(".forge/workflows/publish-snapshot.toml"),
@@ -906,7 +906,7 @@ on_failure = "drop"
     );
 
     // `forge workflows --project equitizr` lists it beside the operator's
-    // catalog, without it ever having landed in FORGE2_HOME/workflows.
+    // catalog, without it ever having landed in FORGE_HOME/workflows.
     let doc: serde_json::Value = serde_json::from_slice(
         &e.forge("ok.sh", &["workflows", "--project", "equitizr", "--json"])
             .stdout,
@@ -2048,7 +2048,7 @@ printf 200
 }
 
 /// Same automation, but with two attempt logs planted directly under
-/// `FORGE2_HOME/logs` naming different ids for the same model family a
+/// `FORGE_HOME/logs` naming different ids for the same model family a
 /// week apart (a `system`/`init` frame, the shape `check-model-drift`
 /// actually reads — see the action's description): `check-model-drift`
 /// must notice the alias moved and log exactly one `row` effect naming
@@ -2137,11 +2137,11 @@ printf 200
     let fakehome = e._dir.path().join("fakehome");
     std::fs::create_dir_all(&fakehome).unwrap();
 
-    // Every operation step now gets FORGE2_HOME explicitly, set to the
+    // Every operation step now gets FORGE_HOME explicitly, set to the
     // real store the `forge job start` process itself resolved (e.home,
-    // from `Env::cmd`'s own `FORGE2_HOME` — untouched by this command's
+    // from `Env::cmd`'s own `FORGE_HOME` — untouched by this command's
     // `HOME` override), so check-model-drift.toml reads `e.home/logs`,
-    // not `$HOME/.local/share/forge2/logs`.
+    // not `$HOME/.local/share/forge/logs`.
     let logs = e.home.join("logs");
     std::fs::create_dir_all(&logs).unwrap();
     let a = logs.join("a.jsonl");
@@ -2219,7 +2219,7 @@ printf 200
 /// so `claude` is faked on PATH the same way the drift-weekly test fakes
 /// its externals, and `df`/`du` are faked so disk-and-logs-check's free
 /// space and log size readings do not depend on the real machine's disk.
-/// A fresh FORGE2_HOME always has at least one WARN (`rate_limit: no
+/// A fresh FORGE_HOME always has at least one WARN (`rate_limit: no
 /// samples yet`), so the effect log is never empty.
 #[test]
 fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
@@ -2333,7 +2333,7 @@ fn doctor_daily_dry_run_parses_resolves_and_records_effects() {
     let effects = doc["effects"].as_array().unwrap();
     assert!(
         !effects.is_empty(),
-        "a fresh FORGE2_HOME always has at least one WARN row (rate_limit: no samples yet): {doc:?}"
+        "a fresh FORGE_HOME always has at least one WARN row (rate_limit: no samples yet): {doc:?}"
     );
     assert!(effects.iter().all(|e| e["kind"] == "row"), "{effects:?}");
     assert!(
@@ -2877,10 +2877,10 @@ fn commit_files(e: &Env, files: &[(&str, &str)]) {
     git(&e.repo, &["commit", "-qm", "automation"]);
 }
 
-/// `forge job test <args>` with no `FORGE2_HOME` at all, from `cwd`.
+/// `forge job test <args>` with no `FORGE_HOME` at all, from `cwd`.
 fn job_test(e: &Env, cwd: &Path, args: &[&str]) -> std::process::Output {
     let mut c = e.cmd("ok.sh");
-    c.env_remove("FORGE2_HOME")
+    c.env_remove("FORGE_HOME")
         .current_dir(cwd)
         .args(["job", "test"])
         .args(args);
@@ -2974,10 +2974,7 @@ fn a_fixture_that_matches_passes_and_one_expecting_an_effect_the_dry_run_does_no
     // job was recorded anywhere, and no home was made for it.
     assert!(!e.repo.join("out.txt").exists());
     assert_eq!(git(&e.repo, &["status", "--porcelain"]), "");
-    assert!(
-        !e.home.exists(),
-        "no FORGE2_HOME is needed, so none is made"
-    );
+    assert!(!e.home.exists(), "no FORGE_HOME is needed, so none is made");
     let listed: serde_json::Value =
         serde_json::from_slice(&e.forge("ok.sh", &["job", "list", "--json"]).stdout).unwrap();
     assert_eq!(listed.as_array().unwrap().len(), 0, "{listed:?}");
@@ -3083,8 +3080,8 @@ fn a_recorded_output_makes_a_directive_step_run_with_no_provider_configured() {
     let run = |args: &[&str]| {
         let mut c = e.cmd("ok.sh");
         // No provider can be launched: any model call fails.
-        c.env("FORGE2_CLAUDE_BIN", "/nonexistent/claude")
-            .env_remove("FORGE2_HOME")
+        c.env("FORGE_CLAUDE_BIN", "/nonexistent/claude")
+            .env_remove("FORGE_HOME")
             .current_dir(&e.repo)
             .args(["job", "test"])
             .args(args);

@@ -15,7 +15,7 @@ cron = "0 7 * * *"
 clean = ["bash", "-c", "! grep -q $'\\tFAIL:' \"$FORGE_EFFECT_LOG\""]
 
 [skip_if]
-already_ran = ["bash", "-c", "home=\"${FORGE2_HOME:-$HOME/.local/share/forge2}\"; marker=\"$home/doctor-daily/last-ok\"; [ -f \"$marker\" ] && [ \"$(cat \"$marker\")\" = \"$(date -u +%Y-%m-%d)\" ] && echo \"doctor already ran clean today\""]
+already_ran = ["bash", "-c", "home=\"${FORGE_HOME:-$HOME/.local/share/forge}\"; marker=\"$home/doctor-daily/last-ok\"; [ -f \"$marker\" ] && [ \"$(cat \"$marker\")\" = \"$(date -u +%Y-%m-%d)\" ] && echo \"doctor already ran clean today\""]
 
 [limits]
 budget_usd = 0.0

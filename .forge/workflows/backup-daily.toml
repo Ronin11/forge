@@ -1,6 +1,6 @@
 name = "backup-daily"
 kind = "run"
-description = "daily unattended backup of the store at 03:30 UTC: a consistent sqlite3 .backup copy of FORGE2_HOME/forge.db and FORGE2_HOME/config.toml go to the equitizr host (ssh host equitizr, ~/backups/forge/<date>/) with rsync, the remote copy must pass `pragma integrity_check`, and the seven newest dated directories are kept. One file effect per copy; a dry run logs what it would copy and touches nothing remote. A failure asks the operator (docs/OPS.md)."
+description = "daily unattended backup of the store at 03:30 UTC: a consistent sqlite3 .backup copy of FORGE_HOME/forge.db and FORGE_HOME/config.toml go to the equitizr host (ssh host equitizr, ~/backups/forge/<date>/) with rsync, the remote copy must pass `pragma integrity_check`, and the seven newest dated directories are kept. One file effect per copy; a dry run logs what it would copy and touches nothing remote. A failure asks the operator (docs/OPS.md)."
 
 steps = [
   { action = "backup-store", effect = "file" },

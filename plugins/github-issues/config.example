@@ -16,7 +16,7 @@
 # and refuses everything else. Forge quotes the issue body and tells the
 # model it is data, which is a mitigation; the network policy is the
 # boundary. `forge doctor` reports each project's policy (WARN when
-# FORGE2_SANDBOX=0, which lifts it), and the built-in egress-probe
+# FORGE_SANDBOX=0, which lifts it), and the built-in egress-probe
 # operation asserts it from inside an attempt.
 #
 # Two things to know before enabling it:
@@ -29,7 +29,7 @@
 # ---------------------------------------------------------------------
 
 # Copy this file to "config" next to plugin.toml (or into the installed
-# copy under FORGE2_HOME/plugins/github-issues/) and fill it in. It is
+# copy under FORGE_HOME/plugins/github-issues/) and fill it in. It is
 # shell, sourced by github-issues.sh: KEY=value lines, one per line.
 
 # owner/name of the GitHub repository to watch. Required.

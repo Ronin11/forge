@@ -1,5 +1,5 @@
 //! Workflows and actions are data: one TOML file each under
-//! `<FORGE2_HOME>/workflows/` (workflows) and `.../workflows/actions/`
+//! `<FORGE_HOME>/workflows/` (workflows) and `.../workflows/actions/`
 //! (actions). An action is a directive (an LLM step) or an operation (a
 //! deterministic step). A workflow is an ordered list of references to
 //! actions or to other workflows, spliced inline.
@@ -1968,7 +1968,7 @@ fn toml_files_if_present(d: &Path) -> Result<Vec<PathBuf>> {
 /// the operator's catalog uses (`parse_action`, `parse_workflow`), so a
 /// file the catalog cannot load fails the same way here as it would at
 /// `forge job start` — but from a plain path, with no store and no
-/// FORGE2_HOME, so it runs as a repository check on any host that has the
+/// FORGE_HOME, so it runs as a repository check on any host that has the
 /// `forge` binary (docs/WORKFLOWS.md, "Validating a repository's own
 /// workflows"). A run workflow's steps must each resolve to a real action
 /// (the repository's own or a built-in) and use `effect` on an operation
@@ -3303,7 +3303,7 @@ noop = ["true"]
     }
 
     #[test]
-    fn validate_repo_accepts_a_clean_tree_with_no_store_and_no_forge2_home() {
+    fn validate_repo_accepts_a_clean_tree_with_no_store_and_no_forge_home() {
         let repo = tempfile::tempdir().unwrap();
         let r = repo.path();
         std::fs::create_dir_all(r.join(".forge/workflows/actions")).unwrap();
@@ -3337,7 +3337,7 @@ on_failure = "drop"
         )
         .unwrap();
 
-        // Reading FORGE2_HOME here would panic the test process (it does not
+        // Reading FORGE_HOME here would panic the test process (it does not
         // exist); `validate_repo` takes only `r`, never a home.
         let report = validate_repo(r).unwrap();
         assert!(report.problems.is_empty(), "{:?}", report.problems);

@@ -308,12 +308,12 @@ fn a_workflow_becomes_measured_after_enough_runs_and_regressions_are_seen() {
 }
 
 /// `forge workflows validate`: a repository check on its own
-/// `.forge/workflows/`, with no store and no FORGE2_HOME so it runs
+/// `.forge/workflows/`, with no store and no FORGE_HOME so it runs
 /// wherever the `forge` binary does (docs/WORKFLOWS.md). Catches the
 /// equitizr shape (a string `trigger`) that landed twice because nothing
 /// ran the catalog's own loader against the repository's own files.
 #[test]
-fn forge_workflows_validate_runs_with_no_store_and_no_forge2_home() {
+fn forge_workflows_validate_runs_with_no_store_and_no_forge_home() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path();
     std::fs::create_dir_all(repo.join(".forge/workflows")).unwrap();
@@ -324,7 +324,7 @@ fn forge_workflows_validate_runs_with_no_store_and_no_forge2_home() {
     .unwrap();
 
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
-        .env_remove("FORGE2_HOME")
+        .env_remove("FORGE_HOME")
         .args(["workflows", "validate", repo.to_str().unwrap()])
         .output()
         .unwrap();
@@ -340,7 +340,7 @@ fn forge_workflows_validate_runs_with_no_store_and_no_forge2_home() {
     )
     .unwrap();
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_forge"))
-        .env_remove("FORGE2_HOME")
+        .env_remove("FORGE_HOME")
         .args(["workflows", "validate", repo.to_str().unwrap()])
         .output()
         .unwrap();
@@ -475,11 +475,11 @@ fn forge_workflows_lint_a_clean_candidate_exits_zero() {
 /// `forge workflows lint --stdin`: a candidate naming two unknown actions
 /// is two lint problems, not a crash and not just the first — each on its
 /// own line, each message naming its own action — and lint writes nothing
-/// into a fresh `FORGE2_HOME`, unlike every other catalog command.
+/// into a fresh `FORGE_HOME`, unlike every other catalog command.
 #[test]
 fn forge_workflows_lint_reports_an_unknown_action() {
     let e = Env::new();
-    // A wholly empty FORGE2_HOME: no prior catalog command has written
+    // A wholly empty FORGE_HOME: no prior catalog command has written
     // anything into it, so lint must resolve against the built-ins alone
     // and still must not write anything itself.
     let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [\n{ action = \"missing-one\" },\n{ action = \"missing-two\" },\n]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
@@ -506,7 +506,7 @@ fn forge_workflows_lint_reports_an_unknown_action() {
     );
     assert!(
         holds_no_files(&e.home),
-        "lint must not write into FORGE2_HOME: {:?}",
+        "lint must not write into FORGE_HOME: {:?}",
         std::fs::read_dir(&e.home).map(|d| d
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -564,7 +564,7 @@ fn forge_client_parses_workflow_show_and_lint() {
 }
 
 /// `forge workflows put NAME --stdin --message TEXT`: a clean candidate
-/// lands in `<FORGE2_HOME>/workflows/NAME.toml`, committed in the
+/// lands in `<FORGE_HOME>/workflows/NAME.toml`, committed in the
 /// catalog's own git with the given message, and the printed hash is
 /// that commit — the same document `forge workflows show` then reads.
 #[test]

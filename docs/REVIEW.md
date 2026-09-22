@@ -177,7 +177,7 @@ RETURNING`; the forward-only numbered migrations with the refuse-newer
 guard; `profile.rs`; `Fault`/`Classify` with `worker::drive` as the one
 conversion site; the `Watch` early-ending in agent.rs; `record` as the
 single writer of an attempt row; `check_flow` and `splice`; the fake
-protocol and per-role `FORGE2_CLAUDE_BIN_<ROLE>` seam; the two doctrine
+protocol and per-role `FORGE_CLAUDE_BIN_<ROLE>` seam; the two doctrine
 tests; the event log shape with `snapshot` returning an offset; the web
 token flow. Every move below extends one of these rather than replacing
 it.

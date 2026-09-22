@@ -6,8 +6,8 @@ checks (doctor, drift); this is the one job that guards the data.*
 
 ## `backup-daily` — 03:30 UTC daily
 
-The store (`FORGE2_HOME/forge.db`) is the only copy of every task, job,
-decision and measurement, and `FORGE2_HOME/config.toml` is the operator's
+The store (`FORGE_HOME/forge.db`) is the only copy of every task, job,
+decision and measurement, and `FORGE_HOME/config.toml` is the operator's
 own configuration. Once a day, `.forge/workflows/backup-daily.toml` (a run
 workflow on the Forge project, `cron = "30 3 * * *"`) runs one operation,
 `.forge/workflows/actions/backup-store.toml`:
@@ -55,7 +55,7 @@ remote, and never dials the host.
 
 To restore, stop `forge-worker`, `forge-web` and `forge-portal`, copy
 `~/backups/forge/<date>/forge.db` from the equitizr host over
-`FORGE2_HOME/forge.db` (removing any `forge.db-wal` and `forge.db-shm`
+`FORGE_HOME/forge.db` (removing any `forge.db-wal` and `forge.db-shm`
 beside it), put `config.toml` back, and start the units.
 
 The e2e tests in `tests/e2e/jobs.rs` (`backup_daily_*`) hold the file

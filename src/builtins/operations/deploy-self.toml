@@ -1,6 +1,6 @@
 name = "deploy-self"
 kind = "operation"
-description = "deploy Forge itself on this machine: under a lock, keeps the registered checkout's current release binaries in target/release/previous, builds the landed tree with `cargo build --release --workspace` into that checkout's target directory (arg dest, so the build cache is used and the symlinks under ~/.local/bin keep pointing at it), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE2_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last, so the worker drains its running attempts, this landing included, and comes back on the new binary. A failed build or check restores the previous binaries, restarts the units on them, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
+description = "deploy Forge itself on this machine: under a lock, keeps the registered checkout's current release binaries in target/release/previous, builds the landed tree with `cargo build --release --workspace` into that checkout's target directory (arg dest, so the build cache is used and the symlinks under ~/.local/bin keep pointing at it), restarts the web and portal units (arg units, default 'forge-web forge-portal') and waits for them to be active, runs the target's check with bounded retries (default: curl the web client's /tasks, arg url, with the token from FORGE_HOME/web.token, expecting 200), and only then asks the worker unit (arg worker, default forge-worker) to restart with `systemctl --user restart --no-block`, last, so the worker drains its running attempts, this landing included, and comes back on the new binary. A failed build or check restores the previous binaries, restarts the units on them, leaves the worker alone and exits non-zero. Optional arg tries (default 40) bounds each wait, half a second apart. Reads its args and the check command from the environment, injected there by `forge deploy` from the target's own record, and the commit as FORGE_DEPLOY_SHA (see docs/DEPLOY.md, 'Deploying Forge itself')."
 run = ["bash", "-c", '''
 set -euo pipefail
 dest="${FORGE_ARG_DEST:-}"
@@ -17,7 +17,7 @@ units="${units//,/ }"
 worker="${FORGE_ARG_WORKER:-forge-worker}"
 url="${FORGE_ARG_URL:-http://127.0.0.1:7788/tasks}"
 tries="${FORGE_ARG_TRIES:-40}"
-home="${FORGE2_HOME:-$HOME/.local/share/forge2}"
+home="${FORGE_HOME:-$HOME/.local/share/forge}"
 # An operation's environment is cleared; `systemctl --user` needs this to
 # find the user manager.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

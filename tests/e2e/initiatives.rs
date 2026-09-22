@@ -421,7 +421,7 @@ fn from_plan_creates_one_task_per_plan_item_chained_in_order() {
     let o = run_wf(
         &e,
         "promptdump.sh",
-        &[("FORGE2_CLAUDE_BIN_INVESTIGATE", "planner-multi.sh")],
+        &[("FORGE_CLAUDE_BIN_INVESTIGATE", "planner-multi.sh")],
         "planned",
         "make the answer 42",
     );
@@ -509,7 +509,7 @@ fn from_plan_defaults_the_outcome_to_the_tasks_own_text() {
     let o = run_wf(
         &e,
         "promptdump.sh",
-        &[("FORGE2_CLAUDE_BIN_INVESTIGATE", "planner-multi.sh")],
+        &[("FORGE_CLAUDE_BIN_INVESTIGATE", "planner-multi.sh")],
         "planned",
         "make the answer 42, please",
     );

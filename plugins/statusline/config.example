@@ -1,5 +1,5 @@
 # Copy this file to "config" next to plugin.toml (or into the installed
-# copy under FORGE2_HOME/plugins/statusline/) and fill it in. It is shell,
+# copy under FORGE_HOME/plugins/statusline/) and fill it in. It is shell,
 # sourced by statusline.sh: KEY=value lines, one per line.
 
 # The forge-web URL, if this operator runs it. Included in the status

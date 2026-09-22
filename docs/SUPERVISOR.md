@@ -96,7 +96,7 @@ max_turns = 30
 per_lineage = 2
 ```
 
-`FORGE2_SUPERVISOR=0` turns it off for one process; the e2e suite runs
+`FORGE_SUPERVISOR=0` turns it off for one process; the e2e suite runs
 that way except where a test hands it a fake. `forge supervise <id>`
 runs it on a blocked task by hand.
 

@@ -1179,7 +1179,7 @@ fn a_retry_of_a_verified_task_starts_from_its_branch() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE2_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
         "reviewed",
         "write 42",
     );
@@ -1381,7 +1381,7 @@ fn a_landing_on_the_reviewed_workflow_runs_assess_and_stores_the_row() {
     let mut c = e.cmd("ok.sh");
     for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
         c.env(
-            format!("FORGE2_CLAUDE_BIN_{role}"),
+            format!("FORGE_CLAUDE_BIN_{role}"),
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fakes")
                 .join(fake),
@@ -1427,7 +1427,7 @@ fn an_assessed_landing_carries_its_score_and_finding_on_show_and_trace() {
     let mut c = e.cmd("ok.sh");
     for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
         c.env(
-            format!("FORGE2_CLAUDE_BIN_{role}"),
+            format!("FORGE_CLAUDE_BIN_{role}"),
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fakes")
                 .join(fake),

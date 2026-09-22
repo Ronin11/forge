@@ -82,7 +82,7 @@ workflow's `[trigger]`, that every step names an action that exists
 an operation step, and prints every problem with its file and, when the
 parser can place it, the line — `n workflow(s), m action(s) valid` and
 exit 0 when there are none, non-zero otherwise. It opens no store and
-needs no FORGE2_HOME, so it runs as an ordinary repository check (wired
+needs no FORGE_HOME, so it runs as an ordinary repository check (wired
 into `forge.toml`'s `[checks]`, or a CI step) on any host that has the
 `forge` binary, the same way `cargo test` or `eslint` does.
 
@@ -375,7 +375,7 @@ A job is claimed by the worker like a task and runs in a sandbox:
    real, landed repository (unlike the scratch directory a step runs in,
    this one has a `.git`) for a step that has to act on the project
    itself, such as filing a task with `forge add`; `FORGE_BIN_DIR` and
-   `FORGE2_HOME` are where that `forge` binary and the operator's own
+   `FORGE_HOME` are where that `forge` binary and the operator's own
    store live, so a step's own recursive `forge` call reaches the same
    store this one did, not a default.
 3. Run the repository's declared `setup` check (`forge.toml` `[checks]
@@ -562,7 +562,7 @@ argument that names a directory, as in `forge job test .`, is the path.
 
 Each fixture goes through the same executor as `forge job start --dry-run
 --now`: `[skip_if]`, every step, `[assert]`, `[limits]`. But it records no
-job in the operator's store and reads none of `FORGE2_HOME`: the replay
+job in the operator's store and reads none of `FORGE_HOME`: the replay
 has a scratch home of its own (a store its throwaway job rows go into,
 and the built-in actions as the whole catalog), and a copy of the
 repository's working tree, committed or not, as the tree the steps run in.

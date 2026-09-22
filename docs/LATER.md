@@ -503,7 +503,7 @@ after it. The real run below is from 2026-09-19, with `anthropic`
 (runner `claude-cli`, model `sonnet`, the operator's built-in default)
 and a new `devhome-chat` (`runner = "chat"`, `base_url =
 "http://dev.home:11434/v1"`, `model = "qwen3-coder:30b"`) added to
-`<FORGE2_HOME>/config.toml`, run as `forge job bench forge
+`<FORGE_HOME>/config.toml`, run as `forge job bench forge
 changelog-line --providers anthropic,devhome-chat`:
 
 ```
@@ -515,7 +515,7 @@ devhome-chat    4  4/4 (100%)       4/4 (100%)          $0.0000        0.51s
 No run failed the directive step: all four fixtures came back
 schema-valid and correctly kinded on both providers, so there is no
 failed-run log to point at. What the `anthropic` runs' logs
-(`job-1-0.jsonl` through `job-4-0.jsonl` under `<FORGE2_HOME>/logs`) do
+(`job-1-0.jsonl` through `job-4-0.jsonl` under `<FORGE_HOME>/logs`) do
 show is every one of those jobs stopping short of `append-changelog-line`
 and landing `needs_human`, recorded on each job as an `L0` "budget"
 verdict — job 1's tail reads "step summarise-changelog-line brought the

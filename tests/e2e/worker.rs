@@ -38,7 +38,7 @@ fn doctor_runs_and_reports_the_essentials() {
     assert!(out.contains("OK   cache"), "{out}");
     assert!(out.contains("blob file"), "{out}");
     // exercised: `forge run` above ran the repo-map step, so the shared
-    // cache under FORGE2_HOME/cache/repomap holds at least one blob.
+    // cache under FORGE_HOME/cache/repomap holds at least one blob.
     assert!(!out.contains("WARN cache"), "{out}");
 
     let o = e.forge("ok.sh", &["doctor", "--json"]);
@@ -69,7 +69,7 @@ fn doctor_runs_and_reports_the_essentials() {
 fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     let e = Env::new();
     if e.sandbox_disabled() {
-        eprintln!("FORGE2_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
         return;
     }
     let o = e.run("ok.sh", &[]);
@@ -85,7 +85,7 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
 #[test]
 fn doctor_warns_when_the_repomap_cache_is_missing() {
     let e = Env::new();
-    // Bootstraps FORGE2_HOME without ever running a task, so
+    // Bootstraps FORGE_HOME without ever running a task, so
     // cache/repomap is never created.
     assert!(e.forge("ok.sh", &["workflows"]).status.success());
     let o = e.forge("ok.sh", &["doctor"]);
@@ -606,7 +606,7 @@ fn the_egress_probe_fails_when_there_is_no_sandbox() {
     let e = Env::new();
     probe_workflow(&e);
     let mut cmd = e.cmd("ok.sh");
-    cmd.env("FORGE2_SANDBOX", "0")
+    cmd.env("FORGE_SANDBOX", "0")
         .env_remove("HTTPS_PROXY")
         .env_remove("https_proxy");
     let o = cmd
@@ -646,7 +646,7 @@ fn doctor_reports_each_projects_egress_policy_and_warns_when_the_sandbox_is_off(
     e.add(&[]);
 
     let mut off = e.cmd("ok.sh");
-    off.env("FORGE2_SANDBOX", "0").arg("doctor");
+    off.env("FORGE_SANDBOX", "0").arg("doctor");
     let o = off.output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("WARN egress "), "{out}");

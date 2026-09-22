@@ -323,7 +323,7 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const RECONCILE_SECS: u64 = 10;
 
 /// What a plugin is doing right now, as the supervisor last recorded it.
-/// Persisted to `<FORGE2_HOME>/plugins-run/<name>.json` so `forge plugin
+/// Persisted to `<FORGE_HOME>/plugins-run/<name>.json` so `forge plugin
 /// status`, its `--json`, and `forge doctor` can read it from another
 /// process; not the plugin's own state (see `FORGE_PLUGIN_STATE`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -458,8 +458,11 @@ async fn stop_child(child: &mut Child) {
 
 /// `run` in the plugin directory, stdout/stderr appended to its log, and
 /// exactly the environment docs/PLUGINS.md promises: `FORGE_BIN`,
-/// `FORGE2_HOME`, `FORGE_PLUGIN_DIR`, `FORGE_PLUGIN_STATE`, plus the
-/// pass-through list every agent and check gets (`agent::agent_env`).
+/// `FORGE_HOME` (and, for one release, `FORGE2_HOME` too — the name
+/// docs/PLUGINS.md promised before the rename, kept alongside the new one
+/// so a plugin written against the old name still works), `FORGE_PLUGIN_DIR`,
+/// `FORGE_PLUGIN_STATE`, plus the pass-through list every agent and check
+/// gets (`agent::agent_env`).
 fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path) -> Result<Child> {
     let stdout_file = std::fs::OpenOptions::new()
         .create(true)
@@ -474,6 +477,7 @@ fn spawn_plugin(plugin: &Plugin, home: &Path, state_dir: &Path, log_path: &Path)
         .env_clear()
         .envs(crate::agent::agent_env())
         .env("FORGE_BIN", bin)
+        .env("FORGE_HOME", home)
         .env("FORGE2_HOME", home)
         .env("FORGE_PLUGIN_DIR", &plugin.dir)
         .env("FORGE_PLUGIN_STATE", state_dir)
@@ -725,7 +729,7 @@ mod tests {
 
     /// Writes `<root>/<name>/plugin.toml`; `root` is a root directory
     /// itself (what `load_catalog` scans directly, e.g. a `plugin_dirs`
-    /// entry), not `<FORGE2_HOME>`.
+    /// entry), not `<FORGE_HOME>`.
     fn write_plugin(root: &Path, name: &str, text: &str) {
         let plugin_dir = root.join(name);
         std::fs::create_dir_all(&plugin_dir).unwrap();

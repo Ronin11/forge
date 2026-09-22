@@ -23,7 +23,7 @@
 //! page serves all of these; the path picks the view.
 //!
 //! Every request carries a token. It is generated once into
-//! `FORGE2_HOME/web.token` and printed at start as a link; the first visit
+//! `FORGE_HOME/web.token` and printed at start as a link; the first visit
 //! with `?token=` sets a cookie. The server binds loopback unless told
 //! otherwise, and there are no routes without the token: Forge 1's web
 //! server had open operator routes and a tailnet proxy made every peer the
@@ -51,12 +51,17 @@ const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
 const DOCTOR_JS: &str = include_str!("doctor.js");
 const ACTIVITY_JS: &str = include_str!("activity.js");
+const SEARCH_JS: &str = include_str!("search.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
-/// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
+/// Where Forge keeps its data: `FORGE_HOME` (`FORGE2_HOME` for one release),
+/// else the XDG default — falling back to the pre-rename
+/// `~/.local/share/forge2` when the new `~/.local/share/forge` does not
+/// exist yet but the old one does, same as the kernel's own
+/// `ctx::Paths::resolve`.
 fn home() -> PathBuf {
-    if let Ok(h) = std::env::var("FORGE2_HOME") {
+    if let Ok(h) = std::env::var("FORGE_HOME").or_else(|_| std::env::var("FORGE2_HOME")) {
         return PathBuf::from(h);
     }
     let base = std::env::var("XDG_DATA_HOME")
@@ -64,7 +69,13 @@ fn home() -> PathBuf {
         .unwrap_or_else(|_| {
             PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share")
         });
-    base.join("forge2")
+    let new = base.join("forge");
+    let old = base.join("forge2");
+    if !new.exists() && old.exists() {
+        old
+    } else {
+        new
+    }
 }
 
 /// The token: read from `web.token` under the data dir, generated on
@@ -364,7 +375,7 @@ fn deploy_project_target(rest: &str) -> Option<(&str, &str)> {
 }
 
 /// `GET /api/deploys/shot/<id>`: the deploy-look step's own screenshot,
-/// `<FORGE2_HOME>/deploys/<id>/screenshot.png` — the exact file
+/// `<FORGE_HOME>/deploys/<id>/screenshot.png` — the exact file
 /// `deploy-smoke` wrote and `deploy-look` read (src/deploy_look.rs), the
 /// same one `forge-portal`'s `/p/<token>/shot/<target>` streams for a
 /// customer. `id` is parsed as a bare integer (`id_of`), so there is no
@@ -1208,6 +1219,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/doctor.js" => text(200, DOCTOR_JS, "application/javascript"),
         "/activity.js" => text(200, ACTIVITY_JS, "application/javascript"),
+        "/search.js" => text(200, SEARCH_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1279,8 +1291,9 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         },
         "/api/tasks" => {
             // forge log --json with the page's filters: limit, before, q
-            // (text or id), state, workflow, repo. Values are passed as
-            // separate argv entries, never through a shell.
+            // (text or id), state, workflow, repo, project, initiative.
+            // Values are passed as separate argv entries, never through a
+            // shell.
             let mut args: Vec<String> = vec!["log".into(), "--json".into()];
             let limit = query_param(&query, "limit")
                 .and_then(|l| l.parse::<u32>().ok())
@@ -1295,6 +1308,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                 ("workflow", "--workflow"),
                 ("repo", "--repo"),
                 ("project", "--project"),
+                ("initiative", "--initiative"),
             ] {
                 if let Some(v) = query_param(&query, key).map(|v| unescape(&v))
                     && !v.is_empty()
@@ -1455,7 +1469,7 @@ fn main() -> Result<()> {
             "--bind" => bind = args.next().context("--bind needs an address")?,
             "-h" | "--help" => {
                 println!(
-                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE2_HOME honoured)"
+                    "usage: forge-web [--bind ADDR]   (default 127.0.0.1:7788; FORGE_BIN, FORGE_HOME honoured)"
                 );
                 return Ok(());
             }

@@ -8,8 +8,8 @@ reaches main without passing through an operation.
 
 ## Files and identity
 
-One file per action in `<FORGE2_HOME>/workflows/actions/<name>.toml`, next
-to `<FORGE2_HOME>/workflows/<name>.toml` for workflows. The directory is a
+One file per action in `<FORGE_HOME>/workflows/actions/<name>.toml`, next
+to `<FORGE_HOME>/workflows/<name>.toml` for workflows. The directory is a
 plain git repository. The identity of a version is the git blob hash of
 the file, the same identity git already gives every version of every
 file, readable from history without checking anything out.
@@ -257,7 +257,7 @@ declared in its file and each enforced by the kernel.
   `FORGE_TASK` (the task text), `FORGE_BIN_DIR` (where forge and its
   tools live), `FORGE_HOT_FILES` (the files successful attempts on this
   repository read most, comma-separated), `FORGE_CACHE_DIR` (a shared,
-  writable directory under FORGE2_HOME for content-addressed artifacts such
+  writable directory under FORGE_HOME for content-addressed artifacts such
   as the repository map's parsed blobs), and `FORGE_NAMESPACE` (the verification
   directories, space-separated) in its environment, and nothing else of
   Forge's. Each is already recorded on the task; the operation learns

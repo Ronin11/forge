@@ -92,7 +92,7 @@ impl Drop for Worker {
 
 /// True if `dir` does not exist, or exists but holds no regular file
 /// anywhere under it — an empty subdirectory doesn't count as a file.
-/// What `forge workflows lint --stdin` must leave a fresh `FORGE2_HOME`,
+/// What `forge workflows lint --stdin` must leave a fresh `FORGE_HOME`,
 /// unlike every other catalog command, which writes the built-ins into it.
 pub fn holds_no_files(dir: &Path) -> bool {
     fn walk(dir: &Path) -> bool {
@@ -157,7 +157,7 @@ impl Env {
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
-        let no_sandbox = std::env::var("FORGE2_TEST_NO_SANDBOX").as_deref() == Ok("1");
+        let no_sandbox = std::env::var("FORGE_TEST_NO_SANDBOX").as_deref() == Ok("1");
         if !no_sandbox {
             let bwrap_ok = Command::new("bwrap")
                 .arg("--version")
@@ -166,7 +166,7 @@ impl Env {
                 .unwrap_or(false);
             assert!(
                 bwrap_ok,
-                "bwrap is not available; install bubblewrap or set FORGE2_TEST_NO_SANDBOX=1 \
+                "bwrap is not available; install bubblewrap or set FORGE_TEST_NO_SANDBOX=1 \
                  to run the e2e suite unsandboxed (sandbox assertions will be skipped)"
             );
         }
@@ -181,18 +181,18 @@ impl Env {
 
     pub fn cmd(&self, fake: &str) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_forge"));
-        c.env("FORGE2_HOME", &self.home);
+        c.env("FORGE_HOME", &self.home);
         c.env(
-            "FORGE2_CLAUDE_BIN",
+            "FORGE_CLAUDE_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fakes")
                 .join(fake),
         );
         if self.no_sandbox {
-            c.env("FORGE2_SANDBOX", "0");
+            c.env("FORGE_SANDBOX", "0");
         }
         // The supervisor only runs where a test hands it a fake.
-        c.env("FORGE2_SUPERVISOR", "0");
+        c.env("FORGE_SUPERVISOR", "0");
         c
     }
 
@@ -200,11 +200,11 @@ impl Env {
         self.no_sandbox
     }
 
-    /// `e.cmd(fake)` with `FORGE2_CLAUDE_BIN_<ROLE>` pointed at `tests/fakes/<role_fake>`.
+    /// `e.cmd(fake)` with `FORGE_CLAUDE_BIN_<ROLE>` pointed at `tests/fakes/<role_fake>`.
     pub fn with_role(&self, fake: &str, role: &str, role_fake: &str) -> Command {
         let mut c = self.cmd(fake);
         c.env(
-            format!("FORGE2_CLAUDE_BIN_{role}"),
+            format!("FORGE_CLAUDE_BIN_{role}"),
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fakes")
                 .join(role_fake),

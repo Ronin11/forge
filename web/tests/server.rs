@@ -146,7 +146,7 @@ JSON
         ;;
       show)
         if [ "$3" = "77" ]; then
-          echo "{\"id\":77,\"project\":\"forge\",\"workflow\":\"author-workflow\",\"workflow_hash\":\"h\",\"landed_sha\":\"\",\"trigger_kind\":\"manual\",\"trigger_ref\":\"\",\"state\":\"ok\",\"workflow_source\":\"catalog\",\"dry_run\":false,\"started_at\":1,\"finished_at\":2,\"cost_usd\":0.01,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":77,\"seq\":1,\"action\":\"draft-workflow\",\"kind\":\"directive\",\"provider\":\"anthropic\",\"model\":\"claude\",\"cost_usd\":0.01,\"started_at\":1,\"finished_at\":2,\"exit_code\":null,\"output_ref\":\"$FORGE2_HOME/fixtures/draft.json\"}],\"effects\":[]}"
+          echo "{\"id\":77,\"project\":\"forge\",\"workflow\":\"author-workflow\",\"workflow_hash\":\"h\",\"landed_sha\":\"\",\"trigger_kind\":\"manual\",\"trigger_ref\":\"\",\"state\":\"ok\",\"workflow_source\":\"catalog\",\"dry_run\":false,\"started_at\":1,\"finished_at\":2,\"cost_usd\":0.01,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":77,\"seq\":1,\"action\":\"draft-workflow\",\"kind\":\"directive\",\"provider\":\"anthropic\",\"model\":\"claude\",\"cost_usd\":0.01,\"started_at\":1,\"finished_at\":2,\"exit_code\":null,\"output_ref\":\"$FORGE_HOME/fixtures/draft.json\"}],\"effects\":[]}"
         else
           echo "{\"id\":$3,\"project\":\"demo\",\"workflow\":\"nightly\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"cron\",\"trigger_ref\":\"0 * * * *\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":1000,\"finished_at\":1010,\"cost_usd\":0.42,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"action\":\"notify\",\"kind\":\"operation\",\"provider\":\"\",\"model\":\"\",\"cost_usd\":null,\"started_at\":1000,\"finished_at\":1005,\"exit_code\":0,\"output_ref\":\"out/1\"}],\"effects\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"kind\":\"message\",\"target\":\"ops-channel\",\"summary\":\"posted status\",\"dry_run\":false}]}"
         fi ;;
@@ -159,7 +159,7 @@ JSON
           esac
           shift
         done
-        { echo "start $proj $wf input=$input"; cat "$input" 2>/dev/null; echo; } >> "$FORGE2_HOME/start.log"
+        { echo "start $proj $wf input=$input"; cat "$input" 2>/dev/null; echo; } >> "$FORGE_HOME/start.log"
         echo 77 ;;
       fire)
         proj="$3"; shift 3
@@ -172,7 +172,7 @@ JSON
           esac
           shift
         done
-        { echo "fire $proj $hook ref=${ref:-none} mode=$(stat -c %a "$input")"; cat "$input"; echo; } >> "$FORGE2_HOME/fire.log"
+        { echo "fire $proj $hook ref=${ref:-none} mode=$(stat -c %a "$input")"; cat "$input"; echo; } >> "$FORGE_HOME/fire.log"
         case "$token" in
           good) echo 7 ;;
           *) echo "invalid webhook token for $proj/$hook: pass --token (got $token)" >&2; exit 1 ;;
@@ -238,7 +238,7 @@ fn start() -> Web {
     let mut child = Command::new(env!("CARGO_BIN_EXE_forge-web"))
         .args(["--bind", "127.0.0.1:0"])
         .env("FORGE_BIN", &fake)
-        .env("FORGE2_HOME", home.path())
+        .env("FORGE_HOME", home.path())
         .env("PATH", path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -398,6 +398,20 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
     let (_, _, body) = get(&w.addr, "/api/tasks", &cookie);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v[0]["args"], "--json --limit 100");
+    // Every filter search (task 9, "search") passes: text, state,
+    // repository, workflow, project, initiative, before — one to one
+    // onto `forge log --json`'s own flags.
+    let (status, _, body) = get(
+        &w.addr,
+        "/api/tasks?q=doctor&state=failed&repo=%2Frepos%2Fdemo&workflow=direct&project=demo&initiative=7&before=120",
+        &cookie,
+    );
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v[0]["args"],
+        "--json --limit 100 --before 120 --grep doctor --state failed --workflow direct --repo /repos/demo --project demo --initiative 7"
+    );
     let (status, _, body) = get(&w.addr, "/api/snapshot", &cookie);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();

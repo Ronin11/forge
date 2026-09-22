@@ -31,12 +31,12 @@ default. Unknown keys are refused, as in an action file.
 
 ## Where plugins live
 
-`<FORGE2_HOME>/plugins/<name>/` first, then every directory listed under
+`<FORGE_HOME>/plugins/<name>/` first, then every directory listed under
 `plugin_dirs` in the operator config:
 
 ```toml
-# <FORGE2_HOME>/config.toml
-plugin_dirs = ["~/.config/forge2/plugins", "/opt/forge2/plugins"]
+# <FORGE_HOME>/config.toml
+plugin_dirs = ["~/.config/forge/plugins", "/opt/forge/plugins"]
 ```
 
 `~` expands; a relative path resolves against the config file's own
@@ -133,7 +133,7 @@ budget, and its failure never fails a task.
   on a non-zero exit; `never` leaves it stopped. Backoff doubles from one
   second to a minute, and resets after the process has stayed up a
   minute.
-- **output**: stdout and stderr to `<FORGE2_HOME>/logs/plugins/<name>.log`,
+- **output**: stdout and stderr to `<FORGE_HOME>/logs/plugins/<name>.log`,
   which `forge plugin logs <name>` prints.
 - **stop**: SIGTERM, then SIGKILL after ten seconds.
 
@@ -149,7 +149,8 @@ and check gets (`PATH`, `HOME`, and the rest in `src/agent.rs`).
 | Variable | Meaning |
 |---|---|
 | `FORGE_BIN` | The forge binary to call. Always set; never assume `forge` is on `PATH`. |
-| `FORGE2_HOME` | Forge's data directory, so a plugin's `forge` calls see the same store. |
+| `FORGE_HOME` | Forge's data directory, so a plugin's `forge` calls see the same store. The name from now on. |
+| `FORGE2_HOME` | The same value as `FORGE_HOME`, kept for one release for a plugin still written against the old name; do not rely on it past that. |
 | `FORGE_PLUGIN_DIR` | The plugin's own directory: its config, its assets. |
 | `FORGE_PLUGIN_STATE` | A directory Forge creates for the plugin to keep its cursor and anything else it must remember across restarts. |
 
@@ -163,7 +164,7 @@ forge plugin list                 every plugin found, where it came from, enable
 forge plugin status [<name>]      running state, pid, uptime, restarts, last exit
 forge plugin enable <name>        enable and start it
 forge plugin disable <name>       stop it and leave it installed
-forge plugin install <path>       copy into <FORGE2_HOME>/plugins/<name> (refusing a name already
+forge plugin install <path>       copy into <FORGE_HOME>/plugins/<name> (refusing a name already
                                    installed there, validating the manifest first), then run `build`
 forge plugin uninstall <name>     stop it, clear its enabled flag, remove the installed copy;
                                    its plugins-state is left alone

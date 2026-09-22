@@ -154,7 +154,7 @@ fn check_binaries() -> Vec<Check> {
     let agent_bin = agent::agent_bin();
     out.push(binary(&agent_bin, true, ""));
     out.push(binary("git", true, ""));
-    let sandbox_off = std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0");
+    let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
     out.push(match (sandbox::resolve_binary("bwrap"), sandbox_off) {
         (Ok((_, p)), false) => check(
             "sandbox",
@@ -165,20 +165,20 @@ fn check_binaries() -> Vec<Check> {
         (Ok(_), true) => check(
             "sandbox",
             Status::Warn,
-            "FORGE2_SANDBOX=0: agents run on the host",
-            "unset FORGE2_SANDBOX",
+            "FORGE_SANDBOX=0: agents run on the host",
+            "unset FORGE_SANDBOX",
         ),
         (Err(_), true) => check(
             "sandbox",
             Status::Warn,
-            "no bwrap and FORGE2_SANDBOX=0",
+            "no bwrap and FORGE_SANDBOX=0",
             "install bubblewrap",
         ),
         (Err(_), false) => check(
             "sandbox",
             Status::Fail,
             "bwrap not found",
-            "install bubblewrap, or set FORGE2_SANDBOX=0 to run unsandboxed",
+            "install bubblewrap, or set FORGE_SANDBOX=0 to run unsandboxed",
         ),
     });
     out
@@ -197,13 +197,13 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
         // `check_config` reports a config that does not load.
         Err(_) => Vec::new(),
     };
-    let sandbox_off = std::env::var("FORGE2_SANDBOX").as_deref() == Ok("0");
+    let sandbox_off = config::env("SANDBOX").as_deref() == Ok("0");
     out.push(if sandbox_off {
         check(
             "egress",
             Status::Warn,
-            "FORGE2_SANDBOX=0: attempts have the host's network; no egress policy is enforced",
-            "unset FORGE2_SANDBOX",
+            "FORGE_SANDBOX=0: attempts have the host's network; no egress policy is enforced",
+            "unset FORGE_SANDBOX",
         )
     } else if sandbox::resolve_binary("bwrap").is_err() {
         check("egress", Status::Fail, "bwrap not found", "install bubblewrap")
@@ -228,7 +228,7 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
                     "bwrap cannot create a network namespace: {}",
                     String::from_utf8_lossy(&o.stderr).trim()
                 ),
-                "attempts would not start; enable unprivileged user namespaces, or set FORGE2_SANDBOX=0 to run unsandboxed",
+                "attempts would not start; enable unprivileged user namespaces, or set FORGE_SANDBOX=0 to run unsandboxed",
             ),
             Err(e) => check("egress", Status::Fail, format!("running bwrap: {e}"), ""),
         }
@@ -273,7 +273,7 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
     out
 }
 
-/// Whether FORGE2_HOME is writable, once it has already been resolved.
+/// Whether FORGE_HOME is writable, once it has already been resolved.
 fn check_home(paths: &Paths) -> Vec<Check> {
     let probe = paths.home.join(".doctor-write-probe");
     vec![
@@ -283,10 +283,54 @@ fn check_home(paths: &Paths) -> Vec<Check> {
                 "home",
                 Status::Fail,
                 format!("{}: not writable: {e}", paths.home.display()),
-                "fix permissions or set FORGE2_HOME",
+                "fix permissions or set FORGE_HOME",
             ),
         },
     ]
+}
+
+/// Every `FORGE2_*` variable still set: the rename to `FORGE_*` is one
+/// release old (`config::env` reads the new name first, the old one as a
+/// fallback), so this names each old one still set and says what it is now.
+fn check_legacy_env() -> Vec<Check> {
+    let old = config::old_env_vars_set();
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let renamed: Vec<String> = old
+        .iter()
+        .map(|k| format!("{k} -> FORGE_{}", &k["FORGE2_".len()..]))
+        .collect();
+    vec![check(
+        "legacy_env",
+        Status::Warn,
+        format!("still set, read for now: {}", old.join(", ")),
+        format!("rename: {}", renamed.join(", ")),
+    )]
+}
+
+/// When nothing names a home explicitly and `Paths::resolve` fell back to
+/// the pre-rename default (`~/.local/share/forge2`) because the new one
+/// does not exist yet: the exact `mv` and the unit lines the operator
+/// changes to make the new default permanent.
+fn check_home_migration() -> Vec<Check> {
+    let Some((new, old)) = crate::ctx::legacy_home_migration() else {
+        return Vec::new();
+    };
+    vec![check(
+        "home_migration",
+        Status::Warn,
+        format!(
+            "using the old data directory {} ({} does not exist yet)",
+            old.display(),
+            new.display()
+        ),
+        format!(
+            "mv {} {}; then in ~/.config/systemd/user/{{forge-worker,forge-web,forge-portal}}.service change Environment=FORGE_HOME=%h/.local/share/forge2 to Environment=FORGE_HOME=%h/.local/share/forge and run systemctl --user daemon-reload",
+            old.display(),
+            new.display(),
+        ),
+    )]
 }
 
 fn check_cache(paths: &Paths) -> Vec<Check> {
@@ -402,7 +446,7 @@ fn check_workflows(paths: &Paths) -> Vec<Check> {
     }]
 }
 
-/// Every plugin found across `<FORGE2_HOME>/plugins` and the configured
+/// Every plugin found across `<FORGE_HOME>/plugins` and the configured
 /// `plugin_dirs`, any problem loading one (a broken `plugin.toml`, a
 /// shadowed name, a configured root that does not exist), and each enabled
 /// plugin's last-known supervision state (running, restarting, or stopped;
@@ -517,14 +561,14 @@ fn check_worker(paths: &Paths) -> Vec<Check> {
             "worker",
             Status::Warn,
             format!("pid {} runs a binary rebuilt since it started", w.pid),
-            "restart the worker (one SIGTERM drains it, or systemctl --user restart forge2-worker)",
+            "restart the worker (one SIGTERM drains it, or systemctl --user restart forge-worker)",
         ),
         (true, false) => check("worker", Status::Ok, format!("pid {} running", w.pid), ""),
         (false, _) => check(
             "worker",
             Status::Warn,
             format!("pid {} is gone", w.pid),
-            "start it: forge work, or systemctl --user start forge2-worker",
+            "start it: forge work, or systemctl --user start forge-worker",
         ),
     }]
 }
@@ -813,6 +857,8 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
 
 pub fn run() -> Result<Vec<Check>> {
     let mut out = check_binaries();
+    out.extend(check_legacy_env());
+    out.extend(check_home_migration());
 
     let paths = match Paths::resolve() {
         Ok(p) => p,
@@ -821,7 +867,7 @@ pub fn run() -> Result<Vec<Check>> {
                 "home",
                 Status::Fail,
                 format!("{e:#}"),
-                "set FORGE2_HOME to a writable directory",
+                "set FORGE_HOME to a writable directory",
             ));
             return Ok(out);
         }

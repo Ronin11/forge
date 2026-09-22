@@ -1,6 +1,6 @@
 name = "disk-and-logs"
 kind = "run"
-description = "schedule-free: keeps free space under FORGE2_HOME above 5 GB and the logs directory under 2 GB, running `forge gc` on the retained worktrees otherwise. Spliced into doctor-daily.toml; also runnable on its own with `forge job start`."
+description = "schedule-free: keeps free space under FORGE_HOME above 5 GB and the logs directory under 2 GB, running `forge gc` on the retained worktrees otherwise. Spliced into doctor-daily.toml; also runnable on its own with `forge job start`."
 
 steps = [
   { action = "disk-and-logs-check", effect = "row" },

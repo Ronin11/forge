@@ -104,7 +104,7 @@ included. It waits for network idle up to twenty seconds and records:
 - every console error;
 - the page title;
 - a full-page screenshot, saved beside the deploy's record under
-  `FORGE2_HOME/deploys/<id>/`.
+  `FORGE_HOME/deploys/<id>/`.
 
 A console error or a failed request to the site's own origin fails the
 deploy, exactly like a failed check: rollback and the human rung below
@@ -187,7 +187,7 @@ other operation, never an agent:
    one).
 3. Wait for the server to report running.
 4. Write a `Host` block naming it by its ipv4 address to
-   `FORGE2_HOME/provision/<project>/<name>/ssh-config`, a file the
+   `FORGE_HOME/provision/<project>/<name>/ssh-config`, a file the
    operator appends to their own `~/.ssh/config` — never written there
    directly, since that file is the operator's and Forge does not edit
    it unasked.
@@ -261,7 +261,7 @@ over each other:
 4. Run the check, retried while it fails, up to a bound. The default asks
    the web client the same thing an operator's browser does: `GET
    http://127.0.0.1:7788/tasks` with `Authorization: Bearer` and the token
-   in `FORGE2_HOME/web.token`, expecting 200. A target's own `--check`
+   in `FORGE_HOME/web.token`, expecting 200. A target's own `--check`
    replaces it.
 5. Only when the check passed, and last, `systemctl --user restart
    --no-block forge-worker`.
@@ -269,7 +269,7 @@ over each other:
 Args: `dest` (required), `url`, `units` (default `forge-web
 forge-portal`), `worker` (default `forge-worker`) and `tries` (default 40,
 half a second apart, for each wait). The method gets `FORGE_DEPLOY_SHA`
-and `FORGE2_HOME` from `forge deploy` like the rest of its environment.
+and `FORGE_HOME` from `forge deploy` like the rest of its environment.
 
 **How a deploy survives its own worker restart.** An on-landing deploy is
 not a separate process: the worker that landed the task calls
@@ -315,7 +315,7 @@ need. There is no third try.
 ## Secrets and hosts
 
 (A method also gets `FORGE_DEPLOY_SHA`, the commit it deploys, and
-`FORGE2_HOME`, since an operation's environment is otherwise cleared to
+`FORGE_HOME`, since an operation's environment is otherwise cleared to
 `PATH`, `HOME` and the like.)
 
 A method gets its host credentials the way a plugin gets its

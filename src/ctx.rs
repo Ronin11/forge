@@ -81,16 +81,28 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// FORGE2_HOME, else $XDG_DATA_HOME/forge2, else ~/.local/share/forge2.
-    /// Separate from Forge 1's FORGE_HOME so the two never share state.
+    /// `FORGE_HOME` (`FORGE2_HOME` for one release, see `config::env`), else
+    /// `$XDG_DATA_HOME/forge`, else `~/.local/share/forge` — falling back to
+    /// `~/.local/share/forge2` when the new default does not exist yet but
+    /// the old one does, so a machine that has never set `FORGE_HOME` keeps
+    /// reading its existing data until the operator moves it by hand (see
+    /// `legacy_home_migration`, which `forge doctor` uses to say so).
     pub fn resolve() -> Result<Paths> {
-        let home = if let Ok(p) = std::env::var("FORGE2_HOME") {
+        let home = if let Ok(p) = config::env("HOME") {
             PathBuf::from(p)
-        } else if let Ok(p) = std::env::var("XDG_DATA_HOME") {
-            PathBuf::from(p).join("forge2")
         } else {
-            PathBuf::from(std::env::var("HOME").context("HOME is not set")?)
-                .join(".local/share/forge2")
+            let base = match std::env::var("XDG_DATA_HOME") {
+                Ok(p) => PathBuf::from(p),
+                Err(_) => PathBuf::from(std::env::var("HOME").context("HOME is not set")?)
+                    .join(".local/share"),
+            };
+            let new = base.join("forge");
+            let old = base.join("forge2");
+            if !new.exists() && old.exists() {
+                old
+            } else {
+                new
+            }
         };
         let p = Paths {
             worktrees: home.join("worktrees"),
@@ -101,6 +113,23 @@ impl Paths {
         std::fs::create_dir_all(&p.logs)?;
         Ok(p)
     }
+}
+
+/// The exact `mv` `forge doctor` tells the operator to run when nothing
+/// names a home explicitly (`FORGE_HOME`, `FORGE2_HOME`, `XDG_DATA_HOME`
+/// all unset) and `Paths::resolve` fell back to the pre-rename default
+/// (`~/.local/share/forge2`) because the new one does not exist yet:
+/// `(new, old)`. `None` once the operator has moved it, set one of those
+/// variables, or never had the old directory at all.
+pub fn legacy_home_migration() -> Option<(PathBuf, PathBuf)> {
+    if config::env("HOME").is_ok() || std::env::var("XDG_DATA_HOME").is_ok() {
+        return None;
+    }
+    let home = std::env::var("HOME").ok()?;
+    let base = PathBuf::from(home).join(".local/share");
+    let new = base.join("forge");
+    let old = base.join("forge2");
+    (!new.exists() && old.exists()).then_some((new, old))
 }
 
 pub struct Forge {
