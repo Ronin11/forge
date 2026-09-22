@@ -376,8 +376,12 @@
     };
   }
 
-  // ---- detail view
+  // ---- detail view: the full task page (task 531, "the task page in
+  // full") — everything `forge trace --json` carries, rendered by
+  // `web/src/task.js`, plus the operator actions from the inbox (task
+  // 530) where each applies to this task's own state.
   function detailView(id) {
+    let compare = null; // only ever known live, from this task's own `task_done` event
     function renderFeed() {
       const rowsEl = $('#feed'); if (!rowsEl) return;
       const rows = feed.filter(e => e.task === id).slice(-300);
@@ -386,57 +390,67 @@
     }
     async function draw() {
       const d = await get(`/api/task/${id}`);
-      const t = d.task || {};
-      const attempts = (d.attempts || []).map(a => `
-        <div class="card"><b>attempt ${a.attempt_no}</b> <span class="mute">[${esc(a.step)}]</span>
-          <span class="state ${esc(a.state)}">${esc(a.state)}</span>
-          <span class="mute">· ${a.num_turns} turns · ${a.tool_calls} tools · ${secs(a.agent_ms)} · ${usd(a.cost_usd)} · ${a.commits} commit(s)${a.dirty ? ' · DIRTY' : ''}</span>
-          ${a.reason ? `<div>${esc(a.reason)}</div>` : ''}
-          ${a.outputs && a.outputs.summary ? `<div class="mute">${esc(a.outputs.summary)}</div>` : ''}
-          ${(a.verdict || []).filter(c => !c.ok).map(c => `<div class="failed">✗ ${esc(c.level)} ${esc(c.name)}${c.tail ? ': ' + esc(c.tail).slice(0, 300) : ''}</div>`).join('')}
-        </div>`).join('');
-      const lineage = (t.lineage || []).map(l => l.id === t.id ? `<b>${l.id} ${esc(l.state)}</b>` : `<a href="/tasks/${l.id}">${l.id}</a> ${esc(l.state)}`).join(' → ');
-      const refs = (t.refs || []).map(r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.kind)}${r.label ? ': ' + esc(r.label) : ''}</a>`).join(' · ');
-      const deploys = (d.deploys || []).map(dep => {
-        const status = dep.check_ok === true ? 'ok' : dep.check_ok === false ? (dep.rolled_back_to ? `rolled back to ${esc(dep.rolled_back_to.slice(0, 8))}` : 'failed') : 'running';
-        return `<div>${esc(dep.target)} ${esc((dep.sha || '').slice(0, 8))} ${status} <span class="mute">${fmtTime(dep.started_at)}${dep.finished_at ? ' → ' + fmtTime(dep.finished_at) : ''}</span></div>`;
-      }).join('');
-      const assessment = d.assessment ? `
-        <div><span class="k">score</span>${d.assessment.score}/10 (${(d.assessment.findings || []).length} finding(s))</div>
-        ${(d.assessment.findings || []).map(fnd => `<div class="mute">${esc(fnd.severity)} ${esc(fnd.path)}: ${esc(fnd.finding)}</div>`).join('')}` : '';
-      const diag = (d.diagnosis || []).map(x => `<div class="card"><span class="k">what</span>${esc(x.what)}<br><span class="k">action</span>${esc(x.action)}</div>`).join('');
-      const retry = (t.state === 'failed' || t.state === 'blocked') ? `<button id="retry">retry</button>` : '';
-      $('#detail').innerHTML = `
-        <h2>Task ${t.id} <span class="state ${esc(t.state)}">${esc(t.state)}</span> <a href="/tasks/${t.id}/run">workflow run →</a> ${retry}</h2>
-        <div class="card">
-          <div><span class="k">repo</span>${esc(t.repo)} <a href="/graph?repo=${encodeURIComponent(t.repo)}">graph</a></div>
-          <div><span class="k">branch</span>${esc(t.branch)} <span class="mute">from ${esc(t.base_branch)} @ ${esc((t.base_sha || '').slice(0, 8))}</span></div>
-          <div><span class="k">workflow</span>${esc(t.workflow)} <span class="mute">${esc((t.workflow_hash || '').slice(0, 8))}</span> · ${esc(t.model)} · ${t.max_turns} turns · ${t.max_attempts} attempts</div>
-          ${(t.project || t.initiative != null) ? `<div><span class="k">project</span>${t.project ? `<a href="/projects/${encodeURIComponent(t.project)}">${esc(t.project)}</a>` : '-'}${t.initiative != null ? ` · <a href="/initiatives/${t.initiative}">initiative ${t.initiative}</a>` : ''}</div>` : ''}
-          <div><span class="k">created</span>${fmtTime(t.created_at)}${t.started_at ? ` · started ${fmtTime(t.started_at)}` : ''}${t.finished_at ? ` · finished ${fmtTime(t.finished_at)}` : ''}</div>
-          ${lineage ? `<div><span class="k">lineage</span>${lineage}</div>` : ''}
-          ${refs ? `<div><span class="k">refs</span>${refs}</div>` : ''}
-          ${t.reason ? `<div><span class="k">reason</span>${esc(t.reason)}</div>` : ''}
-          ${assessment}
-          ${deploys ? `<div><span class="k">deploys</span>${deploys}</div>` : ''}
-        </div>
-        <div class="card"><pre style="margin:0">${esc(t.text)}</pre></div>
-        ${t.plan ? `<h2>Plan</h2><div class="card"><pre style="margin:0">${esc(t.plan)}</pre></div>` : ''}
-        ${diag}
-        ${attempts}
-        ${t.journal ? `<h2>Journal</h2><div class="card"><pre style="margin:0">${esc(t.journal)}</pre></div>` : ''}`;
-      const b = $('#retry');
-      if (b) b.addEventListener('click', async () => { b.disabled = true; const r = await post(`/api/retry/${t.id}`); alert(r.output || r.error || 'retried'); go('/tasks'); });
+      $('#detail').innerHTML = `<div style="margin:0 16px 6px"><a href="/tasks/${id}/run">workflow run →</a></div>` +
+        ForgeTask.renderTaskDetail(d, fmtTime, { compare });
+    }
+    async function onSubmit(ev) {
+      const answerForm = ev.target.closest('form.req-answer');
+      const withdrawForm = ev.target.closest('form.req-withdraw');
+      if (answerForm) {
+        ev.preventDefault();
+        const value = answerForm.querySelector('.req-answer-text').value.trim();
+        if (!value) return;
+        const btn = answerForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/answer/${answerForm.dataset.id}`, JSON.stringify({ text: value }), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      } else if (withdrawForm) {
+        ev.preventDefault();
+        const value = withdrawForm.querySelector('.req-withdraw-reason').value.trim();
+        if (!value) return;
+        const btn = withdrawForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/withdraw/${withdrawForm.dataset.id}`, JSON.stringify({ reason: value }), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      }
+    }
+    async function onClick(ev) {
+      const land = ev.target.closest('button.req-land');
+      const retry = ev.target.closest('button.task-retry');
+      if (land) {
+        land.disabled = true;
+        try {
+          const r = await post(`/api/land/${land.dataset.id}`);
+          if (r.error) alert(r.error); else await draw();
+        } finally { land.disabled = false; }
+      } else if (retry) {
+        retry.disabled = true;
+        try {
+          const r = await post(`/api/retry/${retry.dataset.id}`);
+          alert(r.output || r.error || 'retried');
+          go('/tasks');
+        } finally { retry.disabled = false; }
+      }
     }
     return {
       async show() {
         $('#main').innerHTML = `<div class="two"><section><div id="detail" class="mute" style="margin:16px">loading…</div></section><section><h2>Events · task ${id}</h2><div id="feed" class="feed"></div></section></div>`;
+        $('#detail').addEventListener('submit', onSubmit);
+        $('#detail').addEventListener('click', onClick);
         await snapshotHead();
         await draw();
         renderFeed();
       },
       onEvent(e) {
-        if (e.task === id) { renderFeed(); if (INVALIDATES.detail.includes(e.type)) draw().catch(() => {}); }
+        if (e.task === id) {
+          renderFeed();
+          if (e.type === 'task_done' && e.compare) { compare = e.compare; }
+          if (INVALIDATES.detail.includes(e.type)) draw().catch(() => {});
+        }
       },
     };
   }
