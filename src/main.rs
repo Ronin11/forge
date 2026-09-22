@@ -24,6 +24,7 @@ mod experiment;
 
 mod git;
 mod graph;
+mod init;
 mod intake;
 mod job;
 mod journal;

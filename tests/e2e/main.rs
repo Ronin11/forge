@@ -10,6 +10,7 @@ mod deploy;
 mod economist;
 mod fixtures;
 mod graph;
+mod init;
 mod initiatives;
 mod intake;
 mod jobs;

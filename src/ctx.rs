@@ -81,29 +81,30 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `FORGE_HOME` (`FORGE2_HOME` for one release, see `config::env`), else
-    /// `$XDG_DATA_HOME/forge`, else `~/.local/share/forge` — falling back to
-    /// `~/.local/share/forge2` when the new default does not exist yet but
-    /// the old one does, so a machine that has never set `FORGE_HOME` keeps
-    /// reading its existing data until the operator moves it by hand (see
-    /// `legacy_home_migration`, which `forge doctor` uses to say so).
-    pub fn resolve() -> Result<Paths> {
-        let home = if let Ok(p) = config::env("HOME") {
-            PathBuf::from(p)
-        } else {
-            let base = match std::env::var("XDG_DATA_HOME") {
-                Ok(p) => PathBuf::from(p),
-                Err(_) => PathBuf::from(std::env::var("HOME").context("HOME is not set")?)
-                    .join(".local/share"),
-            };
-            let new = base.join("forge");
-            let old = base.join("forge2");
-            if !new.exists() && old.exists() {
-                old
-            } else {
-                new
-            }
+    /// The directory `resolve` would use, without creating anything: what
+    /// `forge init` reports and writes into before `resolve`'s own
+    /// `create_dir_all` calls would otherwise hide whether it already
+    /// existed.
+    pub fn compute_home() -> Result<PathBuf> {
+        if let Ok(p) = config::env("HOME") {
+            return Ok(PathBuf::from(p));
+        }
+        let base = match std::env::var("XDG_DATA_HOME") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => PathBuf::from(std::env::var("HOME").context("HOME is not set")?)
+                .join(".local/share"),
         };
+        let new = base.join("forge");
+        let old = base.join("forge2");
+        Ok(if !new.exists() && old.exists() {
+            old
+        } else {
+            new
+        })
+    }
+
+    /// `Paths` for a given `home`, creating `worktrees` and `logs` under it.
+    pub fn for_home(home: PathBuf) -> Result<Paths> {
         let p = Paths {
             worktrees: home.join("worktrees"),
             logs: home.join("logs"),
@@ -112,6 +113,16 @@ impl Paths {
         std::fs::create_dir_all(&p.worktrees)?;
         std::fs::create_dir_all(&p.logs)?;
         Ok(p)
+    }
+
+    /// `FORGE_HOME` (`FORGE2_HOME` for one release, see `config::env`), else
+    /// `$XDG_DATA_HOME/forge`, else `~/.local/share/forge` — falling back to
+    /// `~/.local/share/forge2` when the new default does not exist yet but
+    /// the old one does, so a machine that has never set `FORGE_HOME` keeps
+    /// reading its existing data until the operator moves it by hand (see
+    /// `legacy_home_migration`, which `forge doctor` uses to say so).
+    pub fn resolve() -> Result<Paths> {
+        Self::for_home(Self::compute_home()?)
     }
 }
 
