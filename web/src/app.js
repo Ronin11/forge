@@ -77,7 +77,9 @@
     }
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
-    return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
+    if (m[1]) return { page: 'tasks', id: Number(m[1]), run: !!m[2] };
+    const { filters, before } = ForgeSearch.filtersFromSearch(location.search);
+    return { page: 'tasks', id: null, run: false, filters, before };
   }
   function go(path) { history.pushState(null, '', path); render(); }
   // Every href the nav (or a page's own content) can carry: each of the
@@ -146,7 +148,7 @@
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
       : r.page === 'workflow-new' ? promptView()
       : r.page === 'workflows' ? (r.name === null ? workflowsView() : workflowView(r.name, r.project))
-      : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
+      : (r.id === null ? listView(r.filters, r.before) : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
 
@@ -294,24 +296,63 @@
     };
   }
 
-  // ---- list view
-  function listView() {
-    let rows = [], done = false, loading = false, filters = { q: '', state: '', workflow: '', project: '' };
+  // ---- list view: a query box and filters mapped one to one onto `forge
+  // log --json`'s own (web UI task 9, "search") — text, state, repository,
+  // workflow, project, initiative — carried in the URL (`ForgeSearch`, see
+  // web/src/search.js) so a filtered view can be linked or reloaded, paged
+  // backward with the `before` cursor the same way `forge log --before`
+  // itself pages, and its columns sortable (client-side, over whatever
+  // page is loaded — sorting doesn't refetch).
+  const SORT_COLUMNS = [
+    { key: 'id', label: 'id', numeric: true, value: t => t.id },
+    { key: 'state', label: 'state', value: t => t.state },
+    { key: 'workflow', label: 'wf', value: t => t.workflow },
+    { key: 'attempts', label: 'att', numeric: true, value: t => t.attempts },
+    { key: 'cost_usd', label: 'cost', numeric: true, value: t => t.cost_usd },
+    { key: 'initiative', label: 'init', numeric: true, value: t => t.initiative },
+    { key: 'created_at', label: 'created', numeric: true, value: t => t.created_at },
+    { key: 'task', label: 'task', value: t => t.task },
+  ];
+  function sortRows(list, s) {
+    const col = SORT_COLUMNS.find(c => c.key === s.key);
+    if (!col) return list;
+    const sign = s.dir === 'asc' ? 1 : -1;
+    return [...list].sort((a, b) => {
+      const av = col.value(a), bv = col.value(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (av < bv) return -sign;
+      if (av > bv) return sign;
+      return 0;
+    });
+  }
+  function listView(initialFilters, initialBefore) {
+    let rows = [], done = false, loading = false, sort = null;
+    let filters = { ...ForgeSearch.emptyFilters(), ...(initialFilters || {}) };
+    let pendingBefore = initialBefore || null;
     let observer = null, debounce = null;
     const qs = before => {
-      const p = new URLSearchParams({ limit: PAGE });
-      if (before) p.set('before', before);
-      for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+      const p = ForgeSearch.paramsFromFilters(filters, before);
+      p.set('limit', PAGE);
       return '/api/tasks?' + p;
     };
+    function syncUrl(before) {
+      const p = ForgeSearch.paramsFromFilters(filters, before);
+      const q = p.toString();
+      const path = '/tasks' + (q ? `?${q}` : '');
+      if (path !== location.pathname + location.search) history.replaceState(null, '', path);
+    }
     async function page(reset) {
       if (loading) return; loading = true;
       try {
-        const before = reset ? null : (rows.length ? Math.min(...rows.map(t => t.id)) : null);
+        const before = reset ? pendingBefore : (rows.length ? Math.min(...rows.map(t => t.id)) : null);
         if (!reset && done) return;
         const got = await get(qs(before));
         if (reset) rows = got; else rows = rows.concat(got.filter(t => !rows.some(r => r.id === t.id)));
         done = got.length < PAGE;
+        pendingBefore = before;
+        syncUrl(before);
         drawRows();
       } finally { loading = false; }
     }
@@ -323,6 +364,17 @@
       rows = [...known.values()].sort((a, b) => b.id - a.id);
       drawRows();
     }
+    function onFilterChange() {
+      pendingBefore = null;
+      page(true);
+    }
+    function theadHtml() {
+      return SORT_COLUMNS.map(c => {
+        const active = sort && sort.key === c.key ? sort : null;
+        const arrow = active ? (active.dir === 'asc' ? ' ▲' : ' ▼') : '';
+        return `<th data-key="${c.key}" class="sortable${c.numeric ? ' num' : ''}">${esc(c.label)}${arrow}</th>`;
+      }).join('');
+    }
     function drawRows() {
       const wfs = [...new Set(rows.map(t => t.workflow))].sort();
       const sel = $('#f-workflow');
@@ -330,7 +382,8 @@
         const cur = sel.value;
         sel.innerHTML = '<option value="">any workflow</option>' + wfs.map(w => `<option ${w === cur ? 'selected' : ''}>${esc(w)}</option>`).join('');
       }
-      $('#tasks').innerHTML = rows.map(t => `
+      const sorted = sort ? sortRows(rows, sort) : rows;
+      $('#tasks-table').innerHTML = `<thead><tr>${theadHtml()}</tr></thead><tbody id="tasks">${sorted.map(t => `
         <tr class="task" data-id="${t.id}">
           <td class="num">${t.id}</td>
           <td class="state ${esc(t.state)}">${esc(t.state)}</td>
@@ -340,7 +393,7 @@
           <td class="num">${t.initiative != null ? `<a href="/initiatives/${t.initiative}">${t.initiative}</a>` : ''}</td>
           <td class="mute" style="white-space:nowrap">${fmtTime(t.created_at)}</td>
           <td class="task-text" title="${esc(t.task)}">${esc(t.task)}</td>
-        </tr>`).join('');
+        </tr>`).join('')}</tbody>`;
       $('#sentinel').textContent = done ? (rows.length ? `${rows.length} task(s)` : 'no tasks match') : 'loading more…';
     }
     return {
@@ -349,20 +402,32 @@
           <h2>Tasks</h2>
           <div class="filters">
             <input type="search" id="f-q" placeholder="search text or id" value="${esc(filters.q)}">
-            <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified','withdrawn'].map(s => `<option>${s}</option>`).join('')}</select>
+            <select id="f-state"><option value="">any state</option>${['queued','running','succeeded','failed','blocked','unverified','withdrawn'].map(s => `<option ${s === filters.state ? 'selected' : ''}>${s}</option>`).join('')}</select>
             <select id="f-workflow"><option value="">any workflow</option></select>
             <select id="f-project"><option value="">any project</option></select>
+            <input type="text" id="f-repo" placeholder="repo path" value="${esc(filters.repo)}">
+            <input type="number" id="f-initiative" placeholder="initiative id" value="${esc(filters.initiative)}">
           </div>
-          <table><thead><tr><th>id</th><th>state</th><th>wf</th><th class="num">att</th><th class="num">cost</th><th>init</th><th>created</th><th>task</th></tr></thead><tbody id="tasks"></tbody></table>
+          <table id="tasks-table"><thead><tr>${theadHtml()}</tr></thead><tbody id="tasks"></tbody></table>
           <div id="sentinel" class="sentinel">loading…</div>`;
-        $('#f-q').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.q = ev.target.value.trim(); page(true); }, 250); });
-        $('#f-state').addEventListener('change', ev => { filters.state = ev.target.value; page(true); });
-        $('#f-workflow').addEventListener('change', ev => { filters.workflow = ev.target.value; page(true); });
-        $('#f-project').addEventListener('change', ev => { filters.project = ev.target.value; page(true); });
+        $('#f-q').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.q = ev.target.value.trim(); onFilterChange(); }, 250); });
+        $('#f-state').addEventListener('change', ev => { filters.state = ev.target.value; onFilterChange(); });
+        $('#f-workflow').addEventListener('change', ev => { filters.workflow = ev.target.value; onFilterChange(); });
+        $('#f-project').addEventListener('change', ev => { filters.project = ev.target.value; onFilterChange(); });
+        $('#f-repo').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.repo = ev.target.value.trim(); onFilterChange(); }, 250); });
+        $('#f-initiative').addEventListener('input', ev => { clearTimeout(debounce); debounce = setTimeout(() => { filters.initiative = ev.target.value.trim(); onFilterChange(); }, 250); });
+        if (filters.workflow) $('#f-workflow').innerHTML = `<option value="">any workflow</option><option selected>${esc(filters.workflow)}</option>`;
         get('/api/projects').then(rows => {
-          $('#f-project').innerHTML = '<option value="">any project</option>' + rows.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+          $('#f-project').innerHTML = '<option value="">any project</option>' + rows.map(p => `<option value="${esc(p.name)}" ${p.name === filters.project ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
         }).catch(() => {});
-        $('#tasks').addEventListener('click', ev => {
+        $('#tasks-table').addEventListener('click', ev => {
+          const th = ev.target.closest('th[data-key]');
+          if (th) {
+            const key = th.dataset.key;
+            sort = sort && sort.key === key && sort.dir === 'asc' ? { key, dir: 'desc' } : { key, dir: 'asc' };
+            drawRows();
+            return;
+          }
           if (ev.target.closest('a')) return;
           const tr = ev.target.closest('tr.task');
           if (tr) go(`/tasks/${tr.dataset.id}`);
