@@ -16,6 +16,9 @@ task --> sandboxed attempt --> verify (repo checks, then hidden tests) --> land 
                                     `-- a failed row retries with that failure as feedback
 ```
 
+[Contributing](CONTRIBUTING.md) covers development and checks;
+[Security](SECURITY.md) describes the isolation boundary and reporting problems.
+
 ## Quickstart
 
 Prerequisites: Rust, bubblewrap (`bwrap` on `PATH`), git, and the
