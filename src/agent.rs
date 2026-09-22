@@ -243,6 +243,7 @@ pub fn agent_env() -> Vec<(String, String)> {
                     | "CLAUDE_CONFIG_DIR"
                     | "CODEX_HOME"
                     | "FAKE_SLEEP"
+                    | "FAKE_SLEEP_SECS"
             ) || ["LC_", "ANTHROPIC_", "CODEX_"]
                 .iter()
                 .any(|p| k.starts_with(p))
