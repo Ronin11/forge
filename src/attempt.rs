@@ -291,16 +291,25 @@ fn scratch_dir(worktree: &str) -> PathBuf {
     PathBuf::from(format!("{worktree}-red"))
 }
 
-/// The model an attempt's `inputs_json` records. Every step runs the
-/// task's model; the supervisor is the one judge, never the routed work
-/// (see `ctx::resolve_provider`), so it keeps its own configured model —
-/// already on `requested` from `supervisor::supervise` — rather than the
-/// task's.
-fn attempt_model(step: &str, task_model: &str, requested: &str) -> String {
-    if step == "supervisor" {
-        requested.to_string()
-    } else {
-        task_model.to_string()
+/// The model a step runs and its `inputs_json` records. A task names a
+/// model in the Claude runner's vocabulary (`sonnet`, `opus`), so the
+/// task's model applies only on that runner; a step routed by role to a
+/// provider on another runner takes that provider's configured model, or
+/// the runner's own default when it has none (task 518's review, routed
+/// to codex, asked OpenAI for `sonnet` and was refused). On the Claude
+/// runner the supervisor is the one judge, never the routed work (see
+/// `ctx::resolve_provider`), so it keeps its own configured model,
+/// already on `requested` from `supervisor::supervise`.
+pub(crate) fn attempt_model(
+    step: &str,
+    task_model: &str,
+    requested: &str,
+    provider: &agent::Provider,
+) -> String {
+    match provider.runner {
+        agent::Runner::ClaudeCli if step == "supervisor" => requested.to_string(),
+        agent::Runner::ClaudeCli => task_model.to_string(),
+        _ => provider.model.clone().unwrap_or_default(),
     }
 }
 
@@ -358,7 +367,7 @@ pub async fn new_attempt(
     inputs.workflow = t.workflow.clone();
     inputs.workflow_hash = t.workflow_hash.clone();
     inputs.step = step.to_string();
-    inputs.model = attempt_model(step, &t.model, &inputs.model);
+    inputs.model = attempt_model(step, &t.model, &inputs.model, provider);
     inputs.max_turns = t.max_turns;
     inputs.timeout_secs = t.timeout_secs;
     inputs.base_sha = t.base_sha.clone();
@@ -394,6 +403,7 @@ async fn launch(
     start_sha: &str,
     provider: &agent::Provider,
 ) -> Result<agent::Outcome, Fault> {
+    let model = attempt_model(step, &t.model, &t.model, provider);
     let outcome = crate::directive::launch(
         f,
         crate::directive::Spec {
@@ -402,7 +412,7 @@ async fn launch(
             dir: worktree,
             prompt,
             system: "",
-            model: &t.model,
+            model: &model,
             max_turns: t.max_turns as u32,
             timeout: Duration::from_secs(t.timeout_secs as u64),
             log_path,
@@ -547,18 +557,66 @@ mod tests {
 
     #[test]
     fn attempt_model_keeps_the_supervisors_own_model() {
-        assert_eq!(attempt_model("supervisor", "task-model", "opus"), "opus");
+        let claude = |model: Option<&str>| agent::Provider {
+            name: "anthropic".into(),
+            runner: agent::Runner::ClaudeCli,
+            model: model.map(str::to_string),
+            base_url: None,
+            api_key_env: None,
+            env: vec![],
+            extra_args: vec![],
+            notes: None,
+            price_input_per_million: 0.0,
+            price_output_per_million: 0.0,
+            five_hour_max: 0.0,
+            seven_day_max: 0.0,
+            nudges: 0,
+            report_from_git: false,
+        };
+        let codex = |model: Option<&str>| agent::Provider {
+            name: "openai".into(),
+            runner: agent::Runner::CodexCli,
+            model: model.map(str::to_string),
+            base_url: None,
+            api_key_env: None,
+            env: vec![],
+            extra_args: vec![],
+            notes: None,
+            price_input_per_million: 0.0,
+            price_output_per_million: 0.0,
+            five_hour_max: 0.0,
+            seven_day_max: 0.0,
+            nudges: 0,
+            report_from_git: false,
+        };
+        // Claude runner: the task's model, the supervisor's own.
+        assert_eq!(
+            attempt_model("supervisor", "task-model", "opus", &claude(Some("sonnet"))),
+            "opus"
+        );
+        assert_eq!(
+            attempt_model("code", "task-model", "whatever", &claude(Some("sonnet"))),
+            "task-model"
+        );
+        assert_eq!(
+            attempt_model("investigate", "task-model", "whatever", &claude(None)),
+            "task-model"
+        );
+        // Another runner: the provider's model, else its own default; never the task's alias.
+        assert_eq!(
+            attempt_model("review", "sonnet", "sonnet", &codex(Some("gpt-5"))),
+            "gpt-5"
+        );
+        assert_eq!(
+            attempt_model("review", "sonnet", "sonnet", &codex(None)),
+            ""
+        );
+        assert_eq!(
+            attempt_model("supervisor", "sonnet", "opus", &codex(None)),
+            ""
+        );
     }
 
     #[test]
-    fn attempt_model_uses_the_tasks_model_for_every_other_step() {
-        assert_eq!(
-            attempt_model("code", "task-model", "whatever"),
-            "task-model"
-        );
-        assert_eq!(
-            attempt_model("investigate", "task-model", "whatever"),
-            "task-model"
-        );
-    }
+    fn attempt_model_uses_the_tasks_model_for_every_other_step() {}
 }
