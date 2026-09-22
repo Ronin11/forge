@@ -79,6 +79,20 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `forge doctor --json`: every check the CLI's own doctor runs. Not
+    /// part of the stable contract (docs/CLIENT.md), but the web header
+    /// strip reads it for the worker's rate windows and today's spend. An
+    /// exit code of 1 here means a check is FAIL, not that the run
+    /// failed — that is data, not an error — so this reads stdout
+    /// regardless of the exit code and only errors if it isn't JSON.
+    pub fn doctor(&self) -> Result<Vec<DoctorCheck>> {
+        let out = retry_on_etxtbsy(|| Command::new(&self.bin).args(["doctor", "--json"]).output())
+            .with_context(|| format!("running {} doctor --json", self.bin))?;
+        let v: Value = serde_json::from_slice(&out.stdout)
+            .with_context(|| format!("parsing {} doctor --json", self.bin))?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `forge plugin list --json`: every plugin found, where it came from,
     /// and whether it is enabled.
     pub fn plugin_list(&self) -> Result<Vec<PluginRow>> {
@@ -478,6 +492,41 @@ pub struct Snapshot {
     pub worker: Worker,
     #[serde(default)]
     pub events_offset: u64,
+}
+
+/// One row of `forge doctor --json`: `{name, status, detail, hint}`, plus
+/// optional structured numbers a few checks carry alongside their prose
+/// (`src/doctor.rs`'s `Check`) — `rate_limit` sets `provider` and the
+/// window fields, `spend` sets `spend_usd`/`spend_cap_usd`, `queue` sets
+/// `queued`/`running`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DoctorCheck {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub hint: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub five_hour_pct: Option<f64>,
+    #[serde(default)]
+    pub five_hour_resets_at: Option<i64>,
+    #[serde(default)]
+    pub seven_day_pct: Option<f64>,
+    #[serde(default)]
+    pub seven_day_resets_at: Option<i64>,
+    #[serde(default)]
+    pub spend_usd: Option<f64>,
+    #[serde(default)]
+    pub spend_cap_usd: Option<f64>,
+    #[serde(default)]
+    pub queued: Option<i64>,
+    #[serde(default)]
+    pub running: Option<i64>,
 }
 
 /// One row of `forge log --json`: a task as the queue lists it.

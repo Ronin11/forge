@@ -15,12 +15,37 @@ pub enum Status {
     Fail,
 }
 
+/// Beyond `name`/`status`/`detail`/`hint` (the CLI's own text rendering),
+/// a handful of checks carry the same numbers structured, so a client can
+/// draw a gauge instead of parsing prose: `rate_limit` sets `provider` and
+/// the window fields, `spend` sets `spend_usd`/`spend_cap_usd`, `queue`
+/// sets `queued`/`running`. `forge doctor --json` is explicitly not part
+/// of the stable contract (docs/CLIENT.md), so these are additive and
+/// every other check simply leaves them `None`.
 #[derive(Serialize)]
 pub struct Check {
     pub name: String,
     pub status: Status,
     pub detail: String,
     pub hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour_resets_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_day_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_day_resets_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_cap_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<i64>,
 }
 
 fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<String>) -> Check {
@@ -29,6 +54,15 @@ fn check(name: &str, status: Status, detail: impl Into<String>, hint: impl Into<
         status,
         detail: detail.into(),
         hint: hint.into(),
+        provider: None,
+        five_hour_pct: None,
+        five_hour_resets_at: None,
+        seven_day_pct: None,
+        seven_day_resets_at: None,
+        spend_usd: None,
+        spend_cap_usd: None,
+        queued: None,
+        running: None,
     }
 }
 
@@ -502,7 +536,7 @@ fn check_queue(store: &Store) -> Vec<Check> {
         Ok(o) => o,
         Err(e) => return vec![check("queue", Status::Fail, format!("{e:#}"), "")],
     };
-    vec![match (running.len(), orphans.len()) {
+    let mut c = match (running.len(), orphans.len()) {
         (_, o) if o > 0 => check(
             "queue",
             Status::Warn,
@@ -519,7 +553,10 @@ fn check_queue(store: &Store) -> Vec<Check> {
             format!("{queued} queued, {r} running"),
             "",
         ),
-    }]
+    };
+    c.queued = Some(queued);
+    c.running = Some(running.len() as i64);
+    vec![c]
 }
 
 /// Every project still carrying the migration's placeholder purpose
@@ -677,7 +714,7 @@ fn check_spend(f: &Forge) -> Vec<Check> {
         Ok(s) => s,
         Err(e) => return vec![check("spend", Status::Fail, format!("{e:#}"), "")],
     };
-    vec![match f.budget.per_day_usd {
+    let mut c = match f.budget.per_day_usd {
         Some(cap) if spent >= cap => check(
             "spend",
             Status::Warn,
@@ -696,7 +733,10 @@ fn check_spend(f: &Forge) -> Vec<Check> {
             format!("${spent:.2} in the last 24h (no dollar cap; the rate windows are the limit)"),
             "",
         ),
-    }]
+    };
+    c.spend_usd = Some(spent);
+    c.spend_cap_usd = f.budget.per_day_usd;
+    vec![c]
 }
 
 /// One row per provider that has recorded a rate-limit sample: each has
@@ -729,7 +769,7 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
             crate::render::utc(s.seen_at),
             age / 60
         );
-        out.push(match crate::worker::window_hold(f, name) {
+        let mut c = match crate::worker::window_hold(f, name) {
             Ok(Some((msg, _))) => check(
                 "rate_limit",
                 Status::Warn,
@@ -744,7 +784,13 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
             ),
             Ok(None) => check("rate_limit", Status::Ok, detail, ""),
             Err(e) => check("rate_limit", Status::Fail, format!("{e:#}"), ""),
-        });
+        };
+        c.provider = Some(name.clone());
+        c.five_hour_pct = s.five_hour;
+        c.five_hour_resets_at = s.five_hour_resets;
+        c.seven_day_pct = s.seven_day;
+        c.seven_day_resets_at = s.seven_day_resets;
+        out.push(c);
     }
     if out.is_empty() {
         out.push(check(

@@ -33,12 +33,21 @@
     return r.json();
   }
 
-  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /jobs, /jobs/:id,
-  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph,
-  // /graph/modules, /stats, /workflows, /workflows/:name
+  // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /requests, /jobs,
+  // /jobs/:id, /plugins, /projects, /projects/:name, /initiatives,
+  // /initiatives/:id, /deploys, /activity, /messages, /doctor, /graph,
+  // /graph/modules, /stats, /workflows, /workflows/:name — every page
+  // the nav names (web/src/shell.js's NAV_PAGES); a page with no view of
+  // its own yet still routes, to `stubView` below.
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
+    if (location.pathname === '/requests') return { page: 'requests' };
     if (location.pathname === '/projects') return { page: 'projects' };
+    if (location.pathname === '/initiatives') return { page: 'initiatives-list' };
+    if (location.pathname === '/deploys') return { page: 'deploys' };
+    if (location.pathname === '/activity') return { page: 'activity' };
+    if (location.pathname === '/messages') return { page: 'messages' };
+    if (location.pathname === '/doctor') return { page: 'doctor' };
     if (location.pathname === '/stats') return { page: 'stats' };
     let m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
     if (m) return { page: 'graph', modules: !!m[1], repo: new URLSearchParams(location.search).get('repo') || '' };
@@ -59,23 +68,51 @@
     return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
   }
   function go(path) { history.pushState(null, '', path); render(); }
+  // Every href the nav (or a page's own content) can carry: each of the
+  // shell's NAV_PAGES as a prefix, so a sub-route (`/tasks/1`) and a link
+  // carrying a query string (`/graph?repo=...`) both route client-side.
+  const NAV_SELECTOR = ForgeShell.NAV_PAGES.map(p => `a[href^="${p.href}"]`).join(', ');
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"], a[href^="/jobs"], a[href^="/workflows"]');
+    const a = ev.target.closest(NAV_SELECTOR);
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
+
+  // ---- keyboard shortcuts (shared by every page): '/' focuses search,
+  // 'g' then a letter jumps to a page (ForgeShell.SHORTCUT_TARGETS).
+  function focusSearch() {
+    const el = $('#f-q');
+    if (el) { el.focus(); el.select(); return; }
+    go('/tasks');
+  }
+  let gPending = false, gTimer = null;
+  document.addEventListener('keydown', ev => {
+    const tag = (ev.target && ev.target.tagName) || '';
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (ev.target && ev.target.isContentEditable);
+    if (ev.key === '/' && !typing) { ev.preventDefault(); focusSearch(); return; }
+    if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (gPending) {
+      gPending = false; clearTimeout(gTimer);
+      const href = ForgeShell.SHORTCUT_TARGETS[ev.key];
+      if (href) { ev.preventDefault(); go(href); }
+      return;
+    }
+    if (ev.key === 'g') { gPending = true; gTimer = setTimeout(() => { gPending = false; }, 1500); }
+  });
 
   function nav(r) {
     const taskLinks = r.page === 'tasks' && r.id !== null
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
-    const projects = r.page === 'projects' || r.page === 'project';
-    const onWorkflows = r.page === 'workflows' || r.page === 'workflow-new';
     const graphQuery = r.page === 'graph' && r.repo ? `?repo=${encodeURIComponent(r.repo)}` : '';
     const graphLinks = r.page === 'graph'
       ? ` <a href="/graph${graphQuery}" ${!r.modules ? 'style="font-weight:600"' : ''}>files</a> <a href="/graph/modules${graphQuery}" ${r.modules ? 'style="font-weight:600"' : ''}>modules</a>`
       : '';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${onWorkflows ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>${graphLinks}`;
+    const activeKey = r.page === 'project' ? 'projects'
+      : (r.page === 'initiative' || r.page === 'initiatives-list') ? 'initiatives'
+      : r.page === 'workflow-new' ? 'workflows'
+      : r.page;
+    $('#nav').innerHTML = ForgeShell.renderNav(activeKey, taskLinks + graphLinks);
   }
 
   async function render() {
@@ -83,9 +120,15 @@
     nav(r);
     if (view && view.teardown) view.teardown();
     view = r.page === 'plugins' ? pluginsView()
+      : r.page === 'requests' ? requestsView()
       : r.page === 'projects' ? projectsView()
       : r.page === 'project' ? projectView(r.name)
       : r.page === 'initiative' ? initiativeView(r.id)
+      : r.page === 'initiatives-list' ? stubView('Initiatives')
+      : r.page === 'deploys' ? stubView('Deploys')
+      : r.page === 'activity' ? stubView('Activity')
+      : r.page === 'messages' ? stubView('Messages')
+      : r.page === 'doctor' ? stubView('Doctor')
       : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
@@ -95,25 +138,75 @@
     await view.show();
   }
 
-  // ---- shared: worker + live stream
-  function renderWorker(w) {
-    $('#worker').textContent = w.running ? `worker pid ${w.pid}${w.stale_binary ? ' (stale binary)' : ''}` : 'worker not running';
-    $('#worker').className = w.running ? '' : 'failed';
+  // ---- shared: the header strip (worker, rate gauges, queue, spend, a
+  // last-updated stamp) and the live stream that drives it
+  let headData = { worker: {}, tasks: [], doctor: [] };
+  let liveStatus = { text: 'connecting', cls: 'mute' };
+  function applyLiveStatus() {
+    const el = $('#live');
+    if (el) { el.textContent = liveStatus.text; el.className = liveStatus.cls; }
+  }
+  function drawHeadStrip(now) {
+    $('#head-strip').innerHTML = ForgeShell.renderHeaderStrip(
+      { worker: headData.worker, tasks: headData.tasks, doctor: headData.doctor, now }, fmtTime);
+    applyLiveStatus();
+  }
+  async function refreshDoctor() {
+    // Not part of the stable contract (docs/CLIENT.md), so a read that
+    // fails (no home, no store yet) just leaves the gauges at '—'
+    // instead of breaking the rest of the header.
+    try { headData.doctor = await get('/api/doctor'); } catch { headData.doctor = []; }
   }
   async function snapshotHead() {
     const s = await get('/api/snapshot');
-    renderWorker(s.worker || {});
+    headData.worker = s.worker || {};
+    headData.tasks = s.tasks || [];
+    await refreshDoctor();
+    drawHeadStrip(Date.now() / 1000);
     if (!es) { offset = s.events_offset || 0; subscribe(); }
     return s;
   }
   function subscribe() {
     es = new EventSource(`/api/events?since=${offset}`);
-    es.onopen = () => { $('#live').textContent = 'live'; $('#live').className = 'succeeded'; };
-    es.onerror = () => { $('#live').textContent = 'reconnecting'; $('#live').className = 'failed'; };
+    es.onopen = () => { liveStatus = { text: 'live', cls: 'succeeded' }; applyLiveStatus(); };
+    es.onerror = () => { liveStatus = { text: 'reconnecting', cls: 'failed' }; applyLiveStatus(); };
     es.onmessage = m => {
       let e; try { e = JSON.parse(m.data); } catch { return; }
       feed.push(e); if (feed.length > 5000) feed.splice(0, feed.length - 5000);
+      // The last-updated stamp tracks the event stream itself, not just
+      // the header's own 30s poll (docs: "a last-updated stamp driven by
+      // the event stream").
+      const upd = $('#updated');
+      if (upd && e.ts != null) upd.textContent = `updated ${fmtTime(e.ts)}`;
       if (view && view.onEvent) view.onEvent(e);
+    };
+  }
+
+  // ---- a page named by the nav with no view of its own yet: a later
+  // task of the Web UI initiative builds it.
+  function stubView(title) {
+    return {
+      async show() {
+        $('#main').innerHTML = `<h2>${esc(title)}</h2><div class="stub">Not built yet.</div>`;
+      },
+    };
+  }
+
+  // ---- requests view: blocked tasks and what each is waiting on
+  // (forge requests --json), its own page on the client contract
+  function requestsView() {
+    function draw(reqs) {
+      $('#main').innerHTML = '<h2>Requests</h2>' + (reqs.length ? reqs.map(r => `
+        <div class="card req"><b><a href="/tasks/${r.id}">${r.id}</a></b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
+          <div>${esc(r.text)}</div>
+          ${r.tried ? `<details><summary>tried</summary><div class="mute">${esc(r.tried)}</div></details>` : ''}
+          <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
+        : '<div class="card mute">No open questions.</div>');
+    }
+    async function refresh() { draw(await get('/api/requests')); }
+    return {
+      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await refresh(); },
+      onEvent(e) { if (INVALIDATES.list.includes(e.type)) refresh().catch(() => {}); },
     };
   }
 
@@ -166,18 +259,9 @@
         </tr>`).join('');
       $('#sentinel').textContent = done ? (rows.length ? `${rows.length} task(s)` : 'no tasks match') : 'loading more…';
     }
-    function renderRequests(reqs) {
-      $('#requests').innerHTML = reqs.length ? reqs.map(r => `
-        <div class="card req"><b><a href="/tasks/${r.id}">${r.id}</a></b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
-          <div>${esc(r.text)}</div>
-          ${r.tried ? `<details><summary>tried</summary><div class="mute">${esc(r.tried)}</div></details>` : ''}
-          <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
-        : '<div class="card mute">No open questions.</div>';
-    }
     return {
       async show() {
         $('#main').innerHTML = `
-          <h2>Requests</h2><div id="requests"></div>
           <h2>Tasks</h2>
           <div class="filters">
             <input type="search" id="f-q" placeholder="search text or id" value="${esc(filters.q)}">
@@ -201,14 +285,13 @@
         });
         observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) page(false); }, { rootMargin: '400px' });
         observer.observe($('#sentinel'));
-        const s = await snapshotHead();
-        renderRequests(s.requests || []);
+        await snapshotHead();
         await page(true);
       },
       onEvent(e) {
         if (INVALIDATES.list.includes(e.type)) {
           refreshHead().catch(() => {});
-          snapshotHead().then(s => renderRequests(s.requests || [])).catch(() => {});
+          snapshotHead().catch(() => {});
         }
       },
       teardown() { if (observer) observer.disconnect(); clearTimeout(debounce); },

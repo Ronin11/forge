@@ -50,3 +50,21 @@ fn app_js_formats_no_time_itself() {
         "app.js builds a Date itself; go through ForgeTime"
     );
 }
+
+#[test]
+fn shell_js_formats_no_time_itself() {
+    let shell = include_str!("../src/shell.js");
+    for banned in [
+        "toLocale",
+        "toISOString",
+        "toUTCString",
+        "getTimezoneOffset",
+        "new Date(",
+    ] {
+        assert!(
+            !shell.contains(banned),
+            "shell.js formats a time with {banned}; every time it shows must go through the \
+             `fmtTime` the caller passes in, never a formatter of its own"
+        );
+    }
+}

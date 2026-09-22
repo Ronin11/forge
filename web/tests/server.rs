@@ -11,6 +11,7 @@ case "$1" in
   trace) echo "{\"task\":{\"id\":$2},\"attempts\":[]}" ;;
   journal) echo "[{\"task\":$2,\"note\":\"journal\"}]" ;;
   requests) echo '[{"id":1,"status":"pending"}]' ;;
+  doctor) echo '[{"name":"worker","status":"ok","detail":"pid 1 running","hint":""},{"name":"queue","status":"ok","detail":"2 queued, 1 running","hint":"","queued":2,"running":1},{"name":"spend","status":"ok","detail":"$3.50 of $10.00 in the last 24h","hint":"","spend_usd":3.5,"spend_cap_usd":10.0},{"name":"rate_limit","status":"warn","detail":"anthropic: 5h 82%, 7d 40%","hint":"nearly at cap","provider":"anthropic","five_hour_pct":0.82,"five_hour_resets_at":2000000200,"seven_day_pct":0.4,"seven_day_resets_at":2000600000}]' ;;
   log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
@@ -253,11 +254,17 @@ fn without_the_token_nothing_is_served() {
         "/api/task/1",
         "/api/journal/1",
         "/api/requests",
+        "/requests",
         "/api/plugins",
+        "/api/doctor",
+        "/doctor",
         "/app.js",
+        "/shell.js",
+        "/styles.css",
         "/time.js",
         "/projects",
         "/projects/demo",
+        "/initiatives",
         "/initiatives/5",
         "/api/projects",
         "/api/projects/demo",
@@ -404,6 +411,72 @@ fn the_plugins_route_merges_list_and_status_and_the_action_routes_hit_the_cli() 
 }
 
 #[test]
+fn the_shared_shell_serves_its_assets_and_the_doctor_route_passes_forge_json_through() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    // Every page in the shell — built or still a stub — serves the same
+    // page shell, wired to the same shared assets.
+    for view in [
+        "/tasks",
+        "/requests",
+        "/projects",
+        "/initiatives",
+        "/workflows",
+        "/jobs",
+        "/deploys",
+        "/stats",
+        "/graph",
+        "/plugins",
+        "/activity",
+        "/messages",
+        "/doctor",
+    ] {
+        let (status, _, body) = get(&w.addr, view, &cookie);
+        assert_eq!(status, 200, "{view}");
+        assert!(
+            body.contains(r#"<link rel="stylesheet" href="/styles.css">"#),
+            "{view}: {body}"
+        );
+        assert!(
+            body.contains(r#"<script src="/shell.js">"#),
+            "{view}: {body}"
+        );
+        assert!(body.contains(r#"<script src="/app.js">"#), "{view}: {body}");
+    }
+
+    let (status, head, body) = get(&w.addr, "/styles.css", &cookie);
+    assert_eq!(status, 200);
+    assert!(head.contains("Content-Type: text/css"), "{head}");
+    assert!(body.contains("prefers-color-scheme: dark"), "{body}");
+
+    let (status, head, body) = get(&w.addr, "/shell.js", &cookie);
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("Content-Type: application/javascript"),
+        "{head}"
+    );
+    assert!(body.contains("NAV_PAGES"), "{body}");
+
+    // forge doctor --json, through /api/doctor: passed through untouched,
+    // structured fields and all — the header strip's gauges read these.
+    let (status, _, body) = get(&w.addr, "/api/doctor", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = v.as_array().unwrap();
+    let queue = rows.iter().find(|c| c["name"] == "queue").unwrap();
+    assert_eq!(queue["queued"], 2);
+    assert_eq!(queue["running"], 1);
+    let spend = rows.iter().find(|c| c["name"] == "spend").unwrap();
+    assert_eq!(spend["spend_usd"], 3.5);
+    assert_eq!(spend["spend_cap_usd"], 10.0);
+    let rate = rows.iter().find(|c| c["name"] == "rate_limit").unwrap();
+    assert_eq!(rate["provider"], "anthropic");
+    assert_eq!(rate["five_hour_pct"], 0.82);
+    assert_eq!(rate["five_hour_resets_at"], 2000000200_i64);
+}
+
+#[test]
 fn the_projects_and_initiatives_routes_pass_forge_json_through() {
     let w = start();
     let cookie = format!("Cookie: forge_token={}\r\n", w.token);
@@ -488,14 +561,17 @@ fn the_jobs_page_lists_two_fixture_jobs_and_shows_one_with_its_steps_and_effects
         assert_eq!(status, 200, "{view}");
         assert!(body.contains(r#"<script src="/app.js">"#), "{view}: {body}");
     }
-    // The nav links to /jobs from every page, including the header on /tasks.
+    // The shared shell's nav links to /jobs from every page, including
+    // the header on /tasks.
     let (_, _, body) = get(&w.addr, "/tasks", &cookie);
     assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
-    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
+    assert!(body.contains(r#"<script src="/shell.js">"#), "{body}");
+    let (_, _, shell_js) = get(&w.addr, "/shell.js", &cookie);
     assert!(
-        app_js.contains("href=\"/jobs\""),
-        "app.js must link /jobs from the header nav"
+        shell_js.contains("href: '/jobs'"),
+        "shell.js's NAV_PAGES must name /jobs for the header nav"
     );
+    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
     assert!(
         app_js.contains("INVALIDATES")
             && app_js.contains("job_started")
@@ -613,11 +689,12 @@ fn the_workflows_page_lists_catalog_and_repo_workflows_and_the_editor_lints_and_
     assert!(body.contains("renderWorkflowRows"), "{body}");
     let (_, _, index) = get(&w.addr, "/workflows", &cookie);
     assert!(index.contains(r#"<script src="/workflows.js">"#), "{index}");
-    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
+    let (_, _, shell_js) = get(&w.addr, "/shell.js", &cookie);
     assert!(
-        app_js.contains("href=\"/workflows\""),
-        "app.js must link /workflows from the header nav"
+        shell_js.contains("href: '/workflows'"),
+        "shell.js's NAV_PAGES must name /workflows for the header nav"
     );
+    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
     assert!(
         app_js.contains("workflows:")
             && app_js.contains("task_done")

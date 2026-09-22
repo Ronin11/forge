@@ -36,6 +36,8 @@ const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
 const GRAPH_JS: &str = include_str!("graph.js");
+const SHELL_JS: &str = include_str!("shell.js");
+const STYLES_CSS: &str = include_str!("styles.css");
 
 /// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
 fn home() -> PathBuf {
@@ -304,6 +306,34 @@ fn stats_json(forge: &Forge) -> Result<Value> {
         })
         .collect();
     Ok(serde_json::json!({ "by_role": by_role }))
+}
+
+/// `forge doctor --json`, through the client crate's typed `DoctorCheck`,
+/// for the header strip's worker/rate-window/spend/queue readout (and,
+/// later, the `/doctor` page itself).
+fn doctor_json(forge: &Forge) -> Result<Value> {
+    let checks = forge.doctor()?;
+    let arr: Vec<Value> = checks
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "status": c.status,
+                "detail": c.detail,
+                "hint": c.hint,
+                "provider": c.provider,
+                "five_hour_pct": c.five_hour_pct,
+                "five_hour_resets_at": c.five_hour_resets_at,
+                "seven_day_pct": c.seven_day_pct,
+                "seven_day_resets_at": c.seven_day_resets_at,
+                "spend_usd": c.spend_usd,
+                "spend_cap_usd": c.spend_cap_usd,
+                "queued": c.queued,
+                "running": c.running,
+            })
+        })
+        .collect();
+    Ok(Value::Array(arr))
 }
 
 /// `forge plugin list --json` and `forge plugin status --json`, through
@@ -844,15 +874,21 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     let resp = match path.as_str() {
         p if p == "/tasks"
             || p.starts_with("/tasks/")
+            || p == "/requests"
             || p == "/plugins"
             || p == "/projects"
             || p.starts_with("/projects/")
+            || p == "/initiatives"
             || p.starts_with("/initiatives/")
             || p == "/graph"
             || p == "/graph/modules"
             || p == "/stats"
             || p == "/jobs"
             || p.starts_with("/jobs/")
+            || p == "/deploys"
+            || p == "/activity"
+            || p == "/messages"
+            || p == "/doctor"
             || p == "/workflows"
             || p.starts_with("/workflows/") =>
         {
@@ -861,8 +897,11 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
+        "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
+        "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
+        "/api/doctor" => json_or_error(doctor_json(forge)),
         "/api/stats" => json_or_error(stats_json(forge)),
         "/api/graph" => match query_param(&query, "repo").map(|v| unescape(&v)) {
             Some(repo) if !repo.is_empty() => json_or_error(graph(&repo)),

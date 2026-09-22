@@ -239,8 +239,16 @@ and does not parse stdout.
   first. A JSON array of [`MessageRow`](#messagerow).
 
 `forge doctor --json` also exists (a JSON array of
-`{name, status, detail, hint}`) but no current client calls it; it is
-listed for completeness, not as part of the stable contract.
+`{name, status, detail, hint}`, plus a handful of optional structured
+fields a few checks carry alongside their prose so a client can draw a
+gauge instead of parsing it: `rate_limit` also sets `provider`,
+`five_hour_pct`, `five_hour_resets_at`, `seven_day_pct`,
+`seven_day_resets_at`; `spend` also sets `spend_usd`, `spend_cap_usd`;
+`queue` also sets `queued`, `running` — every other check leaves these
+`None`/absent). `forge-web`'s header strip (below) is now its one
+caller, but it is still not part of the stable contract: exit code 1
+means a check is FAIL, not that the read failed, so a caller reads
+stdout regardless of the exit code.
 
 The verb names above, as a plain fenced list a test can parse without
 scraping this prose (`tests/boundary.rs` reads this block and
@@ -1016,12 +1024,27 @@ across a rotation, not to the snapshot protocol itself.
   terminal's local zone: the environment's (`TZ`, else the system's), read
   when drawn, and UTC when it names none. `tui/tests/snapshots.rs` pins a local
   and a UTC rendering under a fixed `TZ`.
-- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`, `web/src/time.js`): every
-  route under `/api/` runs one verb and passes its JSON through
+- **`forge-web`** (`web/src/main.rs`, `web/src/index.html`, `web/src/app.js`, `web/src/shell.js`, `web/src/time.js`): every
+  page mounts into one shared shell (`web/src/shell.js`, `web/src/styles.css`):
+  a nav bar naming every page on the client contract (`ForgeShell.NAV_PAGES` —
+  tasks, requests, projects, initiatives, workflows, jobs, deploys, stats,
+  graph, plugins, activity, messages, doctor; a page not yet built still
+  gets a nav entry and a route, to a placeholder view, so the nav never
+  claims a page that isn't reachable), and a header strip built from one
+  `/api/snapshot` and one `/api/doctor` read: the worker's state, both
+  rate windows as gauges with their reset times (through `web/src/time.js`,
+  the viewer's own zone), queued/running counts, today's spend, and a
+  last-updated stamp the live event stream drives (re-rendered on every
+  event, not just the header's own poll). `/api/doctor` → `doctor --json`
+  (`forge-client`'s typed `DoctorCheck`, see above). `'/'` focuses the
+  task list's search box; `g` then a letter jumps to a page
+  (`ForgeShell.SHORTCUT_TARGETS`). Every route under `/api/` runs one verb
+  and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`
   (query params map to `--limit`/`--before`/`--grep`/`--state`/
-  `--workflow`/`--repo`/`--project`), `/api/requests` → `requests --json`,
-  `/api/task/<id>` → `trace <id> --json`, `/api/journal/<id>` →
+  `--workflow`/`--repo`/`--project`), `/api/requests` → `requests --json`
+  (also the `/requests` page's own read), `/api/task/<id>` →
+  `trace <id> --json`, `/api/journal/<id>` →
   `journal <id> --json`, `/api/events?since=` → `events --since
   --follow` reframed as one SSE `data:` line per event, and
   `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,

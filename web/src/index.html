@@ -4,78 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Forge</title>
-<style>
-  :root { --bg:#f7f7f5; --fg:#1b1b1b; --mute:#6b6b6b; --line:#dcdcd8; --panel:#ffffff; --ok:#1e7d3a; --bad:#b3261e; --warn:#9a6a00; --run:#1b5fb3; --sel:#eef3ff; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#e6e6e6; --mute:#9a9a9a; --line:#2c2c2c; --panel:#1c1c1c; --ok:#5fc37a; --bad:#ff7b72; --warn:#e0b04a; --run:#7fb2ff; --sel:#20283a; } }
-  * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-  a { color:var(--run); text-decoration:none } a:hover { text-decoration:underline }
-  header { display:flex; gap:14px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
-  header h1 { font-size:16px; margin:0; letter-spacing:.02em }
-  header nav a { margin-right:10px }
-  .mute { color:var(--mute) }
-  main { padding:0 0 40px }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--mute); margin:14px 16px 6px; }
-  .filters { display:flex; gap:8px; margin:10px 16px; flex-wrap:wrap; align-items:center }
-  input, select, button { font:inherit; padding:4px 8px; border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:4px }
-  input[type=search] { min-width:28ch }
-  button { cursor:pointer }
-  table { border-collapse:collapse; width:100%; }
-  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--mute); font-weight:500; font-size:12px; position:sticky; top:41px; background:var(--bg); z-index:1 }
-  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap }
-  tr.task { cursor:pointer } tr.task:hover { background:var(--sel) }
-  .state { font-weight:600 } .succeeded { color:var(--ok) } .failed { color:var(--bad) } .blocked { color:var(--warn) } .running { color:var(--run) } .queued { color:var(--mute) } .unverified { color:var(--warn) } .withdrawn { color:var(--mute) }
-  .task-text { max-width:70ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  pre, code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  pre { margin:0 0 8px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; white-space:pre-wrap; word-break:break-word; max-height:40vh; overflow:auto }
-  .card { margin:0 16px 10px; padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:4px; }
-  .card .k { color:var(--mute); display:inline-block; min-width:9ch }
-  .req { border-left:3px solid var(--warn) }
-  .feed { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding:0 16px 12px; }
-  .feed div { white-space:pre-wrap; word-break:break-word; border-bottom:1px dotted var(--line); padding:2px 0 }
-  .feed .t { color:var(--mute); margin-right:6px }
-  .two { display:grid; grid-template-columns: minmax(420px, 1.3fr) minmax(360px, 1fr); gap:0 }
-  .two > section { overflow:auto; max-height:calc(100vh - 42px) }
-  .two > section:first-child { border-right:1px solid var(--line) }
-  details { margin:4px 0 } summary { cursor:pointer; color:var(--mute) }
-  .sentinel { text-align:center; color:var(--mute); padding:12px }
-  /* run view */
-  .pipeline { display:flex; gap:12px; padding:0 16px 16px; overflow-x:auto; align-items:flex-start }
-  .step { min-width:380px; max-width:520px; flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 10px }
-  .step h3 { margin:0 0 4px; font-size:14px } .step h3 small { color:var(--mute); font-weight:400 }
-  .step .ops div { font: 12px/1.5 ui-monospace, Menlo, monospace }
-  .attempt { border-top:1px solid var(--line); margin-top:8px; padding-top:6px }
-  .attempt h4 { margin:0 0 4px; font-size:13px }
-  .kv { display:grid; grid-template-columns: 10ch 1fr; gap:2px 8px; font-size:12px }
-  .kv .k { color:var(--mute) }
-  .rows div { font: 12px/1.5 ui-monospace, Menlo, monospace }
-  .arrow { align-self:center; color:var(--mute); font-size:20px }
-  /* graph view */
-  #graph-svg { background:var(--panel); border:1px solid var(--line); border-radius:6px }
-  #graph-svg .gnode { cursor:pointer }
-  #graph-svg .gnode rect:hover { stroke:var(--run) }
-  #graph-svg .mnode { cursor:pointer }
-  #graph-svg .mnode circle:hover { stroke:var(--run); stroke-width:2 }
-  /* workflows view */
-  .step-card { display:inline-block; padding:1px 6px; margin:1px 0; border:1px solid var(--line); border-radius:3px; background:var(--panel); font-size:12px }
-  .step-arrow { color:var(--mute); margin:0 2px }
-  #wf-steps .step-card { display:block; margin-bottom:4px }
-  #wf-text { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding:8px; border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--fg); resize:vertical }
-  .lint-problem { font-size:12px; padding:2px 0; color:var(--bad) }
-</style>
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 <header>
   <h1><a href="/tasks">Forge</a></h1>
   <nav id="nav"></nav>
-  <span id="worker" class="mute">worker …</span>
-  <span id="live" class="mute">connecting</span>
+  <span class="head-strip" id="head-strip"></span>
   <span style="flex:1"></span>
   <button id="refresh">refresh</button>
 </header>
 <main id="main"></main>
 <script src="/time.js"></script>
+<script src="/shell.js"></script>
 <script src="/workflows.js"></script>
 <script src="/graph.js"></script>
 <script src="/app.js"></script>
