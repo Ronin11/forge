@@ -643,4 +643,25 @@ mod tests {
 
     #[test]
     fn attempt_model_uses_the_tasks_model_for_every_other_step() {}
+
+    #[test]
+    fn attempt_model_source_inherits_project_on_the_claude_runner() {
+        let claude = agent::Provider {
+            name: "anthropic".into(),
+            runner: agent::Runner::ClaudeCli,
+            model: None,
+            base_url: None,
+            api_key_env: None,
+            env: vec![],
+            extra_args: vec![],
+            notes: None,
+            price_input_per_million: 0.0,
+            price_output_per_million: 0.0,
+            five_hour_max: 0.0,
+            seven_day_max: 0.0,
+            nudges: 0,
+            report_from_git: false,
+        };
+        assert_eq!(attempt_model_source(None, &claude, "project"), "project");
+    }
 }
