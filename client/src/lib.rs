@@ -629,13 +629,14 @@ pub struct PluginStatusRow {
 }
 
 /// One row of `forge decisions --json`: an operator's or the supervisor's
-/// answer to a blocked task's question.
+/// answer to a blocked task's question, or (`task_id: null`) a task-less
+/// administrative decision such as `forge stats --reprice`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DecisionRow {
     #[serde(default)]
     pub id: i64,
     #[serde(default)]
-    pub task_id: i64,
+    pub task_id: Option<i64>,
     #[serde(default)]
     pub repo: String,
     #[serde(default)]

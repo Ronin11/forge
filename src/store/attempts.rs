@@ -44,6 +44,14 @@ impl TryFrom<&str> for AttemptState {
     }
 }
 
+/// What `Store::reprice_attempts` did: how many attempts it repriced and
+/// their combined new cost.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct RepriceResult {
+    pub changed: i64,
+    pub total_usd: f64,
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Attempt {
     pub id: i64,
@@ -433,6 +441,59 @@ impl Store {
             }
         };
         Ok(rows)
+    }
+
+    /// `forge stats --reprice` (docs/ECONOMIST.md, "Repricing a
+    /// free-reporting provider"): for every attempt with `cost_usd` 0 or
+    /// NULL, recorded `input_tokens`/`output_tokens`, and a provider
+    /// `prices` names (provider -> (price per million input tokens, price
+    /// per million output tokens), the operator config's own numbers),
+    /// sets `cost_usd` to tokens times price — the same arithmetic
+    /// `agent.rs` uses when a provider reports it live. `provider`
+    /// narrows to one provider's attempts; without `force`, an attempt
+    /// this already repriced (`repriced_at` not NULL) is skipped, so a
+    /// rerun is a no-op once every row it can reach has a real cost.
+    pub fn reprice_attempts(
+        &self,
+        provider: Option<&str>,
+        force: bool,
+        prices: &BTreeMap<String, (f64, f64)>,
+    ) -> Result<RepriceResult> {
+        let c = self.lock();
+        let candidates: Vec<(i64, String, i64, i64)> = {
+            let mut stmt = c.prepare(
+                "SELECT id, provider, input_tokens, output_tokens FROM attempts
+                 WHERE (cost_usd = 0 OR cost_usd IS NULL)
+                   AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+                   AND (?1 IS NULL OR provider = ?1)
+                   AND (?2 = 1 OR repriced_at IS NULL)",
+            )?;
+            stmt.query_map(params![provider, force as i64], |r| {
+                Ok((
+                    r.get("id")?,
+                    r.get("provider")?,
+                    r.get("input_tokens")?,
+                    r.get("output_tokens")?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let now = crate::unix_now();
+        let mut result = RepriceResult::default();
+        for (id, provider, input_tokens, output_tokens) in candidates {
+            let Some((price_input, price_output)) = prices.get(&provider) else {
+                continue;
+            };
+            let cost = input_tokens as f64 * price_input / 1_000_000.0
+                + output_tokens as f64 * price_output / 1_000_000.0;
+            c.execute(
+                "UPDATE attempts SET cost_usd=?2, repriced_at=?3 WHERE id=?1",
+                params![id, cost, now],
+            )?;
+            result.changed += 1;
+            result.total_usd += cost;
+        }
+        Ok(result)
     }
 
     /// Total cost of a task's attempts so far, from the CLI's accounting.

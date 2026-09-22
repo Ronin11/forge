@@ -1,9 +1,11 @@
 use super::*;
 
-/// An operator's answer to a blocked task's question.
+/// An operator's answer to a blocked task's question, or an operator-run
+/// maintenance action not tied to any one task (`forge stats --reprice`,
+/// see `Store::insert_reprice_decision`) — `task_id` is `None` for those.
 pub struct Decision {
     pub id: i64,
-    pub task_id: i64,
+    pub task_id: Option<i64>,
     pub repo: String,
     pub question: String,
     pub answer: String,
@@ -175,7 +177,7 @@ impl Store {
             .join(", ");
         let mut stmt = c.prepare(&format!(
             "SELECT {cols}
-             FROM decisions d JOIN tasks t ON t.id = d.task_id
+             FROM decisions d LEFT JOIN tasks t ON t.id = d.task_id
              WHERE (?1 IS NULL OR d.repo = ?1)
                AND (?2 IS NULL OR t.project = ?2)
                AND (?3 IS NULL OR t.initiative = ?3)
@@ -183,6 +185,21 @@ impl Store {
         ))?;
         let rows = stmt.query_map(params![q.repo, q.project, q.initiative], decision_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Records `forge stats --reprice`'s run (docs/ECONOMIST.md,
+    /// "Repricing a free-reporting provider"): a decision row like any
+    /// other (docs/SUPERVISOR.md, "Every answer is a decision row"), but
+    /// with no `task_id` — the run touches attempts across many tasks, or
+    /// none, so it names no single one.
+    pub fn insert_reprice_decision(&self, question: &str, answer: &str) -> Result<i64> {
+        let c = self.lock();
+        c.execute(
+            "INSERT INTO decisions (task_id, repo, question, answer, created_at, answered_by, citations, answered_for)
+             VALUES (NULL, '', ?1, ?2, ?3, 'operator', '', NULL)",
+            params![question, answer, crate::unix_now()],
+        )?;
+        Ok(c.last_insert_rowid())
     }
 
     /// Record a reference on a task: the pull request it landed as, the

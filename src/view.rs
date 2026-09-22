@@ -116,11 +116,12 @@ impl From<&Task> for RequestRow {
 /// One row of `forge decisions` / `forge decisions --json`: an operator's
 /// answer to a blocked task's question, plus `outcome`, the state of the
 /// task the answer re-queued (`None` until the answer is known to have
-/// landed, failed, or otherwise settled).
+/// landed, failed, or otherwise settled). `task_id` is `null` for a
+/// task-less administrative decision (`forge stats --reprice`).
 #[derive(Serialize)]
 pub struct DecisionRow {
     pub id: i64,
-    pub task_id: i64,
+    pub task_id: Option<i64>,
     pub repo: String,
     pub question: String,
     pub answer: String,
@@ -2235,23 +2236,30 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
         initiative: Some(ini.id),
         ..Default::default()
     })?;
+    // Scoped by initiative above, so a task-less admin decision (`forge
+    // stats --reprice`, `task_id: None`) never reaches here; filter_map
+    // just keeps that guarantee honest rather than unwrapping blindly.
     let rulings = decisions
         .iter()
         .filter(|d| d.answered_by == "supervisor")
-        .map(|d| InitiativeRulingRow {
-            task_id: d.task_id,
-            question: d.question.clone(),
-            answer: d.answer.clone(),
-            citations: d.citations.clone(),
+        .filter_map(|d| {
+            Some(InitiativeRulingRow {
+                task_id: d.task_id?,
+                question: d.question.clone(),
+                answer: d.answer.clone(),
+                citations: d.citations.clone(),
+            })
         })
         .collect();
     let mut questions: Vec<InitiativeQuestionRow> = decisions
         .iter()
         .filter(|d| d.answered_by == "operator")
-        .map(|d| InitiativeQuestionRow {
-            task_id: d.task_id,
-            question: d.question.clone(),
-            answer: Some(d.answer.clone()),
+        .filter_map(|d| {
+            Some(InitiativeQuestionRow {
+                task_id: d.task_id?,
+                question: d.question.clone(),
+                answer: Some(d.answer.clone()),
+            })
         })
         .collect();
     for t in tasks.iter().filter(|t| t.state == TaskState::Blocked) {

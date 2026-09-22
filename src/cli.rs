@@ -336,6 +336,19 @@ enum Cmd {
         /// Only this initiative's tasks
         #[arg(long)]
         initiative: Option<i64>,
+        /// Set cost_usd from recorded tokens on every attempt whose
+        /// provider reported no cost (cost_usd 0 or NULL) but whose
+        /// provider has prices in the operator config; records the run
+        /// as a decision row (see docs/ECONOMIST.md, "Repricing a
+        /// free-reporting provider")
+        #[arg(long)]
+        reprice: bool,
+        /// With --reprice, only this provider's attempts
+        #[arg(long)]
+        provider: Option<String>,
+        /// With --reprice, redo attempts this command already repriced
+        #[arg(long)]
+        force: bool,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -1245,10 +1258,14 @@ pub async fn main() -> Result<()> {
             days,
             project,
             initiative,
+            reprice,
+            provider,
+            force,
             json,
         } => {
             stats(
-                tools, step, quality, journal, by_role, factors, days, project, initiative, json,
+                tools, step, quality, journal, by_role, factors, days, project, initiative,
+                reprice, provider, force, json,
             )
             .await
         }
@@ -1692,7 +1709,11 @@ fn decisions(
             .as_ref()
             .map(|s| format!(" → task {} {}", d.retry_id.unwrap_or_default(), s))
             .unwrap_or_default();
-        out!("{:<5} task {:<5} Q: {}", d.id, d.task_id, d.question);
+        let task_col = d
+            .task_id
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        out!("{:<5} task {:<5} Q: {}", d.id, task_col, d.question);
         out!(
             "{:<17}A ({}{}): {}{}",
             "",
@@ -4549,9 +4570,15 @@ async fn stats(
     days: Option<i64>,
     project: Option<String>,
     initiative: Option<i64>,
+    reprice: bool,
+    provider: Option<String>,
+    force: bool,
     json: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
+    if reprice {
+        return reprice_stats(&f, provider.as_deref(), force, json);
+    }
     let scope = crate::store::StatsFilter {
         project,
         initiative,
@@ -4700,6 +4727,58 @@ async fn stats(
             );
         }
     }
+    Ok(())
+}
+
+/// `forge stats --reprice [--provider NAME] [--force]` (docs/ECONOMIST.md,
+/// "Repricing a free-reporting provider"): sets `cost_usd` from recorded
+/// tokens on every attempt whose provider reported no cost, for every
+/// provider the operator config gives a nonzero price (`Provider::
+/// price_input_per_million`/`price_output_per_million`, the same numbers
+/// `agent.rs` uses at launch — see `Store::reprice_attempts`), reports how
+/// many rows changed and their total, and records the run as a decision
+/// row (`Store::insert_reprice_decision`) whether or not anything changed,
+/// so a rerun's no-op is on the record too.
+fn reprice_stats(f: &Forge, provider: Option<&str>, force: bool, json: bool) -> Result<()> {
+    if let Some(p) = provider
+        && !f.providers.contains_key(p)
+    {
+        bail!("unknown provider {p:?}");
+    }
+    let prices: BTreeMap<String, (f64, f64)> = f
+        .providers
+        .iter()
+        .filter(|(_, p)| p.price_input_per_million > 0.0 || p.price_output_per_million > 0.0)
+        .map(|(name, p)| {
+            (
+                name.clone(),
+                (p.price_input_per_million, p.price_output_per_million),
+            )
+        })
+        .collect();
+    let result = f.store.reprice_attempts(provider, force, &prices)?;
+    let scope = provider.map(|p| format!(" for {p}")).unwrap_or_default();
+    let question = format!(
+        "forge stats --reprice{scope}{}",
+        if force { " --force" } else { "" }
+    );
+    let answer = format!(
+        "repriced {} attempt(s){scope}, total ${:.4}",
+        result.changed, result.total_usd
+    );
+    let decision_id = f.store.insert_reprice_decision(&question, &answer)?;
+    if json {
+        out!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "changed": result.changed,
+                "total_usd": result.total_usd,
+                "decision_id": decision_id,
+            }))?
+        );
+        return Ok(());
+    }
+    out!("{answer} (decision {decision_id})");
     Ok(())
 }
 

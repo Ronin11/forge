@@ -286,10 +286,14 @@ fn prompt(
                 .and_then(|r| f.store.task(r).ok().flatten())
                 .map(|x| format!("; led to task {} {}", x.id, x.state.as_str()))
                 .unwrap_or_default();
+            let task_col = d
+                .task_id
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".to_string());
             p.push_str(&format!(
                 "\n- decision {} (task {}, by {}{}): Q: {} A: {}",
                 d.id,
-                d.task_id,
+                task_col,
                 d.answered_by,
                 outcome,
                 d.question.chars().take(200).collect::<String>(),
