@@ -364,10 +364,14 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     t.journal_arm = arm.to_string();
     let mut explore = assign_explore(t.id, args.provider.is_some(), &f.measure.explore);
     // The operator's `experiment.toml` (piece 4, docs/ECONOMIST.md, "What
-    // is built") only draws for a task that pins neither its own provider
-    // nor its workflow: a task or project that already named either shows
-    // deliberate intent, not the default routing the experiment measures.
-    if args.provider.is_none() && workflow_source == "default" {
+    // is built") draws a provider per role for a task that pins no
+    // provider of its own; a `--provider` shows deliberate intent, not the
+    // default routing the experiment measures. The workflow's source does
+    // not matter: the factors are roles, and a task that names its
+    // workflow (every initiative-filed task does) still gets its providers
+    // drawn. Until 2026-09-22 the draw also required the default workflow,
+    // and so never fired on a real task.
+    if args.provider.is_none() {
         let catalog = workflows::catalog_dir(&f.paths.home)?;
         let exp = crate::experiment::load(&catalog)?;
         crate::experiment::extend_explore(&mut explore, t.id, &project_roles, exp.as_ref());
