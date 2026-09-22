@@ -133,8 +133,9 @@ outcome section of this page.
 11. **The visualiser and the inspector**: the module graph with the
     record overlaid, then the scrubbable run. Reads what exists.
 12. **Digital twins** with the first integration-heavy automation.
-13. **Measured routing**: roles as a prior the profiles can overrule,
-    once enough workflows are measured.
+13. **The economist** (docs/ECONOMIST.md): pace, provider per role,
+    workflow and task size chosen by a pure function from true delayed
+    cost, once the measured week has filled the OpenAI row.
 
 **Retired from the list:** the journal experiment (ill-posed, closed),
 the constitution as a document, a network listener without auth, the
