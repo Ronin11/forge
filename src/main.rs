@@ -111,6 +111,7 @@ mod readme_layout {
 
 #[cfg(test)]
 mod docs_readme_index {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
 
@@ -135,6 +136,11 @@ mod docs_readme_index {
         let docs = root.join("docs");
         let index = fs::read_to_string(docs.join("README.md")).expect("read docs/README.md");
 
+        let tokens: BTreeSet<&str> = index
+            .split(|c: char| c.is_whitespace() || "[]()`,*:".contains(c))
+            .filter(|word| !word.is_empty())
+            .collect();
+
         let mut all = Vec::new();
         walk_md(&docs, "", &mut all);
 
@@ -145,9 +151,9 @@ mod docs_readme_index {
             }
             let covered = match rel.split_once('/') {
                 Some((dir, _)) => {
-                    index.contains(rel.as_str()) || index.contains(&format!("{dir}/"))
+                    tokens.contains(rel.as_str()) || tokens.contains(format!("{dir}/").as_str())
                 }
-                None => index.contains(rel.as_str()),
+                None => tokens.contains(rel.as_str()),
             };
             if !covered {
                 missing.push(rel.clone());
@@ -159,7 +165,7 @@ mod docs_readme_index {
         );
 
         let mut dangling = Vec::new();
-        for word in index.split(|c: char| c.is_whitespace() || "[]()`,*:".contains(c)) {
+        for word in &tokens {
             let word = word.trim_matches('/');
             if !word.ends_with(".md") {
                 continue;
