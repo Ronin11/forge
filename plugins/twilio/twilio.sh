@@ -623,12 +623,14 @@ handle_inbound() {
 # One pass over every owned number's new inbound messages: GET
 # Messages.json filtered To=<number> and DateSent>= the cursor (kept in
 # $FORGE_PLUGIN_STATE/cursor), merged and processed oldest first. Every
-# message actually seen is appended to
-# $FORGE_PLUGIN_STATE/inbox.jsonl (for `code`, below) before it is
-# routed. `$FORGE_PLUGIN_STATE/cursor-sids` names every message id
-# already processed at the cursor's own timestamp, so a restart (or a
-# DateSent filter no finer than a second) can never process the same
-# message twice; it resets whenever the cursor itself advances.
+# message actually seen is appended to $FORGE_PLUGIN_STATE/inbox.jsonl
+# (for `code`, below) and marked in `$FORGE_PLUGIN_STATE/cursor-sids`
+# — every message id already seen at the cursor's own timestamp, reset
+# whenever the cursor itself advances — *before* it is routed, not
+# after: a restart (or a DateSent filter no finer than a second) can
+# then never process the same message twice, even one killed mid-route,
+# since nothing here can undo a `forge add` or a `forge answer` that
+# already ran.
 poll_once() {
     cursor_file="$FORGE_PLUGIN_STATE/cursor"
     seen_file="$FORGE_PLUGIN_STATE/cursor-sids"
@@ -666,14 +668,14 @@ poll_once() {
 
         printf '%s\n' "$msg" >>"$FORGE_PLUGIN_STATE/inbox.jsonl"
 
-        handle_inbound "$to" "$from" "$body"
-
         if [ "$date_sent" != "$cursor" ]; then
             cursor=$date_sent
             : >"$seen_file"
         fi
         printf '%s\n' "$sid" >>"$seen_file"
         printf '%s\n' "$cursor" >"$cursor_file"
+
+        handle_inbound "$to" "$from" "$body"
     done
     rm -f "$all_file"
 }

@@ -1766,3 +1766,392 @@ fn twilio_refuses_a_config_readable_by_group_or_other() {
         std::fs::read_to_string(&calls)
     );
 }
+
+// The twilio plugin's inbound SMS loop (task 2, docs/PLUGINS.md): these
+// tests spawn `plugins/twilio/twilio.sh` with no verb directly (the
+// supervised `run` entry point), against the same fake curl and
+// FAKE_TWILIO_DIR as the search/buy/release tests above, plus
+// FORGE_BIN/FORGE_HOME so its `forge` calls reach a real (throwaway)
+// store — the same shape `the_signal_plugin_routes_a_contacts_message_
+// through_the_concierge` uses to drive `signal.sh` directly rather than
+// through the plugin supervisor.
+
+/// Seeds `$FAKE_TWILIO_DIR/owned.json` with one number Forge holds,
+/// bypassing `buy` (which these tests have no use for).
+fn seed_owned(fx: &TwilioFixture, number: &str, sid: &str) {
+    std::fs::write(
+        fx.fake_dir.join("owned.json"),
+        serde_json::json!([{"sid": sid, "phone_number": number}]).to_string(),
+    )
+    .unwrap();
+}
+
+/// Spawns `twilio.sh` with no verb: the inbound poll loop, against `fx`
+/// and `e`'s own store. A `Worker` so a panicking assertion between
+/// spawn and an explicit `.stop()` can never leave it running.
+fn spawn_twilio_inbound(fx: &TwilioFixture, e: &Env) -> Worker {
+    let sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/twilio/twilio.sh");
+    let fake_curl = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/curl.sh");
+    let mut cmd = Command::new("sh");
+    cmd.arg(&sh)
+        .env("FORGE_BIN", env!("CARGO_BIN_EXE_forge"))
+        .env("FORGE_HOME", &e.home)
+        .env("FORGE_SUPERVISOR", "0")
+        .env("FORGE_PLUGIN_DIR", &fx.plugin_dir)
+        .env("FORGE_PLUGIN_STATE", &fx.state_dir)
+        .env("FAKE_TWILIO_DIR", &fx.fake_dir)
+        .env("CURL", &fake_curl)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if e.sandbox_disabled() {
+        cmd.env("FORGE_SANDBOX", "0");
+    }
+    Worker::spawn(&mut cmd)
+}
+
+fn task_count_matching(e: &Env, needle: &str) -> i64 {
+    e.db()
+        .query_row(
+            "SELECT count(*) FROM tasks WHERE task LIKE ?1",
+            [format!("%{needle}%")],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// An `ALLOWED` sender's plain message queues work the same way an
+/// allowed Signal sender's does (`forge add TARGET_REPO <text>`).
+#[test]
+fn twilio_inbound_from_an_allowed_sender_queues_a_task() {
+    let e = Env::new();
+    // Initializes FORGE_HOME/forge.db before the plugin (a separate
+    // process) is the first thing to touch it.
+    assert!(e.forge("ok.sh", &["doctor"]).status.success());
+    let repo = e.repo.to_str().unwrap();
+    let fx = setup_twilio(&format!(
+        "MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\nPOLL_SECS=1\n\
+         ALLOWED=+15555550199\nTARGET_REPO={repo}\nWORKFLOW=direct\n"
+    ));
+    seed_owned(&fx, "+15555550100", "PN1");
+    std::fs::write(fx.fake_dir.join("messages.json"), "[]").unwrap();
+
+    let mut worker = spawn_twilio_inbound(&fx, &e);
+
+    std::fs::write(
+        fx.fake_dir.join("messages.json"),
+        serde_json::json!([{
+            "sid": "SM1",
+            "from": "+15555550199",
+            "to": "+15555550100",
+            "body": "write 42 to answer.txt",
+            "date_sent": "2024-01-01T00:00:00Z",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || task_count_matching(&e, "write 42 to answer.txt") >= 1,
+            Duration::from_secs(15),
+        ),
+        "expected an allowed sender's message to queue a task"
+    );
+
+    let inbox = std::fs::read_to_string(fx.state_dir.join("inbox.jsonl")).unwrap_or_default();
+    assert!(inbox.contains("SM1"), "{inbox}");
+
+    worker.stop();
+}
+
+/// A stranger's message — a sender in neither `ALLOWED` nor `CONTACTS`
+/// — is recorded in the message record (trust as in docs/PLUGINS.md,
+/// "Trust") but never queues anything.
+#[test]
+fn twilio_inbound_from_a_stranger_records_but_queues_nothing() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "demo", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    let fx = setup_twilio(&format!(
+        "MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\nPOLL_SECS=1\n\
+         ALLOWED=+15555550199\nTARGET_REPO={repo}\nWORKFLOW=direct\n"
+    ));
+    seed_owned(&fx, "+15555550100", "PN1");
+    std::fs::write(fx.fake_dir.join("messages.json"), "[]").unwrap();
+
+    let mut worker = spawn_twilio_inbound(&fx, &e);
+
+    std::fs::write(
+        fx.fake_dir.join("messages.json"),
+        serde_json::json!([{
+            "sid": "SM1",
+            "from": "+15555559999",
+            "to": "+15555550100",
+            "body": "hello, is this a business?",
+            "date_sent": "2024-01-01T00:00:00Z",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || {
+                let rows: serde_json::Value = serde_json::from_slice(
+                    &e.forge("ok.sh", &["message", "list", "demo", "--json"])
+                        .stdout,
+                )
+                .unwrap_or(serde_json::Value::Array(vec![]));
+                rows.as_array().is_some_and(|r| !r.is_empty())
+            },
+            Duration::from_secs(15),
+        ),
+        "expected the stranger's message to be recorded"
+    );
+
+    let rows: serde_json::Value = serde_json::from_slice(
+        &e.forge("ok.sh", &["message", "list", "demo", "--json"])
+            .stdout,
+    )
+    .unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["contact"], "+15555559999");
+    assert_eq!(rows[0]["direction"], "in");
+    assert_eq!(rows[0]["channel"], "sms");
+
+    // Recording (and the routing decision right after it, in the same
+    // shell iteration) has already happened by the time the row above
+    // is visible; a stranger's branch queues nothing at all, so there
+    // is nothing further to wait on.
+    let count: i64 = e
+        .db()
+        .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "a stranger's message must never queue work");
+
+    worker.stop();
+}
+
+/// A `CONTACTS` name's reply to their own open question — addressed to
+/// them via `needs_input.to`, docs/INTAKE.md — is submitted as their
+/// answer (`forge answer ID TEXT --by NAME`), the same as the signal
+/// plugin's own addressed-question handling, and the acknowledgement
+/// goes back out over Twilio from the owned number the reply arrived
+/// on.
+#[test]
+fn twilio_inbound_from_a_contact_with_an_open_question_answers_it() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    let fx = setup_twilio(&format!(
+        "MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\nPOLL_SECS=1\n\
+         CONTACTS=alice:+15555550111\nTARGET_REPO={repo}\nWORKFLOW=direct\n"
+    ));
+    seed_owned(&fx, "+15555550100", "PN1");
+    std::fs::write(fx.fake_dir.join("messages.json"), "[]").unwrap();
+
+    // `e.add` first, so it (not a racing `forge work`) is what
+    // initializes and migrates a fresh FORGE_HOME/forge.db.
+    let id = e.add(&[]);
+    let mut task_worker = Worker::spawn(e.cmd("needsinput-to.sh").args(["work"]));
+
+    assert!(
+        wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(20)),
+        "the task never blocked"
+    );
+
+    let mut plugin_worker = spawn_twilio_inbound(&fx, &e);
+
+    std::fs::write(
+        fx.fake_dir.join("messages.json"),
+        serde_json::json!([{
+            "sid": "SM1",
+            "from": "+15555550111",
+            "to": "+15555550100",
+            "body": "Use answer.txt",
+            "date_sent": "2024-01-01T00:00:00Z",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || e.db()
+                .query_row("SELECT task FROM tasks WHERE retry_of=?1", [id], |r| r
+                    .get::<_, String>(
+                    0
+                ),)
+                .optional()
+                .unwrap()
+                .is_some(),
+            Duration::from_secs(15),
+        ),
+        "the answer never re-queued the task"
+    );
+
+    let (answered_by, answered_for): (String, Option<String>) = e
+        .db()
+        .query_row(
+            "SELECT answered_by, answered_for FROM decisions WHERE task_id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(answered_by, "alice");
+    assert_eq!(answered_for.as_deref(), Some("alice"));
+
+    let sent_to_alice = || -> bool {
+        let Ok(text) = std::fs::read_to_string(fx.fake_dir.join("sent.json")) else {
+            return false;
+        };
+        let Ok(sent) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        sent.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|m| m["to"] == "+15555550111" && m["from"] == "+15555550100")
+        })
+    };
+    assert!(
+        wait_until(sent_to_alice, Duration::from_secs(15)),
+        "expected the acknowledgement to go back out over Twilio: {:?}",
+        std::fs::read_to_string(fx.fake_dir.join("sent.json"))
+    );
+
+    plugin_worker.stop();
+    task_worker.stop();
+}
+
+/// `DateSent>=` the cursor is no finer than a poll's own idea of "new",
+/// so `$FORGE_PLUGIN_STATE/cursor-sids` is what actually guarantees a
+/// restart never processes the same message twice: after the first
+/// message queues a task and the plugin restarts against the same
+/// state dir, the same message must not queue a second one, and a
+/// genuinely new message afterward must still get through.
+#[test]
+fn twilio_cursor_survives_a_restart_without_duplicates() {
+    let e = Env::new();
+    // Initializes FORGE_HOME/forge.db before the plugin (a separate
+    // process) is the first thing to touch it.
+    assert!(e.forge("ok.sh", &["doctor"]).status.success());
+    let repo = e.repo.to_str().unwrap();
+    let fx = setup_twilio(&format!(
+        "MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\nPOLL_SECS=1\n\
+         ALLOWED=+15555550199\nTARGET_REPO={repo}\nWORKFLOW=direct\n"
+    ));
+    seed_owned(&fx, "+15555550100", "PN1");
+    std::fs::write(
+        fx.fake_dir.join("messages.json"),
+        serde_json::json!([{
+            "sid": "SM1",
+            "from": "+15555550199",
+            "to": "+15555550100",
+            "body": "first and original message",
+            "date_sent": "2024-01-01T00:00:00Z",
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut worker = spawn_twilio_inbound(&fx, &e);
+    assert!(
+        wait_until(
+            || task_count_matching(&e, "first and original message") >= 1,
+            Duration::from_secs(15),
+        ),
+        "expected the first message to queue a task"
+    );
+    worker.stop();
+
+    // Restart against the same state dir (same cursor, same
+    // cursor-sids): the fake still serves the first message every
+    // poll (it never filters on DateSent — see tests/fakes/curl.sh),
+    // so if the restart ever reprocessed it, this would be the second
+    // task naming it. A genuinely new message, added now, is the
+    // signal that the restarted loop has actually run a pass.
+    let mut worker2 = spawn_twilio_inbound(&fx, &e);
+    std::fs::write(
+        fx.fake_dir.join("messages.json"),
+        serde_json::json!([
+            {
+                "sid": "SM1",
+                "from": "+15555550199",
+                "to": "+15555550100",
+                "body": "first and original message",
+                "date_sent": "2024-01-01T00:00:00Z",
+            },
+            {
+                "sid": "SM2",
+                "from": "+15555550199",
+                "to": "+15555550100",
+                "body": "second and distinct message",
+                "date_sent": "2024-01-02T00:00:00Z",
+            },
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        wait_until(
+            || task_count_matching(&e, "second and distinct message") >= 1,
+            Duration::from_secs(15),
+        ),
+        "expected the new message to still queue work after a restart"
+    );
+    assert_eq!(
+        task_count_matching(&e, "first and original message"),
+        1,
+        "the first message must not be re-queued after a restart"
+    );
+
+    worker2.stop();
+}
+
+/// `twilio.sh code <number>` reads back the most recent 4-8 digit code
+/// texted to that number off `inbox.jsonl`, for a registration flow
+/// (docs/PLUGINS.md, "twilio").
+#[test]
+fn twilio_code_extracts_a_code() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+    std::fs::write(
+        fx.state_dir.join("inbox.jsonl"),
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "sid": "SM1",
+                "from": "+15555550199",
+                "to": "+15555550100",
+                "body": "hi there",
+                "date_sent": "2024-01-01T00:00:00Z",
+            }),
+            serde_json::json!({
+                "sid": "SM2",
+                "from": "+15555550199",
+                "to": "+15555550100",
+                "body": "Your verification code is 482913",
+                "date_sent": "2024-01-01T00:01:00Z",
+            }),
+        ),
+    )
+    .unwrap();
+
+    let o = twilio(&fx, &["code", "+15555550100"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "482913");
+
+    // A number no message was ever sent to has no code, and refuses
+    // rather than hanging (no `--wait`).
+    let o = twilio(&fx, &["code", "+15555550101"]);
+    assert!(!o.status.success());
+}

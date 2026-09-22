@@ -3732,7 +3732,14 @@ on_failure = "drop"
         .cmd("ok.sh")
         .env("PATH", path)
         .args([
-            "job", "start", "equitizr", "sms", "--input", input_s, "--dry-run", "--now",
+            "job",
+            "start",
+            "equitizr",
+            "sms",
+            "--input",
+            input_s,
+            "--dry-run",
+            "--now",
         ])
         .output()
         .unwrap();
@@ -3862,7 +3869,9 @@ on_failure = "drop"
     let o = e
         .cmd("ok.sh")
         .env("PATH", path)
-        .args(["job", "start", "equitizr", "sms", "--input", input_s, "--now"])
+        .args([
+            "job", "start", "equitizr", "sms", "--input", input_s, "--now",
+        ])
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
