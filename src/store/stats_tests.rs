@@ -719,3 +719,137 @@ fn role_stats_unions_a_directive_job_step_under_its_own_role_and_kind() {
     let total: f64 = draft_quote.iter().map(|r| r.mean_cost_usd).sum();
     assert!((total - 0.05).abs() < 1e-9, "both costs count: {total}");
 }
+
+/// A fixture with a planted effect (openai's `code` attempts cost about
+/// twice anthropic's) recovers that effect from `factor_stats`'s
+/// main-effects fit within tolerance, and a level resting on only two
+/// tasks reports a wide Wilson interval rather than a confident rate.
+#[test]
+fn factor_stats_recovers_a_planted_provider_effect_and_widens_a_thin_levels_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+
+    let base_task = |id: i64, workflow: &str| Task {
+        repo: "r".into(),
+        task: "t".into(),
+        base_branch: "main".into(),
+        model: "m".into(),
+        max_turns: 1,
+        max_attempts: 1,
+        timeout_secs: 1,
+        state: TaskState::Succeeded,
+        created_at: id,
+        started_at: Some(id),
+        finished_at: Some(id + 1),
+        workflow: workflow.into(),
+        ..Default::default()
+    };
+    let code_attempt = |task_id, provider: &str| Attempt {
+        task_id,
+        attempt_no: 1,
+        step: "code".into(),
+        provider: provider.into(),
+        started_at: 0,
+        ..Default::default()
+    };
+    let mut next_id = 1i64;
+    let mut land = |s: &Store, provider: &str, workflow: &str, cost: f64, landed: bool| {
+        let id = next_id;
+        next_id += 1;
+        let mut t = base_task(id, workflow);
+        t.id = s.insert_task(&t).unwrap();
+        let a = s.insert_attempt(&code_attempt(t.id, provider)).unwrap();
+        finish_attempt(
+            s,
+            a,
+            if landed {
+                AttemptState::Succeeded
+            } else {
+                AttemptState::ChecksFailed
+            },
+            5,
+            cost,
+            1000,
+            "[]",
+            "",
+        );
+        if landed {
+            t.landed_sha = format!("{id:08x}");
+        }
+        s.update_task(&t).unwrap();
+    };
+
+    // anthropic/code: 8 landed near $1, 2 failed.
+    for cost in [0.9, 0.95, 1.0, 1.0, 1.0, 1.05, 1.05, 1.1] {
+        land(&s, "anthropic", "direct", cost, true);
+    }
+    land(&s, "anthropic", "direct", 1.0, false);
+    land(&s, "anthropic", "direct", 1.0, false);
+
+    // openai/code: about twice anthropic's cost, 4 landed, 2 failed.
+    for cost in [1.8, 1.9, 2.1, 2.2] {
+        land(&s, "openai", "direct", cost, true);
+    }
+    land(&s, "openai", "direct", 2.0, false);
+    land(&s, "openai", "direct", 2.0, false);
+
+    // A two-task level that never lands: `workflow:reviewed`'s Wilson
+    // interval should stay wide rather than reading as a confident 0%.
+    land(&s, "anthropic", "reviewed", 1.0, false);
+    land(&s, "anthropic", "reviewed", 1.0, false);
+
+    let stats = s.factor_stats(&StatsFilter::default(), None).unwrap();
+
+    let anthropic = stats
+        .iter()
+        .find(|r| r.factor == "provider:code" && r.level == "anthropic")
+        .unwrap();
+    let openai = stats
+        .iter()
+        .find(|r| r.factor == "provider:code" && r.level == "openai")
+        .unwrap();
+    // anthropic also carries the two `reviewed`-workflow tasks below
+    // (same provider, never land): 10 `direct` + 2 `reviewed` = 12.
+    assert_eq!((anthropic.tasks, anthropic.landed), (12, 8));
+    assert_eq!((openai.tasks, openai.landed), (6, 4));
+    assert!(
+        anthropic.is_reference && !openai.is_reference,
+        "the busier level (8 landed) is the reference, not the thinner one (4)"
+    );
+    assert!(
+        anthropic.effect.is_none(),
+        "the reference carries no effect"
+    );
+
+    let effect = openai
+        .effect
+        .expect("enough landed data on both sides to fit");
+    let planted = 2.0_f64.ln();
+    assert!(
+        (effect - planted).abs() < 0.3,
+        "effect {effect} should land near ln(2) ({planted}) for a level that costs twice as much"
+    );
+    let se = openai
+        .effect_se
+        .expect("a fitted level carries a standard error");
+    assert!(
+        (0.0..0.5).contains(&se),
+        "se {se} should be small but present"
+    );
+
+    let reviewed = stats
+        .iter()
+        .find(|r| r.factor == "workflow" && r.level == "reviewed")
+        .unwrap();
+    assert_eq!((reviewed.tasks, reviewed.landed), (2, 0));
+    assert!(
+        reviewed.rate_hi > 0.5,
+        "0/2 landed still leaves a wide Wilson interval ({}-{}), not a confident zero",
+        reviewed.rate_lo,
+        reviewed.rate_hi
+    );
+    assert!(
+        reviewed.effect.is_none(),
+        "a level that never landed has no true cost to fit"
+    );
+}

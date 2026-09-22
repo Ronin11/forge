@@ -1341,14 +1341,52 @@ pub struct StatsRoleRow {
     pub churn_share: Option<f64>,
 }
 
+/// One row of `StatsDoc.factors`: one level of one factor in `forge
+/// stats --factors` (docs/ECONOMIST.md, piece 3) — `factor` is
+/// `"provider:<role>"`, `"workflow"`, or `"size"`; `level` is that
+/// factor's value. `rate`/`rate_lo`/`rate_hi` is the landing rate with
+/// its Wilson 95% interval; `mean_true_cost_usd` is null when nothing
+/// in this level landed. `effect`/`effect_se` come from one joint
+/// least-squares fit of `ln(true cost)` across every factor and level
+/// in scope; both are null for the reference level (`is_reference`) and
+/// for any level the fit could not identify. See `docs/CLIENT.md`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsFactorRow {
+    #[serde(default)]
+    pub factor: String,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub tasks: i64,
+    #[serde(default)]
+    pub landed: i64,
+    #[serde(default)]
+    pub rate: f64,
+    #[serde(default)]
+    pub rate_lo: f64,
+    #[serde(default)]
+    pub rate_hi: f64,
+    #[serde(default)]
+    pub mean_true_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub is_reference: bool,
+    #[serde(default)]
+    pub effect: Option<f64>,
+    #[serde(default)]
+    pub effect_se: Option<f64>,
+}
+
 /// The document `forge stats --json` prints. `docs/CLIENT.md` documents
 /// the full shape (`workflows`, `steps`, `journal`, `no_journal`,
-/// `projects`, `by_role`, `tools`); only `by_role` is modeled here today,
-/// the rest added as a client needs them.
+/// `projects`, `by_role`, `factors`, `tools`); only `by_role` and
+/// `factors` are modeled here today, the rest added as a client needs
+/// them.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StatsDoc {
     #[serde(default)]
     pub by_role: Vec<StatsRoleRow>,
+    #[serde(default)]
+    pub factors: Vec<StatsFactorRow>,
 }
 
 /// One workflow's declared metadata and measured outcomes, one entry of
