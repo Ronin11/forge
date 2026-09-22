@@ -4,5 +4,11 @@ description = "where things are: every source file's declared symbols, ranked ag
 consumes = ["branch"]
 produces = ["context"]
 run = ["bash", "-c", '''
-exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 6000 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
+# Two parts, split by the marker prompts.rs knows: the map ranked without
+# the task's words (shared by every task on this base, so the model's
+# prompt cache serves it), then a short list ranked by them (this task's
+# own). See docs/CONTEXT.md, "The order of a prompt".
+"$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "" --budget 5200 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap" --changed-since "$FORGE_BASE_SHA"
+printf '\n---task---\n'
+exec "$FORGE_BIN_DIR/forge-repomap" rank --dir . --task "$FORGE_TASK" --budget 800 --hot "$FORGE_HOT_FILES" --cache "$FORGE_CACHE_DIR/repomap"
 ''', "repo-map"]
