@@ -442,6 +442,117 @@ fn workflow_lint_route(mut req: Request, forge: &Forge, name: &str) {
     let _ = req.respond(resp);
 }
 
+/// The project and run workflow `/workflows/new` (the prompter) starts:
+/// this repository's own `.forge/workflows/author-workflow.toml`, on the
+/// project self-registered for it (docs/WORKFLOWS.md, "Authoring").
+const DRAFT_PROJECT: &str = "forge";
+const DRAFT_WORKFLOW: &str = "author-workflow";
+
+/// `POST /api/workflows/draft`: the prompter's "Draft it" control. The
+/// body is JSON `{"description"}`, written as the trigger's input
+/// document (`FORGE_INPUT_DESCRIPTION`) and handed to `forge job start
+/// forge author-workflow --now --input <file>` — the same shape `hook`
+/// hands `forge job fire`, and like it this blocks until the job ends, so
+/// the id it returns always names a finished job. The client meanwhile
+/// watches the live event stream for `job_started`/`job_finished` to show
+/// progress, and re-reads `/api/job/<id>` once this responds (or once
+/// `job_finished` names the same id, whichever it sees first).
+fn draft_workflow_route(mut req: Request, forge: &Forge) {
+    let raw = match read_body(&mut req, WORKFLOW_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(text(
+                400,
+                &format!("bad JSON body: {e}"),
+                "application/json",
+            ));
+            return;
+        }
+    };
+    let description = v["description"].as_str().unwrap_or_default().trim();
+    if description.is_empty() {
+        let _ = req.respond(text(
+            422,
+            &serde_json::json!({"error": "description is required"}).to_string(),
+            "application/json",
+        ));
+        return;
+    }
+    let input = serde_json::json!({ "description": description }).to_string();
+    let resp = match BodyFile::write(input.as_bytes()) {
+        Err(e) => text(
+            500,
+            &serde_json::json!({ "error": e.to_string() }).to_string(),
+            "application/json",
+        ),
+        Ok(file) => {
+            let path = file.0.to_string_lossy().into_owned();
+            match forge.run(&[
+                "job",
+                "start",
+                DRAFT_PROJECT,
+                DRAFT_WORKFLOW,
+                "--now",
+                "--input",
+                &path,
+            ]) {
+                Ok(out) => text(
+                    200,
+                    &serde_json::json!({
+                        "job": out.split_whitespace().next().and_then(|j| j.parse::<i64>().ok()),
+                    })
+                    .to_string(),
+                    "application/json",
+                ),
+                Err(e) => text(
+                    502,
+                    &serde_json::json!({ "error": e.to_string() }).to_string(),
+                    "application/json",
+                ),
+            }
+        }
+    };
+    let _ = req.respond(resp);
+}
+
+/// `forge job show ID --json`, with each step's `output_ref` file (a
+/// directive's validated structured output, or an operation's kept
+/// stdout — docs/JOBS.md, "Steps") read and parsed onto the step as
+/// `output`, best-effort: a step with no `output_ref`, or one this
+/// process cannot read or parse as JSON, is left without it. The prompter
+/// reads the `draft-workflow` step's `output` this way — `{name, kind,
+/// description, toml, rationale, open_questions}` — rather than a second
+/// command; any other job step's structured output comes along for free.
+fn job_show_with_outputs(forge: &Forge, id: i64) -> Result<Value> {
+    let mut v = forge.json(&["job", "show", &id.to_string(), "--json"])?;
+    if let Some(steps) = v.get_mut("steps").and_then(|s| s.as_array_mut()) {
+        for step in steps {
+            let output_ref = step
+                .get("output_ref")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
+            if output_ref.is_empty() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&output_ref)
+                && let Ok(parsed) = serde_json::from_str::<Value>(&text)
+                && let Some(obj) = step.as_object_mut()
+            {
+                obj.insert("output".to_string(), parsed);
+            }
+        }
+    }
+    Ok(v)
+}
+
 /// `POST /api/workflows/<name>`: the Save control. The body is JSON
 /// `{"text", "message", "project"}` — `project` is `null` for a save into
 /// the operator's catalog, or a project name for a repository workflow, in
@@ -771,6 +882,14 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             _ => text(404, "not found", "text/plain"),
         },
         "/api/workflows" => json_or_error(workflows_merged(forge)),
+        "/api/workflows/draft" => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                draft_workflow_route(req, forge);
+                return;
+            }
+        }
         p if p.starts_with("/api/workflows/") => match workflow_route(p) {
             Some((name, None)) => match req.method() {
                 Method::Get => {
@@ -825,7 +944,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
         "/api/jobs" => json_or_error(forge.json(&["job", "list", "--json"])),
         p if p.starts_with("/api/job/") => match id_of(&p["/api/job/".len()..]) {
-            Some(id) => json_or_error(forge.json(&["job", "show", &id.to_string(), "--json"])),
+            Some(id) => json_or_error(job_show_with_outputs(forge, id)),
             None => text(404, "no such job", "text/plain"),
         },
         "/api/projects" => json_or_error(forge.json(&["project", "list", "--json"])),

@@ -96,7 +96,23 @@ case "$1" in
 [{"id":1,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1010,"cost_usd":0.42,"verdict_json":"[]","due_at":null},{"id":2,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"running","workflow_source":"repo","dry_run":false,"started_at":2000,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
 JSON
         ;;
-      show) echo "{\"id\":$3,\"project\":\"demo\",\"workflow\":\"nightly\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"cron\",\"trigger_ref\":\"0 * * * *\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":1000,\"finished_at\":1010,\"cost_usd\":0.42,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"action\":\"notify\",\"kind\":\"operation\",\"provider\":\"\",\"model\":\"\",\"cost_usd\":null,\"started_at\":1000,\"finished_at\":1005,\"exit_code\":0,\"output_ref\":\"out/1\"}],\"effects\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"kind\":\"message\",\"target\":\"ops-channel\",\"summary\":\"posted status\",\"dry_run\":false}]}" ;;
+      show)
+        if [ "$3" = "77" ]; then
+          echo "{\"id\":77,\"project\":\"forge\",\"workflow\":\"author-workflow\",\"workflow_hash\":\"h\",\"landed_sha\":\"\",\"trigger_kind\":\"manual\",\"trigger_ref\":\"\",\"state\":\"ok\",\"workflow_source\":\"catalog\",\"dry_run\":false,\"started_at\":1,\"finished_at\":2,\"cost_usd\":0.01,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":77,\"seq\":1,\"action\":\"draft-workflow\",\"kind\":\"directive\",\"provider\":\"anthropic\",\"model\":\"claude\",\"cost_usd\":0.01,\"started_at\":1,\"finished_at\":2,\"exit_code\":null,\"output_ref\":\"$FORGE2_HOME/fixtures/draft.json\"}],\"effects\":[]}"
+        else
+          echo "{\"id\":$3,\"project\":\"demo\",\"workflow\":\"nightly\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"cron\",\"trigger_ref\":\"0 * * * *\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":1000,\"finished_at\":1010,\"cost_usd\":0.42,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"action\":\"notify\",\"kind\":\"operation\",\"provider\":\"\",\"model\":\"\",\"cost_usd\":null,\"started_at\":1000,\"finished_at\":1005,\"exit_code\":0,\"output_ref\":\"out/1\"}],\"effects\":[{\"id\":1,\"job_id\":$3,\"seq\":1,\"kind\":\"message\",\"target\":\"ops-channel\",\"summary\":\"posted status\",\"dry_run\":false}]}"
+        fi ;;
+      start)
+        proj="$3"; wf="$4"; shift 4
+        input=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --input) input="$2" ;;
+          esac
+          shift
+        done
+        { echo "start $proj $wf input=$input"; cat "$input" 2>/dev/null; echo; } >> "$FORGE2_HOME/start.log"
+        echo 77 ;;
       fire)
         proj="$3"; shift 3
         while [ $# -gt 0 ]; do
@@ -507,6 +523,74 @@ fn the_jobs_page_lists_two_fixture_jobs_and_shows_one_with_its_steps_and_effects
 
     let (status, _, _) = get(&w.addr, "/api/job/x", &cookie);
     assert_eq!(status, 404);
+}
+
+#[test]
+fn the_draft_route_starts_the_author_workflow_job_and_the_job_route_reads_each_steps_output_ref() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    // The prompter's page is served like any other.
+    let (status, _, body) = get(&w.addr, "/workflows/new", &cookie);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+
+    // POST /api/workflows/draft writes the description and hands it to
+    // `forge job start forge author-workflow --now --input <file>`, the
+    // same shape as the hooks route hands `forge job fire`.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/workflows/draft",
+        &cookie,
+        r#"{"description":"turn this into a workflow"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["job"], 77);
+
+    let log = std::fs::read_to_string(w.home.path().join("start.log")).unwrap();
+    assert!(
+        log.contains("start forge author-workflow"),
+        "the project and workflow must be forge/author-workflow: {log}"
+    );
+    assert!(
+        log.contains("turn this into a workflow"),
+        "the description must reach the job's input file: {log}"
+    );
+
+    // A blank description is refused before any job starts.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/workflows/draft",
+        &cookie,
+        r#"{"description":"  "}"#,
+    );
+    assert_eq!(status, 422, "{body}");
+
+    // GET is refused; the token still gates the route.
+    let (status, _, _) = get(&w.addr, "/api/workflows/draft", &cookie);
+    assert_eq!(status, 405);
+    let (status, _, _) = get(&w.addr, "/api/workflows/draft", "");
+    assert_eq!(status, 401);
+
+    // /api/job/<id> reads each step's output_ref file and attaches it as
+    // `output`, so the prompter can read the draft-workflow step's
+    // structured result — {name, kind, toml, rationale, open_questions} —
+    // without a second command.
+    std::fs::create_dir_all(w.home.path().join("fixtures")).unwrap();
+    std::fs::write(
+        w.home.path().join("fixtures/draft.json"),
+        r#"{"name":"docs-only","kind":"build","description":"d","toml":"name = \"docs-only\"\n","rationale":"why","open_questions":["a","b"]}"#,
+    )
+    .unwrap();
+    let (status, _, body) = get(&w.addr, "/api/job/77", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "ok");
+    assert_eq!(v["steps"][0]["action"], "draft-workflow");
+    assert_eq!(v["steps"][0]["output"]["name"], "docs-only");
+    assert_eq!(v["steps"][0]["output"]["rationale"], "why");
+    assert_eq!(v["steps"][0]["output"]["open_questions"][1], "b");
 }
 
 #[test]

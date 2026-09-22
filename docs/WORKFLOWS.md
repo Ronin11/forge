@@ -351,6 +351,60 @@ catalog's own `setup` and `docs`), one a `kind = "run"` workflow (a
 webhook that writes what it is sent, composed from the catalog's own
 `write-file`) — both lint clean, so both fixtures expect `state = "ok"`.
 
+### The page
+
+`/workflows/new` is the operator's front door to `author-workflow`: a
+description box and a "Draft it" control, so an operator who cannot yet
+write a workflow file by hand still gets one, in the same catalog every
+hand-written workflow lints against. "Draft it" is `POST
+/api/workflows/draft`, the browser client's equivalent of `forge job
+start forge author-workflow --now --input <file>` — the description
+becomes the file's one field, `FORGE_INPUT_DESCRIPTION` — the same shape
+`POST /hooks/<project>/<name>` already hands `forge job fire` for a
+webhook delivery (docs/CLIENT.md, "Webhooks"). `forge` is this
+repository's own project, self-registered so its own
+`.forge/workflows/author-workflow.toml` can run against it, the way any
+project's automations run against that project's own repository.
+
+Both routes block until the job ends, so the id either returns always
+names a finished job. While that request is in flight the page shows
+something happening sooner than its own response, because a job's
+`job_started` fires before the model is even called and reaches the page
+over the same live event stream every other view re-reads on
+(docs/CLIENT.md, "What to re-read on which event") — a `job_started` for
+`forge`/`author-workflow` seen while the request is pending shows "job N
+running…" as a provisional status. But the stream carries no request
+token (`Event::JobStarted` and `JobFinished`, src/report.rs, have only
+project/workflow/job_id/dry_run, nothing naming whose request started
+them), so it can never end the wait or say whose draft to load: the page
+follows only the job its own request started, identified by the id that
+request's response returns, and loads the draft from that id alone once
+the response lands — never from a `job_finished` on the stream, which
+could belong to any other tab, operator, or a plain `forge job start`
+from the CLI.
+
+A job that ends `ok` always drafted a workflow that lints clean (the
+`lint-workflow-draft` step's own job, above) — its `toml` loads straight
+into the editor task 4 built, saved by the same `POST
+/api/workflows/<name>` and linted live by the same debounced `POST
+/api/workflows/<name>/lint` as any hand-edited file, no special case for
+one the prompter wrote. Its `rationale` and `open_questions` render above
+the editor, not inside it: an open question is answered by editing the
+draft's text directly — naming the schedule it guessed at, say — not
+through a second control. A job that ends `needs_human` (the budget
+`[limits]` line `author-workflow` itself sets, or a step it could not
+finish) shows that human rung's question text — `job::ask`'s filed task,
+the same "job question" a webhook's own `needs_human` run files — and a
+link to it, so answering it is `forge answer <id> "…"` or the task's own
+page, exactly as any other blocked task.
+
+The web server never invents a link to that task: it re-reads the
+project's blocked tasks once, the newest row whose `task` field is
+`"job question"`, then that task's own record for its `reason` — the
+same text `job::ask` filed, never reconstructed client-side. Nothing
+here is polled; every read follows a `job_started` or `job_finished` the
+client already saw.
+
 ## Visibility
 
 Every attempt records `inputs` (workflow and its exact text, step, model,
