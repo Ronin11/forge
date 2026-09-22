@@ -38,6 +38,46 @@ pub struct TaskRow {
     /// Trust the caller earned by the path it queued through: `"operator"`,
     /// `"contact"`, or `"public"` (see `store::Trust`).
     pub trust: String,
+    /// Only under `forge log --touches`: `"changes"` when an attempt
+    /// recorded a change at the path, `"text"` when only the task's text
+    /// mentions it (`--touches-text`). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub touch: Option<String>,
+    /// Only under `forge log --failed-on` or `--reason`: the attempts
+    /// that matched, each `{attempt_no, step, reason, name, tail}` with
+    /// `name` the failing verdict row (null for a reason match) and
+    /// `tail` that row's first line of output. Absent otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<crate::store::FailedAttempt>,
+}
+
+/// The rows behind `forge log` and the snapshot: the filter held to what
+/// the record and the rule registry know (`--failed-on` names a rule or
+/// a check the record has seen; anything else is refused naming both
+/// lists), then the store's listing as `TaskRow`s.
+pub fn task_rows(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<TaskRow>> {
+    if !q.failed_on.is_empty() {
+        let seen = f.store.verdict_row_names()?;
+        for name in &q.failed_on {
+            if crate::verify::Rule::parse(name).is_none() && !seen.iter().any(|s| s == name) {
+                let rules: Vec<&str> = crate::verify::Rule::ALL.iter().map(|r| r.name()).collect();
+                anyhow::bail!(
+                    "--failed-on {name:?}: no such rule or check. Rules: {}. Checks the record has seen: {}",
+                    rules.join(", "),
+                    if seen.is_empty() {
+                        "none yet".to_string()
+                    } else {
+                        seen.join(", ")
+                    }
+                );
+            }
+        }
+    }
+    Ok(f.store
+        .list_tasks_where(q)?
+        .iter()
+        .map(TaskRow::from)
+        .collect())
 }
 
 impl From<&TaskSummary> for TaskRow {
@@ -57,6 +97,8 @@ impl From<&TaskSummary> for TaskRow {
             project: s.project.clone(),
             initiative: s.initiative,
             trust: s.trust.clone(),
+            touch: s.touch.clone(),
+            failures: s.failures.clone(),
         }
     }
 }

@@ -331,6 +331,16 @@ fn set_hand_commits_cache_query(
     Ok(())
 }
 
+/// The attempts' recorded `changes` as rows, one per (attempt, change):
+/// `a` the attempt, `c` the change (`CHANGE_PATH` its file's path),
+/// counted only where `CHANGE_ROWS_VALID` holds, since an attempt with
+/// no envelope has no changes. The one source for "which files did this
+/// task touch": `file_changes` (the graph overlay) and `forge log
+/// --touches` (`Store::list_tasks_where`) both read it.
+pub(super) const CHANGE_ROWS: &str = "attempts a, json_each(a.envelope_json, '$.changes') c";
+pub(super) const CHANGE_ROWS_VALID: &str = "a.envelope_json != '' AND json_valid(a.envelope_json)";
+pub(super) const CHANGE_PATH: &str = "json_extract(c.value, '$.path')";
+
 impl Store {
     /// `task_churn`'s cached row for `task_id`, if it has been computed.
     pub fn churn_cache(&self, task_id: i64) -> Result<Option<(i64, i64, i64)>> {
@@ -409,23 +419,23 @@ impl Store {
     /// Every (path, task) touch on `repo`'s files, from attempts'
     /// recorded `changes`: the graph overlay's `tasks` (see `FileTask`).
     /// An attempt with no envelope, or one whose envelope's `changes` is
-    /// empty, contributes nothing.
+    /// empty, contributes nothing. Reads `CHANGE_ROWS`, the same rows
+    /// `forge log --touches` filters on.
     pub fn file_changes(&self, repo: &str) -> Result<Vec<FileTask>> {
         let c = self.lock();
         // `json_each` itself exposes a column named `path` (the JSON path
         // of the row within its source), which would collide with an
         // identically-named alias below and silently take over the
         // `GROUP BY` — hence `file_path`, not `path`.
-        let mut stmt = c.prepare(
-            "SELECT json_extract(c.value, '$.path') AS file_path, a.task_id AS task_id,
+        let mut stmt = c.prepare(&format!(
+            "SELECT {CHANGE_PATH} AS file_path, a.task_id AS task_id,
                     MAX(COALESCE(a.finished_at, a.started_at)) AS at,
                     COALESCE(SUM(a.cost_usd), 0) AS cost_usd
-             FROM attempts a JOIN tasks t ON t.id = a.task_id,
-                  json_each(a.envelope_json, '$.changes') c
-             WHERE t.repo = ?1 AND a.envelope_json != '' AND json_valid(a.envelope_json)
+             FROM {CHANGE_ROWS}
+             WHERE {CHANGE_ROWS_VALID} AND a.task_id IN (SELECT id FROM tasks WHERE repo = ?1)
              GROUP BY file_path, a.task_id
-             ORDER BY file_path, a.task_id",
-        )?;
+             ORDER BY file_path, a.task_id"
+        ))?;
         let rows = stmt.query_map(params![repo], |r| {
             Ok(FileTask {
                 path: r.get("file_path")?,
