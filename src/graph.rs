@@ -4,13 +4,42 @@
 //! (repomap/src/edges.rs), which already extracts every file's symbol
 //! count and the imports that resolve inside the tree; this only adds
 //! line counts (read straight off disk, since the argument is a working
-//! tree, not a bare tree) and the directory grouping. Deterministic end
-//! to end: no model, no store.
+//! tree, not a bare tree) and the directory grouping. `build` is
+//! deterministic end to end: no model, no store. `overlay` is the one
+//! part that does read the store, laying what the record knows for each
+//! file node on top (docs/LATER.md, "The overlay, from the record").
 
+use crate::store::Store;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// One task's touch on a file node, from `Store::file_changes`.
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct TaskTouch {
+    pub id: i64,
+    pub at: i64,
+    pub cost_usd: f64,
+}
+
+/// One review demotion whose evidence names a file node, from
+/// `Store::task_demotions`.
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct Demotion {
+    pub id: i64,
+    pub at: i64,
+    pub reason: String,
+}
+
+/// What the record knows about one file node (docs/LATER.md, "The
+/// overlay, from the record"): empty for a file no task ever touched.
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct Overlay {
+    pub tasks: Vec<TaskTouch>,
+    pub demotions: Vec<Demotion>,
+    pub repair_cost_usd: f64,
+}
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Node {
@@ -18,6 +47,8 @@ pub struct Node {
     pub kind: String,
     pub symbols: usize,
     pub lines: usize,
+    #[serde(default)]
+    pub overlay: Overlay,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -86,6 +117,7 @@ fn group(raw: RawGraph, repo: &Path) -> Graph {
             kind: "file".to_string(),
             symbols: n.symbols,
             lines,
+            overlay: Overlay::default(),
         });
     }
     for (path, (symbols, lines)) in modules {
@@ -94,6 +126,7 @@ fn group(raw: RawGraph, repo: &Path) -> Graph {
             kind: "module".to_string(),
             symbols,
             lines,
+            overlay: Overlay::default(),
         });
     }
     nodes.sort_by(|a, b| a.path.cmp(&b.path));
@@ -125,6 +158,66 @@ pub fn build(repo: &Path, repomap_bin: &Path) -> Result<Graph> {
     let raw: RawGraph =
         serde_json::from_slice(&out.stdout).context("parsing forge-repomap edges output")?;
     Ok(group(raw, repo))
+}
+
+/// Fills in every file node's overlay from `store` (docs/LATER.md, "The
+/// overlay, from the record"): the tasks that changed it, review
+/// demotions whose evidence names it, and its share of the quality
+/// statistics' repair cost. `repo` must be the same string a queued
+/// task's own `repo` field carries (a canonicalized path), since that is
+/// the only thing tying an attempt back to this repository. Module
+/// nodes are left untouched; a file node no task ever touched keeps its
+/// default, empty overlay.
+pub fn overlay(store: &Store, repo: &str, graph: &mut Graph) -> Result<()> {
+    let changes = store.file_changes(repo)?;
+    let demotions = store.task_demotions(repo)?;
+    let repair_costs = store.task_repair_costs(repo)?;
+
+    // Which files each task touched, from the same `changes` rows: the
+    // split `repair_cost_usd` divides a task's cached repair cost by,
+    // since the quality statistics attribute it per task, not per path.
+    let mut files_by_task: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+    for c in &changes {
+        files_by_task
+            .entry(c.task_id)
+            .or_default()
+            .push(c.path.clone());
+    }
+    let mut repair_share: BTreeMap<String, f64> = BTreeMap::new();
+    for (task_id, cost) in &repair_costs {
+        if let Some(paths) = files_by_task.get(task_id) {
+            let share = cost / paths.len() as f64;
+            for p in paths {
+                *repair_share.entry(p.clone()).or_default() += share;
+            }
+        }
+    }
+
+    for node in &mut graph.nodes {
+        if node.kind != "file" {
+            continue;
+        }
+        node.overlay.tasks = changes
+            .iter()
+            .filter(|c| c.path == node.path)
+            .map(|c| TaskTouch {
+                id: c.task_id,
+                at: c.at,
+                cost_usd: c.cost_usd,
+            })
+            .collect();
+        node.overlay.demotions = demotions
+            .iter()
+            .filter(|d| d.evidence.iter().any(|e| e.contains(&node.path)))
+            .map(|d| Demotion {
+                id: d.task_id,
+                at: d.at,
+                reason: d.reason.clone(),
+            })
+            .collect();
+        node.overlay.repair_cost_usd = repair_share.get(&node.path).copied().unwrap_or(0.0);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -223,5 +316,174 @@ mod tests {
         let graph = group(raw, dir.path());
         assert_eq!(graph.nodes.len(), 1, "{graph:?}");
         assert_eq!(graph.nodes[0].kind, "file");
+    }
+
+    /// `overlay` end to end: a task that touched two files splits its
+    /// cached repair cost evenly between them, a review demotion whose
+    /// evidence names one of those files attaches to that file only, and
+    /// a file no task ever touched keeps `Overlay::default()`.
+    #[test]
+    fn overlay_splits_repair_cost_and_matches_demotions_by_evidence() {
+        use crate::store::{Attempt, AttemptState, FinishAttempt, Store, Task, TaskState};
+
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        let repo = "/repo";
+
+        let finish = |id: i64, reason: &str, envelope_json: &str| {
+            s.finish_attempt(&FinishAttempt {
+                id,
+                state: if reason.starts_with("review demoted") {
+                    AttemptState::NeedsInput
+                } else {
+                    AttemptState::Succeeded
+                },
+                reason: reason.into(),
+                finished_at: Some(10),
+                agent_exit: Some(0),
+                timed_out: false,
+                num_turns: 1,
+                tool_calls: 1,
+                cost_usd: Some(0.0),
+                agent_ms: 0,
+                commits: 0,
+                files_changed: 0,
+                dirty: false,
+                verdict_json: "[]".into(),
+                result_text: String::new(),
+                envelope_json: envelope_json.into(),
+                rl_five_hour: None,
+                rl_seven_day: None,
+                rl_five_hour_resets: None,
+                rl_seven_day_resets: None,
+                end_sha: String::new(),
+                outputs_json: String::new(),
+                session_id: String::new(),
+                first_edit: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                early_signals: "[]".into(),
+                early_near: "[]".into(),
+            })
+            .unwrap();
+        };
+
+        // Task X lands, touching both a.rs and b.rs; its repair cost
+        // (from the quality statistics) splits evenly between them.
+        let mut x = Task {
+            repo: repo.into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Succeeded,
+            created_at: 1,
+            started_at: Some(1),
+            finished_at: Some(1),
+            workflow: "direct".into(),
+            landed_sha: "xsha".into(),
+            ..Default::default()
+        };
+        x.id = s.insert_task(&x).unwrap();
+        s.update_task(&x).unwrap();
+        let x1 = s
+            .insert_attempt(&Attempt {
+                task_id: x.id,
+                attempt_no: 1,
+                step: "code".into(),
+                started_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        finish(
+            x1,
+            "",
+            r#"{"schema_version":1,"summary":"s","needs_input":null,"changes":[{"path":"src/a.rs","kind":"modified","summary":""},{"path":"src/b.rs","kind":"modified","summary":""}],"checks_run":[],"claims":[]}"#,
+        );
+        s.set_repair_cost_cache(x.id, 4.0, 9999).unwrap();
+
+        // Task Y is demoted by a review whose evidence names a.rs.
+        let mut y = Task {
+            repo: repo.into(),
+            task: "t".into(),
+            base_branch: "main".into(),
+            model: "m".into(),
+            max_turns: 1,
+            max_attempts: 1,
+            timeout_secs: 1,
+            state: TaskState::Blocked,
+            created_at: 1,
+            started_at: Some(1),
+            finished_at: Some(1),
+            workflow: "direct".into(),
+            ..Default::default()
+        };
+        y.id = s.insert_task(&y).unwrap();
+        let y1 = s
+            .insert_attempt(&Attempt {
+                task_id: y.id,
+                attempt_no: 1,
+                step: "review".into(),
+                started_at: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        finish(
+            y1,
+            "review demoted: off by one",
+            r#"{"schema_version":1,"summary":"s","needs_input":{"question":"off by one","tried":"","kind":"review"},"changes":[],"checks_run":[],"claims":[{"claim":"c","evidence":"cat -n src/a.rs shows the bug"}]}"#,
+        );
+
+        let mut graph = Graph {
+            nodes: vec![
+                Node {
+                    path: "src/a.rs".into(),
+                    kind: "file".into(),
+                    symbols: 1,
+                    lines: 1,
+                    overlay: Overlay::default(),
+                },
+                Node {
+                    path: "src/b.rs".into(),
+                    kind: "file".into(),
+                    symbols: 1,
+                    lines: 1,
+                    overlay: Overlay::default(),
+                },
+                Node {
+                    path: "src/c.rs".into(),
+                    kind: "file".into(),
+                    symbols: 1,
+                    lines: 1,
+                    overlay: Overlay::default(),
+                },
+            ],
+            edges: vec![],
+        };
+
+        overlay(&s, repo, &mut graph).unwrap();
+
+        let a = graph.nodes.iter().find(|n| n.path == "src/a.rs").unwrap();
+        assert_eq!(a.overlay.tasks.len(), 1, "{a:?}");
+        assert_eq!(a.overlay.tasks[0].id, x.id);
+        assert_eq!(a.overlay.demotions.len(), 1, "{a:?}");
+        assert_eq!(a.overlay.demotions[0].id, y.id);
+        assert_eq!(a.overlay.demotions[0].reason, "review demoted: off by one");
+        assert_eq!(
+            a.overlay.repair_cost_usd, 2.0,
+            "half of X's 4.0, split with b.rs"
+        );
+
+        let b = graph.nodes.iter().find(|n| n.path == "src/b.rs").unwrap();
+        assert_eq!(b.overlay.tasks.len(), 1, "{b:?}");
+        assert!(b.overlay.demotions.is_empty(), "{b:?}");
+        assert_eq!(b.overlay.repair_cost_usd, 2.0);
+
+        let c = graph.nodes.iter().find(|n| n.path == "src/c.rs").unwrap();
+        assert_eq!(c.overlay, Overlay::default(), "no task ever touched c.rs");
     }
 }

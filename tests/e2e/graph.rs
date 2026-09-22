@@ -138,3 +138,66 @@ fn the_repo_graph_operation_writes_a_fresh_graph_to_the_cache_directory() {
     );
     assert!(doc["edges"].is_array(), "{doc}");
 }
+
+/// `forge graph REPO --json` overlays what the record knows onto each
+/// file node (docs/LATER.md, "The overlay, from the record"): a task
+/// whose attempt recorded a change to `hello.sh` shows up under that
+/// node's `overlay.tasks`, and a file no task ever touched (`other.sh`)
+/// keeps an empty overlay.
+#[test]
+fn forge_graph_json_overlays_the_tasks_that_touched_each_file() {
+    let e = Env::new();
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    std::fs::write(e.repo.join("other.sh"), "#!/bin/bash\necho other\n").unwrap();
+    git(&e.repo, &["add", "other.sh"]);
+    git(&e.repo, &["commit", "-qm", "other"]);
+
+    let repo = e.repo.canonicalize().unwrap().display().to_string();
+    let task_id: i64 = {
+        let db = e.db();
+        db.execute(
+            "INSERT INTO tasks (repo, task, base_branch, model, max_turns, max_attempts, timeout_secs, state, created_at, workflow)
+             VALUES (?1, 't', 'main', 'sonnet', 10, 1, 60, 'succeeded', 1, 'direct')",
+            rusqlite::params![repo],
+        )
+        .unwrap();
+        let task_id = db.last_insert_rowid();
+        db.execute(
+            "INSERT INTO attempts (task_id, attempt_no, step, state, started_at, finished_at, cost_usd, envelope_json)
+             VALUES (?1, 1, 'code', 'succeeded', 1, 2, 0.75,
+             '{\"schema_version\":1,\"summary\":\"s\",\"needs_input\":null,\"changes\":[{\"path\":\"hello.sh\",\"kind\":\"modified\",\"summary\":\"\"}],\"checks_run\":[],\"claims\":[]}')",
+            rusqlite::params![task_id],
+        )
+        .unwrap();
+        task_id
+    };
+
+    let o = e.forge("ok.sh", &["graph", e.repo.to_str().unwrap(), "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+
+    let hello = doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["path"] == "hello.sh")
+        .unwrap();
+    let tasks = hello["overlay"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "{doc}");
+    assert_eq!(tasks[0]["id"], task_id, "{doc}");
+    assert_eq!(tasks[0]["cost_usd"], 0.75, "{doc}");
+    assert_eq!(hello["overlay"]["demotions"].as_array().unwrap().len(), 0);
+    assert_eq!(hello["overlay"]["repair_cost_usd"], 0.0);
+
+    let other = doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["path"] == "other.sh")
+        .unwrap();
+    assert_eq!(
+        other["overlay"],
+        serde_json::json!({"tasks": [], "demotions": [], "repair_cost_usd": 0.0}),
+        "no task ever touched other.sh: {doc}"
+    );
+}

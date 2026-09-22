@@ -378,6 +378,33 @@ fn invert(m: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     Some(inv)
 }
 
+/// One task's touch on one file path, read from an attempt's recorded
+/// `changes` (`envelope::Envelope::changes`): the graph overlay's `tasks`
+/// (docs/LATER.md, "The overlay, from the record"). `at` is the latest
+/// attempt of this task that touched the path; `cost_usd` sums only the
+/// cost of this task's attempts that touched it, not the task's whole
+/// spend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileTask {
+    pub path: String,
+    pub task_id: i64,
+    pub at: i64,
+    pub cost_usd: f64,
+}
+
+/// One task ending in a review demotion (`envelope::Kind::Review`,
+/// reason `"review demoted: ..."`), with every claim's evidence text
+/// from that attempt's envelope: the graph overlay's `demotions` are the
+/// file paths that appear inside one of these strings (docs/LATER.md,
+/// "The overlay, from the record").
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskDemotion {
+    pub task_id: i64,
+    pub at: i64,
+    pub reason: String,
+    pub evidence: Vec<String>,
+}
+
 /// `task_repair_cost`'s cached row for `task_id`: `(repair_cost,
 /// computed_at)`, or `None` if it has never been computed. See
 /// `compute_repair_cost` in view.rs for how the git-level number is
@@ -599,6 +626,95 @@ impl Store {
         computed_at: i64,
     ) -> Result<()> {
         set_hand_commits_cache_query(&self.lock(), task_id, hand_commits, computed_at)
+    }
+
+    /// Every (path, task) touch on `repo`'s files, from attempts'
+    /// recorded `changes`: the graph overlay's `tasks` (see `FileTask`).
+    /// An attempt with no envelope, or one whose envelope's `changes` is
+    /// empty, contributes nothing.
+    pub fn file_changes(&self, repo: &str) -> Result<Vec<FileTask>> {
+        let c = self.lock();
+        // `json_each` itself exposes a column named `path` (the JSON path
+        // of the row within its source), which would collide with an
+        // identically-named alias below and silently take over the
+        // `GROUP BY` — hence `file_path`, not `path`.
+        let mut stmt = c.prepare(
+            "SELECT json_extract(c.value, '$.path') AS file_path, a.task_id AS task_id,
+                    MAX(COALESCE(a.finished_at, a.started_at)) AS at,
+                    COALESCE(SUM(a.cost_usd), 0) AS cost_usd
+             FROM attempts a JOIN tasks t ON t.id = a.task_id,
+                  json_each(a.envelope_json, '$.changes') c
+             WHERE t.repo = ?1 AND a.envelope_json != '' AND json_valid(a.envelope_json)
+             GROUP BY file_path, a.task_id
+             ORDER BY file_path, a.task_id",
+        )?;
+        let rows = stmt.query_map(params![repo], |r| {
+            Ok(FileTask {
+                path: r.get("file_path")?,
+                task_id: r.get("task_id")?,
+                at: r.get("at")?,
+                cost_usd: r.get("cost_usd")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every task on `repo` whose last attempt was a review demotion, with
+    /// that attempt's claims' evidence text (see `TaskDemotion`): the raw
+    /// input to the graph overlay's `demotions`, before it is matched
+    /// against a file's own path.
+    pub fn task_demotions(&self, repo: &str) -> Result<Vec<TaskDemotion>> {
+        let rows = {
+            let c = self.lock();
+            let mut stmt = c.prepare(
+                "SELECT a.task_id AS task_id, COALESCE(a.finished_at, a.started_at) AS at,
+                        a.reason AS reason, a.envelope_json AS envelope_json
+                 FROM attempts a JOIN tasks t ON t.id = a.task_id
+                 WHERE t.repo = ?1 AND a.state = 'needs_input' AND a.reason LIKE 'review demoted:%'
+                 ORDER BY a.task_id",
+            )?;
+            let rows = stmt.query_map(params![repo], |r| {
+                Ok((
+                    r.get::<_, i64>("task_id")?,
+                    r.get::<_, i64>("at")?,
+                    r.get::<_, String>("reason")?,
+                    r.get::<_, String>("envelope_json")?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows
+            .into_iter()
+            .map(|(task_id, at, reason, envelope_json)| {
+                let evidence = serde_json::from_str::<crate::envelope::Envelope>(&envelope_json)
+                    .map(|e| e.claims.into_iter().map(|c| c.evidence).collect())
+                    .unwrap_or_default();
+                TaskDemotion {
+                    task_id,
+                    at,
+                    reason,
+                    evidence,
+                }
+            })
+            .collect())
+    }
+
+    /// Landed tasks on `repo` with a cached repair cost (`task_repair_cost`,
+    /// see `WorkflowStat::repair_cost`): the raw input to the graph
+    /// overlay's `repair_cost_usd`, before it is split across the files
+    /// each task touched.
+    pub fn task_repair_costs(&self, repo: &str) -> Result<Vec<(i64, f64)>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT t.id AS task_id, trc.repair_cost AS repair_cost
+             FROM tasks t JOIN task_repair_cost trc ON trc.task_id = t.id
+             WHERE t.repo = ?1 AND t.landed_sha != ''
+             ORDER BY t.id",
+        )?;
+        let rows = stmt.query_map(params![repo], |r| {
+            Ok((r.get("task_id")?, r.get("repair_cost")?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Landed tasks, scoped like every other `forge stats` query: the

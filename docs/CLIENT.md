@@ -517,7 +517,7 @@ and effect it recorded.
 | field | type | meaning |
 |---|---|---|
 | `id`, `project`, `workflow`, `workflow_hash`, `landed_sha`, `trigger_kind`, `trigger_ref`, `state`, `dry_run`, `started_at`, `finished_at`, `cost_usd`, `verdict_json` | | as [`JobRow`](#jobrow). |
-| `steps` | array of `{id, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail}` | Every step of the job's run, in order; an operation's `setup` check is the step with `seq` -1. `kind` is `operation` or `directive`; `provider`/`model` are set only for a directive step, `exit_code` and `tail` only for an operation step. `tail` is the last 20 lines of the operation's stdout and stderr, pass or fail (empty when it printed nothing). `output_ref` is the file holding the step's output: a directive's validated output, or everything an operation printed (up to the kept 16 KiB), under the job's input directory. |
+| `steps` | array of `{id, job_id, seq, action, kind, provider, model, cost_usd, started_at, finished_at, exit_code, output_ref, tail}` | Every step of the job's run, in order; an operation's `setup` check is the step with `seq` -1. `kind` is `operation` or `directive`; `provider`/`model` are set only for a directive step, `exit_code` and `tail` only for an operation step. `tail` is the last 20 lines of the operation's stdout and stderr, pass or fail (empty when it printed nothing). `output_ref` is the file holding the step's output: a directive's validated output, or everything an operation printed (up to the kept 16 KiB), under the job's input directory. `forge-web`'s own `/api/job/<id>` (not `forge job show` itself) adds one more field per step, `output`: `output_ref`'s file, read and parsed as JSON, when this process can do both; absent otherwise. |
 | `effects` | array of `{id, job_id, seq, kind, target, summary, dry_run}` | Every effect a step performed on the world, in order. `seq` is the step that produced it; `kind` is the operation's declared effect kind (e.g. `message`, `row`); `target` is what it acted on; `summary` is a short human-readable description — what the portal shows per run. Same row shape as `forge job log --json`'s, whose rows span every job in a project instead of just this one, newest first. |
 
 ### `TraceDoc`
@@ -608,12 +608,27 @@ of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 The document `forge graph REPO --json` prints: the module graph
 (docs/LATER.md, "The code visualiser") for a repository at its working
 tree, built deterministically from `forge-repomap edges` (docs/ACTIONS.md)
-— no model, no task, no store.
+— no model, no task, no store — with an overlay of what the record
+knows laid onto each file node (docs/LATER.md, "The overlay, from the
+record"), read from the operator's own store when one is open and
+scoped to tasks whose `repo` matches `REPO`'s canonicalized path; a
+store that cannot be opened, or one with no task on this repository,
+just leaves every overlay at its empty default.
 
 | field | type | meaning |
 |---|---|---|
-| `nodes` | array of `{path, kind, symbols, lines}` | One entry per source file `forge-repomap` extracts, plus one entry per directory that groups files directly under it. `kind` is `"file"` or `"module"`. For a file, `symbols` is its declared symbol count and `lines` its line count; for a module, both are the sum over the files grouped under it. A root-level file joins no module. |
+| `nodes` | array of `{path, kind, symbols, lines, overlay}` | One entry per source file `forge-repomap` extracts, plus one entry per directory that groups files directly under it. `kind` is `"file"` or `"module"`. For a file, `symbols` is its declared symbol count and `lines` its line count; for a module, both are the sum over the files grouped under it. A root-level file joins no module. `overlay` (see below) is only ever populated for a `"file"` node; a module node's is always empty. |
 | `edges` | array of `{from, to}` | One entry per import that resolves to another file in the tree (Rust `use`/`mod`, TypeScript/JavaScript relative imports and `require`, Python `import`/`from ... import`, Go imports within the module path); an import that resolves outside the repository is never an edge. |
+
+**`overlay`** — `{tasks, demotions, repair_cost_usd}`, empty (`{"tasks":
+[], "demotions": [], "repair_cost_usd": 0.0}`) for a file no task ever
+touched:
+
+| field | type | meaning |
+|---|---|---|
+| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose recorded `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
+| `demotions` | array of `{id, at, reason}` | One entry per task whose attempt ended a review demotion (`reason` starting `"review demoted: "`) with at least one claim whose evidence text names this path as a substring. `at` is that attempt's finish time. |
+| `repair_cost_usd` | number | This file's share of the quality statistics' repair cost (`StatsWorkflowRow.repair_cost_usd` above): each task's own cached repair cost, divided evenly across every file its attempts touched, summed over every task that touched this one. |
 
 ### `WorkflowShowDoc`
 
@@ -946,6 +961,11 @@ client re-reads the affected document with the verb above.
   `attempt_done`, or `op`, again only for the task currently open.
 - **The jobs list** (`forge job list --json`): re-read on `job_started`
   or `job_finished`.
+- **A job the page started and is watching** (the prompter,
+  `/workflows/new`): `job_started` naming the project and workflow it
+  just asked for is how it learns the id, with no request of its own;
+  `job_finished` naming that id is what re-reads `/api/job/<id>` (see
+  "The prompter" above).
 - **A workflow's measured profile** (`forge workflows --json`'s
   `workflows[].measured`, and `forge workflows show NAME --json`'s
   `measured`): re-read on `task_done` (a build workflow's profile moves
@@ -1033,6 +1053,27 @@ across a rotation, not to the snapshot protocol itself.
   `repos[0].repo`) and runs `workflow_put` with `--repo`, filing a task
   instead (`{"result": "filed", "task_id": ...}`) — the editor labels this
   control "file as a task" rather than "save" when `source` is `"repo"`.
+  **The prompter.** `POST /api/workflows/draft` is `/workflows/new`'s
+  "Draft it": a JSON body `{"description"}`, written as `{"description":
+  ...}` to a private temporary file and handed to `forge job start forge
+  author-workflow --now --input <file>` (docs/WORKFLOWS.md, "Authoring"),
+  blocking until the job ends the way the hooks route blocks on `forge job
+  fire`. Success is `{"job": <id>}`; a blank description is **422** before
+  any job starts, and any other failure to start is **502** with
+  `{"error": "..."}`. `/api/job/<id>` (below) is then how the page reads
+  what that job did. `/api/job/<id>` itself reads a step further than
+  `forge job show ID --json`'s own JSON: for every step whose
+  `output_ref` names a file this process can read and parse as JSON, that
+  parsed value is attached to the step as `output` — best-effort, so a
+  step with no readable or parseable `output_ref` simply has none. This is
+  how the page reads the `draft-workflow` step's `{name, kind,
+  description, toml, rationale, open_questions}` without a second
+  command, and comes free to every other job step's own structured
+  output. A job that ends `needs_human` has no `output` to read instead:
+  the page re-reads `/api/tasks?project=P&state=blocked` once, for the
+  newest row whose `task` is `"job question"` (the same task
+  `job::ask` files — docs/JOBS.md, "The human rung"), then `/api/task/<id>`
+  for its `reason`, the question text, and links to `/tasks/<id>`.
   Every time the page shows is Unix seconds from the server (`created_at`,
   `started_at`, `finished_at`, `due_at`, an event's `ts`), turned into text
   by `web/src/time.js` alone: `fmtTime` renders `2026-09-21 07:00` in the

@@ -280,7 +280,11 @@ enum Cmd {
     /// The module graph as data (docs/LATER.md, "The code visualiser"):
     /// files and symbols as nodes, import edges between them, files
     /// grouped under their directories as module nodes. Reads the
-    /// repository at its working tree; no task, no store.
+    /// repository at its working tree; the structure itself needs no
+    /// task and no store. `--json` additionally overlays what the
+    /// record knows about each file node (the operator's own store,
+    /// when one is open): the tasks that changed it, review demotions
+    /// naming it, and its share of repair cost.
     Graph {
         /// The repository's working tree
         repo: PathBuf,
@@ -3973,8 +3977,14 @@ fn plugin_logs(name: String, follow: bool) -> Result<()> {
 
 fn graph(repo: PathBuf, json: bool) -> Result<()> {
     let bin = crate::graph::repomap_bin()?;
-    let g = crate::graph::build(&repo, &bin)?;
+    let mut g = crate::graph::build(&repo, &bin)?;
     if json {
+        // The overlay is additive: a store this repository never queued
+        // a task under, or no store at all, just leaves every node's
+        // overlay at its empty default.
+        if let (Ok(f), Ok(repo)) = (Forge::open(false, false), repo.canonicalize()) {
+            crate::graph::overlay(&f.store, &repo.display().to_string(), &mut g)?;
+        }
         out!("{}", serde_json::to_string_pretty(&g)?);
         return Ok(());
     }
