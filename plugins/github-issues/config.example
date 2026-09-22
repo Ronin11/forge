@@ -50,5 +50,9 @@ POLL_SECONDS=120
 # Required.
 TARGET_REPO=/path/to/repo
 
-# The workflow new tasks run (see `forge workflows`).
-WORKFLOW=direct
+# The workflow new tasks run (see `forge workflows`). Every task this
+# plugin files carries public trust, whose default policy allows only
+# "reviewed" (see `[trust.public]` in the operator's config.toml); naming
+# a stricter workflow here than that policy allows fails every task at
+# the door.
+WORKFLOW=reviewed

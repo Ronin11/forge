@@ -180,7 +180,11 @@ pub async fn ask(
             if d.question.trim().is_empty() {
                 bail!("the concierge called this unclear but asked no question");
             }
-            let mut req = base(project, &repo, message.to_string(), Some("direct"));
+            // A placeholder, blocked below before any agent runs: "intake"
+            // is only a label here, chosen because it is already in a
+            // contact's allowed workflows (see `build_trust`), not because
+            // anything ever executes it.
+            let mut req = base(project, &repo, message.to_string(), Some("intake"));
             req.retries = 0;
             req.no_land = true;
             let mut n = queue::enqueue(&f, &req, None).await?;
@@ -243,7 +247,11 @@ async fn file_proposal(
         p.repetition.trim(),
         p.outcome.trim()
     );
-    let mut req = base(project, repo, p.outcome.clone(), Some("direct"));
+    // A placeholder, blocked below before any agent runs: see the same
+    // note on the `unclear` branch in `ask`. A yes answer never retries
+    // this row (see `answer_proposal`); it files fresh, operator-trust
+    // tasks on the initiative instead.
+    let mut req = base(project, repo, p.outcome.clone(), Some("intake"));
     req.retries = 0;
     req.no_land = true;
     let mut n = queue::enqueue(f, &req, None).await?;
