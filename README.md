@@ -1,7 +1,42 @@
-# forge (2)
+# Forge
 
-The Forge rebuild, in Rust. One binary, no daemon: the worker is the
-long-running process.
+Forge is an unattended software factory. You give it a task, in plain
+language, against a git repository; it clones the repository into a
+sandboxed worktree, runs a coding agent there, and verifies what came
+back against the repository's own checks and a set of hidden tests the
+agent never sees. A verified task is landed on the base branch, deployed
+if the repository has a deploy target, and every step is recorded so it
+can be measured. Jobs run a product's own automations, such as a webhook
+or a scheduled rule, through the same kernel: an agent or a plain
+command, verified and recorded the same way.
+
+```
+task --> sandboxed attempt --> verify (repo checks, then hidden tests) --> land --> deploy
+                                    |
+                                    `-- a failed row retries with that failure as feedback
+```
+
+## Quickstart
+
+Prerequisites: Rust, bubblewrap (`bwrap` on `PATH`), git, and the
+`claude` CLI, logged in (Forge runs it as the agent).
+
+```sh
+cargo build --release                        # build the workspace
+forge doctor                                 # check this machine can run attempts
+```
+
+Register a repository by giving it a `forge.toml` that declares
+`[checks]` (see this repository's own `forge.toml` for an example, and
+docs/CHECKS.md for the reference). Then:
+
+```sh
+forge add <repo> "<task>"                    # queue a task
+forge work --once                            # drain the queue and exit
+forge web open                               # open the web client on this task's queue
+```
+
+## Commands
 
 ```sh
 forge run  <repo> "<task>" [--workflow W] [--check CMD]...  # run one task now
