@@ -464,7 +464,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Span::styled("no worker", Style::default().fg(Color::Red))
     };
     let header = Line::from(vec![
-        Span::styled("Forge 2", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Forge", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("  {queued} queued, {running} running  ")),
         worker,
         Span::raw("  "),

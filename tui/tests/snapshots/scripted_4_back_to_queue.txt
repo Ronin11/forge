@@ -1,4 +1,4 @@
-Forge 2  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
 ┌tasks, newest first───────────────────────────────────────────────────────────────────────────────┐
 │ID    STATE       WF            ATT  COST    PROJECT      TASK                                    │
 │12    running     tdd           2    $1.35   forge        add snapshot tests for the tui          │

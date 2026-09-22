@@ -702,7 +702,7 @@ pub struct Intake {
 }
 
 const DEFAULT_HOME_CONFIG: &str = "\
-# Forge 2 operator config.
+# Forge operator config.
 [budget]
 # The subscription's rate windows, as fractions of each window the claude CLI
 # reports after every attempt. At or above a cap the worker holds until the
@@ -1298,16 +1298,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "plugin_dirs = [\"~/.config/forge2/plugins\", \"relative/plugins\", \"/opt/forge2/plugins\"]\n",
+            "plugin_dirs = [\"~/.config/forge/plugins\", \"relative/plugins\", \"/opt/forge/plugins\"]\n",
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
         assert_eq!(
             c.plugin_dirs,
             vec![
-                PathBuf::from(std::env::var("HOME").unwrap()).join(".config/forge2/plugins"),
+                PathBuf::from(std::env::var("HOME").unwrap()).join(".config/forge/plugins"),
                 dir.path().join("relative/plugins"),
-                PathBuf::from("/opt/forge2/plugins"),
+                PathBuf::from("/opt/forge/plugins"),
             ]
         );
     }

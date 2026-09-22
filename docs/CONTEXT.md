@@ -22,3 +22,58 @@ changed rank first, which is what a retry or a later attempt wants.
 
 The design work that led here, including the unbuilt `history` operation
 and its per-step token budget, is in docs/LATER.md.
+
+## The order of a prompt (2026-09-22)
+
+Prompt caching serves the longest byte-identical prefix, so every
+directive prompt is assembled in three parts whose boundaries are chosen
+for it (`src/prompts.rs`):
+
+1. **The fixed preamble** (`prompts::PREAMBLE`): the rules the kernel
+   enforces. No task id, branch, workflow name, config path or attempt
+   number in it, so it is the same bytes on every launch of every task.
+2. **The repo pack** (`prompts::repo_pack`): what depends only on the
+   repository at its base. The map ranked without the task's words (the
+   `repo-map` operation prints it before a marker), the checks the
+   operator re-runs, the verification namespace. Two tasks on the same
+   base share it byte for byte; the model writes it to its cache once.
+3. **The task frame and the rest** (`prompts::task_frame` onward): the
+   branch and base, the workflow, the config path, the files this task's
+   own words rank highest (the map's part after the marker, a small
+   budget), why the task exists, protected paths, then the directive's
+   own sections, the task text, the journal, the attempt note and the
+   action's prompt.
+
+Measured on the day it landed with the lean launch already in: a second
+task's turn-1 cache write is the numbers reported in the commit that
+introduced this section. The unit test
+`two_tasks_on_one_base_share_the_preamble_and_the_repo_pack_byte_for_byte`
+pins the shared length against the pack and that the shared prefix
+names no task.
+
+The map itself, when ranked with no words, leads with the files that
+declare the most and leaves out files that declare nothing, since a map
+ranked by nothing has no other signal than what a file carries.
+
+## Line spans and the map factor (2026-09-22)
+
+Every symbol in the map now carries a span, rendered `name@start-end`:
+the line the declaration starts on and the line before the next
+declaration (the last symbol runs to the file's end). It is a cheap span
+with no brace matching, and it is enough for what it is for: the map's
+heading tells the model to read the ranges it needs with Read
+offset/limit and to batch independent Reads and greps into one turn,
+against the measured 1.07 tool calls per turn and 66% of tool output
+being whole-file reads. When a file's symbols overflow its 220-character
+line, trailing symbols are dropped whole; a span is never cut. Cache
+entries written before spans existed read as misses and re-parse.
+
+Whether spans help is measured, not assumed: `map` is an experiment
+factor (`[factors.map]` in `experiment.toml`, levels `spans` and
+`names`; docs/ECONOMIST.md). A task's draw reaches the `repo-map`
+operation as `FORGE_MAP_STYLE`, and `forge stats --factors` reports the
+`map` levels beside the others with two exploration measures: the tool
+call at which the first edit came, and tool calls per turn. Spans are
+the default when no draw was made. The factor is readable once each
+level has a few dozen landed tasks; at the current pace that is about
+a week with the weights at 0.5 each.

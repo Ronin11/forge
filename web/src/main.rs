@@ -1,4 +1,4 @@
-//! forge-web: a browser client for Forge 2, the same seam as the TUI. It
+//! forge-web: a browser client for Forge, the same seam as the TUI. It
 //! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
 //! `log`, `trace`, `journal`, `requests`) and the live feed is
 //! `events --follow` piped through as server-sent events. Almost entirely
