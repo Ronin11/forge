@@ -106,6 +106,15 @@ and does not parse stdout.
 - **`forge journal ID --json`** — what ran earlier in the task's piece
   of work. A JSON array of [`JournalEntry`](#journalentry) objects
   (`{task, attempt, step, state, said, found, reason}`), oldest first.
+- **`forge graph REPO --json`** — the module graph as data (docs/LATER.md,
+  "The code visualiser"): every source file `forge-repomap` extracts as a
+  node, one module node per directory grouping files directly under it,
+  and the import edges between files. `REPO` is a path to a repository's
+  working tree, read directly; there is no task and no store behind this
+  one. A single [`GraphDoc`](#graphdoc) object. The built-in `repo-graph`
+  operation (docs/ACTIONS.md) writes this same document to
+  `$FORGE_CACHE_DIR/graph.json` on every attempt, so a landing always
+  leaves a fresh one behind.
 - **`forge workflows --json`** — the workflows and actions a task can
   run, with declared metadata and measured outcomes. A JSON object
   `{workflows, actions, min_runs_for_known, lookback}`; shaped for an
@@ -210,7 +219,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
+snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative job deploy answer ask message
 ```
 
 ## Time
@@ -564,6 +573,18 @@ landed, or the run failed. `{score, findings, model, provider, cost_usd,
 created_at}` — `score` is 0 (worst) to 10 (best); `findings` is an array
 of `{path, finding, severity}` (`severity` is `notable` or `concern`);
 `model` and `provider` are what ran it; `cost_usd` is what it cost.
+
+### `GraphDoc`
+
+The document `forge graph REPO --json` prints: the module graph
+(docs/LATER.md, "The code visualiser") for a repository at its working
+tree, built deterministically from `forge-repomap edges` (docs/ACTIONS.md)
+— no model, no task, no store.
+
+| field | type | meaning |
+|---|---|---|
+| `nodes` | array of `{path, kind, symbols, lines}` | One entry per source file `forge-repomap` extracts, plus one entry per directory that groups files directly under it. `kind` is `"file"` or `"module"`. For a file, `symbols` is its declared symbol count and `lines` its line count; for a module, both are the sum over the files grouped under it. A root-level file joins no module. |
+| `edges` | array of `{from, to}` | One entry per import that resolves to another file in the tree (Rust `use`/`mod`, TypeScript/JavaScript relative imports and `require`, Python `import`/`from ... import`, Go imports within the module path); an import that resolves outside the repository is never an edge. |
 
 ### `WorkflowShowDoc`
 

@@ -309,7 +309,11 @@ source file's declared symbols ranked against the task's words and the
 files earlier successful work read most, cut to a budget, by the
 deterministic `forge-repomap` tool; shown to the next directive as
 "where things are", recorded in the attempt's inputs; `--no-context` on
-a task is the control arm), `deploy-command` (the generic deploy
+a task is the control arm), `repo-graph` (writes `forge graph`'s own
+document — docs/LATER.md, "The code visualiser" — for the attempt's tree
+to `$FORGE_CACHE_DIR/graph.json`, fresh on every run, so a landing always
+leaves an up to date graph behind for a client to read; deterministic,
+no model), `deploy-command` (the generic deploy
 method `forge deploy` runs, outside of any task: rsyncs the landed tree
 to a target's host and dest over ssh, runs its command, then its check,
 both over ssh unless the host is `local`; see docs/DEPLOY.md),

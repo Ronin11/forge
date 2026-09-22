@@ -8,6 +8,7 @@ mod concierge;
 mod contracts;
 mod deploy;
 mod fixtures;
+mod graph;
 mod initiatives;
 mod intake;
 mod jobs;

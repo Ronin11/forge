@@ -277,6 +277,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The module graph as data (docs/LATER.md, "The code visualiser"):
+    /// files and symbols as nodes, import edges between them, files
+    /// grouped under their directories as module nodes. Reads the
+    /// repository at its working tree; no task, no store.
+    Graph {
+        /// The repository's working tree
+        repo: PathBuf,
+        /// Machine-readable
+        #[arg(long)]
+        json: bool,
+    },
     /// Blocked tasks: questions for the operator and workflow requests
     Requests {
         /// Only requests for this repository
@@ -1107,6 +1118,7 @@ pub async fn main() -> Result<()> {
             ready,
         } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
         Cmd::Trace { id, json } => trace(id, json),
+        Cmd::Graph { repo, json } => graph(repo, json),
         Cmd::Requests { repo, json } => requests(repo, json),
         Cmd::Stats {
             tools,
@@ -3741,6 +3753,22 @@ fn plugin_logs(name: String, follow: bool) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn graph(repo: PathBuf, json: bool) -> Result<()> {
+    let bin = crate::graph::repomap_bin()?;
+    let g = crate::graph::build(&repo, &bin)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&g)?);
+        return Ok(());
+    }
+    let files = g.nodes.iter().filter(|n| n.kind == "file").count();
+    let modules = g.nodes.iter().filter(|n| n.kind == "module").count();
+    out!(
+        "{files} file(s), {modules} module(s), {} edge(s)",
+        g.edges.len()
+    );
     Ok(())
 }
 

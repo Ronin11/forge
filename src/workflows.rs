@@ -770,6 +770,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         include_str!("builtins/operations/repo-map.toml"),
     ),
     (
+        "repo-graph.toml",
+        include_str!("builtins/operations/repo-graph.toml"),
+    ),
+    (
         "diff-size.toml",
         include_str!("builtins/operations/diff-size.toml"),
     ),
