@@ -135,6 +135,10 @@ JSON
 {"workflows":[],"steps":[],"journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"no_journal":{"attempts":0,"succeeded":0,"succeeded_share":null,"mean_turns":0.0,"mean_first_edit":null,"mean_cost_usd":0.0},"by_role":[{"role":"code","provider":"anthropic","model":"claude-sonnet-5","attempts":10,"succeeded":8,"succeeded_share":0.8,"mean_turns":12.5,"mean_cost_usd":1.23,"mean_secs":340.0,"landed":6,"broke_base":1,"broke_base_share":0.16666666666666666},{"role":"review","provider":"anthropic","model":"claude-haiku-4-5","attempts":4,"succeeded":4,"succeeded_share":1.0,"mean_turns":3.0,"mean_cost_usd":0.1,"mean_secs":20.0}]}
 JSON
   ;;
+  graph) cat <<'JSON'
+{"nodes":[{"path":"src","kind":"module","symbols":4,"lines":120,"overlay":{"tasks":[],"demotions":[],"repair_cost_usd":0.0}},{"path":"src/a.rs","kind":"file","symbols":3,"lines":80,"overlay":{"tasks":[{"id":1,"at":1,"cost_usd":0.5}],"demotions":[],"repair_cost_usd":0.0}},{"path":"src/b.rs","kind":"file","symbols":1,"lines":40,"overlay":{"tasks":[],"demotions":[{"id":2,"at":2,"reason":"off by one"}],"repair_cost_usd":1.25}}],"edges":[{"from":"src/a.rs","to":"src/b.rs"}]}
+JSON
+  ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -260,6 +264,8 @@ fn without_the_token_nothing_is_served() {
         "/api/initiatives/5",
         "/graph",
         "/api/graph?repo=%2Fsome%2Frepo",
+        "/graph/modules",
+        "/api/graph/modules?repo=%2Fsome%2Frepo",
         "/stats",
         "/api/stats",
         "/jobs",
@@ -723,6 +729,33 @@ fn the_graph_page_and_route_run_forge_repomap_edges_and_pass_its_json_through() 
     assert_eq!(v["edges"][0]["to"], "src/b.rs");
 
     let (status, _, body) = get(&w.addr, "/api/graph", &cookie);
+    assert_eq!(status, 400, "{body}");
+}
+
+#[test]
+fn the_graph_modules_page_and_route_run_forge_graph_and_pass_its_overlaid_json_through() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, _, body) = get(&w.addr, "/graph/modules", &cookie);
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+    assert!(body.contains(r#"<script src="/graph.js">"#), "{body}");
+
+    let (status, _, body) = get(&w.addr, "/api/graph/modules?repo=%2Fsome%2Frepo", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let nodes = v["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 3, "{v}");
+    let src = nodes.iter().find(|n| n["path"] == "src").unwrap();
+    assert_eq!(src["kind"], "module");
+    assert_eq!(src["lines"], 120);
+    let b = nodes.iter().find(|n| n["path"] == "src/b.rs").unwrap();
+    assert_eq!(b["overlay"]["demotions"][0]["reason"], "off by one");
+    assert_eq!(v["edges"][0]["from"], "src/a.rs");
+    assert_eq!(v["edges"][0]["to"], "src/b.rs");
+
+    let (status, _, body) = get(&w.addr, "/api/graph/modules", &cookie);
     assert_eq!(status, 400, "{body}");
 }
 

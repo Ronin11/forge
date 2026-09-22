@@ -35,6 +35,7 @@ const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
+const GRAPH_JS: &str = include_str!("graph.js");
 
 /// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
 fn home() -> PathBuf {
@@ -267,6 +268,15 @@ fn graph(repo: &str) -> Result<Value> {
     let edges = "edges".to_string();
     let args = [edges.as_str(), repo, "--cache", cache.as_str()];
     forge_client::spawn_json("forge-repomap", &args)
+}
+
+/// `forge graph REPO --json`, through the `forge` verb (`src/graph.rs`):
+/// module nodes grouped from the same files `graph` above lists, each
+/// sized by its lines and, for a file node, carrying the record's overlay
+/// (docs/LATER.md, "The overlay, from the record") — cost sunk and review
+/// demotions — for the `/graph/modules` page.
+fn graph_modules(forge: &Forge, repo: &str) -> Result<Value> {
+    forge.json(&["graph", repo, "--json"])
 }
 
 /// `forge stats --json`, through the client crate's typed `StatsDoc`, for
@@ -839,6 +849,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || p.starts_with("/projects/")
             || p.starts_with("/initiatives/")
             || p == "/graph"
+            || p == "/graph/modules"
             || p == "/stats"
             || p == "/jobs"
             || p.starts_with("/jobs/")
@@ -849,11 +860,16 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         }
         "/time.js" => text(200, TIME_JS, "application/javascript"),
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
+        "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
         "/api/stats" => json_or_error(stats_json(forge)),
         "/api/graph" => match query_param(&query, "repo").map(|v| unescape(&v)) {
             Some(repo) if !repo.is_empty() => json_or_error(graph(&repo)),
+            _ => text(400, "repo is required", "text/plain"),
+        },
+        "/api/graph/modules" => match query_param(&query, "repo").map(|v| unescape(&v)) {
+            Some(repo) if !repo.is_empty() => json_or_error(graph_modules(forge, &repo)),
             _ => text(400, "repo is required", "text/plain"),
         },
         "/api/plugins" => json_or_error(plugins_merged(forge)),

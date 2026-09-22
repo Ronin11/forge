@@ -1031,6 +1031,21 @@ across a rotation, not to the snapshot protocol itself.
   browser's own zone, `fmtSpan` and `fmtAgo` the relative forms (a plugin's
   uptime, a job's due time). `web/tests/time.rs` runs it under `node` in
   fixed zones.
+  **The code visualiser** (docs/LATER.md, "The code visualiser").
+  `/api/graph?repo=` → `forge-repomap edges REPO --cache
+  $FORGE2_HOME/cache/repomap` (not a `forge` verb — a separate tool the
+  kernel ships beside it), the raw file graph the `/graph` page's file
+  view draws in columns by top-level directory.
+  `/api/graph/modules?repo=` → `forge graph REPO --json`
+  (`forge-client`'s typed `GraphDoc`): the same files grouped under
+  module nodes, each file node carrying the record's overlay (tasks that
+  touched it and their cost, review demotions, repair cost — docs/LATER.md,
+  "The overlay, from the record"). The `/graph/modules` page
+  (`web/src/graph.js`'s `renderModuleGraph`, tested under `node` by
+  `web/tests/graph_render.rs`) collapses this to module nodes sized by
+  lines, lays them out in layers with no library, draws edges as curves,
+  and colours/badges each node from the overlay — cost sunk, review
+  demotions. Both routes are **400** with no `repo`.
   `/api/projects` → `project list --json` for the `/projects` page;
   `/api/projects/<name>` → `project show <name> --json`,
   `/api/projects/<name>/initiatives` → `initiative list <name> --json`,

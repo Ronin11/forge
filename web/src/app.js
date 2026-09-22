@@ -34,14 +34,15 @@
   }
 
   // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /jobs, /jobs/:id,
-  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph, /stats,
-  // /workflows, /workflows/:name
+  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph,
+  // /graph/modules, /stats, /workflows, /workflows/:name
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
     if (location.pathname === '/projects') return { page: 'projects' };
     if (location.pathname === '/stats') return { page: 'stats' };
-    if (location.pathname === '/graph') return { page: 'graph', repo: new URLSearchParams(location.search).get('repo') || '' };
-    let m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
+    let m = location.pathname.match(/^\/graph(\/modules)?\/?$/);
+    if (m) return { page: 'graph', modules: !!m[1], repo: new URLSearchParams(location.search).get('repo') || '' };
+    m = location.pathname.match(/^\/projects\/([^/]+)\/?$/);
     if (m) return { page: 'project', name: decodeURIComponent(m[1]) };
     m = location.pathname.match(/^\/initiatives\/(\d+)\/?$/);
     if (m) return { page: 'initiative', id: Number(m[1]) };
@@ -70,7 +71,11 @@
       : '';
     const projects = r.page === 'projects' || r.page === 'project';
     const onWorkflows = r.page === 'workflows' || r.page === 'workflow-new';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${onWorkflows ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
+    const graphQuery = r.page === 'graph' && r.repo ? `?repo=${encodeURIComponent(r.repo)}` : '';
+    const graphLinks = r.page === 'graph'
+      ? ` <a href="/graph${graphQuery}" ${!r.modules ? 'style="font-weight:600"' : ''}>files</a> <a href="/graph/modules${graphQuery}" ${r.modules ? 'style="font-weight:600"' : ''}>modules</a>`
+      : '';
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${onWorkflows ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>${graphLinks}`;
   }
 
   async function render() {
@@ -81,7 +86,7 @@
       : r.page === 'projects' ? projectsView()
       : r.page === 'project' ? projectView(r.name)
       : r.page === 'initiative' ? initiativeView(r.id)
-      : r.page === 'graph' ? graphView(r.repo)
+      : r.page === 'graph' ? (r.modules ? graphModulesView(r.repo) : graphView(r.repo))
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
       : r.page === 'workflow-new' ? promptView()
@@ -776,6 +781,29 @@
     };
   }
 
+  // ---- graph pages: a project selector shared by the file view and the
+  // module view, since both just draw whatever `?repo=` names.
+  async function projectRepos() {
+    let rows = [];
+    try { rows = await get('/api/projects'); } catch { rows = []; }
+    return rows
+      .map(p => ({ name: p.name, repo: (p.repos && p.repos[0] && p.repos[0].repo) || '' }))
+      .filter(p => p.repo);
+  }
+  function wireProjectSelector(modules, repo) {
+    const sel = $('#graph-project');
+    if (!sel) return;
+    projectRepos().then(projects => {
+      const opts = ['<option value="">— pick a project —</option>']
+        .concat(projects.map(p => `<option value="${esc(p.repo)}" ${p.repo === repo ? 'selected' : ''}>${esc(p.name)}</option>`));
+      sel.innerHTML = opts.join('');
+    });
+    sel.addEventListener('change', () => {
+      const next = sel.value;
+      go(`/graph${modules ? '/modules' : ''}${next ? `?repo=${encodeURIComponent(next)}` : ''}`);
+    });
+  }
+
   // ---- graph view: the structure layer. Files grouped into columns by
   // top-level directory, ordered within a column by path; edges from
   // `forge-repomap edges` as lines between columns. The only overlay is
@@ -855,10 +883,12 @@
         $('#main').innerHTML = `
           <h2>Graph</h2>
           <div class="filters">
+            <select id="graph-project"><option value="">loading projects…</option></select>
             <span class="mute">${esc(repo) || 'no repo given'}</span>
             <input type="search" id="f-graph" placeholder="filter files" ${repo ? '' : 'disabled'}>
           </div>
           <div style="overflow:auto; padding:0 16px 24px"><svg id="graph-svg"></svg></div>`;
+        wireProjectSelector(false, repo);
         if (!repo) return;
         $('#f-graph').addEventListener('input', ev => { filter = ev.target.value; draw(); });
         $('#graph-svg').addEventListener('click', ev => {
@@ -871,6 +901,48 @@
         if (!graph || !Array.isArray(graph.nodes)) graph = { nodes: [], edges: [] };
         draw();
         touches = await loadTouches();
+        draw();
+      },
+    };
+  }
+
+  // ---- graph modules view: the repository graph at module granularity
+  // (docs/LATER.md, "The code visualiser"), from `forge graph --json`
+  // through `/api/graph/modules` — module nodes sized by lines, the
+  // record's overlay as a cost colour and a demotion badge
+  // (`src/graph.js`'s `renderModuleGraph`). Hovering a node lists its
+  // tasks through the SVG's own `<title>`.
+  function graphModulesView(repo) {
+    let graph = null, filter = '', selected = null;
+    function draw() {
+      const svg = $('#graph-svg');
+      if (!svg || !graph) return;
+      const { svgHtml, width, height } = ForgeGraph.renderModuleGraph(graph, { filterQuery: filter, selected });
+      svg.setAttribute('width', width);
+      svg.setAttribute('height', height);
+      svg.innerHTML = svgHtml;
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Graph — modules</h2>
+          <div class="filters">
+            <select id="graph-project"><option value="">loading projects…</option></select>
+            <span class="mute">${esc(repo) || 'no repo given'}</span>
+            <input type="search" id="f-graph" placeholder="filter modules" ${repo ? '' : 'disabled'}>
+          </div>
+          <div style="overflow:auto; padding:0 16px 24px"><svg id="graph-svg"></svg></div>`;
+        wireProjectSelector(true, repo);
+        if (!repo) return;
+        $('#f-graph').addEventListener('input', ev => { filter = ev.target.value; draw(); });
+        $('#graph-svg').addEventListener('click', ev => {
+          const g = ev.target.closest('.mnode');
+          const path = g ? g.dataset.path : null;
+          selected = (path && path !== selected) ? path : null;
+          draw();
+        });
+        try { graph = await get(`/api/graph/modules?repo=${encodeURIComponent(repo)}`); } catch { graph = null; }
+        if (!graph || !Array.isArray(graph.nodes)) graph = { nodes: [], edges: [] };
         draw();
       },
     };

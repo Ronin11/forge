@@ -435,7 +435,7 @@ experiment.
 
 ## The code visualiser, and the inspector inside it (2026-09-15)
 
-**Status (2026-09-21):** not built. After 1.0; the record it reads is complete.
+**Status (2026-09-22):** structure, the overlay, and the page are built. `forge graph REPO --json` (`src/graph.rs`) groups files under their directory as module nodes and lays the record's overlay (tasks, cost, demotions) on each file node; the web client's `/graph` (files, by top-level directory) and `/graph/modules` (the module graph, a layered SVG layout with no library, nodes sized by lines, coloured by cost sunk, badged with demotions, hover listing a node's tasks) both read it, with a project selector choosing the repository. Remaining: the inspector, and the stepping debugger it folds in.
 
 Three layers, in order, each on something that exists.
 

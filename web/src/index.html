@@ -55,6 +55,8 @@
   #graph-svg { background:var(--panel); border:1px solid var(--line); border-radius:6px }
   #graph-svg .gnode { cursor:pointer }
   #graph-svg .gnode rect:hover { stroke:var(--run) }
+  #graph-svg .mnode { cursor:pointer }
+  #graph-svg .mnode circle:hover { stroke:var(--run); stroke-width:2 }
   /* workflows view */
   .step-card { display:inline-block; padding:1px 6px; margin:1px 0; border:1px solid var(--line); border-radius:3px; background:var(--panel); font-size:12px }
   .step-arrow { color:var(--mute); margin:0 2px }
@@ -75,6 +77,7 @@
 <main id="main"></main>
 <script src="/time.js"></script>
 <script src="/workflows.js"></script>
+<script src="/graph.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
