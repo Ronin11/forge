@@ -762,6 +762,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forge-client",
+ "serde",
  "serde_json",
  "tempfile",
  "tiny_http",

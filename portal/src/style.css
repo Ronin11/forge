@@ -143,9 +143,38 @@ form.ask button {
   color: var(--panel);
   cursor: pointer;
 }
-p.reply {
-  color: var(--ok);
-  font-style: italic;
+.msg {
+  max-width: 80%;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.msg p {
+  margin: 0;
+}
+.msg .date {
+  color: var(--mute);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.msg.in {
+  margin-right: auto;
+}
+.msg.out {
+  margin-left: auto;
+  background: var(--accent);
+  color: var(--panel);
+  border-color: var(--accent);
+}
+.msg.out .date {
+  color: var(--panel);
+  opacity: 0.75;
+}
+form.ask.msg.question {
+  max-width: 100%;
+  margin-right: auto;
 }
 .notfound {
   max-width: 480px;
