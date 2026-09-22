@@ -23,7 +23,7 @@
 //! bearer token instead and gives it no reach past `forge job fire`.
 
 use anyhow::{Context, Result};
-use forge_client::Forge;
+use forge_client::{Forge, Workflow, WorkflowPutResult};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -34,6 +34,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 const INDEX: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
+const WORKFLOWS_JS: &str = include_str!("workflows.js");
 
 /// Where Forge keeps its data: `FORGE2_HOME`, else the XDG default.
 fn home() -> PathBuf {
@@ -325,6 +326,191 @@ fn plugins_merged(forge: &Forge) -> Result<Value> {
     Ok(Value::Array(merged))
 }
 
+/// One [`Workflow`] as a JSON doc for the `/workflows` list, `project`
+/// naming which project's repository it was found in (`None` for a
+/// catalog entry — the field the raw CLI JSON doesn't carry, since one
+/// `forge workflows --json` call only ever names one project).
+fn workflow_doc(w: &Workflow, project: Option<&str>) -> Value {
+    serde_json::json!({
+        "name": w.name, "kind": w.kind, "source": w.source, "hash": w.hash,
+        "description": w.description, "path": w.path, "steps": w.steps,
+        "resolved": w.resolved, "meta": w.meta, "measured": w.measured,
+        "project": project,
+    })
+}
+
+/// The operator catalog plus, for every project, its own repository
+/// workflows (docs/CLIENT.md, "forge-web": `/api/workflows`): one
+/// `forge workflows --json` call for the catalog, then one per project
+/// with `--project`, keeping only that call's `source: "repo"` entries
+/// (the catalog ones repeat on every call) and tagging each with the
+/// project it came from.
+fn workflows_merged(forge: &Forge) -> Result<Value> {
+    let mut docs: Vec<Value> = forge
+        .workflow_list(None)?
+        .iter()
+        .map(|w| workflow_doc(w, None))
+        .collect();
+    for p in forge.project_list()? {
+        for w in forge.workflow_list(Some(&p.name))? {
+            if w.source == "repo" {
+                docs.push(workflow_doc(&w, Some(&p.name)));
+            }
+        }
+    }
+    Ok(Value::Array(docs))
+}
+
+/// `forge workflows show NAME [--project P] --json`, as a JSON doc for the
+/// `/workflows/<name>` editor page.
+fn workflow_show_json(forge: &Forge, name: &str, project: Option<&str>) -> Result<Value> {
+    let d = forge.workflow_show(name, project)?;
+    Ok(serde_json::json!({
+        "name": d.name, "source": d.source, "path": d.path, "kind": d.kind, "text": d.text,
+        "steps": d.steps.iter().map(|s| serde_json::json!({
+            "name": s.name, "kind": s.kind, "contract": s.contract, "model": s.model,
+            "max_turns": s.max_turns, "timeout_secs": s.timeout_secs, "description": s.description,
+        })).collect::<Vec<_>>(),
+        "measured": d.measured,
+    }))
+}
+
+/// A project's first registered repository path (`forge project show
+/// NAME --json`'s `repos[0].repo`), the same repo `forge workflows show
+/// --project` and `forge workflows put --repo` resolve against — needed to
+/// turn the editor's `project` name into the path `--repo` takes.
+fn project_first_repo(forge: &Forge, project: &str) -> Result<Option<String>> {
+    let v = forge.json(&["project", "show", project, "--json"])?;
+    Ok(v["repos"][0]["repo"].as_str().map(str::to_string))
+}
+
+/// `/api/workflows/<name>` or `/api/workflows/<name>/lint`, split into the
+/// workflow's file name and which of the two routes it is; `None` for
+/// anything else, including a name that would smuggle a path segment.
+fn workflow_route(path: &str) -> Option<(&str, Option<&'static str>)> {
+    let rest = path.strip_prefix("/api/workflows/")?;
+    if let Some(name) = rest.strip_suffix("/lint") {
+        return (!name.is_empty() && !name.contains('/')).then_some((name, Some("lint")));
+    }
+    (!rest.is_empty() && !rest.contains('/')).then_some((rest, None))
+}
+
+/// The largest candidate workflow file the editor will lint or save: a
+/// generous ceiling on a hand-edited TOML file, not an upload.
+const WORKFLOW_BODY_LIMIT: u64 = 512 * 1024;
+
+fn read_body(req: &mut Request, limit: u64) -> Result<String> {
+    let mut body = Vec::new();
+    req.as_reader()
+        .take(limit + 1)
+        .read_to_end(&mut body)
+        .context("reading body")?;
+    anyhow::ensure!(body.len() as u64 <= limit, "body too large");
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// `POST /api/workflows/<name>/lint`: the request body is the candidate
+/// text (plain, not JSON — the editor posts the textarea's value
+/// directly), run through `forge workflows lint --stdin --name <name>` so
+/// the editor can lint on every change.
+fn workflow_lint_route(mut req: Request, forge: &Forge, name: &str) {
+    let candidate = match read_body(&mut req, WORKFLOW_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let resp = match forge.workflow_lint(Some(name), &candidate) {
+        Ok(problems) => {
+            let arr: Vec<Value> = problems
+                .iter()
+                .map(|p| serde_json::json!({"line": p.line, "message": p.message}))
+                .collect();
+            text(
+                200,
+                &serde_json::json!({"problems": arr}).to_string(),
+                "application/json",
+            )
+        }
+        Err(e) => text(
+            502,
+            &serde_json::json!({"error": e.to_string()}).to_string(),
+            "application/json",
+        ),
+    };
+    let _ = req.respond(resp);
+}
+
+/// `POST /api/workflows/<name>`: the Save control. The body is JSON
+/// `{"text", "message", "project"}` — `project` is `null` for a save into
+/// the operator's catalog, or a project name for a repository workflow, in
+/// which case this resolves it to that project's first repo and calls
+/// `forge workflows put --repo` instead, filing a task rather than writing
+/// directly (docs/CLIENT.md, "write verb").
+fn workflow_save_route(mut req: Request, forge: &Forge, name: &str) {
+    let raw = match read_body(&mut req, WORKFLOW_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(text(
+                400,
+                &format!("bad JSON body: {e}"),
+                "application/json",
+            ));
+            return;
+        }
+    };
+    let candidate = v["text"].as_str().unwrap_or_default();
+    let message = v["message"].as_str().unwrap_or_default();
+    let repo = match v["project"].as_str() {
+        Some(p) => match project_first_repo(forge, p) {
+            Ok(Some(r)) => Some(r),
+            Ok(None) => {
+                let _ = req.respond(text(
+                    422,
+                    &serde_json::json!({"error": format!("project {p} has no registered repository")}).to_string(),
+                    "application/json",
+                ));
+                return;
+            }
+            Err(e) => {
+                let _ = req.respond(text(
+                    502,
+                    &serde_json::json!({"error": e.to_string()}).to_string(),
+                    "application/json",
+                ));
+                return;
+            }
+        },
+        None => None,
+    };
+    let resp = match forge.workflow_put(name, candidate, message, repo.as_deref()) {
+        Ok(WorkflowPutResult::Committed { hash }) => text(
+            200,
+            &serde_json::json!({"result": "committed", "hash": hash}).to_string(),
+            "application/json",
+        ),
+        Ok(WorkflowPutResult::Filed { task_id }) => text(
+            200,
+            &serde_json::json!({"result": "filed", "task_id": task_id}).to_string(),
+            "application/json",
+        ),
+        Err(e) => text(
+            422,
+            &serde_json::json!({"error": e.to_string()}).to_string(),
+            "application/json",
+        ),
+    };
+    let _ = req.respond(resp);
+}
+
 /// The largest webhook body the server will take: a webhook's input is a
 /// small JSON object, not an upload.
 const HOOK_BODY_LIMIT: u64 = 1024 * 1024;
@@ -501,6 +687,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     }
     let write_post = req.method() == &Method::Post
         && (path.starts_with("/api/retry/")
+            || path.starts_with("/api/workflows/")
             || matches!(
                 plugin_action(&path),
                 Some((_, "enable")) | Some((_, "disable"))
@@ -543,11 +730,14 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || p == "/graph"
             || p == "/stats"
             || p == "/jobs"
-            || p.starts_with("/jobs/") =>
+            || p.starts_with("/jobs/")
+            || p == "/workflows"
+            || p.starts_with("/workflows/") =>
         {
             text(200, INDEX, "text/html; charset=utf-8")
         }
         "/time.js" => text(200, TIME_JS, "application/javascript"),
+        "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
         "/api/stats" => json_or_error(stats_json(forge)),
@@ -576,6 +766,29 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                         Ok(s) => text(200, &s, "text/plain; charset=utf-8"),
                         Err(e) => text(502, &e.to_string(), "text/plain"),
                     }
+                }
+            }
+            _ => text(404, "not found", "text/plain"),
+        },
+        "/api/workflows" => json_or_error(workflows_merged(forge)),
+        p if p.starts_with("/api/workflows/") => match workflow_route(p) {
+            Some((name, None)) => match req.method() {
+                Method::Get => {
+                    let project = query_param(&query, "project").map(|v| unescape(&v));
+                    json_or_error(workflow_show_json(forge, name, project.as_deref()))
+                }
+                Method::Post => {
+                    workflow_save_route(req, forge, name);
+                    return;
+                }
+                _ => text(405, "GET or POST only", "text/plain"),
+            },
+            Some((name, Some("lint"))) => {
+                if req.method() != &Method::Post {
+                    text(405, "POST only", "text/plain")
+                } else {
+                    workflow_lint_route(req, forge, name);
+                    return;
                 }
             }
             _ => text(404, "not found", "text/plain"),

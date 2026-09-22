@@ -14,6 +14,9 @@
     detail: ['task_done', 'attempt_done', 'deploy_finished'],
     run: ['task_done', 'attempt_done', 'op'],
     jobs: ['job_started', 'job_finished'],
+    // A workflow's measured profile moves when a task lands under it
+    // (build workflows) or a job using it finishes (run workflows).
+    workflows: ['task_done', 'job_finished'],
   };
 
   async function call(method, path) {
@@ -23,9 +26,15 @@
   }
   const get = path => call('GET', path);
   const post = path => call('POST', path);
+  async function postBody(path, body, contentType) {
+    const r = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: contentType ? { 'Content-Type': contentType } : {}, body });
+    if (r.status === 401) { document.body.innerHTML = '<p style="margin:2em">Not signed in: open the link forge-web printed when it started.</p>'; throw new Error('401'); }
+    return r.json();
+  }
 
   // ---- routing: /tasks, /tasks/:id, /tasks/:id/run, /jobs, /jobs/:id,
-  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph, /stats
+  // /plugins, /projects, /projects/:name, /initiatives/:id, /graph, /stats,
+  // /workflows, /workflows/:name
   function route() {
     if (location.pathname === '/plugins') return { page: 'plugins' };
     if (location.pathname === '/projects') return { page: 'projects' };
@@ -37,13 +46,15 @@
     if (m) return { page: 'initiative', id: Number(m[1]) };
     m = location.pathname.match(/^\/jobs(?:\/(\d+))?\/?$/);
     if (m) return { page: 'jobs', id: m[1] ? Number(m[1]) : null };
+    m = location.pathname.match(/^\/workflows(?:\/([^/]+))?\/?$/);
+    if (m) return { page: 'workflows', name: m[1] ? decodeURIComponent(m[1]) : null, project: new URLSearchParams(location.search).get('project') || null };
     m = location.pathname.match(/^\/tasks(?:\/(\d+)(\/run)?)?\/?$/);
     if (!m) { history.replaceState(null, '', '/tasks'); return route(); }
     return { page: 'tasks', id: m[1] ? Number(m[1]) : null, run: !!m[2] };
   }
   function go(path) { history.pushState(null, '', path); render(); }
   document.addEventListener('click', ev => {
-    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"], a[href^="/jobs"]');
+    const a = ev.target.closest('a[href^="/tasks"], a[href="/plugins"], a[href^="/projects"], a[href^="/initiatives"], a[href^="/graph"], a[href="/stats"], a[href^="/jobs"], a[href^="/workflows"]');
     if (a && !ev.metaKey && !ev.ctrlKey) { ev.preventDefault(); go(a.getAttribute('href')); }
   });
   window.addEventListener('popstate', render);
@@ -53,7 +64,7 @@
       ? ` <a href="/tasks/${r.id}" ${!r.run ? 'style="font-weight:600"' : ''}>task ${r.id}</a> <a href="/tasks/${r.id}/run" ${r.run ? 'style="font-weight:600"' : ''}>workflow run</a>`
       : '';
     const projects = r.page === 'projects' || r.page === 'project';
-    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
+    $('#nav').innerHTML = `<a href="/tasks" ${r.page === 'tasks' && r.id === null ? 'style="font-weight:600"' : ''}>tasks</a>${taskLinks} <a href="/jobs" ${r.page === 'jobs' ? 'style="font-weight:600"' : ''}>jobs</a> <a href="/workflows" ${r.page === 'workflows' ? 'style="font-weight:600"' : ''}>workflows</a> <a href="/projects" ${projects ? 'style="font-weight:600"' : ''}>projects</a> <a href="/plugins" ${r.page === 'plugins' ? 'style="font-weight:600"' : ''}>plugins</a> <a href="/stats" ${r.page === 'stats' ? 'style="font-weight:600"' : ''}>stats</a>`;
   }
 
   async function render() {
@@ -67,6 +78,7 @@
       : r.page === 'graph' ? graphView(r.repo)
       : r.page === 'stats' ? statsView()
       : r.page === 'jobs' ? (r.id === null ? jobsView() : jobView(r.id))
+      : r.page === 'workflows' ? (r.name === null ? workflowsView() : workflowView(r.name, r.project))
       : (r.id === null ? listView() : (r.run ? runView(r.id) : detailView(r.id)));
     await view.show();
   }
@@ -388,6 +400,103 @@
     return {
       async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await draw(); },
       onEvent(e) { if (INVALIDATES.jobs.includes(e.type)) draw().catch(() => {}); },
+    };
+  }
+
+  // ---- workflows view: every workflow (operator catalog and each
+  // project's repository), through forge-client's workflow_list
+  function workflowsView() {
+    async function refresh() {
+      const rows = await get('/api/workflows');
+      $('#workflow-rows').innerHTML = ForgeWorkflows.renderWorkflowRows(rows);
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = `
+          <h2>Workflows</h2>
+          <table><thead><tr><th>name</th><th>kind</th><th>source</th><th>steps</th><th>measured</th></tr></thead><tbody id="workflow-rows"></tbody></table>`;
+        $('#workflow-rows').addEventListener('click', ev => {
+          if (ev.target.closest('a')) return;
+          const tr = ev.target.closest('tr.task');
+          if (!tr) return;
+          const project = tr.dataset.project;
+          go(project ? `/workflows/${encodeURIComponent(tr.dataset.name)}?project=${encodeURIComponent(project)}` : `/workflows/${encodeURIComponent(tr.dataset.name)}`);
+        });
+        await refresh();
+      },
+      onEvent(e) { if (INVALIDATES.workflows.includes(e.type)) refresh().catch(() => {}); },
+    };
+  }
+
+  // ---- one workflow: the file text in a textarea, linted on every
+  // change (debounced through the server's lint verb), the resolved
+  // steps and measured profile beside it, and a Save control
+  function workflowView(name, project) {
+    let lintTimer = null, lintSeq = 0;
+    function draw(d) {
+      const saveLabel = d.source === 'repo' ? 'file as a task' : 'save';
+      $('#main').innerHTML = `
+        <h2>Workflow ${esc(d.name)} <span class="mute">${esc(d.kind)} · ${d.source === 'repo' ? esc(project) : 'catalog'}</span> <a href="/workflows">← workflows</a></h2>
+        <div class="two">
+          <section>
+            <div class="card"><textarea id="wf-text" spellcheck="false" style="width:100%;height:50vh">${esc(d.text)}</textarea></div>
+            <div class="card" id="wf-problems"></div>
+            <div class="card">
+              <input id="wf-message" placeholder="commit message" style="width:50%">
+              <button id="wf-save">${saveLabel}</button>
+              <span id="wf-save-result" class="mute"></span>
+            </div>
+          </section>
+          <section>
+            <h2>Steps</h2>
+            <div class="card" id="wf-steps">${ForgeWorkflows.renderSteps(d.steps)}</div>
+            <h2>Measured</h2>
+            <div class="card" id="wf-profile">${ForgeWorkflows.profileLine(d.measured)}</div>
+          </section>
+        </div>`;
+      $('#wf-text').addEventListener('input', () => { clearTimeout(lintTimer); lintTimer = setTimeout(lint, 400); });
+      $('#wf-save').addEventListener('click', save);
+      lint();
+    }
+    async function lint() {
+      const mySeq = ++lintSeq;
+      const candidate = $('#wf-text').value;
+      let doc;
+      try { doc = await postBody(`/api/workflows/${encodeURIComponent(name)}/lint`, candidate, 'text/plain'); }
+      catch { return; }
+      if (mySeq !== lintSeq) return; // a newer keystroke already started another lint
+      const el = $('#wf-problems');
+      if (el) el.innerHTML = ForgeWorkflows.renderLintProblems(doc.problems || []);
+    }
+    async function save() {
+      const btn = $('#wf-save'); if (!btn) return;
+      btn.disabled = true;
+      try {
+        const doc = await postBody(`/api/workflows/${encodeURIComponent(name)}`, JSON.stringify({
+          text: $('#wf-text').value, message: $('#wf-message').value, project,
+        }), 'application/json');
+        $('#wf-save-result').textContent = doc.error ? doc.error
+          : doc.result === 'filed' ? `filed as task ${doc.task_id}`
+          : `committed ${(doc.hash || '').slice(0, 8)}`;
+      } catch (e) {
+        $('#wf-save-result').textContent = String(e);
+      } finally { btn.disabled = false; }
+    }
+    async function refreshMeasured() {
+      const q = project ? `?project=${encodeURIComponent(project)}` : '';
+      let d;
+      try { d = await get(`/api/workflows/${encodeURIComponent(name)}${q}`); } catch { return; }
+      const el = $('#wf-profile');
+      if (el) el.innerHTML = ForgeWorkflows.profileLine(d.measured);
+    }
+    return {
+      async show() {
+        $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>';
+        const q = project ? `?project=${encodeURIComponent(project)}` : '';
+        draw(await get(`/api/workflows/${encodeURIComponent(name)}${q}`));
+      },
+      onEvent(e) { if (INVALIDATES.workflows.includes(e.type)) refreshMeasured().catch(() => {}); },
+      teardown() { clearTimeout(lintTimer); },
     };
   }
 
