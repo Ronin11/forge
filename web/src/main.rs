@@ -51,6 +51,7 @@ const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
 const DOCTOR_JS: &str = include_str!("doctor.js");
 const ACTIVITY_JS: &str = include_str!("activity.js");
+const MESSAGES_JS: &str = include_str!("messages.js");
 const SEARCH_JS: &str = include_str!("search.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
@@ -488,6 +489,72 @@ fn activity_json(
         "events": page.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         "next_before": next_before,
         "done": done,
+    }))
+}
+
+/// A project's repository paths (`forge project show NAME --json`'s
+/// `repos[].repo`): every path a task filed under this project could
+/// carry as `RequestRow.repo`, used below to narrow the operator-wide
+/// `forge requests --json` down to one project's own blocked questions.
+fn project_repos(forge: &Forge, project: &str) -> Result<Vec<String>> {
+    let v = forge.json(&["project", "show", project, "--json"])?;
+    Ok(v["repos"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| r["repo"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The `/messages` page's own read, merged from four verbs (docs/CLIENT.md
+/// once this lands): `forge message list PROJECT --json` for the message
+/// record itself; `forge decisions --json --project PROJECT` for both the
+/// concierge's own decisions on inbound messages (`answered_by ==
+/// "concierge"`, `src/concierge.rs`'s "question" branch) and, wherever
+/// `answered_for` is set, the outcome of a question that was addressed to
+/// a contact; `forge requests --json`, narrowed to this project's own
+/// repositories and to open questions addressed to a contact (`kind ==
+/// "question"`, `to` set), for the other half of that same picture — the
+/// ones still waiting; and `forge job list PROJECT --json`, narrowed to
+/// `trigger_kind == "message"`, for the jobs a message triggered
+/// (`src/worker.rs`'s `message_triggers`, `trigger_ref` the message's own
+/// id). Filtering the operator-wide `requests` list down to one project
+/// happens here, not in the CLI, since `forge requests` only ever takes
+/// `--repo`: the same repo-matching `deploys_merged`/`workflow_show_json`
+/// already do for a project-scoped read.
+fn messages_merged(forge: &Forge, project: &str) -> Result<Value> {
+    let messages = forge.json(&["message", "list", project, "--json"])?;
+    let decisions = forge.json(&["decisions", "--json", "--project", project])?;
+    let repos = project_repos(forge, project)?;
+    let requests = forge.json(&["requests", "--json"])?;
+    let questions: Vec<Value> = requests
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            r["kind"].as_str() == Some("question")
+                && r["to"].as_str().is_some()
+                && r["repo"]
+                    .as_str()
+                    .is_some_and(|repo| repos.iter().any(|p| p == repo))
+        })
+        .collect();
+    let jobs: Vec<Value> = forge
+        .json(&["job", "list", project, "--json"])?
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|j| j["trigger_kind"].as_str() == Some("message"))
+        .collect();
+    Ok(serde_json::json!({
+        "messages": messages,
+        "decisions": decisions,
+        "questions": questions,
+        "jobs": jobs,
     }))
 }
 
@@ -1219,6 +1286,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/doctor.js" => text(200, DOCTOR_JS, "application/javascript"),
         "/activity.js" => text(200, ACTIVITY_JS, "application/javascript"),
+        "/messages.js" => text(200, MESSAGES_JS, "application/javascript"),
         "/search.js" => text(200, SEARCH_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
@@ -1321,6 +1389,14 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             json_or_error(forge.json(&argv))
         }
         "/api/requests" => json_or_error(forge.json(&["requests", "--json"])),
+        p if p.starts_with("/api/messages/") => {
+            let name = unescape(&p["/api/messages/".len()..]);
+            if name.is_empty() || name.contains('/') {
+                text(404, "not found", "text/plain")
+            } else {
+                json_or_error(messages_merged(forge, &name))
+            }
+        }
         "/api/jobs" => json_or_error(forge.json(&["job", "list", "--json"])),
         p if p.starts_with("/api/job/") => match id_of(&p["/api/job/".len()..]) {
             Some(id) => json_or_error(job_show_with_outputs(forge, id)),

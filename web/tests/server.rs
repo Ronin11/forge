@@ -10,7 +10,13 @@ case "$1" in
   snapshot) echo '{"events_offset":7,"tasks":[{"id":1,"state":"queued"}],"requests":[],"worker":{"running":false}}' ;;
   trace) echo "{\"task\":{\"id\":$2},\"attempts\":[]}" ;;
   journal) echo "[{\"task\":$2,\"note\":\"journal\"}]" ;;
-  requests) echo '[{"id":1,"status":"pending"}]' ;;
+  requests) echo '[{"id":1,"status":"pending","kind":"question","to":"alice","text":"which price sheet?","repo":"/repos/demo"}]' ;;
+  decisions) echo '[{"id":9,"task_id":40,"repo":"/repos/demo","question":"which env?","answer":"prod, same as last time","created_at":110,"answered_by":"concierge","citations":"","retry_id":null,"outcome":null,"answered_for":"alice"}]' ;;
+  message)
+    case "$2" in
+      list) echo "[{\"id\":3,\"project\":\"$3\",\"channel\":\"signal\",\"contact\":\"alice\",\"direction\":\"in\",\"text\":\"can you ship it today?\",\"at\":300,\"task_id\":41}]" ;;
+      *) echo "unexpected message: $*" >&2; exit 2 ;;
+    esac ;;
   doctor) echo '[{"name":"worker","status":"ok","detail":"pid 1 running","hint":""},{"name":"queue","status":"ok","detail":"2 queued, 1 running","hint":"","queued":2,"running":1},{"name":"spend","status":"ok","detail":"$3.50 of $10.00 in the last 24h","hint":"","spend_usd":3.5,"spend_cap_usd":10.0},{"name":"rate_limit","status":"warn","detail":"anthropic: 5h 82%, 7d 40%","hint":"nearly at cap","provider":"anthropic","five_hour_pct":0.82,"five_hour_resets_at":2000000200,"seven_day_pct":0.4,"seven_day_resets_at":2000600000}]' ;;
   log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
@@ -140,10 +146,15 @@ case "$1" in
     esac ;;
   job)
     case "$2" in
-      list) cat <<'JSON'
+      list)
+        if [ "$3" = "--json" ]; then
+          cat <<'JSON'
 [{"id":1,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1000,"finished_at":1010,"cost_usd":0.42,"verdict_json":"[]","due_at":null},{"id":2,"project":"demo","workflow":"nightly","workflow_hash":"abc123","landed_sha":"","trigger_kind":"cron","trigger_ref":"0 * * * *","state":"running","workflow_source":"repo","dry_run":false,"started_at":2000,"finished_at":null,"cost_usd":null,"verdict_json":"","due_at":null}]
 JSON
-        ;;
+        else
+          proj="$3"
+          echo "[{\"id\":7,\"project\":\"$proj\",\"workflow\":\"quote-by-text\",\"workflow_hash\":\"abc123\",\"landed_sha\":\"\",\"trigger_kind\":\"message\",\"trigger_ref\":\"3\",\"state\":\"ok\",\"workflow_source\":\"repo\",\"dry_run\":false,\"started_at\":300,\"finished_at\":310,\"cost_usd\":0.1,\"verdict_json\":\"[]\",\"due_at\":null}]"
+        fi ;;
       show)
         if [ "$3" = "77" ]; then
           echo "{\"id\":77,\"project\":\"forge\",\"workflow\":\"author-workflow\",\"workflow_hash\":\"h\",\"landed_sha\":\"\",\"trigger_kind\":\"manual\",\"trigger_ref\":\"\",\"state\":\"ok\",\"workflow_source\":\"catalog\",\"dry_run\":false,\"started_at\":1,\"finished_at\":2,\"cost_usd\":0.01,\"verdict_json\":\"[]\",\"due_at\":null,\"steps\":[{\"id\":1,\"job_id\":77,\"seq\":1,\"action\":\"draft-workflow\",\"kind\":\"directive\",\"provider\":\"anthropic\",\"model\":\"claude\",\"cost_usd\":0.01,\"started_at\":1,\"finished_at\":2,\"exit_code\":null,\"output_ref\":\"$FORGE_HOME/fixtures/draft.json\"}],\"effects\":[]}"
@@ -344,6 +355,9 @@ fn without_the_token_nothing_is_served() {
         "/api/deploys",
         "/api/deploys/shot/9",
         "/api/deploys/run/demo/prod",
+        "/messages",
+        "/messages.js",
+        "/api/messages/demo",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -1091,6 +1105,45 @@ fn the_deploys_page_merges_targets_with_their_full_log_and_the_run_route_calls_f
     let (status, _, _) = get(&w.addr, "/api/deploys/run/demo/prod", &cookie);
     assert_eq!(status, 405);
     let (status, _, _) = post(&w.addr, "/api/deploys/run/demo", &cookie);
+    assert_eq!(status, 404);
+}
+
+#[test]
+fn the_messages_page_merges_the_record_decisions_questions_and_triggered_jobs() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    let (status, _, body) = get(&w.addr, "/messages", &cookie);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#"<script src="/app.js">"#), "{body}");
+
+    let (_, _, messages_js) = get(&w.addr, "/messages.js", &cookie);
+    assert!(messages_js.contains("renderMessagesDoc"), "{messages_js}");
+
+    // `/api/messages/<project>` merges four reads: `forge message list
+    // PROJECT --json` for the record, `forge decisions --json --project
+    // PROJECT` for the concierge's own decisions, `forge requests --json`
+    // narrowed to this project's own repository and to open questions
+    // addressed to a contact, and `forge job list PROJECT --json`
+    // narrowed to `trigger_kind == "message"`.
+    let (status, _, body) = get(&w.addr, "/api/messages/demo", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["messages"][0]["id"], 3);
+    assert_eq!(v["messages"][0]["project"], "demo");
+    assert_eq!(v["messages"][0]["contact"], "alice");
+    assert_eq!(v["decisions"][0]["id"], 9);
+    assert_eq!(v["decisions"][0]["answered_by"], "concierge");
+    assert_eq!(v["decisions"][0]["answered_for"], "alice");
+    assert_eq!(v["questions"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(v["questions"][0]["to"], "alice");
+    assert_eq!(v["jobs"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(v["jobs"][0]["trigger_kind"], "message");
+    assert_eq!(v["jobs"][0]["trigger_ref"], "3");
+
+    let (status, _, _) = get(&w.addr, "/api/messages/", &cookie);
+    assert_eq!(status, 404);
+    let (status, _, _) = get(&w.addr, "/api/messages/demo/extra", &cookie);
     assert_eq!(status, 404);
 }
 
