@@ -9,6 +9,21 @@ use serde::{Deserialize, Serialize};
 /// Ported verbatim from Forge 1 (VERIFICATION.md, worker/verify.go).
 pub const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"required":["schema_version","summary","needs_input","changes","checks_run","claims"],"properties":{"schema_version":{"type":"integer"},"summary":{"type":"string"},"needs_input":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["question","tried"],"properties":{"question":{"type":"string"},"tried":{"type":"string","description":"what you did before stopping, and where you stopped"},"path":{"type":"string","description":"for kind suite: the test file that contradicts the task"},"kind":{"type":"string","enum":["question","workflow","review","suite"]},"options":{"type":"array","items":{"type":"string"}},"context":{"type":"string"},"checkpoint":{"type":["string","null"]},"to":{"type":"string","description":"who the question is addressed to, e.g. a channel contact's name; absent means the operator"}}}]},"changes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","kind"],"properties":{"path":{"type":"string"},"kind":{"type":"string","enum":["added","modified","deleted"]},"summary":{"type":"string"}}}},"checks_run":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["check","passed"],"properties":{"check":{"type":"string"},"passed":{"type":"boolean"},"notes":{"type":"string"}}}},"claims":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["claim","evidence"],"properties":{"claim":{"type":"string"},"evidence":{"type":"string"}}}}}}"#;
 
+/// Who a question is addressed to, from the envelope's `needs_input.to`:
+/// `None` for the operator, which is what an absent, empty or literal
+/// "operator" value all mean. The literal form arrives from runners
+/// whose strict schema makes `to` required (codex), and a reviewer's
+/// demotion that said "operator" was being read as addressed to a person
+/// and skipped by the supervisor (four Forge tasks, 2026-09-22).
+pub fn addressee(to: Option<&str>) -> Option<String> {
+    let to = to?.trim();
+    if to.is_empty() || to.eq_ignore_ascii_case("operator") {
+        None
+    } else {
+        Some(to.to_string())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Envelope {
     pub schema_version: i64,
@@ -137,6 +152,16 @@ pub fn parse(structured: Option<&str>, result_text: &str) -> Result<Option<Envel
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn addressee_treats_empty_and_operator_as_nobody() {
+        assert_eq!(addressee(None), None);
+        assert_eq!(addressee(Some("")), None);
+        assert_eq!(addressee(Some("  ")), None);
+        assert_eq!(addressee(Some("operator")), None);
+        assert_eq!(addressee(Some("Operator")), None);
+        assert_eq!(addressee(Some("nate")).as_deref(), Some("nate"));
+    }
     use super::*;
 
     #[test]
