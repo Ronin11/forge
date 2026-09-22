@@ -34,7 +34,7 @@ pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,
     TaskTtl, WorkflowStat,
 };
-pub use tasks::{Task, TaskState};
+pub use tasks::{RoleRouting, Routed, Task, TaskState};
 
 /// What `forge log` filters on.
 #[derive(Default, Debug, Clone)]
@@ -657,6 +657,20 @@ ALTER TABLE tasks ADD COLUMN shape_path_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN shape_tdd INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN shape_declared_checks INTEGER NOT NULL DEFAULT 0;
 ",
+    // The routing record (docs/ECONOMIST.md, "The routing record"): per
+    // role that ran, the provider, model, and workflow it ran under, each
+    // with its source (flag, project, operator, default, or experiment).
+    // `model_source` and `workflow_source` are computed once at enqueue
+    // (`queue::enqueue`), since `model` and `workflow` are themselves
+    // resolved once and shared by every role; `routing_json` is built up
+    // as each role actually runs (`engine::run_directive_step`,
+    // `assess::try_run`) and stays `{}` for a task enqueued before this
+    // column existed.
+    "
+ALTER TABLE tasks ADD COLUMN model_source TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE tasks ADD COLUMN workflow_source TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE tasks ADD COLUMN routing_json TEXT NOT NULL DEFAULT '{}';
+",
 ];
 
 /// Width of the delayed-cost window: how long after a task lands a later
@@ -742,6 +756,9 @@ const TASK_COLUMNS: &[&str] = &[
     "shape_path_tokens",
     "shape_tdd",
     "shape_declared_checks",
+    "model_source",
+    "workflow_source",
+    "routing_json",
 ];
 
 fn conv<T, E: std::error::Error + Send + Sync + 'static>(
@@ -824,6 +841,13 @@ fn task_from_row(r: &Row) -> rusqlite::Result<Task> {
         shape_path_tokens: r.get("shape_path_tokens")?,
         shape_tdd: r.get::<_, i64>("shape_tdd")? != 0,
         shape_declared_checks: r.get("shape_declared_checks")?,
+        model_source: r.get("model_source")?,
+        workflow_source: r.get("workflow_source")?,
+        routing: conv(
+            r,
+            "routing_json",
+            serde_json::from_str(&r.get::<_, String>("routing_json")?),
+        )?,
     })
 }
 

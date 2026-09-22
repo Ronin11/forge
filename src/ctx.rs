@@ -25,27 +25,53 @@ pub fn resolve_provider<'a>(
     task_provider: &str,
     role: &str,
 ) -> Result<&'a agent::Provider> {
+    resolve_provider_routed(
+        providers,
+        operator_roles,
+        project_roles,
+        explore,
+        task_provider,
+        role,
+    )
+    .map(|(p, _)| p)
+}
+
+/// `resolve_provider`, also naming which layer decided: `"flag"` (the
+/// task's own `--provider`), `"experiment"` (an explore draw, see
+/// `queue::assign_explore`), `"project"`, `"operator"`, or `"default"`
+/// (the built-in "anthropic", nothing else named a provider for `role`).
+/// Recorded on `Task::routing` (see docs/ECONOMIST.md, "The routing
+/// record") so the record shows why a step ran where it did.
+pub fn resolve_provider_routed<'a>(
+    providers: &'a BTreeMap<String, agent::Provider>,
+    operator_roles: &BTreeMap<String, String>,
+    project_roles: &BTreeMap<String, String>,
+    explore: &BTreeMap<String, String>,
+    task_provider: &str,
+    role: &str,
+) -> Result<(&'a agent::Provider, &'static str)> {
     // A task's --provider (explicit or drawn by explore) routes the work,
     // never the judge: the supervisor rules on the record and keeps the
     // operator's or the project's provider for that role (task 309's
     // supervisor ran on the task's local model and tried to pull "opus"
     // from ollama).
-    let name = if !task_provider.is_empty() && role != "supervisor" {
-        task_provider
+    let (name, source) = if !task_provider.is_empty() && role != "supervisor" {
+        (task_provider, "flag")
     } else if role != "supervisor"
         && let Some(p) = explore.get(role)
     {
-        p.as_str()
+        (p.as_str(), "experiment")
     } else if let Some(p) = project_roles.get(role) {
-        p.as_str()
+        (p.as_str(), "project")
     } else if let Some(p) = operator_roles.get(role) {
-        p.as_str()
+        (p.as_str(), "operator")
     } else {
-        "anthropic"
+        ("anthropic", "default")
     };
-    providers.get(name).with_context(|| {
+    let provider = providers.get(name).with_context(|| {
         format!("unknown provider {name:?} for role {role:?}; see `forge providers` for what is configured")
-    })
+    })?;
+    Ok((provider, source))
 }
 
 pub struct Paths {
@@ -187,11 +213,17 @@ impl Forge {
     /// The provider `t`'s step under `role` actually runs: see
     /// `resolve_provider`.
     pub fn effective_provider(&self, t: &Task, role: &str) -> Result<&agent::Provider> {
+        self.effective_provider_routed(t, role).map(|(p, _)| p)
+    }
+
+    /// `effective_provider`, also naming which layer decided: see
+    /// `resolve_provider_routed`.
+    pub fn effective_provider_routed(&self, t: &Task, role: &str) -> Result<(&agent::Provider, &'static str)> {
         let project_roles = self
             .task_project(t)
             .map(|p| p.role_providers)
             .unwrap_or_default();
-        resolve_provider(
+        resolve_provider_routed(
             &self.providers,
             &self.roles,
             &project_roles,

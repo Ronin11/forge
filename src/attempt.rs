@@ -313,6 +313,30 @@ pub(crate) fn attempt_model(
     }
 }
 
+/// Where the model `attempt_model` picked actually came from, for
+/// `Task::routing` (see docs/ECONOMIST.md, "The routing record"): on the
+/// Claude runner, a workflow step's own `model` wins with source
+/// `"default"` (the action's own declared model, never a flag, a
+/// project's, or the operator's); otherwise the task's model applies, and
+/// `model_source` already names where that came from (see
+/// `queue::enqueue`). Off the Claude runner, `step`'s override never
+/// applies (`attempt_model` ignores it there too): the provider's own
+/// configured model wins with source `"operator"` (only the operator
+/// configures a provider's model), else `"default"` when the provider
+/// names none and the runner's own default applies.
+pub(crate) fn attempt_model_source(
+    step_model: Option<&str>,
+    provider: &agent::Provider,
+    model_source: &str,
+) -> String {
+    match provider.runner {
+        agent::Runner::ClaudeCli if step_model.is_some() => "default".to_string(),
+        agent::Runner::ClaudeCli => model_source.to_string(),
+        _ if provider.model.is_some() => "operator".to_string(),
+        _ => "default".to_string(),
+    }
+}
+
 /// Tool calls before the first edit in an attempt's stream: exploration.
 fn first_edit_call(log_path: &Path) -> Option<i64> {
     let text = std::fs::read_to_string(log_path).ok()?;

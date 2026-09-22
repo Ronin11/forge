@@ -206,6 +206,17 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
     // docs/PROJECTS.md, "Configuration layering"). The workflow has no
     // operator- or repository-level default, so only the last two layers
     // apply here.
+    // How `workflow` got its value, for `Task::workflow_source` (see
+    // docs/ECONOMIST.md, "The routing record"): named directly on this
+    // request, else the project's own default, else the built-in
+    // fallback — never the operator's, since no such layer exists here.
+    let workflow_source = if args.workflow.is_some() {
+        "flag"
+    } else if project.as_ref().is_some_and(|p| p.workflow.is_some()) {
+        "project"
+    } else {
+        "default"
+    };
     let workflow = args
         .workflow
         .clone()
@@ -274,7 +285,7 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         .as_ref()
         .map(|p| p.role_providers.clone())
         .unwrap_or_default();
-    let code_provider = crate::ctx::resolve_provider(
+    let (code_provider, code_provider_source) = crate::ctx::resolve_provider_routed(
         &f.providers,
         &f.roles,
         &project_roles,
@@ -286,6 +297,14 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         .model
         .clone()
         .unwrap_or_else(|| code_provider.model.clone().unwrap_or_default());
+    // Where `model` came from, for `Task::model_source`: `--model` itself,
+    // else the same layer that resolved "code"'s provider, since that
+    // provider's own configured model is what `model` fell back to.
+    let model_source = if args.model.is_some() {
+        "flag"
+    } else {
+        code_provider_source
+    };
     let shape = task_shape(&args.task, &resolved, cfg.checks.len());
     let mut t = Task {
         repo: repo.display().to_string(),
@@ -320,6 +339,8 @@ pub async fn enqueue(f: &Forge, args: &TaskRequest, retry_of: Option<i64>) -> Re
         shape_path_tokens: shape.path_tokens,
         shape_tdd: shape.tdd,
         shape_declared_checks: shape.declared_checks,
+        model_source: model_source.to_string(),
+        workflow_source: workflow_source.to_string(),
         ..Default::default()
     };
     for &dep in &t.after {
