@@ -2,9 +2,11 @@
 //! never touches the kernel: every read is a forge verb's JSON (`snapshot`,
 //! `log`, `trace`, `journal`, `requests`) and the live feed is
 //! `events --follow` piped through as server-sent events. Almost entirely
-//! read-only; the write routes are `POST /api/retry/<id>`, the same `forge
-//! retry` verb the CLI runs, and `POST /hooks/<project>/<name>`, a
-//! webhook delivery handed to `forge job fire` (docs/CLIENT.md).
+//! read-only; the write routes are `POST /api/retry/<id>` (`forge retry`),
+//! `POST /api/answer/<id>` (`forge answer`), `POST /api/withdraw/<id>`
+//! (`forge withdraw`), `POST /api/land/<id>` (`forge land`) — the inbox's
+//! own controls (`web/src/requests.js`) — and `POST /hooks/<project>/<name>`,
+//! a webhook delivery handed to `forge job fire` (docs/CLIENT.md).
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
 //! `/tasks/<id>` (one task: trace, diagnosis, journal, its events),
@@ -36,6 +38,7 @@ const APP_JS: &str = include_str!("app.js");
 const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
 const GRAPH_JS: &str = include_str!("graph.js");
+const REQUESTS_JS: &str = include_str!("requests.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -662,6 +665,92 @@ fn workflow_save_route(mut req: Request, forge: &Forge, name: &str) {
     let _ = req.respond(resp);
 }
 
+/// The largest inline reply or withdrawal reason the inbox's own controls
+/// send (`web/src/requests.js`): an operator's own words, not an upload.
+const REQUEST_BODY_LIMIT: u64 = 64 * 1024;
+
+/// `POST /api/answer/<id>`: the inbox's inline answer box. The body is
+/// JSON `{"text"}`, run through `forge answer <id> <text>` — the same
+/// write verb `forge-portal`'s own answer form calls (`portal/src/main.rs`,
+/// `handle_answer`), minus its `--by customer`: an operator's own answer
+/// through the web UI carries no contact name, so `forge answer`'s default
+/// (`"operator"`) stands.
+fn answer_route(mut req: Request, forge: &Forge, id: i64) {
+    let raw = match read_body(&mut req, REQUEST_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(text(
+                400,
+                &format!("bad JSON body: {e}"),
+                "application/json",
+            ));
+            return;
+        }
+    };
+    let answer = v["text"].as_str().unwrap_or_default().trim();
+    if answer.is_empty() {
+        let _ = req.respond(text(
+            422,
+            &serde_json::json!({"error": "text is required"}).to_string(),
+            "application/json",
+        ));
+        return;
+    }
+    let resp = json_or_error(
+        forge
+            .run(&["answer", &id.to_string(), answer])
+            .map(|out| serde_json::json!({ "output": out })),
+    );
+    let _ = req.respond(resp);
+}
+
+/// `POST /api/withdraw/<id>`: the inbox's withdraw control. The body is
+/// JSON `{"reason"}`, run through `forge withdraw <id> --reason <reason>`
+/// — the operator's own decision, so no `--by` either (default
+/// `"operator"` stands).
+fn withdraw_route(mut req: Request, forge: &Forge, id: i64) {
+    let raw = match read_body(&mut req, REQUEST_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(text(
+                400,
+                &format!("bad JSON body: {e}"),
+                "application/json",
+            ));
+            return;
+        }
+    };
+    let reason = v["reason"].as_str().unwrap_or_default().trim();
+    if reason.is_empty() {
+        let _ = req.respond(text(
+            422,
+            &serde_json::json!({"error": "reason is required"}).to_string(),
+            "application/json",
+        ));
+        return;
+    }
+    let resp = json_or_error(
+        forge
+            .run(&["withdraw", &id.to_string(), "--reason", reason])
+            .map(|out| serde_json::json!({ "output": out })),
+    );
+    let _ = req.respond(resp);
+}
+
 /// The largest webhook body the server will take: a webhook's input is a
 /// small JSON object, not an upload.
 const HOOK_BODY_LIMIT: u64 = 1024 * 1024;
@@ -838,6 +927,9 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
     }
     let write_post = req.method() == &Method::Post
         && (path.starts_with("/api/retry/")
+            || path.starts_with("/api/answer/")
+            || path.starts_with("/api/withdraw/")
+            || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
             || matches!(
                 plugin_action(&path),
@@ -898,6 +990,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/workflows.js" => text(200, WORKFLOWS_JS, "application/javascript"),
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
+        "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1042,6 +1135,46 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                     Some(id) => json_or_error(
                         forge
                             .run(&["retry", &id.to_string()])
+                            .map(|out| serde_json::json!({ "output": out })),
+                    ),
+                    None => text(404, "no such task", "text/plain"),
+                }
+            }
+        }
+        p if p.starts_with("/api/answer/") => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                match id_of(&p["/api/answer/".len()..]) {
+                    Some(id) => {
+                        answer_route(req, forge, id);
+                        return;
+                    }
+                    None => text(404, "no such task", "text/plain"),
+                }
+            }
+        }
+        p if p.starts_with("/api/withdraw/") => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                match id_of(&p["/api/withdraw/".len()..]) {
+                    Some(id) => {
+                        withdraw_route(req, forge, id);
+                        return;
+                    }
+                    None => text(404, "no such task", "text/plain"),
+                }
+            }
+        }
+        p if p.starts_with("/api/land/") => {
+            if req.method() != &Method::Post {
+                text(405, "POST only", "text/plain")
+            } else {
+                match id_of(&p["/api/land/".len()..]) {
+                    Some(id) => json_or_error(
+                        forge
+                            .run(&["land", &id.to_string()])
                             .map(|out| serde_json::json!({ "output": out })),
                     ),
                     None => text(404, "no such task", "text/plain"),

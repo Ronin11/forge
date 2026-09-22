@@ -18,6 +18,12 @@
     // A workflow's measured profile moves when a task lands under it
     // (build workflows) or a job using it finishes (run workflows).
     workflows: ['task_done', 'job_finished'],
+    // A task going blocked or reaching any other final state (including
+    // unverified) is a `task_done` event whose `state` names which
+    // (src/engine.rs's `finish`, docs/CLIENT.md's Events table has no
+    // separate "blocked" variant); `task_blocked` is listened for too in
+    // case a future kernel event narrows this, at no cost today.
+    requests: ['task_blocked', 'task_done'],
   };
 
   async function call(method, path) {
@@ -192,21 +198,93 @@
     };
   }
 
-  // ---- requests view: blocked tasks and what each is waiting on
-  // (forge requests --json), its own page on the client contract
+  // ---- requests view: the inbox. Everything waiting on a person: open
+  // questions, dependency blocks, and workflow requests (forge requests
+  // --json — RequestRow already carries the dependency's state as part
+  // of its own text, e.g. "waits on task 14 (failed: ...)"), plus every
+  // unverified task (forge log --json --state unverified) since the only
+  // thing left waiting on those is the land decision. Its own page on
+  // the client contract (task 530, "the inbox").
   function requestsView() {
-    function draw(reqs) {
-      $('#main').innerHTML = '<h2>Requests</h2>' + (reqs.length ? reqs.map(r => `
-        <div class="card req"><b><a href="/tasks/${r.id}">${r.id}</a></b> <span class="mute">${esc(r.kind)}${r.path ? ' · ' + esc(r.path) : ''}</span>
-          <div>${esc(r.text)}</div>
-          ${r.tried ? `<details><summary>tried</summary><div class="mute">${esc(r.tried)}</div></details>` : ''}
-          <div class="mute">answer with <code>forge answer ${r.id} "…"</code></div></div>`).join('')
-        : '<div class="card mute">No open questions.</div>');
+    // A question row's lineage and its last attempt's summary aren't on
+    // RequestRow itself (docs/CLIENT.md) — fetched per question from
+    // `/api/task/<id>` (`forge trace ID --json`) and attached before
+    // rendering; a row this fails to load for just renders without them.
+    async function enrichQuestions(rows) {
+      await Promise.all(rows.filter(r => r.kind === 'question').map(async r => {
+        let d;
+        try { d = await get(`/api/task/${r.id}`); } catch { return; }
+        r.lineage = (d.task && d.task.lineage) || [];
+        const attempts = d.attempts || [];
+        const last = attempts[attempts.length - 1];
+        r.last_summary = last ? ((last.outputs && last.outputs.summary) || last.reason || '') : '';
+      }));
+      return rows;
     }
-    async function refresh() { draw(await get('/api/requests')); }
+    async function draw() {
+      const [reqs, unverified] = await Promise.all([
+        get('/api/requests').then(enrichQuestions),
+        get('/api/tasks?state=unverified').catch(() => []),
+      ]);
+      $('#req-rows').innerHTML = ForgeRequests.renderRequestRows(reqs);
+      const heading = $('#req-unverified-h2'), rows = $('#req-unverified');
+      if (heading) heading.style.display = unverified.length ? '' : 'none';
+      if (rows) rows.innerHTML = ForgeRequests.renderUnverifiedRows(unverified);
+    }
+    async function onSubmit(ev) {
+      const answerForm = ev.target.closest('form.req-answer');
+      const withdrawForm = ev.target.closest('form.req-withdraw');
+      if (answerForm) {
+        ev.preventDefault();
+        const value = answerForm.querySelector('.req-answer-text').value.trim();
+        if (!value) return;
+        const btn = answerForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/answer/${answerForm.dataset.id}`, JSON.stringify({ text: value }), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      } else if (withdrawForm) {
+        ev.preventDefault();
+        const value = withdrawForm.querySelector('.req-withdraw-reason').value.trim();
+        if (!value) return;
+        const btn = withdrawForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/withdraw/${withdrawForm.dataset.id}`, JSON.stringify({ reason: value }), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      }
+    }
+    async function onClick(ev) {
+      const btn = ev.target.closest('button.req-land');
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        const r = await post(`/api/land/${btn.dataset.id}`);
+        if (r.error) alert(r.error); else await draw();
+      } finally { btn.disabled = false; }
+    }
     return {
-      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await refresh(); },
-      onEvent(e) { if (INVALIDATES.list.includes(e.type)) refresh().catch(() => {}); },
+      async show() {
+        // A wrapper div, not `#main` itself, carries the delegated
+        // listeners: `#main`'s own innerHTML is reassigned on every visit
+        // to this page, but the element itself persists across
+        // navigations, so a listener attached directly to it would
+        // accumulate one instance per visit. This inner div is a fresh
+        // node each time, same as `#tasks`/`#plugin-rows` elsewhere.
+        $('#main').innerHTML = `
+          <div id="req-page">
+            <h2>Requests</h2>
+            <div id="req-rows" class="mute">loading…</div>
+            <h2 id="req-unverified-h2" style="display:none">Unverified — needs landing</h2>
+            <div id="req-unverified"></div>
+          </div>`;
+        $('#req-page').addEventListener('submit', onSubmit);
+        $('#req-page').addEventListener('click', onClick);
+        await draw();
+      },
+      onEvent(e) { if (INVALIDATES.requests.includes(e.type)) draw().catch(() => {}); },
     };
   }
 

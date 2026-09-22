@@ -205,11 +205,34 @@ and does not parse stdout.
   the web server). Not `--json`; a client shows its text output and then
   re-reads the lists itself, since `forge retry`'s own output is not
   meant to be parsed.
+- **`forge land ID`** — write verb: lands an already-verified task's
+  branch through the integrator (merge the base in, re-verify, push,
+  fast-forward). Also accepted for a task still `blocked` on a review
+  demotion or a question a human or the supervisor has set aside, when
+  the last agent attempt's L1 checks already passed clean on a committed
+  tree (`landable_needs_input`, `src/cli.rs`) — neither leaves the commit
+  itself in doubt. Refused (non-zero exit) on a task that is not verified
+  and not landable this way, one that already landed, or one whose
+  worktree is gone. Not `--json`; a client shows the line it prints and
+  re-reads the lists itself, the same as `forge retry`. This is the write
+  verb the web UI's inbox (`POST /api/land/<id>`, task 530) calls for an
+  unverified task's land control.
 - **`forge answer ID TEXT [--by NAME]`** — write verb: answers the
   question task `ID` is blocked on and re-queues it as a retry, `--by`
   naming the contact when the answer came through a channel (the portal
   passes its contact name). Stdout is the new task's id; a non-zero exit
   is the error on stderr. Not JSON.
+- **`forge withdraw ID --reason TEXT [--by NAME]`** — write verb:
+  withdraws a blocked or queued task the operator has decided not to do
+  — a stale description, superseded, or the product decision went the
+  other way. Terminal, refused (non-zero exit) on a running or already-
+  landed task. Recorded as the task's own reason and as a decision row
+  (see [`DecisionRow`](#decisionrow)); releases any task that was
+  waiting on this one, the same as landing or failing does. Not `--json`;
+  a client re-reads `forge log`/`forge requests` for the task it just
+  withdrew. This is the write verb the web UI's inbox
+  (`POST /api/withdraw/<id>`, task 530) calls for a request row's
+  withdraw control.
 - **`forge task set ID [--budget USD] [--max-turns N] [--timeout-secs N]
   [--retries N]`** — write verb: changes a queued or blocked task's own
   limits in place, replacing only the fields given; refused (non-zero
@@ -255,7 +278,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry doctor plugin ref project initiative task job deploy answer ask message
+snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message
 ```
 
 ## Time
@@ -1050,6 +1073,32 @@ across a rotation, not to the snapshot protocol itself.
   `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
   detail view, and run view apply the same re-read rules as above; the
   list view's `TaskRow.initiative`, when set, links to `/initiatives/<id>`.
+  **The inbox.** `/requests` (`web/src/requests.js`) is everything waiting
+  on a person: `/api/requests` (`forge requests --json`) for every blocked
+  task — an open question with its text and who it is addressed to
+  (`RequestRow.to`), a dependency block (`RequestRow.text` already carries
+  the dependency's own state, e.g. `"waits on task 14 (failed: ...)"`), or
+  a workflow request — each question row further enriched, one
+  `/api/task/<id>` read per question, with its lineage
+  (`TraceDoc.task.lineage`) and its last attempt's summary
+  (`TraceDoc.attempts`, the last entry's `outputs.summary` or `reason`);
+  plus `/api/tasks?state=unverified` for every task that passed but never
+  landed, each showing a land control. Three write routes sit beside
+  `/api/retry/<id>`, all token-gated the same way: `POST /api/answer/<id>`
+  — a JSON body `{"text"}` — runs `forge answer <id> <text>` for a
+  question row's inline answer box (`422` on a blank `text`, before the
+  verb runs); `POST /api/withdraw/<id>` — a JSON body `{"reason"}` — runs
+  `forge withdraw <id> --reason <reason>` for any row's withdraw control
+  (`422` on a blank `reason`); `POST /api/land/<id>` — no body, exactly
+  the shape of `/api/retry/<id>` — runs `forge land <id>` for an
+  unverified task's land control. All three return `{"output": ...}` on
+  success or `{"error": ...}` (`502`) on the verb's own refusal; the page
+  never parses the output, it re-reads `/api/requests` and
+  `/api/tasks?state=unverified` itself, the same as `forge retry`'s own
+  caller does for the task list. The page refreshes on `task_blocked` and
+  `task_done` (a task going blocked is itself a `task_done` event whose
+  `state` is `"blocked"` — see [Events](#events) — so both names are
+  listened for).
   `/api/plugins` runs `plugin list --json` and `plugin status --json`
   through `forge-client`'s typed `PluginRow`/`PluginStatusRow` and
   merges them by name for the `/plugins` page;
