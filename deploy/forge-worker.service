@@ -12,7 +12,7 @@ After=network-online.target
 Type=simple
 Environment=FORGE_HOME=%h/.local/share/forge
 Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/Projects/forge/target/release/forge work --jobs 3
+ExecStart=%h/Projects/forge/target/release/forge work --jobs 4
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=2400

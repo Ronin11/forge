@@ -398,6 +398,20 @@ fn the_first_visit_sets_the_cookie_and_the_routes_pass_forge_json_through() {
     let (_, _, body) = get(&w.addr, "/api/tasks", &cookie);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v[0]["args"], "--json --limit 100");
+    // Every filter search (task 9, "search") passes: text, state,
+    // repository, workflow, project, initiative, before — one to one
+    // onto `forge log --json`'s own flags.
+    let (status, _, body) = get(
+        &w.addr,
+        "/api/tasks?q=doctor&state=failed&repo=%2Frepos%2Fdemo&workflow=direct&project=demo&initiative=7&before=120",
+        &cookie,
+    );
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v[0]["args"],
+        "--json --limit 100 --before 120 --grep doctor --state failed --workflow direct --repo /repos/demo --project demo --initiative 7"
+    );
     let (status, _, body) = get(&w.addr, "/api/snapshot", &cookie);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();

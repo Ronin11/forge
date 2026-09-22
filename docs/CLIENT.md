@@ -1187,7 +1187,7 @@ across a rotation, not to the snapshot protocol itself.
   and passes its JSON through
   untouched — `/api/snapshot` → `snapshot`, `/api/tasks` → `log --json`
   (query params map to `--limit`/`--before`/`--grep`/`--state`/
-  `--workflow`/`--repo`/`--project`), `/api/requests` → `requests --json`
+  `--workflow`/`--repo`/`--project`/`--initiative`), `/api/requests` → `requests --json`
   (also the `/requests` page's own read), `/api/task/<id>` →
   `trace <id> --json`, `/api/journal/<id>` →
   `journal <id> --json`, `/api/events?since=` → `events --since
@@ -1195,6 +1195,18 @@ across a rotation, not to the snapshot protocol itself.
   `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
   detail view, and run view apply the same re-read rules as above; the
   list view's `TaskRow.initiative`, when set, links to `/initiatives/<id>`.
+  **Search** (web UI task 9, `web/src/search.js`). The `/tasks` list's
+  query box and filters map one to one onto `forge log --json`'s own
+  flags: text (`q`, matched against the task text or an exact id via
+  `--grep`), state, repository (`repo`), workflow, project, initiative —
+  and the `before` paging cursor `forge log --before` itself takes.
+  `ForgeSearch.filtersFromSearch`/`paramsFromFilters` carry all seven
+  through the URL's own query string, so a filtered, paged view can be
+  linked or reloaded: a filter change resets the cursor and rewrites the
+  URL to just the filters, and scrolling further (the same infinite-scroll
+  `before` paging as before) advances the URL's `before` to the page just
+  loaded. The list's columns are sortable by clicking a header (client-side,
+  over whatever page is loaded so far — sorting never refetches).
   **The inbox.** `/requests` (`web/src/requests.js`) is everything waiting
   on a person: `/api/requests` (`forge requests --json`) for every blocked
   task — an open question with its text and who it is addressed to

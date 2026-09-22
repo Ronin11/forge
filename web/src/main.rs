@@ -51,6 +51,7 @@ const DEPLOYS_JS: &str = include_str!("deploys.js");
 const STATS_JS: &str = include_str!("stats.js");
 const DOCTOR_JS: &str = include_str!("doctor.js");
 const ACTIVITY_JS: &str = include_str!("activity.js");
+const SEARCH_JS: &str = include_str!("search.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -1218,6 +1219,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/doctor.js" => text(200, DOCTOR_JS, "application/javascript"),
         "/activity.js" => text(200, ACTIVITY_JS, "application/javascript"),
+        "/search.js" => text(200, SEARCH_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1289,8 +1291,9 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         },
         "/api/tasks" => {
             // forge log --json with the page's filters: limit, before, q
-            // (text or id), state, workflow, repo. Values are passed as
-            // separate argv entries, never through a shell.
+            // (text or id), state, workflow, repo, project, initiative.
+            // Values are passed as separate argv entries, never through a
+            // shell.
             let mut args: Vec<String> = vec!["log".into(), "--json".into()];
             let limit = query_param(&query, "limit")
                 .and_then(|l| l.parse::<u32>().ok())
@@ -1305,6 +1308,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
                 ("workflow", "--workflow"),
                 ("repo", "--repo"),
                 ("project", "--project"),
+                ("initiative", "--initiative"),
             ] {
                 if let Some(v) = query_param(&query, key).map(|v| unescape(&v))
                     && !v.is_empty()
