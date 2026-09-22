@@ -104,3 +104,21 @@ fn initiative_js_formats_no_time_itself() {
         );
     }
 }
+
+#[test]
+fn stats_js_formats_no_time_itself() {
+    let stats = include_str!("../src/stats.js");
+    for banned in [
+        "toLocale",
+        "toISOString",
+        "toUTCString",
+        "getTimezoneOffset",
+        "new Date(",
+    ] {
+        assert!(
+            !stats.contains(banned),
+            "stats.js formats a time with {banned}; StatsDoc.daily's `date` is a plain UTC \
+             calendar string already, never a formatter of its own"
+        );
+    }
+}

@@ -135,3 +135,19 @@ details { margin: var(--space-1) 0 } summary { cursor: pointer; color: var(--mut
 .bar-fill.over { background: var(--bad) }
 .actions form { display: inline-flex; gap: 6px; align-items: center; margin-right: var(--space-3) }
 .actions label { display: inline-flex; gap: 4px; align-items: center; color: var(--mute); font-size: var(--text-sm) }
+/* stats view: tabs, sortable tables, the verified-rate bar, the 30-day chart */
+.tabs { display: flex; gap: 4px; margin: 10px var(--space-4); flex-wrap: wrap }
+.tabs .tab { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; color: var(--mute); cursor: pointer; font: inherit }
+.tabs .tab.active { color: var(--fg); border-color: var(--run); font-weight: 600 }
+th.sortable { cursor: pointer; user-select: none }
+th.sortable:hover { color: var(--fg) }
+.rate-bar { display: flex; flex-direction: column; gap: 2px; min-width: 16ch }
+.rate-bar .bar-track { position: relative; overflow: visible }
+.rate-bar .bar-range { position: absolute; top: 0; height: 100%; background: var(--run); opacity: .35; border-radius: 4px }
+.rate-bar .bar-point { position: absolute; top: -2px; width: 2px; height: 12px; background: var(--run); transform: translateX(-1px) }
+.rate-label { font-size: var(--text-sm) }
+.chart-wrap { margin: 10px var(--space-4); overflow-x: auto }
+#stats-chart { background: var(--panel); border: 1px solid var(--line); border-radius: 6px }
+#stats-chart .chart-bar { fill: var(--run); opacity: .5 }
+#stats-chart .chart-line { stroke: var(--warn); stroke-width: 1.5 }
+#stats-chart .chart-dot { fill: var(--warn) }

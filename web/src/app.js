@@ -802,34 +802,47 @@
     };
   }
 
-  // ---- stats view: attempts, outcomes, cost and wall time per (role,
-  // provider, model)
+  // ---- stats view: the full record (web UI task 5) — a 30-day chart of
+  // daily landings and daily spend above tabbed, sortable tables:
+  // workflows (the verified-rate interval as a bar, with the regression
+  // mark), quality, by-role, human attention, time to live, and factors
+  // (hidden when `forge stats --json` carries no `factors` key at all).
   function statsView() {
-    const pct = v => v == null ? '-' : (v * 100).toFixed(0) + '%';
-    const num = v => v == null ? '-' : v;
-    function drawRows(rows) {
-      $('#stats-rows').innerHTML = rows.map(r => `
-        <tr>
-          <td>${esc(r.role)}</td>
-          <td>${esc(r.provider)}</td>
-          <td>${esc(r.model)}</td>
-          <td class="num">${r.attempts}</td>
-          <td class="num">${pct(r.succeeded_share)}</td>
-          <td class="num">${r.mean_turns.toFixed(1)}</td>
-          <td class="num">${usd(r.mean_cost_usd)}</td>
-          <td class="num">${r.mean_secs.toFixed(0)}</td>
-          <td class="num">${num(r.landed)}</td>
-          <td class="num">${num(r.broke_base)}</td>
-          <td class="num">${pct(r.broke_base_share)}</td>
-        </tr>`).join('') || '<tr><td colspan="11" class="mute">no data</td></tr>';
+    let doc = null;
+    let activeTab = null;
+    let sort = null;
+
+    function draw() {
+      const tabs = ForgeStats.visibleTabs(doc);
+      if (!tabs.some(t => t.id === activeTab)) activeTab = tabs.length ? tabs[0].id : null;
+      const nav = tabs.map(t => `<button type="button" class="tab${t.id === activeTab ? ' active' : ''}" data-tab="${t.id}">${esc(t.label)}</button>`).join('');
+      const chart = ForgeStats.renderDailyChart(doc.daily || []);
+      const body = activeTab ? ForgeStats.renderTab(activeTab, doc, sort) : '<div class="mute">no data</div>';
+      $('#main').innerHTML = `
+        <h2>Stats</h2>
+        <div class="chart-wrap"><svg id="stats-chart" width="${chart.width}" height="${chart.height}" viewBox="0 0 ${chart.width} ${chart.height}">${chart.svgHtml}</svg></div>
+        <div class="tabs" id="stats-tabs">${nav}</div>
+        <div id="stats-body">${body}</div>`;
+      $('#stats-tabs').addEventListener('click', ev => {
+        const b = ev.target.closest('button[data-tab]');
+        if (!b) return;
+        activeTab = b.dataset.tab;
+        sort = null;
+        draw();
+      });
+      $('#stats-body').addEventListener('click', ev => {
+        const th = ev.target.closest('th[data-table]');
+        if (!th) return;
+        const table = th.dataset.table, key = th.dataset.key;
+        const dir = sort && sort.table === table && sort.key === key && sort.dir === 'asc' ? 'desc' : 'asc';
+        sort = { table, key, dir };
+        draw();
+      });
     }
     return {
       async show() {
-        $('#main').innerHTML = `
-          <h2>Stats by role</h2>
-          <table><thead><tr><th>role</th><th>provider</th><th>model</th><th class="num">att</th><th class="num">succeed%</th><th class="num">turns</th><th class="num">cost</th><th class="num">secs</th><th class="num">landed</th><th class="num">broke</th><th class="num">broke%</th></tr></thead><tbody id="stats-rows"></tbody></table>`;
-        const d = await get('/api/stats');
-        drawRows(d.by_role || []);
+        doc = await get('/api/stats');
+        draw();
       },
     };
   }

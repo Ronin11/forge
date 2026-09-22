@@ -706,7 +706,7 @@ full.
 The document `forge stats --json` prints: `{workflows, steps, journal,
 no_journal, projects, jobs, by_role, assessment_correlation,
 human_attention, human_attention_projects, time_to_live,
-time_to_live_projects, factors, tools}`.
+time_to_live_projects, factors, daily, tools}`.
 `tools` is present only with `--tools` (an object keyed by step name);
 otherwise it is omitted. `projects` and `jobs` are present only when
 `forge stats` is not itself scoped to one project or initiative.
@@ -719,6 +719,18 @@ definition hash: `workflow`, `hash`, `pieces` (task count),
 header-named legacy key flattened onto the same object: `WF`, `HASH`,
 `TASKS`, `OK`, `FAIL`, `BLK`, `UNV`, `ATT`, `COST`, `$/OK`, `LANDED`,
 `$/LANDED` — kept for one release only; read the named fields instead.
+
+Also `rate` (`succeeded / pieces`, 0 when `pieces` is 0 — the same
+verified rate [`Profile`](../src/profile.rs) reports, over this
+version's own tasks in scope rather than a lookback window), `rate_lo`/
+`rate_hi` (its Wilson 95% interval, `crate::profile::wilson`), and
+`regressed` (`true` only on a workflow's current version —
+`Store::workflow_versions`'s first hash — when its `rate` interval sits
+entirely below its previous version's, both sides needing at least
+`crate::profile::MIN_N` pieces; `false` on every other version and on a
+current version with no previous one). The `/stats` workflows tab (web
+UI task 5) draws `rate_lo`–`rate_hi` as a bar per version and shows the
+regression mark where `regressed` is set.
 
 Defect escape, the two signals docs/LATER.md calls out: `broke_base`
 (landed tasks whose `landed_sha` became a later task's `base_sha`,
@@ -904,6 +916,17 @@ factor in this scope (a singular fit reports no effect rather than a
 number it cannot stand behind). `forge stats --factors` is the
 text-mode view of the same rows, one table, `ref` where `is_reference`
 is true.
+
+**`daily`** — array of `StatsDailyRow`, `{date, landed, cost_usd}`:
+this scope's landings and spend, one row per UTC date, the last 30
+days (`Store::daily_stats`'s `DAILY_WINDOW_DAYS`) including today,
+oldest first. `landed` is how many of this scope's tasks landed that
+day (by `landed_at`); `cost_usd` is the sum of `attempts.cost_usd`
+over every attempt on one of this scope's tasks that started that
+day. Always exactly 30 rows — a day with no activity is zeroed, not
+omitted — so a client can draw a fixed-width chart straight off the
+array. The `/stats` page (web UI task 5) draws this as an SVG chart of
+daily landings and daily spend, above its tabs.
 
 ### `PluginRow`
 

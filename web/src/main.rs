@@ -43,6 +43,7 @@ const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
 const TASK_JS: &str = include_str!("task.js");
 const INITIATIVE_JS: &str = include_str!("initiative.js");
+const STATS_JS: &str = include_str!("stats.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -288,31 +289,16 @@ fn graph_modules(forge: &Forge, repo: &str) -> Result<Value> {
     forge.json(&["graph", repo, "--json"])
 }
 
-/// `forge stats --json`, through the client crate's typed `StatsDoc`, for
-/// the `/stats` page's by-role table.
+/// `forge stats --json` (docs/CLIENT.md's `StatsDoc`), passed straight
+/// through: the `/stats` page (web UI task 5) renders every tab —
+/// workflows, quality, by-role, human attention, time to live, factors —
+/// and its 30-day chart client-side from the same document the CLI
+/// prints, rather than a server-side reshaping of a typed subset. A
+/// `factors` key missing entirely (an older `forge` with no `--factors`
+/// verb) is how the client knows to hide that tab; this server always
+/// forwards whatever the CLI gives it, present or not.
 fn stats_json(forge: &Forge) -> Result<Value> {
-    let doc = forge.stats()?;
-    let by_role: Vec<Value> = doc
-        .by_role
-        .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "role": r.role,
-                "provider": r.provider,
-                "model": r.model,
-                "attempts": r.attempts,
-                "succeeded": r.succeeded,
-                "succeeded_share": r.succeeded_share,
-                "mean_turns": r.mean_turns,
-                "mean_cost_usd": r.mean_cost_usd,
-                "mean_secs": r.mean_secs,
-                "landed": r.landed,
-                "broke_base": r.broke_base,
-                "broke_base_share": r.broke_base_share,
-            })
-        })
-        .collect();
-    Ok(serde_json::json!({ "by_role": by_role }))
+    forge.json(&["stats", "--json"])
 }
 
 /// `forge doctor --json`, through the client crate's typed `DoctorCheck`,
@@ -1054,6 +1040,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
         "/task.js" => text(200, TASK_JS, "application/javascript"),
         "/initiative.js" => text(200, INITIATIVE_JS, "application/javascript"),
+        "/stats.js" => text(200, STATS_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
