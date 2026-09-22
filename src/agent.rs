@@ -1115,6 +1115,51 @@ fn apply_codex_event(
     None
 }
 
+/// The schema as OpenAI's strict structured output accepts it: every
+/// object lists all of its properties as `required` and forbids
+/// additional ones. Claude takes the schemas as written, with optional
+/// keys; codex's phase two (`--output-schema`) is refused for the same
+/// text ("'required' is required to be supplied and to be an array
+/// including every key in properties", task 509, 2026-09-22). Nothing is
+/// made nullable: an optional string or array becomes required and the
+/// model sends it empty, which every envelope reader already treats as
+/// absent, whereas an explicit `null` would fail the `#[serde(default)]`
+/// fields.
+pub fn strict_schema(schema: &str) -> Result<String> {
+    let mut v: serde_json::Value =
+        serde_json::from_str(schema).context("the output schema is not valid JSON")?;
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object")
+                    || map.contains_key("properties");
+                if is_object && let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                    let keys: Vec<serde_json::Value> = props
+                        .keys()
+                        .map(|k| serde_json::Value::String(k.clone()))
+                        .collect();
+                    map.insert("required".into(), serde_json::Value::Array(keys));
+                    map.insert(
+                        "additionalProperties".into(),
+                        serde_json::Value::Bool(false),
+                    );
+                }
+                for (_, child) in map.iter_mut() {
+                    walk(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    walk(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut v);
+    Ok(serde_json::to_string(&v)?)
+}
+
 /// codex's `exec` flags shared by both of the two phases below, after `exec
 /// [resume <id>]` and before whatever differs (`--output-schema` and the
 /// prompt): `--skip-git-repo-check --json -C <worktree> [-m <model>]`,
@@ -1328,7 +1373,8 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
         .worktree
         .join(".git")
         .join(format!("forge-{}-schema.json", l.step));
-    std::fs::write(&schema_path, l.schema)
+    let strict = strict_schema(l.schema)?;
+    std::fs::write(&schema_path, strict)
         .with_context(|| format!("writing {}", schema_path.display()))?;
 
     let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
@@ -1500,6 +1546,79 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn strict_schema_requires_every_key_of_every_object_and_keeps_the_rest() {
+        let strict = strict_schema(crate::envelope::SCHEMA).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&strict).unwrap();
+        fn check(v: &serde_json::Value) {
+            if let Some(props) = v.get("properties").and_then(|p| p.as_object()) {
+                let required: Vec<&str> = v["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.as_str().unwrap())
+                    .collect();
+                for k in props.keys() {
+                    assert!(required.contains(&k.as_str()), "{k} not required");
+                }
+                assert_eq!(v["additionalProperties"], false);
+            }
+            match v {
+                serde_json::Value::Object(m) => m.values().for_each(check),
+                serde_json::Value::Array(a) => a.iter().for_each(check),
+                _ => {}
+            }
+        }
+        check(&v);
+        // The optional needs_input object now requires path, kind, options, context, to.
+        let ni = &v["properties"]["needs_input"]["anyOf"][1];
+        let req: Vec<&str> = ni["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        for k in [
+            "question",
+            "tried",
+            "path",
+            "kind",
+            "options",
+            "context",
+            "checkpoint",
+            "to",
+        ] {
+            assert!(req.contains(&k), "{k}");
+        }
+        // Nothing became nullable and the enum survived.
+        assert_eq!(ni["properties"]["path"]["type"], "string");
+        assert_eq!(
+            ni["properties"]["kind"]["enum"].as_array().unwrap().len(),
+            4
+        );
+        // An envelope written the strict way (every key present, optional ones empty) validates
+        // against it and parses into the same Envelope as before.
+        let doc = serde_json::json!({
+            "schema_version": 1, "summary": "did it",
+            "needs_input": {"question": "which?", "tried": "x", "path": "", "kind": "question",
+                             "options": [], "context": "", "checkpoint": null, "to": ""},
+            "changes": [{"path": "a.rs", "kind": "modified", "summary": ""}],
+            "checks_run": [{"check": "test", "passed": true, "notes": ""}],
+            "claims": [{"claim": "c", "evidence": ""}]
+        });
+        jsonschema::validate(&v, &doc).unwrap();
+        let e: crate::envelope::Envelope = serde_json::from_value(doc).unwrap();
+        assert_eq!(e.needs_input.as_ref().unwrap().to.as_deref(), Some(""));
+        // And every other schema the runners send is accepted by the transform.
+        for s in [
+            crate::supervisor::SCHEMA,
+            crate::assess::SCHEMA,
+            crate::deploy_look::SCHEMA,
+        ] {
+            strict_schema(s).unwrap();
+        }
+    }
     use super::*;
     use crate::config::EarlyEnding;
     use serde_json::json;
