@@ -206,11 +206,39 @@ impl Forge {
         Ok(serde_json::from_value(v)?)
     }
 
-    /// `forge workflows show NAME --json`: one workflow in full — its file
-    /// text, where it came from, kind, every resolved step, and its
-    /// measured profile.
-    pub fn workflow_show(&self, name: &str) -> Result<WorkflowShowDoc> {
-        let v = self.json(&["workflows", "show", name, "--json"])?;
+    /// `forge workflows --json [--project NAME]`: the operator catalog, or,
+    /// with `project`, the catalog plus that project's own repository
+    /// workflows (`source: "repo"` entries), for the `/workflows` list page.
+    pub fn workflow_list(&self, project: Option<&str>) -> Result<Vec<Workflow>> {
+        let mut args = vec!["workflows"];
+        if let Some(p) = project {
+            args.push("--project");
+            args.push(p);
+        }
+        args.push("--json");
+        let v = self.json(&args)?;
+        #[derive(Deserialize, Default)]
+        struct Doc {
+            #[serde(default)]
+            workflows: Vec<Workflow>,
+        }
+        let doc: Doc = serde_json::from_value(v)?;
+        Ok(doc.workflows)
+    }
+
+    /// `forge workflows show NAME [--project NAME] --json`: one workflow in
+    /// full — its file text, where it came from, kind, every resolved
+    /// step, and its measured profile. `project` finds a repository
+    /// workflow (a project's own `.forge/workflows/`) when the operator
+    /// catalog has none of this name.
+    pub fn workflow_show(&self, name: &str, project: Option<&str>) -> Result<WorkflowShowDoc> {
+        let mut args = vec!["workflows", "show", name];
+        if let Some(p) = project {
+            args.push("--project");
+            args.push(p);
+        }
+        args.push("--json");
+        let v = self.json(&args)?;
         Ok(serde_json::from_value(v)?)
     }
 
@@ -1412,6 +1440,13 @@ pub struct Demotion {
 pub struct Workflow {
     #[serde(default)]
     pub name: String,
+    /// `"build"` or `"run"`.
+    #[serde(default)]
+    pub kind: String,
+    /// `"catalog"` (the operator's own) or `"repo"` (a project's own
+    /// `.forge/workflows/`).
+    #[serde(default)]
+    pub source: String,
     #[serde(default)]
     pub hash: String,
     #[serde(default)]

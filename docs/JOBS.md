@@ -299,10 +299,18 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
   offset that already started a job for it starts nothing.
 - **Steps.** Operations and directives from the catalog, unchanged in
   shape. A directive in a job carries a `role`, routed to a provider
-  like every role, and a schema; it is given the step's inputs and its
-  instructions, nothing else, and it has no tools. This is the bounded
-  judgment the local model is fit for: the harness controls the inputs
-  and the assertion checks the output.
+  like every role, and a schema; it is given the step's inputs — the
+  trigger's own input document, and every earlier step's output, operation
+  or directive alike — and its instructions, nothing else, and it has no
+  tools. This is the bounded judgment the local model is fit for: the
+  harness controls the inputs and the assertion checks the output. An
+  operation whose action declares `produces = ["interface"]`
+  (`ActionDef::yields_interface`, the same field a build workflow's
+  operation uses to hand its stdout to the next code step) hands its
+  stdout on the same way: a later directive's prompt sees it as "the
+  output of step ..." beside anything an earlier directive produced
+  (`author-workflow`'s `dump-workflow-catalog` step is the first user of
+  this on the job side — docs/WORKFLOWS.md, "Authoring").
 
   A step may instead name a sibling `kind = "run"` workflow
   (`{ workflow = "disk-and-logs" }`), the same field a build workflow

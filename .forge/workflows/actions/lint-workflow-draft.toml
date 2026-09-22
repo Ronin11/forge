@@ -1,0 +1,4 @@
+name = "lint-workflow-draft"
+kind = "operation"
+description = "writes the draft-workflow directive's toml to a scratch path and runs forge workflows lint --stdin on it, failing the job with the lint output when it does not pass"
+run = ["bash", ".forge/workflows/actions/lint-workflow-draft.sh"]
