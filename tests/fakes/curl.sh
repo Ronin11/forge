@@ -18,6 +18,7 @@ method=GET
 outfile=""
 want_code=0
 data=""
+data_fields=""
 url=""
 
 while [ $# -gt 0 ]; do
@@ -42,6 +43,8 @@ while [ $# -gt 0 ]; do
             ;;
         --data-urlencode)
             data=$2
+            data_fields="$data_fields
+$2"
             shift 2
             ;;
         *)
@@ -50,6 +53,12 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# The raw (not urlencoded — this fake never touches the wire) value
+# passed as `--data-urlencode <key>=<value>` for $1, or empty.
+field() {
+    printf '%s\n' "$data_fields" | sed -n "s/^$1=//p" | tail -n1
+}
 
 printf '%s %s\n' "$method" "$url" >>"$calls_file"
 
@@ -106,6 +115,54 @@ case "$method $path" in
         tmp=$(mktemp)
         jq --arg n "$num" --arg s "$sid" '. + [{sid: $s, phone_number: $n}]' "$owned_file" >"$tmp" && mv "$tmp" "$owned_file"
         body=$(jq -n --arg n "$num" --arg s "$sid" '{sid: $s, phone_number: $n}')
+        ;;
+    "GET "*"Messages.json")
+        # $dir/messages.json: an array of inbound messages (sid, from,
+        # to, body, date_sent), seeded by the test and grown between
+        # polls. The fake ignores the DateSent filter (real Twilio's
+        # own is date-, not second-, granularity anyway); twilio.sh's
+        # own sid dedup is what actually guarantees no duplicate is
+        # ever processed, restart or not.
+        messages_file="$dir/messages.json"
+        [ -f "$messages_file" ] || echo '[]' >"$messages_file"
+        to=""
+        case "$query" in
+            *To=*)
+                to=${query#*To=}
+                to=${to%%&*}
+                to=${to//%2B/+}
+                ;;
+        esac
+        if [ -n "$to" ]; then
+            body=$(jq --arg t "$to" '{messages: [.[] | select(.to==$t)]}' "$messages_file")
+        else
+            body=$(jq '{messages: .}' "$messages_file")
+        fi
+        ;;
+    "POST "*"Messages.json")
+        # $dir/send_error.json, when present, is a Twilio-shaped error
+        # document (code, message, ...) this fake returns with HTTP 400
+        # instead of sending: send-sms.toml's own error path and
+        # twilio.sh's `twilio_reply` both read it the same way. Absent,
+        # the send "succeeds" and is appended to $dir/sent.json for the
+        # test to read back.
+        from=$(field From)
+        to=$(field To)
+        msg_body=$(field Body)
+        err_file="$dir/send_error.json"
+        if [ -f "$err_file" ]; then
+            body=$(cat "$err_file")
+            code=400
+        else
+            sid="SM$(printf '%s%s%s' "$from" "$to" "$msg_body" | md5sum | cut -c1-32)"
+            sent_file="$dir/sent.json"
+            [ -f "$sent_file" ] || echo '[]' >"$sent_file"
+            msg=$(jq -n --arg s "$sid" --arg f "$from" --arg t "$to" --arg b "$msg_body" \
+                '{sid: $s, from: $f, to: $t, body: $b, status: "queued"}')
+            tmp=$(mktemp)
+            jq --argjson m "$msg" '. + [$m]' "$sent_file" >"$tmp" && mv "$tmp" "$sent_file"
+            body=$msg
+        fi
         ;;
     "DELETE "*"IncomingPhoneNumbers/"*)
         sid=${path##*IncomingPhoneNumbers/}

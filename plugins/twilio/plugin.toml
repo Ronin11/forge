@@ -1,5 +1,5 @@
 name = "twilio"
 description = "search, buy and release Forge's own Twilio phone numbers from the command line; buying is an operator verb, gated like `forge provision`, never run by this plugin's own loop"
 run = ["./twilio.sh"]
-capabilities = ["message"]
+capabilities = ["intake", "message"]
 restart = "on-failure"

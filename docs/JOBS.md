@@ -347,6 +347,10 @@ on_failure = "ask:contact" # ask:contact | ask:operator | retry:2 | drop (honour
 - **Effects.** An operation that acts on the world declares its effect
   kind. The executor logs every effect with its target. In a dry run,
   effect operations record what they would have done and do nothing.
+  The `message` effect ships two built-in operations, `send-signal` and
+  `send-sms` (docs/ACTIONS.md, "Operations"; docs/PLUGINS.md, "signal"
+  and "twilio") — a workflow's own `[env]` or project secrets pick
+  which channel a step actually reaches.
 - **Assertions.** Commands run after the steps, with the effect log and
   every step's output on disk; exit status is the verdict, as with a
   deploy check.

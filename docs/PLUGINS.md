@@ -263,37 +263,69 @@ Its configuration is `plugins/statusline/config` (see `config.example`),
 which can set the forge-web URL to include in the document. Install with
 `forge plugin install plugins/statusline`.
 
-**twilio** (`message`) searches for, buys and releases Forge's own
-Twilio phone numbers (the Signal bot's own number today; later, SMS for
-customers, docs/INTAKE.md) through Twilio's REST and Pricing APIs. Its
-entry point is a CLI, `plugins/twilio/twilio.sh <verb>`, run by hand
-rather than driven by this plugin's own loop: `search [--area-code N]
+**twilio** (`intake`, `message`) searches for, buys and releases Forge's
+own Twilio phone numbers, and is an SMS channel over them, the way the
+signal plugin is one over Signal (docs/INTAKE.md, "the text-message
+business"), through Twilio's REST and Pricing APIs. Its entry point is
+a CLI, `plugins/twilio/twilio.sh <verb>`; `search [--area-code N]
 [--sms] [--voice] [--limit N]` (read-only, always allowed) lists numbers
 `AvailablePhoneNumbers` currently offers, each with its locality,
 capabilities and monthly price from the Pricing API; `owned` lists
 `IncomingPhoneNumbers` Forge already holds, each with its price. Buying
 is gated the way `forge provision` gates standing up a Hetzner box
-(docs/DEPLOY.md, "Provisioning"): an operator verb, never something an
-agent or this plugin's own loop reaches on its own. `buy <number>
---yes` refuses without `--yes`, refuses a number `search` would not
-currently return as available, and refuses a purchase that would push
-Forge's account past `MAX_NUMBERS` numbers or `MONTHLY_CAP_USD` dollars
-a month (its current owned total, read from the account itself, plus
-the number being bought) — both set in `plugins/twilio/config` (see
-`config.example`), defaulting to 2 and $5. A bought number is recorded
-in `$FORGE_PLUGIN_STATE/numbers.json` (its number, Twilio SID, purchase
-time and price); `release <number> --yes` carries the same `--yes` gate
-and removes it from both Twilio and that record. The manifest requires
-at least one capability; `message` is declared now, ahead of use, as
-the minimum this plugin will need once a second task turns its
-supervised loop (currently a no-op) into a poll of Twilio's inbound
-message list and records each one the way the signal plugin's inbound
-side does (see "message" above) — this task does not use it yet. One
-carrier rule the operator, not this plugin, must satisfy in the Twilio
-console before a bought number can send: US outbound SMS from a local
-number needs A2P 10DLC registration (or else a verified toll-free
-number); receiving SMS and voice on a freshly bought number need
-neither. Install with `forge plugin install plugins/twilio`.
+(docs/DEPLOY.md, "Provisioning"): an operator verb, run by hand, never
+something an agent or this plugin's own loop reaches on its own. `buy
+<number> --yes` refuses without `--yes`, refuses a number `search`
+would not currently return as available, and refuses a purchase that
+would push Forge's account past `MAX_NUMBERS` numbers or
+`MONTHLY_CAP_USD` dollars a month (its current owned total, read from
+the account itself, plus the number being bought) — both set in
+`plugins/twilio/config` (see `config.example`), defaulting to 2 and $5.
+A bought number is recorded in `$FORGE_PLUGIN_STATE/numbers.json` (its
+number, Twilio SID, purchase time and price); `release <number> --yes`
+carries the same `--yes` gate and removes it from both Twilio and that
+record.
+
+Unlike buying, the supervised loop (no verb) is unattended: every
+`POLL_SECS` (default 30) it fetches each owned number's new messages —
+`GET Accounts/{sid}/Messages.json` filtered `To=` the number and
+`DateSent>=` a cursor kept in `$FORGE_PLUGIN_STATE/cursor` (a second
+file, `$FORGE_PLUGIN_STATE/cursor-sids`, tracks every message id
+already processed at the cursor's own timestamp, so a restart, or a
+filter no finer than a second, never processes one twice). Every
+message it sees is appended to `$FORGE_PLUGIN_STATE/inbox.jsonl` and
+recorded in the message record (`forge message record <project>
+--channel sms --from <E.164> --text <text>`, always by the sender's raw
+number), then routed the way the signal plugin routes an inbound
+message, reusing its config names where they apply: an `ALLOWED`
+sender's message queues work (`forge add TARGET_REPO <text>`) or
+answers an open question (`/answer <id> <text>`); a `CONTACTS`
+name:number pair's reply to their own open question is submitted as
+their answer (`forge answer ID TEXT --by NAME`); a `CONTACTS` name's
+other messages route through the concierge (docs/INTAKE.md, "The front
+door is not the interview") to whichever project `PROJECTS` names for
+them, or `TARGET_REPO`'s own; anyone else's message is recorded and
+logged, nothing queued — the same trust posture as everything else a
+plugin does (see "Trust"). A reply goes out the same way
+`src/builtins/operations/send-sms.toml` does (a job step's `message`
+effect, docs/JOBS.md), from the owned number the inbound message
+arrived on, and is itself recorded (`--to`). `twilio.sh code <number>
+[--since SECS] [--wait SECS]` prints the most recent 4-8 digit code
+texted to that number, read back from `inbox.jsonl`: a registration
+flow's verification code (a `signal-cli register` for a bot account,
+say) without a human reading a phone.
+
+The manifest requires at least one capability; `message` covers the
+channel, `intake` the work an `ALLOWED` sender's plain message and a
+`CONTACTS` name's concierge-filed task both create. One carrier rule
+the operator, not this plugin, must satisfy in the Twilio console
+before a bought number can send: US outbound SMS from a local number
+needs A2P 10DLC registration (or else a verified toll-free number);
+receiving SMS and voice on a freshly bought number need neither — an
+unregistered sender's send fails with Twilio error 30034, which
+`send-sms.toml` surfaces plainly, since it is a human step, not
+something a retry fixes. Install with `forge plugin install
+plugins/twilio`.
 
 ## What this is not
 
