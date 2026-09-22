@@ -200,6 +200,7 @@ src/doctor.rs       forge doctor
 src/egress.rs       the egress allowlist and its proxy
 src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
 src/envelope.rs     the result contract: schema and parser
+src/experiment.rs   the economist: experiment.toml's weighted draw and its weekly rebalance
 src/git.rs          the few git operations Forge performs
 src/graph.rs        forge graph: the module graph as data, from forge-repomap edges
 src/intake.rs       intake acceptance: a confirmed brief becomes a project
