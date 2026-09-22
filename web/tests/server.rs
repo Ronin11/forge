@@ -14,6 +14,18 @@ case "$1" in
   doctor) echo '[{"name":"worker","status":"ok","detail":"pid 1 running","hint":""},{"name":"queue","status":"ok","detail":"2 queued, 1 running","hint":"","queued":2,"running":1},{"name":"spend","status":"ok","detail":"$3.50 of $10.00 in the last 24h","hint":"","spend_usd":3.5,"spend_cap_usd":10.0},{"name":"rate_limit","status":"warn","detail":"anthropic: 5h 82%, 7d 40%","hint":"nearly at cap","provider":"anthropic","five_hour_pct":0.82,"five_hour_resets_at":2000000200,"seven_day_pct":0.4,"seven_day_resets_at":2000600000}]' ;;
   log) shift; printf '[{"id":9,"args":"%s"}]\n' "$*" ;;
   retry) echo "retried task $2 as 99" ;;
+  answer) echo "answered task $2 as 99: $3" ;;
+  withdraw)
+    id="$2"; reason=""; shift 2
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --reason) reason="$2"; shift 2 ;;
+        --by) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    echo "withdrew task $id: $reason" ;;
+  land) echo "landed task $2 @ deadbeef" ;;
   events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
   plugin)
     case "$2" in
@@ -255,11 +267,15 @@ fn without_the_token_nothing_is_served() {
         "/api/journal/1",
         "/api/requests",
         "/requests",
+        "/api/answer/1",
+        "/api/withdraw/1",
+        "/api/land/1",
         "/api/plugins",
         "/api/doctor",
         "/doctor",
         "/app.js",
         "/shell.js",
+        "/requests.js",
         "/styles.css",
         "/time.js",
         "/projects",
@@ -367,6 +383,63 @@ fn retrying_a_task_posts_through_to_forge_retry_and_a_get_is_refused() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v["output"].as_str().unwrap().contains("1"), "{body}");
     let (status, _, _) = get(&w.addr, "/api/retry/1", &cookie);
+    assert_eq!(status, 405);
+}
+
+#[test]
+fn the_inboxs_write_routes_call_forge_answer_withdraw_and_land_with_the_bodys_text() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    // POST /api/answer/<id>: the body is JSON {"text"}, run through
+    // `forge answer <id> <text>` — the fake echoes it back so the test
+    // can see the verb was called with the answer's own text.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/answer/1",
+        &cookie,
+        r#"{"text":"use postgres"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        v["output"].as_str().unwrap().contains("use postgres"),
+        "{body}"
+    );
+    // A blank answer never reaches the verb.
+    let (status, _, body) = post_body(&w.addr, "/api/answer/1", &cookie, r#"{"text":"  "}"#);
+    assert_eq!(status, 422, "{body}");
+    let (status, _, _) = get(&w.addr, "/api/answer/1", &cookie);
+    assert_eq!(status, 405);
+
+    // POST /api/withdraw/<id>: the body is JSON {"reason"}, run through
+    // `forge withdraw <id> --reason <reason>`.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/withdraw/2",
+        &cookie,
+        r#"{"reason":"superseded by task 9"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        v["output"]
+            .as_str()
+            .unwrap()
+            .contains("superseded by task 9"),
+        "{body}"
+    );
+    let (status, _, body) = post_body(&w.addr, "/api/withdraw/2", &cookie, r#"{"reason":""}"#);
+    assert_eq!(status, 422, "{body}");
+    let (status, _, _) = get(&w.addr, "/api/withdraw/2", &cookie);
+    assert_eq!(status, 405);
+
+    // POST /api/land/<id>: no body, exactly like /api/retry/<id>.
+    let (status, _, body) = post(&w.addr, "/api/land/3", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["output"].as_str().unwrap().contains('3'), "{body}");
+    let (status, _, _) = get(&w.addr, "/api/land/3", &cookie);
     assert_eq!(status, 405);
 }
 
