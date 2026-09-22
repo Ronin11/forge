@@ -1205,6 +1205,11 @@ pub struct StatsFactorRow {
     pub is_reference: bool,
     pub effect: Option<f64>,
     pub effect_se: Option<f64>,
+    /// Exploration over the level's tasks' code attempts: the mean tool
+    /// call at which the first edit came, and the mean tool calls per
+    /// turn; `null` when no attempt recorded them.
+    pub mean_first_edit_call: Option<f64>,
+    pub mean_calls_per_turn: Option<f64>,
 }
 
 impl From<&crate::store::FactorLevelStat> for StatsFactorRow {
@@ -1221,6 +1226,8 @@ impl From<&crate::store::FactorLevelStat> for StatsFactorRow {
             is_reference: f.is_reference,
             effect: f.effect,
             effect_se: f.effect_se,
+            mean_first_edit_call: f.mean_first_edit_call,
+            mean_calls_per_turn: f.mean_calls_per_turn,
         }
     }
 }

@@ -952,6 +952,10 @@ set) — every one of them, or only those that finished in the last
   role carries no row for it.
 - `"workflow"` — `level` is the task's `workflow` name (not its hash;
   every version of a workflow is one level here).
+- `"map"` — `level` is `"spans"` or `"names"`: the arm the experiment
+  drew for the repository map's rendering (`name@start-end` or names
+  only; docs/CONTEXT.md, "Line spans and the map factor"). Only tasks
+  that carry a draw have a row.
 - `"size"` — `level` is `"small"`, `"medium"`, or `"large"`: a plain,
   hand-picked score over the two task-shape fields piece 1 recorded
   (`shape_text_len` plus 80 times `shape_path_tokens`, split at 150 and
@@ -964,6 +968,12 @@ rate, `landed / tasks`) with its Wilson 95% interval (`rate_lo`,
 wide interval, not a confident number), and `mean_true_cost_usd` (mean
 of `attempts.cost_usd` summed per task plus that task's cached repair
 cost, over this level's own landed tasks; `null` when none landed).
+Two exploration measures ride along, over the level's tasks' code
+attempts: `mean_first_edit_call` (the tool call at which the first edit
+came, `attempts.first_edit`, the first attempt that recorded one per
+task) and `mean_calls_per_turn` (tool calls over turns); `null` when no
+attempt recorded them. The text table shows them as FIRSTEDIT and
+CALLS/TURN.
 
 `effect` and `effect_se` come from one joint fit, not one per factor:
 plain least squares (normal equations solved by hand, no library — see

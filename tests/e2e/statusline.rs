@@ -140,9 +140,17 @@ fn a_blocked_task_moves_the_state_to_attention() {
         wait_until(|| e.task(id).0 == "blocked", Duration::from_secs(15)),
         "the task never blocked"
     );
+    // The plugin reads the counts and the open questions in two calls, so a
+    // status can say "attention" from the question a beat before its
+    // blocked count catches up; wait for the whole expectation, not the
+    // first field of it (this raced one run in three under a load of 30).
     assert!(
-        wait_until(|| state_is(&path, "attention"), Duration::from_secs(15)),
-        "expected attention once a question is open: {:?}",
+        wait_until(
+            || state_is(&path, "attention")
+                && read_status(&path).and_then(|v| v["blocked"].as_i64()) == Some(1),
+            Duration::from_secs(15)
+        ),
+        "expected attention with one blocked task once a question is open: {:?}",
         read_status(&path)
     );
     let doc: StatusDoc = serde_json::from_value(read_status(&path).unwrap()).unwrap();
