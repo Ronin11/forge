@@ -1055,6 +1055,7 @@ async fn run_directive_step(
             worktree: wt,
             base_sha: &t.base_sha,
             start_sha: &t.base_sha,
+            branch: &t.branch,
             cfg,
             task_checks: &t.checks,
             paths: &[],

@@ -263,6 +263,7 @@ pub async fn run_attempt(
             worktree: &spec.dir,
             base_sha: &t.base_sha,
             start_sha: &a.start_sha,
+            branch: &t.branch,
             cfg,
             task_checks,
             paths,
