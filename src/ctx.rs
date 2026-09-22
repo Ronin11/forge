@@ -218,7 +218,11 @@ impl Forge {
 
     /// `effective_provider`, also naming which layer decided: see
     /// `resolve_provider_routed`.
-    pub fn effective_provider_routed(&self, t: &Task, role: &str) -> Result<(&agent::Provider, &'static str)> {
+    pub fn effective_provider_routed(
+        &self,
+        t: &Task,
+        role: &str,
+    ) -> Result<(&agent::Provider, &'static str)> {
         let project_roles = self
             .task_project(t)
             .map(|p| p.role_providers)

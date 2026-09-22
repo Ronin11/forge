@@ -657,15 +657,7 @@ ALTER TABLE tasks ADD COLUMN shape_path_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN shape_tdd INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN shape_declared_checks INTEGER NOT NULL DEFAULT 0;
 ",
-    // The routing record (docs/ECONOMIST.md, "The routing record"): per
-    // role that ran, the provider, model, and workflow it ran under, each
-    // with its source (flag, project, operator, default, or experiment).
-    // `model_source` and `workflow_source` are computed once at enqueue
-    // (`queue::enqueue`), since `model` and `workflow` are themselves
-    // resolved once and shared by every role; `routing_json` is built up
-    // as each role actually runs (`engine::run_directive_step`,
-    // `assess::try_run`) and stays `{}` for a task enqueued before this
-    // column existed.
+    // The routing record (see `Task::routing`, docs/ECONOMIST.md).
     "
 ALTER TABLE tasks ADD COLUMN model_source TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE tasks ADD COLUMN workflow_source TEXT NOT NULL DEFAULT 'default';

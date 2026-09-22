@@ -3774,6 +3774,17 @@ fn trace(id: i64, json: bool) -> Result<()> {
         t.shape_tdd,
         t.shape_declared_checks
     );
+    for (role, r) in &doc.task.routing {
+        out!(
+            "routing    {role:<8} provider={}({}) model={}({}) workflow={}({})",
+            r.provider.value,
+            r.provider.source,
+            r.model.value,
+            r.model.source,
+            r.workflow.value,
+            r.workflow.source
+        );
+    }
     if let Ok(r) = serde_json::from_value::<workflows::Resolved>(doc.resolved.clone()) {
         out!(
             "resolved   {}",
@@ -4972,6 +4983,24 @@ fn show(id: i64) -> Result<()> {
             task.explore
                 .iter()
                 .map(|(role, provider)| format!("{role}={provider}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !task.routing.is_empty() {
+        out!(
+            "routing    {}",
+            task.routing
+                .iter()
+                .map(|(role, r)| format!(
+                    "{role}: provider={}({}) model={}({}) workflow={}({})",
+                    r.provider.value,
+                    r.provider.source,
+                    r.model.value,
+                    r.model.source,
+                    r.workflow.value,
+                    r.workflow.source
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         );

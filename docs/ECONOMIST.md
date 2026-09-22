@@ -59,6 +59,16 @@ routing. The night shifts that follow this note exist to fill that row.
 - Budgets: task, initiative, project defaults.
 - Task shape: repository, workflow if named, the text's size, whether
   it names files, whether it has hidden tests.
+- The routing record: every task's `routing_json`, per role that ran
+  (code, tests, review, plan, assess) the provider, model, and workflow
+  it ran under, each with its source (flag, project, operator, default,
+  or experiment — the last is piece 4's explore draw). Written where the
+  provider is resolved (`src/engine.rs`) and where the model is chosen
+  (`src/attempt.rs`); shown by `forge trace` and `forge show`; documented
+  in docs/CLIENT.md. This is what makes "provider per role" (below)
+  answerable from the record rather than asserted: a decision the
+  economist makes can be explained by naming the row that shows why the
+  step before it ran where it did.
 
 ## The decisions, in the order to build them
 

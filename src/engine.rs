@@ -667,8 +667,17 @@ async fn run_directive_step(
                 source: provider_source.to_string(),
             },
             model: crate::store::Routed {
-                value: crate::attempt::attempt_model(&step.action.name, &ts.model, &ts.model, provider),
-                source: crate::attempt::attempt_model_source(step.model.as_deref(), provider, &t.model_source),
+                value: crate::attempt::attempt_model(
+                    &step.action.name,
+                    &ts.model,
+                    &ts.model,
+                    provider,
+                ),
+                source: crate::attempt::attempt_model_source(
+                    step.model.as_deref(),
+                    provider,
+                    &t.model_source,
+                ),
             },
             workflow: crate::store::Routed {
                 value: t.workflow.clone(),

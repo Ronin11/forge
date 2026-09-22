@@ -1045,6 +1045,94 @@ mod tests {
         (dir, f)
     }
 
+    /// The routing record (docs/ECONOMIST.md, "The routing record"): a
+    /// task that named its own `--provider` routes every role under it,
+    /// so `Task::routing` should record source `"flag"` for every one —
+    /// never the project's or the operator's, even when both name a
+    /// provider for the same role. `effective_provider_routed` is exactly
+    /// what `engine::run_directive_step` and `assess::try_run` call to
+    /// build each role's entry, so exercising it here covers what they'd
+    /// record without needing a real attempt.
+    #[test]
+    fn a_task_flagged_with_provider_records_source_flag_for_every_role() {
+        let (_dir, mut f) = fixture_forge();
+        f.providers.insert(
+            "devhome".to_string(),
+            crate::agent::Provider {
+                name: "devhome".to_string(),
+                ..crate::agent::Provider::default()
+            },
+        );
+        // Both layers name a provider for "code" too, so a pass here
+        // proves the flag actually wins rather than merely being present.
+        f.roles.insert("code".to_string(), "anthropic".to_string());
+        f.store
+            .create_project(&crate::store::Project {
+                name: "acme".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        f.store
+            .set_project_defaults(
+                "acme",
+                &crate::store::ProjectDefaults {
+                    role_providers: [("code".to_string(), "anthropic".to_string())].into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let t = Task {
+            provider: "devhome".to_string(),
+            project: Some("acme".to_string()),
+            ..Default::default()
+        };
+        for role in ["code", "tests", "review", "plan", "assess"] {
+            let (provider, source) = f.effective_provider_routed(&t, role).unwrap();
+            assert_eq!(provider.name, "devhome", "role {role}");
+            assert_eq!(source, "flag", "role {role}");
+        }
+    }
+
+    /// The other half: a task that names no `--provider` resolves each
+    /// role through its project's `[roles]` table when that role is
+    /// there, else the operator's (`build_roles` always names every role,
+    /// "anthropic" where the operator's own config names none — so
+    /// "operator" is what a role with no project override always records
+    /// through a real `Forge`; "default" only shows up against a
+    /// hand-built, incomplete operator table, as `ctx::resolve_provider`'s
+    /// own tests use).
+    #[test]
+    fn a_task_without_a_provider_flag_records_project_or_operator() {
+        let (_dir, f) = fixture_forge();
+        f.store
+            .create_project(&crate::store::Project {
+                name: "acme".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        f.store
+            .set_project_defaults(
+                "acme",
+                &crate::store::ProjectDefaults {
+                    role_providers: [("code".to_string(), "anthropic".to_string())].into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let t = Task {
+            provider: String::new(),
+            project: Some("acme".to_string()),
+            ..Default::default()
+        };
+        let (_, code_source) = f.effective_provider_routed(&t, "code").unwrap();
+        assert_eq!(code_source, "project", "the project's [roles] names code");
+        let (_, tests_source) = f.effective_provider_routed(&t, "tests").unwrap();
+        assert_eq!(
+            tests_source, "operator",
+            "the project names no tests provider, so the operator's table applies"
+        );
+    }
+
     #[test]
     fn validate_initiative_file_refuses_an_unknown_provider_naming_the_paragraph() {
         let (_dir, f) = fixture_forge();
