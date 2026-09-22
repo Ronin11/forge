@@ -1,0 +1,26 @@
+# Copy to $FORGE_PLUGIN_DIR/config (KEY=value, one per line, '#' comments
+# and blank lines ignored). Nothing here is parsed as shell. Once copied,
+# chmod 600 this file: twilio.sh refuses to run against a config that is
+# readable or writable by group or other.
+
+# Twilio's REST API credentials (console.twilio.com, Account ->
+# API keys & tokens). Prefer an API key pair over the account's own auth
+# token, since a key can be revoked on its own without rotating every
+# other thing that uses the account's credentials; either pair
+# authenticates every call below. Leave the pair you don't use blank.
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=
+TWILIO_API_KEY_SID=
+TWILIO_API_KEY_SECRET=
+
+# Total monthly rental Forge may hold across every number it owns, in
+# USD. `buy` refuses a purchase that would push the total (every owned
+# number's own price, plus the one being bought) over this.
+MONTHLY_CAP_USD=5
+
+# How many numbers Forge may hold at once. `buy` refuses past this,
+# regardless of cost.
+MAX_NUMBERS=2
+
+# Country to search and buy in, Twilio's ISO country code (e.g. US, GB).
+COUNTRY=US

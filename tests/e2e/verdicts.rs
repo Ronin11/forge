@@ -108,6 +108,27 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
     assert_eq!(step_line.split_whitespace().last(), Some("123"), "{stats}");
 }
 
+/// `envelope::SCHEMA` dropped `changes` from what it asks the model for
+/// (Token cost, C2): git is the only source now. A runner that still
+/// sends `changes` in its structured result (`tests/fakes/ok.sh`, as an
+/// old envelope would) must not break anything reading it back: it still
+/// deserializes into `Envelope` via `#[serde(default)]` and still shows
+/// up in `forge trace --json`.
+#[test]
+fn an_old_envelope_with_changes_still_parses_and_shows_in_trace() {
+    let e = Env::new();
+    assert!(e.run("ok.sh", &[]).status.success());
+    let (state, _, _) = e.task(1);
+    assert_eq!(state, "succeeded");
+
+    let doc: serde_json::Value = e.trace_json("1");
+    let changes = doc["attempts"][0]["envelope"]["changes"]
+        .as_array()
+        .expect("an old envelope's changes still parses");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["path"], "answer.txt");
+}
+
 #[test]
 fn config_may_live_under_dot_forge() {
     let e = Env::new();

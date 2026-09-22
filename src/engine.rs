@@ -999,9 +999,9 @@ async fn run_directive_step(
                     feedback = Some(if let Some(why) = &outcome.ended_early {
                         early_feedback(why, &outcome.early_signals)
                     } else if progress {
-                        "You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result. Its `changes` must list every path you changed since this session began, not only in this continuation; the kernel measures from where you started.".to_string()
+                        "You ran out of turns before finishing. Continue exactly where you left off: finish the work, leave the tree clean, commit, and return the structured result.".to_string()
                     } else {
-                        "You ran out of turns before changing anything. You have already read what you need: stop exploring, make the change now, commit as soon as it compiles, and return the structured result. Its `changes` must list every path you changed since this session began.".to_string()
+                        "You ran out of turns before changing anything. You have already read what you need: stop exploring, make the change now, commit as soon as it compiles, and return the structured result.".to_string()
                     });
                 } else if t.resume_on_failure
                     && a.state == AttemptState::ChecksFailed
