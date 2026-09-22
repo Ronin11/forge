@@ -52,7 +52,9 @@ pub struct TaskFilter {
     pub repo: Option<String>,
     /// Only ids strictly below this one: the next page when scrolling back.
     pub before: Option<i64>,
-    /// A substring of the task text, or an exact id.
+    /// A case-insensitive substring of the task text, its title, its
+    /// stored plan or the summary of its last attempt with an envelope;
+    /// or an exact id. `TaskSummary::matched` says which.
     pub grep: Option<String>,
     pub workflow: Option<String>,
     /// Only this project's tasks.
@@ -126,6 +128,10 @@ pub struct TaskSummary {
     /// task's text mentions it, `touches_text`). `None` without the
     /// filter.
     pub touch: Option<String>,
+    /// With `TaskFilter::grep`: which field matched, the first of
+    /// `"text"` (the task text, or an exact id), `"title"`, `"plan"`,
+    /// `"summary"`. `None` without the filter.
+    pub matched: Option<String>,
     /// With `TaskFilter::failed_on` or `::reason`: the attempts that
     /// matched, by attempt number. Empty without those filters.
     pub failures: Vec<FailedAttempt>,
@@ -475,6 +481,16 @@ impl Store {
                                 AND json_extract(v.value, '$.ok') = 0)";
         let reasoned = "EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.id
                                 AND a.reason LIKE '%' || ?12 || '%')";
+        // `?5`, the grep: the task text or an exact id, the title, the
+        // stored plan, or the summary of the last attempt with an envelope,
+        // in that order for `matched`.
+        let last_summary = "(SELECT json_extract(a.envelope_json, '$.summary') FROM attempts a
+                             WHERE a.task_id = t.id AND a.envelope_json != '' AND json_valid(a.envelope_json)
+                             ORDER BY a.attempt_no DESC, a.id DESC LIMIT 1)";
+        let by_text = "(t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)";
+        let by_title = "COALESCE(t.title, '') LIKE '%' || ?5 || '%'";
+        let by_plan = "t.plan LIKE '%' || ?5 || '%'";
+        let by_summary = format!("COALESCE({last_summary}, '') LIKE '%' || ?5 || '%'");
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
             "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch') AS created,
@@ -483,10 +499,12 @@ impl Store {
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
                     t.project AS project, t.initiative AS initiative, t.trust AS trust,
-                    CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch
+                    CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch,
+                    CASE WHEN ?5 IS NULL THEN NULL WHEN {by_text} THEN 'text' WHEN {by_title} THEN 'title'
+                         WHEN {by_plan} THEN 'plan' ELSE 'summary' END AS matched
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
-               AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
+               AND (?5 IS NULL OR {by_text} OR {by_title} OR {by_plan} OR {by_summary})
                AND (?6 IS NULL OR t.workflow = ?6)
                AND (?7 IS NULL OR t.project = ?7)
                AND (?8 IS NULL OR t.initiative = ?8)
@@ -526,6 +544,7 @@ impl Store {
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
                     touch: r.get("touch")?,
+                    matched: r.get("matched")?,
                     failures: Vec::new(),
                 })
             },

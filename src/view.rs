@@ -43,6 +43,11 @@ pub struct TaskRow {
     /// mentions it (`--touches-text`). Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub touch: Option<String>,
+    /// Only under `forge log --grep`: which field matched, the first of
+    /// `"text"` (the task text, or an exact id), `"title"`, `"plan"`,
+    /// `"summary"` (the last attempt with an envelope). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched: Option<String>,
     /// Only under `forge log --failed-on` or `--reason`: the attempts
     /// that matched, each `{attempt_no, step, reason, name, tail}` with
     /// `name` the failing verdict row (null for a reason match) and
@@ -98,6 +103,7 @@ impl From<&TaskSummary> for TaskRow {
             initiative: s.initiative,
             trust: s.trust.clone(),
             touch: s.touch.clone(),
+            matched: s.matched.clone(),
             failures: s.failures.clone(),
         }
     }
