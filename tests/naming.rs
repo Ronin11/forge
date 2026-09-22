@@ -106,6 +106,21 @@ const ALLOWED: &[(&str, &str)] = &[
         "docs/PLUGINS.md",
         "| `FORGE2_HOME` | The same value as `FORGE_HOME`, kept for one release for a plugin still written against the old name; do not rely on it past that. |",
     ),
+    // deploy-self runs under the kernel being replaced, which for one
+    // release may still export the old name; its fallback is the same
+    // machinery, in shell.
+    (
+        "src/builtins/operations/deploy-self.toml",
+        "# may still export FORGE2_HOME (the rename, 2026-09-22), and the",
+    ),
+    (
+        "src/builtins/operations/deploy-self.toml",
+        "home=\"${FORGE_HOME:-${FORGE2_HOME:-}}\"",
+    ),
+    (
+        "src/builtins/operations/deploy-self.toml",
+        "if [ -d \"$HOME/.local/share/forge\" ]; then home=\"$HOME/.local/share/forge\"; else home=\"$HOME/.local/share/forge2\"; fi",
+    ),
 ];
 
 /// Dated documents that describe what was and are never edited for a rename:
