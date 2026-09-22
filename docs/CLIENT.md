@@ -1169,7 +1169,14 @@ retirement keeps loading instead of failing on an unknown key. It never
 appears in `ProviderRow` and no longer changes anything — every
 attempt's `changes[]` is now derived from git for every provider,
 never taken from the model's own report (see `verify::derive_changes`,
-`Rule::ChangesFromGit`).
+`Rule::ChangesFromGit`). Since C1 already made the model's own report of
+`changes` unused, `changes` was dropped from `properties`/`required` in
+`envelope::SCHEMA` itself (Token cost, C2, `schema_version` unchanged:
+the shape a client reads back — `Envelope.changes`, still populated by
+`verify::derive_changes` — did not shrink, only what the CLI's own
+result schema asks the model to produce did). A row's `envelope` JSON,
+including one written before C2, still deserializes and still carries
+`changes[]`; the model is simply never asked to fill it in anymore.
 
 ### Snapshot document
 

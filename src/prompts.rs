@@ -126,12 +126,10 @@ Do not push. Leave the tree clean: every change committed, nothing untracked. Do
 Commit as soon as something compiles and keep committing; work left uncommitted when your turns run out is lost. \
 Every check in the repository is run by Forge after you stop, so never wait on a long test run and never \
 leave work uncommitted because one is still going: commit, report what you did run, and stop.\n\n\
-Your final result must be the structured object the CLI asks for: a summary; `changes` listing every path this \
-attempt added, modified, or deleted (lockfiles included; not what earlier attempts already committed); `checks_run` \
+Your final result must be the structured object the CLI asks for: a summary; `checks_run` \
 listing only checks you actually ran, with their real outcome; `claims` \
-each with concrete evidence; and `needs_input` when you must stop. For a rename or move, either list the \
-destination as `added` or `modified` and the source as `deleted`, or list one entry whose `summary` says so \
-by naming both paths (e.g. \"moved from old/path to new/path\").\n\n\
+each with concrete evidence; and `needs_input` when you must stop. What you changed is read from git, not \
+from what you report.\n\n\
 Two honest exits, never penalized and never retried: `needs_input` with kind `question` when you cannot proceed \
 without the operator, and kind `workflow` when the workflow you are in is wrong for this task or a step \
 you need does not exist. A third: kind `suite` when a test under the verification namespace that is not \
@@ -288,7 +286,7 @@ pub fn early_feedback(why: &str, signals: &[&str]) -> String {
             _ => "",
         });
     }
-    fb.push_str(" then return the structured result, whose `changes` must list every path changed since this session began.");
+    fb.push_str(" then return the structured result.");
     fb
 }
 
@@ -1138,9 +1136,7 @@ mod tests {
             .unwrap();
         let uncommitted = text.find("commit what you have right now").unwrap();
         let repeat = text.find("that command's result will not change").unwrap();
-        let closing = text
-            .find("whose `changes` must list every path changed since this session began")
-            .unwrap();
+        let closing = text.find("then return the structured result").unwrap();
         assert!(
             why < no_edit && no_edit < uncommitted && uncommitted < repeat && repeat < closing,
             "expected why < no_edit < uncommitted < repeat < closing in:\n{text}"
