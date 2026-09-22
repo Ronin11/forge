@@ -652,11 +652,40 @@ async fn run_directive_step(
     // operator's, else "anthropic" (see
     // `ctx::resolve_provider`). Recorded on `ts.provider` so
     // `attempt::run_attempt`'s existing lookup picks it up.
-    ts.provider = f
-        .effective_provider(&ts, step.action.contract.as_str())
-        .env()?
-        .name
-        .clone();
+    let role = step.action.contract.as_str();
+    let (provider, provider_source) = f.effective_provider_routed(&ts, role).env()?;
+    ts.provider = provider.name.clone();
+    // The routing record (docs/ECONOMIST.md, "The routing record"): why
+    // this role ran where it did, named alongside what it ran on, before
+    // the first attempt spends anything — so even a step that never
+    // verifies still shows its own routing.
+    t.routing.insert(
+        role.to_string(),
+        crate::store::RoleRouting {
+            provider: crate::store::Routed {
+                value: ts.provider.clone(),
+                source: provider_source.to_string(),
+            },
+            model: crate::store::Routed {
+                value: crate::attempt::attempt_model(
+                    &step.action.name,
+                    &ts.model,
+                    &ts.model,
+                    provider,
+                ),
+                source: crate::attempt::attempt_model_source(
+                    step.model.as_deref(),
+                    provider,
+                    &t.model_source,
+                ),
+            },
+            workflow: crate::store::Routed {
+                value: t.workflow.clone(),
+                source: t.workflow_source.clone(),
+            },
+        },
+    );
+    f.store.update_task(t).env()?;
     let mut feedback: Option<String> = run.owed.remove(&seq);
     let mut resume: Option<Resume> = None;
     let mut step_ok = false;

@@ -1,4 +1,25 @@
 use super::*;
+use serde::{Deserialize, Serialize};
+
+/// One resolved value on `Task::routing`, and which layer decided it:
+/// `"flag"`, `"project"`, `"operator"`, `"default"`, or `"experiment"`
+/// (see `ctx::resolve_provider_routed` and docs/ECONOMIST.md, "The
+/// routing record").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Routed {
+    pub value: String,
+    pub source: String,
+}
+
+/// What one role's step ran under, and why: `Task::routing` is keyed by
+/// role name ("code", "tests", "review", "plan", "assess") for every role
+/// that actually ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleRouting {
+    pub provider: Routed,
+    pub model: Routed,
+    pub workflow: Routed,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TaskState {
@@ -193,6 +214,26 @@ pub struct Task {
     /// this column existed, since backfilling it needs the repository's
     /// config as it stood at the time, which the record does not keep.
     pub shape_declared_checks: i64,
+    /// Where `model` came from, computed once at enqueue (see
+    /// `queue::enqueue`): `"flag"` when `--model` named it, else the
+    /// source of "code"'s resolved provider at that moment (`"project"`,
+    /// `"operator"`, or `"default"`) — the provider whose own configured
+    /// model is `model`'s fallback. Role-invariant: every Claude-runner
+    /// step shares this one task-wide model (see `attempt::attempt_model`).
+    pub model_source: String,
+    /// Where `workflow` came from, computed once at enqueue: `"flag"`
+    /// (`--workflow`), `"project"` (the project's own default), or
+    /// `"default"` ("direct", nothing named it) — no operator-level
+    /// default exists for the workflow (see docs/PROJECTS.md,
+    /// "Configuration layering").
+    pub workflow_source: String,
+    /// Per role that ran (code, tests, review, plan, assess), the
+    /// provider, model, and workflow it ran under, each with its source
+    /// (see docs/ECONOMIST.md, "The routing record"). Built up as each
+    /// role runs (`engine::run_directive_step`, `assess::try_run`); a
+    /// role that never ran (a task that failed before review, say) has no
+    /// entry.
+    pub routing: BTreeMap<String, RoleRouting>,
 }
 
 /// `Store::set_task_limits`: only a field that is `Some` replaces the
@@ -384,8 +425,8 @@ impl Store {
         c.execute(
             "INSERT INTO tasks (repo, task, title, base_branch, model, provider, max_turns, max_attempts, timeout_secs, checks_json,
                                 state, created_at, budget_usd, allow_protected, workflow, show_checks, workflow_hash, workflow_text, land, after_json, retry_of, journal, context_enabled, resume_on_failure, journal_arm, explore_json,
-                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                                shape_text_len, shape_path_tokens, shape_tdd, shape_declared_checks, model_source, workflow_source, routing_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 t.repo,
                 t.task,
@@ -417,6 +458,9 @@ impl Store {
                 t.shape_path_tokens,
                 t.shape_tdd as i64,
                 t.shape_declared_checks,
+                t.model_source,
+                t.workflow_source,
+                serde_json::to_string(&t.routing)?,
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -436,7 +480,8 @@ impl Store {
              project=?38, initiative=?39, provider=?40, question_to=?41, explore_json=?42,
              concierge_json=?43, proposal_json=?44, proposal_answer=?45, proposal_initiative=?46,
              title=?47, landed_at=?48, hand_landed=?49, shape_text_len=?50, shape_path_tokens=?51,
-             shape_tdd=?52, shape_declared_checks=?53 WHERE id=?1",
+             shape_tdd=?52, shape_declared_checks=?53, model_source=?54, workflow_source=?55,
+             routing_json=?56 WHERE id=?1",
             params![
                 t.id,
                 t.repo,
@@ -491,6 +536,9 @@ impl Store {
                 t.shape_path_tokens,
                 t.shape_tdd as i64,
                 t.shape_declared_checks,
+                t.model_source,
+                t.workflow_source,
+                serde_json::to_string(&t.routing)?,
             ],
         )?;
         Ok(())
