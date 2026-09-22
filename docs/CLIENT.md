@@ -360,6 +360,32 @@ server. And when `--bind ADDR` is already held — usually by another
 address and prints the link for whatever already holds it, the same
 link `forge web link` would print.
 
+### Passwordless from the operator's own tailnet devices
+
+`[web] tailscale_login = "<login>"` in the operator's config
+(`<FORGE_HOME>/config.toml`) is unset by default, so nothing changes for
+an operator who never sets it. When set, a request whose
+`Tailscale-User-Login` header equals it is treated as the operator
+without the token — the cookie is still set, on the same first-visit page
+load that pins a `?token=` value, so the browser keeps working the same
+way after — and the first such request for that login is logged; a
+header that doesn't match is ignored, not refused, so the token path
+still stands for everyone else.
+
+This is safe only because of where the header comes from and where
+`forge-web` runs. A request proxied through `tailscale serve` carries
+`Tailscale-User-Login` (and `-Name`, `-Profile-Pic`) set by `tailscaled`
+itself, which a plain client reaching the box from outside cannot spoof.
+But **any process on the box can send that header straight to
+`forge-web`'s loopback port** — `tailscaled` only guarantees the header
+on traffic that actually came through its own proxy, not on a direct
+request to `127.0.0.1:7788`. That is why this is opt-in rather than the
+default, and why it is only trustworthy at all when nothing untrusted
+shares the box: an attempt's sandbox has its own network namespace and
+cannot reach the host's loopback, so the model driving a task can never
+forge the header to authenticate itself as the operator. An operator who
+runs anything else untrusted on the same host should leave this unset.
+
 ## Time
 
 Time is UTC everywhere in the kernel and the record; a time zone is a

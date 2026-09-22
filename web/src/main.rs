@@ -29,6 +29,13 @@
 //! server had open operator routes and a tailnet proxy made every peer the
 //! operator. The one exception is `/hooks/`, which takes a webhook's own
 //! bearer token instead and gives it no reach past `forge job fire`.
+//!
+//! The other exception is opt-in: `[web] tailscale_login` in the
+//! operator's config (`<FORGE_HOME>/config.toml`), unset by default. When
+//! set, a request whose `Tailscale-User-Login` header equals it is treated
+//! as the operator without the token (`handle`, `tailscale_login`); a
+//! header that does not match is ignored and the token path stands. See
+//! docs/CLIENT.md, "Reaching forge-web (operator)".
 
 use anyhow::{Context, Result};
 use forge_client::{Forge, Workflow, WorkflowPutResult};
@@ -36,7 +43,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const INDEX: &str = include_str!("index.html");
@@ -102,6 +109,29 @@ fn token(dir: &std::path::Path) -> Result<String> {
     }
     Ok(t)
 }
+
+/// `[web] tailscale_login` from the operator's config
+/// (`<FORGE_HOME>/config.toml`): unset by default, so nothing changes for
+/// an operator who never sets it. Read straight as TOML rather than
+/// through the kernel's own config module — `tests/boundary.rs` forbids a
+/// client from depending on `forge` at all — so this reads only the one
+/// field it needs and ignores everything else in the file, including a
+/// missing or unparsable one (the token path still works either way).
+fn tailscale_login(dir: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+    let doc: toml::Value = toml::from_str(&text).ok()?;
+    doc.get("web")?
+        .get("tailscale_login")?
+        .as_str()
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// Every Tailscale login `handle` has already logged a passwordless
+/// request for, so the first one per login gets one line and the rest are
+/// silent.
+static LOGGED_TAILSCALE_LOGINS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 /// Equal without leaking where they differ.
 fn same(a: &str, b: &str) -> bool {
@@ -1157,8 +1187,10 @@ fn hook_refusal_status(stderr: &str) -> u16 {
 }
 
 /// One request: authenticate, then route. Everything but `/` with a
-/// token in the query is refused without a valid token.
-fn handle(req: Request, forge: &Forge, secret: &str) {
+/// token in the query is refused without a valid token, unless
+/// `tailscale_login` is set and the request's own `Tailscale-User-Login`
+/// header matches it.
+fn handle(req: Request, forge: &Forge, secret: &str, tailscale_login: Option<&str>) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let (path, query) = (path.to_string(), query.to_string());
@@ -1191,13 +1223,33 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         let _ = req.respond(text(405, "read-only for now", "text/plain"));
         return;
     }
-    let ok = presented(&req, &query).is_some_and(|t| same(&t, secret));
-    if !ok {
+    let via_token = presented(&req, &query).is_some_and(|t| same(&t, secret));
+    // Trustworthy only because tailscaled itself sets this header on a
+    // request proxied through `tailscale serve`, and an attempt's sandbox
+    // has its own network namespace and cannot reach the host's loopback
+    // to spoof it (docs/CLIENT.md, "Reaching forge-web (operator)"); a
+    // login that doesn't match the configured one is ignored, not refused,
+    // so the token path still stands for everyone else.
+    let via_tailscale = !via_token
+        && tailscale_login
+            .is_some_and(|want| header(&req, "Tailscale-User-Login").as_deref() == Some(want));
+    if via_tailscale {
+        let login = tailscale_login.expect("via_tailscale implies Some");
+        if LOGGED_TAILSCALE_LOGINS
+            .lock()
+            .unwrap()
+            .insert(login.to_string())
+        {
+            eprintln!("forge-web: passwordless login from tailscale user {login}");
+        }
+    }
+    if !via_token && !via_tailscale {
         let _ = req.respond(text(401, UNAUTHORIZED_PAGE, "text/html; charset=utf-8"));
         return;
     }
-    if query_param(&query, "token").is_some() && !path.starts_with("/api/") {
-        // First visit: pin the token in a cookie and drop it from the URL.
+    if (query_param(&query, "token").is_some() || via_tailscale) && !path.starts_with("/api/") {
+        // First visit: pin the token in a cookie (from the `?token=` query
+        // value, or the trusted Tailscale login) and drop it from the URL.
         let resp = Response::empty(StatusCode(303))
             .with_header(h("Location", if path == "/" { "/tasks" } else { &path }))
             .with_header(h(
@@ -1527,11 +1579,13 @@ fn main() -> Result<()> {
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
-    let secret = token(&home())?;
+    let home_dir = home();
+    let secret = token(&home_dir)?;
     if print_link {
         println!("http://{bind}/?token={secret}");
         return Ok(());
     }
+    let tailscale_login = tailscale_login(&home_dir);
     let forge = Forge::new();
     let server = match Server::http(&bind) {
         Ok(s) => s,
@@ -1550,7 +1604,8 @@ fn main() -> Result<()> {
     for req in server.incoming_requests() {
         let forge = forge.clone();
         let secret = secret.clone();
-        std::thread::spawn(move || handle(req, &forge, &secret));
+        let tailscale_login = tailscale_login.clone();
+        std::thread::spawn(move || handle(req, &forge, &secret, tailscale_login.as_deref()));
     }
     Ok(())
 }
@@ -1626,6 +1681,40 @@ mod tests {
         let b = token(dir.path()).unwrap();
         assert_eq!(a.len(), 64);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn tailscale_login_is_read_from_the_web_table_and_absent_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(tailscale_login(dir.path()), None, "no config.toml at all");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[budget]\nper_task_usd = 2.0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            tailscale_login(dir.path()),
+            None,
+            "a config.toml with no [web] table"
+        );
+        std::fs::write(dir.path().join("config.toml"), "[web]\n").unwrap();
+        assert_eq!(
+            tailscale_login(dir.path()),
+            None,
+            "a [web] table with no tailscale_login"
+        );
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[web]\ntailscale_login = \"\"\n",
+        )
+        .unwrap();
+        assert_eq!(tailscale_login(dir.path()), None, "an empty login");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[web]\ntailscale_login = \"alice@github\"\n",
+        )
+        .unwrap();
+        assert_eq!(tailscale_login(dir.path()).as_deref(), Some("alice@github"));
     }
 
     #[test]

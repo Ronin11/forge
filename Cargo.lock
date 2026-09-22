@@ -799,6 +799,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tiny_http",
+ "toml",
 ]
 
 [[package]]
