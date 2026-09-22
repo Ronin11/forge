@@ -184,6 +184,7 @@ pub enum Rule {
     ResultStructured,
     SuiteNamesAHiddenTest,
     CleanTree,
+    NoStrayFiles,
     ConfigUntouched,
     HasCommits,
     ChangesMatchGit,
@@ -206,10 +207,11 @@ pub enum Rule {
 }
 
 impl Rule {
-    pub const ALL: [Rule; 22] = [
+    pub const ALL: [Rule; 23] = [
         Rule::ResultStructured,
         Rule::SuiteNamesAHiddenTest,
         Rule::CleanTree,
+        Rule::NoStrayFiles,
         Rule::ConfigUntouched,
         Rule::HasCommits,
         Rule::ChangesMatchGit,
@@ -236,6 +238,7 @@ impl Rule {
             Rule::ResultStructured => "result-structured",
             Rule::SuiteNamesAHiddenTest => "suite-names-a-hidden-test",
             Rule::CleanTree => "clean-tree",
+            Rule::NoStrayFiles => "no-stray-files",
             Rule::ConfigUntouched => "forge.toml-untouched",
             Rule::HasCommits => "has-commits",
             Rule::ChangesMatchGit => "changes-match-git",
@@ -329,6 +332,37 @@ async fn derive_changes(wt: &Path, start_sha: &str) -> Result<Vec<Change>> {
         }
     }
     Ok(changes)
+}
+
+/// Only net additions count: a scratch file removed before the attempt
+/// finishes is harmless, and existing backup files are not this attempt's.
+async fn no_stray_files(wt: &Path, start_sha: &str) -> Result<CheckResult> {
+    let stray: Vec<String> = crate::git::changed_with_status(wt, start_sha, "HEAD")
+        .await?
+        .into_iter()
+        .filter_map(|change| match change {
+            crate::git::GitChange::Added(path) => Some(path),
+            crate::git::GitChange::Renamed { to, .. } => Some(to),
+            _ => None,
+        })
+        .filter(|path| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            [".bak", ".backup", ".orig", ".rej", "~"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+                || ["temp_", "tmp_", "scratch_"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .collect();
+    Ok(l0(
+        Rule::NoStrayFiles,
+        stray.is_empty(),
+        format!(
+            "stray files added during this attempt: {}. Delete them.",
+            stray.join(", ")
+        ),
+    ))
 }
 
 /// What every step's L0 shares: git facts, the envelope, the rows that do
@@ -425,6 +459,7 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
         dirty.is_empty(),
         format!("uncommitted: {}", dirty.join(", ")),
     ));
+    rows.push(no_stray_files(worktree, start_sha).await?);
     let touched = changed
         .iter()
         .chain(dirty.iter())
@@ -805,6 +840,8 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
         dirty.is_empty(),
         format!("left uncommitted by the operation: {}", dirty.join(", ")),
     ));
+    v.checks
+        .push(no_stray_files(s.worktree, s.start_sha).await?);
     v.checks.extend(scope_rows(&s, changed, changed, dirty));
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
@@ -1403,6 +1440,87 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "--quiet", "-m", "attempt"]);
         (dir, base)
+    }
+
+    #[tokio::test]
+    async fn no_stray_files_rejects_matching_additions() {
+        let (dir, base) = commit_fixture().await;
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        let names = [
+            "file.bak",
+            "file.backup",
+            "file.orig",
+            "file.rej",
+            "file~",
+            "temp_file",
+            "tmp_file",
+            "scratch_file",
+        ];
+        for name in names {
+            std::fs::write(dir.path().join("nested").join(name), name).unwrap();
+        }
+        crate::git::commit_all(dir.path(), "add strays")
+            .await
+            .unwrap();
+        let row = no_stray_files(dir.path(), &base).await.unwrap();
+        assert!(!row.ok);
+        assert_eq!(row.name, "no-stray-files");
+        assert_eq!(row.level, "L0");
+        for name in names {
+            assert!(row.tail.contains(&format!("nested/{name}")));
+        }
+        assert!(row.tail.contains("Delete them"));
+    }
+
+    #[tokio::test]
+    async fn no_stray_files_rejects_non_ascii_backup_names() {
+        let (dir, base) = commit_fixture().await;
+        std::fs::write(dir.path().join("résumé.bak"), "cv").unwrap();
+        crate::git::commit_all(dir.path(), "add non-ascii backup")
+            .await
+            .unwrap();
+        let row = no_stray_files(dir.path(), &base).await.unwrap();
+        assert!(!row.ok);
+        assert!(row.tail.contains("résumé.bak"));
+    }
+
+    #[tokio::test]
+    async fn no_stray_files_accepts_non_matching_additions_and_existing_backups() {
+        let (dir, _) = commit_fixture().await;
+        std::fs::write(dir.path().join("existing.bak"), "old").unwrap();
+        crate::git::commit_all(dir.path(), "existing backup")
+            .await
+            .unwrap();
+        let start = crate::git::head(dir.path()).await.unwrap();
+        std::fs::write(dir.path().join("existing.bak"), "modified").unwrap();
+        std::fs::create_dir(dir.path().join("scratch_directory")).unwrap();
+        for name in [
+            "backup.rs",
+            "file.bak.rs",
+            "temporary.txt",
+            "scratch_directory/real.rs",
+        ] {
+            std::fs::write(dir.path().join(name), "real work").unwrap();
+        }
+        crate::git::commit_all(dir.path(), "normal changes")
+            .await
+            .unwrap();
+        assert!(no_stray_files(dir.path(), &start).await.unwrap().ok);
+    }
+
+    #[tokio::test]
+    async fn no_stray_files_accepts_a_file_added_then_deleted_in_the_attempt() {
+        let (dir, base) = commit_fixture().await;
+        let path = dir.path().join("scratch_work");
+        std::fs::write(&path, "scratch").unwrap();
+        crate::git::commit_all(dir.path(), "add scratch")
+            .await
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        crate::git::commit_all(dir.path(), "delete scratch")
+            .await
+            .unwrap();
+        assert!(no_stray_files(dir.path(), &base).await.unwrap().ok);
     }
 
     fn test_cfg() -> Config {
