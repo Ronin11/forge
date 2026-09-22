@@ -50,6 +50,87 @@ already set up machine reports every step unchanged and says so
 holds: creation the first time, "nothing changed" the second, and
 `--home` never touching the default `FORGE_HOME`.
 
+### Upgrading
+
+```
+forge upgrade [<path-or-url>] [--check-only] [--force]
+```
+
+`<path-or-url>` names a release archive built by `scripts/release.sh`
+("Releases", below): a local path, or a URL, fetched with `curl` into a
+scratch directory under `FORGE_HOME/worktrees/upgrade/`. Either way, a
+`SHA256SUMS` naming the archive must sit beside it — the same directory
+for a path, the same URL with `SHA256SUMS` in place of the archive's own
+name for a URL — and the archive is refused if its hash does not match.
+Omitting `<path-or-url>` is refused too; there is no default source.
+
+1. **Verify.** The archive's SHA-256 against its `SHA256SUMS` entry.
+2. **Version-gate.** The version is read from the archive's own file name
+   (`forge-<version>-<target>.tar.gz`, exactly what `scripts/release.sh`
+   names it), never by running the binary inside before it is verified.
+   A version older than the running one (`forge version`) is refused —
+   migrations are forward-only, so downgrading the binary over a store a
+   newer schema has already migrated is not a supported path — unless
+   `--force`, which installs it anyway and says so. `--check-only` stops
+   here, after verifying and reporting the version, without installing,
+   backing up or restarting anything.
+3. **Extract** and confirm the five release binaries are all present.
+4. **Read the schema version** the running store is at (`PRAGMA
+   user_version`, via `Store::schema_version`).
+5. **Back the store up**: `sqlite3 FORGE_HOME/forge.db .backup` (the same
+   online, WAL-safe snapshot `backup-store.toml` takes) into
+   `FORGE_HOME/backups/<version>-<unix time>/forge.db`.
+6. **Keep the current binaries.** The five release binaries
+   (`forge`, `forge-web`, `forge-portal`, `forge-repomap`, `forge-tui`) in
+   the running binary's own directory are copied into `<bin
+   dir>/previous/` — copy then rename, so a binary already running is
+   never written to — before anything is overwritten.
+7. **Install** the new binaries over the old ones, the same copy-then-
+   rename way.
+8. **Migrate.** The newly installed `forge doctor --json` is run against
+   `FORGE_HOME` — opening the store once, so it is the new binary's own
+   migration ladder that runs, forward-only, never the old binary's —
+   and its `schema` check's version is read back and reported beside the
+   version from step 4, so an operator sees exactly what moved.
+9. **Restart `forge-web` and `forge-portal`**, each only if its unit file
+   exists under `~/.config/systemd/user` (a satellite worker box may have
+   neither), and wait for the ones restarted to report active.
+10. **Check the web client**, the same default `deploy-self` uses: `GET
+    http://127.0.0.1:7788/tasks` with `Authorization: Bearer` and the
+    token in `FORGE_HOME/web.token`, expecting 200, retried up to 40
+    times half a second apart — run only when `forge-web`'s unit existed
+    and was restarted onto the new binary in the previous step.
+11. **Ask `forge-worker` to restart**, last, and only once its unit
+    exists: `systemctl --user restart --no-block forge-worker`, so it
+    drains its running attempts (this command's own process, were it the
+    worker) before coming back on the new binary.
+
+Any failure from step 6 onward — a bad build, a schema check the new
+binary fails, a unit that never becomes active, a web check that never
+passes — restores the binaries kept in step 6 over the current ones and
+says so; a rollback restarts `forge-web`/`forge-portal` onto them but
+never touches `forge-worker`, so it is left running the binary it
+already trusted rather than restarted onto one that failed its check
+(the same shape `deploy-self`'s own rollback holds, docs/DEPLOY.md,
+"Deploying Forge itself", "Rollback."). A failure before step 6 (a bad
+checksum, an older version without `--force`) changes nothing at all.
+
+`forge upgrade` shares deploy-self's shape — snapshot to `previous/`,
+restart web and portal, wait, check, restart the worker last — but not
+its text. `deploy-self` (`src/builtins/operations/deploy-self.toml`) has
+to be one self-contained script that runs from an archived checkout of
+whatever repository a deploy target names, under the operation kernel's
+`FORGE_ARG_*` contract; nothing guarantees that tree is Forge's own
+source (the e2e suite deploys a throwaway fixture repository through
+it), so it has no file it can reliably `source`. `forge upgrade` is a
+first-class CLI command with its own tarball, `SHA256SUMS` and backup
+steps that have no home in that generic bash contract either. The two
+are kept honest against each other by mirroring the same step order and
+restart/check/rollback semantics in `src/upgrade.rs`, rather than by
+literally sharing one file; `tests/e2e/upgrade.rs` and
+`tests/e2e/deploy.rs`'s `SelfDeploy` fixture hold the two shapes to the
+same behaviour.
+
 ## `backup-daily` — 03:30 UTC daily
 
 The store (`FORGE_HOME/forge.db`) is the only copy of every task, job,

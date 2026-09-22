@@ -281,6 +281,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query
 src/supervisor.rs   the rung between a blocked task and the human
 src/tools.rs        what an attempt ran, read back from its stream
+src/upgrade.rs      forge upgrade: verify, backup, swap binaries, migrate, restart
 src/verify.rs       L0/L1/L2, the claim rule, and the pure verdict table
 src/view.rs         shapes behind `log`, `requests`, `decisions`: text and JSON from one struct
 src/worker.rs       drive, the queue loop, signals

@@ -38,7 +38,7 @@ impl Report {
 /// `$XDG_CONFIG_HOME/systemd/user`, else `$HOME/.config/systemd/user` —
 /// the OS user's own config directory, never `FORGE_HOME` (which may sit
 /// elsewhere entirely): systemd only ever looks for user units there.
-fn systemd_user_dir() -> Option<PathBuf> {
+pub(crate) fn systemd_user_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(p).join("systemd/user"));
     }

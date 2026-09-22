@@ -295,6 +295,30 @@ enum Cmd {
     },
     /// Print the crate version and, if built from a git checkout, its commit
     Version,
+    /// Install a release tarball over the running binaries: verify it
+    /// against its own SHA256SUMS, back the store up, keep the current
+    /// binaries under <bin dir>/previous/, install the new ones, migrate
+    /// the store through the new binary and report the schema version
+    /// before and after, restart forge-web and forge-portal when their
+    /// units exist and check the web client, then ask forge-worker to
+    /// restart, last, after its drain. Refuses a tarball older than the
+    /// running version unless --force; any failure restores the previous
+    /// binaries. See docs/OPS.md, "Upgrading".
+    Upgrade {
+        /// A path to a release tarball, or a URL fetched with curl. A
+        /// SHA256SUMS naming it must sit beside it (the same directory, or
+        /// the same URL with SHA256SUMS in place of the tarball's name).
+        source: Option<String>,
+        /// Verify the tarball and report what would happen, without
+        /// installing or restarting anything
+        #[arg(long)]
+        check_only: bool,
+        /// Install even if the tarball's version is older than the
+        /// running one (migrations do not run backwards; this does not
+        /// undo them)
+        #[arg(long)]
+        force: bool,
+    },
     /// Inside a sandbox: pipe loopback to the egress proxy's unix socket
     #[command(hide = true)]
     EgressRelay {
@@ -1357,6 +1381,11 @@ pub async fn main() -> Result<()> {
         Cmd::Init { home } => cmd_init(home).await,
         Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
+        Cmd::Upgrade {
+            source,
+            check_only,
+            force,
+        } => crate::upgrade::run(source, check_only, force),
         Cmd::EgressRelay {
             socket,
             listen,

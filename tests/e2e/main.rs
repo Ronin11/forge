@@ -28,6 +28,7 @@ mod statusline;
 mod supervisor;
 mod tdd;
 mod trust;
+mod upgrade;
 mod verdicts;
 mod webhooks;
 mod worker;

@@ -40,6 +40,7 @@ mod sandbox;
 mod store;
 mod supervisor;
 mod tools;
+mod upgrade;
 mod verify;
 mod view;
 mod worker;
