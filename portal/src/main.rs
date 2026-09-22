@@ -9,6 +9,19 @@
 //! of why. `GET /p/<token>/shot/<target>` streams that deploy target's
 //! last-look screenshot file.
 //!
+//! Running for you speaks only in the customer's own words: each
+//! automation is its workflow's own `description`, never its file name
+//! alone, and each of its last three runs is a plain-word status plus
+//! every effect it logged as a sentence — the operation's own `summary`,
+//! never a `kind` or a `target` (see `render_run_workflows`,
+//! `job_run_status`). A dry run (a rehearsal, e.g. `forge job test`'s
+//! fixture replay) is marked one; a needs-human run shows the human
+//! rung's question in the customer's own terms when the workflow's
+//! `[limits] on_failure` addressed it to them, or a plain "we're on it"
+//! when it addressed the operator instead — the record already drew that
+//! line (`view::portal_doc`), so the portal just renders what it is
+//! given.
+//!
 //! Ask is a conversation, not a box on its own: every message on the
 //! project's record (`forge message list --json`, both directions) and
 //! every concierge reply (`forge decisions --json`, narrowed to the
@@ -291,10 +304,14 @@ fn render_targets(targets: &[PortalDeployTarget], token: &str) -> String {
 /// The class and plain-word phrase for one job run: bad for a failure,
 /// warn for one that needs a person, ok for a clean run or a skip (a
 /// `[skip_if]` deciding there was nothing to do is not a failure), plain
-/// for anything still in flight. A failure, a needs-you, or a skip carries
-/// its one-line reason, when there is one.
+/// for anything still in flight. A skip or a failure carries its
+/// one-line reason, when there is one; a needs-human run carries the
+/// human rung's question in the customer's own terms when it was
+/// addressed to them (`reason` set), or a plain "we're on it" when it was
+/// addressed to the operator instead (`reason` unset — see
+/// `PortalJobRun`). A dry run is marked a rehearsal, whatever it went.
 fn job_run_status(j: &PortalJobRun) -> (&'static str, String) {
-    match j.state.as_str() {
+    let (class, phrase) = match j.state.as_str() {
         "ok" => ("ok", "Ran fine.".to_string()),
         "skipped" => (
             "ok",
@@ -314,29 +331,57 @@ fn job_run_status(j: &PortalJobRun) -> (&'static str, String) {
             "warn",
             match &j.reason {
                 Some(r) => format!("Needs you \u{2014} {r}."),
-                None => "Needs you.".to_string(),
+                None => "We're on it.".to_string(),
             },
         ),
         "running" => ("", "Running now.".to_string()),
         "scheduled" => ("", "Scheduled.".to_string()),
         "dropped" => ("", "Dropped.".to_string()),
         _ => ("", "Queued.".to_string()),
+    };
+    if j.dry_run {
+        (class, format!("Rehearsal \u{2014} {phrase}"))
+    } else {
+        (class, phrase)
     }
+}
+
+/// A run's effects, each the operation's own `summary` sentence — never
+/// its `kind` or `target` (`PortalJobRun.effects` already carries nothing
+/// else). Empty when the run logged none, e.g. it never got that far.
+fn render_effects(effects: &[String]) -> String {
+    if effects.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(r#"<ul class="effects">"#);
+    for e in effects {
+        out.push_str(&format!("<li>{}</li>", esc(e)));
+    }
+    out.push_str("</ul>");
+    out
 }
 
 fn render_run_workflows(workflows: &[PortalWorkflow]) -> String {
     let mut out = String::new();
     for w in workflows {
         out.push_str(&format!(
-            r#"<div class="card"><div class="name">{}</div><ul class="plain">"#,
+            r#"<div class="card"><div class="name">{}</div>"#,
             esc(&w.name)
         ));
+        if !w.description.is_empty() {
+            out.push_str(&format!(
+                r#"<div class="description">{}</div>"#,
+                esc(&w.description)
+            ));
+        }
+        out.push_str(r#"<ul class="plain">"#);
         for j in &w.jobs {
             let (class, phrase) = job_run_status(j);
             out.push_str(&format!(
-                r#"<li><div class="status {class}">{phrase}</div><div class="date">{when}</div></li>"#,
+                r#"<li><div class="status {class}">{phrase}</div><div class="date">{when}</div>{effects}</li>"#,
                 phrase = esc(&phrase),
                 when = time_tag("", j.started_at),
+                effects = render_effects(&j.effects),
             ));
         }
         out.push_str("</ul></div>");
@@ -848,6 +893,53 @@ mod tests {
         assert_eq!(
             esc("<b>Tom & Jerry's</b>"),
             "&lt;b&gt;Tom &amp; Jerry&#39;s&lt;/b&gt;"
+        );
+    }
+
+    fn run(state: &str, dry_run: bool, reason: Option<&str>) -> PortalJobRun {
+        PortalJobRun {
+            started_at: 0,
+            state: state.to_string(),
+            dry_run,
+            effects: Vec::new(),
+            reason: reason.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_needs_human_run_shows_the_question_when_there_is_one_and_were_on_it_otherwise() {
+        assert_eq!(
+            job_run_status(&run("needs_human", false, Some("no price sheet entry"))),
+            (
+                "warn",
+                "Needs you \u{2014} no price sheet entry.".to_string()
+            ),
+            "addressed to the customer: the human rung's question, in their own terms"
+        );
+        assert_eq!(
+            job_run_status(&run("needs_human", false, None)),
+            ("warn", "We're on it.".to_string()),
+            "addressed to the operator instead: no question to leak, just a reassurance"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_is_marked_a_rehearsal_whatever_it_went() {
+        assert_eq!(
+            job_run_status(&run("ok", true, None)),
+            ("ok", "Rehearsal \u{2014} Ran fine.".to_string())
+        );
+        assert_eq!(
+            job_run_status(&run("failed", true, Some("timed out"))),
+            (
+                "bad",
+                "Rehearsal \u{2014} Failed \u{2014} timed out.".to_string()
+            )
+        );
+        assert_eq!(
+            job_run_status(&run("ok", false, None)),
+            ("ok", "Ran fine.".to_string()),
+            "a real run carries no rehearsal prefix"
         );
     }
 }

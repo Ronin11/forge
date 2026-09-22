@@ -76,8 +76,15 @@ fn fixture_doc(shot_path: &str, answered: bool, asked: bool) -> String {
         "run_workflows": [
             {
                 "name": "nightly-order-sync",
+                "description": "syncs last night's orders into the book every morning",
                 "jobs": [
-                    {"started_at": 1_700_000_100_i64, "state": "failed", "reason": "the order feed timed out"},
+                    {
+                        "started_at": 1_700_000_100_i64,
+                        "state": "failed",
+                        "dry_run": false,
+                        "effects": [],
+                        "reason": "the order feed timed out",
+                    },
                 ],
             },
         ],
