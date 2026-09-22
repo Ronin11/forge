@@ -115,7 +115,13 @@ enum Cmd {
     /// Run one task now
     Run(TaskArgs),
     /// Queue a task for `forge work`
-    Add(TaskArgs),
+    Add {
+        #[command(flatten)]
+        args: TaskArgs,
+        /// Print `{"id", "queued"}` instead of the sentence
+        #[arg(long)]
+        json: bool,
+    },
     /// The front door: sort a customer message into a request, a
     /// question, a need, or unclear, and act on it (see docs/INTAKE.md,
     /// "The front door is not the interview")
@@ -234,7 +240,12 @@ enum Cmd {
         json: bool,
     },
     /// Show one task and its attempts
-    Show { id: i64 },
+    Show {
+        id: i64,
+        /// The task's full record as one JSON object (`TraceDoc.task`)
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the supervisor on a task blocked with a question, now
     Supervise { id: i64 },
     /// Check this machine can run attempts and nothing is stuck
@@ -1213,7 +1224,7 @@ enum TaskCmd {
 pub async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(args) => run(args).await,
-        Cmd::Add(args) => add(args).await,
+        Cmd::Add { args, json } => add(args, json).await,
         Cmd::Ask {
             project,
             message,
@@ -1289,7 +1300,7 @@ pub async fn main() -> Result<()> {
             initiative,
             json,
         } => decisions(repo, project, initiative, json),
-        Cmd::Show { id } => show(id),
+        Cmd::Show { id, json } => show(id, json),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
         Cmd::Doctor { json } => run_doctor(json),
@@ -3254,7 +3265,7 @@ fn initiative_set(
 async fn task_set(id: i64, edit: crate::queue::TaskEdit) -> Result<()> {
     let f = Forge::open(false, false)?;
     crate::queue::edit_task(&f, id, &edit).await?;
-    show(id)
+    show(id, false)
 }
 
 fn initiative_list(project: Option<String>, json: bool) -> Result<()> {
@@ -3408,10 +3419,15 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn add(args: TaskArgs) -> Result<()> {
+async fn add(args: TaskArgs, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let t = enqueue(&f, &args).await?;
-    out!("queued task {} ({} queued)", t.id, f.store.queued_count()?);
+    let queued = f.store.queued_count()?;
+    if json {
+        out!("{}", serde_json::json!({ "id": t.id, "queued": queued }));
+    } else {
+        out!("queued task {} ({queued} queued)", t.id);
+    }
     Ok(())
 }
 
@@ -5532,12 +5548,16 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn show(id: i64) -> Result<()> {
+fn show(id: i64, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let Some(t) = f.store.task(id)? else {
         bail!("no task {id}")
     };
     let doc = crate::view::trace_doc(&f, &t)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc.task)?);
+        return Ok(());
+    }
     let task = &doc.task;
     let cost: f64 = doc.attempts.iter().filter_map(|a| a.cost_usd).sum();
     out!("task       {}", task.id);

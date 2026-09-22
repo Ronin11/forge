@@ -133,6 +133,18 @@ and does not parse stdout.
   record, every attempt's inputs/outputs/verdict, every kernel
   operation, and a diagnosis. One [`TraceDoc`](#tracedoc) object. Exits
   non-zero if the task does not exist.
+- **`forge show ID --json`** — the task's full record alone: exactly
+  the `task` member of [`TraceDoc`](#tracedoc), one object, with every
+  field of the spec a client would feed back into `forge add` (`text`,
+  `workflow`, `checks`, `after`, `budget_usd`, `max_turns`,
+  `max_attempts`, `timeout_secs`, `show_checks`, `allow_protected`,
+  `land`, `provider`, `model`, `project`, `initiative`, `trust`) beside
+  the run's state. No attempts, ops or diagnosis: a client that needs
+  those reads `forge trace`. Exits non-zero if the task does not exist.
+- **`forge add REPO TEXT [flags] --json`** — write verb: queues the task
+  as without `--json` and prints `{"id": <the new task's id>, "queued":
+  <how many tasks are queued now, this one included>}` on one line.
+  Refusals are stderr and a non-zero exit, as for every verb.
 - **`forge journal ID --json`** — what ran earlier in the task's piece
   of work. A JSON array of [`JournalEntry`](#journalentry) objects
   (`{task, attempt, step, state, said, found, reason}`), oldest first.
