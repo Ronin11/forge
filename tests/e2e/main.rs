@@ -7,6 +7,7 @@ mod support;
 mod concierge;
 mod contracts;
 mod deploy;
+mod economist;
 mod fixtures;
 mod graph;
 mod initiatives;
