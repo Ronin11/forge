@@ -400,6 +400,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: InitiativeCmd,
     },
+    /// Change an existing task
+    Task {
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
     /// Run a deploy target now, or (with `log`) show what was deployed
     /// when (see docs/DEPLOY.md)
     Deploy(DeployArgs),
@@ -1053,6 +1058,31 @@ enum InitiativeCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum TaskCmd {
+    /// Change a queued or blocked task's own limits in place, replacing
+    /// only the fields given; refused when none are, and refused on a
+    /// running or finished task (only its next attempt, or a retry, can
+    /// change those). Recorded as a decision on the task, so the change
+    /// is on the record; the queue's next claim reads the new values.
+    /// Prints the task afterward.
+    Set {
+        id: i64,
+        /// Cost cap for this task in USD
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Turns per attempt
+        #[arg(long = "max-turns")]
+        max_turns: Option<u32>,
+        /// Wall-clock limit per attempt in seconds
+        #[arg(long)]
+        timeout_secs: Option<u32>,
+        /// Extra attempts after a failure, each fed the previous failure
+        #[arg(long)]
+        retries: Option<u32>,
+    },
+}
+
 pub async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(args) => run(args).await,
@@ -1369,6 +1399,15 @@ pub async fn main() -> Result<()> {
             InitiativeCmd::List { project, json } => initiative_list(project, json),
             InitiativeCmd::Show { id, json } => initiative_show(id, json),
             InitiativeCmd::Report { id, json } => initiative_report(id, json),
+        },
+        Cmd::Task { cmd } => match cmd {
+            TaskCmd::Set {
+                id,
+                budget,
+                max_turns,
+                timeout_secs,
+                retries,
+            } => task_set(id, budget, max_turns, timeout_secs, retries),
         },
         Cmd::Intake { cmd } => match cmd {
             IntakeCmd::Accept {
@@ -2977,6 +3016,68 @@ fn initiative_set(
     Ok(())
 }
 
+fn task_set(
+    id: i64,
+    budget: Option<f64>,
+    max_turns: Option<u32>,
+    timeout_secs: Option<u32>,
+    retries: Option<u32>,
+) -> Result<()> {
+    if budget.is_none() && max_turns.is_none() && timeout_secs.is_none() && retries.is_none() {
+        bail!("nothing to set: pass --budget, --max-turns, --timeout-secs or --retries");
+    }
+    if let Some(b) = budget
+        && (!b.is_finite() || b <= 0.0)
+    {
+        bail!("budget must be a positive finite number");
+    }
+    let f = Forge::open(false, false)?;
+    let Some(old) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    if !matches!(old.state, TaskState::Queued | TaskState::Blocked) {
+        bail!(
+            "task {id} is {}; only a queued or blocked task's limits are set (a running attempt might still finish, and a finished task is done)",
+            old.state.as_str()
+        );
+    }
+    let mut changes = Vec::new();
+    if let Some(b) = budget {
+        changes.push(format!("budget ${b:.2}"));
+    }
+    if let Some(n) = max_turns {
+        changes.push(format!("max-turns {n}"));
+    }
+    if let Some(n) = timeout_secs {
+        changes.push(format!("timeout-secs {n}"));
+    }
+    if let Some(n) = retries {
+        changes.push(format!("retries {n}"));
+    }
+    if !f.store.set_task_limits(
+        id,
+        &crate::store::TaskLimitsUpdate {
+            budget_usd: budget,
+            max_turns: max_turns.map(|n| n as i64),
+            max_attempts: retries.map(|n| n as i64 + 1),
+            timeout_secs: timeout_secs.map(|n| n as i64),
+        },
+    )? {
+        bail!("task {id} changed state before its limits could be set");
+    }
+    let decision = f.store.insert_decision_by(
+        id,
+        &old.repo,
+        &format!("task {id}'s limits"),
+        &format!("set {}", changes.join(", ")),
+        "operator",
+        "",
+        old.question_to.as_deref(),
+    )?;
+    f.store.set_decision_retry(decision, id)?;
+    show(id)
+}
+
 fn initiative_list(project: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let rows = crate::view::initiative_rows(&f, project.as_deref())?;
@@ -3916,6 +4017,17 @@ fn trace(id: i64, json: bool) -> Result<()> {
         t.shape_tdd,
         t.shape_declared_checks
     );
+    for (role, r) in &doc.task.routing {
+        out!(
+            "routing    {role:<8} provider={}({}) model={}({}) workflow={}({})",
+            r.provider.value,
+            r.provider.source,
+            r.model.value,
+            r.model.source,
+            r.workflow.value,
+            r.workflow.source
+        );
+    }
     if let Ok(r) = serde_json::from_value::<workflows::Resolved>(doc.resolved.clone()) {
         out!(
             "resolved   {}",
@@ -5114,6 +5226,24 @@ fn show(id: i64) -> Result<()> {
             task.explore
                 .iter()
                 .map(|(role, provider)| format!("{role}={provider}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !task.routing.is_empty() {
+        out!(
+            "routing    {}",
+            task.routing
+                .iter()
+                .map(|(role, r)| format!(
+                    "{role}: provider={}({}) model={}({}) workflow={}({})",
+                    r.provider.value,
+                    r.provider.source,
+                    r.model.value,
+                    r.model.source,
+                    r.workflow.value,
+                    r.workflow.source
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         );

@@ -690,10 +690,14 @@ impl Store {
     /// Exactly four signals are counted, all of them attention to the work
     /// itself: operator answers (decisions not answered by the supervisor),
     /// hand landings, withdrawals, and hand commits. Operator bookkeeping
-    /// (`forge initiative set`, `forge project set`, `forge gc`, budget
-    /// raises, renames) is not among them by construction: none of those
-    /// verbs writes a decision, a hand landing, a withdrawal or a base-branch
-    /// commit, so nothing needs excluding.
+    /// (`forge initiative set`, `forge project set`, `forge gc`, renames)
+    /// is not among them by construction: none of those verbs writes a
+    /// decision, a hand landing, a withdrawal or a base-branch commit, so
+    /// nothing needs excluding. `forge task set` is the deliberate
+    /// exception: raising a stuck task's own budget or turn cap in place
+    /// is exactly the kind of friction this signal exists to surface, so
+    /// it writes a decision (see `Store::set_task_limits`) and is counted
+    /// here like any other operator answer.
     pub fn human_attention_stats(&self, scope: &StatsFilter) -> Result<Vec<HumanAttentionStat>> {
         let mut stats = {
             let c = self.lock();

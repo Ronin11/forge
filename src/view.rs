@@ -6,7 +6,8 @@
 
 use crate::ctx::Forge;
 use crate::store::{
-    Decision, JournalStat, Message, StepStat, Task, TaskRef, TaskState, TaskSummary, WorkflowStat,
+    Decision, JournalStat, Message, RoleRouting, StepStat, Task, TaskRef, TaskState, TaskSummary,
+    WorkflowStat,
 };
 use crate::workflows::Problem;
 use crate::{config, plugins};
@@ -256,6 +257,11 @@ pub struct TraceTask {
     /// role name; empty when the task named an explicit `--provider` or no
     /// role explored (see `queue::assign_explore`).
     pub explore: std::collections::BTreeMap<String, String>,
+    /// The routing record (see docs/ECONOMIST.md, "The routing record"):
+    /// per role that ran, the provider, model, and workflow it ran under,
+    /// each with its source (`"flag"`, `"project"`, `"operator"`,
+    /// `"default"`, or `"experiment"`). A role that never ran has no key.
+    pub routing: std::collections::BTreeMap<String, RoleRouting>,
     pub context_enabled: bool,
     pub context: String,
     pub resume_on_failure: bool,
@@ -465,6 +471,7 @@ pub fn trace_doc(f: &Forge, t: &Task) -> Result<TraceDoc> {
         journal_enabled: t.journal,
         journal_arm: t.journal_arm.clone(),
         explore: t.explore.clone(),
+        routing: t.routing.clone(),
         context_enabled: t.context_enabled,
         context: t.context.clone(),
         resume_on_failure: t.resume_on_failure,

@@ -143,6 +143,7 @@ forge initiative set <id> [--budget <usd>] [--stop-after <n>] [--outcome <text>]
 forge initiative list [<project>] | show <id> | report <id> [--json]
 forge add <repo> <text> --initiative <id>        (project follows the initiative)
 forge add <repo> <text> --project <name>         (a task outside any initiative)
+forge task set <id> [--budget <usd>] [--max-turns <n>] [--timeout-secs <n>] [--retries <n>]
 forge log | stats [--project <name>] [--initiative <id>]
 ```
 
