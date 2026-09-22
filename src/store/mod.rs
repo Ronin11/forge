@@ -59,6 +59,38 @@ pub struct TaskFilter {
     pub project: Option<String>,
     /// Only this initiative's tasks.
     pub initiative: Option<i64>,
+    /// Only tasks whose attempts' recorded changes include one of these
+    /// paths, or anything under one that names a directory: a `/`
+    /// boundary, so `src/cli` matches `src/cli/tasks.rs` and not
+    /// `src/client.rs`. Empty means no such filter. Read from
+    /// `stats::CHANGE_ROWS`, the rows `file_changes` reads.
+    pub touches: Vec<String>,
+    /// With `touches`: also tasks whose text mentions one of the paths
+    /// (a queued or running task has no changes yet), marked
+    /// `TaskSummary::touch == "text"` so a guess is never mistaken for a
+    /// record.
+    pub touches_text: bool,
+    /// Only tasks with an attempt whose verdict has a row of one of these
+    /// names with `ok: false`: a rule name (`verify::Rule`) or a check
+    /// name as the record spells it (`test`, `clippy`, `task-check-1`).
+    /// Validated by `view::task_rows` against the registry and the
+    /// record; empty means no such filter.
+    pub failed_on: Vec<String>,
+    /// Only tasks with an attempt whose `reason` contains this substring
+    /// (case-insensitive).
+    pub reason: Option<String>,
+}
+
+/// One attempt that matched `TaskFilter::failed_on` or `::reason`: a
+/// verdict row with `ok: false` (`name` set, `tail` its first line) or a
+/// reason match (`name` None).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FailedAttempt {
+    pub attempt_no: i64,
+    pub step: String,
+    pub reason: String,
+    pub name: Option<String>,
+    pub tail: String,
 }
 
 /// What `forge decisions` filters on, and what the supervisor's prompt
@@ -70,6 +102,9 @@ pub struct DecisionFilter {
     pub repo: Option<String>,
     pub project: Option<String>,
     pub initiative: Option<i64>,
+    /// A case-insensitive substring of the question, the answer or the
+    /// citations.
+    pub grep: Option<String>,
 }
 
 pub struct TaskSummary {
@@ -86,6 +121,14 @@ pub struct TaskSummary {
     pub project: Option<String>,
     pub initiative: Option<i64>,
     pub trust: String,
+    /// With `TaskFilter::touches`: how the row matched, `"changes"` (an
+    /// attempt recorded a change under the path) or `"text"` (only the
+    /// task's text mentions it, `touches_text`). `None` without the
+    /// filter.
+    pub touch: Option<String>,
+    /// With `TaskFilter::failed_on` or `::reason`: the attempts that
+    /// matched, by attempt number. Empty without those filters.
+    pub failures: Vec<FailedAttempt>,
 }
 
 pub struct Store {
@@ -323,15 +366,28 @@ impl Store {
 
     /// Blocked tasks: the demand signal for workflows and the questions
     /// waiting on the operator.
-    pub fn blocked(&self, repo: Option<&str>) -> Result<Vec<Task>> {
+    /// The blocked tasks `forge requests` lists, oldest first, less any
+    /// already retried. `grep` is a case-insensitive substring of what the
+    /// request shows: the task's reason (the question, as `view::
+    /// request_kind` reads it) or, on its last attempt's envelope, the
+    /// `needs_input` question, what it tried, and its options.
+    pub fn blocked(&self, repo: Option<&str>, grep: Option<&str>) -> Result<Vec<Task>> {
         let c = self.lock();
         let mut stmt = c.prepare(&format!(
             "SELECT {} FROM tasks t WHERE t.state='blocked'
                AND (?1 IS NULL OR t.repo = ?1)
+               AND (?2 IS NULL OR t.reason LIKE '%' || ?2 || '%'
+                    OR EXISTS (SELECT 1 FROM attempts a
+                               WHERE a.id = (SELECT id FROM attempts WHERE task_id = t.id
+                                             ORDER BY attempt_no DESC, id DESC LIMIT 1)
+                                 AND json_valid(a.envelope_json)
+                                 AND (json_extract(a.envelope_json, '$.needs_input.question') LIKE '%' || ?2 || '%'
+                                      OR json_extract(a.envelope_json, '$.needs_input.tried') LIKE '%' || ?2 || '%'
+                                      OR json_extract(a.envelope_json, '$.needs_input.options') LIKE '%' || ?2 || '%')))
                AND NOT EXISTS (SELECT 1 FROM tasks n WHERE n.retry_of = t.id) ORDER BY t.id",
             TASK_COLUMNS.join(", ")
         ))?;
-        let rows = stmt.query_map(params![repo], task_from_row)?;
+        let rows = stmt.query_map(params![repo, grep], task_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -385,22 +441,60 @@ impl Store {
     /// The listing behind `forge log`: newest first, filtered, and paged by
     /// `before` (ids strictly below it) so a client can scroll back.
     pub fn list_tasks_where(&self, q: &TaskFilter) -> Result<Vec<TaskSummary>> {
+        // `?9` is the `touches` paths as a JSON array (NULL for none),
+        // each without a trailing slash; `touched` holds where an attempt
+        // recorded a change at one of them or under it (`/` boundary).
+        let touches: Vec<&str> = q
+            .touches
+            .iter()
+            .map(|p| p.trim_end_matches('/'))
+            .filter(|p| !p.is_empty())
+            .collect();
+        let touches_json = (!touches.is_empty())
+            .then(|| serde_json::to_string(&touches))
+            .transpose()?;
+        let touched = format!(
+            "EXISTS (SELECT 1 FROM {}, json_each(?9) p
+                     WHERE a.task_id = t.id AND {}
+                       AND ({path} = p.value
+                            OR substr({path}, 1, length(p.value) + 1) = p.value || '/'))",
+            stats::CHANGE_ROWS,
+            stats::CHANGE_ROWS_VALID,
+            path = stats::CHANGE_PATH
+        );
+        let mentioned = "EXISTS (SELECT 1 FROM json_each(?9) p WHERE instr(t.task, p.value) > 0)";
+        // `?11` is the `failed_on` names as a JSON array (NULL for none):
+        // a verdict row of that name with `ok: false` on any attempt.
+        let failed_json = (!q.failed_on.is_empty())
+            .then(|| serde_json::to_string(&q.failed_on))
+            .transpose()?;
+        let failed =
+            "EXISTS (SELECT 1 FROM attempts a, json_each(a.verdict_json) v, json_each(?11) n
+                              WHERE a.task_id = t.id AND json_valid(a.verdict_json)
+                                AND json_extract(v.value, '$.name') = n.value
+                                AND json_extract(v.value, '$.ok') = 0)";
+        let reasoned = "EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.id
+                                AND a.reason LIKE '%' || ?12 || '%')";
         let c = self.lock();
-        let mut stmt = c.prepare(
+        let mut stmt = c.prepare(&format!(
             "SELECT t.id AS id, t.state AS state, datetime(t.created_at,'unixepoch') AS created,
                     t.repo AS repo, t.task AS task,
                     (SELECT COUNT(*) FROM attempts a WHERE a.task_id=t.id) AS attempts,
                     (SELECT COALESCE(SUM(cost_usd),0) FROM attempts a WHERE a.task_id=t.id) AS cost,
                     t.workflow AS workflow, t.created_at AS created_at, t.finished_at AS finished_at,
-                    t.project AS project, t.initiative AS initiative, t.trust AS trust
+                    t.project AS project, t.initiative AS initiative, t.trust AS trust,
+                    CASE WHEN ?9 IS NULL THEN NULL WHEN {touched} THEN 'changes' ELSE 'text' END AS touch
              FROM tasks t WHERE (?2 IS NULL OR t.state = ?2) AND (?3 IS NULL OR t.repo = ?3)
                AND (?4 IS NULL OR t.id < ?4)
                AND (?5 IS NULL OR t.task LIKE '%' || ?5 || '%' OR CAST(t.id AS TEXT) = ?5)
                AND (?6 IS NULL OR t.workflow = ?6)
                AND (?7 IS NULL OR t.project = ?7)
                AND (?8 IS NULL OR t.initiative = ?8)
-             ORDER BY t.id DESC LIMIT ?1",
-        )?;
+               AND (?9 IS NULL OR {touched} OR (?10 = 1 AND {mentioned}))
+               AND (?11 IS NULL OR {failed})
+               AND (?12 IS NULL OR {reasoned})
+             ORDER BY t.id DESC LIMIT ?1"
+        ))?;
         let rows = stmt.query_map(
             params![
                 q.limit,
@@ -411,6 +505,10 @@ impl Store {
                 q.workflow.as_deref(),
                 q.project.as_deref(),
                 q.initiative,
+                touches_json,
+                q.touches_text as i64,
+                failed_json,
+                q.reason.as_deref(),
             ],
             |r| {
                 Ok(TaskSummary {
@@ -427,11 +525,74 @@ impl Store {
                     project: r.get("project")?,
                     initiative: r.get("initiative")?,
                     trust: r.get("trust")?,
+                    touch: r.get("touch")?,
+                    failures: Vec::new(),
                 })
             },
         )?;
+        let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        if failed_json.is_some() || q.reason.is_some() {
+            for row in &mut out {
+                row.failures =
+                    failed_attempts_query(&c, row.id, failed_json.as_deref(), q.reason.as_deref())?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every verdict row name the record has seen, on any attempt: the
+    /// check names `forge log --failed-on` accepts beside the rule
+    /// registry's own.
+    pub fn verdict_row_names(&self) -> Result<Vec<String>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(
+            "SELECT DISTINCT json_extract(v.value, '$.name') AS name
+             FROM attempts a, json_each(a.verdict_json) v
+             WHERE json_valid(a.verdict_json) AND name IS NOT NULL
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>("name"))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+/// The attempts of `task_id` that `forge log --failed-on`/`--reason`
+/// matched (see `FailedAttempt`): one row per failing verdict row named
+/// in `names_json`, plus one per attempt whose reason contains
+/// `reason`; by attempt number. SQLite walks the verdict JSON; nothing
+/// is parsed here but the tail's first line.
+fn failed_attempts_query(
+    c: &Connection,
+    task_id: i64,
+    names_json: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Vec<FailedAttempt>> {
+    let mut stmt = c.prepare(
+        "SELECT a.attempt_no AS attempt_no, a.step AS step, a.reason AS reason,
+                json_extract(v.value, '$.name') AS name,
+                COALESCE(json_extract(v.value, '$.tail'), '') AS tail
+         FROM attempts a, json_each(a.verdict_json) v
+         WHERE a.task_id = ?1 AND ?2 IS NOT NULL AND json_valid(a.verdict_json)
+           AND json_extract(v.value, '$.ok') = 0
+           AND EXISTS (SELECT 1 FROM json_each(?2) n WHERE n.value = json_extract(v.value, '$.name'))
+         UNION ALL
+         SELECT a.attempt_no, a.step, a.reason, NULL, ''
+         FROM attempts a
+         WHERE a.task_id = ?1 AND ?3 IS NOT NULL AND a.reason LIKE '%' || ?3 || '%'
+         ORDER BY 1, 4",
+    )?;
+    let rows = stmt.query_map(params![task_id, names_json, reason], |r| {
+        let tail: String = r.get("tail")?;
+        Ok(FailedAttempt {
+            attempt_no: r.get("attempt_no")?,
+            step: r.get("step")?,
+            reason: r.get("reason")?,
+            name: r.get("name")?,
+            tail: tail.lines().next().unwrap_or_default().to_string(),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[derive(serde::Deserialize)]

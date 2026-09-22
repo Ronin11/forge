@@ -178,6 +178,29 @@ enum Cmd {
         /// Only tasks in this initiative
         #[arg(long)]
         initiative: Option<i64>,
+        /// Only tasks whose recorded changes include this path, or
+        /// anything under it when it names a directory (repeatable; a /
+        /// boundary, so src/cli matches src/cli/tasks.rs and not
+        /// src/client.rs). The changes are what the attempts' envelopes
+        /// recorded: derived from git where the provider reports from
+        /// git, else what the agent itself reported.
+        #[arg(long = "touches")]
+        touches: Vec<String>,
+        /// With --touches: also tasks whose text mentions the path (a
+        /// queued or running task has no changes yet); such rows are
+        /// marked "by text"
+        #[arg(long = "touches-text", requires = "touches")]
+        touches_text: bool,
+        /// Only tasks with an attempt that failed this verdict row
+        /// (repeatable): a rule name such as changes-match-git or
+        /// clean-tree, or a check name as the record spells it, such as
+        /// test, clippy or task-check-1. An unknown name is refused,
+        /// listing the known ones.
+        #[arg(long = "failed-on")]
+        failed_on: Vec<String>,
+        /// Only tasks with an attempt whose reason contains this text
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Re-queue a finished task as a new one: same text, workflow, budget, flags, and dependencies
     Retry {
@@ -235,6 +258,9 @@ enum Cmd {
         /// Only decisions on this initiative's tasks
         #[arg(long)]
         initiative: Option<i64>,
+        /// Only decisions whose question, answer or citations contain this (case-insensitive)
+        #[arg(long)]
+        grep: Option<String>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -313,6 +339,9 @@ enum Cmd {
         /// Only requests for this repository
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Only requests whose question, tried or options contain this (case-insensitive)
+        #[arg(long)]
+        grep: Option<String>,
         /// Machine-readable
         #[arg(long)]
         json: bool,
@@ -1257,6 +1286,10 @@ pub async fn main() -> Result<()> {
             workflow,
             project,
             initiative,
+            touches,
+            touches_text,
+            failed_on,
+            reason,
         } => log(
             LogArgs {
                 limit,
@@ -1267,6 +1300,10 @@ pub async fn main() -> Result<()> {
                 workflow,
                 project,
                 initiative,
+                touches,
+                touches_text,
+                failed_on,
+                reason,
             },
             json,
         ),
@@ -1298,8 +1335,9 @@ pub async fn main() -> Result<()> {
             repo,
             project,
             initiative,
+            grep,
             json,
-        } => decisions(repo, project, initiative, json),
+        } => decisions(repo, project, initiative, grep, json),
         Cmd::Show { id, json } => show(id, json),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
@@ -1312,7 +1350,7 @@ pub async fn main() -> Result<()> {
         } => crate::egress::relay(&socket, &listen, ready.as_deref()).await,
         Cmd::Trace { id, json } => trace(id, json),
         Cmd::Graph { repo, json } => graph(repo, json),
-        Cmd::Requests { repo, json } => requests(repo, json),
+        Cmd::Requests { repo, grep, json } => requests(repo, grep, json),
         Cmd::Stats {
             tools,
             step,
@@ -1771,6 +1809,7 @@ fn decisions(
     repo: Option<PathBuf>,
     project: Option<String>,
     initiative: Option<i64>,
+    grep: Option<String>,
     json: bool,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
@@ -1784,6 +1823,7 @@ fn decisions(
             repo,
             project,
             initiative,
+            grep,
         })?
         .iter()
         .map(|d| {
@@ -4462,13 +4502,13 @@ fn trace(id: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn requests(repo: Option<PathBuf>, json: bool) -> Result<()> {
+fn requests(repo: Option<PathBuf>, grep: Option<String>, json: bool) -> Result<()> {
     let f = Forge::open(false, false)?;
     let repo = repo
         .map(|p| p.canonicalize().context("repo path"))
         .transpose()?
         .map(|p| p.display().to_string());
-    let rows = requests_json(&f, repo.as_deref())?;
+    let rows = requests_json(&f, repo.as_deref(), grep.as_deref())?;
     if json {
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -5188,16 +5228,16 @@ async fn journal_control_stats(f: &Forge) -> Result<()> {
 }
 
 fn tasks_json(f: &Forge, q: &crate::store::TaskFilter) -> Result<Vec<crate::view::TaskRow>> {
-    Ok(f.store
-        .list_tasks_where(q)?
-        .iter()
-        .map(crate::view::TaskRow::from)
-        .collect())
+    crate::view::task_rows(f, q)
 }
 
-fn requests_json(f: &Forge, repo: Option<&str>) -> Result<Vec<crate::view::RequestRow>> {
+fn requests_json(
+    f: &Forge,
+    repo: Option<&str>,
+    grep: Option<&str>,
+) -> Result<Vec<crate::view::RequestRow>> {
     Ok(f.store
-        .blocked(repo)?
+        .blocked(repo, grep)?
         .iter()
         .map(|t| {
             let q = f
@@ -5403,7 +5443,7 @@ fn snapshot() -> Result<()> {
         .unwrap_or(0);
     let doc = serde_json::json!({
         "tasks": tasks_json(&f, &crate::store::TaskFilter { limit: 200, ..Default::default() })?,
-        "requests": requests_json(&f, None)?,
+        "requests": requests_json(&f, None, None)?,
         "worker": worker_json(&f),
         "events_offset": offset,
     });
@@ -5468,6 +5508,10 @@ struct LogArgs {
     workflow: Option<String>,
     project: Option<String>,
     initiative: Option<i64>,
+    touches: Vec<String>,
+    touches_text: bool,
+    failed_on: Vec<String>,
+    reason: Option<String>,
 }
 
 fn log(args: LogArgs, json: bool) -> Result<()> {
@@ -5480,6 +5524,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         workflow,
         project,
         initiative,
+        touches,
+        touches_text,
+        failed_on,
+        reason,
     } = args;
     let state = state
         .map(|s| {
@@ -5504,6 +5552,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
         workflow,
         project,
         initiative,
+        touches,
+        touches_text,
+        failed_on,
+        reason,
     };
     let rows = tasks_json(&f, &q)?;
     if json {
@@ -5533,7 +5585,7 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -5542,10 +5594,32 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             format!("${:.4}", s.cost_usd),
             render::utc(s.created_at),
             repo_name,
-            task_short
+            task_short,
+            if s.touch.as_deref() == Some("text") {
+                " (by text)"
+            } else {
+                ""
+            },
+            failed_suffix(&s.failures)
         );
     }
     Ok(())
+}
+
+/// The listing's mark for a `--failed-on`/`--reason` match: the distinct
+/// failing row names, `reason` for a reason match; empty without one.
+fn failed_suffix(failures: &[crate::store::FailedAttempt]) -> String {
+    if failures.is_empty() {
+        return String::new();
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for f in failures {
+        let n = f.name.as_deref().unwrap_or("reason");
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    format!(" (failed: {})", names.join(", "))
 }
 
 fn show(id: i64, json: bool) -> Result<()> {

@@ -10,8 +10,8 @@
 use crate::support::*;
 use rusqlite::OptionalExtension;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 fn plugin_status_json(e: &Env, name: &str) -> serde_json::Value {
@@ -1508,4 +1508,261 @@ esac
         "My printer broke, can someone come by Tuesday?"
     );
     assert_eq!(rows[1]["channel"], "signal");
+}
+
+// The twilio plugin (search/buy/release) runs against a fake `curl`
+// (tests/fakes/curl.sh) rather than the worker or the real Twilio API:
+// it has no event loop yet to drive through `forge work`, so these tests
+// invoke `plugins/twilio/twilio.sh` the way the operator does, with
+// FORGE_PLUGIN_DIR/FORGE_PLUGIN_STATE pointed at a throwaway directory
+// and FAKE_TWILIO_DIR telling the fake curl which account state to read
+// and mutate.
+
+struct TwilioFixture {
+    _dir: tempfile::TempDir,
+    plugin_dir: PathBuf,
+    state_dir: PathBuf,
+    fake_dir: PathBuf,
+}
+
+/// A fresh plugin dir (config written from `config_extra`, defaulting
+/// MONTHLY_CAP_USD=5 MAX_NUMBERS=2 COUNTRY=US), state dir, and a fake
+/// Twilio account seeded with two available numbers, an empty owned
+/// list, and a $1.00/mo local price.
+fn setup_twilio(config_extra: &str) -> TwilioFixture {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin_dir = dir.path().join("plugin");
+    let state_dir = dir.path().join("state");
+    let fake_dir = dir.path().join("fake");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::create_dir_all(&fake_dir).unwrap();
+
+    std::fs::write(
+        plugin_dir.join("config"),
+        format!("TWILIO_ACCOUNT_SID=ACtest\nTWILIO_AUTH_TOKEN=tokentest\n{config_extra}"),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        plugin_dir.join("config"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+
+    std::fs::write(
+        fake_dir.join("available.json"),
+        serde_json::json!({
+            "available_phone_numbers": [
+                {
+                    "phone_number": "+15555550100",
+                    "locality": "Columbus",
+                    "region": "OH",
+                    "capabilities": {"voice": true, "SMS": true, "MMS": true, "fax": false},
+                },
+                {
+                    "phone_number": "+15555550101",
+                    "locality": "Dayton",
+                    "region": "OH",
+                    "capabilities": {"voice": true, "SMS": true, "MMS": false, "fax": false},
+                },
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        fake_dir.join("pricing.json"),
+        serde_json::json!({
+            "phone_number_prices": [{"number_type": "local", "base_price": "1.00", "current_price": "1.00"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(fake_dir.join("owned.json"), "[]").unwrap();
+
+    TwilioFixture {
+        _dir: dir,
+        plugin_dir,
+        state_dir,
+        fake_dir,
+    }
+}
+
+fn twilio(fx: &TwilioFixture, args: &[&str]) -> Output {
+    let sh = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/twilio/twilio.sh");
+    let fake_curl = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fakes/curl.sh");
+    Command::new("sh")
+        .arg(&sh)
+        .args(args)
+        .env("FORGE_PLUGIN_DIR", &fx.plugin_dir)
+        .env("FORGE_PLUGIN_STATE", &fx.state_dir)
+        .env("FAKE_TWILIO_DIR", &fx.fake_dir)
+        .env("CURL", &fake_curl)
+        .output()
+        .unwrap()
+}
+
+fn numbers_json(fx: &TwilioFixture) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(fx.state_dir.join("numbers.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn twilio_search_prints_number_locality_capabilities_and_price() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+    let o = twilio(&fx, &["search"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("+15555550100"), "{out}");
+    assert!(out.contains("Columbus"), "{out}");
+    assert!(out.contains("voice"), "{out}");
+    assert!(out.contains("SMS"), "{out}");
+    assert!(out.contains("1.00"), "{out}");
+}
+
+#[test]
+fn twilio_buy_refused_without_yes() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+    let o = twilio(&fx, &["buy", "+15555550100"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("--yes"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        numbers_json(&fx).as_array().unwrap().len(),
+        0,
+        "a refused buy must not record anything in numbers.json"
+    );
+}
+
+#[test]
+fn twilio_buy_refuses_a_number_search_would_not_return_and_succeeds_for_one_it_does() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+
+    let o = twilio(&fx, &["buy", "+15555559999", "--yes"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("not offered"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let o = twilio(&fx, &["buy", "+15555550100", "--yes"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let last = out.lines().next_back().unwrap();
+    assert_eq!(last, "+15555550100 PN3538218e2d157f1fe9ffd0ebaf8dd716");
+
+    let numbers = numbers_json(&fx);
+    assert_eq!(numbers[0]["number"], "+15555550100");
+    assert_eq!(numbers[0]["sid"], "PN3538218e2d157f1fe9ffd0ebaf8dd716");
+    assert_eq!(numbers[0]["price"], "1.00");
+    assert!(numbers[0]["bought_at"].as_str().unwrap().contains('T'));
+
+    let owned: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.fake_dir.join("owned.json")).unwrap())
+            .unwrap();
+    assert_eq!(owned.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn twilio_buy_refused_over_max_numbers() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=1\nCOUNTRY=US\n");
+
+    let o = twilio(&fx, &["buy", "+15555550100", "--yes"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let o = twilio(&fx, &["buy", "+15555550101", "--yes"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("MAX_NUMBERS"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        numbers_json(&fx).as_array().unwrap().len(),
+        1,
+        "the refused second buy must not be recorded"
+    );
+}
+
+#[test]
+fn twilio_buy_refused_over_monthly_cap() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=1.5\nMAX_NUMBERS=5\nCOUNTRY=US\n");
+
+    let o = twilio(&fx, &["buy", "+15555550100", "--yes"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let o = twilio(&fx, &["buy", "+15555550101", "--yes"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("MONTHLY_CAP_USD"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        numbers_json(&fx).as_array().unwrap().len(),
+        1,
+        "the refused second buy must not be recorded"
+    );
+}
+
+#[test]
+fn twilio_release_refused_without_yes_then_removes_the_number() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+    let o = twilio(&fx, &["buy", "+15555550100", "--yes"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let o = twilio(&fx, &["release", "+15555550100"]);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("--yes"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    let o = twilio(&fx, &["release", "+15555550100", "--yes"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        numbers_json(&fx).as_array().unwrap().len(),
+        0,
+        "release must remove the number from numbers.json"
+    );
+
+    let owned: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.fake_dir.join("owned.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        owned.as_array().unwrap().len(),
+        0,
+        "release must DELETE the number from the (fake) Twilio account"
+    );
+
+    let o = twilio(&fx, &["owned"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stdout).is_empty());
+}
+
+#[test]
+fn twilio_refuses_a_config_readable_by_group_or_other() {
+    let fx = setup_twilio("MONTHLY_CAP_USD=5\nMAX_NUMBERS=2\nCOUNTRY=US\n");
+    std::fs::set_permissions(
+        fx.plugin_dir.join("config"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    let o = twilio(&fx, &["search"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("chmod 600"), "{err}");
+
+    let calls = fx.fake_dir.join("calls.log");
+    assert!(
+        !calls.exists(),
+        "a refused run must never reach the (fake) API: {:?}",
+        std::fs::read_to_string(&calls)
+    );
 }

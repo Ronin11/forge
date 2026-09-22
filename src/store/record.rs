@@ -181,9 +181,15 @@ impl Store {
              WHERE (?1 IS NULL OR d.repo = ?1)
                AND (?2 IS NULL OR t.project = ?2)
                AND (?3 IS NULL OR t.initiative = ?3)
+               AND (?4 IS NULL OR d.question LIKE '%' || ?4 || '%'
+                    OR d.answer LIKE '%' || ?4 || '%'
+                    OR d.citations LIKE '%' || ?4 || '%')
              ORDER BY d.id DESC"
         ))?;
-        let rows = stmt.query_map(params![q.repo, q.project, q.initiative], decision_from_row)?;
+        let rows = stmt.query_map(
+            params![q.repo, q.project, q.initiative, q.grep],
+            decision_from_row,
+        )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
