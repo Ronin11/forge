@@ -1,10 +1,11 @@
 # Unattended checks
 
 *2026-09-19. What Forge asks of itself on a schedule, with no operator
-watching: the daily doctor, the weekly drift check, and the weekly
-engineering check. Each is a `kind = "run"` workflow on the `forge`
-project's own repository (docs/JOBS.md), so it is versioned, checked by
-`forge workflows validate`, and dry-runnable like any automation.*
+watching: the daily doctor, the weekly drift check, the weekly
+engineering check, and the weekly economist rebalance. Each is a `kind =
+"run"` workflow on the `forge` project's own repository (docs/JOBS.md),
+so it is versioned, checked by `forge workflows validate`, and
+dry-runnable like any automation.*
 
 ## `doctor-daily` — 07:00 daily
 
@@ -42,3 +43,19 @@ blocked question naming what moved. The CLI update itself is never run
 by the job — `check-claude-cli-version` only logs the exact `npm install
 -g @anthropic-ai/claude-code@<version>` command, for the operator to run
 by hand at the next worker restart.
+
+## `economist-weekly` — Monday 06:00
+
+One step, `economist-rebalance`: runs `forge economist rebalance`
+(docs/ECONOMIST.md, "What is built"), which reads `forge stats
+--factors` over the last `ECONOMIST_DAYS` (`[env]`, default 14) and
+shifts `experiment.toml`'s weights toward the cheaper, more confidently
+measured level of every factor it declares, never below the floor,
+writing and committing the result in the workflow catalog's own git with
+a message naming what moved. The step (and so the job) fails when a
+level's `|effect|` crosses `ECONOMIST_LARGE_EFFECT_THRESHOLD` (`[env]`,
+default `1.0`); `[limits] on_failure = "ask:operator"` turns that into a
+blocked question naming the effect, so a human sees a large move before
+the next week's shift compounds on top of it. Honours `FORGE_DRY_RUN`:
+`forge economist rebalance --dry-run` prints the weights it would write
+and writes nothing.

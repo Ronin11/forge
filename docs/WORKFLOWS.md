@@ -291,6 +291,35 @@ than one worker machine or a wait measured in days. What is borrowed from
 Temporal is the discipline: definitions as data, an event history per run,
 idempotent resumption, explicit timeouts.
 
+### `experiment.toml`, beside the catalog
+
+One more file lives in the same directory as the workflow files, but is
+never one itself: `experiment.toml`, the economist's randomized-routing
+config (docs/ECONOMIST.md, "What is built"). `workflows::toml_files`
+excludes it by name from the workflow parser, so it is never flagged as
+a broken workflow and never blocks task creation; it is versioned and
+committed the same plain-git way every workflow file is (`forge doctor`
+reports it as part of the catalog's own uncommitted state).
+
+It declares, per role in `store::ROLES`, a table of levels (provider
+names) and weights, plus an optional `floor` (default `0.1`):
+
+```toml
+[factors.review]
+anthropic = 0.7
+openai = 0.3
+```
+
+`queue::enqueue` draws one level per factor, independently, for a task
+that pins neither its own provider nor its workflow and whose project
+pins no role for that factor — recorded on `Task::explore` and, once a
+step runs, on `Task::routing` with source `"experiment"`, the same
+surface `[measure] explore` already writes (docs/ECONOMIST.md, "The
+routing record"). `.forge/workflows/economist-weekly.toml`, in this
+repository's own catalog, rebalances the weights weekly from `forge
+stats --factors`; see docs/ECONOMIST.md for the arithmetic and
+`docs/CHECKS.md` for the job itself.
+
 ## Authoring
 
 The first agent that needs to author a workflow is a run workflow itself:
