@@ -12,8 +12,8 @@
 #
 # It logs its own argv (via argv_debug, a type the parser only logs) for the
 # tests to check the flags Forge built for each phase — a file of its own
-# would either land inside the worktree (which the L0 changes-match-git
-# check would then flag as an unreported change) or outside it, where a
+# would either land inside the worktree (an untracked file the L0
+# clean-tree check would then flag as dirty) or outside it, where a
 # sandboxed run cannot write it back to the host at all.
 source "$(dirname "$0")/lib.sh"
 

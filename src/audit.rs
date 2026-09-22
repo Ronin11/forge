@@ -382,12 +382,13 @@ pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
         ),
         Rule::ChangesFromGit => d(
             "the report's changes were filled from git, not the model's own list",
-            "Nothing to do; this provider is configured with report_from_git, so a mistake in what the model reported does not fail the attempt.",
+            "Nothing to do; every attempt's changes[] comes from git, so a mistake in what the model reported does not fail the attempt.",
         ),
-        Rule::CleanTree
-        | Rule::ChangesMatchGit
-        | Rule::ClaimsHaveEvidence
-        | Rule::ResultStructured => d(
+        Rule::ChangesMatchGit => d(
+            "retired: this attempt's verdict predates deriving changes[] from git",
+            "Nothing to do; read alongside the other L0 rows from the same attempt for what actually failed, if anything else did.",
+        ),
+        Rule::CleanTree | Rule::ClaimsHaveEvidence | Rule::ResultStructured => d(
             &format!(
                 "{} {}: the agent broke the result contract ({tail2})",
                 c.level, c.name

@@ -331,6 +331,10 @@ and does not parse stdout.
   [--direction in|out] --json`** — a project's recorded messages, newest
   first. A JSON array of [`MessageRow`](#messagerow).
 
+- **`forge providers --json`** — every agent backend the operator has
+  configured under `[providers.<name>]`, plus the built-in `anthropic`.
+  A JSON array of [`ProviderRow`](#providerrow).
+
 - **`forge gc [--dry-run]`** — write verb: removes a task's worktree once
   it is clean and every commit it added is reachable from a remote ref
   (or it added none); everything else is kept, with the reason and the
@@ -358,7 +362,7 @@ scraping this prose (`tests/boundary.rs` reads this block and
 asserts every verb a client source file invokes appears in it):
 
 ```text
-snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc
+snapshot log requests decisions trace journal graph workflows stats events retry land doctor plugin ref project initiative task job deploy answer withdraw ask message gc providers
 ```
 
 ## Reaching forge-web (operator)
@@ -1109,6 +1113,32 @@ enabled and, per the supervisor's last record, its running state.
 | `uptime_secs` | integer or null | Set when `state` is `running`. |
 | `restart_count` | integer or null | Set when `state` is `restarting`. |
 | `last_exit` | string or null | Set when `state` is `stopped` and the supervisor has run it before; `null` for a plugin no worker has ever supervised. |
+
+### `ProviderRow`
+
+One row of `forge providers --json`: an agent backend as configured
+under `[providers.<name>]` (docs/JOBS.md, `config::build_providers`), or
+the built-in `anthropic`, which needs no entry.
+
+| field | type | meaning |
+|---|---|---|
+| `name` | string | The provider's name, as `--provider NAME` and `[providers.<name>]` name it. |
+| `runner` | string | `claude-cli`, `codex-cli`, or `chat`. |
+| `model` | string or null | The model this provider runs when a task or its workflow step names none; `null` leaves it to the runner's own default. |
+| `base_url` | string or null | Set for `runner = "chat"` and an OpenAI-compatible endpoint that isn't the default. |
+| `api_key_env` | string or null | The environment variable holding the provider's API key; never the key itself. |
+| `env` | array of string | The names (not values) of extra environment variables this provider's process always gets. |
+| `extra_args` | array of string | Extra argv this provider always adds to its runner's launch command. |
+| `notes` | string or null | Free text from the config, e.g. how the provider is signed in. |
+
+A provider's `[providers.<name>]` table may still set a key named
+`report_from_git`: that config key is retired (Token cost, C1) and
+parsed as a no-op, kept only so a config.toml written before the
+retirement keeps loading instead of failing on an unknown key. It never
+appears in `ProviderRow` and no longer changes anything — every
+attempt's `changes[]` is now derived from git for every provider,
+never taken from the model's own report (see `verify::derive_changes`,
+`Rule::ChangesFromGit`).
 
 ### Snapshot document
 

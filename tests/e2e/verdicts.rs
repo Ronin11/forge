@@ -53,7 +53,7 @@ fn success_is_verified_at_l0_and_l1_and_pushed() {
     assert!(e.log_text(1, 1).starts_with("{\"type\":\"forge_prompt\""));
     for (level, name) in [
         ("L0", "result-structured"),
-        ("L0", "changes-match-git"),
+        ("note", "changes-from-git"),
         ("L0", "claims-have-evidence"),
     ] {
         assert_eq!(check(&a[0].4, level, name), Some(true), "{level} {name}");
@@ -259,9 +259,9 @@ fn a_retry_that_changes_nothing_reports_nothing_and_passes() {
     assert_eq!(a[0].1, "agent_failed");
     assert_eq!(a[1].1, "succeeded");
     assert_eq!(
-        check(&a[1].4, "L0", "changes-match-git"),
+        check(&a[1].4, "note", "changes-from-git"),
         Some(true),
-        "changes are measured since the attempt started"
+        "changes are derived from git since the attempt started"
     );
     assert_eq!(
         check(&a[1].4, "L0", "has-commits"),
@@ -315,14 +315,30 @@ fn no_structured_result_fails_l0() {
 }
 
 #[test]
-fn an_unreported_change_fails_l0() {
+fn changes_are_derived_from_git_even_when_the_agent_reports_none() {
     let e = Env::new();
-    assert!(!e.run("unreported.sh", &["--retries", "0"]).status.success());
+    assert!(e.run("unreported.sh", &["--retries", "0"]).status.success());
     let a = e.attempts(1);
-    assert_eq!(a[0].2, "L0 failed: changes-match-git");
-    let v: Vec<serde_json::Value> = serde_json::from_str(&a[0].4).unwrap();
-    let row = v.iter().find(|c| c["name"] == "changes-match-git").unwrap();
-    assert!(row["tail"].as_str().unwrap().contains("extra.txt"), "{row}");
+    assert_eq!(a[0].1, "succeeded", "{}", a[0].2);
+    assert_eq!(check(&a[0].4, "note", "changes-from-git"), Some(true));
+    let (envelope_json,): (String,) = e
+        .db()
+        .query_row("SELECT envelope_json FROM attempts WHERE id=1", [], |r| {
+            Ok((r.get(0)?,))
+        })
+        .unwrap();
+    let env: serde_json::Value = serde_json::from_str(&envelope_json).unwrap();
+    let paths: Vec<&str> = env["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["answer.txt", "extra.txt"],
+        "the stored envelope lists what git committed, not what the agent reported: {envelope_json}"
+    );
 }
 
 #[test]

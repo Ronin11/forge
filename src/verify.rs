@@ -3,8 +3,13 @@
 //!
 //! - L0: is the result consistent with git? A structured result exists,
 //!   the tree is clean, there is at least one commit, `forge.toml`,
-//!   protected paths, and the verification namespace are untouched, the
-//!   reported `changes[]` match what git saw, every claim has evidence.
+//!   protected paths, and the verification namespace are untouched, every
+//!   claim has evidence. The result's `changes[]` is never taken from the
+//!   model: `derive_changes` overwrites it from git before this level
+//!   runs, for every provider (`Rule::ChangesFromGit`; the retired
+//!   `Rule::ChangesMatchGit` held the model to its own list instead, and
+//!   only survives so `Rule::parse` and `audit::rule_diagnosis` still
+//!   read a verdict written before this changed).
 //! - L1: do the repository's declared checks pass, read from the trusted
 //!   base commit and run by Forge in the sandbox, with the verification
 //!   namespace overlaid from the trusted refs? And for every check the
@@ -28,7 +33,6 @@ use crate::sandbox::Sandbox;
 use crate::store::AttemptState;
 use crate::workflows::Contract;
 use anyhow::Result;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -75,11 +79,6 @@ pub struct Subject<'a> {
     /// The tests contract's scratch directory for the red-on-base run;
     /// created and removed by the verdict. Other contracts leave it None.
     pub scratch: Option<&'a Path>,
-    /// This attempt's provider set `report_from_git` (see
-    /// `agent::Provider::report_from_git`): the kernel fills the result's
-    /// `changes[]` from git before the L0 rules run, instead of holding
-    /// the model to its own list.
-    pub report_from_git: bool,
     /// Whether a `Contract::Plan` directive's summary is judged as a
     /// repository file plan (`plan-substantive`, `plan-names-real-paths`):
     /// true for `investigate`, false for `interview`, whose summary is
@@ -120,9 +119,6 @@ pub struct Verdict {
     pub files_changed: i64,
     pub dirty: bool,
     pub envelope: Option<Envelope>,
-    /// Whether `envelope`'s `changes[]` was filled from git rather than
-    /// reported by the agent (see `Rule::ChangesFromGit`).
-    pub changes_from_git: bool,
     pub checks: Vec<CheckResult>,
     pub state: AttemptState,
     pub reason: String,
@@ -157,7 +153,6 @@ impl Verdict {
             files_changed: facts.changed.len() as i64,
             dirty: !facts.dirty.is_empty(),
             envelope: None,
-            changes_from_git: false,
             checks: Vec::new(),
             state: AttemptState::Running,
             reason: String::new(),
@@ -295,73 +290,6 @@ fn in_namespace(namespace: &[String], path: &str) -> bool {
     namespace.iter().any(|d| path.starts_with(d.as_str()))
 }
 
-/// Whether a change's summary reads as a move naming `other`: it mentions
-/// the other path and says so with a word for it, so a report is not
-/// credited with a move it never described.
-fn describes_move(summary: &str, other: &str) -> bool {
-    let lower = summary.to_lowercase();
-    lower.contains(&other.to_lowercase())
-        && ["moved", "rename", "renamed"]
-            .iter()
-            .any(|w| lower.contains(w))
-}
-
-/// Reconcile what git saw against what the attempt reported, rename-aware.
-/// `changed` is git's plain view (a rename's destination only, as
-/// `changed_paths` always has); `renamed` pairs each destination back
-/// with its source. A rename `from -> to` is satisfied when the report
-/// lists `to` as added or modified and `from` as deleted, or when either
-/// path's own entry describes the move by naming the other; an
-/// unsatisfied rename falls back to the plain rule, so both endpoints
-/// must be reported like any other add or delete. Everything else is
-/// matched by path alone, as before. Returns what git saw but the report
-/// missed, and what the report claimed but git did not see.
-pub(crate) fn changes_match_git(
-    changed: &[String],
-    renamed: &[(String, String)],
-    dirty: &[String],
-    reported: &[Change],
-) -> (Vec<String>, Vec<String>) {
-    let mut actual: BTreeSet<String> = changed.iter().chain(dirty.iter()).cloned().collect();
-    let mut settled: BTreeSet<String> = BTreeSet::new();
-    for (from, to) in renamed {
-        let to_entry = reported
-            .iter()
-            .find(|c| &c.path == to && matches!(c.kind.as_str(), "added" | "modified"));
-        let from_entry = reported
-            .iter()
-            .find(|c| &c.path == from && c.kind == "deleted");
-        let move_on_to = reported
-            .iter()
-            .find(|c| &c.path == to && describes_move(&c.summary, from));
-        let move_on_from = reported
-            .iter()
-            .find(|c| &c.path == from && describes_move(&c.summary, to));
-        let split = to_entry.is_some() && from_entry.is_some();
-        if split || move_on_to.is_some() || move_on_from.is_some() {
-            actual.remove(to);
-            for c in [to_entry, from_entry, move_on_to, move_on_from]
-                .into_iter()
-                .flatten()
-            {
-                settled.insert(c.path.clone());
-            }
-        } else {
-            // Git detected a rename the report never mentioned: both
-            // endpoints are missing, not just the destination.
-            actual.insert(from.clone());
-        }
-    }
-    let reported_paths: BTreeSet<String> = reported.iter().map(|c| c.path.clone()).collect();
-    let unreported: Vec<String> = actual.difference(&reported_paths).cloned().collect();
-    let phantom: Vec<String> = reported_paths
-        .difference(&actual)
-        .filter(|p| !settled.contains(*p))
-        .cloned()
-        .collect();
-    (unreported, phantom)
-}
-
 /// The report's `changes[]`, filled from git instead of the model: every
 /// path this attempt added, modified, deleted or renamed since it started,
 /// read the same way `changes_match_git` reconciles a report against git.
@@ -427,15 +355,11 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
     // retry that adds nothing reports nothing and is right. An attempt that
     // merged the base in is credited with what it resolved, not with what
     // the merge carried.
-    // Renames are only tracked in the simple case; a branch measured
-    // against a moved base (`net_changes`) compares patches across two
-    // bases, where a single move-aware diff range does not apply.
-    let (changed_this_attempt, renamed_this_attempt) = match merged_main {
-        Some(m) if !crate::git::is_ancestor(worktree, m, start_sha).await => (
-            crate::git::net_changes(worktree, base_sha, start_sha, m, "HEAD").await?,
-            Vec::new(),
-        ),
-        _ => crate::git::changed_paths_and_renames(worktree, start_sha, "HEAD").await?,
+    let changed_this_attempt = match merged_main {
+        Some(m) if !crate::git::is_ancestor(worktree, m, start_sha).await => {
+            crate::git::net_changes(worktree, base_sha, start_sha, m, "HEAD").await?
+        }
+        _ => crate::git::changed_paths(worktree, start_sha).await?,
     };
     let dirty = crate::git::dirty_paths(worktree).await?;
     report.emit(
@@ -516,39 +440,14 @@ pub async fn common_l0(s: &Subject<'_>, agent: &Outcome) -> Result<Common> {
         "no commits on the branch".into(),
     ));
     if let Some(e) = &mut env {
-        if s.report_from_git {
-            e.changes = derive_changes(worktree, start_sha).await?;
-            rows.push(l0(Rule::ChangesFromGit, true, String::new()));
-        } else {
-            let (unreported, phantom) = changes_match_git(
-                &changed_this_attempt,
-                &renamed_this_attempt,
-                &dirty,
-                &e.changes,
-            );
-            let mut detail = String::new();
-            if !unreported.is_empty() {
-                detail.push_str(&format!(
-                    "changed in git during this attempt but not reported (lockfiles count): {}\n",
-                    unreported.join(", ")
-                ));
-            }
-            if !phantom.is_empty() {
-                detail.push_str(&format!(
-                    "also reported, but unchanged during this attempt (noted, not a failure): {}",
-                    phantom.join(", ")
-                ));
-            }
-            // Under-reporting hides work and fails. Over-reporting hides
-            // nothing: after an integrate rewind the coder merges main and
-            // tends to list main's files as its own (tasks 180 and 354 each
-            // lost attempts to that), so it is noted and passes.
-            rows.push(l0(
-                Rule::ChangesMatchGit,
-                unreported.is_empty(),
-                detail.trim().to_string(),
-            ));
-        }
+        // The model is never held to its own list of changes: git says
+        // what changed, always (see docs/CHECKS.md and the retired
+        // `changes-match-git` rule below). A weak model can commit real
+        // work and still misreport what it touched, and holding the
+        // report against git failed the attempt for a mistake in the
+        // report, not the work.
+        e.changes = derive_changes(worktree, start_sha).await?;
+        rows.push(l0(Rule::ChangesFromGit, true, String::new()));
         let bare: Vec<&str> = e
             .claims
             .iter()
@@ -1092,7 +991,6 @@ pub async fn verify_directive(
                 emit_rows(s.report, s.task_id, &v.checks);
             }
         }
-        v.changes_from_git = s.report_from_git && common.envelope.is_some();
         v.envelope = common.envelope;
     }
     v.settle(
@@ -1109,10 +1007,7 @@ pub async fn verify_directive(
 fn contract_keeps(contract: Contract, rule: Rule) -> bool {
     match contract {
         Contract::Code | Contract::Tests => true,
-        Contract::Review => !matches!(
-            rule,
-            Rule::HasCommits | Rule::ChangesMatchGit | Rule::ChangesFromGit
-        ),
+        Contract::Review => !matches!(rule, Rule::HasCommits | Rule::ChangesFromGit),
         Contract::Plan => matches!(rule, Rule::ResultStructured | Rule::CleanTree),
     }
 }
@@ -1470,142 +1365,6 @@ mod tests {
         assert!(!in_namespace(&ns, "src/a.ts"));
     }
 
-    fn change(path: &str, kind: &str, summary: &str) -> Change {
-        Change {
-            path: path.into(),
-            kind: kind.into(),
-            summary: summary.into(),
-        }
-    }
-
-    #[test]
-    fn plain_adds_modifies_and_deletes_match_by_path_alone() {
-        let changed = vec!["a.txt".to_string(), "b.txt".to_string()];
-        let reported = vec![
-            change("a.txt", "modified", ""),
-            change("b.txt", "added", ""),
-        ];
-        assert_eq!(
-            changes_match_git(&changed, &[], &[], &reported),
-            (vec![], vec![])
-        );
-        let (unreported, phantom) =
-            changes_match_git(&changed, &[], &[], &[change("a.txt", "modified", "")]);
-        assert_eq!(unreported, vec!["b.txt".to_string()]);
-        assert!(phantom.is_empty());
-        let (unreported, phantom) = changes_match_git(
-            &changed,
-            &[],
-            &[],
-            &[
-                change("a.txt", "modified", ""),
-                change("b.txt", "added", ""),
-                change("c.txt", "added", ""),
-            ],
-        );
-        assert!(unreported.is_empty());
-        assert_eq!(phantom, vec!["c.txt".to_string()]);
-    }
-
-    /// A tempdir with one commit renaming `old.txt` to `new.txt`, unchanged
-    /// content so git detects it as a pure rename. Returns the directory
-    /// and the sha before the rename.
-    async fn rename_fixture() -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let run = |args: &[&str]| {
-            assert!(
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(dir.path())
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
-        run(&["init", "--quiet"]);
-        run(&["config", "user.email", "a@a.com"]);
-        run(&["config", "user.name", "a"]);
-        std::fs::write(dir.path().join("old.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
-        run(&["add", "."]);
-        run(&["commit", "--quiet", "-m", "base"]);
-        let base = String::from_utf8(
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir.path())
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
-        run(&["mv", "old.txt", "new.txt"]);
-        run(&["commit", "--quiet", "-m", "rename"]);
-        (dir, base)
-    }
-
-    #[tokio::test]
-    async fn a_rename_reported_as_a_split_add_and_delete_matches() {
-        let (dir, base) = rename_fixture().await;
-        let (changed, renamed) = crate::git::changed_paths_and_renames(dir.path(), &base, "HEAD")
-            .await
-            .unwrap();
-        let reported = vec![
-            change("new.txt", "added", ""),
-            change("old.txt", "deleted", ""),
-        ];
-        assert_eq!(
-            changes_match_git(&changed, &renamed, &[], &reported),
-            (vec![], vec![])
-        );
-    }
-
-    #[tokio::test]
-    async fn a_rename_reported_as_one_move_named_on_the_destination_matches() {
-        let (dir, base) = rename_fixture().await;
-        let (changed, renamed) = crate::git::changed_paths_and_renames(dir.path(), &base, "HEAD")
-            .await
-            .unwrap();
-        let reported = vec![change(
-            "new.txt",
-            "modified",
-            "moved from old.txt to new.txt",
-        )];
-        assert_eq!(
-            changes_match_git(&changed, &renamed, &[], &reported),
-            (vec![], vec![])
-        );
-    }
-
-    #[tokio::test]
-    async fn a_rename_reported_as_one_move_named_on_the_source_matches() {
-        let (dir, base) = rename_fixture().await;
-        let (changed, renamed) = crate::git::changed_paths_and_renames(dir.path(), &base, "HEAD")
-            .await
-            .unwrap();
-        let reported = vec![change("old.txt", "deleted", "renamed to new.txt")];
-        assert_eq!(
-            changes_match_git(&changed, &renamed, &[], &reported),
-            (vec![], vec![])
-        );
-    }
-
-    #[tokio::test]
-    async fn a_rename_reported_as_nothing_is_a_mismatch() {
-        let (dir, base) = rename_fixture().await;
-        let (changed, renamed) = crate::git::changed_paths_and_renames(dir.path(), &base, "HEAD")
-            .await
-            .unwrap();
-        let (unreported, phantom) = changes_match_git(&changed, &renamed, &[], &[]);
-        assert_eq!(
-            unreported,
-            vec!["new.txt".to_string(), "old.txt".to_string()]
-        );
-        assert!(phantom.is_empty());
-    }
-
     /// A tempdir with a base commit and a second commit that adds
     /// `real.txt`, as an attempt's own work. Returns the directory and the
     /// base sha, the attempt's `start_sha`.
@@ -1660,10 +1419,12 @@ mod tests {
         }
     }
 
-    /// A structured result naming a file the attempt never touched
-    /// instead of the one it actually committed: `changes-match-git`
-    /// would fail this, exactly the false-claim-about-the-report shape
-    /// dev.home's qwen3-coder:30b hit on task 324.
+    /// A structured result naming a file the attempt never touched instead
+    /// of the one it actually committed: the retired `changes-match-git`
+    /// rule would have failed this, exactly the false-claim-about-the-report
+    /// shape dev.home's qwen3-coder:30b hit on task 324. Every provider now
+    /// has its `changes[]` derived from git, so the wrong list is simply
+    /// replaced, never a reason to fail.
     fn wrong_changes_outcome() -> Outcome {
         Outcome {
             structured: Some(
@@ -1675,7 +1436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn report_from_git_replaces_a_wrong_changes_list_and_notes_it() {
+    async fn changes_from_git_replaces_a_wrong_changes_list_for_every_provider() {
         let (dir, base) = commit_fixture().await;
         let cfg = test_cfg();
         let report = Reporter::new(false, None);
@@ -1696,7 +1457,6 @@ mod tests {
             sandbox: None,
             report: &report,
             scratch: None,
-            report_from_git: true,
             plan_rows: true,
         };
         let common = common_l0(&s, &outcome).await.unwrap();
@@ -1711,41 +1471,6 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "real.txt");
         assert_eq!(changes[0].kind, "added");
-    }
-
-    #[tokio::test]
-    async fn without_report_from_git_the_same_wrong_list_still_fails_changes_match_git() {
-        let (dir, base) = commit_fixture().await;
-        let cfg = test_cfg();
-        let report = Reporter::new(false, None);
-        let outcome = wrong_changes_outcome();
-        let s = Subject {
-            task_id: 1,
-            repo: dir.path(),
-            worktree: dir.path(),
-            base_sha: &base,
-            start_sha: &base,
-            branch: "forge/1",
-            cfg: &cfg,
-            task_checks: &[],
-            paths: &[],
-            allow_protected: false,
-            overlay_refs: &[],
-            pending_main: None,
-            sandbox: None,
-            report: &report,
-            scratch: None,
-            report_from_git: false,
-            plan_rows: true,
-        };
-        let common = common_l0(&s, &outcome).await.unwrap();
-        assert!(common.rows.iter().all(|r| r.name != "changes-from-git"));
-        let row = common
-            .rows
-            .iter()
-            .find(|r| r.name == "changes-match-git")
-            .expect("a changes-match-git row");
-        assert!(!row.ok);
     }
 
     fn fixable_cfg(fixable: &[(&str, &[&str])]) -> Config {
@@ -1795,7 +1520,6 @@ mod tests {
             sandbox: None,
             report: &report,
             scratch: None,
-            report_from_git: false,
             plan_rows: true,
         };
         let checks = vec![
@@ -1842,7 +1566,6 @@ mod tests {
             sandbox: None,
             report: &report,
             scratch: None,
-            report_from_git: false,
             plan_rows: true,
         };
         let checks = vec![CheckResult {
@@ -1875,7 +1598,6 @@ mod tests {
             sandbox: None,
             report: &report,
             scratch: None,
-            report_from_git: false,
             plan_rows: true,
         };
         let checks = vec![CheckResult {
@@ -1908,7 +1630,6 @@ mod tests {
             sandbox: None,
             report: &report,
             scratch: None,
-            report_from_git: false,
             plan_rows: true,
         };
         let checks = vec![
@@ -1990,7 +1711,6 @@ mod tests {
             files_changed: 1,
             dirty: false,
             envelope: None,
-            changes_from_git: false,
             checks: vec![CheckResult {
                 level: "L1".into(),
                 name: "test".into(),

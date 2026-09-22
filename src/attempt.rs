@@ -273,7 +273,6 @@ pub async fn run_attempt(
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
             scratch: spec.scratch.as_deref(),
-            report_from_git: provider.report_from_git,
             plan_rows: !matches!(step.action.name.as_str(), "interview" | "concierge"),
         },
         &outcome,
@@ -517,15 +516,11 @@ pub async fn record(
     a.dirty = verdict.dirty;
     a.verdict_json = serde_json::to_string(&verdict.checks).env()?;
     a.result_text = outcome.result_text.clone();
-    a.envelope_json = if verdict.changes_from_git {
-        verdict
-            .envelope
-            .as_ref()
-            .and_then(|e| serde_json::to_string(e).ok())
-            .unwrap_or_default()
-    } else {
-        outcome.structured.clone().unwrap_or_default()
-    };
+    a.envelope_json = verdict
+        .envelope
+        .as_ref()
+        .and_then(|e| serde_json::to_string(e).ok())
+        .unwrap_or_else(|| outcome.structured.clone().unwrap_or_default());
     a.rl_five_hour = outcome.rate_limits.five_hour.map(|(u, _)| u);
     a.rl_five_hour_resets = outcome.rate_limits.five_hour.map(|(_, r)| r);
     a.rl_seven_day = outcome.rate_limits.seven_day.map(|(u, _)| u);
@@ -596,7 +591,6 @@ mod tests {
             five_hour_max: 0.0,
             seven_day_max: 0.0,
             nudges: 0,
-            report_from_git: false,
         };
         let codex = |model: Option<&str>| agent::Provider {
             name: "openai".into(),
@@ -612,7 +606,6 @@ mod tests {
             five_hour_max: 0.0,
             seven_day_max: 0.0,
             nudges: 0,
-            report_from_git: false,
         };
         // Claude runner: the task's model, the supervisor's own.
         assert_eq!(
@@ -661,7 +654,6 @@ mod tests {
             five_hour_max: 0.0,
             seven_day_max: 0.0,
             nudges: 0,
-            report_from_git: false,
         };
         assert_eq!(attempt_model_source(None, &claude, "project"), "project");
     }

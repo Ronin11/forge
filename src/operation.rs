@@ -354,7 +354,6 @@ pub(crate) async fn run_operation(
             sandbox: f.sandbox.as_ref(),
             report: &f.report,
             scratch: None,
-            report_from_git: false,
             plan_rows: true,
         })
         .await

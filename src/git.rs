@@ -588,31 +588,6 @@ pub async fn changed_with_status(wt: &Path, from: &str, to: &str) -> Result<Vec<
         .collect())
 }
 
-/// The same range as [`changed_paths`], but with renames split out: the
-/// plain list still carries a rename's destination (as `changed_paths`
-/// always has, since git detects renames by default), and the source is
-/// reported separately, paired with its destination, for callers that
-/// need to reconcile a report written either as a split add/delete or as
-/// one move.
-pub async fn changed_paths_and_renames(
-    wt: &Path,
-    from: &str,
-    to: &str,
-) -> Result<(Vec<String>, Vec<(String, String)>)> {
-    let mut plain = Vec::new();
-    let mut renamed = Vec::new();
-    for gc in changed_with_status(wt, from, to).await? {
-        match gc {
-            GitChange::Added(p) | GitChange::Modified(p) | GitChange::Deleted(p) => plain.push(p),
-            GitChange::Renamed { from, to } => {
-                plain.push(to.clone());
-                renamed.push((from, to));
-            }
-        }
-    }
-    Ok((plain, renamed))
-}
-
 /// The full unified diff from `from` to `to`, as a human or an agent
 /// reviewer would read it (unlike `diff_lines`, which strips markers for
 /// the churn measurement).

@@ -361,9 +361,12 @@ struct ProviderRaw {
     /// How many times `run_codex` may nudge a phase one that made no
     /// progress before it runs phase two; default 0 (see `agent::Provider`).
     nudges: Option<u32>,
-    /// Whether the kernel fills the result's `changes[]` from git instead
-    /// of holding the model to its own list; default false (see
-    /// `agent::Provider::report_from_git`).
+    /// Retired (Token cost, C1): the kernel now derives every attempt's
+    /// `changes[]` from git for every provider, so this key no longer
+    /// changes anything. Kept, parsed and discarded so a config.toml that
+    /// still sets it keeps loading instead of failing on an unknown key
+    /// (see docs/CLIENT.md, "Providers").
+    #[allow(dead_code)]
     report_from_git: Option<bool>,
 }
 
@@ -783,11 +786,6 @@ journal_control = 0.0
 # having edited without committing; up to this many times, run_codex
 # resumes the same thread with a fixed prompt to do the work and commit
 # before phase two ever asks for the structured report)
-# report_from_git = true
-# (the kernel fills the report's changes from git and does not hold the
-# model to its own list; a weak model can commit real work and still
-# misreport what it touched, and changes-match-git would fail the attempt
-# for a mistake in the report, not the work)
 #
 # [providers.openai]
 # runner = \"codex-cli\"
@@ -1002,7 +1000,6 @@ fn build_providers(
                 five_hour_max: p.five_hour_max.unwrap_or(budget.five_hour_max),
                 seven_day_max: p.seven_day_max.unwrap_or(budget.seven_day_max),
                 nudges: p.nudges.unwrap_or(0),
-                report_from_git: p.report_from_git.unwrap_or(false),
             },
         );
     }
@@ -1593,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn report_from_git_defaults_false_and_parses_when_set() {
+    fn a_retired_report_from_git_key_still_parses_without_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -1606,9 +1603,11 @@ mod tests {
         )
         .unwrap();
         let c = load_home(dir.path()).unwrap();
-        assert!(c.providers["devhome"].report_from_git);
-        assert!(!c.providers["openai"].report_from_git);
-        assert!(!c.providers["anthropic"].report_from_git);
+        assert_eq!(
+            c.providers["devhome"].runner,
+            crate::agent::Runner::CodexCli
+        );
+        assert_eq!(c.providers["openai"].runner, crate::agent::Runner::CodexCli);
     }
 
     #[test]

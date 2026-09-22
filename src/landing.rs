@@ -159,7 +159,6 @@ async fn verify_merged_tree(f: &Forge, args: MergeVerifyArgs<'_>) -> Result<Verd
         sandbox: f.sandbox.as_ref(),
         report: &f.report,
         scratch: None,
-        report_from_git: false,
         plan_rows: true,
     })
     .await
