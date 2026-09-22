@@ -100,7 +100,18 @@ case "$1" in
   initiative)
     case "$2" in
       list) echo "[{\"id\":5,\"project\":\"$3\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"queued\":1,\"running\":0,\"succeeded\":0,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":1.25,\"budget_usd\":null,\"stop_after_same_rule\":3,\"created_at\":1,\"settled_at\":null}]" ;;
-      report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\"}],\"refused\":[],\"rulings\":[],\"questions\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
+      report) echo "{\"id\":$3,\"project\":\"demo\",\"outcome\":\"ship it\",\"state\":\"open\",\"held_rule\":null,\"budget_usd\":null,\"stop_after_same_rule\":3,\"tasks\":[{\"id\":9,\"state\":\"succeeded\",\"reason\":\"\",\"retries\":0,\"score\":null,\"cost_usd\":1.25}],\"refused\":[],\"rulings\":[],\"questions\":[],\"deployed\":[],\"cost_usd\":1.25,\"elapsed_secs\":null,\"created_at\":1,\"settled_at\":null}" ;;
+      set)
+        id="$3"; shift 3
+        out="set initiative $id"
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --budget) out="$out budget=$2"; shift 2 ;;
+            --stop-after) out="$out stop_after=$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        echo "$out" ;;
       *) echo "unexpected initiative: $*" >&2; exit 2 ;;
     esac ;;
   job)
@@ -277,6 +288,7 @@ fn without_the_token_nothing_is_served() {
         "/shell.js",
         "/requests.js",
         "/task.js",
+        "/initiative.js",
         "/styles.css",
         "/time.js",
         "/projects",
@@ -591,6 +603,7 @@ fn the_projects_and_initiatives_routes_pass_forge_json_through() {
     assert_eq!(v["id"], 5);
     assert_eq!(v["outcome"], "ship it");
     assert_eq!(v["tasks"][0]["id"], 9);
+    assert_eq!(v["tasks"][0]["cost_usd"], 1.25);
 
     let (status, _, _) = get(&w.addr, "/api/initiatives/x", &cookie);
     assert_eq!(status, 404);
@@ -600,6 +613,45 @@ fn the_projects_and_initiatives_routes_pass_forge_json_through() {
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v[0]["args"], "--json --limit 100 --project demo");
+}
+
+#[test]
+fn the_initiative_pages_write_route_calls_forge_initiative_set() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    // POST /api/initiatives/<id>: the body is JSON {"budget", "stop_after"},
+    // either or both, run through `forge initiative set <id> [--budget B]
+    // [--stop-after N]` — the fake echoes back what it was passed.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/initiatives/5",
+        &cookie,
+        r#"{"budget":25.5,"stop_after":4}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let out = v["output"].as_str().unwrap();
+    assert!(out.contains("budget=25.5"), "{out}");
+    assert!(out.contains("stop_after=4"), "{out}");
+
+    // Only one of the two still reaches the verb.
+    let (status, _, body) = post_body(&w.addr, "/api/initiatives/5", &cookie, r#"{"budget":9}"#);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let out = v["output"].as_str().unwrap();
+    assert!(out.contains("budget=9"), "{out}");
+    assert!(!out.contains("stop_after"), "{out}");
+
+    // An empty body never reaches the verb.
+    let (status, _, body) = post_body(&w.addr, "/api/initiatives/5", &cookie, r#"{}"#);
+    assert_eq!(status, 422, "{body}");
+
+    // GET still runs `forge initiative report` on the same route.
+    let (status, _, body) = get(&w.addr, "/api/initiatives/5", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["id"], 5);
 }
 
 #[test]

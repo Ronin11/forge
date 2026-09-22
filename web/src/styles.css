@@ -128,3 +128,10 @@ details { margin: var(--space-1) 0 } summary { cursor: pointer; color: var(--mut
 .lint-problem { font-size: var(--text-sm); padding: 2px 0; color: var(--bad) }
 /* placeholder pages for a page 'named' by the nav but not yet built */
 .stub { margin: var(--space-5) var(--space-4); color: var(--mute) }
+/* initiative view: cost-vs-budget bar */
+.cost-bar { margin-top: 6px }
+.bar-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden }
+.bar-fill { height: 100%; background: var(--run); border-radius: 4px }
+.bar-fill.over { background: var(--bad) }
+.actions form { display: inline-flex; gap: 6px; align-items: center; margin-right: var(--space-3) }
+.actions label { display: inline-flex; gap: 4px; align-items: center; color: var(--mute); font-size: var(--text-sm) }

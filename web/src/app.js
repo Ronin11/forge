@@ -870,33 +870,65 @@
     };
   }
 
-  // ---- one initiative: the outcome, its tasks, and the generated report
+  // ---- one initiative: the outcome, its tasks (state and cost), what
+  // verification refused, what the supervisor ruled, what reached the
+  // operator, deploys, cost against budget as a bar, elapsed time, and —
+  // while held — the reason (task 532, "the initiative page in full").
+  // Rendering itself lives in `web/src/initiative.js` (`renderInitiativeDoc`),
+  // tested under `node` without a DOM by `web/tests/initiative_render.rs`.
   function initiativeView(id) {
+    let taskIds = new Set();
     async function draw() {
       const d = await get(`/api/initiatives/${id}`);
-      const taskRows = (d.tasks || []).map(t => `
-        <tr><td><a href="/tasks/${t.id}">${t.id}</a></td>
-          <td class="state ${esc(t.state)}">${esc(t.state)}${t.retries ? ` <span class="mute">(${t.retries} ${t.retries === 1 ? 'retry' : 'retries'})</span>` : ''}</td>
-          <td>${esc(t.reason)}</td></tr>`).join('');
-      const refused = (d.refused || []).map(r => `<div>${esc(r.rule)}: ${r.count}</div>`).join('');
-      const rulings = (d.rulings || []).map(r => `
-        <div class="card"><b>task ${r.task_id}</b> ${esc(r.question)}<div class="mute">${esc(r.answer)}</div></div>`).join('');
-      const questions = (d.questions || []).map(q => `
-        <div class="card"><b>task ${q.task_id}</b> ${esc(q.question)}<div class="mute">${q.answer ? esc(q.answer) : 'unanswered'}</div></div>`).join('');
-      $('#main').innerHTML = `
-        <h2>Initiative ${d.id} <span class="mute">· <a href="/projects/${encodeURIComponent(d.project)}">${esc(d.project)}</a></span></h2>
-        <div class="card">
-          <div><b>${esc(d.outcome)}</b></div>
-          <div class="mute">state ${esc(d.state)}${d.held_rule ? ' (' + esc(d.held_rule) + ')' : ''} · ${usd(d.cost_usd)}${d.budget_usd != null ? ' of ' + usd(d.budget_usd) : ''}${d.elapsed_secs != null ? ' · ' + fmtSpan(d.elapsed_secs) + ' elapsed' : ''}</div>
-        </div>
-        <h2>Tasks</h2>
-        <table><thead><tr><th>id</th><th>state</th><th>reason</th></tr></thead><tbody>${taskRows || '<tr><td colspan="3" class="mute">no tasks</td></tr>'}</tbody></table>
-        ${refused ? `<h2>Refused</h2><div class="card">${refused}</div>` : ''}
-        ${rulings ? `<h2>Rulings</h2>${rulings}` : ''}
-        ${questions ? `<h2>Questions</h2>${questions}` : ''}`;
+      taskIds = new Set((d.tasks || []).map(t => t.id));
+      $('#ini-page').innerHTML = ForgeInitiative.renderInitiativeDoc(d, fmtSpan);
+    }
+    async function onSubmit(ev) {
+      const setForm = ev.target.closest('form.ini-set');
+      const withdrawForm = ev.target.closest('form.req-withdraw');
+      if (setForm) {
+        ev.preventDefault();
+        const budget = setForm.querySelector('.ini-budget').value.trim();
+        const stopAfter = setForm.querySelector('.ini-stop-after').value.trim();
+        const body = {};
+        if (budget !== '') body.budget = Number(budget);
+        if (stopAfter !== '') body.stop_after = Number(stopAfter);
+        if (!Object.keys(body).length) return;
+        const btn = setForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/initiatives/${id}`, JSON.stringify(body), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      } else if (withdrawForm) {
+        ev.preventDefault();
+        const value = withdrawForm.querySelector('.req-withdraw-reason').value.trim();
+        if (!value) return;
+        const btn = withdrawForm.querySelector('button');
+        btn.disabled = true;
+        try {
+          const r = await postBody(`/api/withdraw/${withdrawForm.dataset.id}`, JSON.stringify({ reason: value }), 'application/json');
+          if (r.error) alert(r.error); else await draw();
+        } finally { btn.disabled = false; }
+      }
     }
     return {
-      async show() { $('#main').innerHTML = '<div class="mute" style="margin:16px">loading…</div>'; await draw(); },
+      async show() {
+        // A wrapper div, not `#main` itself, carries the delegated
+        // listener — same reasoning as `requestsView`'s `#req-page`:
+        // `#main` persists across navigations, this div is fresh each
+        // visit.
+        $('#main').innerHTML = '<div id="ini-page" class="mute" style="margin:16px">loading…</div>';
+        $('#ini-page').addEventListener('submit', onSubmit);
+        await draw();
+      },
+      onEvent(e) {
+        // The initiative's own record closing (`initiative_settled`,
+        // tagged with this id) or any event about one of its own tasks
+        // that would also invalidate that task's detail page.
+        if (e.type === 'initiative_settled' && e.id === id) { draw().catch(() => {}); return; }
+        if (taskIds.has(e.task) && INVALIDATES.detail.includes(e.type)) draw().catch(() => {});
+      },
     };
   }
 

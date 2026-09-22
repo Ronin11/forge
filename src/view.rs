@@ -2129,6 +2129,10 @@ pub struct InitiativeTaskRow {
     /// in, the task never landed, or the run failed; see
     /// docs/ACTIONS.md, "Assessment").
     pub score: Option<i64>,
+    /// Total cost across every attempt of this lineage's latest task
+    /// (`Store::task_cost`), so the report's task table can show what
+    /// each one spent alongside the initiative's own total.
+    pub cost_usd: f64,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
@@ -2314,6 +2318,7 @@ pub fn initiative_doc(f: &Forge, ini: &crate::store::Initiative) -> Result<Initi
                     reason: t.reason.clone(),
                     retries: *retries,
                     score: f.store.assessment(t.id)?.map(|a| a.score),
+                    cost_usd: f.store.task_cost(t.id)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?,

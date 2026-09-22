@@ -1,0 +1,33 @@
+{
+  "id": 7,
+  "project": "equitizr",
+  "outcome": "the billing page shows usage-based line items",
+  "state": "held",
+  "held_rule": "budget",
+  "budget_usd": 10.0,
+  "stop_after_same_rule": 3,
+  "tasks": [
+    { "id": 40, "state": "succeeded", "reason": "", "retries": 0, "score": 8, "cost_usd": 3.2 },
+    { "id": 41, "state": "failed", "reason": "cargo test failed", "retries": 2, "score": null, "cost_usd": 4.75 },
+    { "id": 42, "state": "blocked", "reason": "needs input: which pricing tier?", "retries": 0, "score": null, "cost_usd": 2.55 },
+    { "id": 43, "state": "queued", "reason": "", "retries": 0, "score": null, "cost_usd": 0.0 }
+  ],
+  "refused": [
+    { "rule": "cargo clippy", "count": 3 },
+    { "rule": "cargo test", "count": 1 }
+  ],
+  "rulings": [
+    { "task_id": 41, "question": "is the retry budget worth raising?", "answer": "no, withdraw and refile narrower", "citations": "task 41, decision 12" }
+  ],
+  "questions": [
+    { "task_id": 42, "question": "which pricing tier?", "answer": null }
+  ],
+  "deployed": [
+    { "task_id": 40, "target": "prod", "sha": "cdcce8adba0629506cf8e6c6e8f3cb56479ce850", "check_ok": true, "rolled_back_to": null, "findings": [] }
+  ],
+  "cost_usd": 10.5,
+  "elapsed_secs": 5400,
+  "created_at": 1789760000,
+  "settled_at": null,
+  "proposal": null
+}

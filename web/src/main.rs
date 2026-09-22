@@ -5,7 +5,9 @@
 //! read-only; the write routes are `POST /api/retry/<id>` (`forge retry`),
 //! `POST /api/answer/<id>` (`forge answer`), `POST /api/withdraw/<id>`
 //! (`forge withdraw`), `POST /api/land/<id>` (`forge land`) — the inbox's
-//! own controls (`web/src/requests.js`) — and `POST /hooks/<project>/<name>`,
+//! own controls (`web/src/requests.js`) — `POST /api/initiatives/<id>`
+//! (`forge initiative set`), the initiative page's budget/stop-after
+//! control (`web/src/initiative.js`) — and `POST /hooks/<project>/<name>`,
 //! a webhook delivery handed to `forge job fire` (docs/CLIENT.md).
 //!
 //! Views: `/tasks` (the queue, searched and paged through `forge log`),
@@ -40,6 +42,7 @@ const WORKFLOWS_JS: &str = include_str!("workflows.js");
 const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
 const TASK_JS: &str = include_str!("task.js");
+const INITIATIVE_JS: &str = include_str!("initiative.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -752,6 +755,62 @@ fn withdraw_route(mut req: Request, forge: &Forge, id: i64) {
     let _ = req.respond(resp);
 }
 
+/// The largest body the initiative page's budget/stop-after control sends:
+/// two numbers, not an upload.
+const INITIATIVE_BODY_LIMIT: u64 = 4 * 1024;
+
+/// `POST /api/initiatives/<id>`: the initiative page's budget/stop-after
+/// control. The body is JSON `{"budget", "stop_after"}`, either or both
+/// present, run through `forge initiative set <id> [--budget B]
+/// [--stop-after N]` — the same write verb the CLI's own `forge initiative
+/// set` exposes, with neither field required at the CLI level but at
+/// least one required here since a body with both absent has nothing to
+/// change.
+fn initiative_set_route(mut req: Request, forge: &Forge, id: i64) {
+    let raw = match read_body(&mut req, INITIATIVE_BODY_LIMIT) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = req.respond(text(400, &e.to_string(), "text/plain"));
+            return;
+        }
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(text(
+                400,
+                &format!("bad JSON body: {e}"),
+                "application/json",
+            ));
+            return;
+        }
+    };
+    let mut args = vec!["initiative".to_string(), "set".to_string(), id.to_string()];
+    if let Some(b) = v["budget"].as_f64() {
+        args.push("--budget".to_string());
+        args.push(b.to_string());
+    }
+    if let Some(n) = v["stop_after"].as_i64() {
+        args.push("--stop-after".to_string());
+        args.push(n.to_string());
+    }
+    if args.len() == 3 {
+        let _ = req.respond(text(
+            422,
+            &serde_json::json!({"error": "budget or stop_after is required"}).to_string(),
+            "application/json",
+        ));
+        return;
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let resp = json_or_error(
+        forge
+            .run(&argv)
+            .map(|out| serde_json::json!({ "output": out })),
+    );
+    let _ = req.respond(resp);
+}
+
 /// The largest webhook body the server will take: a webhook's input is a
 /// small JSON object, not an upload.
 const HOOK_BODY_LIMIT: u64 = 1024 * 1024;
@@ -932,6 +991,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             || path.starts_with("/api/withdraw/")
             || path.starts_with("/api/land/")
             || path.starts_with("/api/workflows/")
+            || path.starts_with("/api/initiatives/")
             || matches!(
                 plugin_action(&path),
                 Some((_, "enable")) | Some((_, "disable"))
@@ -993,6 +1053,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
         "/task.js" => text(200, TASK_JS, "application/javascript"),
+        "/initiative.js" => text(200, INITIATIVE_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
@@ -1109,9 +1170,16 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
             _ => text(404, "not found", "text/plain"),
         },
         p if p.starts_with("/api/initiatives/") => match id_of(&p["/api/initiatives/".len()..]) {
-            Some(id) => {
-                json_or_error(forge.json(&["initiative", "report", &id.to_string(), "--json"]))
-            }
+            Some(id) => match req.method() {
+                Method::Get => {
+                    json_or_error(forge.json(&["initiative", "report", &id.to_string(), "--json"]))
+                }
+                Method::Post => {
+                    initiative_set_route(req, forge, id);
+                    return;
+                }
+                _ => text(405, "GET or POST only", "text/plain"),
+            },
             None => text(404, "no such initiative", "text/plain"),
         },
         "/api/events" => {

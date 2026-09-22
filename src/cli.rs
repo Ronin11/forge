@@ -3248,9 +3248,10 @@ fn initiative_report(id: i64, json: bool) -> Result<()> {
     out!("tasks");
     for t in &doc.tasks {
         out!(
-            "  {:<5} {:<10}{}{}{}",
+            "  {:<5} {:<10}${:<7.2}{}{}{}",
             t.id,
             t.state,
+            t.cost_usd,
             match t.retries {
                 0 => String::new(),
                 1 => " (1 retry)".to_string(),

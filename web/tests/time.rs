@@ -86,3 +86,21 @@ fn task_js_formats_no_time_itself() {
         );
     }
 }
+
+#[test]
+fn initiative_js_formats_no_time_itself() {
+    let initiative = include_str!("../src/initiative.js");
+    for banned in [
+        "toLocale",
+        "toISOString",
+        "toUTCString",
+        "getTimezoneOffset",
+        "new Date(",
+    ] {
+        assert!(
+            !initiative.contains(banned),
+            "initiative.js formats a time with {banned}; every time it shows must go through \
+             the `fmtSpan` the caller passes in, never a formatter of its own"
+        );
+    }
+}

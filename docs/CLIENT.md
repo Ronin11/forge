@@ -74,6 +74,15 @@ and does not parse stdout.
   outcome, each task and how it ended, what verification refused, what
   the supervisor ruled, what reached the operator, cost and elapsed time.
   A single [`InitiativeDoc`](#initiativedoc) object.
+- **`forge initiative set ID [--budget USD] [--stop-after N] [--outcome
+  TEXT]`** — write verb: changes an existing initiative's own settings in
+  place, replacing only the fields given; refused (non-zero exit) when
+  none are given, or when `--budget` is not positive. Not `--json`; a
+  client re-reads `forge initiative report ID --json` for the initiative
+  it just changed. This is the verb the web UI's initiative page (task
+  532, `POST /api/initiatives/<id>`) calls for its budget/stop-after
+  control, the same way `forge task set` lets the inbox raise a stuck
+  task's own limits in place.
 - **`forge job list [<project>] --json`** — jobs (runs of a `kind = "run"`
   workflow, see docs/JOBS.md), newest first, or only `<project>`'s. A
   JSON array of [`JobRow`](#jobrow).
@@ -526,7 +535,7 @@ report (see docs/PROJECTS.md, "One notification and one report").
 | field | type | meaning |
 |---|---|---|
 | `id`, `project`, `outcome`, `state`, `held_rule`, `budget_usd`, `stop_after_same_rule`, `cost_usd`, `created_at`, `settled_at` | | as [`InitiativeRow`](#initiativerow). |
-| `tasks` | array of `{id, state, reason, score}` | Every task in the initiative and how it ended. `score` is the assess directive's 0-10 maintainability score for that task's own landing, or `null` if it never ran (see docs/ACTIONS.md, "Assessment"). |
+| `tasks` | array of `{id, state, reason, retries, score, cost_usd}` | Every task in the initiative and how it ended. `retries` is how many retries its lineage took to reach it. `score` is the assess directive's 0-10 maintainability score for that task's own landing, or `null` if it never ran (see docs/ACTIONS.md, "Assessment"). `cost_usd` is that lineage's own total cost across every attempt, the same figure `TaskRow.cost_usd` carries for the task alone. |
 | `refused` | array of `{rule, count}` | How many attempts of the initiative's tasks each verification rule refused, by name. |
 | `rulings` | array of `{task_id, question, answer, citations}` | Decisions the supervisor made on the initiative's tasks. |
 | `questions` | array of `{task_id, question, answer}` | Questions that reached the operator; `answer` is `null` while the task is still blocked. |
@@ -986,6 +995,7 @@ Every variant, with its own fields (beyond `type`/`text`/`ts`/`task`):
 | `project_created` | `project`, `person` | `forge intake accept` created `project` for the first time, on `person`'s confirmed brief (see docs/INTAKE.md); a plugin's cue to send them their customer portal link (see docs/PORTAL.md). |
 | `job_started` | `project`, `workflow`, `job_id`, `dry_run` | A job began running its steps, either `forge job start --now` or the worker's claimed run. |
 | `job_finished` | `project`, `workflow`, `job_id`, `state`, `cost_usd` | A job reached a final state: `ok`, `failed`, `needs_human` or `dropped`. |
+| `initiative_settled` | `id`, `state`, `cost_usd` | The last of an initiative's tasks reached a terminal state and its own record closed (see docs/PROJECTS.md, "One notification and one report"); `task` (every event's own field) is the task whose change completed it, not the initiative — `id` here is the initiative's. |
 
 ### What to re-read on which event
 
@@ -1018,6 +1028,12 @@ client re-reads the affected document with the verb above.
   `measured`): re-read on `task_done` (a build workflow's profile moves
   when a task under it lands) or `job_finished` (a run workflow's profile
   moves when a job under it finishes).
+- **An initiative's report** (`forge initiative report ID --json`):
+  re-read on `initiative_settled` naming this `id`, or on
+  `task_done`/`attempt_done`/`deploy_finished` for any task the report's
+  own `tasks` list already names — the same three types as a task's
+  detail page, applied across every task in the initiative instead of
+  one.
 
 A client that only wants a live feed (a scrolling line per event) needs
 no re-read logic at all: every event's `text` is already the line to
@@ -1187,10 +1203,37 @@ across a rotation, not to the snapshot protocol itself.
   `/api/projects/<name>` → `project show <name> --json`,
   `/api/projects/<name>/initiatives` → `initiative list <name> --json`,
   and `/api/projects/<name>/backlog` → `project backlog <name> --json`,
-  together for the `/projects/<name>` page; `/api/initiatives/<id>` →
-  `initiative report <id> --json` for the `/initiatives/<id>` page,
-  which is the outcome, the tasks and their states, and the rest of the
-  generated report all from that one document.
+  together for the `/projects/<name>` page.
+  **The initiative page** (task 532, "the initiative page in full").
+  `GET /api/initiatives/<id>` → `initiative report <id> --json`
+  (`forge-client`'s typed `InitiativeDoc`, passed through as raw JSON so
+  every field it carries reaches the browser) for the `/initiatives/<id>`
+  page: the outcome, every task with its state and own cost
+  (`InitiativeDoc.tasks[].cost_usd`), the refused rules and their counts,
+  the supervisor's rulings, the questions that reached the operator, the
+  deploys the initiative's tasks triggered, cost against budget drawn as
+  a filled bar (`web/src/initiative.js`'s `renderCostBar` — full width
+  and coloured a warning when spend passes the cap, no bar at all when
+  `budget_usd` is `null`), elapsed time, and — while `state` is `"held"`
+  — the reason (`held_rule`). Rendering is pure (`renderInitiativeDoc`,
+  no DOM, no fetch), tested under `node` by
+  `web/tests/initiative_render.rs` against `tests/fixtures/initiative.json`,
+  a held initiative over its own budget with refused rules, a ruling, an
+  open question and a deploy — the same fixture-renders-everything
+  convention as `web/tests/task_render.rs`. `POST /api/initiatives/<id>`
+  is the page's own write control: a JSON body `{"budget", "stop_after"}`,
+  either or both, run through `forge initiative set <id> [--budget B]
+  [--stop-after N]` (**422** when neither is given, before the verb
+  runs); success and failure are shaped exactly like the inbox's write
+  routes, `{"output": ...}` or `{"error": ...}` or (`502`). Each blocked
+  task in the table gets its own withdraw control — the same
+  `POST /api/withdraw/<id>` the inbox and the task page use, wired the
+  same way (a JSON body `{"reason"}`, **422** on a blank one). The page
+  refreshes on `initiative_settled` naming this id (the initiative's own
+  record closing) and on `task_done`/`attempt_done`/`deploy_finished` for
+  any task in its own `tasks` list — the same re-read rule as a task's
+  detail page, applied to every task the initiative carries rather than
+  just one.
   **Webhooks.** `POST /hooks/<project>/<name>` is the one route not behind
   the web token: its credential is the hook's own token, sent as
   `Authorization: Bearer <token>` (never in the URL or a cookie), and the

@@ -918,9 +918,9 @@ pub struct InitiativeRow {
 }
 
 /// One lineage in [`InitiativeDoc::tasks`]: its latest task's id, state
-/// and reason, plus how many retries the lineage took to reach it, and
-/// the assess directive's score for its own landing, if any ran (see
-/// docs/ACTIONS.md, "Assessment").
+/// and reason, plus how many retries the lineage took to reach it, its
+/// own total cost across every attempt, and the assess directive's score
+/// for its own landing, if any ran (see docs/ACTIONS.md, "Assessment").
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct InitiativeTaskRow {
     #[serde(default)]
@@ -933,6 +933,8 @@ pub struct InitiativeTaskRow {
     pub retries: i64,
     #[serde(default)]
     pub score: Option<i64>,
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// One row of `InitiativeDoc.refused`: a verification rule name and how
