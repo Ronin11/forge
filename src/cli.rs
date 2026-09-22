@@ -3216,8 +3216,8 @@ fn lint_workflow(stdin: bool, name: Option<String>) -> Result<()> {
     std::io::stdin()
         .read_to_string(&mut text)
         .context("reading the candidate workflow's text from stdin")?;
-    let f = Forge::open(false, false)?;
-    let problems = workflows::lint(&f.paths.home, name.as_deref(), &text)?;
+    let paths = crate::ctx::Paths::resolve()?;
+    let problems = workflows::lint(&paths.home, name.as_deref(), &text)?;
     out!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({

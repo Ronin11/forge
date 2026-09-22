@@ -90,6 +90,30 @@ impl Drop for Worker {
     }
 }
 
+/// True if `dir` does not exist, or exists but holds no regular file
+/// anywhere under it — an empty subdirectory doesn't count as a file.
+/// What `forge workflows lint --stdin` must leave a fresh `FORGE2_HOME`,
+/// unlike every other catalog command, which writes the built-ins into it.
+pub fn holds_no_files(dir: &Path) -> bool {
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return true;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !walk(&path) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+    !dir.exists() || walk(dir)
+}
+
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")

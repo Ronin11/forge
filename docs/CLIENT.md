@@ -129,24 +129,29 @@ and does not parse stdout.
   [`WorkflowShowDoc`](#workflowshowdoc). Exits non-zero if `NAME` names no
   known workflow.
 - **`forge workflows lint --stdin [--name NAME]`** — validate a candidate
-  workflow file's text against the catalog without writing it anywhere, so
-  an editor can lint as the operator types: reads the candidate from
-  stdin, parses it the same way a real file would be, and resolves it
-  against the operator's own catalog (every action or workflow reference
-  it names, the data-flow rule, `[trigger]` for a `kind = "run"` file).
-  `NAME` is the file name the candidate would be saved under (its own
-  `name` must match, exactly as a real file's stem must); omitted, the
-  candidate's own declared name stands in, so a fresh draft lints clean
-  before the operator has chosen where to save it. Prints
-  `{"problems": [{"line", "message"}, ...]}`, one entry per problem found,
-  `line` the 1-based line a syntax or shape error points at (`null` for a
-  semantic error caught only after a clean parse, e.g. an unknown action);
-  empty and exit 0 when the candidate is clean, non-empty and **exit 1**
-  otherwise — the same "print everything, one exit code" shape as `forge
-  workflows validate` for a repository's files. Opens the operator's
-  catalog (`FORGE2_HOME`), unlike `forge workflows validate`, which needs
-  neither: a candidate is checked against the live catalog it would join,
-  not a bare parse.
+  workflow file's text against the catalog, so an editor can lint as the
+  operator types: reads the candidate from stdin, parses it the same way a
+  real file would be, and resolves it against the operator's own catalog
+  (every action or workflow reference it names, the data-flow rule,
+  `[trigger]` for a `kind = "run"` file). `NAME` is the file name the
+  candidate would be saved under (its own `name` must match, exactly as a
+  real file's stem must); omitted, the candidate's own declared name
+  stands in, so a fresh draft lints clean before the operator has chosen
+  where to save it. Prints `{"problems": [{"line", "message"}, ...]}`,
+  **every** problem found, not just the first — a candidate naming two
+  unknown actions gets two entries, each on its own line; `line` is the
+  1-based line: a syntax or shape error's own span, the line of the
+  offending `action = "…"`/`workflow = "…"` for an unknown reference, or
+  the `steps` key's line for a whole-flow problem (a data-flow violation)
+  with no span of its own. Empty and exit 0 when the candidate is clean,
+  non-empty and **exit 1** otherwise — the same "print everything, one
+  exit code" shape as `forge workflows validate` for a repository's files.
+  Reads the operator's catalog (`FORGE2_HOME`) to resolve against, unlike
+  `forge workflows validate`, which needs neither — a candidate is checked
+  against the live catalog it would join, not a bare parse — but **writes
+  nothing**, not even to a fresh, not-yet-initialized home: linting never
+  has the side effect `forge workflows` and every other catalog command
+  have of writing the built-in workflows and actions into `FORGE2_HOME`.
 - **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON

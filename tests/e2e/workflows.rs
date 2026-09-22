@@ -472,25 +472,45 @@ fn forge_workflows_lint_a_clean_candidate_exits_zero() {
     assert_eq!(doc["problems"].as_array().unwrap().len(), 0, "{doc}");
 }
 
-/// `forge workflows lint --stdin`: a candidate naming an action the
-/// catalog does not have is a lint problem, not a crash, and exits 1 with
-/// the problem as JSON (line and message).
+/// `forge workflows lint --stdin`: a candidate naming two unknown actions
+/// is two lint problems, not a crash and not just the first — each on its
+/// own line, each message naming its own action — and lint writes nothing
+/// into a fresh `FORGE2_HOME`, unlike every other catalog command.
 #[test]
 fn forge_workflows_lint_reports_an_unknown_action() {
     let e = Env::new();
-    assert!(e.forge("ok.sh", &["workflows"]).status.success());
-    let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"does-not-exist\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
+    // A wholly empty FORGE2_HOME: no prior catalog command has written
+    // anything into it, so lint must resolve against the built-ins alone
+    // and still must not write anything itself.
+    let text = "name = \"candidate\"\ndescription = \"d\"\nsteps = [\n{ action = \"missing-one\" },\n{ action = \"missing-two\" },\n]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n";
     let o = e.forge_stdin("ok.sh", &["workflows", "lint", "--stdin"], text);
     assert!(!o.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let problems = doc["problems"].as_array().unwrap();
-    assert_eq!(problems.len(), 1, "{doc}");
+    assert_eq!(problems.len(), 2, "{doc}");
+    assert_eq!(problems[0]["line"], 4, "{doc}");
     assert!(
         problems[0]["message"]
             .as_str()
             .unwrap()
-            .contains("unknown action \"does-not-exist\""),
+            .contains("unknown action \"missing-one\""),
         "{doc}"
+    );
+    assert_eq!(problems[1]["line"], 5, "{doc}");
+    assert!(
+        problems[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown action \"missing-two\""),
+        "{doc}"
+    );
+    assert!(
+        holds_no_files(&e.home),
+        "lint must not write into FORGE2_HOME: {:?}",
+        std::fs::read_dir(&e.home).map(|d| d
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect::<Vec<_>>())
     );
 
     // A --name that disagrees with the candidate's own `name` is refused
