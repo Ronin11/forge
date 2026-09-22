@@ -219,6 +219,41 @@ fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
 }
 
 #[test]
+fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
+    let e = Env::new();
+    let id = e.add(&["--budget", "12"]);
+    let budget = |e: &Env| -> Option<f64> {
+        e.db()
+            .query_row("SELECT budget_usd FROM tasks WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(budget(&e), Some(12.0));
+
+    for bad_budget in ["NaN", "inf"] {
+        let o = e.forge(
+            "ok.sh",
+            &["task", "set", &id.to_string(), "--budget", bad_budget],
+        );
+        assert!(
+            !o.status.success(),
+            "--budget {bad_budget} should be refused"
+        );
+        assert_eq!(
+            budget(&e),
+            Some(12.0),
+            "--budget {bad_budget} must not change the task's budget"
+        );
+        let ds = e.decisions_json();
+        assert!(
+            ds.as_array().unwrap().iter().all(|d| d["task_id"] != id),
+            "--budget {bad_budget} must not record a decision: {ds}"
+        );
+    }
+}
+
+#[test]
 fn stats_json_is_the_text_form_as_one_object() {
     let e = Env::new();
     assert!(e.run("tooly.sh", &["--retries", "0"]).status.success());

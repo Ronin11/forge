@@ -3023,9 +3023,9 @@ fn task_set(
         bail!("nothing to set: pass --budget, --max-turns, --timeout-secs or --retries");
     }
     if let Some(b) = budget
-        && b <= 0.0
+        && (!b.is_finite() || b <= 0.0)
     {
-        bail!("budget must be positive");
+        bail!("budget must be a positive finite number");
     }
     let f = Forge::open(false, false)?;
     let Some(old) = f.store.task(id)? else {
