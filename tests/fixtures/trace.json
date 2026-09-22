@@ -1,0 +1,364 @@
+{
+  "task": {
+    "id": 42,
+    "repo": "/srv/repos/equitizr",
+    "text": "add a retry button to the failed-task row",
+    "state": "succeeded",
+    "reason": "",
+    "workflow": "code-and-test",
+    "workflow_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "workflow_text": "[[step]]\nname = \"investigate\"\n\n[[step]]\nname = \"code\"\n",
+    "base_branch": "main",
+    "base_sha": "1111111111111111111111111111111111aaaa",
+    "branch": "forge/42-retry-button",
+    "worktree": "/srv/worktrees/42",
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "max_turns": 40,
+    "max_attempts": 3,
+    "timeout_secs": 1800,
+    "checks": ["cargo test", "cargo clippy"],
+    "show_checks": true,
+    "allow_protected": false,
+    "land": true,
+    "after": [],
+    "verify_base": "1111111111111111111111111111111111aaaa",
+    "retry_of": null,
+    "journal_enabled": true,
+    "journal_arm": "treatment",
+    "explore": { "code": "anthropic" },
+    "routing": {
+      "code": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "workflow": "code-and-test",
+        "source": "default"
+      }
+    },
+    "context_enabled": true,
+    "context": "src/store/tasks.rs holds the Task struct; web/src/app.js holds the client.",
+    "resume_on_failure": false,
+    "parent": null,
+    "children": [43],
+    "root": 42,
+    "lineage": [
+      { "id": 42, "parent": null, "state": "succeeded", "reason": "", "workflow": "code-and-test", "cost_usd": 0.42 },
+      { "id": 43, "parent": 42, "state": "queued", "reason": "", "workflow": "code-and-test", "cost_usd": 0.0 }
+    ],
+    "refs": [
+      { "id": 1, "task_id": 42, "kind": "pr", "url": "https://github.com/nate/equitizr/pull/9", "label": "#9", "by": "operator", "created_at": 1789769100 }
+    ],
+    "journal": "attempt 1 (investigate): looked at web/src/app.js and web/src/requests.js for the existing pattern.\nattempt 2 (code): added the button but the check tail showed a missing import.\nattempt 3 (code): fixed the import; checks passed.",
+    "interface": "",
+    "plan": "1. add a retry button next to the state badge\n2. wire it to POST /api/retry/<id>\n3. cover it with a render test",
+    "pushed": true,
+    "budget_usd": 5.0,
+    "created_at": 1789769000,
+    "started_at": 1789769010,
+    "finished_at": 1789769400,
+    "project": "equitizr",
+    "initiative": 7,
+    "inputs": {
+      "text_len": 42,
+      "path_tokens": 3,
+      "tdd": true,
+      "declared_checks": 2,
+      "project": "equitizr"
+    }
+  },
+  "attempts": [
+    {
+      "attempt_no": 1,
+      "step": "investigate",
+      "step_seq": 1,
+      "state": "succeeded",
+      "reason": "",
+      "started_at": 1789769010,
+      "finished_at": 1789769080,
+      "agent_exit": 0,
+      "timed_out": false,
+      "num_turns": 6,
+      "tool_calls": 14,
+      "cost_usd": 0.03,
+      "agent_ms": 70000,
+      "commits": 0,
+      "files_changed": 0,
+      "dirty": false,
+      "start_sha": "1111111111111111111111111111111111aaaa",
+      "end_sha": "1111111111111111111111111111111111aaaa",
+      "log_path": "/srv/logs/42/1.jsonl",
+      "runner": "claude",
+      "provider": "anthropic",
+      "tokens": { "input": 12000, "output": 800, "cache_read": 9000, "cache_creation": 1200 },
+      "inputs": {
+        "workflow": "code-and-test",
+        "workflow_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "step": "investigate",
+        "model": "claude-sonnet-5",
+        "max_turns": 40,
+        "timeout_secs": 1800,
+        "base_sha": "1111111111111111111111111111111111aaaa",
+        "start_sha": "1111111111111111111111111111111111aaaa",
+        "feedback": null,
+        "interface": null,
+        "plan": null,
+        "overlay_refs": [],
+        "checks_shown": true,
+        "task_checks": ["cargo test", "cargo clippy"],
+        "protected": ["forge.toml"],
+        "namespace": ["tests/hidden/"],
+        "prompt_chars": 4200
+      },
+      "outputs": {
+        "end_sha": "1111111111111111111111111111111111aaaa",
+        "changed_files": [],
+        "dirty_files": [],
+        "verify_ref": null,
+        "interface": null,
+        "summary": "found the render pattern in requests.js; no repo changes needed yet",
+        "claims": 0,
+        "checks_run": 0,
+        "first_edit_call": null,
+        "tools": {
+          "by_tool": { "Read": { "calls": 9, "ms": 1200 }, "Grep": { "calls": 5, "ms": 600 } },
+          "shell": {},
+          "reads": { "web/src/app.js": 3, "web/src/requests.js": 2 },
+          "span_ms": 68000,
+          "recent": ["Read web/src/app.js", "Grep renderRequestRows"]
+        }
+      },
+      "verdict": [
+        { "level": "L0", "name": "structured-result", "ok": true, "exit": null, "ms": 5, "timed_out": false, "tail": "", "failing_tests": [] },
+        { "level": "L0", "name": "clean-tree", "ok": true, "exit": null, "ms": 3, "timed_out": false, "tail": "", "failing_tests": [] }
+      ],
+      "envelope": {
+        "schema_version": 1,
+        "summary": "found the render pattern in requests.js; no repo changes needed yet",
+        "needs_input": null,
+        "changes": [],
+        "checks_run": [],
+        "claims": []
+      },
+      "rate_limits": { "five_hour": 0.12, "seven_day": 0.04 }
+    },
+    {
+      "attempt_no": 2,
+      "step": "code",
+      "step_seq": 2,
+      "state": "checks_failed",
+      "reason": "L1 check failed: cargo test",
+      "started_at": 1789769090,
+      "finished_at": 1789769200,
+      "agent_exit": 0,
+      "timed_out": false,
+      "num_turns": 18,
+      "tool_calls": 41,
+      "cost_usd": 0.21,
+      "agent_ms": 108000,
+      "commits": 1,
+      "files_changed": 2,
+      "dirty": false,
+      "start_sha": "1111111111111111111111111111111111aaaa",
+      "end_sha": "2222222222222222222222222222222222bbbb",
+      "log_path": "/srv/logs/42/2.jsonl",
+      "runner": "claude",
+      "provider": "anthropic",
+      "tokens": { "input": 30000, "output": 2100, "cache_read": 20000, "cache_creation": 3000 },
+      "inputs": {
+        "workflow": "code-and-test",
+        "workflow_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "step": "code",
+        "model": "claude-sonnet-5",
+        "max_turns": 40,
+        "timeout_secs": 1800,
+        "base_sha": "1111111111111111111111111111111111aaaa",
+        "start_sha": "1111111111111111111111111111111111aaaa",
+        "feedback": null,
+        "interface": null,
+        "plan": "1. add a retry button next to the state badge\n2. wire it to POST /api/retry/<id>\n3. cover it with a render test",
+        "overlay_refs": ["verify/42"],
+        "checks_shown": true,
+        "task_checks": ["cargo test", "cargo clippy"],
+        "protected": ["forge.toml"],
+        "namespace": ["tests/hidden/"],
+        "prompt_chars": 5100
+      },
+      "outputs": {
+        "end_sha": "2222222222222222222222222222222222bbbb",
+        "changed_files": ["web/src/app.js", "web/src/task.js"],
+        "dirty_files": [],
+        "verify_ref": null,
+        "interface": null,
+        "summary": "added the retry button and a render helper, but a test regressed",
+        "claims": 2,
+        "checks_run": 2,
+        "first_edit_call": 4,
+        "tools": {
+          "by_tool": { "Read": { "calls": 12, "ms": 1800 }, "Edit": { "calls": 6, "ms": 900 }, "Bash": { "calls": 9, "ms": 32000 } },
+          "shell": { "cargo test": { "calls": 3, "ms": 28000 }, "git": { "calls": 4, "ms": 400 } },
+          "reads": { "web/src/app.js": 5, "web/src/task.js": 4 },
+          "span_ms": 105000,
+          "recent": ["Bash cargo test", "Edit web/src/task.js"]
+        }
+      },
+      "verdict": [
+        { "level": "L0", "name": "structured-result", "ok": true, "exit": null, "ms": 4, "timed_out": false, "tail": "", "failing_tests": [] },
+        { "level": "L0", "name": "clean-tree", "ok": true, "exit": null, "ms": 3, "timed_out": false, "tail": "", "failing_tests": [] },
+        {
+          "level": "L1",
+          "name": "cargo test",
+          "ok": false,
+          "exit": 101,
+          "ms": 28000,
+          "timed_out": false,
+          "tail": "thread 'task_render' panicked at web/tests/task_render.rs:12:5:\nassertion failed: body.contains(\"attempt 2\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+          "failing_tests": ["task_render::a_fixture_renders_every_step_and_attempt"]
+        },
+        { "level": "L1", "name": "cargo clippy", "ok": true, "exit": 0, "ms": 4000, "timed_out": false, "tail": "", "failing_tests": [] }
+      ],
+      "envelope": {
+        "schema_version": 1,
+        "summary": "added the retry button and a render helper, but a test regressed",
+        "needs_input": null,
+        "changes": [
+          { "path": "web/src/app.js", "kind": "modified", "summary": "wire the retry button" },
+          { "path": "web/src/task.js", "kind": "added", "summary": "the full task page renderer" }
+        ],
+        "checks_run": [
+          { "check": "cargo test", "passed": true, "notes": "ran the workspace suite" },
+          { "check": "cargo clippy", "passed": true, "notes": "" }
+        ],
+        "claims": [
+          { "claim": "the retry button posts to /api/retry/<id>", "evidence": "web/src/app.js onClick handler" },
+          { "claim": "the render test passes", "evidence": "cargo test -p forge-web" }
+        ]
+      },
+      "rate_limits": { "five_hour": 0.2, "seven_day": 0.07 }
+    },
+    {
+      "attempt_no": 3,
+      "step": "code",
+      "step_seq": 2,
+      "state": "succeeded",
+      "reason": "",
+      "started_at": 1789769210,
+      "finished_at": 1789769390,
+      "agent_exit": 0,
+      "timed_out": false,
+      "num_turns": 9,
+      "tool_calls": 20,
+      "cost_usd": 0.09,
+      "agent_ms": 51000,
+      "commits": 1,
+      "files_changed": 1,
+      "dirty": false,
+      "start_sha": "2222222222222222222222222222222222bbbb",
+      "end_sha": "3333333333333333333333333333333333cccc",
+      "log_path": "/srv/logs/42/3.jsonl",
+      "runner": "claude",
+      "provider": "anthropic",
+      "tokens": { "input": 9000, "output": 600, "cache_read": 7000, "cache_creation": 500 },
+      "inputs": {
+        "workflow": "code-and-test",
+        "workflow_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "step": "code",
+        "model": "claude-sonnet-5",
+        "max_turns": 40,
+        "timeout_secs": 1800,
+        "base_sha": "2222222222222222222222222222222222bbbb",
+        "start_sha": "2222222222222222222222222222222222bbbb",
+        "feedback": "cargo test failed: task_render::a_fixture_renders_every_step_and_attempt",
+        "interface": null,
+        "plan": "1. add a retry button next to the state badge\n2. wire it to POST /api/retry/<id>\n3. cover it with a render test",
+        "overlay_refs": ["verify/42"],
+        "checks_shown": true,
+        "task_checks": ["cargo test", "cargo clippy"],
+        "protected": ["forge.toml"],
+        "namespace": ["tests/hidden/"],
+        "prompt_chars": 4800
+      },
+      "outputs": {
+        "end_sha": "3333333333333333333333333333333333cccc",
+        "changed_files": ["web/src/task.js"],
+        "dirty_files": [],
+        "verify_ref": null,
+        "interface": null,
+        "summary": "fixed the step grouping so every attempt renders under its step",
+        "claims": 1,
+        "checks_run": 2,
+        "first_edit_call": 2,
+        "tools": {
+          "by_tool": { "Read": { "calls": 4, "ms": 500 }, "Edit": { "calls": 2, "ms": 300 }, "Bash": { "calls": 4, "ms": 15000 } },
+          "shell": { "cargo test": { "calls": 2, "ms": 14000 } },
+          "reads": { "web/src/task.js": 3 },
+          "span_ms": 49000,
+          "recent": ["Bash cargo test", "Bash cargo clippy"]
+        }
+      },
+      "verdict": [
+        { "level": "L0", "name": "structured-result", "ok": true, "exit": null, "ms": 4, "timed_out": false, "tail": "", "failing_tests": [] },
+        { "level": "L0", "name": "clean-tree", "ok": true, "exit": null, "ms": 3, "timed_out": false, "tail": "", "failing_tests": [] },
+        { "level": "L1", "name": "cargo test", "ok": true, "exit": 0, "ms": 14000, "timed_out": false, "tail": "", "failing_tests": [] },
+        { "level": "L1", "name": "cargo clippy", "ok": true, "exit": 0, "ms": 3500, "timed_out": false, "tail": "", "failing_tests": [] }
+      ],
+      "envelope": {
+        "schema_version": 1,
+        "summary": "fixed the step grouping so every attempt renders under its step",
+        "needs_input": null,
+        "changes": [
+          { "path": "web/src/task.js", "kind": "modified", "summary": "group attempts by step name" }
+        ],
+        "checks_run": [
+          { "check": "cargo test", "passed": true, "notes": "" },
+          { "check": "cargo clippy", "passed": true, "notes": "" }
+        ],
+        "claims": [
+          { "claim": "every attempt renders under its own step heading", "evidence": "cargo test -p forge-web task_render" }
+        ]
+      },
+      "rate_limits": { "five_hour": 0.22, "seven_day": 0.08 }
+    }
+  ],
+  "ops": [
+    { "id": 1, "seq": 0, "name": "clone", "kernel": true, "started_at": 1789769005, "ms": 800, "ok": true, "exit": 0, "detail": "cloned to /srv/worktrees/42", "attempt_id": null, "output": "" },
+    { "id": 2, "seq": 3, "name": "push", "kernel": true, "started_at": 1789769395, "ms": 400, "ok": true, "exit": 0, "detail": "pushed forge/42-retry-button", "attempt_id": null, "output": "" },
+    { "id": 3, "seq": 4, "name": "land", "kernel": true, "started_at": 1789769398, "ms": 200, "ok": true, "exit": 0, "detail": "merged into main", "attempt_id": null, "output": "Merge made by the 'ort' strategy.\n web/src/app.js | 40 +++++++++++-----\n" }
+  ],
+  "resolved": {
+    "steps": [
+      { "name": "investigate", "kind": "directive", "contract": "investigate" },
+      { "name": "code", "kind": "directive", "contract": "code" }
+    ]
+  },
+  "diagnosis": [
+    { "what": "attempt 2 burned 18 turns and left cargo test failing", "action": "the next attempt was given the failing test name as feedback" }
+  ],
+  "deploys": [
+    {
+      "id": 1,
+      "project": "equitizr",
+      "target": "prod",
+      "sha": "3333333333333333333333333333333333cccc",
+      "started_at": 1789769401,
+      "finished_at": 1789769420,
+      "check_ok": true,
+      "check_output": "copied . to /srv/sites/prod (rsync)\nok\n",
+      "rolled_back_to": null,
+      "reason": "",
+      "smoke_ok": true,
+      "smoke_json": null,
+      "look_ok": null,
+      "look_json": null
+    }
+  ],
+  "assessment": {
+    "score": 8,
+    "findings": [
+      { "path": "web/src/task.js", "finding": "the tool-stats table has no zebra striping", "severity": "low" }
+    ],
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "cost_usd": 0.02,
+    "created_at": 1789769430
+  }
+}

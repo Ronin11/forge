@@ -276,6 +276,7 @@ fn without_the_token_nothing_is_served() {
         "/app.js",
         "/shell.js",
         "/requests.js",
+        "/task.js",
         "/styles.css",
         "/time.js",
         "/projects",

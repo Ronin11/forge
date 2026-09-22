@@ -39,6 +39,7 @@ const TIME_JS: &str = include_str!("time.js");
 const WORKFLOWS_JS: &str = include_str!("workflows.js");
 const GRAPH_JS: &str = include_str!("graph.js");
 const REQUESTS_JS: &str = include_str!("requests.js");
+const TASK_JS: &str = include_str!("task.js");
 const SHELL_JS: &str = include_str!("shell.js");
 const STYLES_CSS: &str = include_str!("styles.css");
 
@@ -991,6 +992,7 @@ fn handle(req: Request, forge: &Forge, secret: &str) {
         "/graph.js" => text(200, GRAPH_JS, "application/javascript"),
         "/shell.js" => text(200, SHELL_JS, "application/javascript"),
         "/requests.js" => text(200, REQUESTS_JS, "application/javascript"),
+        "/task.js" => text(200, TASK_JS, "application/javascript"),
         "/app.js" => text(200, APP_JS, "application/javascript"),
         "/styles.css" => text(200, STYLES_CSS, "text/css"),
         "/api/snapshot" => json_or_error(forge.json(&["snapshot"])),
