@@ -1318,7 +1318,7 @@ fn phase_one_needs_real_input(out: &Outcome) -> bool {
 /// to go on without having seen the schema itself.
 const CODEX_REPORT_PROMPT: &str = "Do no further work. Report the structured \
 result for everything done in this thread so far: schema_version, summary, \
-changes, checks_run, claims, and needs_input if you stopped for a reason \
+checks_run, claims, and needs_input if you stopped for a reason \
 before finishing, matching the schema you were given exactly.";
 
 /// One spawn of a codex `exec` phase to exit or timeout, writing every raw
@@ -1708,18 +1708,19 @@ mod tests {
             4
         );
         // An envelope written the strict way (every key present, optional ones empty) validates
-        // against it and parses into the same Envelope as before.
+        // against it and parses into the same Envelope as before. `changes` is not among its
+        // keys: the model is never asked for it, since git says what changed (Token cost, C2).
         let doc = serde_json::json!({
             "schema_version": 1, "summary": "did it",
             "needs_input": {"question": "which?", "tried": "x", "path": "", "kind": "question",
                              "options": [], "context": "", "checkpoint": null, "to": ""},
-            "changes": [{"path": "a.rs", "kind": "modified", "summary": ""}],
             "checks_run": [{"check": "test", "passed": true, "notes": ""}],
             "claims": [{"claim": "c", "evidence": ""}]
         });
         jsonschema::validate(&v, &doc).unwrap();
         let e: crate::envelope::Envelope = serde_json::from_value(doc).unwrap();
         assert_eq!(e.needs_input.as_ref().unwrap().to.as_deref(), Some(""));
+        assert!(e.changes.is_empty());
         // And every other schema the runners send is accepted by the transform.
         for s in [
             crate::supervisor::SCHEMA,

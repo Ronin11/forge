@@ -1,8 +1,9 @@
 # Operating the store
 
-*2026-09-21. What runs unattended against the operator's own Forge home,
-and what to do when it does not. docs/CHECKS.md covers the standing
-checks (doctor, drift); this is the one job that guards the data.*
+*2026-09-22. What runs unattended against the operator's own Forge home,
+and what to do when it does not, plus how a release is built. docs/CHECKS.md
+covers the standing checks (doctor, drift); `backup-daily` below is the job
+that guards the data.*
 
 ## `backup-daily` — 03:30 UTC daily
 
@@ -62,3 +63,38 @@ The e2e tests in `tests/e2e/jobs.rs` (`backup_daily_*`) hold the file
 formats and the behaviour above: the workflow parses, a dry run records
 its effects and dials nothing, and a real run against a fake remote
 copies, verifies and prunes to seven.
+
+## Releases
+
+`scripts/release.sh [target-triple]` builds the workspace in release mode
+and packs one archive: `forge`, `forge-web`, `forge-portal`, `forge-tui`,
+`forge-repomap` (and `forge-test`, once that crate exists),
+`deploy/forge-worker.service`, `docs/ops/forge-web.service` and a
+`config.toml` template, into `dist/forge-<version>-<target>.tar.gz` beside
+`dist/SHA256SUMS`. The target defaults to the host `rustc` reports; naming
+a different one assumes its toolchain is already installed and passes it
+to `cargo build --target`.
+
+The version is never typed by hand: the script reads it back from the
+binary it just built (`forge version`), so the archive's own name — and
+the tag a release should carry — is exactly what `forge version` reports
+on every install and upgrade built from it, never a copy that can drift
+from `Cargo.toml`. The `config.toml` template is built the same way: the
+script points `FORGE_HOME` at a scratch directory and runs the freshly
+built `forge project list` (a read-only command, no network or agent
+needed) so `Forge::open` writes it exactly as `config::DEFAULT_HOME_CONFIG`
+does, then copies it into the archive — one source of truth, not a hand-kept
+copy.
+
+`tests/release.rs` derives the workspace's own binaries from every member's
+`Cargo.toml` and fails `cargo test --workspace` if the script's `BINS=` list
+drifts from them, so a new crate that ships a binary cannot be forgotten.
+
+There is no `.github/workflows/release.yml` yet — this repository has no
+`.github` directory. Once it exists, add a workflow triggered on a `v*` tag
+that runs `scripts/release.sh` (one job per target triple in the matrix)
+and uploads each `dist/forge-*.tar.gz` and `dist/SHA256SUMS` as release
+assets. Until then, cut a release by hand: tag the commit `v<version>`
+matching `Cargo.toml`'s `[package] version` (so `forge version` names the
+same tag), run `scripts/release.sh` for each target the release ships, and
+attach the resulting `dist/` files to the tag.

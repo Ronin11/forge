@@ -2,7 +2,8 @@
 // DOM, so web/tests/search.test.js can exercise the URL round-trip under
 // node exactly like time.js and shell.js. Mapped one to one onto `forge
 // log --json`'s own flags (docs/CLIENT.md): `q` (--grep: task text or an
-// exact id), `state`, `repo` (--repo, a repository path), `workflow`,
+// exact id, title, plan or last result summary; each row's `matched` says
+// which), `state`, `repo` (--repo, a repository path), `workflow`,
 // `project`, `initiative`. `before` is the paging cursor `forge log
 // --before` itself takes, carried alongside the filters so a scrolled-to
 // page round-trips through the URL too.

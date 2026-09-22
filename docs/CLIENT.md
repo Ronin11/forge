@@ -29,8 +29,13 @@ and does not parse stdout.
   TEXT]`** —
   tasks, newest first. A JSON array of [`TaskRow`](#taskrow). `--limit`
   defaults to 20; `--before` pages backward by id; `--grep` matches the
-  task text or an exact id; `--state` is one of `queued`, `running`,
-  `succeeded`, `failed`, `blocked`, `unverified`, `withdrawn`. `--touches
+  task text or an exact id, the task's title, its stored plan, or the
+  result summary of its last attempt with an envelope (case-insensitive
+  substring), and each row's `matched` says which of `text`, `title`,
+  `plan`, `summary` hit first (the text form appends `(by plan)` and the
+  like for anything but the text); `--state` is one of `queued`,
+  `running`, `succeeded`, `failed`, `blocked`, `unverified`,
+  `withdrawn`. `--touches
   PATH` (repeatable) keeps tasks with an attempt whose recorded changes
   include the path, or anything under it when it names a directory: a
   `/` boundary, so `src/cli` matches `src/cli/tasks.rs` and not
@@ -513,6 +518,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
 | `trust` | string | Trust the caller earned by the path it queued through: `"operator"` (`forge add`/`forge run` and the CLI, the default), `"contact"` (a known contact through the Signal plugin, the portal, or another message through the concierge's `forge ask`), or `"public"` (the github-issues plugin, or any other caller a stranger can reach). Set once at enqueue and never revisited; a retry keeps the trust of the task it retries. `"operator"` for every task that predates this column. Also on `TraceDoc.task.trust`, shown by `forge show` and `forge trace`. |
 | `touch` | string, only under `--touches` | How the row matched `--touches`: `"changes"` (an attempt recorded a change at the path or under it) or `"text"` (only the task's text mentions it, `--touches-text`). Absent without the filter. |
+| `matched` | string, only under `--grep` | Which field matched, the first of `"text"` (the task text, or an exact id), `"title"`, `"plan"`, `"summary"` (the last attempt with an envelope). Absent without the filter. |
 | `failures` | array, only under `--failed-on`/`--reason` | The attempts that matched, by attempt number: `{attempt_no, step, reason, name, tail}` with `name` the failing verdict row's name (null for a `--reason` match) and `tail` that row's first line of output (empty for a reason match). Absent without those filters. |
 
 ### `RequestRow`
@@ -1169,7 +1175,14 @@ retirement keeps loading instead of failing on an unknown key. It never
 appears in `ProviderRow` and no longer changes anything — every
 attempt's `changes[]` is now derived from git for every provider,
 never taken from the model's own report (see `verify::derive_changes`,
-`Rule::ChangesFromGit`).
+`Rule::ChangesFromGit`). Since C1 already made the model's own report of
+`changes` unused, `changes` was dropped from `properties`/`required` in
+`envelope::SCHEMA` itself (Token cost, C2, `schema_version` unchanged:
+the shape a client reads back — `Envelope.changes`, still populated by
+`verify::derive_changes` — did not shrink, only what the CLI's own
+result schema asks the model to produce did). A row's `envelope` JSON,
+including one written before C2, still deserializes and still carries
+`changes[]`; the model is simply never asked to fill it in anymore.
 
 ### Snapshot document
 
