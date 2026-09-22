@@ -884,6 +884,11 @@ client re-reads the affected document with the verb above.
   `attempt_done`, or `op`, again only for the task currently open.
 - **The jobs list** (`forge job list --json`): re-read on `job_started`
   or `job_finished`.
+- **A workflow's measured profile** (`forge workflows --json`'s
+  `workflows[].measured`, and `forge workflows show NAME --json`'s
+  `measured`): re-read on `task_done` (a build workflow's profile moves
+  when a task under it lands) or `job_finished` (a run workflow's profile
+  moves when a job under it finishes).
 
 A client that only wants a live feed (a scrolling line per event) needs
 no re-read logic at all: every event's `text` is already the line to
@@ -946,6 +951,26 @@ across a rotation, not to the snapshot protocol itself.
   `POST /api/plugins/<name>/enable` and `.../disable` → `forge plugin
   enable|disable <name>`; `/api/plugins/<name>/logs` → `forge plugin
   logs <name>` (no `--follow`), served as plain text.
+  `/api/workflows` merges `forge-client`'s typed `workflow_list`: one call
+  with no project for the operator's catalog, then one per project
+  (`forge project list --json`)
+  with `--project`, keeping only that call's `source: "repo"` entries and
+  tagging each with the project it came from — the `/workflows` list page's
+  rows. `/api/workflows/<name>[?project=P]` → `forge-client`'s typed
+  `workflow_show` (`forge workflows show NAME [--project P] --json`), for
+  the `/workflows/<name>` editor page's text, resolved steps, and measured
+  profile. `POST /api/workflows/<name>/lint` — the body is the candidate
+  text, plain, not JSON — runs `forge-client`'s `workflow_lint`
+  (`forge workflows lint --stdin --name NAME`) on every debounced change
+  and returns `{"problems": [...]}`, the same shape `forge workflows lint`
+  prints. `POST /api/workflows/<name>` is the Save control: a JSON body
+  `{"text", "message", "project"}`; `project: null` runs `forge-client`'s
+  `workflow_put` with no `--repo`, committing straight into the operator's
+  catalog (`{"result": "committed", "hash": ...}`); a `project` name
+  resolves that project's first repo (`forge project show NAME --json`'s
+  `repos[0].repo`) and runs `workflow_put` with `--repo`, filing a task
+  instead (`{"result": "filed", "task_id": ...}`) — the editor labels this
+  control "file as a task" rather than "save" when `source` is `"repo"`.
   Every time the page shows is Unix seconds from the server (`created_at`,
   `started_at`, `finished_at`, `due_at`, an event's `ts`), turned into text
   by `web/src/time.js` alone: `fmtTime` renders `2026-09-21 07:00` in the

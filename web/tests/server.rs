@@ -25,10 +25,64 @@ case "$1" in
     esac ;;
   project)
     case "$2" in
-      list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"repos":[],"created_at":1}]' ;;
-      show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[],\"created_at\":1}" ;;
+      list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"repos":[{"repo":"/repos/demo","scope":null}],"created_at":1}]' ;;
+      show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[{\"repo\":\"/repos/$3\",\"scope\":null}],\"created_at\":1}" ;;
       backlog) echo "[{\"id\":1,\"project\":\"$3\",\"text\":\"do the thing\",\"created_at\":1,\"done_at\":null}]" ;;
       *) echo "unexpected project: $*" >&2; exit 2 ;;
+    esac ;;
+  workflows)
+    shift
+    case "$1" in
+      show)
+        name="$2"; proj=""
+        args=("$@")
+        for ((i=0; i<${#args[@]}; i++)); do
+          if [ "${args[i]}" = "--project" ]; then proj="${args[i+1]}"; fi
+        done
+        if [ "$proj" = "demo" ] && [ "$name" = "repo-flow" ]; then
+          echo '{"name":"repo-flow","source":"repo","path":".forge/workflows/repo-flow.toml","kind":"build","text":"name = \"repo-flow\"\n","steps":[{"name":"setup","kind":"operation","contract":"setup","model":null,"max_turns":null,"timeout_secs":null,"description":"prepares the tree"}],"measured":{"current":{"n":0,"known":false},"previous":null,"all_versions":{"n":0,"known":false},"regressed":false,"by_provider":[]}}'
+        else
+          echo '{"name":"direct","source":"catalog","path":"/home/x/workflows/direct.toml","kind":"build","text":"name = \"direct\"\n","steps":[{"name":"setup","kind":"operation","contract":"setup","model":null,"max_turns":null,"timeout_secs":null,"description":"prepares the tree"},{"name":"code","kind":"directive","contract":"code","model":"claude-sonnet-5","max_turns":40,"timeout_secs":1800,"description":"writes the change"}],"measured":{"current":{"n":12,"known":true,"succeeded":10,"rate":0.8333333333333334,"rate_lo":0.55,"rate_hi":0.95,"cost_per_task":1.2,"cost_per_success":1.44,"mean_secs":300.0,"mean_attempts":1.1,"lineages":12,"lineages_verified":10},"previous":null,"all_versions":{"n":12,"known":true},"regressed":false,"by_provider":[]}}'
+        fi ;;
+      lint)
+        cat >/dev/null
+        nm=""
+        args=("$@")
+        for ((i=0; i<${#args[@]}; i++)); do
+          if [ "${args[i]}" = "--name" ]; then nm="${args[i+1]}"; fi
+        done
+        if [ "$nm" = "bad" ]; then
+          echo '{"problems":[{"line":3,"message":"unknown action \"nope\""}]}'
+          exit 1
+        else
+          echo '{"problems":[]}'
+        fi ;;
+      put)
+        name="$2"; shift 2
+        cat >/dev/null
+        repo=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --repo) repo="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        if [ -n "$repo" ]; then
+          echo "42"
+        else
+          echo "abc123abc123abc123abc123abc123abc123abcd"
+        fi ;;
+      *)
+        proj=""
+        args=("$@")
+        for ((i=0; i<${#args[@]}; i++)); do
+          if [ "${args[i]}" = "--project" ]; then proj="${args[i+1]}"; fi
+        done
+        if [ "$proj" = "demo" ]; then
+          echo '{"workflows":[{"name":"direct","kind":"build","source":"catalog","hash":"h1","description":"d","path":"/x/direct.toml","steps":[],"resolved":[{"action":"setup","kind":"operation","contract":"setup"}],"meta":{},"measured":{"current":{"n":12,"known":true,"succeeded":10,"rate":0.8333333333333334,"rate_lo":0.55,"rate_hi":0.95,"cost_per_task":1.2,"cost_per_success":1.44,"mean_secs":300.0,"mean_attempts":1.1,"lineages":12,"lineages_verified":10},"regressed":false}},{"name":"repo-flow","kind":"build","source":"repo","hash":"h2","description":"r","path":".forge/workflows/repo-flow.toml","steps":[{"action":"setup"}],"resolved":null,"meta":{},"measured":{"current":{"n":0,"known":false},"regressed":false}}],"actions":[],"min_runs_for_known":5,"lookback":50}'
+        else
+          echo '{"workflows":[{"name":"direct","kind":"build","source":"catalog","hash":"h1","description":"d","path":"/x/direct.toml","steps":[],"resolved":[{"action":"setup","kind":"operation","contract":"setup"}],"meta":{},"measured":{"current":{"n":12,"known":true,"succeeded":10,"rate":0.8333333333333334,"rate_lo":0.55,"rate_hi":0.95,"cost_per_task":1.2,"cost_per_success":1.44,"mean_secs":300.0,"mean_attempts":1.1,"lineages":12,"lineages_verified":10},"regressed":false}}],"actions":[],"min_runs_for_known":5,"lookback":50}'
+        fi ;;
     esac ;;
   initiative)
     case "$2" in
@@ -196,6 +250,10 @@ fn without_the_token_nothing_is_served() {
         "/jobs/1",
         "/api/jobs",
         "/api/job/1",
+        "/workflows",
+        "/workflows/direct",
+        "/api/workflows",
+        "/api/workflows/direct",
     ] {
         let (status, _, _) = get(&w.addr, path, "");
         assert_eq!(status, 401, "{path}");
@@ -449,6 +507,118 @@ fn the_jobs_page_lists_two_fixture_jobs_and_shows_one_with_its_steps_and_effects
 
     let (status, _, _) = get(&w.addr, "/api/job/x", &cookie);
     assert_eq!(status, 404);
+}
+
+#[test]
+fn the_workflows_page_lists_catalog_and_repo_workflows_and_the_editor_lints_and_saves() {
+    let w = start();
+    let cookie = format!("Cookie: forge_token={}\r\n", w.token);
+
+    for view in ["/workflows", "/workflows/direct"] {
+        let (status, _, body) = get(&w.addr, view, &cookie);
+        assert_eq!(status, 200, "{view}");
+        assert!(body.contains(r#"<script src="/app.js">"#), "{view}: {body}");
+    }
+    let (_, _, body) = get(&w.addr, "/workflows.js", &cookie);
+    assert!(body.contains("renderWorkflowRows"), "{body}");
+    let (_, _, index) = get(&w.addr, "/workflows", &cookie);
+    assert!(index.contains(r#"<script src="/workflows.js">"#), "{index}");
+    let (_, _, app_js) = get(&w.addr, "/app.js", &cookie);
+    assert!(
+        app_js.contains("href=\"/workflows\""),
+        "app.js must link /workflows from the header nav"
+    );
+    assert!(
+        app_js.contains("workflows:")
+            && app_js.contains("task_done")
+            && app_js.contains("job_finished"),
+        "app.js must invalidate the workflows views on task_done/job_finished"
+    );
+
+    // forge workflows --json, through /api/workflows: the catalog once,
+    // plus every project's own repo workflows, tagged with the project.
+    let (status, _, body) = get(&w.addr, "/api/workflows", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{body}");
+    let direct = rows.iter().find(|r| r["name"] == "direct").unwrap();
+    assert_eq!(direct["source"], "catalog");
+    assert_eq!(direct["kind"], "build");
+    assert!(direct["project"].is_null(), "{body}");
+    let repo_flow = rows.iter().find(|r| r["name"] == "repo-flow").unwrap();
+    assert_eq!(repo_flow["source"], "repo");
+    assert_eq!(repo_flow["project"], "demo");
+
+    // forge workflows show NAME --json, through /api/workflows/<name>.
+    let (status, _, body) = get(&w.addr, "/api/workflows/direct", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["name"], "direct");
+    assert_eq!(v["source"], "catalog");
+    assert!(v["text"].as_str().unwrap().contains("direct"), "{body}");
+    assert_eq!(v["steps"][0]["name"], "setup");
+    assert_eq!(v["measured"]["current"]["n"], 12);
+
+    // ...and with ?project=, a repository workflow.
+    let (status, _, body) = get(&w.addr, "/api/workflows/repo-flow?project=demo", &cookie);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["source"], "repo");
+    assert_eq!(v["steps"][0]["name"], "setup");
+
+    // forge workflows lint --stdin, through POST /api/workflows/<name>/lint:
+    // the body is the candidate text, plain.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/workflows/ok/lint",
+        &cookie,
+        "name = \"ok\"\n",
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["problems"].as_array().unwrap().len(), 0, "{body}");
+
+    let (status, _, body) = post_body(&w.addr, "/api/workflows/bad/lint", &cookie, "garbage");
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["problems"][0]["line"], 3);
+    assert!(
+        v["problems"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nope"),
+        "{body}"
+    );
+    let (status, _, _) = get(&w.addr, "/api/workflows/ok/lint", &cookie);
+    assert_eq!(status, 405);
+
+    // forge workflows put NAME --stdin --message MSG, through
+    // POST /api/workflows/<name>: a catalog save commits and returns the
+    // hash.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/workflows/put-me",
+        &cookie,
+        r#"{"text":"name = \"put-me\"\n","message":"add put-me","project":null}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["result"], "committed");
+    assert_eq!(v["hash"], "abc123abc123abc123abc123abc123abc123abcd");
+
+    // ...and with a project, "file as a task" — resolves the project's
+    // first repo and calls put --repo, filing a task instead.
+    let (status, _, body) = post_body(
+        &w.addr,
+        "/api/workflows/repo-flow",
+        &cookie,
+        r#"{"text":"name = \"repo-flow\"\n","message":"m","project":"demo"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["result"], "filed");
+    assert_eq!(v["task_id"], 42);
 }
 
 #[test]
