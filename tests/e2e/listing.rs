@@ -387,6 +387,133 @@ fn forge_task_set_replaces_text_workflow_after_and_checks_and_records_old_and_ne
     );
 }
 
+/// `forge add --json` names the task it queued; `forge show --json` is
+/// the task's record with every field of its spec, so a client can feed
+/// one task's spec back into `forge add` and get the same spec.
+#[test]
+fn add_json_names_the_task_and_show_json_round_trips_the_spec_through_add() {
+    let e = Env::new();
+    let dep = e.add(&[]);
+    let repo = e.repo.to_str().unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "add",
+            repo,
+            "write 42 to answer.txt",
+            "--workflow",
+            "reviewed",
+            "--check",
+            "test -f answer.txt",
+            "--check",
+            "grep -qx 42 answer.txt",
+            "--after",
+            &dep.to_string(),
+            "--budget",
+            "7.5",
+            "--max-turns",
+            "40",
+            "--retries",
+            "2",
+            "--timeout-secs",
+            "600",
+            "--show-checks",
+            "--allow-protected",
+            "--no-land",
+            "--json",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let added: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(added["id"], dep + 1);
+    assert_eq!(added["queued"], 2, "{added}");
+    let id = added["id"].as_i64().unwrap();
+
+    let show = |id: i64| -> serde_json::Value {
+        let o = e.forge("ok.sh", &["show", &id.to_string(), "--json"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let t = show(id);
+    assert_eq!(t, e.trace_json(id)["task"], "show --json is TraceDoc.task");
+    assert_eq!(t["text"], "write 42 to answer.txt");
+    assert_eq!(t["workflow"], "reviewed");
+    assert_eq!(t["after"], serde_json::json!([dep]));
+    assert_eq!(t["budget_usd"], 7.5);
+    assert_eq!(t["land"], false);
+
+    // Feed the spec back into `forge add`, then compare the two records.
+    let text = t["text"].as_str().unwrap().to_string();
+    let workflow = t["workflow"].as_str().unwrap().to_string();
+    let budget = t["budget_usd"].as_f64().unwrap().to_string();
+    let max_turns = t["max_turns"].as_i64().unwrap().to_string();
+    let retries = (t["max_attempts"].as_i64().unwrap() - 1).to_string();
+    let timeout = t["timeout_secs"].as_i64().unwrap().to_string();
+    let mut args: Vec<String> = vec![
+        "add".into(),
+        repo.into(),
+        text,
+        "--workflow".into(),
+        workflow,
+        "--budget".into(),
+        budget,
+        "--max-turns".into(),
+        max_turns,
+        "--retries".into(),
+        retries,
+        "--timeout-secs".into(),
+        timeout,
+        "--json".into(),
+    ];
+    for c in t["checks"].as_array().unwrap() {
+        args.push("--check".into());
+        args.push(c.as_str().unwrap().into());
+    }
+    for a in t["after"].as_array().unwrap() {
+        args.push("--after".into());
+        args.push(a.to_string());
+    }
+    for (flag, on) in [
+        ("--show-checks", t["show_checks"] == true),
+        ("--allow-protected", t["allow_protected"] == true),
+        ("--no-land", t["land"] == false),
+    ] {
+        if on {
+            args.push(flag.into());
+        }
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = e.forge("ok.sh", &argv);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let again: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let copy = show(again["id"].as_i64().unwrap());
+    for field in [
+        "text",
+        "workflow",
+        "checks",
+        "after",
+        "budget_usd",
+        "max_turns",
+        "max_attempts",
+        "timeout_secs",
+        "show_checks",
+        "allow_protected",
+        "land",
+        "provider",
+        "model",
+        "project",
+        "initiative",
+        "trust",
+        "repo",
+    ] {
+        assert_eq!(copy[field], t[field], "{field} did not round-trip");
+    }
+    assert_ne!(copy["id"], t["id"]);
+
+    let o = e.forge("ok.sh", &["show", "999", "--json"]);
+    assert!(!o.status.success());
+}
+
 #[test]
 fn forge_task_set_rejects_a_non_finite_budget_and_changes_nothing() {
     let e = Env::new();
