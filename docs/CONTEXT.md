@@ -54,3 +54,26 @@ names no task.
 The map itself, when ranked with no words, leads with the files that
 declare the most and leaves out files that declare nothing, since a map
 ranked by nothing has no other signal than what a file carries.
+
+## Line spans and the map factor (2026-09-22)
+
+Every symbol in the map now carries a span, rendered `name@start-end`:
+the line the declaration starts on and the line before the next
+declaration (the last symbol runs to the file's end). It is a cheap span
+with no brace matching, and it is enough for what it is for: the map's
+heading tells the model to read the ranges it needs with Read
+offset/limit and to batch independent Reads and greps into one turn,
+against the measured 1.07 tool calls per turn and 66% of tool output
+being whole-file reads. When a file's symbols overflow its 220-character
+line, trailing symbols are dropped whole; a span is never cut. Cache
+entries written before spans existed read as misses and re-parse.
+
+Whether spans help is measured, not assumed: `map` is an experiment
+factor (`[factors.map]` in `experiment.toml`, levels `spans` and
+`names`; docs/ECONOMIST.md). A task's draw reaches the `repo-map`
+operation as `FORGE_MAP_STYLE`, and `forge stats --factors` reports the
+`map` levels beside the others with two exploration measures: the tool
+call at which the first edit came, and tool calls per turn. Spans are
+the default when no draw was made. The factor is readable once each
+level has a few dozen landed tasks; at the current pace that is about
+a week with the weights at 0.5 each.

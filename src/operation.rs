@@ -46,6 +46,16 @@ fn operation_env(
         ),
         ("FORGE_HOT_FILES", hot_files.join(",")),
         ("FORGE_CACHE_DIR", cache_dir.display().to_string()),
+        // The map's arm from the experiment (docs/CONTEXT.md, the map
+        // factor): `spans` renders `name@start-end`, `names` renders names
+        // only; spans when no experiment drew it.
+        (
+            "FORGE_MAP_STYLE",
+            t.explore
+                .get("map")
+                .cloned()
+                .unwrap_or_else(|| "spans".to_string()),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -611,6 +621,7 @@ mod tests {
                     "FORGE_CACHE_DIR".to_string(),
                     "/tmp/forge-cache".to_string()
                 ),
+                ("FORGE_MAP_STYLE".to_string(), "spans".to_string()),
             ]
         );
     }
