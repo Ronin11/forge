@@ -1,9 +1,54 @@
 # Operating the store
 
 *2026-09-22. What runs unattended against the operator's own Forge home,
-and what to do when it does not, plus how a release is built. docs/CHECKS.md
-covers the standing checks (doctor, drift); `backup-daily` below is the job
-that guards the data.*
+and what to do when it does not, plus how a release is built and installed.
+docs/CHECKS.md covers the standing checks (doctor, drift); `backup-daily`
+below is the job that guards the data.*
+
+## Installing and upgrading
+
+`forge init [--home DIR]` is what a second machine runs once, against the
+binaries unpacked from a release archive (see "Releases" below), to get a
+working `FORGE_HOME` (default `~/.local/share/forge`, the same resolution
+`Paths::resolve` always uses — `--home` overrides it for that one run):
+
+1. Creates the data directory (`worktrees/` and `logs/` under it).
+2. Writes `config.toml` from `config::DEFAULT_HOME_CONFIG` — never
+   overwriting one that is already there.
+3. Makes `FORGE_HOME/workflows` a git repository (if it is not one yet),
+   writes every built-in action, operation and workflow that is not
+   already present, and commits whatever that leaves uncommitted as
+   Forge — so a fresh install's catalog starts at a clean, committed
+   `git status`, the same thing `forge doctor`'s `workflows` check counts.
+4. Generates `web.token` (32 bytes of `/dev/urandom` as hex, mode 0600) if
+   it does not exist — the same generator `forge web link` falls back to.
+5. Writes `forge-worker.service` and `forge-web.service` under
+   `$XDG_CONFIG_HOME/systemd/user` (`~/.config/systemd/user` when
+   `XDG_CONFIG_HOME` is unset — the OS user's own config directory, never
+   `FORGE_HOME`, which may sit elsewhere), each `ExecStart=` pointing at
+   the currently running `forge` binary's own path (`forge-web` is
+   expected beside it), with `Environment=FORGE_HOME=` set to the home
+   just set up. When a systemd user session is reachable (`sd_booted()`:
+   `/run/systemd/system` exists, plus `XDG_RUNTIME_DIR`, which a login
+   session sets), it also runs `systemctl --user daemon-reload`,
+   `systemctl --user enable --now forge-worker.service forge-web.service`
+   and `loginctl enable-linger`, so both survive a logout. Without a
+   session, the unit files are still written, and the same three commands
+   are printed instead of run, for the operator to run by hand once one
+   is available.
+6. Ends by running the same checks `forge doctor` reports (against the
+   home `forge init` just set up, even with `--home`), so a missing
+   `bwrap`, `git` or a `claude` CLI that is not logged in is named on the
+   spot rather than on the first real attempt.
+
+Every step only changes what is not already exactly right — the config is
+never overwritten, a built-in already on disk is never rewritten, a unit
+file identical to what would be written again is left alone and neither
+`systemctl` nor `loginctl` is re-run — so running `forge init` again on an
+already set up machine reports every step unchanged and says so
+(`already initialized; nothing changed`), the same shape `tests/e2e/init.rs`
+holds: creation the first time, "nothing changed" the second, and
+`--home` never touching the default `FORGE_HOME`.
 
 ## `backup-daily` — 03:30 UTC daily
 

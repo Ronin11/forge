@@ -24,6 +24,7 @@ mod experiment;
 
 mod git;
 mod graph;
+mod init;
 mod intake;
 mod job;
 mod journal;
@@ -105,6 +106,78 @@ mod readme_layout {
         assert!(
             missing.is_empty(),
             "README.md's Layout section doesn't name: {missing:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod docs_readme_index {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::Path;
+
+    // docs/README.md is the hand-written index of everything under docs/.
+    // This is the stop that keeps it from going stale: every docs/*.md file
+    // has to be named there, and every *.md name it mentions has to exist.
+    fn walk_md(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).expect("read_dir") {
+            let path = entry.expect("dir entry").path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            if path.is_dir() {
+                walk_md(&path, &format!("{prefix}{name}/"), out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(format!("{prefix}{name}"));
+            }
+        }
+    }
+
+    #[test]
+    fn every_doc_is_indexed_and_the_index_names_only_real_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let docs = root.join("docs");
+        let index = fs::read_to_string(docs.join("README.md")).expect("read docs/README.md");
+
+        let tokens: BTreeSet<&str> = index
+            .split(|c: char| c.is_whitespace() || "[]()`,*:".contains(c))
+            .filter(|word| !word.is_empty())
+            .collect();
+
+        let mut all = Vec::new();
+        walk_md(&docs, "", &mut all);
+
+        let mut missing = Vec::new();
+        for rel in &all {
+            if rel == "README.md" {
+                continue;
+            }
+            let covered = match rel.split_once('/') {
+                Some((dir, _)) => {
+                    tokens.contains(rel.as_str()) || tokens.contains(format!("{dir}/").as_str())
+                }
+                None => tokens.contains(rel.as_str()),
+            };
+            if !covered {
+                missing.push(rel.clone());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "docs/README.md doesn't index: {missing:?}"
+        );
+
+        let mut dangling = Vec::new();
+        for word in &tokens {
+            let word = word.trim_matches('/');
+            if !word.ends_with(".md") {
+                continue;
+            }
+            if !docs.join(word).is_file() {
+                dangling.push(word.to_string());
+            }
+        }
+        assert!(
+            dangling.is_empty(),
+            "docs/README.md names files that don't exist: {dangling:?}"
         );
     }
 }

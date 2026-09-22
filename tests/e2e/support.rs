@@ -11,6 +11,10 @@ pub struct Env {
     pub home: PathBuf,
     pub repo: PathBuf,
     pub origin: PathBuf,
+    /// `XDG_CONFIG_HOME` for every spawned `forge`, so `forge init`'s
+    /// systemd units land under the test's own tempdir rather than the
+    /// machine running the suite's real `~/.config/systemd/user`.
+    pub xdg_config: PathBuf,
     no_sandbox: bool,
 }
 
@@ -170,11 +174,13 @@ impl Env {
                  to run the e2e suite unsandboxed (sandbox assertions will be skipped)"
             );
         }
+        let xdg_config = dir.path().join("xdg_config");
         Env {
             _dir: dir,
             home,
             repo,
             origin,
+            xdg_config,
             no_sandbox,
         }
     }
@@ -182,6 +188,7 @@ impl Env {
     pub fn cmd(&self, fake: &str) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_forge"));
         c.env("FORGE_HOME", &self.home);
+        c.env("XDG_CONFIG_HOME", &self.xdg_config);
         c.env(
             "FORGE_CLAUDE_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR"))

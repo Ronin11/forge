@@ -15,9 +15,17 @@ logs anywhere on it.
 
 - **Running for you.** Each deploy target: its name, where it runs, when
   it was last deployed, whether the last check and look passed, and the
-  last look's screenshot. Alongside it, each run workflow: its name and
-  its last three jobs, newest first — when each ran, whether it went ok,
-  failed, or needs a person, and, on failure, a one-line reason. This is
+  last look's screenshot. Alongside it, each automation: described from
+  its own workflow's `description`, never its file name alone, and its
+  last three runs, newest first — when each ran, whether it went ok,
+  failed, or needs a person, and every effect it logged as one sentence
+  ("quoted the Hendersons' fence job at $1,240") — the operation's own
+  `summary`, never its kind or target. A dry run (a rehearsal, e.g.
+  `forge job test`'s fixture replay) is marked one. A run that needs a
+  person shows the human rung's question in the customer's own terms
+  when it was addressed to them (docs/JOBS.md, "The human rung, per
+  run"), or a plain "we're on it" when it was addressed to the operator
+  instead — never a question that was never theirs to answer. This is
   the list of automations Forge built and keeps working for them, and
   the recent record of the ones that run on their own schedule or
   trigger rather than sitting behind a URL.

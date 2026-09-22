@@ -365,15 +365,18 @@ creates a same-named firewall allowing 22, 80, 443 and icmp if absent,
 its ipv4, and writes an ssh-config fragment for the operator to append
 to their own `~/.ssh/config`; see docs/DEPLOY.md, "Provisioning").
 
-A job's steps (docs/JOBS.md) are operations too, and four built-in ones
+A job's steps (docs/JOBS.md) are operations too, and five built-in ones
 perform its effects, each honouring `FORGE_DRY_RUN` by logging to
 `FORGE_EFFECT_LOG` instead of acting: `write-file` (writes
 `FORGE_INPUT_CONTENT` to `FORGE_INPUT_PATH`, the `file` effect),
 `append-row` (appends `FORGE_INPUT_ROW` to the table
 `FORGE_INPUT_TABLE`, the `row` effect), `http-post` (posts
-`FORGE_INPUT_BODY` to `FORGE_INPUT_URL`, the `http` effect), and
-`send-signal` (sends `FORGE_INPUT_TEXT` to `FORGE_INPUT_CONTACT` through
-signal-cli, the `message` effect).
+`FORGE_INPUT_BODY` to `FORGE_INPUT_URL`, the `http` effect), and two
+that both perform the `message` effect: `send-signal` (sends
+`FORGE_INPUT_TEXT` to `FORGE_INPUT_CONTACT` through signal-cli) and
+`send-sms` (the same, over Twilio, from `TWILIO_FROM`; a Twilio error
+response — 30034, an unregistered 10DLC sender, notably — exits
+non-zero quoting its own code and message, docs/PLUGINS.md, "twilio").
 
 The same tool's `forge-repomap edges <root>
 [--cache DIR]` subcommand prints the structure layer of the code

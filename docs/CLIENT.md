@@ -29,8 +29,13 @@ and does not parse stdout.
   TEXT]`** —
   tasks, newest first. A JSON array of [`TaskRow`](#taskrow). `--limit`
   defaults to 20; `--before` pages backward by id; `--grep` matches the
-  task text or an exact id; `--state` is one of `queued`, `running`,
-  `succeeded`, `failed`, `blocked`, `unverified`, `withdrawn`. `--touches
+  task text or an exact id, the task's title, its stored plan, or the
+  result summary of its last attempt with an envelope (case-insensitive
+  substring), and each row's `matched` says which of `text`, `title`,
+  `plan`, `summary` hit first (the text form appends `(by plan)` and the
+  like for anything but the text); `--state` is one of `queued`,
+  `running`, `succeeded`, `failed`, `blocked`, `unverified`,
+  `withdrawn`. `--touches
   PATH` (repeatable) keeps tasks with an attempt whose recorded changes
   include the path, or anything under it when it names a directory: a
   `/` boundary, so `src/cli` matches `src/cli/tasks.rs` and not
@@ -513,6 +518,7 @@ One row of `forge log --json`, one task as the queue lists it.
 | `initiative` | integer or null | The initiative the task belongs to, if any. |
 | `trust` | string | Trust the caller earned by the path it queued through: `"operator"` (`forge add`/`forge run` and the CLI, the default), `"contact"` (a known contact through the Signal plugin, the portal, or another message through the concierge's `forge ask`), or `"public"` (the github-issues plugin, or any other caller a stranger can reach). Set once at enqueue and never revisited; a retry keeps the trust of the task it retries. `"operator"` for every task that predates this column. Also on `TraceDoc.task.trust`, shown by `forge show` and `forge trace`. |
 | `touch` | string, only under `--touches` | How the row matched `--touches`: `"changes"` (an attempt recorded a change at the path or under it) or `"text"` (only the task's text mentions it, `--touches-text`). Absent without the filter. |
+| `matched` | string, only under `--grep` | Which field matched, the first of `"text"` (the task text, or an exact id), `"title"`, `"plan"`, `"summary"` (the last attempt with an envelope). Absent without the filter. |
 | `failures` | array, only under `--failed-on`/`--reason` | The attempts that matched, by attempt number: `{attempt_no, step, reason, name, tail}` with `name` the failing verdict row's name (null for a `--reason` match) and `tail` that row's first line of output (empty for a reason match). Absent without those filters. |
 
 ### `RequestRow`
@@ -678,8 +684,8 @@ operator's page (`forge trace`, `forge stats`), never to this one.
 | `project` | string | The project's name. |
 | `purpose` | string | The project's one-paragraph purpose; for the operator's own tools — never rendered on the customer's page (see docs/PORTAL.md). |
 | `deploy_targets` | array of `{name, where_it_runs, last_deployed_at, check_ok, look_ok, screenshot}` | "Running for you": each deploy target, `where_it_runs` its `host` arg, `last_deployed_at` Unix seconds of its most recent deploy (`null` if never deployed), `check_ok`/`look_ok` that deploy's verdicts (`null` if it never ran or never declared a smoke url), `screenshot` the last look's screenshot path, `null` when the smoke step never ran. |
-| `run_workflows` | array of `{name, jobs}` | "Running for you", continued: every run workflow this project's jobs have used, most recently run first; `jobs` its last three, newest first, from the same job rows `forge job list` serves (see [`JobRow`](#jobrow)). |
-| `run_workflows[].jobs[]` | `{started_at, state, reason}` | One job: `started_at` Unix seconds, `state` `"ok"`, `"failed"`, `"needs_human"`, or one of `JobState`'s other values for a job still in flight; `reason` a one-line cause cut from the first failing check's tail (path-like tokens stripped, 120 characters on a word boundary), set only when `state` is `"failed"` or `"needs_human"` and the verdict names one. |
+| `run_workflows` | array of `{name, description, jobs}` | "Running for you", continued: every run workflow this project's jobs have used, most recently run first; `description` its own workflow file's `description` (empty when the file can no longer be resolved, from either the repository or the operator's catalog); `jobs` its last three, newest first, from the same job rows `forge job list` serves (see [`JobRow`](#jobrow)). |
+| `run_workflows[].jobs[]` | `{started_at, state, dry_run, effects, reason}` | One job: `started_at` Unix seconds, `state` `"ok"`, `"failed"`, `"needs_human"`, or one of `JobState`'s other values for a job still in flight; `dry_run` true for a rehearsal (`forge job test`'s fixture replay); `effects` every effect it logged, each cut to its own one-line `summary` — never its `kind` or `target` (the full shape is [`JobDoc`](#jobdoc)'s `effects`); `reason` a one-line cause cut from the first failing check's tail (path-like tokens stripped, 120 characters on a word boundary) on a failure, or set on a needs-human run only when the workflow's own `[limits] on_failure` addressed the question to this project's own contact rather than the operator (docs/JOBS.md, "The human rung, per run") — `null` then means "we're on it", not "no reason available". |
 | `initiatives` | array of `{outcome, state, pieces}` | "Being built": every open initiative (never settled), newest first, capped at ten (`initiatives_more` the rest); `state` one of `"in progress"` or `"waiting on you"` (an open question on one of its tasks — see `questions`); `pieces` how many tasks make up the initiative so far. |
 | `initiatives_more` | integer | How many open initiatives past the ten in `initiatives`; 0 when nothing was cut. |
 | `questions` | array of `{task_id, text, asked_at}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`; `asked_at` Unix seconds, when the task blocked on it. |

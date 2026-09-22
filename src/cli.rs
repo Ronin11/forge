@@ -166,7 +166,8 @@ enum Cmd {
         /// Only tasks with ids below this one: the next page when scrolling back
         #[arg(long)]
         before: Option<i64>,
-        /// Only tasks whose text contains this, or whose id is exactly this
+        /// Only tasks whose text, title, plan or last result summary
+        /// contains this, or whose id is exactly this
         #[arg(long)]
         grep: Option<String>,
         /// Only tasks that ran this workflow
@@ -274,6 +275,18 @@ enum Cmd {
     },
     /// Run the supervisor on a task blocked with a question, now
     Supervise { id: i64 },
+    /// Set up FORGE_HOME on this machine: the data directory, the
+    /// operator's config template, the workflow catalog as a committed
+    /// git repository, web.token, and (when systemd is available) user
+    /// units for the worker and web client, enabled with linger. Ends by
+    /// running the same checks as `forge doctor`. Idempotent: a second
+    /// run changes nothing and says so.
+    Init {
+        /// FORGE_HOME to set up (default: the usual resolution — FORGE_HOME,
+        /// XDG_DATA_HOME/forge, or ~/.local/share/forge)
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
     /// Check this machine can run attempts and nothing is stuck
     Doctor {
         /// Machine-readable: a JSON array of {name, status, detail, hint}
@@ -1341,6 +1354,7 @@ pub async fn main() -> Result<()> {
         Cmd::Show { id, json } => show(id, json),
         Cmd::Supervise { id } => supervise_now(id).await,
         Cmd::Gc { dry_run } => gc(dry_run).await,
+        Cmd::Init { home } => cmd_init(home).await,
         Cmd::Doctor { json } => run_doctor(json),
         Cmd::Version => version(),
         Cmd::EgressRelay {
@@ -2641,7 +2655,7 @@ fn webhook_list(project: String, json: bool) -> Result<()> {
 /// generates it (32 bytes of OS randomness as hex, file mode 0600) if it
 /// is not there yet — so `forge web link` works whether `forge-web` has
 /// ever run or not.
-fn web_token(dir: &Path) -> Result<String> {
+pub(crate) fn web_token(dir: &Path) -> Result<String> {
     let path = dir.join("web.token");
     if let Ok(t) = std::fs::read_to_string(&path) {
         let t = t.trim().to_string();
@@ -3519,17 +3533,31 @@ fn version() -> Result<()> {
     Ok(())
 }
 
-fn run_doctor(json: bool) -> Result<()> {
-    let checks = doctor::run()?;
-    let failed = checks.iter().any(|c| c.status == doctor::Status::Fail);
-    if json {
-        out!("{}", serde_json::to_string(&checks)?);
-        if failed {
-            std::process::exit(1);
-        }
-        return Ok(());
+/// `forge init [--home DIR]`: see `Cmd::Init`.
+async fn cmd_init(home: Option<PathBuf>) -> Result<()> {
+    let report = crate::init::run(home).await?;
+    for s in &report.steps {
+        let tag = if s.changed { "done" } else { "ok  " };
+        out!("{tag} {:<10} {}", s.name, s.detail);
     }
-    for c in &checks {
+    if !report.changed_anything() {
+        out!("already initialized; nothing changed");
+    }
+    out!();
+    let paths = crate::ctx::Paths::for_home(report.home)?;
+    let checks = doctor::run_at(paths)?;
+    if print_doctor_checks(&checks) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Prints each check as `forge doctor`'s own text format does, and
+/// answers whether any of them failed. Shared with `forge init`, whose
+/// closing pass is exactly this against the home it just set up.
+fn print_doctor_checks(checks: &[doctor::Check]) -> bool {
+    let failed = checks.iter().any(|c| c.status == doctor::Status::Fail);
+    for c in checks {
         let tag = match c.status {
             doctor::Status::Ok => "OK  ",
             doctor::Status::Warn => "WARN",
@@ -3540,7 +3568,20 @@ fn run_doctor(json: bool) -> Result<()> {
             out!("     {:<12} → {}", "", c.hint);
         }
     }
-    if failed {
+    failed
+}
+
+fn run_doctor(json: bool) -> Result<()> {
+    let checks = doctor::run()?;
+    if json {
+        let failed = checks.iter().any(|c| c.status == doctor::Status::Fail);
+        out!("{}", serde_json::to_string(&checks)?);
+        if failed {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if print_doctor_checks(&checks) {
         std::process::exit(1);
     }
     Ok(())
@@ -5585,7 +5626,7 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
             .collect::<String>()
             .replace('\n', " ");
         out!(
-            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}",
+            "{:<5} {:<11} {:<8} {:<7} {:<3} {:<8} {:<20} {:<18} {}{}{}{}",
             s.id,
             s.state,
             s.trust,
@@ -5599,6 +5640,10 @@ fn log(args: LogArgs, json: bool) -> Result<()> {
                 " (by text)"
             } else {
                 ""
+            },
+            match s.matched.as_deref() {
+                Some(m) if m != "text" => format!(" (by {m})"),
+                _ => String::new(),
             },
             failed_suffix(&s.failures)
         );

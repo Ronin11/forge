@@ -826,6 +826,10 @@ const BUILTIN_OPERATIONS: &[(&str, &str)] = &[
         "send-signal.toml",
         include_str!("builtins/operations/send-signal.toml"),
     ),
+    (
+        "send-sms.toml",
+        include_str!("builtins/operations/send-sms.toml"),
+    ),
 ];
 
 pub(crate) const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[

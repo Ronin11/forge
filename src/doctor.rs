@@ -856,22 +856,30 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
 }
 
 pub fn run() -> Result<Vec<Check>> {
-    let mut out = check_binaries();
-    out.extend(check_legacy_env());
-    out.extend(check_home_migration());
-
-    let paths = match Paths::resolve() {
-        Ok(p) => p,
+    match Paths::resolve() {
+        Ok(paths) => run_at(paths),
         Err(e) => {
+            let mut out = check_binaries();
+            out.extend(check_legacy_env());
+            out.extend(check_home_migration());
             out.push(check(
                 "home",
                 Status::Fail,
                 format!("{e:#}"),
                 "set FORGE_HOME to a writable directory",
             ));
-            return Ok(out);
+            Ok(out)
         }
-    };
+    }
+}
+
+/// The same checks as `run`, against an already-resolved `paths` rather
+/// than re-resolving `FORGE_HOME`: what `forge init` calls so its closing
+/// doctor pass looks at the exact home it just set up, even with `--home`.
+pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
+    let mut out = check_binaries();
+    out.extend(check_legacy_env());
+    out.extend(check_home_migration());
     out.extend(check_home(&paths));
     out.extend(check_cache(&paths));
     out.extend(check_config(&paths));

@@ -23,8 +23,19 @@ Prerequisites: Rust, bubblewrap (`bwrap` on `PATH`), git, and the
 
 ```sh
 cargo build --release                        # build the workspace
-forge doctor                                 # check this machine can run attempts
+forge init                                   # set up FORGE_HOME: config, workflow catalog, web.token, units
+forge doctor                                 # check this machine can run attempts (forge init ends with this too)
 ```
+
+`forge init [--home DIR]` creates FORGE_HOME (default `~/.local/share/forge`),
+writes the operator's `config.toml` template if none exists, commits the
+built-in workflow catalog into `FORGE_HOME/workflows` as its own git
+repository, generates `web.token`, and — when a systemd user session is
+reachable — installs and enables `forge-worker` and `forge-web` under
+`~/.config/systemd/user` with linger, so they survive a logout (without
+one, it prints the commands to run by hand instead). It is safe to run
+again: an already-initialized machine reports nothing changed. See
+docs/OPS.md, "Installing and upgrading".
 
 Register a repository by giving it a `forge.toml` that declares
 `[checks]` (see this repository's own `forge.toml` for an example, and
@@ -238,6 +249,7 @@ src/envelope.rs     the result contract: schema and parser
 src/experiment.rs   the economist: experiment.toml's weighted draw and its weekly rebalance
 src/git.rs          the few git operations Forge performs
 src/graph.rs        forge graph: the module graph as data, from forge-repomap edges
+src/init.rs         forge init: data directory, config template, committed workflow catalog, web.token, systemd units
 src/intake.rs       intake acceptance: a confirmed brief becomes a project
 src/job.rs          forge job start: the executor for operation-only run workflows
 src/journal.rs      what earlier attempts in a piece of work said, and what the kernel found

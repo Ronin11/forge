@@ -67,12 +67,24 @@ section h2 {
   font-weight: 600;
   font-size: 17px;
 }
-.card .where {
+.card .where,
+.card .description {
   color: var(--mute);
   margin-top: 2px;
 }
 .card .status {
   margin-top: 8px;
+}
+ul.effects {
+  list-style: disc;
+  margin: 6px 0 0 20px;
+  padding: 0;
+  font-size: 15px;
+  color: var(--mute);
+}
+ul.effects li {
+  padding: 2px 0;
+  border: none;
 }
 .status.ok { color: var(--ok); }
 .status.warn { color: var(--warn); }
