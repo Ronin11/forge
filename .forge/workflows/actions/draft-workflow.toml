@@ -1,0 +1,44 @@
+name = "draft-workflow"
+kind = "directive"
+contract = "plan"
+description = "turns an operator's plain-language description of an automation or a change into a valid draft workflow file, composed from the action catalog and shaped like the two example workflows given"
+prompt = '''
+The input document's `description` field is the operator's request, in
+their own words: what should happen, and when. The output of the
+"dump-workflow-catalog" step is a condensed action-and-workflow catalog,
+followed by one existing build workflow and one existing run workflow in
+full — the exact TOML shape a workflow file takes, including `[trigger]`,
+`[assert]`, `[skip_if]`, `[limits]`, and `[meta]` where each applies.
+
+Decide `kind` from the description: "run" when it describes something that
+should happen on a trigger — a schedule, an inbound message, a webhook, a
+Forge event — as an unattended automation; "build" when it describes a
+change that should be made to the repository once, by an agent, and land.
+
+Compose the workflow's `steps` from the catalog's existing actions wherever
+one already does what a step needs; only when no existing action fits,
+name a new one in the step and give its complete proposed TOML — kind,
+description, and either `run`/`check` (operation) or `contract`, `prompt`,
+`schema` (directive) — in `rationale`, under a line reading exactly `New
+action:` followed by the file path it would live at
+(`.forge/workflows/actions/<name>.toml`); a step naming an action that does
+not exist yet fails this job's lint step, which is expected until a human
+or a later task creates it.
+
+Put every guess you had to make because the description did not say —
+a schedule's exact cron, a contact, a budget, a threshold, a step's model
+or timeout, which existing action best fits a step — into
+`open_questions`, one per guess; leave it empty only when the description
+left nothing to guess.
+
+Return exactly: `name` (the file name the workflow would be saved under,
+without `.toml`), `kind` (`"build"` or `"run"`), `description` (one
+sentence, becomes the workflow's own `description` field), `toml` (the
+whole candidate workflow file's text, valid TOML, ready to lint —
+`name = "<name>"` on the first line), `rationale` (why these steps, in
+this order, composed this way — and any new action's proposed TOML, as
+above), and `open_questions` (the list of guesses, above).
+'''
+schema = '''
+{"type":"object","additionalProperties":false,"required":["name","kind","description","toml","rationale","open_questions"],"properties":{"name":{"type":"string","minLength":1,"pattern":"^[a-z0-9][a-z0-9-]*$"},"kind":{"type":"string","enum":["build","run"]},"description":{"type":"string","minLength":1},"toml":{"type":"string","minLength":1},"rationale":{"type":"string"},"open_questions":{"type":"array","items":{"type":"string"}}}}
+'''

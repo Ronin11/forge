@@ -1,0 +1,17 @@
+name = "author-workflow"
+kind = "run"
+description = "the prompter: turns an operator's plain-language description of an automation or a change into a lint-clean draft workflow file, composed from the action catalog where it fits and naming a new action only when nothing does (docs/WORKFLOWS.md, \"Authoring\")"
+
+steps = [
+  { action = "dump-workflow-catalog" },
+  { action = "draft-workflow",       role = "author" },
+  { action = "lint-workflow-draft" },
+]
+
+[trigger]
+on = "manual"
+
+[limits]
+budget_usd = 0.50
+per_day = 40
+on_failure = "ask:operator"

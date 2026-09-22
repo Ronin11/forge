@@ -1035,6 +1035,17 @@ async fn run_now(
                     verdict.push(checks::CheckResult { tail, ..r });
                     break;
                 }
+                // `produces = ["interface"]` (`ActionDef::yields_interface`)
+                // is the same vocabulary a build workflow's operation uses
+                // to hand its stdout to the next code step
+                // (`operation::run_operation`, `t.interface`); a job step
+                // reads it the same way, via `step_outputs`, so a directive
+                // step after this one sees what an earlier operation
+                // printed — a catalog dump, say — as "the output of step
+                // ...".
+                if action.yields_interface() {
+                    step_outputs.push((action.name.clone(), r.stdout.trim().to_string()));
+                }
             }
             Kind::Directive => {
                 let started_at = unix_now();
