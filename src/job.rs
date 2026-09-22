@@ -33,7 +33,7 @@ fn scratch_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}"))
 }
 
-fn input_dir(f: &Forge, job_id: i64) -> PathBuf {
+pub(crate) fn input_dir(f: &Forge, job_id: i64) -> PathBuf {
     f.paths.worktrees.join(format!("job-{job_id}-input"))
 }
 
@@ -1284,7 +1284,7 @@ fn decide_on_failure(
 /// mark that keeps one message from starting one workflow's job twice),
 /// else the workflow's own `[trigger] contact` when that names someone
 /// (not the `"*"` wildcard), else `None` — asked of the operator instead.
-fn trigger_contact(
+pub(crate) fn trigger_contact(
     job: &Job,
     trigger: Option<&workflows::Trigger>,
     input: &serde_json::Value,
