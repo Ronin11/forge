@@ -255,6 +255,61 @@ impl Forge {
         Ok(doc.problems)
     }
 
+    /// `forge workflows put NAME --stdin --message MESSAGE [--repo PATH]`:
+    /// write verb. Writes `text` into the operator's catalog once it
+    /// lints clean and commits it there, returning the new commit hash;
+    /// or, with `repo`, files a direct task on that repository's project
+    /// that lands the same content through review instead of a direct
+    /// write, returning the new task's id. Unlike
+    /// [`Forge::workflow_lint`], a non-zero exit here — a lint failure, a
+    /// `NAME` that doesn't match the candidate's own declared `name`, or
+    /// an empty `message` — is the error, so this goes through the same
+    /// contract as [`Forge::run`] except for piping `text` in on stdin.
+    pub fn workflow_put(
+        &self,
+        name: &str,
+        text: &str,
+        message: &str,
+        repo: Option<&str>,
+    ) -> Result<WorkflowPutResult> {
+        let mut args = vec!["workflows", "put", name, "--stdin", "--message", message];
+        if let Some(r) = repo {
+            args.push("--repo");
+            args.push(r);
+        }
+        let mut child = retry_on_etxtbsy(|| {
+            Command::new(&self.bin)
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        })
+        .with_context(|| format!("running {} {}", self.bin, args.join(" ")))?;
+        child
+            .stdin
+            .take()
+            .context("put stdin")?
+            .write_all(text.as_bytes())
+            .context("writing the candidate text to forge workflows put")?;
+        let out = child.wait_with_output().context("forge workflows put")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "forge workflows put: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Ok(match repo {
+            Some(_) => WorkflowPutResult::Filed {
+                task_id: stdout.parse().with_context(|| {
+                    format!("forge workflows put printed a non-numeric task id: {stdout:?}")
+                })?,
+            },
+            None => WorkflowPutResult::Committed { hash: stdout },
+        })
+    }
+
     /// `forge stats --json`: see [`StatsDoc`].
     pub fn stats(&self) -> Result<StatsDoc> {
         let v = self.json(&["stats", "--json"])?;
@@ -1336,6 +1391,15 @@ pub struct WorkflowShowDoc {
     pub steps: Vec<WorkflowStepDoc>,
     #[serde(default)]
     pub measured: Value,
+}
+
+/// What `forge workflows put` did: a commit landed straight in the
+/// operator's catalog, or, with `--repo`, a direct task was filed on a
+/// repository's project instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowPutResult {
+    Committed { hash: String },
+    Filed { task_id: i64 },
 }
 
 /// One problem `forge workflows lint --stdin` found in a candidate

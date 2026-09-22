@@ -161,6 +161,22 @@ and does not parse stdout.
   nothing**, not even to a fresh, not-yet-initialized home: linting never
   has the side effect `forge workflows` and every other catalog command
   have of writing the built-in workflows and actions into `FORGE2_HOME`.
+- **`forge workflows put NAME --stdin --message TEXT [--repo PATH]`** —
+  write verb: writes a candidate workflow file into the operator's
+  catalog (`<FORGE2_HOME>/workflows/NAME.toml`) once it lints clean (the
+  same checks `forge workflows lint --stdin` runs, against `NAME`), then
+  commits just that file in the catalog's own git — already a repository,
+  the same one `forge workflows` itself creates on first use — with
+  `--message`, and prints the new commit hash. Refuses, writing nothing,
+  on: a candidate that fails lint (its problems are printed, one per
+  line, `NAME.toml:LINE: MESSAGE` or `NAME.toml: MESSAGE` with no line);
+  a `NAME` that does not match the candidate's own declared `name`; or an
+  empty `--message`. `--repo PATH` files a direct task on that
+  repository's project instead of touching the catalog: the task adds or
+  replaces `.forge/workflows/NAME.toml` with the candidate's exact
+  content, so a repository's own automation still lands through the
+  normal build-and-verify path rather than a direct write; stdout is the
+  new task's id instead of a hash. Not `--json`.
 - **`forge stats --json [--tools] [--step S] [--quality] [--journal] [--by-role]`** —
   outcomes per workflow version and per step. One
   [`StatsDoc`](#statsdoc) object. `--quality` (text mode only; the JSON
