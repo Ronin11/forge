@@ -234,6 +234,12 @@ enum Cmd {
         /// plugin) the contact the question was addressed to
         #[arg(long, default_value = "operator")]
         by: String,
+        /// Restrict this answer to a project: refused unless the task
+        /// belongs to this project and its question is addressed to
+        /// `--by` (see `queue::answer`). Unset for the operator's own
+        /// answers, which reach any task.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Withdraw a blocked or queued task the operator has decided not to
     /// do: written against a stale description, superseded, or the
@@ -1372,7 +1378,12 @@ pub async fn main() -> Result<()> {
             )
             .await
         }
-        Cmd::Answer { id, text, by } => answer(id, text, by).await,
+        Cmd::Answer {
+            id,
+            text,
+            by,
+            project,
+        } => answer(id, text, by, project).await,
         Cmd::Withdraw { id, reason, by } => withdraw(id, reason, by),
         Cmd::Decisions {
             repo,
@@ -1736,7 +1747,11 @@ async fn enqueue(f: &Forge, args: &TaskArgs) -> Result<Task> {
 
 /// Answer a task blocked on a question. `by` is "operator" by default, or
 /// who else the answer came from (a channel plugin's contact name).
-async fn answer(id: i64, text: String, by: String) -> Result<()> {
+/// `project`, when given, scopes the answer to that project and to `by`
+/// as the question's recipient (see `queue::check_answer_scope`); unset,
+/// as the operator's own `forge answer` always leaves it, the answer
+/// reaches any task.
+async fn answer(id: i64, text: String, by: String, project: Option<String>) -> Result<()> {
     let f = Forge::open(false, false)?;
     if let Some(t) = f.store.task(id)?
         && t.state == TaskState::Blocked
@@ -1756,7 +1771,8 @@ async fn answer(id: i64, text: String, by: String) -> Result<()> {
             }
         };
     }
-    let (_, n) = crate::queue::answer(&f, id, &text, &by, "").await?;
+    let scope = project.as_deref().map(|p| (p, by.as_str()));
+    let (_, n) = crate::queue::answer(&f, id, &text, &by, "", scope).await?;
     out!("answered task {id} as {}", n.id);
     Ok(())
 }

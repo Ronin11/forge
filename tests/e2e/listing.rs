@@ -145,6 +145,133 @@ fn a_blocked_task_is_withdrawn_and_a_dependent_blocks_with_the_reason() {
 }
 
 #[test]
+fn a_portal_token_answers_only_its_own_projects_blocked_question() {
+    let e = Env::new();
+    let repo = e.repo.to_str().unwrap();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "projA", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        e.forge(
+            "ok.sh",
+            &["project", "new", "projB", "--purpose", "p", "--repo", repo],
+        )
+        .status
+        .success()
+    );
+
+    // A blocked question, addressed to "alice", in each project.
+    let o = e.forge(
+        "needsinput-to.sh",
+        &[
+            "run",
+            repo,
+            "write 42 to answer.txt",
+            "--no-land",
+            "--project",
+            "projA",
+            "--retries",
+            "2",
+        ],
+    );
+    assert!(!o.status.success());
+    let task_a = 1;
+    assert_eq!(e.task(task_a).0, "blocked");
+
+    let o = e.forge(
+        "needsinput-to.sh",
+        &[
+            "run",
+            repo,
+            "write 42 to answer.txt",
+            "--no-land",
+            "--project",
+            "projB",
+            "--retries",
+            "2",
+        ],
+    );
+    assert!(!o.status.success());
+    let task_b = 2;
+    assert_eq!(e.task(task_b).0, "blocked");
+
+    // Mint a portal token for project A and resolve it back, the same
+    // round trip the portal itself does before every write.
+    let o = e.forge("ok.sh", &["project", "portal", "projA"]);
+    assert!(o.status.success());
+    let minted = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let token_a = minted.strip_prefix("/p/").expect(&minted).to_string();
+    let o = e.forge("ok.sh", &["project", "resolve-token", &token_a, "--json"]);
+    assert!(o.status.success());
+    let resolved: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(resolved["project"], "projA");
+
+    // Token A answering task B (project B's own question) is refused
+    // before any write, and leaves task B exactly as it was.
+    let bad = e.forge(
+        "ok.sh",
+        &[
+            "answer",
+            &task_b.to_string(),
+            "no",
+            "--by",
+            "alice",
+            "--project",
+            "projA",
+        ],
+    );
+    assert!(!bad.status.success());
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(err.contains("projB"), "{err}");
+    assert!(err.contains("projA"), "{err}");
+    assert_eq!(e.task(task_b).0, "blocked");
+    assert_eq!(
+        e.db()
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE task_id=?1",
+                [task_b],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "a refused answer records no decision"
+    );
+
+    // Token A answering task A, its own project's question addressed to
+    // the same recipient it names, lands.
+    let ok = e.forge(
+        "ok.sh",
+        &[
+            "answer",
+            &task_a.to_string(),
+            "Use answer.txt",
+            "--by",
+            "alice",
+            "--project",
+            "projA",
+        ],
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let (task_text, retry_of): (String, Option<i64>) = e
+        .db()
+        .query_row("SELECT task, retry_of FROM tasks WHERE id=3", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(retry_of, Some(task_a));
+    assert!(task_text.contains("alice's answer"), "{task_text}");
+}
+
+#[test]
 fn forge_task_set_changes_a_queued_tasks_limits_and_refuses_a_running_one() {
     let e = Env::new();
     let id = e.add(&[]);

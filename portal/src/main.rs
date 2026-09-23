@@ -31,7 +31,10 @@
 //! carries (see `render_conversation`).
 //!
 //! `POST /p/<token>/answer` (`id`, `text`) runs `forge answer <id> <text>
-//! --by customer`, re-queuing the blocked task; `POST /p/<token>/ask`
+//! --by customer --project <resolved>`, re-queuing the blocked task —
+//! the token's own project and contact, so it never reaches another
+//! project's task or a question addressed to someone else (see
+//! `queue::check_answer_scope`); `POST /p/<token>/ask`
 //! (`message`) runs `forge ask <project> <message> --from customer` and
 //! appends the exchange to the same thread. Both are token-scoped (the
 //! same 404 an unknown token gets elsewhere) and rate-limited to ten
@@ -695,9 +698,12 @@ fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
 }
 
 /// Answers a blocked task's question: `forge answer <id> <text> --by
-/// customer`, then the freshly re-read page. A missing or malformed
-/// `id`/`text`, or `forge` itself failing, is the fixed write-error page
-/// — never a hint of which.
+/// customer --project <project>`, then the freshly re-read page. The
+/// `--project` scopes the answer to this token's own project and
+/// contact, so a task outside it — another project's, or a question
+/// addressed to someone else — is refused. A missing or malformed
+/// `id`/`text`, that refusal, or `forge` itself failing otherwise, is
+/// the fixed write-error page — never a hint of which.
 fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
     let body = read_body(&mut req);
     let id = form_value(&body, "id").and_then(|v| v.parse::<i64>().ok());
@@ -707,7 +713,10 @@ fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
         return;
     };
     let id = id.to_string();
-    if forge.run(&["answer", &id, &text, "--by", CONTACT]).is_err() {
+    if forge
+        .run(&["answer", &id, &text, "--by", CONTACT, "--project", project])
+        .is_err()
+    {
         let _ = req.respond(write_error(502));
         return;
     }
