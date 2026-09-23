@@ -724,9 +724,7 @@ async fn run_with_relaunch(
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    let sandbox = l.sandbox;
-    let worktree = l.worktree;
-    let result = match l.provider.runner {
+    match l.provider.runner {
         Runner::ClaudeCli => run_claude(l).await,
         Runner::CodexCli => {
             if l.no_tools {
@@ -747,14 +745,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
             }
             run_chat(l).await
         }
-    };
-    // Whatever this attempt wrote to its private claude/codex state (see
-    // `Sandbox::command`) is gone with it, win or lose: the next attempt in
-    // this worktree never sees it.
-    if let Some(sb) = sandbox {
-        sb.discard_provider_state(worktree);
     }
-    result
 }
 
 /// The tools an attempt gets, and no other: what a coder, a reviewer or a

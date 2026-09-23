@@ -139,11 +139,12 @@ fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
     assert_eq!(op["ok"], true, "{}", op["detail"]);
 }
 
-/// A write to the private provider state one attempt makes is gone before
-/// the next attempt in the same worktree starts (src/sandbox.rs,
-/// `discard_provider_state`, wiped and reseeded on every `command` call).
+/// The private provider state (src/sandbox.rs, `provider_state_dir`) lives
+/// as long as the task's worktree and never reaches another task's: a
+/// retry in the same worktree sees what the first attempt wrote there (a
+/// resumed session depends on that), a second task does not.
 #[test]
-fn a_write_to_provider_state_in_one_attempt_is_not_seen_by_the_next() {
+fn provider_state_lives_for_the_task_and_never_reaches_another() {
     let e = Env::new();
     if e.sandbox_disabled() {
         eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
@@ -152,9 +153,17 @@ fn a_write_to_provider_state_in_one_attempt_is_not_seen_by_the_next() {
     let o = e.run("provider-canary.sh", &["--retries", "1"]);
     assert!(
         o.status.success(),
-        "the retry must succeed only once the first attempt's canary is gone: {}",
+        "the retry must find the first attempt's canary: {}",
         String::from_utf8_lossy(&o.stderr)
     );
+    assert_eq!(e.attempts(1).len(), 2);
+    let o = e.run("provider-canary.sh", &["--retries", "0"]);
+    assert!(
+        !o.status.success(),
+        "a second task must not see the first task's canary: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(e.task(2).0, "failed");
 }
 
 /// A repository's cache (`FORGE_CACHE_DIR`) is private to it: a write aimed
