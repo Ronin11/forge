@@ -405,6 +405,15 @@ enum Cmd {
         /// after the first, by whether they were handed a journal
         #[arg(long)]
         journal: bool,
+        /// Test-run means per role over the last N attempts (--last,
+        /// default 50): forge-test calls and cache hits, raw test
+        /// commands, full-suite runs, runs with no edit since the
+        /// previous one, and test wall time
+        #[arg(long)]
+        tests: bool,
+        /// With --tests, how many of the latest attempts to average
+        #[arg(long, default_value_t = 50)]
+        last: i64,
         /// Attempts, outcomes, cost and wall time per (role, provider,
         /// model), role being the attempt step
         #[arg(long)]
@@ -1419,6 +1428,8 @@ pub async fn main() -> Result<()> {
             step,
             quality,
             journal,
+            tests,
+            last,
             by_role,
             factors,
             days,
@@ -1430,8 +1441,8 @@ pub async fn main() -> Result<()> {
             json,
         } => {
             stats(
-                tools, step, quality, journal, by_role, factors, days, project, initiative,
-                reprice, provider, force, json,
+                tools, step, quality, journal, tests, last, by_role, factors, days, project,
+                initiative, reprice, provider, force, json,
             )
             .await
         }
@@ -4801,6 +4812,8 @@ async fn stats(
     step: Option<String>,
     quality: bool,
     journal: bool,
+    tests: bool,
+    last: i64,
     by_role: bool,
     factors: bool,
     days: Option<i64>,
@@ -4835,6 +4848,9 @@ async fn stats(
     }
     if journal {
         return journal_control_stats(&f).await;
+    }
+    if tests {
+        return test_run_stats(&f, last);
     }
     if by_role {
         return by_role_stats(&f).await;
@@ -5170,6 +5186,63 @@ async fn quality_stats(f: &Forge, scope: &crate::store::StatsFilter) -> Result<(
 /// Attempts, outcomes, cost and wall time per (role, provider, model),
 /// role being the attempt's step; landed, broke-base and delayed-cost
 /// columns for the `code` role only.
+/// Means of the test-run facts per role over the last `last` attempts,
+/// counting only attempts that recorded them (docs/CONTEXT.md, B4).
+fn test_run_stats(f: &Forge, last: i64) -> Result<()> {
+    use std::collections::BTreeMap;
+    let mut per: BTreeMap<String, (u64, crate::tools::testruns::TestRuns)> = BTreeMap::new();
+    for (step, outputs_json) in f.store.recent_attempt_outputs(last.max(1))? {
+        let Some(t) = serde_json::from_str::<audit::Outputs>(&outputs_json)
+            .ok()
+            .and_then(|o| o.tools)
+            .and_then(|t| t.tests)
+        else {
+            continue;
+        };
+        let e = per.entry(step).or_default();
+        e.0 += 1;
+        e.1.forge_test_calls += t.forge_test_calls;
+        e.1.cache_hits += t.cache_hits;
+        e.1.raw_commands += t.raw_commands;
+        e.1.full_suite_runs += t.full_suite_runs;
+        e.1.runs_without_edit += t.runs_without_edit;
+        e.1.wall_ms += t.wall_ms;
+    }
+    if per.is_empty() {
+        out!("no attempts with test-run facts yet (recorded from the next attempt on)");
+        return Ok(());
+    }
+    out!(
+        "mean per attempt over the last {last} attempts; baseline: 3669 runs, 64% with no edit, 1251 full-suite runs, 11.3 h"
+    );
+    out!(
+        "{:<10} {:>5} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8}",
+        "ROLE",
+        "ATT",
+        "FTEST",
+        "HITS",
+        "RAW",
+        "FULL",
+        "NOEDIT",
+        "WALL s"
+    );
+    for (step, (n, t)) in per {
+        let m = |v: u64| v as f64 / n as f64;
+        out!(
+            "{:<10} {:>5} {:>8.2} {:>6.2} {:>6.2} {:>6.2} {:>8.2} {:>8.1}",
+            step,
+            n,
+            m(t.forge_test_calls),
+            m(t.cache_hits),
+            m(t.raw_commands),
+            m(t.full_suite_runs),
+            m(t.runs_without_edit),
+            m(t.wall_ms) / 1000.0
+        );
+    }
+    Ok(())
+}
+
 async fn by_role_stats(f: &Forge) -> Result<()> {
     let doc = crate::view::stats_doc(f, &crate::store::StatsFilter::default(), None).await?;
     out!(

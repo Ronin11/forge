@@ -860,3 +860,13 @@ fn a_directive_attempts_sandbox_can_run_forge_repomap_def() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(e.task(1).0, "succeeded");
 }
+
+/// `forge-test` is on `PATH` inside a directive attempt's sandbox and runs
+/// against a fake repository, the second call answered from its cache.
+#[test]
+fn a_directive_attempts_sandbox_can_run_forge_test_against_a_fake_repository() {
+    let e = Env::new();
+    let o = e.run("forgetest.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+}

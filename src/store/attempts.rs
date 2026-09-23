@@ -449,6 +449,15 @@ impl Store {
         Ok(rows)
     }
 
+    /// (step, outputs_json) of the last `n` attempts, newest first.
+    pub fn recent_attempt_outputs(&self, n: i64) -> Result<Vec<(String, String)>> {
+        let c = self.lock();
+        let mut stmt =
+            c.prepare("SELECT step, outputs_json FROM attempts ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![n], |r| Ok((r.get("step")?, r.get("outputs_json")?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// `forge stats --reprice` (docs/ECONOMIST.md, "Repricing a
     /// free-reporting provider"): for every attempt with `cost_usd` 0 or
     /// NULL, recorded `input_tokens`/`output_tokens`, and a provider

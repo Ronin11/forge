@@ -507,6 +507,7 @@ pub async fn record(
     if let Some(tools) = &mut outputs.tools {
         let mut edited = outputs.changed_files.clone();
         edited.extend(outputs.dirty_files.iter().cloned());
+        tools.tests = crate::tools::testruns::measure(Path::new(&a.log_path));
         tools.exploration = crate::tools::exploration::measure(
             Path::new(&a.log_path),
             dir.to_str().unwrap_or(""),

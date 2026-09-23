@@ -106,6 +106,27 @@ declaration and cost characters on every symbol). Within the same
 budgets in `repo-map.toml` and the 220-character file line, trailing
 symbols are dropped whole, never cut, so more files fit.
 
+### forge-test in the sandbox, and the count (B4)
+
+`forge-test` sits beside `forge-repomap`, so the same `PATH` entry and
+read-only bind put it inside a directive sandbox; the e2e test
+`a_directive_attempts_sandbox_can_run_forge_test_against_a_fake_repository`
+runs it there against a throwaway repository and gets the second call
+from the cache. The repo pack carries one line for every task, the plain
+tools arm included (this is not an arm; the cache can only remove
+duplicate runs): run tests with `forge-test [filter args]`, it keeps the
+full log and never re-runs an unchanged tree.
+
+Each attempt's log is read into `outputs_json.tools.tests`
+(`tools::testruns`): `forge-test` calls, cache hits (the result starts
+"cached: tree unchanged"), raw test commands that bypassed it (`cargo
+test`, `npm test`, `npx vitest`, `pytest`, `go test`), full-suite runs
+(no filter, either way), runs with no Edit/Write since the previous run,
+and test wall time (call to result). Only the Claude stream is read.
+`forge stats --tests [--last N]` prints the means per role over the last
+N attempts (default 50) that recorded them, beside the baseline: 3,669
+runs, 64% without an edit, 1,251 full-suite runs, 11.3 hours.
+
 ## Outline and def experiment (A4)
 
 `[factors.tools]` in `experiment.toml` accepts `outline` and `plain`.

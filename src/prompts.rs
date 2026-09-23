@@ -48,6 +48,9 @@ pub fn repo_pack(t: &Task, cfg: &config::Config) -> String {
         "\n\nforge-repomap outline <path> lists a file's signatures with line ranges; forge-repomap def <name> prints one item. Use them before grep; Read with offset/limit before editing.",
     );
     }
+    p.push_str(
+        "\n\nRun tests with forge-test [filter args]; it keeps the full log and never re-runs an unchanged tree.",
+    );
     let l1: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
     p.push_str(&format!(
         "\n\nAfter you finish, the operator re-runs the repository's declared checks: {}.",

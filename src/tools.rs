@@ -3,6 +3,7 @@
 //! read. Facts for the audit and the cost anti-patterns; never opinions.
 
 pub mod exploration;
+pub mod testruns;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,6 +20,9 @@ pub struct Use {
 pub struct Tools {
     #[serde(default)]
     pub exploration: Option<exploration::Measures>,
+    /// Test runs: `forge-test` calls and cache hits, bypasses, repeats.
+    #[serde(default)]
+    pub tests: Option<testruns::TestRuns>,
     /// By tool name: Read, Edit, Bash, ...
     pub by_tool: BTreeMap<String, Use>,
     /// Shell commands by family: `npx vitest`, `git`, `cargo test`, ...
