@@ -1258,6 +1258,11 @@ pub struct StatsFactorRow {
     /// turn; `null` when no attempt recorded them.
     pub mean_first_edit_call: Option<f64>,
     pub mean_calls_per_turn: Option<f64>,
+    pub mean_grep_then_ranged_read_chains: Option<f64>,
+    pub mean_unedited_read_chars: Option<f64>,
+    pub mean_turns_before_first_edit: Option<f64>,
+    pub mean_outline_calls: Option<f64>,
+    pub mean_def_calls: Option<f64>,
 }
 
 impl From<&crate::store::FactorLevelStat> for StatsFactorRow {
@@ -1276,6 +1281,11 @@ impl From<&crate::store::FactorLevelStat> for StatsFactorRow {
             effect_se: f.effect_se,
             mean_first_edit_call: f.mean_first_edit_call,
             mean_calls_per_turn: f.mean_calls_per_turn,
+            mean_grep_then_ranged_read_chains: f.mean_grep_then_ranged_read_chains,
+            mean_unedited_read_chars: f.mean_unedited_read_chars,
+            mean_turns_before_first_edit: f.mean_turns_before_first_edit,
+            mean_outline_calls: f.mean_outline_calls,
+            mean_def_calls: f.mean_def_calls,
         }
     }
 }

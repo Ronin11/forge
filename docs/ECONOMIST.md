@@ -287,3 +287,21 @@ exactly this case.
 Not a learning system, not a scheduler, not a spend cap (those exist).
 Not something that changes what verification means: it chooses who does
 the work and when, never what counts as done.
+
+The `tools` factor (A4) is another non-role factor, with levels `outline`
+and `plain`. For an even trial, use `forge experiment set tools
+outline=0.5 plain=0.5`. Validation, independent task draws, and persisted
+arms follow `map`; undrawn tasks are not retrospectively assigned a
+factor level. See docs/CONTEXT.md for rendering and measurement details.
+
+`forge stats --factors` includes tools rows and five per-attempt means:
+`GREP/READ`, `UNEDIT-CHARS`, `EDIT-TURNS`, `OUTLINE`, and `DEF`. JSON names
+are `mean_grep_then_ranged_read_chains`, `mean_unedited_read_chars`,
+`mean_turns_before_first_edit`, `mean_outline_calls`, and `mean_def_calls`.
+All measured attempts of the level's scoped terminal tasks contribute,
+including retries and non-code roles. Missing historical measurements
+are excluded; edit-turn means also exclude attempts with no observed
+edit. Zero counts remain in the denominator. Task counts, landing rates,
+and the joint cost fit use the task's tools draw, with the same scope
+and time window as the other factors. The weekly provider rebalance does
+not adjust tools or map weights automatically.

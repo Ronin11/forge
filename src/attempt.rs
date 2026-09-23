@@ -484,7 +484,7 @@ pub async fn record(
 ) -> Result<(), Fault> {
     let end_sha = git::head(dir).await.task()?;
     a.session_id = outcome.session_id.clone().unwrap_or_default();
-    let outputs = Outputs {
+    let mut outputs = Outputs {
         end_sha: end_sha.clone(),
         changed_files: git::changed_paths(dir, &a.start_sha).await.task()?,
         dirty_files: git::dirty_paths(dir).await.task()?,
@@ -504,6 +504,15 @@ pub async fn record(
         tools: crate::tools::summarize(Path::new(&a.log_path), dir.to_str().unwrap_or("")),
         checks_run: verdict.envelope.as_ref().map_or(0, |e| e.checks_run.len()),
     };
+    if let Some(tools) = &mut outputs.tools {
+        let mut edited = outputs.changed_files.clone();
+        edited.extend(outputs.dirty_files.iter().cloned());
+        tools.exploration = crate::tools::exploration::measure(
+            Path::new(&a.log_path),
+            dir.to_str().unwrap_or(""),
+            &edited,
+        );
+    }
     a.end_sha = end_sha;
     a.first_edit = outputs.first_edit_call;
     a.outputs_json = serde_json::to_string(&outputs).env()?;

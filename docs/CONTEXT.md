@@ -105,3 +105,29 @@ the map renders `name@start` only (the end was the line before the next
 declaration and cost characters on every symbol). Within the same
 budgets in `repo-map.toml` and the 220-character file line, trailing
 symbols are dropped whole, never cut, so more files fit.
+
+## Outline and def experiment (A4)
+
+`[factors.tools]` in `experiment.toml` accepts `outline` and `plain`.
+The task draws once, just like `map`; operations receive that draw as
+`FORGE_TOOLS_STYLE`. `outline` includes the outline/def instruction in
+`repo_pack`, and `plain` omits it. Undrawn tasks default to `outline`.
+The line remains in the shared prefix, so tasks in each arm share their
+own pack. Both arms still have the tools available.
+
+Each attempt records `outputs_json.tools.exploration` from its log:
+`grep_then_ranged_read_chains`, `unedited_read_chars`,
+`turns_before_first_edit`, `outline_calls`, and `def_calls`.
+A chain is a search call immediately followed by a ranged read call.
+Searches include Grep and shell rg/grep; ranged reads include Read with
+an offset or limit, and a single `sed -n 'N,Mp' file` command. Characters
+are Unicode characters in successful read results, excluding files
+edited anywhere in the attempt (including git changes and dirty files).
+Structured Read and single-file cat/sed results can be attributed;
+arbitrary scripts and compound shell output cannot. Outline/def counts
+come from shell invocations, including commands batched with separators.
+Turns count assistant messages (deduplicated by message ID) or Codex
+`turn.started` events before the turn containing the first structured
+edit/file-change event. No observed edit means null, not zero; shell
+edits without file-change events cannot identify that turn. Missing or
+unsupported logs produce null exploration. Replayed call IDs count once.

@@ -2,6 +2,8 @@
 //! its duration to the matching result, shell commands by family, files
 //! read. Facts for the audit and the cost anti-patterns; never opinions.
 
+pub mod exploration;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -15,6 +17,8 @@ pub struct Use {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 pub struct Tools {
+    #[serde(default)]
+    pub exploration: Option<exploration::Measures>,
     /// By tool name: Read, Edit, Bash, ...
     pub by_tool: BTreeMap<String, Use>,
     /// Shell commands by family: `npx vitest`, `git`, `cargo test`, ...

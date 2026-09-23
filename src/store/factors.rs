@@ -87,6 +87,11 @@ pub struct FactorLevelStat {
     /// What the map factor (docs/CONTEXT.md) is measured by.
     pub mean_first_edit_call: Option<f64>,
     pub mean_calls_per_turn: Option<f64>,
+    pub mean_grep_then_ranged_read_chains: Option<f64>,
+    pub mean_unedited_read_chars: Option<f64>,
+    pub mean_turns_before_first_edit: Option<f64>,
+    pub mean_outline_calls: Option<f64>,
+    pub mean_def_calls: Option<f64>,
 }
 
 /// One landed task's row in the main-effects design (`fit_main_effects`):
@@ -262,6 +267,7 @@ impl Store {
             /// The `map` factor's level from the task's explore draw, when
             /// one was drawn (docs/CONTEXT.md, the map factor).
             map: Option<String>,
+            tools: Option<String>,
         }
         let c = self.lock();
         let tasks: Vec<TaskFacts> = {
@@ -282,12 +288,16 @@ impl Store {
                 let map = serde_json::from_str::<serde_json::Value>(&explore)
                     .ok()
                     .and_then(|v| v.get("map").and_then(|m| m.as_str()).map(str::to_string));
+                let tools = serde_json::from_str::<serde_json::Value>(&explore)
+                    .ok()
+                    .and_then(|v| v.get("tools").and_then(|m| m.as_str()).map(str::to_string));
                 Ok(TaskFacts {
                     id: r.get("id")?,
                     workflow: r.get("workflow")?,
                     size: size_class(text_len, path_tokens),
                     landed: !landed_sha.is_empty(),
                     map,
+                    tools,
                 })
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -364,6 +374,21 @@ impl Store {
             }
         }
 
+        let mut navigation: BTreeMap<i64, Vec<crate::tools::exploration::Measures>> =
+            BTreeMap::new();
+        {
+            let mut stmt = c.prepare("SELECT task_id, outputs_json FROM attempts")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (id, json) = row?;
+                if let Ok(outputs) = serde_json::from_str::<crate::audit::Outputs>(&json)
+                    && let Some(measures) = outputs.tools.and_then(|t| t.exploration)
+                {
+                    navigation.entry(id).or_default().push(measures);
+                }
+            }
+        }
+
         let mut true_cost: BTreeMap<i64, f64> = BTreeMap::new();
         for t in tasks.iter().filter(|t| t.landed) {
             let cost: f64 = c.query_row(
@@ -387,6 +412,11 @@ impl Store {
             costs: Vec<f64>,
             first_edits: Vec<f64>,
             calls_per_turn: Vec<f64>,
+            grep_then_ranged_read_chains: Vec<f64>,
+            unedited_read_chars: Vec<f64>,
+            turns_before_first_edit: Vec<f64>,
+            outline_calls: Vec<f64>,
+            def_calls: Vec<f64>,
         }
         let mut groups: BTreeMap<(String, String), Group> = BTreeMap::new();
         let bump = |groups: &mut BTreeMap<(String, String), Group>,
@@ -438,6 +468,22 @@ impl Store {
                     ex,
                 );
             }
+            if let Some(level) = &t.tools {
+                let key = ("tools".to_string(), level.clone());
+                bump(&mut groups, key.clone(), t.landed, cost, ex);
+                let group = groups.get_mut(&key).unwrap();
+                for m in navigation.get(&t.id).into_iter().flatten() {
+                    group
+                        .grep_then_ranged_read_chains
+                        .push(m.grep_then_ranged_read_chains as f64);
+                    group.unedited_read_chars.push(m.unedited_read_chars as f64);
+                    if let Some(v) = m.turns_before_first_edit {
+                        group.turns_before_first_edit.push(v as f64);
+                    }
+                    group.outline_calls.push(m.outline_calls as f64);
+                    group.def_calls.push(m.def_calls as f64);
+                }
+            }
             let roles = role_providers.get(&t.id);
             if let Some(roles) = roles {
                 for (role, provider) in roles {
@@ -459,6 +505,9 @@ impl Store {
                 ];
                 if let Some(map) = &t.map {
                     levels.push(("map".to_string(), map.clone()));
+                }
+                if let Some(level) = &t.tools {
+                    levels.push(("tools".to_string(), level.clone()));
                 }
                 if let Some(roles) = roles {
                     for (role, provider) in roles {
@@ -540,6 +589,11 @@ impl Store {
                     effect_se,
                     mean_first_edit_call,
                     mean_calls_per_turn,
+                    mean_grep_then_ranged_read_chains: mean(&g.grep_then_ranged_read_chains),
+                    mean_unedited_read_chars: mean(&g.unedited_read_chars),
+                    mean_turns_before_first_edit: mean(&g.turns_before_first_edit),
+                    mean_outline_calls: mean(&g.outline_calls),
+                    mean_def_calls: mean(&g.def_calls),
                 }
             })
             .collect();

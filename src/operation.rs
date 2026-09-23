@@ -54,6 +54,13 @@ fn operation_env(
     let mut env = task_facts(t.id, &t.base_sha, start_sha, &t.branch);
     env.extend(
         [
+            (
+                "FORGE_TOOLS_STYLE",
+                t.explore
+                    .get("tools")
+                    .cloned()
+                    .unwrap_or_else(|| "outline".into()),
+            ),
             ("FORGE_WORKFLOW", t.workflow.clone()),
             ("FORGE_STEP", step.action.name.clone()),
             ("FORGE_BASE_BRANCH", t.base_branch.clone()),
@@ -645,6 +652,7 @@ mod tests {
                 ("FORGE_BASE_SHA".to_string(), "abcdef0".to_string()),
                 ("FORGE_START_SHA".to_string(), "start456".to_string()),
                 ("FORGE_BRANCH".to_string(), "forge/42".to_string()),
+                ("FORGE_TOOLS_STYLE".to_string(), "outline".to_string()),
                 ("FORGE_WORKFLOW".to_string(), "direct".to_string()),
                 ("FORGE_STEP".to_string(), "fmt".to_string()),
                 ("FORGE_BASE_BRANCH".to_string(), "main".to_string()),

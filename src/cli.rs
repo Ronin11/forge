@@ -5239,7 +5239,7 @@ async fn factor_stats_cmd(
 ) -> Result<()> {
     let doc = crate::view::stats_doc(f, scope, days).await?;
     out!(
-        "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10}",
+        "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10} {:>10} {:>12} {:>10} {:>8} {:>8}",
         "FACTOR",
         "LEVEL",
         "N",
@@ -5249,7 +5249,12 @@ async fn factor_stats_cmd(
         "EFFECT(log$)",
         "SE",
         "FIRSTEDIT",
-        "CALLS/TURN"
+        "CALLS/TURN",
+        "GREP/READ",
+        "UNEDIT-CHARS",
+        "EDIT-TURNS",
+        "OUTLINE",
+        "DEF"
     );
     let dollar = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("${n:.2}"));
     for r in &doc.factors {
@@ -5270,7 +5275,7 @@ async fn factor_stats_cmd(
         let se = r.effect_se.map_or("-".to_string(), |v| format!("{v:.2}"));
         let num = |v: Option<f64>| v.map_or("-".to_string(), |n| format!("{n:.1}"));
         out!(
-            "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10}",
+            "{:<14} {:<10} {:>5} {:>6} {:>18} {:>10} {:>12} {:>8} {:>9} {:>10} {:>10} {:>12} {:>10} {:>8} {:>8}",
             r.factor,
             r.level,
             r.tasks,
@@ -5280,7 +5285,12 @@ async fn factor_stats_cmd(
             effect,
             se,
             num(r.mean_first_edit_call),
-            num(r.mean_calls_per_turn)
+            num(r.mean_calls_per_turn),
+            num(r.mean_grep_then_ranged_read_chains),
+            num(r.mean_unedited_read_chars),
+            num(r.mean_turns_before_first_edit),
+            num(r.mean_outline_calls),
+            num(r.mean_def_calls)
         );
     }
     if let Some(d) = days {

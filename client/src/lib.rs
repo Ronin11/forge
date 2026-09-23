@@ -1339,6 +1339,16 @@ pub struct StatsFactorRow {
     pub effect: Option<f64>,
     #[serde(default)]
     pub effect_se: Option<f64>,
+    #[serde(default)]
+    pub mean_grep_then_ranged_read_chains: Option<f64>,
+    #[serde(default)]
+    pub mean_unedited_read_chars: Option<f64>,
+    #[serde(default)]
+    pub mean_turns_before_first_edit: Option<f64>,
+    #[serde(default)]
+    pub mean_outline_calls: Option<f64>,
+    #[serde(default)]
+    pub mean_def_calls: Option<f64>,
 }
 
 /// The document `forge stats --json` prints. `docs/CLIENT.md` documents

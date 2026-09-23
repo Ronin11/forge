@@ -43,9 +43,11 @@ pub fn repo_pack(t: &Task, cfg: &config::Config) -> String {
             "\n\nWhere things are (this repository's files and their declared symbols; read the ranges you need with Read offset/limit, and batch independent Reads and greps into a single turn rather than one call per turn):\n{map}"
         ));
     }
-    p.push_str(
+    if t.explore.get("tools").map(String::as_str) != Some("plain") {
+        p.push_str(
         "\n\nforge-repomap outline <path> lists a file's signatures with line ranges; forge-repomap def <name> prints one item. Use them before grep; Read with offset/limit before editing.",
     );
+    }
     let l1: Vec<&str> = cfg.checks.keys().map(String::as_str).collect();
     p.push_str(&format!(
         "\n\nAfter you finish, the operator re-runs the repository's declared checks: {}.",

@@ -90,12 +90,18 @@ fn validate_factor(
     factor: &str,
     levels: BTreeMap<String, f64>,
 ) -> Result<BTreeMap<String, f64>> {
-    if factor == "map" {
+    if factor == "map" || factor == "tools" {
+        let allowed = if factor == "map" {
+            ["spans", "names"]
+        } else {
+            ["outline", "plain"]
+        };
         for level in levels.keys() {
-            if level != "spans" && level != "names" {
+            if !allowed.contains(&level.as_str()) {
                 bail!(
-                    "{}: [factors.map] level {level:?} is not one of spans, names (docs/CONTEXT.md, the map factor)",
-                    path.display()
+                    "{}: [factors.{factor}] level {level:?} is not one of {} (docs/CONTEXT.md)",
+                    path.display(),
+                    allowed.join(", ")
                 );
             }
         }
@@ -530,6 +536,11 @@ mod tests {
             effect_se: se,
             mean_first_edit_call: None,
             mean_calls_per_turn: None,
+            mean_grep_then_ranged_read_chains: None,
+            mean_unedited_read_chars: None,
+            mean_turns_before_first_edit: None,
+            mean_outline_calls: None,
+            mean_def_calls: None,
         }
     }
 
