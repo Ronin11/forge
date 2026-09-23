@@ -472,14 +472,29 @@ impl Forge {
     /// events. The subordinate process is killed when the iterator is
     /// dropped.
     pub fn subscribe(&self, offset: u64) -> Result<Subscription> {
-        let mut child = retry_on_etxtbsy(|| {
-            Command::new(&self.bin)
-                .args(["events", "--since", &offset.to_string(), "--follow"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-        })
-        .with_context(|| format!("running {} events --follow", self.bin))?;
+        let mut command = Command::new(&self.bin);
+        command
+            .args(["events", "--since", &offset.to_string(), "--follow"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // Drop cannot run when the owning process is killed. Linux also
+        // ties the follower to its spawning thread, covering abrupt exits.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            let parent = libc::getpid();
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+        let mut child = retry_on_etxtbsy(|| command.spawn())
+            .with_context(|| format!("running {} events --follow", self.bin))?;
         let stdout = child.stdout.take().context("events stdout")?;
         Ok(Subscription {
             child: Arc::new(Mutex::new(child)),
@@ -526,6 +541,11 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Read an unmodified event line, preserving unknown event types for proxies.
+    pub fn next_line(&mut self) -> Option<std::io::Result<String>> {
+        self.lines.next()
+    }
+
     /// A cloneable handle that kills the subordinate process from any
     /// thread — including one that is, right now, blocked in `next()` on
     /// another thread: killing the process closes its stdout, which wakes
@@ -552,9 +572,7 @@ impl Iterator for Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-        }
+        self.killer().kill();
     }
 }
 
@@ -566,6 +584,7 @@ impl Killer {
     pub fn kill(&self) {
         if let Ok(mut child) = self.0.lock() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

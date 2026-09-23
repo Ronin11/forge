@@ -40,9 +40,8 @@
 use anyhow::{Context, Result};
 use forge_client::{Forge, Workflow, WorkflowPutResult};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
@@ -251,52 +250,57 @@ fn json_or_error(r: Result<Value>) -> Response<std::io::Cursor<Vec<u8>>> {
     }
 }
 
-/// `forge events --since <offset> --follow`, each line as one SSE frame.
-/// tiny_http buffers streamed bodies (a chunked encoder and a BufWriter,
-/// neither flushed until the end), so the connection is taken over and
-/// written directly, flushed per event. The child dies with the
-/// connection: a write to a closed socket fails and the thread kills it.
+/// Proxy events with idle heartbeats so disconnects also close quiet followers.
 fn events(req: Request, forge: &Forge, since: u64) {
-    let mut child = match Command::new(&forge.bin)
-        .args(["events", "--since", &since.to_string(), "--follow"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
+    let mut subscription = match forge.subscribe(since) {
+        Ok(subscription) => subscription,
         Err(e) => {
-            let _ = req.respond(text(
-                502,
-                &format!("{} events: {e}", forge.bin),
-                "text/plain",
-            ));
+            let _ = req.respond(text(502, &e.to_string(), "text/plain"));
             return;
         }
     };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = req.respond(text(502, "events stdout", "text/plain"));
-        return;
-    };
+    struct StopFollower(forge_client::Killer);
+    impl Drop for StopFollower {
+        fn drop(&mut self) {
+            self.0.kill();
+        }
+    }
+    let _stop = StopFollower(subscription.killer());
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        while let Some(Ok(line)) = subscription.next_line() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let head = Response::empty(StatusCode(200))
         .with_header(h("Content-Type", "text/event-stream"))
         .with_header(h("Cache-Control", "no-cache"))
         .with_header(h("X-Accel-Buffering", "no"));
     let mut stream = req.upgrade("sse", head);
-    let _ = stream
-        .write_all(b": connected\n\n")
-        .and_then(|_| stream.flush());
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else { break };
-        if stream
-            .write_all(format!("data: {line}\n\n").as_bytes())
-            .and_then(|_| stream.flush())
-            .is_err()
-        {
-            break;
+    while stream
+        .write_all(b": heartbeat\n\n")
+        .and_then(|_| stream.flush())
+        .is_ok()
+    {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(line) => {
+                if stream
+                    .write_all(format!("data: {line}\n\n").as_bytes())
+                    .and_then(|_| stream.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(rx);
+    drop(_stop);
+    let _ = reader.join();
 }
 
 fn id_of(rest: &str) -> Option<i64> {
