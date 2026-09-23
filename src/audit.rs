@@ -407,6 +407,10 @@ pub fn rule_diagnosis(rule: Rule, c: &CheckResult) -> Diagnosis {
             &format!("the agent changed the repository's Forge config ({tail1})"),
             "The config is the operator's. If the task needs it, change it by hand first; the task text should not ask for it.",
         ),
+        Rule::CandidateUnchanged => d(
+            &format!("a check moved the commit it was judging ({tail1})"),
+            "A trusted check command committed, staged, or left tracked changes during L1 or L2. Find which check did it and stop it from writing to the tree; only the known-fix path may commit, and only its own commit is judged.",
+        ),
         Rule::NamespaceUntouched => d(
             "the coder created files inside the verification namespace",
             "That is the shadow-test pattern. Re-add the task; if it repeats, the model is gaming and the task should not run unattended with it.",

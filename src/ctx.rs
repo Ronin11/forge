@@ -182,15 +182,11 @@ impl Forge {
             {
                 extra_ro.push(dir.to_path_buf());
             }
-            // The repository map's parsed blobs are cached here and
-            // written from inside the sandbox.
-            let cache = paths.home.join("cache");
-            let _ = std::fs::create_dir_all(&cache);
             Sandbox::detect(
                 &agent::agent_bin(),
                 &home.sandbox,
                 extra_ro,
-                vec![cache],
+                Vec::new(),
                 crate::egress::model_rules(&home.providers),
             )?
         } else {
@@ -240,6 +236,23 @@ impl Forge {
     pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config) {
         if let Some(sandbox) = &self.sandbox {
             sandbox.set_egress(worktree, &cfg.egress);
+        }
+    }
+
+    /// Where `repo`'s operations may cache what they compute
+    /// (`FORGE_CACHE_DIR`): `paths.home/cache/<hash of repo's path>`, so
+    /// two repositories never share a directory and one cannot poison or
+    /// read what the other cached.
+    pub fn cache_dir(&self, repo: &Path) -> PathBuf {
+        let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
+        self.paths.home.join("cache").join(&key[..16])
+    }
+
+    /// Tell the sandbox where attempts in `worktree` (this task's clone of
+    /// `repo`) may reach their cache. No-op unsandboxed.
+    pub fn declare_cache(&self, worktree: &Path, repo: &Path) {
+        if let Some(sandbox) = &self.sandbox {
+            sandbox.set_cache_dir(worktree, self.cache_dir(repo));
         }
     }
 

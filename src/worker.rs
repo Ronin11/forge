@@ -144,20 +144,47 @@ pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
     let Some(s) = f.store.latest_rate_limit(provider)? else {
         return Ok(None);
     };
-    let (five_hour_max, seven_day_max) = f
+    let caps = f
         .providers
         .get(provider)
         .map(|p| (p.five_hour_max, p.seven_day_max))
         .unwrap_or((f.budget.five_hour_max, f.budget.seven_day_max));
-    let now = unix_now();
+    Ok(hold_from_sample(&s, caps, unix_now()))
+}
+
+/// `window_hold`'s decision on one sample: the tightest window at or
+/// over its cap whose reset is still ahead. A sample older than the
+/// window it describes is stale, whatever reset it names: a five-hour
+/// window seen more than five hours ago has reset since, so it holds
+/// nothing (a mis-read reset time once held a provider for a day).
+fn hold_from_sample(
+    s: &crate::store::RateLimitSample,
+    (five_hour_max, seven_day_max): (f64, f64),
+    now: i64,
+) -> Option<(String, i64)> {
     let mut hold: Option<(String, i64)> = None;
-    for (name, util, resets, cap) in [
-        ("5h", s.five_hour, s.five_hour_resets, five_hour_max),
-        ("7d", s.seven_day, s.seven_day_resets, seven_day_max),
+    for (name, util, resets, cap, span) in [
+        (
+            "5h",
+            s.five_hour,
+            s.five_hour_resets,
+            five_hour_max,
+            5 * 3600,
+        ),
+        (
+            "7d",
+            s.seven_day,
+            s.seven_day_resets,
+            seven_day_max,
+            7 * 86_400,
+        ),
     ] {
         let (Some(u), Some(r)) = (util, resets) else {
             continue;
         };
+        if now - s.seen_at > span {
+            continue;
+        }
         if u >= cap && r > now && hold.as_ref().is_none_or(|(_, until)| r > *until) {
             hold = Some((
                 format!(
@@ -170,7 +197,7 @@ pub fn window_hold(f: &Forge, provider: &str) -> Result<Option<(String, i64)>> {
             ));
         }
     }
-    Ok(hold)
+    hold
 }
 
 /// The role the task's *next agent step* will actually run under: the
@@ -783,6 +810,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
     }
+    for (id, owner) in f.store.orphan_jobs(pid_alive)? {
+        crate::job::recover_interrupted(&f, id, owner)?;
+    }
     let pid = std::process::id() as i64;
     let pid_file = f.paths.home.join("worker.pid");
     let _ = std::fs::write(
@@ -956,7 +986,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         f.store.requeue(id, "worker aborted by operator")?;
                     }
                     for id in job_ids.drain(..) {
-                        f.store.requeue_job(id)?;
+                        crate::job::recover_interrupted(&f, id, Some(pid))?;
                     }
                     break;
                 }
@@ -980,6 +1010,34 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A rate-limit sample older than the window it describes holds
+    /// nothing, whatever reset time it names; a fresh one at its cap does.
+    #[test]
+    fn a_five_hour_sample_older_than_five_hours_never_holds() {
+        use crate::store::RateLimitSample;
+        let now = 1_800_000_000;
+        let stale = RateLimitSample {
+            seen_at: now - 5 * 3600 - 1,
+            five_hour: Some(1.0),
+            seven_day: None,
+            five_hour_resets: Some(now + 6 * 3600),
+            seven_day_resets: None,
+        };
+        assert_eq!(hold_from_sample(&stale, (0.9, 0.9), now), None);
+        let fresh = RateLimitSample {
+            seen_at: now - 60,
+            ..stale
+        };
+        let (msg, until) = hold_from_sample(&fresh, (0.9, 0.9), now).unwrap();
+        assert_eq!(until, now + 6 * 3600);
+        assert!(msg.starts_with("rate window 5h at 100%"), "{msg}");
+        let reset_passed = RateLimitSample {
+            five_hour_resets: Some(now - 1),
+            ..fresh
+        };
+        assert_eq!(hold_from_sample(&reset_passed, (0.9, 0.9), now), None);
+    }
+
     use super::*;
     use crate::store::Store;
 

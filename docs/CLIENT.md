@@ -12,6 +12,37 @@ protocol that keeps a client's state in sync without polling.
 A third client only has to follow this document, not read the engine,
 to stay correct.
 
+## Required vs. optional fields
+
+Every JSON document below is a table of fields; a field is **optional**
+only when its table entry says `... or null` (a nullable value the CLI
+may send as `null`) or its prose says outright that it is sometimes
+missing entirely (e.g. `Worker`'s `pid`/`exe`/`stale_binary`, present
+only while a worker is running). Every other field is **required**: the
+CLI always sends it, and a client should treat its absence as a bug in
+the CLI or the wire, not a value to paper over with a default.
+
+`forge-client` (`client/src/lib.rs`) enforces this: each row type derives
+`Deserialize` with `#[serde(default)]` on exactly its optional fields,
+never on a required one. A `forge` binary that omits a required field
+fails the parse with an error naming both the field and the verb that
+was run (`Forge::parse`), instead of silently handing back a zero, an
+empty string, or `false` for it. A hand-rolled client in another
+language should hold itself to the same rule: default only the fields
+marked optional above, and treat a missing required one as a parse
+error to surface, not swallow.
+
+## `forge-client`'s own deadline
+
+Every run of the `forge` binary through `forge-client`'s `Forge` handle
+(`client/src/lib.rs`) is held to `Forge::timeout`, a `Duration` on the
+handle itself, default 60 seconds. Past it, the child is killed and the
+error names the verb that timed out (`forge <verb args>: timed out after
+<duration>`) — a caller never blocks forever on a `forge` subprocess that
+hangs. The one exception is `Forge::subscribe` (`forge events --follow`):
+it is deliberately unbounded, and is torn down by dropping its
+[`Subscription`] or calling its [`Killer`] instead of a deadline.
+
 ## Verbs
 
 Every verb below is invoked as `forge <name> [args] --json` (or, for
@@ -308,11 +339,18 @@ and does not parse stdout.
   re-reads the lists itself, the same as `forge retry`. This is the write
   verb the web UI's inbox (`POST /api/land/<id>`, task 530) calls for an
   unverified task's land control.
-- **`forge answer ID TEXT [--by NAME]`** — write verb: answers the
-  question task `ID` is blocked on and re-queues it as a retry, `--by`
-  naming the contact when the answer came through a channel (the portal
-  passes its contact name). Stdout is the new task's id; a non-zero exit
-  is the error on stderr. Not JSON.
+- **`forge answer ID TEXT [--by NAME] [--project NAME]`** — write verb:
+  answers the question task `ID` is blocked on and re-queues it as a
+  retry, `--by` naming the contact when the answer came through a
+  channel (the portal passes its contact name). `--project`, given,
+  scopes the answer: refused (non-zero exit), before any write, unless
+  task `ID` belongs to that project and its question is addressed to
+  `--by` (see `RequestRow.to`) — the portal passes its resolved project
+  on every answer, so a token can never reach another project's task or
+  a question addressed to someone else. Unset, as the operator's own
+  `forge answer` always leaves it, the answer reaches any task. Stdout
+  is the new task's id; a non-zero exit is the error on stderr. Not
+  JSON.
 - **`forge withdraw ID --reason TEXT [--by NAME]`** — write verb:
   withdraws a blocked or queued task the operator has decided not to do
   — a stale description, superseded, or the product decision went the
@@ -871,7 +909,7 @@ touched:
 
 | field | type | meaning |
 |---|---|---|
-| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose recorded `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
+| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose git-derived `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
 | `demotions` | array of `{id, at, reason}` | One entry per task whose attempt ended a review demotion (`reason` starting `"review demoted: "`) with at least one claim whose evidence text names this path as a substring. `at` is that attempt's finish time. |
 | `repair_cost_usd` | number | This file's share of the quality statistics' repair cost (`StatsWorkflowRow.repair_cost_usd` above): each task's own cached repair cost, divided evenly across every file its attempts touched, summed over every task that touched this one. |
 
@@ -1357,7 +1395,11 @@ across a rotation, not to the snapshot protocol itself.
   `trace <id> --json`, `/api/journal/<id>` →
   `journal <id> --json`, `/api/events?since=` → `events --since
   --follow` reframed as one SSE `data:` line per event, and
-  `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
+  `POST /api/retry/<id>` → `forge retry <id>`. Write controls also run
+  the CLI verbs `answer`, `withdraw`, `land`, `initiative set`, `gc`,
+  and `deploy` through `forge-client`, as detailed below. `forge task set`
+  is available in the CLI but has no web route in this checkout.
+  The browser's list view,
   detail view, and run view apply the same re-read rules as above; the
   list view's `TaskRow.initiative`, when set, links to `/initiatives/<id>`.
   **Search** (web UI task 9, `web/src/search.js`). The `/tasks` list's

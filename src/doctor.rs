@@ -333,31 +333,55 @@ fn check_home_migration() -> Vec<Check> {
     )]
 }
 
+/// Every repository's own repomap cache (`ctx::Forge::cache_dir`, private
+/// per repository so one cannot poison what another reads), each a
+/// `<hash>/repomap` directory directly under `paths.home/cache`.
+fn repo_repomap_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path().join("repomap"))
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn check_cache(paths: &Paths) -> Vec<Check> {
-    let cache_dir = paths.home.join("cache").join("repomap");
-    vec![if !cache_dir.exists() {
+    let root = paths.home.join("cache");
+    let repo_caches = repo_repomap_dirs(&root);
+    vec![if repo_caches.is_empty() {
         check(
             "cache",
             Status::Warn,
-            format!("{} does not exist", cache_dir.display()),
+            format!("{} does not exist", root.join("<repo>/repomap").display()),
             "it is created on the first repomap run; nothing to do yet",
         )
     } else {
-        let probe = cache_dir.join(".doctor-write-probe");
+        let probe = repo_caches[0].join(".doctor-write-probe");
         match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
             Ok(()) => {
-                let (count, size) = count_files(&cache_dir);
+                let (count, size) = repo_caches
+                    .iter()
+                    .map(|d| count_files(d))
+                    .fold((0, 0), |(c, s), (fc, fs)| (c + fc, s + fs));
                 check(
                     "cache",
                     Status::Ok,
-                    format!("{count} blob file(s) totaling {}", human_bytes(size)),
+                    format!(
+                        "{count} blob file(s) totaling {} across {} repositor{}",
+                        human_bytes(size),
+                        repo_caches.len(),
+                        if repo_caches.len() == 1 { "y" } else { "ies" }
+                    ),
                     "",
                 )
             }
             Err(e) => check(
                 "cache",
                 Status::Warn,
-                format!("{}: not writable: {e}", cache_dir.display()),
+                format!("{}: not writable: {e}", repo_caches[0].display()),
                 "fix permissions on the repomap cache directory",
             ),
         }
@@ -725,7 +749,8 @@ fn check_initiatives(f: &Forge) -> Vec<Check> {
 }
 
 fn check_logs(paths: &Paths) -> Vec<Check> {
-    let events_size = std::fs::metadata(paths.home.join("events.jsonl"))
+    let events_path = paths.home.join("events.jsonl");
+    let events_size = std::fs::metadata(&events_path)
         .map(|m| m.len())
         .unwrap_or(0);
     let (mut attempt_count, mut attempt_size, mut oldest) = (0u64, 0u64, None::<i64>);
@@ -747,27 +772,39 @@ fn check_logs(paths: &Paths) -> Vec<Check> {
             }
         }
     }
+    let dropped = crate::report::dropped_log_task_count(&events_path);
     let total = events_size + attempt_size;
     let detail = format!(
-        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}",
+        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}{}",
         human_bytes(events_size),
         human_bytes(attempt_size),
         oldest.map_or(String::new(), |o| format!(", oldest {}", ymd(o))),
+        if dropped > 0 {
+            format!("; {dropped} task(s) lost log lines")
+        } else {
+            String::new()
+        },
     );
     const GIB: u64 = 1024 * 1024 * 1024;
-    vec![if total >= GIB {
-        check(
+    let disk_hint = format!(
+        "{} of logs on disk; archive or delete old attempt logs under {} by hand",
+        human_bytes(total),
+        paths.logs.display()
+    );
+    let dropped_hint = format!(
+        "check disk space and permissions for {}",
+        events_path.display()
+    );
+    vec![match (total >= GIB, dropped > 0) {
+        (false, false) => check("logs", Status::Ok, detail, ""),
+        (true, false) => check("logs", Status::Warn, detail, disk_hint),
+        (false, true) => check("logs", Status::Warn, detail, dropped_hint),
+        (true, true) => check(
             "logs",
             Status::Warn,
             detail,
-            format!(
-                "{} of logs on disk; archive or delete old attempt logs under {} by hand",
-                human_bytes(total),
-                paths.logs.display()
-            ),
-        )
-    } else {
-        check("logs", Status::Ok, detail, "")
+            format!("{disk_hint}; {dropped_hint}"),
+        ),
     }]
 }
 

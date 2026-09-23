@@ -82,6 +82,142 @@ fn an_attempt_runs_sandboxed_when_bwrap_is_present() {
     assert!(out.contains("sandboxed"), "{out}");
 }
 
+/// The operator's claude config directory (`CLAUDE_CONFIG_DIR`) is seeded
+/// into the sandbox with only what the CLI needs — the settings file — and
+/// nothing else it holds is visible at that path (src/sandbox.rs, `command`).
+#[test]
+fn the_operators_config_directory_is_seeded_not_bound_into_the_sandbox() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    // Stands in for the operator's real claude config directory: one file
+    // an attempt needs, one it must never see.
+    let fake_config = e.home.join("fake-claude-config");
+    std::fs::create_dir_all(&fake_config).unwrap();
+    std::fs::write(fake_config.join("settings.json"), "operator-settings").unwrap();
+    std::fs::write(
+        fake_config.join("real-secret.txt"),
+        "never-leaves-the-operator",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/actions/canary.toml"),
+        "name = \"canary\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", \"set -e; test \\\"$(cat \\\"$CLAUDE_CONFIG_DIR/settings.json\\\")\\\" = operator-settings; test ! -e \\\"$CLAUDE_CONFIG_DIR/real-secret.txt\\\"\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/canary-wf.toml"),
+        "name = \"canary-wf\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"canary\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("CLAUDE_CONFIG_DIR", &fake_config);
+    let o = cmd
+        .args([
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "canary-wf",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let doc: serde_json::Value = e.trace_json("1");
+    let op = doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "canary")
+        .unwrap_or_else(|| panic!("no canary op in {doc}"));
+    assert_eq!(op["ok"], true, "{}", op["detail"]);
+}
+
+/// The private provider state (src/sandbox.rs, `provider_state_dir`) lives
+/// as long as the task's worktree and never reaches another task's: a
+/// retry in the same worktree sees what the first attempt wrote there (a
+/// resumed session depends on that), a second task does not.
+#[test]
+fn provider_state_lives_for_the_task_and_never_reaches_another() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    let o = e.run("provider-canary.sh", &["--retries", "1"]);
+    assert!(
+        o.status.success(),
+        "the retry must find the first attempt's canary: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(e.attempts(1).len(), 2);
+    let o = e.run("provider-canary.sh", &["--retries", "0"]);
+    assert!(
+        !o.status.success(),
+        "a second task must not see the first task's canary: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(e.task(2).0, "failed");
+}
+
+/// A repository's cache (`FORGE_CACHE_DIR`) is private to it: a write aimed
+/// at another repository's cache directory under the same `FORGE_HOME`
+/// fails, since only this repository's own is bound in (src/sandbox.rs,
+/// `set_cache_dir`/`cache_dir_for`; src/ctx.rs, `Forge::cache_dir`).
+#[test]
+fn a_write_to_another_repositorys_cache_directory_fails() {
+    let e = Env::new();
+    if e.sandbox_disabled() {
+        eprintln!("FORGE_TEST_NO_SANDBOX=1: skipping, bwrap unavailable");
+        return;
+    }
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let foreign_cache = e.home.join("cache").join("some-other-repository");
+    std::fs::create_dir_all(&foreign_cache).unwrap();
+    let foreign_file = foreign_cache.join("poison");
+    std::fs::write(
+        e.home.join("workflows/actions/poison.toml"),
+        format!(
+            "name = \"poison\"\nkind = \"operation\"\ndescription = \"d\"\nconsumes = [\"branch\"]\nrun = [\"bash\", \"-c\", {}]\n",
+            serde_json::to_string(&format!(
+                "! echo poison > '{}' 2>/dev/null",
+                foreign_file.display()
+            ))
+            .unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        e.home.join("workflows/poison-wf.toml"),
+        "name = \"poison-wf\"\ndescription = \"d\"\nsteps = [{ action = \"setup\" }, { action = \"code\" }, { action = \"poison\" }]\n[meta]\nuse_when = \"u\"\navoid_when = \"a\"\n",
+    )
+    .unwrap();
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            "--no-land",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--workflow",
+            "poison-wf",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        !foreign_file.exists(),
+        "another repository's cache must never be written to from inside the sandbox"
+    );
+}
+
 #[test]
 fn doctor_warns_when_the_repomap_cache_is_missing() {
     let e = Env::new();

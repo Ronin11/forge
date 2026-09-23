@@ -231,6 +231,15 @@ pub async fn run_attempt(
         provider,
     )
     .await?;
+    git::verification_checkout(
+        &f.paths.home,
+        repo,
+        &spec.dir,
+        spec.verify_ref.as_deref().unwrap_or(&t.branch),
+        &t.base_branch,
+    )
+    .await
+    .task()?;
     // A branch that merged the moved base is measured from there.
     let pending_main = match contract {
         Contract::Code => git::rev_parse(&spec.dir, &format!("refs/heads/forge/{}", t.base_branch))

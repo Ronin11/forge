@@ -69,6 +69,18 @@ server like `forge-web` that reads through the CLI's JSON, scoped to one
 project per link. It writes through two verbs only: `forge answer` for
 Needs you, and `forge ask` for the box.
 
+A write's request body is bounded at 64 KiB; over that, the same fixed
+write-error page, at 413.
+
+Every `forge answer` the portal runs carries `--project <resolved>`
+beside `--by customer`, naming both the project its token resolved to
+and the contact it writes as. The kernel (`queue::answer`) refuses,
+before any write, a task that belongs to a different project or whose
+question is addressed to someone else — so a token can never answer
+another project's question, or one addressed to a different contact,
+even by guessing its id. A refusal renders the same fixed write-error
+page as any other failed write, with no hint of why.
+
 Access is a per-project link carrying a token (`/p/<token>`), minted
 with `forge project portal <name>` and stored on the project; a token
 opens one project and nothing else. Accounts, several projects per

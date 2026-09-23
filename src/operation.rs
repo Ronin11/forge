@@ -162,8 +162,9 @@ pub(crate) async fn run_operation(
             .unwrap_or_else(|| t.base_sha.clone())
     };
     let hot_files = f.store.hot_files(&t.repo, 8).env()?;
-    let cache_dir = f.paths.home.join("cache");
+    let cache_dir = f.cache_dir(&repo);
     let _ = std::fs::create_dir_all(&cache_dir);
+    f.declare_cache(&wt, &repo);
     let start_sha = git::head(&wt).await.task()?;
     let env = operation_env(t, cfg, step, &start_sha, &prev_sha, &hot_files, &cache_dir);
     let scratch = step
@@ -306,6 +307,9 @@ pub(crate) async fn run_operation(
         );
     }
     if step.action.mutates() {
+        git::verification_checkout(&f.paths.home, &repo, &wt, &t.branch, &t.base_branch)
+            .await
+            .task()?;
         let timer = Timer::now();
         let committed = git::commit_all(&wt, &format!("forge: {}", step.action.name))
             .await

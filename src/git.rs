@@ -2,6 +2,11 @@
 //! base branch: the registered checkout is only ever read, the clone's
 //! object store never holds the verification refs, and the sandbox never
 //! sees the repository's own .git.
+//!
+//! After an agent exits, only a fetch touches its Git metadata. Fetch runs
+//! upload-pack in the source clone; Git itself does not honor repository-local
+//! hooks or upload-pack pack hooks there. All subsequent verification uses a
+//! fresh checkout from a kernel-owned bare repository, never the agent's config.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -182,6 +187,135 @@ pub async fn clone_task(
     dir_git.line(&["checkout", "--quiet", "-b", branch]).await?;
     dir_git.line(&["remote", "remove", "origin"]).await?;
     Ok(base_sha)
+}
+
+// Deliberately a complete config, not a patch to metadata supplied by an agent.
+const KERNEL_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
+
+async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
+    let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
+    let dir = home.join("repositories").join(format!("{key}.git"));
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+        Git::new(&dir)
+            .line(&["init", "--bare", "--quiet", "--template="])
+            .await?;
+        std::fs::write(dir.join("config"), KERNEL_CONFIG)?;
+    }
+    Ok(dir)
+}
+
+/// Import only the named task branch, then replace the agent's metadata with
+/// a fresh checkout. Move ordinary files without following symlinks: L0 must
+/// still see uncommitted edits/deletions and untracked files. Neither config,
+/// hooks, index extensions nor object-store alternates cross this boundary.
+/// The bare repository stays outside every sandbox mount.
+pub async fn verification_checkout(
+    home: &Path,
+    repo: &Path,
+    dir: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<()> {
+    let locks = home.join("repository-locks");
+    std::fs::create_dir_all(&locks)?;
+    let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(locks.join(key))?;
+    let _lock = tokio::task::spawn_blocking(move || lock.lock().map(|_| lock)).await??;
+    let kernel = kernel_repository(home, repo).await?;
+    let g = Git::new(&kernel);
+    let source = dir.to_str().context("clone path is not UTF-8")?;
+    let reference = format!("refs/heads/{branch}");
+    g.line(&[
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "--",
+        source,
+        &format!("+{reference}:{reference}"),
+    ])
+    .await?;
+    // Keep the local base name used by acceptance commands. Its objects and
+    // name come from the registered repository, never the agent's metadata.
+    g.line(&[
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--",
+        repo.to_str().context("repo path is not UTF-8")?,
+        &format!("+refs/heads/{base}:refs/heads/{base}"),
+    ])
+    .await?;
+    let fresh = dir.with_file_name(format!(
+        "{}-verification",
+        dir.file_name().context("clone filename")?.to_string_lossy()
+    ));
+    if fresh.exists() {
+        std::fs::remove_dir_all(&fresh)?;
+    }
+    g.line(&[
+        "clone",
+        "--quiet",
+        "--no-hardlinks",
+        "--single-branch",
+        "--no-tags",
+        "--template=",
+        "--branch",
+        branch,
+        kernel.to_str().context("kernel path is not UTF-8")?,
+        fresh.to_str().context("verification path is not UTF-8")?,
+    ])
+    .await?;
+    std::fs::write(
+        fresh.join(".git/config"),
+        KERNEL_CONFIG.replace("bare = true", "bare = false"),
+    )?;
+    Git::new(&fresh)
+        .line(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--",
+            kernel.to_str().context("kernel path")?,
+            &format!("+refs/heads/{base}:refs/heads/{base}"),
+        ])
+        .await?;
+    // Preserve a pending integration base via an explicit fetch as well.
+    let pending = format!("refs/heads/forge/{base}");
+    let _ = Git::new(&fresh)
+        .line(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--",
+            source,
+            &format!("+{pending}:{pending}"),
+        ])
+        .await;
+    for entry in std::fs::read_dir(&fresh)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() != ".git" {
+            std::fs::rename(entry.path(), fresh.join(entry.file_name()))?;
+        }
+    }
+    std::fs::remove_dir_all(dir)?;
+    std::fs::rename(fresh, dir)?;
+    Ok(())
 }
 
 /// Fetch one branch from any source (a path or a URL) into `dir` as FETCH_HEAD.
@@ -620,6 +754,20 @@ pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     ))
 }
 
+/// Porcelain status entries for paths git already tracks: staged or
+/// modified content, never a plain untracked file (`??`). Used where a
+/// leftover build artifact must not read as tampering with the commit a
+/// check is judging, but a change to what HEAD already named must.
+pub async fn dirty_tracked_paths(wt: &Path) -> Result<Vec<String>> {
+    let raw = Git::new(wt).raw(&["status", "--porcelain"]).await?;
+    let tracked: String = raw
+        .lines()
+        .filter(|l| !l.starts_with("??"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    Ok(porcelain_paths(&tracked))
+}
+
 pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     Git::new(repo)
         .line(&["remote", "get-url", remote])
@@ -813,6 +961,26 @@ pub async fn remote_branch_exists(url: &str, branch: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn kernel_config_is_exactly_kernel_written() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let kernel = super::kernel_repository(home.path(), repo.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(kernel.join("config")).unwrap(),
+            "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n"
+        );
+        assert!(!kernel.join("hooks").exists());
+        assert_eq!(
+            super::kernel_repository(home.path(), repo.path())
+                .await
+                .unwrap(),
+            kernel
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -914,6 +1082,20 @@ mod tests {
         commit_path(wt, "a.toml", "add a").await.unwrap().unwrap();
         let again = commit_path(wt, "a.toml", "add a again").await.unwrap();
         assert_eq!(again, None);
+    }
+
+    #[tokio::test]
+    async fn dirty_tracked_paths_excludes_untracked_but_keeps_modified_and_staged() {
+        let dir = init_repo();
+        let wt = dir.path();
+        std::fs::write(wt.join("tracked.txt"), "one\n").unwrap();
+        commit_all(wt, "base").await.unwrap();
+        std::fs::write(wt.join("tracked.txt"), "two\n").unwrap();
+        std::fs::write(wt.join("untracked.txt"), "new\n").unwrap();
+        let dirty = dirty_paths(wt).await.unwrap();
+        assert_eq!(dirty, vec!["tracked.txt", "untracked.txt"]);
+        let tracked_only = dirty_tracked_paths(wt).await.unwrap();
+        assert_eq!(tracked_only, vec!["tracked.txt"]);
     }
 
     #[tokio::test]

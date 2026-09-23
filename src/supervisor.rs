@@ -633,7 +633,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     }
     match r.action.as_str() {
         "answer" => {
-            let (_, n) = crate::queue::answer(f, id, &r.answer, "supervisor", &cited).await?;
+            let (_, n) = crate::queue::answer(f, id, &r.answer, "supervisor", &cited, None).await?;
             f.report.emit(
                 id,
                 Event::Note {

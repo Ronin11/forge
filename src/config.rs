@@ -435,8 +435,10 @@ struct SandboxRaw {
 }
 
 /// What the sandbox exposes beyond the attempt's own holes: toolchains the
-/// checks need, read-only, and package caches, read-write and shared across
-/// attempts. Paths that do not exist are skipped.
+/// checks need, read-only, and package caches, read through with an
+/// attempt's own writes going to a private overlay discarded with it (see
+/// `sandbox::Sandbox::command`), so one attempt can never poison what
+/// another reads from these. Paths that do not exist are skipped.
 pub struct SandboxPaths {
     pub ro: Vec<PathBuf>,
     pub rw: Vec<PathBuf>,

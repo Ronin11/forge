@@ -99,10 +99,28 @@ fn without_json_forge_graph_prints_a_one_line_count() {
     );
 }
 
+/// Find `name` anywhere under `dir`, however deep.
+fn find_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// The built-in `repo-graph` operation, in a workflow, writes
 /// `forge graph`'s own document to `$FORGE_CACHE_DIR/graph.json` — the
 /// same file every attempt overwrites, so a landing always leaves a
 /// fresh graph behind (docs/ACTIONS.md, `repo-graph`).
+/// `FORGE_CACHE_DIR` is this repository's own directory under
+/// `cache/<hash>` (src/ctx.rs, `Forge::cache_dir`), so the file is looked
+/// up rather than assumed to sit directly under `cache/`.
 #[test]
 fn the_repo_graph_operation_writes_a_fresh_graph_to_the_cache_directory() {
     let e = Env::new();
@@ -127,7 +145,9 @@ fn the_repo_graph_operation_writes_a_fresh_graph_to_the_cache_directory() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
-    let cache = e.home.join("cache/graph.json");
+    let cache_root = e.home.join("cache");
+    let cache = find_file(&cache_root, "graph.json")
+        .unwrap_or_else(|| panic!("no graph.json anywhere under {}", cache_root.display()));
     let text = std::fs::read_to_string(&cache)
         .unwrap_or_else(|e| panic!("reading {}: {e}", cache.display()));
     let doc: serde_json::Value = serde_json::from_str(&text).unwrap();

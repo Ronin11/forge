@@ -190,6 +190,7 @@ pub enum Rule {
     ChangesMatchGit,
     ChangesFromGit,
     ClaimsHaveEvidence,
+    CandidateUnchanged,
     ProtectedPaths,
     PathsInScope,
     NamespaceUntouched,
@@ -207,7 +208,7 @@ pub enum Rule {
 }
 
 impl Rule {
-    pub const ALL: [Rule; 23] = [
+    pub const ALL: [Rule; 24] = [
         Rule::ResultStructured,
         Rule::SuiteNamesAHiddenTest,
         Rule::CleanTree,
@@ -217,6 +218,7 @@ impl Rule {
         Rule::ChangesMatchGit,
         Rule::ChangesFromGit,
         Rule::ClaimsHaveEvidence,
+        Rule::CandidateUnchanged,
         Rule::ProtectedPaths,
         Rule::PathsInScope,
         Rule::NamespaceUntouched,
@@ -244,6 +246,7 @@ impl Rule {
             Rule::ChangesMatchGit => "changes-match-git",
             Rule::ChangesFromGit => "changes-from-git",
             Rule::ClaimsHaveEvidence => "claims-have-evidence",
+            Rule::CandidateUnchanged => "candidate-unchanged",
             Rule::ProtectedPaths => "protected-paths",
             Rule::PathsInScope => "paths-in-scope",
             Rule::NamespaceUntouched => "namespace-untouched",
@@ -574,6 +577,41 @@ fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The commit L1 and L2 judge is the commit that lands: nothing a check
+/// command runs may move HEAD, stage anything, or leave a tracked file
+/// modified, whatever it reports on exit. `before` is HEAD as `l1_l2`
+/// found it, recorded before the overlay ever touches the tree; a plain
+/// untracked leftover does not count (`git::dirty_tracked_paths`), only
+/// HEAD itself and what git already tracks. The one legitimate mutator is
+/// `try_known_fix`: it commits outside this function and calls `l1_l2`
+/// again, so its own commit is `before` for that second call and must
+/// still pass this row.
+async fn candidate_unchanged(wt: &Path, before: &str) -> Result<CheckResult> {
+    let after = crate::git::head(wt).await?;
+    let dirty = crate::git::dirty_tracked_paths(wt).await?;
+    let moved = after != before;
+    let detail = if !moved && dirty.is_empty() {
+        String::new()
+    } else if moved && !dirty.is_empty() {
+        format!(
+            "the checks committed {after} over the verified {before} and left uncommitted changes to {}",
+            dirty.join(", ")
+        )
+    } else if moved {
+        format!("the checks committed {after} over the verified {before}")
+    } else {
+        format!(
+            "the checks left uncommitted changes to {} on the verified {before}",
+            dirty.join(", ")
+        )
+    };
+    Ok(l0(
+        Rule::CandidateUnchanged,
+        !moved && dirty.is_empty(),
+        detail,
+    ))
+}
+
 /// L1 then L2 on the tree as it stands: the namespace overlaid from the
 /// trusted refs, the repository's checks, the claim rule against the
 /// envelope when there is one, the task's own commands, then the overlay
@@ -584,6 +622,7 @@ async fn l1_l2(
     envelope: Option<&Envelope>,
     checks: &mut Vec<CheckResult>,
 ) -> Result<()> {
+    let candidate_before = crate::git::head(s.worktree).await?;
     let placed = overlay(s.repo, s.overlay_refs, &s.cfg.namespace, s.worktree).await?;
     if !placed.is_empty() {
         s.report.emit(
@@ -678,6 +717,9 @@ async fn l1_l2(
         }
     }
     remove_overlay(&placed, &s.cfg.namespace, s.worktree);
+    let candidate_row = candidate_unchanged(s.worktree, &candidate_before).await?;
+    emit_check(s.report, s.task_id, &candidate_row);
+    checks.push(candidate_row);
     Ok(())
 }
 
@@ -853,20 +895,34 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
 
 /// Landing: the branch with the base merged in, run through every check
 /// with every hidden suite overlaid. No agent, so no result contract; the
-/// tree must be clean and the checks green.
+/// tree must be clean and the checks green. The scope rules run again too
+/// (protected paths, `forge.toml`, the write scope, the verification
+/// namespace), against the merged tree rather than the branch alone: a
+/// merge can carry a change past L0 that no single directive committed by
+/// itself.
 pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
+    let changed = crate::git::changed_paths(s.worktree, s.base_sha).await?;
+    let dirty = crate::git::dirty_paths(s.worktree).await?;
     let facts = GitFacts {
         commits: crate::git::count_commits(s.worktree, s.base_sha).await?,
-        dirty: crate::git::dirty_paths(s.worktree).await?,
-        ..Default::default()
+        changed_now: changed.clone(),
+        changed,
+        dirty,
     };
-    let dirty = &facts.dirty;
+    let (changed, dirty) = (&facts.changed, &facts.dirty);
     let mut v = Verdict::open(&facts);
     v.checks.push(l0(
         Rule::CleanTree,
         dirty.is_empty(),
         format!("uncommitted after the merge: {}", dirty.join(", ")),
     ));
+    let touched = changed.iter().any(|p| p == s.cfg.config_path.as_str());
+    v.checks.push(l0(
+        Rule::ConfigUntouched,
+        !touched,
+        format!("the merged tree modifies {}", s.cfg.config_path),
+    ));
+    v.checks.extend(scope_rows(s, changed, changed, dirty));
     emit_rows(s.report, s.task_id, &v.checks);
     if v.checks.iter().all(|c| c.ok) {
         l1_l2(s, None, &mut v.checks).await?;
@@ -932,7 +988,11 @@ pub async fn verify_directive(
                     if question.is_none()
                         && let Some(fix) = try_known_fix(s, &v.checks).await?
                     {
-                        v.checks.retain(|c| c.level != "L1" && c.level != "L2");
+                        v.checks.retain(|c| {
+                            c.level != "L1"
+                                && c.level != "L2"
+                                && c.name != Rule::CandidateUnchanged.name()
+                        });
                         l1_l2(s, common.envelope.as_ref(), &mut v.checks).await?;
                         v.known_fix = Some(fix);
                     }
@@ -1589,6 +1649,101 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "real.txt");
         assert_eq!(changes[0].kind, "added");
+    }
+
+    #[tokio::test]
+    async fn verify_integration_reruns_the_scope_rules_over_the_merged_tree() {
+        // The base has no protected paths; the "merge" (a plain commit
+        // stands in for one here, since only the diff against `base_sha`
+        // matters to the rule) carries a change to one anyway — the shape
+        // a real merge could produce even though no single directive
+        // committed it by itself.
+        let (dir, base) = commit_fixture().await;
+        std::fs::write(dir.path().join("secrets.txt"), "leak\n").unwrap();
+        crate::git::commit_all(dir.path(), "merge carrying a protected change")
+            .await
+            .unwrap();
+        let mut cfg = test_cfg();
+        cfg.protected = vec!["secrets.txt".to_string()];
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: &base,
+            start_sha: &base,
+            branch: "forge/1",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            plan_rows: true,
+        };
+        let v = verify_integration(&s).await.unwrap();
+        assert_eq!(
+            v.checks
+                .iter()
+                .find(|c| c.name == "protected-paths")
+                .map(|c| c.ok),
+            Some(false),
+            "{:?}",
+            v.checks
+        );
+        assert_eq!(v.state, AttemptState::ChecksFailed);
+        assert_eq!(v.reason, "L0 failed: protected-paths");
+    }
+
+    #[tokio::test]
+    async fn l1_l2_fails_candidate_unchanged_when_a_check_commits() {
+        let (dir, base) = commit_fixture().await;
+        let mut cfg = test_cfg();
+        cfg.checks.insert(
+            "tamper".into(),
+            vec![
+                "bash".into(),
+                "-c".into(),
+                "echo tampered >> forge.toml; git -c user.email=a@a.com -c user.name=a commit --quiet -am tamper".into(),
+            ],
+        );
+        std::fs::write(dir.path().join("forge.toml"), "[checks]\n").unwrap();
+        crate::git::commit_all(dir.path(), "add forge.toml")
+            .await
+            .unwrap();
+        let before = crate::git::head(dir.path()).await.unwrap();
+        let report = Reporter::new(false, None);
+        let s = Subject {
+            task_id: 1,
+            repo: dir.path(),
+            worktree: dir.path(),
+            base_sha: &base,
+            start_sha: &base,
+            branch: "forge/1",
+            cfg: &cfg,
+            task_checks: &[],
+            paths: &[],
+            allow_protected: false,
+            overlay_refs: &[],
+            pending_main: None,
+            sandbox: None,
+            report: &report,
+            scratch: None,
+            plan_rows: true,
+        };
+        let mut checks = Vec::new();
+        l1_l2(&s, None, &mut checks).await.unwrap();
+        let row = checks
+            .iter()
+            .find(|c| c.name == "candidate-unchanged")
+            .expect("a candidate-unchanged row");
+        assert!(!row.ok, "{row:?}");
+        assert!(row.tail.contains(&before), "{}", row.tail);
+        let after = crate::git::head(dir.path()).await.unwrap();
+        assert!(row.tail.contains(&after), "{}", row.tail);
     }
 
     fn fixable_cfg(fixable: &[(&str, &[&str])]) -> Config {

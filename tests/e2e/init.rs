@@ -1,17 +1,58 @@
-//! `forge init`: see doctor.rs and init.rs. No systemd session is reachable
-//! in this suite's sandbox (no `/run/systemd/system`, no
-//! `XDG_RUNTIME_DIR`), and `XDG_CONFIG_HOME` is pointed at the test's own
-//! tempdir (`Env::xdg_config`), so every assertion here exercises the
-//! print path and never touches the machine running the suite.
+//! `forge init`: see doctor.rs and init.rs. `XDG_CONFIG_HOME` is pointed at
+//! the test's own tempdir (`Env::xdg_config`) in every test here, so the
+//! unit files `forge init` writes always land under a tempdir rather than
+//! the machine running the suite's real `~/.config/systemd/user`.
+//!
+//! The no-session test below additionally strips `XDG_RUNTIME_DIR` and
+//! `DBUS_SESSION_BUS_ADDRESS` from the child's environment, so it exercises
+//! the print path even when `cargo test` itself runs inside a logged-in
+//! desktop session (where both are set) rather than accidentally touching
+//! that session's real `systemctl`/`loginctl`.
+//!
+//! `forge_init_enables_units_when_a_systemd_session_is_reachable` below
+//! covers the other branch: a fake `systemctl`/`loginctl` first on `PATH`,
+//! and `FORGE_TEST_SYSTEMD_RUN_DIR` pointed at a tempdir standing in for
+//! `/run` (the one piece `sd_booted()` checks that a test can't otherwise
+//! fake, since it is only ever real once systemd is actually pid 1).
 
 use crate::support::*;
+use std::path::Path;
+use std::process::Output;
+
+fn write_fake(path: &Path, content: &str) {
+    std::fs::write(path, content).unwrap();
+    let mut perm = std::fs::metadata(path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+    std::fs::set_permissions(path, perm).unwrap();
+}
+
+/// `forge init`, with `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`
+/// stripped from the child's environment so a developer's own logged-in
+/// session (where both are set) never makes these tests take the
+/// systemd-session branch and touch that session's real `systemctl` /
+/// `loginctl`.
+fn forge_init_no_session(e: &Env, extra: &[&str]) -> Output {
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env_remove("XDG_RUNTIME_DIR")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .arg("init")
+        .args(extra);
+    let o = cmd.output().expect("forge init");
+    eprintln!(
+        "--- forge init {} ---\n{}{}",
+        extra.join(" "),
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    o
+}
 
 #[test]
 fn forge_init_sets_up_a_fresh_home_and_prints_the_systemd_commands() {
     let e = Env::new();
     assert!(!e.home.exists());
 
-    let o = e.forge("ok.sh", &["init"]);
+    let o = forge_init_no_session(&e, &[]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
 
@@ -49,13 +90,13 @@ fn forge_init_sets_up_a_fresh_home_and_prints_the_systemd_commands() {
 #[test]
 fn forge_init_run_twice_changes_nothing_the_second_time() {
     let e = Env::new();
-    assert!(e.forge("ok.sh", &["init"]).status.success());
+    assert!(forge_init_no_session(&e, &[]).status.success());
     let catalog = e.home.join("workflows");
     let head_after_first = git(&catalog, &["rev-parse", "HEAD"]);
     let worker_unit_path = e.xdg_config.join("systemd/user/forge-worker.service");
     let unit_after_first = std::fs::read_to_string(&worker_unit_path).unwrap();
 
-    let o = e.forge("ok.sh", &["init"]);
+    let o = forge_init_no_session(&e, &[]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
     assert!(
@@ -81,13 +122,85 @@ fn forge_init_run_twice_changes_nothing_the_second_time() {
 fn forge_init_home_overrides_the_default_resolution() {
     let e = Env::new();
     let custom = e._dir.path().join("elsewhere");
-    let o = e
-        .cmd("ok.sh")
-        .args(["init", "--home", custom.to_str().unwrap()])
-        .output()
-        .expect("forge init --home");
+    let o = forge_init_no_session(&e, &["--home", custom.to_str().unwrap()]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{out}");
     assert!(custom.join("config.toml").exists());
     assert!(!e.home.exists(), "the default home must not be touched");
+}
+
+const FAKE_SYSTEMCTL: &str = r#"#!/bin/bash
+echo "systemctl $*" >> "$INIT_CALLS_LOG"
+exit 0
+"#;
+
+const FAKE_LOGINCTL: &str = r#"#!/bin/bash
+echo "loginctl $*" >> "$INIT_CALLS_LOG"
+exit 0
+"#;
+
+/// The session branch: `/run/systemd/system` (faked via
+/// `FORGE_TEST_SYSTEMD_RUN_DIR`) and `XDG_RUNTIME_DIR` both present, and a
+/// fake `systemctl`/`loginctl` first on `PATH` recording their exact argv
+/// so nothing real is ever reachable — `forge init` can only invoke the
+/// fakes, and the assertions below pin down that it invokes exactly the
+/// three commands `install_units` is meant to run, on the unit file paths
+/// it just wrote under this test's own `XDG_CONFIG_HOME`.
+#[test]
+fn forge_init_enables_units_when_a_systemd_session_is_reachable() {
+    let e = Env::new();
+
+    let run_dir = e._dir.path().join("run");
+    std::fs::create_dir_all(run_dir.join("systemd/system")).unwrap();
+    let runtime_dir = e._dir.path().join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+
+    let fakebin = e._dir.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    write_fake(&fakebin.join("systemctl"), FAKE_SYSTEMCTL);
+    write_fake(&fakebin.join("loginctl"), FAKE_LOGINCTL);
+    let path = format!(
+        "{}:{}",
+        fakebin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let calls_log = e._dir.path().join("init-calls.log");
+
+    let o = e
+        .cmd("ok.sh")
+        .env("PATH", &path)
+        .env("FORGE_TEST_SYSTEMD_RUN_DIR", &run_dir)
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("INIT_CALLS_LOG", &calls_log)
+        .args(["init"])
+        .output()
+        .expect("forge init");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+
+    let unit_dir = e.xdg_config.join("systemd/user");
+    let worker_path = unit_dir.join("forge-worker.service");
+    let web_path = unit_dir.join("forge-web.service");
+    assert!(worker_path.exists());
+    assert!(web_path.exists());
+
+    assert!(out.contains("installed and enabled"), "{out}");
+    assert!(!out.contains("no systemd user session detected"), "{out}");
+
+    let calls = std::fs::read_to_string(&calls_log).unwrap_or_default();
+    let calls: Vec<&str> = calls.lines().collect();
+    let enable = format!(
+        "systemctl --user enable --now {} {}",
+        worker_path.display(),
+        web_path.display()
+    );
+    assert_eq!(
+        calls,
+        [
+            "systemctl --user daemon-reload",
+            &enable,
+            "loginctl enable-linger"
+        ],
+        "{calls:?}"
+    );
 }

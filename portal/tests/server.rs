@@ -2,8 +2,8 @@
 //! six sections in plain words, an unknown or revoked token is a plain
 //! 404, a deploy target's screenshot streams through, and the two write
 //! routes — `POST /p/<token>/answer` and `POST /p/<token>/ask` — reach
-//! `forge answer`/`forge ask` with the right arguments, token-scoped and
-//! rate-limited.
+//! `forge answer`/`forge ask` with the right arguments, token-scoped,
+//! rate-limited, and body-bounded.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -159,7 +159,7 @@ case "$1" in
     echo '[]'
     ;;
   answer)
-    printf 'answer|%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
+    printf 'answer|%s|%s|%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" "$6" "$7" >> "$CALLS"
     touch "$ANSWERED"
     echo "answered task $2 as 99"
     ;;
@@ -415,7 +415,7 @@ fn answering_posts_through_to_forge_answer_and_requeues() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(
         p.calls(),
-        vec!["answer|42|Yes, 10%.|--by|customer".to_string()]
+        vec!["answer|42|Yes, 10%.|--by|customer|--project|acme".to_string()]
     );
     // The re-read page no longer lists the question the fake's answer
     // handler just re-queued.
@@ -476,4 +476,22 @@ fn the_eleventh_write_in_a_minute_is_refused() {
     assert_eq!(status, 429, "{body}");
     // The refused write never reaches `forge`.
     assert_eq!(p.calls().len(), 10);
+}
+
+#[test]
+fn a_body_over_64_kib_is_the_fixed_write_error_and_calls_forge_not_at_all() {
+    let (p, _shot) = start();
+    let pad = "a".repeat(64 * 1024 - "message=".len() + 1);
+    let (status, _, body) = post_form(&p.addr, "/p/good-token/ask", &format!("message={pad}"));
+    assert_eq!(status, 413, "{body}");
+    assert!(p.calls().is_empty());
+}
+
+#[test]
+fn a_body_just_under_64_kib_is_accepted() {
+    let (p, _shot) = start();
+    let pad = "a".repeat(64 * 1024 - "message=".len() - 1);
+    let (status, _, body) = post_form(&p.addr, "/p/good-token/ask", &format!("message={pad}"));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(p.calls().len(), 1);
 }

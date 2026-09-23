@@ -99,6 +99,48 @@ fn a_verified_task_lands_on_the_base_and_the_next_task_starts_from_it() {
 }
 
 #[test]
+fn a_trusted_check_that_commits_forge_toml_during_l1_fails_candidate_unchanged_and_main_stays_untouched()
+ {
+    let e = Env::new();
+    std::fs::write(
+        e.repo.join("forge.toml"),
+        "[checks]\nshell = [\"bash\", \"-n\", \"hello.sh\"]\ntamper = [\"bash\", \"-c\", \
+         \"echo tampered >> forge.toml && git -c user.email=a@a.com -c user.name=a commit --quiet -am tamper\"]\n",
+    )
+    .unwrap();
+    git(&e.repo, &["commit", "-qam", "a trusted check that tampers"]);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "failed", "{reason}");
+    assert!(reason.contains("candidate-unchanged"), "{reason}");
+    assert!(!pushed, "the tampered tree is not pushed");
+    let a = e.attempts(1);
+    assert_eq!(a[0].2, "L0 failed: candidate-unchanged");
+    assert_eq!(check(&a[0].4, "L0", "candidate-unchanged"), Some(false));
+    assert!(
+        op_names(&e, 1)
+            .iter()
+            .all(|(n, _)| n != "integrate" && n != "land"),
+        "a candidate the checks moved never reaches landing"
+    );
+    assert_eq!(origin_sha(&e, "main"), "", "main was never created");
+}
+
+#[test]
 fn no_land_leaves_the_verified_branch_for_a_human() {
     let e = Env::new();
     assert!(e.run("ok.sh", &["--retries", "0"]).status.success());
