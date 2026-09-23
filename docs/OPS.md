@@ -238,3 +238,21 @@ assets. Until then, cut a release by hand: tag the commit `v<version>`
 matching `Cargo.toml`'s `[package] version` (so `forge version` names the
 same tag), run `scripts/release.sh` for each target the release ships, and
 attach the resulting `dist/` files to the tag.
+
+
+### When the worker dies
+
+Jobs record the PID of the process that claims them. On startup, the worker
+recovers running jobs whose owner has died (including old rows without an
+owner). A job with no recorded effects returns to the queue with a recovery
+step naming the previous worker. A job with any recorded effects ends failed;
+its verdict names the previous worker and every recorded effect. Those jobs
+are never automatically rerun. The workflow's `on_failure = "ask:operator"`
+or `"ask:contact"` files the usual question; `drop` leaves the failed record,
+and `retry:N` files an operator question instead of repeating external work.
+The second-signal abort path applies the same rule. Inspect `forge job show`,
+`forge job log`, and `forge requests` to reconcile interrupted effects.
+
+Recovery uses the persisted effect rows; it cannot identify an external effect
+that happened before its row was recorded. PID ownership also cannot distinguish
+a dead process from an unrelated process that has reused its PID.

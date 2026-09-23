@@ -3911,3 +3911,180 @@ on_failure = "drop"
         "a failed send must record no effect: {doc:?}"
     );
 }
+
+#[test]
+fn killed_job_without_effects_is_requeued_and_completed() {
+    killed_job_recovery(false);
+}
+
+#[test]
+fn killed_job_with_effects_fails_without_repeating_them() {
+    killed_job_recovery(true);
+}
+
+fn killed_job_recovery(with_effect: bool) {
+    use std::time::Duration;
+    let e = Env::new();
+    assert!(
+        e.forge(
+            "ok.sh",
+            &[
+                "project",
+                "new",
+                "acme",
+                "--purpose",
+                "p",
+                "--repo",
+                e.repo.to_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(e.forge("ok.sh", &["workflows"]).status.success());
+    let first = if with_effect {
+        "{ action = \"write-file\", effect = \"file\" },"
+    } else {
+        ""
+    };
+    std::fs::write(
+        e.home.join("workflows/recover.toml"),
+        format!(
+            r#"
+name = "recover"
+kind = "run"
+description = "worker death regression"
+steps = [{first} {{ action = "pause" }}]
+[trigger]
+on = "manual"
+[assert]
+ok = ["true"]
+[limits]
+budget_usd = 1.0
+per_day = 10
+on_failure = "ask:operator"
+"#
+        ),
+    )
+    .unwrap();
+    let action = e.home.join("workflows/actions/pause.toml");
+    std::fs::write(
+        &action,
+        r#"
+name = "pause"
+kind = "operation"
+description = "pause until killed"
+run = ["bash", "-c", "touch sleeping; exec sleep 30"]
+"#,
+    )
+    .unwrap();
+    let input = e.home.join("recovery-input.json");
+    std::fs::write(&input, r#"{"path":"receipt.txt","content":"sent"}"#).unwrap();
+    let out = e.forge(
+        "ok.sh",
+        &[
+            "job",
+            "start",
+            "acme",
+            "recover",
+            "--input",
+            input.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let id: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+    let mut worker = Worker::spawn(e.cmd("ok.sh").args(["work", "--once"]));
+    let pid = worker.id();
+    assert!(wait_until(
+        || {
+            let db = e.db();
+            let owned: bool = db
+                .query_row(
+                    "SELECT state='running' AND worker_pid=?2 FROM jobs WHERE id=?1",
+                    rusqlite::params![id, pid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let effects: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM job_effects WHERE job_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            owned
+                && (!with_effect || effects == 1)
+                && e.home.join(format!("worktrees/job-{id}/sleeping")).exists()
+        },
+        Duration::from_secs(10)
+    ));
+    worker.signal(libc::SIGKILL);
+    assert!(!worker.wait().success());
+    // The restart can now complete the otherwise identical operation immediately.
+    std::fs::write(
+        &action,
+        r#"
+name = "pause"
+kind = "operation"
+description = "pause released"
+run = ["true"]
+"#,
+    )
+    .unwrap();
+    let restart = e.forge("ok.sh", &["work", "--once"]);
+    assert!(
+        restart.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    let db = e.db();
+    let (state, verdict, owner): (String, String, Option<i64>) = db
+        .query_row(
+            "SELECT state, verdict_json, worker_pid FROM jobs WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(owner, None);
+    let effects: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM job_effects WHERE job_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    if with_effect {
+        assert_eq!(state, "failed");
+        assert_eq!(effects, 1);
+        assert!(verdict.contains("receipt.txt"), "{verdict}");
+        assert!(verdict.contains(&pid.to_string()), "{verdict}");
+        let reason: String = db
+            .query_row(
+                "SELECT reason FROM tasks WHERE project='acme' AND state='blocked'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(reason.contains("receipt.txt"), "{reason}");
+    } else {
+        assert_eq!(state, "ok");
+        assert_eq!(effects, 0);
+        let note: String = db
+            .query_row(
+                "SELECT tail FROM job_steps WHERE job_id=?1 AND action='recovery'",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(note.contains(&pid.to_string()), "{note}");
+    }
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

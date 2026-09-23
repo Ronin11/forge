@@ -705,3 +705,21 @@ Each step is an initiative on the `forge` project, sized to land.
    brief: the plumber's quote-by-text, or Nate's own example, end to
    end, as the bench for everything above.
 8. **The local runner**, when a real effect needs it.
+
+
+### When the worker dies
+
+Jobs record the PID of the process that claims them. On startup, the worker
+recovers running jobs whose owner has died (including old rows without an
+owner). A job with no recorded effects returns to the queue with a recovery
+step naming the previous worker. A job with any recorded effects ends failed;
+its verdict names the previous worker and every recorded effect. Those jobs
+are never automatically rerun. The workflow's `on_failure = "ask:operator"`
+or `"ask:contact"` files the usual question; `drop` leaves the failed record,
+and `retry:N` files an operator question instead of repeating external work.
+The second-signal abort path applies the same rule. Inspect `forge job show`,
+`forge job log`, and `forge requests` to reconcile interrupted effects.
+
+Recovery uses the persisted effect rows; it cannot identify an external effect
+that happened before its row was recorded. PID ownership also cannot distinguish
+a dead process from an unrelated process that has reused its PID.

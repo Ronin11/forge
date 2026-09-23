@@ -1513,14 +1513,11 @@ pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) ->
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(serde_json::Value::Null);
             let contact = trigger_contact(&job, wf.trigger.as_ref(), &input);
-            decide_on_failure(
-                &wf.limits
-                    .as_ref()
-                    .context("run workflow has no limits")?
-                    .on_failure,
-                job.retry_count,
-                contact.as_deref(),
-            )
+            wf.limits
+                .as_ref()
+                .map_or(FailureAction::Ask(None), |limits| {
+                    decide_on_failure(&limits.on_failure, job.retry_count, contact.as_deref())
+                })
         }
         Err(_) => FailureAction::Ask(None),
     };
