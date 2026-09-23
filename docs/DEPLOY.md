@@ -155,6 +155,13 @@ After a landing on the target's repository, if the target was declared
 separate steps with separate records on purpose: a landing can be good
 and a deploy can still fail, and the record must say which.
 
+The landing a deploy follows pushes from the kernel-owned repository, by
+commit id: the task branch, then the base. A deploy target that
+publishes with `git push` in its own method is a separate matter (it runs
+as that action, from the scratch tree of the landed commit); the kernel's
+own pushes never run hooks, credential helpers or ssh commands set in an
+agent's clone.
+
 A deploy is recorded like an operation: target, commit, started,
 finished, the check's output and verdict, and what it rolled back to if
 it did. It emits `DeployStarted` and `DeployFinished` events, so the
