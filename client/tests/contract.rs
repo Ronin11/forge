@@ -72,3 +72,28 @@ fn a_row_missing_a_required_field_is_an_error_naming_it_and_the_verb() {
         "error should name the verb: {msg}"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dropping_an_events_iterator_kills_and_reaps_its_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = fake_forge(dir.path(), "#!/bin/sh\necho $$\nexec sleep 300\n");
+    let forge = Forge {
+        bin,
+        ..Forge::new()
+    };
+    let mut subscription = forge.subscribe(7).unwrap();
+    let pid = subscription.next_line().unwrap().unwrap();
+    // A retained cancellation handle must not extend the follower's lifetime.
+    let killer = subscription.killer();
+    drop(subscription);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "follower {pid} was not reaped"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    killer.kill();
+}

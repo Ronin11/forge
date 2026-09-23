@@ -322,6 +322,7 @@ and does not parse stdout.
 - **`forge events [--since OFFSET] [--follow] [--task ID]`** — the event
   log as JSON lines, one [`Event`](#events) per line. See
   [Snapshot, then subscribe](#snapshot-then-subscribe).
+  The follower is killed and reaped when its client iterator or web stream closes, and on Linux is killed if its owning process exits.
 - **`forge retry ID [--chain]`** — the one write verb a client uses (the
   TUI's `r`/`R`, the web UI's retry button, `POST /api/retry/<id>` on
   the web server). Not `--json`; a client shows its text output and then

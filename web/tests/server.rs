@@ -32,7 +32,7 @@ case "$1" in
     done
     echo "withdrew task $id: $reason" ;;
   land) echo "landed task $2 @ deadbeef" ;;
-  events) echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; sleep 5 ;;
+  events) echo $$ > "$FORGE_HOME/follower.pid"; echo '{"type":"note","task":1,"text":"first","ts":1}'; echo '{"type":"note","task":1,"text":"second","ts":2}'; exec "$FORGE_HOME/follower" 300 ;;
   plugin)
     case "$2" in
       list) echo '[{"name":"echo","description":"says things","dir":"/p/echo","source":"/p","capabilities":["events"],"restart":"always","enabled":true}]' ;;
@@ -224,6 +224,8 @@ impl Drop for Web {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        #[cfg(target_os = "linux")]
+        assert_no_followers(self.home.path());
     }
 }
 
@@ -236,6 +238,7 @@ fn start() -> Web {
 /// operator setting like `[web] tailscale_login`.
 fn start_with_config(config: Option<&str>) -> Web {
     let home = tempfile::tempdir().unwrap();
+    std::fs::copy("/bin/sleep", home.path().join("follower")).unwrap();
     let fake = home.path().join("forge");
     std::fs::write(&fake, FAKE).unwrap();
     let bin_dir = home.path().join("bin");
@@ -1270,6 +1273,44 @@ fn events_stream_as_server_sent_events_from_the_offset() {
     }
     assert_eq!(seen.len(), 2, "{seen:?}");
     assert!(seen[0].contains("first") && seen[1].contains("second"));
+    let pid = std::fs::read_to_string(w.home.path().join("follower.pid")).unwrap();
+    drop(r);
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while std::path::Path::new(&format!("/proc/{}", pid.trim())).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "follower {pid} was not reaped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[test]
+fn server_exit_kills_an_open_streams_follower() {
+    let w = start();
+    let mut s = TcpStream::connect(&w.addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    write!(
+        s,
+        "GET /api/events HTTP/1.1\r\nHost: x\r\nCookie: forge_token={}\r\n\r\n",
+        w.token
+    )
+    .unwrap();
+    let mut r = BufReader::new(s);
+    loop {
+        let mut line = String::new();
+        assert_ne!(r.read_line(&mut line).unwrap(), 0);
+        if line.contains("second") {
+            break;
+        }
+    }
+    // Web::drop checks the process list while the connection is still open.
+    drop(w);
+    drop(r);
 }
 
 /// One raw HTTP/1.0 POST with a body; returns (status, headers, body).
@@ -1384,4 +1425,30 @@ fn a_webhook_body_over_the_limit_is_refused_before_it_reaches_forge() {
     );
     assert_eq!(status, 413);
     assert_eq!(fire_log(&w), "");
+}
+
+// Every server fixture checks teardown, including tests that panic. Match the
+// dedicated executable's full path, never another test's process name.
+#[cfg(target_os = "linux")]
+fn assert_no_followers(home: &std::path::Path) {
+    let exe = home.join("follower");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let pids: Vec<_> = std::fs::read_dir("/proc")
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                std::fs::read_link(entry.path().join("exe")).ok().as_ref() == Some(&exe)
+            })
+            .map(|entry| entry.file_name())
+            .collect();
+        if pids.is_empty() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "orphaned followers: {pids:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
