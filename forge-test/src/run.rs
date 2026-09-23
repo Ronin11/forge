@@ -191,15 +191,73 @@ fn git_dir(dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
 }
 
-fn key(argv: &[String]) -> String {
+/// The cache key: the hash of the working tree (tracked, modified, and
+/// untracked non-ignored files) and the argv. The tree comes from a temporary
+/// index so the real one is never touched.
+pub fn cache_key(dir: &Path, argv: &[String]) -> Result<String, String> {
     use std::hash::{Hash, Hasher};
+    let gd = git_dir(dir)?;
+    let tmp = gd.join(format!("forge-test-index.{}", std::process::id()));
+    let git = |args: &[&str]| -> Result<String, String> {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_INDEX_FILE", &tmp)
+            .output()
+            .map_err(|e| format!("git: {e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let tree = git(&["add", "-A"]).and_then(|_| git(&["write-tree"]));
+    let _ = std::fs::remove_file(&tmp);
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    tree?.hash(&mut h);
     argv.hash(&mut h);
-    format!("{:016x}", h.finish())
+    Ok(format!("{:016x}", h.finish()))
+}
+
+fn utc(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// A saved result: `<exit code> <unix secs>\n<condensed text>`.
+fn load_cached(path: &Path) -> Option<(String, i32)> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let (head, text) = raw.split_once('\n')?;
+    let (code, secs) = head.split_once(' ')?;
+    let secs: u64 = secs.parse().ok()?;
+    Some((
+        format!("cached: tree unchanged since {}\n{text}", utc(secs)),
+        code.parse().ok()?,
+    ))
 }
 
 /// Run and report. Returns the process exit code for `forge-test` itself.
 pub fn run(dir: &Path, args: &[String]) -> Result<(String, i32), String> {
+    let fresh = args.first().is_some_and(|a| a == "--fresh");
+    let args = if fresh { &args[1..] } else { args };
     let args = args.strip_prefix(&["--".to_string()]).unwrap_or(args);
     let (argv, timeout, full) = if args.is_empty() {
         let (a, t) = read_checks(dir)?;
@@ -210,7 +268,12 @@ pub fn run(dir: &Path, args: &[String]) -> Result<(String, i32), String> {
     };
     let logs = git_dir(dir)?.join("forge-test");
     std::fs::create_dir_all(&logs).map_err(|e| format!("{}: {e}", logs.display()))?;
-    let log_path = logs.join(format!("{}.log", key(&argv)));
+    let key = cache_key(dir, &argv)?;
+    let saved = logs.join(format!("{key}.result"));
+    if !fresh && let Some(hit) = load_cached(&saved) {
+        return Ok(hit);
+    }
+    let log_path = logs.join(format!("{key}.log"));
     let file =
         std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
     let err = file.try_clone().map_err(|e| e.to_string())?;
@@ -254,6 +317,12 @@ pub fn run(dir: &Path, args: &[String]) -> Result<(String, i32), String> {
         &log_path.display().to_string(),
         full,
     );
+    if matches!(exit, Exit::Code(_)) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = std::fs::write(&saved, format!("{code} {now}\n{text}"));
+    }
     Ok((text, code))
 }
 
@@ -348,5 +417,117 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
     fn timeout_is_reported() {
         let s = condense("c", Exit::TimedOut(9), "hi\n", "/l", false);
         assert!(s.contains("timed out after 9s"));
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let o = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    }
+
+    fn repo(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("forge-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        git(&d, &["init", "-q"]);
+        std::fs::write(d.join("a.txt"), "one\n").unwrap();
+        git(&d, &["add", "-A"]);
+        git(&d, &["commit", "-qm", "x"]);
+        d
+    }
+
+    fn argv() -> Vec<String> {
+        vec!["true".into()]
+    }
+
+    #[test]
+    fn a_tree_edit_changes_the_key() {
+        let d = repo("edit");
+        let k = cache_key(&d, &argv()).unwrap();
+        assert_eq!(k, cache_key(&d, &argv()).unwrap());
+        std::fs::write(d.join("a.txt"), "two\n").unwrap();
+        assert_ne!(k, cache_key(&d, &argv()).unwrap());
+        assert_ne!(
+            cache_key(&d, &argv()).unwrap(),
+            cache_key(&d, &["false".into()]).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_untracked_file_changes_the_key_and_an_ignored_one_does_not() {
+        let d = repo("untracked");
+        std::fs::write(d.join(".gitignore"), "ignored\n").unwrap();
+        git(&d, &["add", "-A"]);
+        git(&d, &["commit", "-qm", "ignore"]);
+        let k = cache_key(&d, &argv()).unwrap();
+        std::fs::write(d.join("ignored"), "x").unwrap();
+        assert_eq!(k, cache_key(&d, &argv()).unwrap());
+        std::fs::write(d.join("new.txt"), "x").unwrap();
+        assert_ne!(k, cache_key(&d, &argv()).unwrap());
+    }
+
+    #[test]
+    fn the_real_index_is_untouched() {
+        let d = repo("index");
+        std::fs::write(d.join("new.txt"), "x").unwrap();
+        std::fs::write(d.join("a.txt"), "changed\n").unwrap();
+        let before = std::fs::read(d.join(".git/index")).unwrap();
+        let status = git(&d, &["status", "--porcelain"]);
+        cache_key(&d, &argv()).unwrap();
+        assert_eq!(before, std::fs::read(d.join(".git/index")).unwrap());
+        assert_eq!(status, git(&d, &["status", "--porcelain"]));
+        assert!(status.contains("?? new.txt"));
+    }
+
+    #[test]
+    fn the_log_lands_under_git_and_a_rerun_is_a_cache_hit() {
+        let d = repo("log");
+        let args = vec!["echo".to_string(), "hi".to_string()];
+        let (first, code) = run(&d, &args).unwrap();
+        assert_eq!(code, 0);
+        assert!(!first.starts_with("cached:"));
+        let gd = d.join(".git/forge-test");
+        assert!(first.contains(&gd.display().to_string()), "{first}");
+        assert!(
+            std::fs::read_dir(&gd)
+                .unwrap()
+                .any(|e| { e.unwrap().path().extension().is_some_and(|x| x == "log") })
+        );
+        assert!(git(&d, &["status", "--porcelain"]).is_empty());
+        let (second, _) = run(&d, &args).unwrap();
+        assert!(
+            second.starts_with("cached: tree unchanged since "),
+            "{second}"
+        );
+        assert!(second.ends_with(&first));
+        let mut fresh = vec!["--fresh".to_string()];
+        fresh.extend(args.clone());
+        assert!(!run(&d, &fresh).unwrap().0.starts_with("cached:"));
+        std::fs::write(d.join("a.txt"), "edit\n").unwrap();
+        assert!(!run(&d, &args).unwrap().0.starts_with("cached:"));
+    }
+
+    #[test]
+    fn the_hidden_test_overlay_is_never_in_the_agents_clone() {
+        // The overlay is placed only in the verification worktree and removed
+        // before it ends; a clone made for an agent holds committed files only,
+        // so the namespace is absent and cannot enter the key.
+        let d = repo("overlay");
+        let clone = d.with_extension("clone");
+        let _ = std::fs::remove_dir_all(&clone);
+        git(
+            &d,
+            &["clone", "-q", d.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        assert!(!clone.join("tests/hidden").exists());
+        assert_eq!(
+            cache_key(&d, &argv()).unwrap(),
+            cache_key(&clone, &argv()).unwrap()
+        );
     }
 }
