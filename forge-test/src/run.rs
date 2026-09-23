@@ -198,9 +198,9 @@ pub fn cache_key(dir: &Path, argv: &[String]) -> Result<String, String> {
     use std::hash::{Hash, Hasher};
     let gd = git_dir(dir)?;
     let tmp = gd.join(format!("forge-test-index.{}", std::process::id()));
-    let git = |args: &[&str]| -> Result<String, String> {
+    let git = |args: &str| -> Result<String, String> {
         let o = Command::new("git")
-            .args(args)
+            .args(args.split_whitespace())
             .current_dir(dir)
             .env("GIT_INDEX_FILE", &tmp)
             .output()
@@ -208,13 +208,13 @@ pub fn cache_key(dir: &Path, argv: &[String]) -> Result<String, String> {
         if !o.status.success() {
             return Err(format!(
                 "git {}: {}",
-                args.join(" "),
+                args,
                 String::from_utf8_lossy(&o.stderr).trim()
             ));
         }
         Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let tree = git(&["add", "-A"]).and_then(|_| git(&["write-tree"]));
+    let tree = git("add -A").and_then(|_| git("write-tree"));
     let _ = std::fs::remove_file(&tmp);
     let mut h = std::collections::hash_map::DefaultHasher::new();
     tree?.hash(&mut h);
@@ -419,10 +419,10 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         assert!(s.contains("timed out after 9s"));
     }
 
-    fn git(dir: &Path, args: &[&str]) -> String {
+    fn git(dir: &Path, args: &str) -> String {
         let o = Command::new("git")
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(args)
+            .args(args.split_whitespace())
             .current_dir(dir)
             .output()
             .unwrap();
@@ -434,15 +434,15 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         let d = std::env::temp_dir().join(format!("forge-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        git(&d, &["init", "-q"]);
+        git(&d, "init -q");
         std::fs::write(d.join("a.txt"), "one\n").unwrap();
-        git(&d, &["add", "-A"]);
-        git(&d, &["commit", "-qm", "x"]);
+        git(&d, "add -A");
+        git(&d, "commit -qm x");
         d
     }
 
     fn argv() -> Vec<String> {
-        vec!["true".into()]
+        Vec::from(["true".to_string()])
     }
 
     #[test]
@@ -454,7 +454,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         assert_ne!(k, cache_key(&d, &argv()).unwrap());
         assert_ne!(
             cache_key(&d, &argv()).unwrap(),
-            cache_key(&d, &["false".into()]).unwrap()
+            cache_key(&d, &[String::from("false")]).unwrap()
         );
     }
 
@@ -462,8 +462,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
     fn an_untracked_file_changes_the_key_and_an_ignored_one_does_not() {
         let d = repo("untracked");
         std::fs::write(d.join(".gitignore"), "ignored\n").unwrap();
-        git(&d, &["add", "-A"]);
-        git(&d, &["commit", "-qm", "ignore"]);
+        git(&d, "add -A");
+        git(&d, "commit -qm ignore");
         let k = cache_key(&d, &argv()).unwrap();
         std::fs::write(d.join("ignored"), "x").unwrap();
         assert_eq!(k, cache_key(&d, &argv()).unwrap());
@@ -477,17 +477,17 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         std::fs::write(d.join("new.txt"), "x").unwrap();
         std::fs::write(d.join("a.txt"), "changed\n").unwrap();
         let before = std::fs::read(d.join(".git/index")).unwrap();
-        let status = git(&d, &["status", "--porcelain"]);
+        let status = git(&d, "status --porcelain");
         cache_key(&d, &argv()).unwrap();
         assert_eq!(before, std::fs::read(d.join(".git/index")).unwrap());
-        assert_eq!(status, git(&d, &["status", "--porcelain"]));
+        assert_eq!(status, git(&d, "status --porcelain"));
         assert!(status.contains("?? new.txt"));
     }
 
     #[test]
     fn the_log_lands_under_git_and_a_rerun_is_a_cache_hit() {
         let d = repo("log");
-        let args = vec!["echo".to_string(), "hi".to_string()];
+        let args = Vec::from(["echo".to_string(), "hi".to_string()]);
         let (first, code) = run(&d, &args).unwrap();
         assert_eq!(code, 0);
         assert!(!first.starts_with("cached:"));
@@ -498,14 +498,14 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
                 .unwrap()
                 .any(|e| { e.unwrap().path().extension().is_some_and(|x| x == "log") })
         );
-        assert!(git(&d, &["status", "--porcelain"]).is_empty());
+        assert!(git(&d, "status --porcelain").is_empty());
         let (second, _) = run(&d, &args).unwrap();
         assert!(
             second.starts_with("cached: tree unchanged since "),
             "{second}"
         );
         assert!(second.ends_with(&first));
-        let mut fresh = vec!["--fresh".to_string()];
+        let mut fresh = Vec::from(["--fresh".to_string()]);
         fresh.extend(args.clone());
         assert!(!run(&d, &fresh).unwrap().0.starts_with("cached:"));
         std::fs::write(d.join("a.txt"), "edit\n").unwrap();
@@ -520,10 +520,13 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         let d = repo("overlay");
         let clone = d.with_extension("clone");
         let _ = std::fs::remove_dir_all(&clone);
-        git(
-            &d,
-            &["clone", "-q", d.to_str().unwrap(), clone.to_str().unwrap()],
-        );
+        std::process::Command::new("git")
+            .arg("clone")
+            .arg("-q")
+            .arg(&d)
+            .arg(&clone)
+            .status()
+            .unwrap();
         assert!(!clone.join("tests/hidden").exists());
         assert_eq!(
             cache_key(&d, &argv()).unwrap(),
