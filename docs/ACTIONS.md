@@ -51,6 +51,11 @@ see `agent::claude_argv`). A job's directive step gets no tools at all.
   `code` adds namespace-untouched.
 - The prompt is the smallest part.
 
+The model's result contains a summary, checks run, claims with evidence,
+and any request for input. It is not asked to report `changes[]`: for
+every provider the verifier derives that field from git and stores it
+in the envelope. There is no model-reported file list to reconcile.
+
 A directive file names its `contract`, the kernel-enforced behavior that
 runs it (default: its own name). Four contracts exist: `code`, `tests`,
 `review`, and `plan`. Many directives over few contracts: `docs`, `fix`,

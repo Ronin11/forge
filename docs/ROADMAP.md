@@ -54,6 +54,23 @@ Not a feature set. A week of the following, measured from the record:
   its onboarding landed.
 - UTC everywhere in the kernel; every client renders local time.
 
+## Hardening
+
+Before the measured week, the eight-task hardening initiative addresses
+the [Astra review of 2026-09-22](research/review-astra-2026-09-22.md):
+
+1. Keep host git out of agent-controlled repositories.
+2. Bind verification and landing to the same approved commit.
+3. Enforce portal tokens as project and answer-recipient boundaries.
+4. Persist job ownership and recover work after worker death.
+5. Reconcile interrupted external effects safely, without blind replay.
+6. Isolate each attempt's provider state and package caches.
+7. Surface quiet failures and bound client and portal requests.
+8. Correct behavioral documentation to match the implementation.
+
+These are prerequisites for the measured week, not evidence that it has
+already succeeded.
+
 ## Open, in order
 
 **Before 1.0**
