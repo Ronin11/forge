@@ -810,6 +810,9 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
         f.store.requeue(id, "previous worker exited")?;
         eprintln!("requeued task {id}: its previous worker exited");
     }
+    for (id, owner) in f.store.orphan_jobs(pid_alive)? {
+        crate::job::recover_interrupted(&f, id, owner)?;
+    }
     let pid = std::process::id() as i64;
     let pid_file = f.paths.home.join("worker.pid");
     let _ = std::fs::write(
@@ -983,7 +986,7 @@ pub async fn work(f: Arc<Forge>, opts: WorkOpts) -> Result<()> {
                         f.store.requeue(id, "worker aborted by operator")?;
                     }
                     for id in job_ids.drain(..) {
-                        f.store.requeue_job(id)?;
+                        crate::job::recover_interrupted(&f, id, Some(pid))?;
                     }
                     break;
                 }

@@ -204,6 +204,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
     "workflow_source",
     "due_at",
     "retry_count",
+    "worker_pid",
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
@@ -332,8 +333,8 @@ impl Store {
     pub fn create_job(&self, j: &Job) -> Result<i64> {
         let c = self.lock();
         c.execute(
-            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO jobs (project, workflow, workflow_hash, landed_sha, trigger_kind, trigger_ref, state, workflow_source, dry_run, started_at, finished_at, cost_usd, verdict_json, due_at, retry_count, worker_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, CASE WHEN ?7='running' THEN ?16 ELSE NULL END)",
             params![
                 j.project,
                 j.workflow,
@@ -350,6 +351,7 @@ impl Store {
                 j.verdict_json,
                 j.due_at,
                 j.retry_count,
+                std::process::id(),
             ],
         )?;
         Ok(c.last_insert_rowid())
@@ -402,7 +404,7 @@ impl Store {
         verdict_json: &str,
     ) -> Result<()> {
         self.lock().execute(
-            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5 WHERE id=?1",
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
             params![id, state.as_str(), at, cost_usd, verdict_json],
         )?;
         Ok(())
@@ -495,14 +497,14 @@ impl Store {
         let id: Option<i64> = self
             .lock()
             .query_row(
-                "UPDATE jobs SET state='running'
+                "UPDATE jobs SET state='running', worker_pid=?2
                  WHERE id = (
                    SELECT id FROM jobs
                    WHERE state='queued' OR (state='scheduled' AND due_at <= ?1)
                    ORDER BY id LIMIT 1
                  )
                  RETURNING id",
-                params![crate::unix_now()],
+                params![crate::unix_now(), std::process::id()],
                 |r| r.get(0),
             )
             .optional()?;
@@ -574,12 +576,26 @@ impl Store {
             .optional()?)
     }
 
+    /// Running jobs whose owner died, including legacy rows without an owner.
+    pub fn orphan_jobs(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<(i64, Option<i64>)>> {
+        let c = self.lock();
+        let mut stmt =
+            c.prepare("SELECT id, worker_pid FROM jobs WHERE state='running' ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get("id")?, r.get("worker_pid")?)))?
+            .collect::<rusqlite::Result<Vec<(i64, Option<i64>)>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, pid)| !pid.is_some_and(&alive))
+            .collect())
+    }
+
     /// Put a running job back in the queue: the worker aborted with it
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).
     pub fn requeue_job(&self, id: i64) -> Result<()> {
         self.lock().execute(
-            "UPDATE jobs SET state='queued' WHERE id=?1 AND state='running'",
+            "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
             params![id],
         )?;
         Ok(())
@@ -614,6 +630,49 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn orphan_jobs_selects_only_dead_or_missing_owners_and_requeue_guards_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        mk_project(&s, "acme");
+        let dead = mk_job(&s, "acme", "dead", 1);
+        let live = mk_job(&s, "acme", "live", 1);
+        let legacy = mk_job(&s, "acme", "legacy", 1);
+        let queued = mk_job(&s, "acme", "queued", 1);
+        s.lock()
+            .execute("UPDATE jobs SET worker_pid=42 WHERE id=?1", [dead])
+            .unwrap();
+        s.lock()
+            .execute("UPDATE jobs SET worker_pid=NULL WHERE id=?1", [legacy])
+            .unwrap();
+        s.requeue_job(queued).unwrap();
+        assert_eq!(
+            s.orphan_jobs(|pid| pid == i64::from(std::process::id()))
+                .unwrap(),
+            vec![(dead, Some(42)), (legacy, None)]
+        );
+        s.append_job_effect(&JobEffect {
+            job_id: dead,
+            kind: "message".into(),
+            target: "customer".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.requeue_job(dead).unwrap();
+        assert_eq!(s.job(dead).unwrap().unwrap().state, JobState::Running);
+        assert_eq!(s.job(live).unwrap().unwrap().state, JobState::Running);
+        let claimed = s.claim_next_job().unwrap().unwrap();
+        assert_eq!(claimed.id, queued);
+        assert!(
+            s.orphan_jobs(|_| true)
+                .unwrap()
+                .iter()
+                .all(|(id, _)| *id != queued)
+        );
+        s.requeue_job(legacy).unwrap();
+        assert_eq!(s.job(legacy).unwrap().unwrap().state, JobState::Queued);
     }
 
     fn mk_message_job(s: &Store, message_id: i64, retry_count: i64) -> Result<i64> {
