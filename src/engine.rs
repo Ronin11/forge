@@ -980,7 +980,12 @@ async fn run_directive_step(
                 let unfinished = verdict.envelope.is_none();
                 let progress = verdict.commits > 0 || verdict.dirty;
                 capped_committed = capped && unfinished && verdict.commits > 0 && !verdict.dirty;
-                if (capped || stopped)
+                let over = fresh_arm(t)
+                    && std::fs::read_to_string(&a.log_path)
+                        .ok()
+                        .and_then(|l| crate::handoff::last_context_tokens(&l))
+                        .is_some_and(|n| n > crate::handoff::CONTEXT_THRESHOLD_TOKENS);
+                if (capped || stopped || over)
                     && unfinished
                     && let Some(sid) = &outcome.session_id
                 {
@@ -992,8 +997,10 @@ async fn run_directive_step(
                                 &sid[..sid.len().min(8)],
                                 if stopped {
                                     "after stopping it early"
-                                } else {
+                                } else if capped {
                                     "past the turn cap"
+                                } else {
+                                    "past the context threshold"
                                 }
                             ),
                         },
@@ -1026,11 +1033,6 @@ async fn run_directive_step(
                             ),
                         },
                     );
-                    let over = fresh_arm(t)
-                        && std::fs::read_to_string(&a.log_path)
-                            .ok()
-                            .and_then(|l| crate::handoff::last_context_tokens(&l))
-                            .is_some_and(|n| n > crate::handoff::CONTEXT_THRESHOLD_TOKENS);
                     resume = Some(Resume {
                         session: sid.clone(),
                         start_sha: a.start_sha.clone(),

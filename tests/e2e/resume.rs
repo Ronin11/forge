@@ -349,3 +349,25 @@ fn the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff() {
     assert_eq!(doc["attempts"][1]["inputs"]["continuation"], "fresh");
     assert!(doc["attempts"][1]["inputs"]["resumed"].is_null());
 }
+
+#[test]
+fn the_fresh_arm_hands_off_past_the_context_threshold_without_a_turn_cap() {
+    let e = Env::new();
+    let dir = e.home.join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("experiment.toml"),
+        "[factors.continuation]\nfresh = 1.0\n",
+    )
+    .unwrap();
+    let o = e.run("freshctx.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1].1, "succeeded");
+    let prompt = e.log_text(1, 2);
+    assert!(
+        prompt.contains("Handoff: you are continuing"),
+        "missing handoff in {prompt}"
+    );
+}
