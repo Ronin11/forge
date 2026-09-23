@@ -31,11 +31,20 @@ working `FORGE_HOME` (default `~/.local/share/forge`, the same resolution
    just set up. When a systemd user session is reachable (`sd_booted()`:
    `/run/systemd/system` exists, plus `XDG_RUNTIME_DIR`, which a login
    session sets), it also runs `systemctl --user daemon-reload`,
-   `systemctl --user enable --now forge-worker.service forge-web.service`
-   and `loginctl enable-linger`, so both survive a logout. Without a
-   session, the unit files are still written, and the same three commands
-   are printed instead of run, for the operator to run by hand once one
-   is available.
+   `systemctl --user enable --now <worker unit path> <web unit path>`
+   and `loginctl enable-linger`, so both survive a logout — `enable` is
+   given the absolute paths of the two files this run just wrote, never
+   the bare unit names, so it can only ever act on those two files, not
+   on whatever `systemctl --user` would otherwise resolve a bare name to.
+   Without a session, the unit files are still written, and the same
+   three commands (with the same paths) are printed instead of run, for
+   the operator to run by hand once one is available. Nothing under
+   `install_units` runs unless both conditions hold, so a plain
+   `cargo test` — no session, `XDG_RUNTIME_DIR` unset — only ever prints;
+   `tests/e2e/init.rs` additionally strips `XDG_RUNTIME_DIR` and
+   `DBUS_SESSION_BUS_ADDRESS` from its own no-session test's environment,
+   so the suite exercises the print path even when run inside a desktop
+   session where both are set.
 6. Ends by running the same checks `forge doctor` reports (against the
    home `forge init` just set up, even with `--home`), so a missing
    `bwrap`, `git` or a `claude` CLI that is not logged in is named on the
