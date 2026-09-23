@@ -402,7 +402,7 @@ impl Store {
         verdict_json: &str,
     ) -> Result<()> {
         self.lock().execute(
-            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5 WHERE id=?1",
+            "UPDATE jobs SET state=?2, finished_at=?3, cost_usd=?4, verdict_json=?5, worker_pid=NULL WHERE id=?1",
             params![id, state.as_str(), at, cost_usd, verdict_json],
         )?;
         Ok(())
@@ -495,14 +495,14 @@ impl Store {
         let id: Option<i64> = self
             .lock()
             .query_row(
-                "UPDATE jobs SET state='running'
+                "UPDATE jobs SET state='running', worker_pid=?2
                  WHERE id = (
                    SELECT id FROM jobs
                    WHERE state='queued' OR (state='scheduled' AND due_at <= ?1)
                    ORDER BY id LIMIT 1
                  )
                  RETURNING id",
-                params![crate::unix_now()],
+                params![crate::unix_now(), std::process::id()],
                 |r| r.get(0),
             )
             .optional()?;
@@ -574,12 +574,26 @@ impl Store {
             .optional()?)
     }
 
+    /// Running jobs whose owner died, including legacy rows without an owner.
+    pub fn orphan_jobs(&self, alive: impl Fn(i64) -> bool) -> Result<Vec<(i64, Option<i64>)>> {
+        let c = self.lock();
+        let mut stmt =
+            c.prepare("SELECT id, worker_pid FROM jobs WHERE state='running' ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(i64, Option<i64>)>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, pid)| !pid.is_some_and(&alive))
+            .collect())
+    }
+
     /// Put a running job back in the queue: the worker aborted with it
     /// still in flight (see `worker::work`'s double-signal abort, which
     /// does the same for a running task's `requeue`).
     pub fn requeue_job(&self, id: i64) -> Result<()> {
         self.lock().execute(
-            "UPDATE jobs SET state='queued' WHERE id=?1 AND state='running'",
+            "UPDATE jobs SET state='queued', worker_pid=NULL WHERE id=?1 AND state='running' AND NOT EXISTS (SELECT 1 FROM job_effects WHERE job_id=?1)",
             params![id],
         )?;
         Ok(())

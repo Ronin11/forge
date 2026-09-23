@@ -625,4 +625,5 @@ CREATE INDEX decisions_task ON decisions(task_id, id);
     "
 ALTER TABLE tasks ADD COLUMN trust TEXT NOT NULL DEFAULT 'operator';
 ",
+    "ALTER TABLE jobs ADD COLUMN worker_pid INTEGER;",
 ];

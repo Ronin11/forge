@@ -1473,6 +1473,72 @@ fn executor_error_verdict(e: &anyhow::Error) -> String {
     serde_json::to_string(&verdict).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// Reconcile interrupted work without repeating any recorded external effect.
+pub(crate) fn recover_interrupted(f: &Forge, job_id: i64, owner: Option<i64>) -> Result<()> {
+    let job = f.store.job(job_id)?.context("interrupted job vanished")?;
+    let effects = f.store.job_effects(job_id)?;
+    let previous = owner.map_or_else(|| "unknown".into(), |pid| pid.to_string());
+    let mut reason = format!("previous worker {previous} exited");
+    if effects.is_empty() {
+        f.store.append_job_step(&JobStep {
+            job_id,
+            action: "recovery".into(),
+            kind: "operation".into(),
+            tail: reason.clone(),
+            ..Default::default()
+        })?;
+        f.store.requeue_job(job_id)?;
+        eprintln!("requeued job {job_id}: {reason}");
+        return Ok(());
+    }
+    for effect in &effects {
+        reason.push_str(&format!(
+            "\n{} {}: {}",
+            effect.kind, effect.target, effect.summary
+        ));
+    }
+    reason.push_str("\nAutomatic retry suppressed: effects already performed.");
+    let repo = f.store.first_repo(&job.project)?.unwrap_or_default();
+    let policy = workflows::resolve_job_for_project(
+        &f.paths.home,
+        Path::new(&repo),
+        &job.landed_sha,
+        &job.workflow,
+    );
+    // A missing workflow must not hide interrupted external work.
+    let action = match policy {
+        Ok((wf, _, _)) => {
+            let input = std::fs::read_to_string(input_dir(f, job_id).join("input.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let contact = trigger_contact(&job, wf.trigger.as_ref(), &input);
+            decide_on_failure(
+                &wf.limits
+                    .as_ref()
+                    .context("run workflow has no limits")?
+                    .on_failure,
+                job.retry_count,
+                contact.as_deref(),
+            )
+        }
+        Err(_) => FailureAction::Ask(None),
+    };
+    match action {
+        FailureAction::Stop => {}
+        FailureAction::Ask(to) => ask(f, &job.project, &repo, to.as_deref(), reason.clone())?,
+        FailureAction::Retry => ask(f, &job.project, &repo, None, reason.clone())?,
+    }
+    f.store.finish_job(
+        job_id,
+        unix_now(),
+        JobState::Failed,
+        job.cost_usd,
+        &executor_error_verdict(&anyhow::anyhow!(reason)),
+    )?;
+    Ok(())
+}
+
 /// What the worker's claim loop calls on a job it just claimed
 /// (`Store::claim_next_job`): run it to completion and report its final
 /// state. A job's own failure — a bad archive, a step that errors, a
