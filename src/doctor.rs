@@ -749,7 +749,8 @@ fn check_initiatives(f: &Forge) -> Vec<Check> {
 }
 
 fn check_logs(paths: &Paths) -> Vec<Check> {
-    let events_size = std::fs::metadata(paths.home.join("events.jsonl"))
+    let events_path = paths.home.join("events.jsonl");
+    let events_size = std::fs::metadata(&events_path)
         .map(|m| m.len())
         .unwrap_or(0);
     let (mut attempt_count, mut attempt_size, mut oldest) = (0u64, 0u64, None::<i64>);
@@ -771,27 +772,39 @@ fn check_logs(paths: &Paths) -> Vec<Check> {
             }
         }
     }
+    let dropped = crate::report::dropped_log_task_count(&events_path);
     let total = events_size + attempt_size;
     let detail = format!(
-        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}",
+        "events.jsonl {}; {attempt_count} attempt log(s) totaling {}{}{}",
         human_bytes(events_size),
         human_bytes(attempt_size),
         oldest.map_or(String::new(), |o| format!(", oldest {}", ymd(o))),
+        if dropped > 0 {
+            format!("; {dropped} task(s) lost log lines")
+        } else {
+            String::new()
+        },
     );
     const GIB: u64 = 1024 * 1024 * 1024;
-    vec![if total >= GIB {
-        check(
+    let disk_hint = format!(
+        "{} of logs on disk; archive or delete old attempt logs under {} by hand",
+        human_bytes(total),
+        paths.logs.display()
+    );
+    let dropped_hint = format!(
+        "check disk space and permissions for {}",
+        events_path.display()
+    );
+    vec![match (total >= GIB, dropped > 0) {
+        (false, false) => check("logs", Status::Ok, detail, ""),
+        (true, false) => check("logs", Status::Warn, detail, disk_hint),
+        (false, true) => check("logs", Status::Warn, detail, dropped_hint),
+        (true, true) => check(
             "logs",
             Status::Warn,
             detail,
-            format!(
-                "{} of logs on disk; archive or delete old attempt logs under {} by hand",
-                human_bytes(total),
-                paths.logs.display()
-            ),
-        )
-    } else {
-        check("logs", Status::Ok, detail, "")
+            format!("{disk_hint}; {dropped_hint}"),
+        ),
     }]
 }
 

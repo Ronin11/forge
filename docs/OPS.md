@@ -5,6 +5,20 @@ and what to do when it does not, plus how a release is built and installed.
 docs/CHECKS.md covers the standing checks (doctor, drift); `backup-daily`
 below is the job that guards the data.*
 
+## When the event log cannot be written
+
+`FORGE_HOME/events.jsonl` (the record `forge job show` and every client's
+subscription read) is written best-effort: a directory that is briefly
+full or wrongly permissioned never fails the attempt whose event it was.
+The first write that fails for a task prints one `Note` on stderr naming
+the path and the error, and never repeats for that task — an attempt
+stuck in a bad environment does not spam its own log. `forge doctor`'s
+`logs` check counts how many distinct tasks hit this, adding `N task(s)
+lost log lines` to its detail and its hint (`check disk space and
+permissions for events.jsonl`) once `N` is above zero, so a systemic
+problem is visible even though no single attempt reported it as a
+failure.
+
 ## Installing and upgrading
 
 `forge init [--home DIR]` is what a second machine runs once, against the

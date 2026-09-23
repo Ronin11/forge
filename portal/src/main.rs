@@ -48,7 +48,7 @@ use forge_client::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -253,12 +253,23 @@ fn form_value(body: &str, key: &str) -> Option<String> {
         .map(|(_, v)| urldecode(v))
 }
 
-/// The request body, read to completion (tiny_http's reader is already
-/// bounded by `Content-Length`).
-fn read_body(req: &mut Request) -> String {
-    let mut body = String::new();
-    let _ = req.as_reader().read_to_string(&mut body);
-    body
+/// The largest request body a write route accepts (see docs/PORTAL.md).
+const MAX_BODY_BYTES: u64 = 64 * 1024;
+
+/// The request body, read to completion, bounded at `MAX_BODY_BYTES`:
+/// `None` once that many bytes have been read, whether or not the
+/// stream had more to give, so a request with no or a false
+/// `Content-Length` can't force an unbounded read either.
+fn read_body(req: &mut Request) -> Option<String> {
+    let mut buf = Vec::new();
+    req.as_reader()
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_BODY_BYTES {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// The class and plain-word phrase for one deploy target's current state:
@@ -705,7 +716,10 @@ fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
 /// `id`/`text`, that refusal, or `forge` itself failing otherwise, is
 /// the fixed write-error page — never a hint of which.
 fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
-    let body = read_body(&mut req);
+    let Some(body) = read_body(&mut req) else {
+        let _ = req.respond(write_error(413));
+        return;
+    };
     let id = form_value(&body, "id").and_then(|v| v.parse::<i64>().ok());
     let text = form_value(&body, "text").filter(|t| !t.trim().is_empty());
     let (Some(id), Some(text)) = (id, text) else {
@@ -734,7 +748,10 @@ fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
 /// --from customer`, then the freshly re-read page with the command's
 /// stdout shown back as the reply line.
 fn handle_ask(mut req: Request, forge: &Forge, project: &str, token: &str) {
-    let body = read_body(&mut req);
+    let Some(body) = read_body(&mut req) else {
+        let _ = req.respond(write_error(413));
+        return;
+    };
     let Some(message) = form_value(&body, "message").filter(|m| !m.trim().is_empty()) else {
         let _ = req.respond(write_error(400));
         return;

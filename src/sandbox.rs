@@ -2,7 +2,7 @@
 //! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
 //! needs: the task's clone (its .git included), the agent binary, and a
 //! private copy of the claude and codex CLIs' credentials and settings,
-//! seeded from the operator's real state and discarded with the attempt
+//! seeded from the operator's real state and discarded with the worktree
 //! (see `provider_state_dir`, `discard_provider_state`) — the operator's
 //! real `.claude`/`.codex` directories are never bound into a sandbox.
 //! Nothing else on the host is visible, and in particular not the
@@ -86,14 +86,25 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Where an attempt in `worktree` gets its own private copy of the claude
+/// Where the attempts in `worktree` get their private copy of the claude
 /// and codex CLIs' state: a sibling of the worktree, under its parent, in
-/// the same style as `attempt::tests_clone_dir`. Wiped and reseeded at the
-/// start of every `command` call and removed by `discard_provider_state`
-/// once the attempt is done, so one attempt's session writes are never
-/// visible to the next.
+/// the same style as `attempt::tests_clone_dir`. Created and seeded by the
+/// first `command` call, reseeded (credentials and settings only) by every
+/// later one, and removed by `discard_provider_state` when the worktree
+/// itself goes. It lives as long as the task, not one attempt: a capped or
+/// failed attempt is resumed by `--resume <session>`, and the phase-two
+/// report resumes the same thread, so the CLI's session transcripts must
+/// survive between launches in one worktree. They never reach another
+/// task's worktree, and the operator's real directories are never bound.
 fn provider_state_dir(worktree: &Path) -> PathBuf {
     PathBuf::from(format!("{}-provider", worktree.display()))
+}
+
+/// Remove `worktree`'s private provider-state directory (see
+/// `provider_state_dir`): called where the worktree itself is removed, so
+/// nothing about the task's claude or codex sessions outlives its tree.
+pub fn discard_provider_state(worktree: &Path) {
+    let _ = std::fs::remove_dir_all(provider_state_dir(worktree));
 }
 
 /// Resolve a binary the way the shell would, then follow symlinks.
@@ -233,13 +244,6 @@ impl Sandbox {
         worktree.ancestors().find_map(|d| caches.get(d)).cloned()
     }
 
-    /// Remove `worktree`'s private provider-state directory (see
-    /// `provider_state_dir`) once its attempt is done: nothing about that
-    /// attempt's claude or codex session survives for the next one.
-    pub fn discard_provider_state(&self, worktree: &Path) {
-        let _ = std::fs::remove_dir_all(provider_state_dir(worktree));
-    }
-
     /// Build the bwrap command that runs `argv` inside the worktree with
     /// exactly `env` (HOME is forced to the tmpfs home).
     pub fn command(&self, worktree: &Path, argv: &[String], env: &[(String, String)]) -> Command {
@@ -310,15 +314,16 @@ impl Sandbox {
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
         // A private copy of the claude CLI's credentials and settings, and
-        // of codex's login and config: wiped and reseeded from the
-        // operator's real files here (read, never bound into a sandbox
-        // themselves), then bound writable at the paths each CLI expects.
-        // `discard_provider_state` removes this once the attempt is done,
-        // so a write here is never visible to the next attempt, and the
-        // operator's real `.claude`/`.codex` directories are never bound
-        // into a sandbox at all.
+        // of codex's login and config: seeded from the operator's real
+        // files here (read, never bound into a sandbox themselves), then
+        // bound writable at the paths each CLI expects. The directory is
+        // the task's (see `provider_state_dir`): the seed files are
+        // refreshed on every launch, everything else the CLIs wrote there
+        // (session transcripts above all) is kept, so a resumed attempt and
+        // the phase-two report find their thread. `discard_provider_state`
+        // removes it with the worktree. The operator's real
+        // `.claude`/`.codex` directories are never bound into a sandbox.
         let provider_dir = provider_state_dir(worktree);
-        let _ = std::fs::remove_dir_all(&provider_dir);
         let claude_priv = provider_dir.join("claude");
         let codex_priv = provider_dir.join("codex");
         let _ = std::fs::create_dir_all(&claude_priv);
@@ -568,7 +573,7 @@ mod tests {
         assert_eq!(tail[3], "sh", "argv[0] for the wrapper script is $0");
         assert_eq!(&tail[4..], &["true"], "the real argv follows the wrapper");
 
-        sandbox.discard_provider_state(&worktree);
+        discard_provider_state(&worktree);
         assert!(!provider_dir.exists(), "provider state must be discarded");
     }
 

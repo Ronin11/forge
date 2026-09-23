@@ -27,7 +27,8 @@
       "started_at": 1789769299,
       "finished_at": 1789769299,
       "exit_code": 0,
-      "output_ref": ""
+      "output_ref": "",
+      "tail": ""
     },
     {
       "id": 2,
@@ -41,7 +42,8 @@
       "started_at": 1789769299,
       "finished_at": 1789769299,
       "exit_code": 0,
-      "output_ref": ""
+      "output_ref": "",
+      "tail": ""
     }
   ],
   "effects": [

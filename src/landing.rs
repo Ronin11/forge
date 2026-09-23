@@ -867,6 +867,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     if matches!(outcome, IntegrateOutcome::Ready) {
         git::push_to_repo(&dir, &repo, &branch).await?;
         let _ = std::fs::remove_dir_all(&dir);
+        crate::sandbox::discard_provider_state(&dir);
     }
     Ok(IntegrateReport {
         base_branch: cfg.base_branch,

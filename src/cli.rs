@@ -6090,7 +6090,10 @@ async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
             }
             if !dry_run {
                 std::fs::remove_dir_all(wt)?;
-                let _ = std::fs::remove_dir_all(crate::attempt::tests_clone_dir(&t.worktree));
+                crate::sandbox::discard_provider_state(wt);
+                let tests_clone = crate::attempt::tests_clone_dir(&t.worktree);
+                let _ = std::fs::remove_dir_all(&tests_clone);
+                crate::sandbox::discard_provider_state(&tests_clone);
             }
             Ok(Ok(()))
         }

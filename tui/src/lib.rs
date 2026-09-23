@@ -1161,6 +1161,7 @@ mod tests {
     fn app_with(tasks: &str, requests: &str) -> App {
         let mut app = App::new(Forge {
             bin: "/nonexistent".into(),
+            ..Forge::new()
         });
         app.tasks = serde_json::from_str(tasks).unwrap();
         app.requests = serde_json::from_str(requests).unwrap();
@@ -1177,8 +1178,8 @@ mod tests {
     #[test]
     fn the_queue_lists_tasks_with_their_state_and_counts_them() {
         let app = app_with(
-            r#"[{"id":7,"state":"running","workflow":"tdd","attempts":1,"cost_usd":0.5,"task":"stars tier","project":"forge"},
-                {"id":6,"state":"queued","workflow":"direct","attempts":0,"cost_usd":0,"task":"docs"}]"#,
+            r#"[{"id":7,"state":"running","workflow":"tdd","attempts":1,"cost_usd":0.5,"repo":"/r","text":"stars tier","task":"stars tier","created_at":0,"created":"","trust":"operator","project":"forge"},
+                {"id":6,"state":"queued","workflow":"direct","attempts":0,"cost_usd":0,"repo":"/r","text":"docs","task":"docs","created_at":0,"created":"","trust":"operator"}]"#,
             "[]",
         );
         let text = frame_of(&app);
@@ -1194,7 +1195,7 @@ mod tests {
     fn requests_show_the_question_what_was_tried_and_the_path() {
         let mut app = app_with(
             "[]",
-            r#"[{"id":42,"kind":"suite","text":"stars-tier asserts stars never age","tried":"ran the suite","path":"tests/acceptance/stars-tier.test.ts","workflow":"tdd","repo":"/r","task":"stellar lifetime"}]"#,
+            r#"[{"id":42,"kind":"suite","question":"stars-tier asserts stars never age","text":"stars-tier asserts stars never age","tried":"ran the suite","path":"tests/acceptance/stars-tier.test.ts","workflow":"tdd","repo":"/r","task":"stellar lifetime"}]"#,
         );
         app.screen = Screen::Requests;
         let text = frame_of(&app);
@@ -1210,7 +1211,17 @@ mod tests {
     #[test]
     fn an_event_is_kept_as_live_text_and_flags_what_it_changed() {
         let mut app = app_with("[]", "[]");
-        app.trace = Some(serde_json::from_value(serde_json::json!({"task": {"id": 5}})).unwrap());
+        app.trace = Some(
+            serde_json::from_value(serde_json::json!({
+                "task": {"id": 5},
+                "attempts": [],
+                "ops": [],
+                "resolved": null,
+                "diagnosis": [],
+                "deploys": []
+            }))
+            .unwrap(),
+        );
         app.apply(
             serde_json::from_str(
                 r#"{"ts":1,"task":5,"type":"tool_call","name":"Bash","text":"tool Bash"}"#,
@@ -1243,9 +1254,11 @@ mod tests {
         let mut app = app_with("[]", "[]");
         app.trace = Some(serde_json::from_value(serde_json::json!({
             "task": {"id": 3, "state": "failed", "workflow": "tdd", "reason": "L1 failed: test (after 2 attempt(s))", "branch": "forge/3-x", "base_sha": "abcdef1234567890", "text": "do the thing", "after": [], "retry_of": null, "project": "forge", "initiative": 9},
-            "attempts": [{"attempt_no": 1, "step": "code", "state": "checks_failed", "num_turns": 12, "cost_usd": 0.4, "reason": "L1 failed: test", "verdict": [{"level": "L1", "name": "test", "ok": false, "tail": "FAIL x\nmore"}]}],
-            "ops": [{"name": "clone", "ok": true, "detail": "abc"}, {"name": "verify", "ok": false, "detail": "L1 failed: test"}],
-            "diagnosis": [{"what": "the repo's test check fails", "action": "read the failing tests"}]
+            "attempts": [{"attempt_no": 1, "step": "code", "step_seq": 0, "state": "checks_failed", "started_at": 0, "timed_out": false, "num_turns": 12, "tool_calls": 0, "cost_usd": 0.4, "agent_ms": 0, "commits": 0, "files_changed": 0, "dirty": false, "start_sha": "", "end_sha": "", "log_path": "", "tokens": {}, "rate_limits": {}, "inputs": {}, "outputs": {}, "reason": "L1 failed: test", "verdict": [{"level": "L1", "name": "test", "ok": false, "tail": "FAIL x\nmore"}], "envelope": {}}],
+            "ops": [{"id": 1, "seq": 0, "name": "clone", "kernel": true, "started_at": 0, "ms": 0, "ok": true, "detail": "abc", "output": ""}, {"id": 2, "seq": 1, "name": "verify", "kernel": true, "started_at": 0, "ms": 0, "ok": false, "detail": "L1 failed: test", "output": ""}],
+            "resolved": null,
+            "diagnosis": [{"what": "the repo's test check fails", "action": "read the failing tests"}],
+            "deploys": []
         })).unwrap());
         app.screen = Screen::Task;
         let text = frame_of(&app);
@@ -1263,6 +1276,8 @@ mod tests {
             "task": {"id": 4, "state": "succeeded", "workflow": "tdd", "reason": "", "branch": "forge/4-x", "base_sha": "abcdef1234567890", "text": "ship it", "after": [], "retry_of": null},
             "attempts": [],
             "ops": [],
+            "resolved": null,
+            "diagnosis": [],
             "deploys": [{"id": 1, "project": "forge", "target": "prod", "sha": "abcdef1234567890", "started_at": 1, "finished_at": 2, "check_ok": true, "check_output": "ok", "rolled_back_to": null, "reason": ""}],
             "assessment": {"score": 82, "findings": [{"path": "tui/src/lib.rs", "finding": "missing coverage", "severity": "minor"}], "model": "claude-sonnet-5", "provider": "anthropic", "cost_usd": 0.05, "created_at": 1}
         })).unwrap());
@@ -1292,7 +1307,25 @@ mod tests {
     #[test]
     fn job_events_flag_the_jobs_list_and_the_open_job_as_dirty() {
         let mut app = app_with("[]", "[]");
-        app.job = Some(serde_json::from_value(serde_json::json!({"id": 9})).unwrap());
+        app.job = Some(
+            serde_json::from_value(serde_json::json!({
+                "id": 9,
+                "project": "forge",
+                "workflow": "nightly",
+                "workflow_hash": "",
+                "landed_sha": "",
+                "trigger_kind": "manual",
+                "trigger_ref": "",
+                "state": "running",
+                "workflow_source": "catalog",
+                "dry_run": false,
+                "started_at": 0,
+                "verdict_json": "",
+                "steps": [],
+                "effects": []
+            }))
+            .unwrap(),
+        );
         app.apply(
             serde_json::from_str(
                 r#"{"ts":1,"task":0,"type":"job_started","project":"forge","workflow":"nightly","job_id":9,"dry_run":false,"text":"running forge/nightly (job 9)"}"#,

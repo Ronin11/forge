@@ -724,9 +724,7 @@ async fn run_with_relaunch(
 }
 
 pub async fn run(l: Launch<'_>) -> Result<Outcome> {
-    let sandbox = l.sandbox;
-    let worktree = l.worktree;
-    let result = match l.provider.runner {
+    match l.provider.runner {
         Runner::ClaudeCli => run_claude(l).await,
         Runner::CodexCli => {
             if l.no_tools {
@@ -747,14 +745,7 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
             }
             run_chat(l).await
         }
-    };
-    // Whatever this attempt wrote to its private claude/codex state (see
-    // `Sandbox::command`) is gone with it, win or lose: the next attempt in
-    // this worktree never sees it.
-    if let Some(sb) = sandbox {
-        sb.discard_provider_state(worktree);
     }
-    result
 }
 
 /// The tools an attempt gets, and no other: what a coder, a reviewer or a
@@ -1180,8 +1171,20 @@ pub fn usage_limit_reset(msg: &str, now: i64) -> Option<i64> {
         "pm" => h % 12 + 12,
         _ => return Some(now + 3600),
     };
-    Some(next_local_time(now, h, m))
+    // The named time is when the five-hour window resets, so it can never
+    // be more than five hours off. A refusal seen at the named minute
+    // itself ("try again at 3:00 PM" at 3:00 PM) names a reset that has
+    // just happened, not tomorrow's: retry in a minute. Anything past five
+    // hours is the local-time reading having wrapped to the next day.
+    let at = next_local_time(now, h, m);
+    if at - now > FIVE_HOURS {
+        return Some(now + 60);
+    }
+    Some(at)
 }
+
+/// The longest a five-hour window can be from resetting.
+const FIVE_HOURS: i64 = 5 * 3600;
 
 /// The next unix time at local `hour:minute` strictly after `now`.
 fn next_local_time(now: i64, hour: i64, minute: i64) -> i64 {
@@ -1637,11 +1640,22 @@ mod tests {
     #[test]
     fn a_codex_usage_limit_message_is_a_refusal_with_a_reset() {
         let now = crate::unix_now();
-        let msg = "You've hit your usage limit. Upgrade to Pro, or try again at 3:37 AM.";
-        let reset = usage_limit_reset(msg, now).unwrap();
+        // A time two hours ahead, in the local zone, as codex would name it.
+        let (h, m) = unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            let t = (now + 2 * 3600) as libc::time_t;
+            libc::localtime_r(&t, &mut tm);
+            (tm.tm_hour as i64, tm.tm_min as i64)
+        };
+        let ampm = if h >= 12 { "PM" } else { "AM" };
+        let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+        let msg = format!(
+            "You've hit your usage limit. Upgrade to Pro, or try again at {h12}:{m:02} {ampm}."
+        );
+        let reset = usage_limit_reset(&msg, now).unwrap();
         assert!(
-            reset > now && reset <= now + 86_400,
-            "next 3:37 within a day: {reset} vs {now}"
+            reset > now && reset <= now + 2 * 3600,
+            "the named time, within its window: {reset} vs {now}"
         );
         // The named time, read in the local zone.
         let secs_of_day = {
@@ -1653,7 +1667,7 @@ mod tests {
                 (tm.tm_hour as i64, tm.tm_min as i64)
             }
         };
-        assert_eq!(secs_of_day, (3, 37));
+        assert_eq!(secs_of_day, (h, m));
         // No time named: an hour's hold. Not a limit at all: nothing.
         assert_eq!(
             usage_limit_reset("usage limit reached", now),
@@ -1663,6 +1677,39 @@ mod tests {
         assert_eq!(
             usage_limit_reset("rate limit exceeded, try again at 11:05 PM", 0).map(|r| r > 0),
             Some(true)
+        );
+    }
+
+    /// The named time is the five-hour window's reset, so a refusal seen at
+    /// that very minute (the reset just happened) means "retry now", and a
+    /// reading that wraps to tomorrow is capped: on 2026-09-22 a refusal at
+    /// 3:00 PM saying "try again at 3:00 PM" held every openai task for a
+    /// day.
+    #[test]
+    fn a_reset_time_already_reached_or_a_day_away_never_holds_past_five_hours() {
+        let now = crate::unix_now();
+        let (h, m) = unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            let t = now as libc::time_t;
+            libc::localtime_r(&t, &mut tm);
+            (tm.tm_hour as i64, tm.tm_min as i64)
+        };
+        let ampm = if h >= 12 { "PM" } else { "AM" };
+        let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+        let msg = format!("You've hit your usage limit. Try again at {h12}:{m:02} {ampm}.");
+        let reset = usage_limit_reset(&msg, now).unwrap();
+        assert!(reset > now && reset <= now + 60, "{reset} vs {now}");
+        // One minute earlier than now: the same reading, wrapped to tomorrow.
+        let m_prev = (m + 59) % 60;
+        let h_prev = if m == 0 { (h + 23) % 24 } else { h };
+        let ampm = if h_prev >= 12 { "PM" } else { "AM" };
+        let h12 = if h_prev % 12 == 0 { 12 } else { h_prev % 12 };
+        let msg = format!("usage limit; try again at {h12}:{m_prev:02} {ampm}");
+        let reset = usage_limit_reset(&msg, now).unwrap();
+        assert!(reset > now && reset <= now + 60, "{reset} vs {now}");
+        assert!(
+            usage_limit_reset("usage limit; try again at 3:37 AM", now).unwrap()
+                <= now + FIVE_HOURS
         );
     }
 
