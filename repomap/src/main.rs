@@ -18,15 +18,21 @@ mod edges;
 pub struct Symbol {
     pub name: String,
     pub kind: String,
-    /// The line the declaration starts on (1-based) and the last line
-    /// before the next declaration in the file (or the file's last
-    /// line): a cheap span a reader can hand to Read offset/limit. Zero
-    /// on an entry cached before spans existed, which `Index` treats as
-    /// a miss so the blob re-parses.
+    /// The line the declaration starts on (1-based) and its real end: by
+    /// brace depth from the declaration's first `{` in Rust, TypeScript,
+    /// JavaScript and Go; the last more-indented line in Python; the
+    /// matching `}` in shell. A declaration with no resolvable body ends
+    /// on its own start line. A cheap span a reader can hand to Read
+    /// offset/limit. Zero on an entry cached before spans existed, which
+    /// `Index` treats as a miss so the blob re-parses.
     #[serde(default)]
     pub start: usize,
     #[serde(default)]
     pub end: usize,
+    /// The declaration line, trimmed and capped at about 160 characters:
+    /// enough to tell a reader what the symbol is without opening the file.
+    #[serde(default)]
+    pub sig: String,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -55,7 +61,7 @@ impl BlobCache {
         }
     }
 
-    /// A blob's cache file for one kind of cached data (`"sym"`, `"edges"`),
+    /// A blob's cache file for one kind of cached data (`"sym2"`, `"edges"`),
     /// sharded two hex characters deep so no directory holds every blob.
     fn path_for(&self, kind: &str, blob: &str) -> PathBuf {
         self.dir
@@ -63,26 +69,32 @@ impl BlobCache {
             .join(format!("{blob}.{kind}.json"))
     }
 
+    /// The pre-span, pre-`sig` cache format's path: kept only so a test can
+    /// prove an entry written there is never read back as `sym2`.
+    #[cfg(test)]
     fn path(&self, blob: &str) -> PathBuf {
         self.dir
             .join(&blob[..2.min(blob.len())])
             .join(format!("{blob}.json"))
     }
 
+    /// Symbols cached under kind `sym2`: bumped from the unkeyed format
+    /// spans and `sig` replaced, so an old entry simply misses instead of
+    /// being misread as one with a real end and a signature.
     pub fn get(&self, blob: &str) -> Option<Vec<Symbol>> {
-        let text = std::fs::read_to_string(self.path(blob)).ok()?;
+        let text = std::fs::read_to_string(self.path_for("sym2", blob)).ok()?;
         serde_json::from_str::<Vec<Symbol>>(&text)
             .ok()
             .filter(|syms| syms.iter().all(|x| x.start > 0))
     }
 
     pub fn put(&self, blob: &str, syms: &[Symbol]) {
-        let path = self.path(blob);
+        let path = self.path_for("sym2", blob);
         let Some(parent) = path.parent() else { return };
         if std::fs::create_dir_all(parent).is_err() {
             return;
         }
-        let tmp = parent.join(format!(".{blob}.{}.tmp", std::process::id()));
+        let tmp = parent.join(format!(".{blob}.sym2.{}.tmp", std::process::id()));
         if let Ok(text) = serde_json::to_string(syms)
             && std::fs::write(&tmp, text).is_ok()
         {
@@ -99,9 +111,19 @@ struct Sink {
     seen: HashSet<(String, String)>,
     /// The 1-based line the extractor is on; every push records it.
     line: usize,
+    /// The current line, trimmed and capped; every push records it as the
+    /// symbol's `sig`.
+    sig: String,
 }
 
 impl Sink {
+    /// Marks the extractor's position: `line_no` for spans, `line` (already
+    /// trimmed of leading space) capped at 160 characters for `sig`.
+    fn at(&mut self, line_no: usize, line: &str) {
+        self.line = line_no;
+        self.sig = line.trim_end().chars().take(160).collect();
+    }
+
     fn push(&mut self, name: &str, kind: &str) {
         let name = name.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'));
         if name.is_empty() {
@@ -113,6 +135,7 @@ impl Sink {
                 kind: kind.to_string(),
                 start: self.line,
                 end: self.line,
+                sig: self.sig.clone(),
             });
         }
     }
@@ -129,8 +152,8 @@ fn words_of(line: &str) -> Vec<&str> {
 fn extract_rust(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
     for (li, raw) in text.lines().enumerate() {
-        sink.line = li + 1;
         let line = raw.trim_start();
+        sink.at(li + 1, line);
         let words = words_of(line);
         let mut i = 0;
         // Visibility and qualifiers: `pub(crate)` splits on '(' into "pub", "crate)".
@@ -178,8 +201,8 @@ fn extract_rust(text: &str) -> Vec<Symbol> {
 fn extract_typescript(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
     for (li, raw) in text.lines().enumerate() {
-        sink.line = li + 1;
         let line = raw.trim_start();
+        sink.at(li + 1, line);
         let words = words_of(line);
         let mut i = 0;
         while i < words.len()
@@ -211,8 +234,8 @@ fn extract_typescript(text: &str) -> Vec<Symbol> {
 fn extract_python(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
     for (li, raw) in text.lines().enumerate() {
-        sink.line = li + 1;
         let line = raw.trim_start();
+        sink.at(li + 1, line);
         let words = words_of(line);
         if (line.starts_with("def ") || line.starts_with("async def ")) && words.len() > 1 {
             sink.push(words[if words[0] == "async" { 2 } else { 1 }], "def");
@@ -226,8 +249,8 @@ fn extract_python(text: &str) -> Vec<Symbol> {
 fn extract_shell(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
     for (li, raw) in text.lines().enumerate() {
-        sink.line = li + 1;
         let line = raw.trim_start();
+        sink.at(li + 1, line);
         if let Some(rest) = line.strip_prefix("function ") {
             sink.push(
                 rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -248,8 +271,8 @@ fn extract_shell(text: &str) -> Vec<Symbol> {
 fn extract_go(text: &str) -> Vec<Symbol> {
     let mut sink = Sink::default();
     for (li, raw) in text.lines().enumerate() {
-        sink.line = li + 1;
         let line = raw.trim_start();
+        sink.at(li + 1, line);
         let words = words_of(line);
         if line.starts_with("func ") && words.len() > 1 {
             let name = if words[1].starts_with('(') || words[1].is_empty() {
@@ -290,21 +313,230 @@ fn extract_names(path: &str, text: &str) -> Vec<Symbol> {
         .unwrap_or_default()
 }
 
-/// The declarations of a file with their spans closed: each symbol ends
-/// on the line before the next declaration, the last on the file's last
-/// line. Declarations come out in file order, so the spans are disjoint
-/// and cover the file from the first declaration on.
+/// How a language's declarations close, for `real_end` below: Rust's `'a`
+/// is a lifetime rather than a char literal and it has no backtick or
+/// `#`-comment syntax; Curly (TypeScript, JavaScript, Go) treats every
+/// quote as a plain multi-character string, including backtick template
+/// literals; Shell has `#` line comments and no `/* */` block comments.
+#[derive(Clone, Copy, PartialEq)]
+enum Lang {
+    Rust,
+    Curly,
+    Shell,
+}
+
+/// The char index each 1-based line starts at, so a symbol's `start` line
+/// can be turned into a scan position without re-walking the file.
+fn line_starts_of(chars: &[char]) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// A declaration's real end, scanning forward from its first character:
+/// brace depth from its first unescaped `{`, skipping string and char
+/// literals and comments (a Rust `'a` is a lifetime, not a char literal),
+/// until the depth returns to zero; or, if a bare `;` comes first, the
+/// line it is on. `None` when neither closes before the file ends (an
+/// unmatched or malformed declaration), left for the caller to fall back
+/// to the start line.
+fn real_end(chars: &[char], line_starts: &[usize], start_line: usize, lang: Lang) -> Option<usize> {
+    let mut i = *line_starts.get(start_line - 1)?;
+    let mut line = start_line;
+    let mut depth = 0i32;
+    let mut seen_open = false;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\n' => {
+                line += 1;
+                i += 1;
+            }
+            '#' if lang == Lang::Shell => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if lang != Lang::Shell && chars.get(i + 1) == Some(&'/') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if lang != Lang::Shell && chars.get(i + 1) == Some(&'*') => {
+                i += 2;
+                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    if chars[i] == '\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i = (i + 2).min(chars.len());
+            }
+            '`' if lang == Lang::Curly => {
+                i += 1;
+                while i < chars.len() && chars[i] != '`' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == '\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            'r' | 'b'
+                if lang == Lang::Rust
+                    && !(i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')) =>
+            {
+                // `r"…"`, `r#"…"#`, `br#"…"#`: a raw string, no escapes.
+                let mut j = i;
+                if chars[j] == 'b' {
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'r') {
+                    j += 1;
+                    let mut hashes = 0;
+                    while chars.get(j) == Some(&'#') {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if chars.get(j) == Some(&'"') {
+                        j += 1;
+                        while j < chars.len() {
+                            if chars[j] == '\n' {
+                                line += 1;
+                            } else if chars[j] == '"'
+                                && (1..=hashes).all(|k| chars.get(j + k) == Some(&'#'))
+                            {
+                                j += hashes;
+                                break;
+                            }
+                            j += 1;
+                        }
+                        i = (j + 1).min(chars.len());
+                        continue;
+                    }
+                }
+                i += 1; // an identifier, or a byte string the `"` arm handles
+            }
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == '\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '\'' if lang == Lang::Rust => {
+                if chars.get(i + 1) == Some(&'\\') {
+                    let bound = (i + 12).min(chars.len());
+                    let mut j = i + 2;
+                    while j < bound && chars[j] != '\'' && chars[j] != '\n' {
+                        j += 1;
+                    }
+                    if j < bound && chars.get(j) == Some(&'\'') {
+                        i = j + 1;
+                    } else {
+                        i += 1; // a lifetime, not a char literal
+                    }
+                } else if chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    i += 1; // a lifetime, not a char literal
+                }
+            }
+            '\'' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    if lang == Lang::Curly && chars[i] == '\\' {
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == '\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            '{' => {
+                depth += 1;
+                seen_open = true;
+                i += 1;
+            }
+            '}' => {
+                depth -= 1;
+                i += 1;
+                if seen_open && depth <= 0 {
+                    return Some(line);
+                }
+            }
+            ';' if depth == 0 && !seen_open => return Some(line),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Leading spaces and tabs, for Python's indentation-based spans.
+fn indent_of(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// A Python `def` or `class`'s real end: the last line indented deeper
+/// than its own, blank lines skipped over rather than ending the span.
+fn python_end(lines: &[&str], start_line: usize) -> usize {
+    let idx = start_line.saturating_sub(1);
+    let Some(&decl) = lines.get(idx) else {
+        return start_line;
+    };
+    let base_indent = indent_of(decl);
+    let mut end_idx = idx;
+    for (i, l) in lines.iter().enumerate().skip(idx + 1) {
+        if l.trim().is_empty() {
+            continue;
+        }
+        if indent_of(l) > base_indent {
+            end_idx = i;
+        } else {
+            break;
+        }
+    }
+    end_idx + 1
+}
+
+/// The declarations of a file with real spans: each symbol's `end` comes
+/// from its own declaration, never guessed from the next one's position.
 pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
     let mut syms = extract_names(path, text);
-    let last_line = text.lines().count().max(1);
-    let n = syms.len();
-    for i in 0..n {
-        let end = if i + 1 < n {
-            syms[i + 1].start.saturating_sub(1).max(syms[i].start)
-        } else {
-            last_line.max(syms[i].start)
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let chars: Vec<char> = text.chars().collect();
+    let line_starts = line_starts_of(&chars);
+    let lines: Vec<&str> = text.lines().collect();
+    for sym in &mut syms {
+        sym.end = match ext {
+            "rs" => real_end(&chars, &line_starts, sym.start, Lang::Rust).unwrap_or(sym.start),
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "go" => {
+                real_end(&chars, &line_starts, sym.start, Lang::Curly).unwrap_or(sym.start)
+            }
+            "sh" | "bash" => {
+                real_end(&chars, &line_starts, sym.start, Lang::Shell).unwrap_or(sym.start)
+            }
+            "py" => python_end(&lines, sym.start),
+            _ => sym.start,
         };
-        syms[i].end = end;
     }
     syms
 }
@@ -706,8 +938,8 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-    /// Every declaration carries the line it starts on and ends the line
-    /// before the next one (the last on the file's last line), in Rust,
+    /// Every declaration carries the line it starts on and its real end —
+    /// the matching brace, not the next declaration's position — in Rust,
     /// TypeScript and shell alike; the map renders `name@start-end`.
     #[test]
     fn spans_cover_the_file_from_the_first_declaration_in_three_languages() {
@@ -715,7 +947,7 @@ mod tests {
         let syms = extract("m.rs", rs);
         let a = syms.iter().find(|s| s.name == "a").unwrap();
         let b = syms.iter().find(|s| s.name == "B").unwrap();
-        assert_eq!((a.start, a.end), (3, 6));
+        assert_eq!((a.start, a.end), (3, 5));
         assert_eq!((b.start, b.end), (7, 9));
         let ts = "import x from 'y';\nexport function f() {}\nexport class C {}\n";
         let syms = extract("m.ts", ts);
@@ -737,7 +969,7 @@ mod tests {
             1000,
             true,
         );
-        assert!(out.contains("a@3-6"), "{out}");
+        assert!(out.contains("a@3-5"), "{out}");
         let plain = render(
             &[("m.rs".to_string(), extract("m.rs", rs))],
             &["a".to_string()],
@@ -762,6 +994,7 @@ mod tests {
                 kind: "fn".into(),
                 start: i * 3 + 1,
                 end: i * 3 + 3,
+                sig: String::new(),
             })
             .collect();
         let out = render(&[("big.rs".to_string(), syms)], &[], &[], &[], 1000, true);
@@ -789,6 +1022,7 @@ mod tests {
             kind: "fn".into(),
             start: 0,
             end: 0,
+            sig: String::new(),
         };
         let files = vec![
             ("scripts/empty.sh".to_string(), vec![]),
@@ -858,6 +1092,111 @@ mod tests {
         );
     }
 
+    /// A nested `fn`'s span is its own braces, not swallowed by the
+    /// enclosing one: brace depth tracks both independently.
+    #[test]
+    fn a_nested_fn_span_is_its_own_braces_not_the_enclosing_ones() {
+        let rs = "fn outer() {\n    fn inner() {\n        1\n    }\n    2\n}\n";
+        let syms = extract("m.rs", rs);
+        let outer = syms.iter().find(|s| s.name == "outer").unwrap();
+        let inner = syms.iter().find(|s| s.name == "inner").unwrap();
+        assert_eq!((outer.start, outer.end), (1, 6));
+        assert_eq!((inner.start, inner.end), (2, 4));
+    }
+
+    /// An `impl` block's span covers every method inside it, closing on
+    /// the brace that matches the block's own, not the first method's.
+    #[test]
+    fn an_impl_blocks_span_covers_its_methods() {
+        let rs = "impl Star {\n    fn a(&self) {}\n    fn b(&self) {\n        1\n    }\n}\n";
+        let syms = extract("m.rs", rs);
+        let imp = syms.iter().find(|s| s.name == "Star").unwrap();
+        let b = syms.iter().find(|s| s.name == "b").unwrap();
+        assert_eq!((imp.start, imp.end), (1, 6));
+        assert_eq!((b.start, b.end), (3, 5));
+    }
+
+    /// A `}` inside a string literal never closes the brace it sits in.
+    #[test]
+    fn a_brace_inside_a_string_literal_does_not_close_the_span() {
+        let rs = "fn f() {\n    let s = \"}\";\n}\n";
+        let syms = extract("m.rs", rs);
+        let f = syms.iter().find(|s| s.name == "f").unwrap();
+        assert_eq!((f.start, f.end), (1, 3));
+    }
+
+    /// A `}` or `"` inside a raw string never closes the span, and a raw
+    /// string's trailing backslash is not an escape.
+    #[test]
+    fn a_brace_inside_a_raw_string_does_not_close_the_span() {
+        let rs = "pub fn example() {\n    let _s = r#\"a quote \" and a brace }\"#;\n}\n";
+        let syms = extract("m.rs", rs);
+        assert_eq!(syms[0].end, 3);
+        let rs = "fn g() {\n    let _s = r\"\\\";\n    let _t = 1;\n}\n";
+        let syms = extract("m.rs", rs);
+        let g = syms.iter().find(|s| s.name == "g").unwrap();
+        assert_eq!((g.start, g.end), (1, 4));
+    }
+
+    /// `'a` is a lifetime, not a char literal, so it never sends the scan
+    /// looking for a closing quote that isn't there.
+    #[test]
+    fn a_lifetime_is_not_mistaken_for_a_char_literal() {
+        let rs = "fn f<'a>(x: &'a str) -> &'a str {\n    x\n}\n";
+        let syms = extract("m.rs", rs);
+        let f = syms.iter().find(|s| s.name == "f").unwrap();
+        assert_eq!((f.start, f.end), (1, 3));
+    }
+
+    /// A declaration with no body ends on its own line, as soon as the
+    /// `;` is reached with no `{` seen first.
+    #[test]
+    fn a_one_line_declaration_ends_on_its_own_line() {
+        let rs = "type Alias = Star;\npub trait Speak {\n    fn talk(&self);\n}\n";
+        let syms = extract("m.rs", rs);
+        let alias = syms.iter().find(|s| s.name == "Alias").unwrap();
+        let talk = syms.iter().find(|s| s.name == "talk").unwrap();
+        assert_eq!((alias.start, alias.end), (1, 1));
+        assert_eq!((talk.start, talk.end), (3, 3));
+    }
+
+    /// A Python class's span runs to the last line of its last method,
+    /// blank lines inside the body skipped rather than ending the span.
+    #[test]
+    fn a_python_classs_span_covers_its_methods() {
+        let py = "class Foo:\n    def a(self):\n        return 1\n\n    def b(self):\n        return 2\n";
+        let syms = extract("f.py", py);
+        let foo = syms.iter().find(|s| s.name == "Foo").unwrap();
+        let a = syms.iter().find(|s| s.name == "a").unwrap();
+        let b = syms.iter().find(|s| s.name == "b").unwrap();
+        assert_eq!((foo.start, foo.end), (1, 6));
+        assert_eq!((a.start, a.end), (2, 3));
+        assert_eq!((b.start, b.end), (5, 6));
+    }
+
+    /// A shell function's span runs to its matching `}`, past semicolons
+    /// and an `if`/`then`/`fi` inside its body.
+    #[test]
+    fn a_shell_functions_span_ends_at_the_matching_brace() {
+        let sh = "foo() {\n    echo 1\n    if true; then\n        echo 2\n    fi\n}\n";
+        let syms = extract("f.sh", sh);
+        let foo = syms.iter().find(|s| s.name == "foo").unwrap();
+        assert_eq!((foo.start, foo.end), (1, 6));
+    }
+
+    /// `sig` is the declaration line, trimmed, capped at 160 characters.
+    #[test]
+    fn sig_is_the_trimmed_declaration_line_capped_at_160_chars() {
+        let rs = "    pub fn tick(s: &S) {}\n";
+        let syms = extract("m.rs", rs);
+        assert_eq!(syms[0].sig, "pub fn tick(s: &S) {}");
+        let long_name = "a".repeat(200);
+        let rs = format!("pub fn {long_name}() {{}}\n");
+        let syms = extract("m.rs", &rs);
+        assert_eq!(syms[0].sig.chars().count(), 160);
+        assert!(rs.trim().starts_with(&syms[0].sig));
+    }
+
     #[test]
     fn a_trailing_flag_with_no_value_is_an_error_not_a_panic() {
         let args: Vec<String> = ["forge-repomap", "rank", "--task"]
@@ -880,12 +1219,14 @@ mod tests {
                         kind: "fn".into(),
                         start: 0,
                         end: 0,
+                        sig: String::new(),
                     },
                     Symbol {
                         name: "rates".into(),
                         kind: "fn".into(),
                         start: 0,
                         end: 0,
+                        sig: String::new(),
                     },
                 ],
             ),
@@ -896,6 +1237,7 @@ mod tests {
                     kind: "fn".into(),
                     start: 0,
                     end: 0,
+                    sig: String::new(),
                 }],
             ),
             (
@@ -905,6 +1247,7 @@ mod tests {
                     kind: "fn".into(),
                     start: 0,
                     end: 0,
+                    sig: String::new(),
                 }],
             ),
         ];
@@ -1024,5 +1367,39 @@ mod tests {
             true,
         );
         assert!(map.starts_with("b.py:"), "{map}");
+    }
+
+    /// An entry written at the pre-`sig` cache path (the format `sym2`
+    /// replaces) is never read back as one: `get` misses, forcing a
+    /// re-parse instead of misreading spans and signatures that were
+    /// never computed.
+    #[test]
+    fn an_old_sym_cache_entry_is_ignored_in_favour_of_sym2() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BlobCache::new(dir.path());
+        let blob = "deadbeefcafe";
+        let old_path = cache.path(blob);
+        std::fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        let stale = vec![Symbol {
+            name: "stale".into(),
+            kind: "fn".into(),
+            start: 1,
+            end: 1,
+            sig: String::new(),
+        }];
+        std::fs::write(&old_path, serde_json::to_string(&stale).unwrap()).unwrap();
+        assert!(
+            cache.get(blob).is_none(),
+            "an old-format entry must not be read as sym2"
+        );
+        let fresh = vec![Symbol {
+            name: "fresh".into(),
+            kind: "fn".into(),
+            start: 1,
+            end: 2,
+            sig: "fn fresh() {".into(),
+        }];
+        cache.put(blob, &fresh);
+        assert_eq!(cache.get(blob), Some(fresh));
     }
 }
