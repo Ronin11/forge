@@ -378,7 +378,12 @@ impl Store {
             BTreeMap::new();
         {
             let mut stmt = c.prepare("SELECT task_id, outputs_json FROM attempts")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>("task_id")?,
+                    r.get::<_, String>("outputs_json")?,
+                ))
+            })?;
             for row in rows {
                 let (id, json) = row?;
                 if let Ok(outputs) = serde_json::from_str::<crate::audit::Outputs>(&json)
