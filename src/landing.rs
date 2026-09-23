@@ -83,6 +83,24 @@ async fn record_verdict(
     Ok(a.id)
 }
 
+/// The `end_sha` of the most recent attempt that ran in the task's own
+/// worktree and succeeded: the commit its verify judged, and so the one
+/// landing is about to merge and push. The tests contract runs in its own
+/// clone, never `t.worktree`, so it is not a candidate. `None` when the
+/// task has no such attempt (an operator-driven flow with nothing on
+/// record), in which case the guard that reads this has nothing to check
+/// against and stays quiet.
+fn last_verified_sha(f: &Forge, task_id: i64) -> Result<Option<String>, Fault> {
+    Ok(f.store
+        .attempts(task_id)
+        .env()?
+        .into_iter()
+        .rev()
+        .find(|a| a.step != "tests" && a.state == AttemptState::Succeeded)
+        .map(|a| a.end_sha)
+        .filter(|s| !s.is_empty()))
+}
+
 pub enum Integrate {
     /// On the base branch; its new tip.
     Landed(String),
@@ -185,6 +203,38 @@ pub async fn integrate(
     let repo = Path::new(&t.repo);
     let wt = Path::new(&t.worktree);
     let _lock = repo_lock(f, repo).await?;
+    // The verdict names one commit; landing merges and pushes exactly it.
+    // Between that verify and this lock, nothing should have moved the
+    // branch — but if it did, catch it here rather than fast-forward the
+    // base to something no check ever ran on.
+    if let Some(verified) = last_verified_sha(f, t.id)? {
+        let head_now = git::head(wt).await.task()?;
+        if head_now != verified {
+            let d = format!(
+                "the branch moved before landing began: verified {}, branch is now {}",
+                short(&verified),
+                short(&head_now)
+            );
+            *seq += 1;
+            let timer = Timer::now();
+            op(
+                f,
+                t.id,
+                &timer,
+                OpRow {
+                    seq: *seq,
+                    name: "land",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &d,
+                    attempt_id: None,
+                    output: "",
+                },
+            )?;
+            return Ok(Integrate::Failed(d));
+        }
+    }
     let placed = format!("forge/{}", t.base_branch);
     let mut base_sha = t.base_sha.clone();
     for round in 0..3 {

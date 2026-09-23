@@ -81,3 +81,47 @@ fn an_attempt_failing_only_a_fixable_check_is_fixed_committed_and_passes() {
         "the fake formatter's fix must have landed on the pushed branch"
     );
 }
+
+/// The fix's own commit is the new candidate: `l1_l2` re-runs after it and
+/// must judge that commit, not reject it as a check that moved the tree.
+/// Landing re-verifies the merged tree the same way (`verify_integration`),
+/// so this also proves `candidate-unchanged` does not block the one
+/// mutator it is meant to allow.
+#[test]
+fn a_known_fix_still_lands() {
+    let e = Env::new();
+    fixable_repo(&e);
+    let o = e.forge(
+        "ok.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--retries",
+            "0",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert!(pushed);
+
+    let attempts = e.attempts(1);
+    assert_eq!(attempts.len(), 1, "the fix resolves it without a retry");
+    assert_eq!(
+        check(&attempts[0].4, "L0", "candidate-unchanged"),
+        Some(true),
+        "the fix's own commit is the candidate the re-run checks judged"
+    );
+    let ops = op_names(&e, 1);
+    assert!(ops.iter().any(|(n, ok)| n == "known-fix" && *ok), "{ops:?}");
+    assert!(ops.iter().any(|(n, ok)| n == "land" && *ok), "{ops:?}");
+
+    assert_eq!(
+        origin_file(&e, "main", "fmt.txt").as_deref(),
+        Some("GOOD\n"),
+        "the fix landed on main"
+    );
+}
