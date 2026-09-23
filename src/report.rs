@@ -374,14 +374,23 @@ impl Reporter {
     /// The first time `task_id`'s event log write fails, records it in the
     /// durable marker file and prints one `Note` directly to stderr (never
     /// through `append_log`, which is exactly what just failed). Every
-    /// later failure for the same task, this attempt or a later one in the
-    /// same process, is silent: the operator already knows.
+    /// later failure for the same task is silent: the operator already
+    /// knows. The dedup holds across processes because it consults the
+    /// marker file — a `forge work` restart mid-task (the orphan-requeue
+    /// path in worker.rs) starts a fresh `Reporter` with an empty
+    /// in-memory set, but the marker file still names the task.
     fn note_dropped(&self, task_id: i64, path: &Path, err: &std::io::Error) {
         let mut noted = self.noted_drops.lock().unwrap_or_else(|p| p.into_inner());
         if !noted.insert(task_id) {
             return;
         }
         drop(noted);
+        if let Ok(content) = std::fs::read_to_string(dropped_marker_path(path)) {
+            let id = task_id.to_string();
+            if content.lines().any(|l| l.trim() == id) {
+                return;
+            }
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -986,6 +995,49 @@ mod tests {
             "one marker line per task, not per event"
         );
         assert_eq!(dropped_log_task_count(&log_path), 2);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn a_second_reporter_does_not_renote_a_task_the_marker_already_names() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join("forge_test_events_dropped_restart");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let locked = temp_dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let log_path = locked.join("events.jsonl");
+        fs::write(log_path.with_extension("dropped"), b"").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let event = Event::Note {
+            text: "does not matter",
+        };
+
+        // Simulates a `forge work` restart mid-task: the first Reporter's
+        // process exits (e.g. the orphan-requeue path in worker.rs) and a
+        // second Reporter picks the same task back up with an empty
+        // in-memory `noted_drops` set.
+        let first = Reporter::new(false, Some(log_path.clone()));
+        for _ in 0..10 {
+            first.append_log_with_limit(42, &event, EVENT_LOG_SIZE_LIMIT);
+        }
+
+        let second = Reporter::new(false, Some(log_path.clone()));
+        for _ in 0..10 {
+            second.append_log_with_limit(42, &event, EVENT_LOG_SIZE_LIMIT);
+        }
+
+        let marker = std::fs::read_to_string(log_path.with_extension("dropped")).unwrap();
+        assert_eq!(
+            marker.lines().collect::<Vec<_>>(),
+            vec!["42"],
+            "the marker file already named the task, so the second process must not append again"
+        );
+        assert_eq!(dropped_log_task_count(&log_path), 1);
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         let _ = fs::remove_dir_all(&temp_dir);
