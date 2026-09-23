@@ -333,31 +333,55 @@ fn check_home_migration() -> Vec<Check> {
     )]
 }
 
+/// Every repository's own repomap cache (`ctx::Forge::cache_dir`, private
+/// per repository so one cannot poison what another reads), each a
+/// `<hash>/repomap` directory directly under `paths.home/cache`.
+fn repo_repomap_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path().join("repomap"))
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn check_cache(paths: &Paths) -> Vec<Check> {
-    let cache_dir = paths.home.join("cache").join("repomap");
-    vec![if !cache_dir.exists() {
+    let root = paths.home.join("cache");
+    let repo_caches = repo_repomap_dirs(&root);
+    vec![if repo_caches.is_empty() {
         check(
             "cache",
             Status::Warn,
-            format!("{} does not exist", cache_dir.display()),
+            format!("{} does not exist", root.join("<repo>/repomap").display()),
             "it is created on the first repomap run; nothing to do yet",
         )
     } else {
-        let probe = cache_dir.join(".doctor-write-probe");
+        let probe = repo_caches[0].join(".doctor-write-probe");
         match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {
             Ok(()) => {
-                let (count, size) = count_files(&cache_dir);
+                let (count, size) = repo_caches
+                    .iter()
+                    .map(|d| count_files(d))
+                    .fold((0, 0), |(c, s), (fc, fs)| (c + fc, s + fs));
                 check(
                     "cache",
                     Status::Ok,
-                    format!("{count} blob file(s) totaling {}", human_bytes(size)),
+                    format!(
+                        "{count} blob file(s) totaling {} across {} repositor{}",
+                        human_bytes(size),
+                        repo_caches.len(),
+                        if repo_caches.len() == 1 { "y" } else { "ies" }
+                    ),
                     "",
                 )
             }
             Err(e) => check(
                 "cache",
                 Status::Warn,
-                format!("{}: not writable: {e}", cache_dir.display()),
+                format!("{}: not writable: {e}", repo_caches[0].display()),
                 "fix permissions on the repomap cache directory",
             ),
         }

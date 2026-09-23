@@ -91,7 +91,11 @@ forge gc [--dry-run]                                        # remove worktrees t
 3. **Agent.** `claude --print --output-format stream-json --json-schema …`
    in the worktree under bubblewrap: read-only system, private `/tmp` `/run`
    `/proc`, a tmpfs `$HOME` holding only the worktree, the repo's `.git`,
-   the agent binary, and the claude CLI's state. Its network is its own:
+   the agent binary, and a private copy of the claude and codex CLIs'
+   credentials and settings — seeded from the operator's real state and
+   discarded with the attempt, so no attempt ever reads or writes the
+   operator's actual session, and one attempt's session is never visible to
+   the next. Its network is its own:
    a namespace with only loopback, and one route out, an allowlist proxy
    that lets through the model endpoint and the hosts the repository's
    `forge.toml` declares under `[sandbox] egress` and refuses the rest

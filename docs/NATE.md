@@ -41,3 +41,10 @@ job does not read this; a person does.
   share it: the history is clean (no keys, every phone number a 555
   placeholder), and the commits are the record of Forge landing on itself.
   Once it exists, CI (task 591) runs there.
+- [ ] **A separate agent identity.** Every attempt now gets its own private
+  copy of the claude/codex credentials, seeded from whatever account is
+  logged in on this machine (task 627) — but it is still your account. A
+  Claude login that is not the operator's, used only for attempts, is an
+  operator decision (a second `claude login`, a service account, a
+  workspace seat) Forge should not make on its own; nothing in the code
+  currently forces it.

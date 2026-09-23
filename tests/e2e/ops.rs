@@ -466,11 +466,20 @@ fn an_operation_sees_prev_sha_verify_ref_hot_files_and_cache_dir() {
     );
     assert!(out.contains("REF=verify/2"), "{out}");
     assert!(out.contains("HOT=hello.sh"), "{out}");
+    // FORGE_CACHE_DIR is this repository's own directory under `cache/`
+    // (src/ctx.rs, `Forge::cache_dir`), not the shared top-level one, so
+    // another repository's attempts can never poison what this one reads.
+    let cache_prefix = format!("{}/", e.home.join("cache").display());
+    let cache_val = out
+        .split("CACHE=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no CACHE= in {out}"));
     assert!(
-        out.contains(&format!("CACHE={}", e.home.join("cache").display())),
-        "{out}"
+        cache_val.starts_with(&cache_prefix),
+        "expected a repository cache dir under {cache_prefix}, got {cache_val} ({out})"
     );
-    assert!(e.home.join("cache").is_dir());
+    assert!(std::path::Path::new(cache_val).is_dir());
 }
 
 #[test]

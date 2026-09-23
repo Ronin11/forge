@@ -1,8 +1,12 @@
 //! The agent and the checks run under bubblewrap. Read-only system, private
 //! /tmp, /run and /proc, a tmpfs $HOME with only the holes the attempt
-//! needs: the task's clone (its .git included), the agent binary, and the
-//! claude CLI's own state. Nothing else on the host is visible, and in
-//! particular not the registered checkout or its .git.
+//! needs: the task's clone (its .git included), the agent binary, and a
+//! private copy of the claude and codex CLIs' credentials and settings,
+//! seeded from the operator's real state and discarded with the attempt
+//! (see `provider_state_dir`, `discard_provider_state`) — the operator's
+//! real `.claude`/`.codex` directories are never bound into a sandbox.
+//! Nothing else on the host is visible, and in particular not the
+//! registered checkout or its .git.
 //!
 //! The network is not shared. The sandbox has a network namespace of its
 //! own with nothing in it but loopback; the only way out is the egress
@@ -37,9 +41,15 @@ pub struct Sandbox {
     home: PathBuf,
     /// Directories holding the agent binary (as named and as resolved).
     agent_dirs: Vec<PathBuf>,
-    /// Paths under $HOME the claude CLI must be able to write: today just
-    /// the config directory, where credentials live.
-    write_paths: Vec<PathBuf>,
+    /// The claude CLI's real config directory (credentials, settings) and
+    /// codex's real `~/.codex`. Read from, on the host, only to seed each
+    /// attempt's own private copy (see `command`); never bound into a
+    /// sandbox themselves, so an attempt can neither read nor overwrite the
+    /// operator's actual session state. These paths also happen to be
+    /// where the sandbox's tmpfs `$HOME` puts the private copy, since
+    /// `home` shadows the operator's real `$HOME` at the identical path.
+    config_dir: PathBuf,
+    codex_dir: PathBuf,
     /// The host's `~/.claude.json`, bound read-only at `CLAUDE_JSON_SEED`
     /// and copied into the tmpfs $HOME before the agent runs. Never bound
     /// at its real path: many claude CLIs write it concurrently (rename
@@ -48,7 +58,10 @@ pub struct Sandbox {
     claude_json_seed: PathBuf,
     /// Operator-configured toolchain paths, read-only.
     extra_ro: Vec<PathBuf>,
-    /// Operator-configured package caches, read-write.
+    /// Operator-configured package caches (`~/.npm`, `~/.cargo/registry`,
+    /// ...): read from, an attempt's own writes going to a private overlay
+    /// discarded with it (see `command`), so one attempt can never poison
+    /// what another reads from the operator's real cache.
     extra_rw: Vec<PathBuf>,
     /// The model endpoints every attempt may reach, whatever its repository
     /// declares (see `egress::model_rules`).
@@ -61,11 +74,26 @@ pub struct Sandbox {
     /// (see `set_egress`); a worktree not in here gets the model endpoints
     /// alone.
     declared: Mutex<BTreeMap<PathBuf, Vec<Rule>>>,
+    /// A repository's own cache directory (`FORGE_CACHE_DIR`), by the
+    /// worktree its attempts run in (see `set_cache_dir`); a worktree not
+    /// in here gets no cache bind at all. Keyed per repository so one
+    /// repository's attempts can never poison a cache another reads.
+    caches: Mutex<BTreeMap<PathBuf, PathBuf>>,
 }
 
 /// Quote `s` as a single POSIX shell argument.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Where an attempt in `worktree` gets its own private copy of the claude
+/// and codex CLIs' state: a sibling of the worktree, under its parent, in
+/// the same style as `attempt::tests_clone_dir`. Wiped and reseeded at the
+/// start of every `command` call and removed by `discard_provider_state`
+/// once the attempt is done, so one attempt's session writes are never
+/// visible to the next.
+fn provider_state_dir(worktree: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-provider", worktree.display()))
 }
 
 /// Resolve a binary the way the shell would, then follow symlinks.
@@ -90,8 +118,10 @@ pub fn resolve_binary(name: &str) -> Result<(PathBuf, PathBuf)> {
 impl Sandbox {
     /// `Ok(None)` only when the operator opted out with FORGE_SANDBOX=0.
     /// `extra_ro` and `extra_rw` are bound alongside `paths.ro`/`paths.rw`;
-    /// the caller resolves them (the executable's own directory, the cache
-    /// directory) so detection stays a pure read of its inputs.
+    /// the caller resolves them (the executable's own directory) so
+    /// detection stays a pure read of its inputs. A repository's own cache
+    /// (`FORGE_CACHE_DIR`) is not here: it is declared per worktree, once
+    /// known, with `set_cache_dir`.
     pub fn detect(
         agent_bin: &str,
         paths: &crate::config::SandboxPaths,
@@ -137,11 +167,8 @@ impl Sandbox {
         let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".claude"));
+        let codex_dir = home.join(".codex");
         let claude_json_seed = home.join(".claude.json");
-        // The claude config directory holds its credentials; ~/.codex holds
-        // codex's login and its per-thread state. Both are bound with
-        // --bind-try, so a host without one of them is unaffected.
-        let write_paths = vec![config_dir, home.join(".codex")];
         // The relay is this binary, so its directory has to be visible.
         let relay_exe = std::env::current_exe().context("finding the forge binary")?;
         let relay_dir = relay_exe.parent().map(Path::to_path_buf);
@@ -149,7 +176,8 @@ impl Sandbox {
             bwrap,
             home,
             agent_dirs: agent_dirs.into_iter().collect(),
-            write_paths,
+            config_dir,
+            codex_dir,
             claude_json_seed,
             extra_ro: paths
                 .ro
@@ -163,6 +191,7 @@ impl Sandbox {
             relay_exe,
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            caches: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -186,6 +215,29 @@ impl Sandbox {
             .into_iter()
             .flatten();
         Policy::new(self.model_hosts.iter().chain(extra).cloned())
+    }
+
+    /// Declare where a command in `worktree` (or a directory below it) may
+    /// cache what it computes: `dir`, private to the repository that owns
+    /// `worktree`, so one repository's attempts can never read or poison
+    /// what another cached (see `ctx::Forge::declare_cache`).
+    pub fn set_cache_dir(&self, worktree: &Path, dir: PathBuf) {
+        self.caches
+            .lock()
+            .unwrap()
+            .insert(worktree.to_path_buf(), dir);
+    }
+
+    fn cache_dir_for(&self, worktree: &Path) -> Option<PathBuf> {
+        let caches = self.caches.lock().unwrap();
+        worktree.ancestors().find_map(|d| caches.get(d)).cloned()
+    }
+
+    /// Remove `worktree`'s private provider-state directory (see
+    /// `provider_state_dir`) once its attempt is done: nothing about that
+    /// attempt's claude or codex session survives for the next one.
+    pub fn discard_provider_state(&self, worktree: &Path) {
+        let _ = std::fs::remove_dir_all(provider_state_dir(worktree));
     }
 
     /// Build the bwrap command that runs `argv` inside the worktree with
@@ -257,8 +309,43 @@ impl Sandbox {
             cmd.arg("--bind").arg(s).arg(egress::SANDBOX_SOCKET);
         }
         cmd.arg("--bind").arg(worktree).arg(worktree);
-        for p in self.write_paths.iter().chain(&self.extra_rw) {
-            cmd.arg("--bind-try").arg(p).arg(p);
+        // A private copy of the claude CLI's credentials and settings, and
+        // of codex's login and config: wiped and reseeded from the
+        // operator's real files here (read, never bound into a sandbox
+        // themselves), then bound writable at the paths each CLI expects.
+        // `discard_provider_state` removes this once the attempt is done,
+        // so a write here is never visible to the next attempt, and the
+        // operator's real `.claude`/`.codex` directories are never bound
+        // into a sandbox at all.
+        let provider_dir = provider_state_dir(worktree);
+        let _ = std::fs::remove_dir_all(&provider_dir);
+        let claude_priv = provider_dir.join("claude");
+        let codex_priv = provider_dir.join("codex");
+        let _ = std::fs::create_dir_all(&claude_priv);
+        let _ = std::fs::create_dir_all(&codex_priv);
+        for name in [".credentials.json", "settings.json"] {
+            let _ = std::fs::copy(self.config_dir.join(name), claude_priv.join(name));
+        }
+        for name in ["auth.json", "config.toml"] {
+            let _ = std::fs::copy(self.codex_dir.join(name), codex_priv.join(name));
+        }
+        cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
+        cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
+        // The operator's package caches: read through, an attempt's own
+        // writes going to an invisible tmpfs overlay that bwrap discards
+        // with the sandbox, so one attempt can never poison what another
+        // reads from the operator's real cache. `--overlay-src` has no
+        // `-try` form, so a cache the operator never populated is skipped
+        // rather than failing the launch.
+        for p in self.extra_rw.iter().filter(|p| p.exists()) {
+            cmd.arg("--overlay-src").arg(p);
+            cmd.arg("--tmp-overlay").arg(p);
+        }
+        // This repository's own cache (`FORGE_CACHE_DIR`), private to it
+        // (see `ctx::Forge::declare_cache`): read-write, but never another
+        // repository's, so one cannot poison a cache another reads.
+        if let Some(dir) = self.cache_dir_for(worktree) {
+            cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
         // The claude CLI's own config file, not the credential-bearing
@@ -314,20 +401,37 @@ mod tests {
 
     #[test]
     fn command_binds_tmpfs_home_before_ro_dirs_before_the_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path().join("work/tree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let config_dir = root.path().join("real/.claude");
+        let codex_dir = root.path().join("real/.codex");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(config_dir.join(".credentials.json"), "creds").unwrap();
+        std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
+        std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
+        std::fs::write(codex_dir.join("config.toml"), "cfg").unwrap();
+        let npm_cache = root.path().join("opt/npm-cache");
+        std::fs::create_dir_all(&npm_cache).unwrap();
+        let repo_cache = root.path().join("forge-home/cache/abc123");
+
         let sandbox = Sandbox {
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![PathBuf::from("/opt/agent")],
-            write_paths: vec![PathBuf::from("/home/attempt/.claude")],
+            config_dir: config_dir.clone(),
+            codex_dir: codex_dir.clone(),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
-            extra_rw: vec![PathBuf::from("/opt/cache")],
+            extra_rw: vec![npm_cache.clone()],
             model_hosts: vec![Rule::parse("api.example.com").unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            caches: Mutex::new(BTreeMap::new()),
         };
-        let worktree = PathBuf::from("/work/tree");
+        sandbox.set_cache_dir(&worktree, repo_cache.clone());
         let cmd = sandbox.command(&worktree, &["true".to_string()], &[]);
         let args: Vec<String> = cmd
             .get_args()
@@ -344,9 +448,10 @@ mod tests {
         let ro_agent = pos("--ro-bind-try", "/opt/agent");
         let ro_extra = pos("--ro-bind-try", "/opt/toolchain");
         let ro_seed = pos("--ro-bind-try", "/home/real/.claude.json");
-        let worktree_bind = pos("--bind", "/work/tree");
-        let rw_write = pos("--bind-try", "/home/attempt/.claude");
-        let rw_extra = pos("--bind-try", "/opt/cache");
+        let worktree_bind = pos("--bind", worktree.to_str().unwrap());
+        let overlay_src = pos("--overlay-src", npm_cache.to_str().unwrap());
+        let tmp_overlay = pos("--tmp-overlay", npm_cache.to_str().unwrap());
+        let cache_bind = pos("--bind-try", repo_cache.to_str().unwrap());
 
         assert!(tmpfs_home < ro_agent, "tmpfs $HOME must precede ro binds");
         assert!(tmpfs_home < ro_extra, "tmpfs $HOME must precede ro binds");
@@ -363,12 +468,61 @@ mod tests {
             "the claude.json seed ro bind must precede the worktree bind"
         );
         assert!(
-            worktree_bind < rw_write,
-            "worktree bind must precede rw binds"
+            worktree_bind < overlay_src,
+            "worktree bind must precede the package cache overlay"
         );
         assert!(
-            worktree_bind < rw_extra,
-            "worktree bind must precede rw binds"
+            worktree_bind < tmp_overlay,
+            "worktree bind must precede the package cache overlay"
+        );
+        assert!(
+            worktree_bind < cache_bind,
+            "worktree bind must precede the repository cache bind"
+        );
+
+        // A private, seeded copy of the claude and codex state is bound
+        // writable at the paths the CLIs expect; the operator's real
+        // directories are never a bind source.
+        let provider_dir = provider_state_dir(&worktree);
+        let claude_priv = provider_dir.join("claude");
+        let codex_priv = provider_dir.join("codex");
+        let provider_bind = |src: &Path, dest: &Path| {
+            args.windows(3)
+                .position(|w| {
+                    w[0] == "--bind"
+                        && w[1] == src.to_str().unwrap()
+                        && w[2] == dest.to_str().unwrap()
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing private provider bind {src:?} -> {dest:?}: {args:?}")
+                })
+        };
+        let claude_bind = provider_bind(&claude_priv, &config_dir);
+        let codex_bind = provider_bind(&codex_priv, &codex_dir);
+        assert!(worktree_bind < claude_bind && worktree_bind < codex_bind);
+        assert!(
+            !args.windows(3).any(|w| matches!(
+                w[0].as_str(),
+                "--bind" | "--ro-bind" | "--bind-try" | "--ro-bind-try"
+            ) && (w[1] == config_dir.to_str().unwrap()
+                || w[1] == codex_dir.to_str().unwrap())),
+            "the operator's real claude/codex directories must never be a bind source: {args:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(claude_priv.join(".credentials.json")).unwrap(),
+            "creds"
+        );
+        assert_eq!(
+            std::fs::read_to_string(claude_priv.join("settings.json")).unwrap(),
+            "settings"
+        );
+        assert_eq!(
+            std::fs::read_to_string(codex_priv.join("auth.json")).unwrap(),
+            "auth"
+        );
+        assert_eq!(
+            std::fs::read_to_string(codex_priv.join("config.toml")).unwrap(),
+            "cfg"
         );
 
         // The seed is bound read-only at a neutral path, never at the real
@@ -413,6 +567,9 @@ mod tests {
         );
         assert_eq!(tail[3], "sh", "argv[0] for the wrapper script is $0");
         assert_eq!(&tail[4..], &["true"], "the real argv follows the wrapper");
+
+        sandbox.discard_provider_state(&worktree);
+        assert!(!provider_dir.exists(), "provider state must be discarded");
     }
 
     fn test_sandbox(model: &str) -> Sandbox {
@@ -420,7 +577,8 @@ mod tests {
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             home: PathBuf::from("/home/attempt"),
             agent_dirs: vec![],
-            write_paths: vec![],
+            config_dir: PathBuf::from("/home/attempt/.claude"),
+            codex_dir: PathBuf::from("/home/attempt/.codex"),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![],
             extra_rw: vec![],
@@ -428,6 +586,7 @@ mod tests {
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
+            caches: Mutex::new(BTreeMap::new()),
         }
     }
 

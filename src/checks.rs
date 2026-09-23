@@ -194,6 +194,12 @@ pub async fn run_one_capped(
             child.wait().await.ok();
         }
     }
+    // Whatever this check wrote to its private claude/codex state (see
+    // `Sandbox::command`) is gone with it; the next check or attempt in
+    // this worktree never sees it.
+    if let Some(sb) = sandbox {
+        sb.discard_provider_state(cwd);
+    }
     // The check has exited; nothing it left behind may outlive it.
     if let Some(pid) = pid {
         let _ = Command::new("kill")
