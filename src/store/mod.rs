@@ -24,7 +24,7 @@ mod stats;
 mod tasks;
 mod webhooks;
 
-pub use attempts::{Attempt, AttemptState, FinishAttempt, Op};
+pub use attempts::{Attempt, AttemptState, FinishAttempt, Op, RateLimitSample};
 pub use daily::DailyStat;
 pub use deploys::{Assessment, Deploy, DeployTarget};
 pub use factors::{FactorLevelStat, ROLES};
