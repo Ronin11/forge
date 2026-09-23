@@ -159,7 +159,7 @@ case "$1" in
     echo '[]'
     ;;
   answer)
-    printf 'answer|%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
+    printf 'answer|%s|%s|%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" "$6" "$7" >> "$CALLS"
     touch "$ANSWERED"
     echo "answered task $2 as 99"
     ;;
@@ -415,7 +415,7 @@ fn answering_posts_through_to_forge_answer_and_requeues() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(
         p.calls(),
-        vec!["answer|42|Yes, 10%.|--by|customer".to_string()]
+        vec!["answer|42|Yes, 10%.|--by|customer|--project|acme".to_string()]
     );
     // The re-read page no longer lists the question the fake's answer
     // handler just re-queued.

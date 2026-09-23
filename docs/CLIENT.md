@@ -308,11 +308,18 @@ and does not parse stdout.
   re-reads the lists itself, the same as `forge retry`. This is the write
   verb the web UI's inbox (`POST /api/land/<id>`, task 530) calls for an
   unverified task's land control.
-- **`forge answer ID TEXT [--by NAME]`** — write verb: answers the
-  question task `ID` is blocked on and re-queues it as a retry, `--by`
-  naming the contact when the answer came through a channel (the portal
-  passes its contact name). Stdout is the new task's id; a non-zero exit
-  is the error on stderr. Not JSON.
+- **`forge answer ID TEXT [--by NAME] [--project NAME]`** — write verb:
+  answers the question task `ID` is blocked on and re-queues it as a
+  retry, `--by` naming the contact when the answer came through a
+  channel (the portal passes its contact name). `--project`, given,
+  scopes the answer: refused (non-zero exit), before any write, unless
+  task `ID` belongs to that project and its question is addressed to
+  `--by` (see `RequestRow.to`) — the portal passes its resolved project
+  on every answer, so a token can never reach another project's task or
+  a question addressed to someone else. Unset, as the operator's own
+  `forge answer` always leaves it, the answer reaches any task. Stdout
+  is the new task's id; a non-zero exit is the error on stderr. Not
+  JSON.
 - **`forge withdraw ID --reason TEXT [--by NAME]`** — write verb:
   withdraws a blocked or queued task the operator has decided not to do
   — a stale description, superseded, or the product decision went the

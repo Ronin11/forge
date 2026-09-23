@@ -215,6 +215,18 @@ agent had gotten it right the first time; still failing lets the ordinary
 retry path begin. Either way the fix run is its own `known-fix` row on
 the attempt's operations, with the diff it committed.
 
+A check command is trusted to report pass or fail, never to touch the
+tree it is judging: the verdict names the one commit L1 and L2 ran
+against, and a check that commits, stages, or leaves a tracked file
+modified fails L0's `candidate-unchanged` row, naming the commit it was
+supposed to be judging and the one it left behind instead — even if
+every check it ran otherwise passed, so a check that quietly slips
+`forge.toml` or a protected path into the tree cannot land it under a
+green `forge.toml-untouched`. The one commit allowed to move the tree
+mid-verify is the known-fixes commit above: it runs outside the checks,
+and the re-run it triggers is judged as the new candidate, not the old
+one.
+
 ## Landing
 
 A task's base is the base branch as the push remote has it, fetched at
@@ -222,6 +234,10 @@ clone time, so a task started after a landing sees it. Once the last
 step passes, the kernel lands the branch, one task at a time per
 repository:
 
+0. Before any of that: the worktree's HEAD must still be the `end_sha`
+   of the task's last succeeded attempt. A mismatch refuses landing with
+   a reason naming both shas rather than fast-forward the base to a
+   commit no check ever ran on.
 1. `integrate`: fetch the base again; if it moved, merge it into the
    branch. A clean merge is committed as Forge. Then run every repository
    check and every hidden suite (`forge-verify` at its current tip and

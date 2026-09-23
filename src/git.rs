@@ -620,6 +620,20 @@ pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     ))
 }
 
+/// Porcelain status entries for paths git already tracks: staged or
+/// modified content, never a plain untracked file (`??`). Used where a
+/// leftover build artifact must not read as tampering with the commit a
+/// check is judging, but a change to what HEAD already named must.
+pub async fn dirty_tracked_paths(wt: &Path) -> Result<Vec<String>> {
+    let raw = Git::new(wt).raw(&["status", "--porcelain"]).await?;
+    let tracked: String = raw
+        .lines()
+        .filter(|l| !l.starts_with("??"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    Ok(porcelain_paths(&tracked))
+}
+
 pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     Git::new(repo)
         .line(&["remote", "get-url", remote])
@@ -914,6 +928,20 @@ mod tests {
         commit_path(wt, "a.toml", "add a").await.unwrap().unwrap();
         let again = commit_path(wt, "a.toml", "add a again").await.unwrap();
         assert_eq!(again, None);
+    }
+
+    #[tokio::test]
+    async fn dirty_tracked_paths_excludes_untracked_but_keeps_modified_and_staged() {
+        let dir = init_repo();
+        let wt = dir.path();
+        std::fs::write(wt.join("tracked.txt"), "one\n").unwrap();
+        commit_all(wt, "base").await.unwrap();
+        std::fs::write(wt.join("tracked.txt"), "two\n").unwrap();
+        std::fs::write(wt.join("untracked.txt"), "new\n").unwrap();
+        let dirty = dirty_paths(wt).await.unwrap();
+        assert_eq!(dirty, vec!["tracked.txt", "untracked.txt"]);
+        let tracked_only = dirty_tracked_paths(wt).await.unwrap();
+        assert_eq!(tracked_only, vec!["tracked.txt"]);
     }
 
     #[tokio::test]
