@@ -103,12 +103,12 @@ impl BlobCache {
     }
 }
 
-/// A `Vec<Symbol>` that also dedups by (name, kind) in O(1) instead of a
+/// A `Vec<Symbol>` that also dedups by (name, kind, line) in O(1) instead of a
 /// linear scan per push, while keeping first-seen order.
 #[derive(Default)]
 struct Sink {
     out: Vec<Symbol>,
-    seen: HashSet<(String, String)>,
+    seen: HashSet<(String, String, usize)>,
     /// The 1-based line the extractor is on; every push records it.
     line: usize,
     /// The current line, trimmed and capped; every push records it as the
@@ -129,7 +129,10 @@ impl Sink {
         if name.is_empty() {
             return;
         }
-        if self.seen.insert((name.to_string(), kind.to_string())) {
+        if self
+            .seen
+            .insert((name.to_string(), kind.to_string(), self.line))
+        {
             self.out.push(Symbol {
                 name: name.to_string(),
                 kind: kind.to_string(),
@@ -517,6 +520,15 @@ fn python_end(lines: &[&str], start_line: usize) -> usize {
 /// The declarations of a file with real spans: each symbol's `end` comes
 /// from its own declaration, never guessed from the next one's position.
 pub fn extract(path: &str, text: &str) -> Vec<Symbol> {
+    // The compact repository map keeps one entry per name and kind.
+    let mut seen = HashSet::new();
+    extract_all(path, text)
+        .into_iter()
+        .filter(|s| seen.insert((s.name.clone(), s.kind.clone())))
+        .collect()
+}
+
+fn extract_all(path: &str, text: &str) -> Vec<Symbol> {
     let mut syms = extract_names(path, text);
     let ext = Path::new(path)
         .extension()
@@ -792,7 +804,7 @@ pub fn render(
     out
 }
 
-const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA] [--no-spans]\n       forge-repomap edges <root> [--cache DIR]";
+const USAGE: &str = "usage: forge-repomap (index|rank) [--dir D] [--task T] [--budget CHARS] [--hot a,b] [--cache DIR] [--changed-since SHA] [--no-spans]\n       forge-repomap edges <root> [--cache DIR]\n       forge-repomap outline <path> [--dir D]\n       forge-repomap def <name> [--in <path>] [--dir D]";
 
 #[derive(Debug)]
 struct Args {
@@ -806,6 +818,8 @@ struct Args {
     cache: Option<PathBuf>,
     since: Option<String>,
     cmd: String,
+    query: Option<String>,
+    in_path: Option<String>,
 }
 
 /// The value following a flag, or an error with the usage line when the
@@ -825,10 +839,25 @@ fn parse_args(args: &[String]) -> Result<Args> {
     let mut cache: Option<PathBuf> = None;
     let mut since: Option<String> = None;
     let mut cmd = String::new();
+    let mut query = None;
+    let mut in_path = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "index" | "rank" | "edges" => cmd = args[i].clone(),
+            "index" | "rank" | "edges" | "outline" | "def" if cmd.is_empty() => {
+                cmd = args[i].clone();
+            }
+            "--in" => {
+                in_path = Some(flag_value(args, i, "--in")?.to_string());
+                i += 1;
+            }
+            other
+                if matches!(cmd.as_str(), "outline" | "def")
+                    && !other.starts_with("--")
+                    && query.is_none() =>
+            {
+                query = Some(other.to_string());
+            }
             "--dir" => {
                 dir = PathBuf::from(flag_value(args, i, "--dir")?);
                 i += 1;
@@ -879,8 +908,106 @@ fn parse_args(args: &[String]) -> Result<Args> {
         cache,
         since,
         cmd,
+        query,
+        in_path,
         spans,
     })
+}
+
+/// Read current working files together with their spans; the index cache is
+/// keyed by staged blobs and may not describe an edited working file.
+fn navigate(dir: &Path, cmd: &str, query: &str, in_path: Option<&str>) -> Result<String> {
+    use std::fmt::Write;
+
+    let filter = if cmd == "outline" {
+        Some(query)
+    } else {
+        in_path
+    };
+    let filter = filter.map(|p| p.strip_prefix("./").unwrap_or(p));
+    let tracked = tracked(dir)?;
+    if let Some(path) = filter
+        && !tracked.iter().any(|(p, _)| p == path)
+    {
+        anyhow::bail!("unknown tracked file: {path}");
+    }
+    let mut files = Vec::new();
+    for (path, _) in tracked {
+        if filter.is_some_and(|p| p != path) {
+            continue;
+        }
+        let ext = Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !EXTRACTORS.iter().any(|(exts, _)| exts.contains(&ext)) {
+            if filter.is_some() {
+                anyhow::bail!("no extractor for tracked file: {path}");
+            }
+            continue;
+        }
+        let text =
+            std::fs::read_to_string(dir.join(&path)).with_context(|| format!("read {path}"))?;
+        let symbols = extract_all(&path, &text);
+        files.push((path, text, symbols));
+    }
+    let mut out = String::new();
+    if cmd == "outline" {
+        for (_, _, symbols) in &files {
+            for s in symbols {
+                writeln!(out, "{}-{} {} {}", s.start, s.end, s.kind, s.sig)?;
+            }
+        }
+        return Ok(out);
+    }
+    let mut exact = Vec::new();
+    let mut partial = Vec::new();
+    for (path, text, symbols) in &files {
+        for s in symbols {
+            let qualified = query.rsplit_once("::").is_some_and(|(owner, method)| {
+                s.name == method
+                    && s.kind == "fn"
+                    && symbols.iter().any(|parent| {
+                        parent.kind == "impl"
+                            && parent.name == owner
+                            && parent.start < s.start
+                            && parent.end >= s.end
+                    })
+            });
+            if s.name == query || qualified {
+                exact.push((path, text, s));
+            } else if s.name.contains(query) {
+                partial.push((path, text, s));
+            }
+        }
+    }
+    let matches = if exact.is_empty() { partial } else { exact };
+    match matches.as_slice() {
+        [] => writeln!(
+            out,
+            "No match for {query}; try forge-repomap outline <path>."
+        )?,
+        [(path, text, s)] => {
+            writeln!(out, "{path}:{}-{}", s.start, s.end)?;
+            for (i, line) in text
+                .lines()
+                .enumerate()
+                .skip(s.start - 1)
+                .take((s.end - s.start + 1).min(250))
+            {
+                writeln!(out, "{:6}\t{line}", i + 1)?;
+            }
+            if s.end - s.start + 1 > 250 {
+                writeln!(out, "...truncated, Read {path} offset/limit for the rest")?;
+            }
+        }
+        _ => {
+            for (path, _, s) in matches {
+                writeln!(out, "{path}:{}-{} {} {}", s.start, s.end, s.kind, s.sig)?;
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn main() -> Result<()> {
@@ -893,6 +1020,8 @@ fn main() -> Result<()> {
         cache,
         since,
         cmd,
+        query,
+        in_path,
         spans,
     } = parse_args(&args)?;
     let shared = cache
@@ -900,6 +1029,10 @@ fn main() -> Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(BlobCache::new);
     match cmd.as_str() {
+        "outline" | "def" => {
+            let query = query.context("outline/def needs a path/name")?;
+            print!("{}", navigate(&dir, &cmd, &query, in_path.as_deref())?);
+        }
         "index" => {
             let (files, parsed) = index(&dir, shared.as_ref())?;
             let map: BTreeMap<&String, &Vec<Symbol>> = files.iter().map(|(p, s)| (p, s)).collect();
