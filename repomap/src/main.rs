@@ -772,7 +772,7 @@ pub fn render(
                     x.name.clone()
                 };
                 if spans && x.start > 0 {
-                    format!("{name}@{}-{}", x.start, x.end)
+                    format!("{name}@{}", x.start)
                 } else {
                     name
                 }
@@ -780,7 +780,7 @@ pub fn render(
             .collect();
         // One line per file, at most 220 characters: when the symbols do
         // not fit, the trailing ones are dropped whole (with an ellipsis),
-        // never cut mid-name and never stripped of their spans.
+        // never cut mid-name and never stripped of their `@start`.
         let mut line = format!("{path}:");
         let mut dropped = false;
         for (i, name) in names.iter().enumerate() {
@@ -811,7 +811,7 @@ struct Args {
     dir: PathBuf,
     task: String,
     budget: usize,
-    /// Render `name@start-end` (the default); `--no-spans` renders names
+    /// Render `name@start` (the default); `--no-spans` renders names
     /// only, the control arm of the `map` experiment factor.
     spans: bool,
     hot: Vec<String>,
@@ -1073,7 +1073,7 @@ mod tests {
 
     /// Every declaration carries the line it starts on and its real end —
     /// the matching brace, not the next declaration's position — in Rust,
-    /// TypeScript and shell alike; the map renders `name@start-end`.
+    /// TypeScript and shell alike; the map renders `name@start`.
     #[test]
     fn spans_cover_the_file_from_the_first_declaration_in_three_languages() {
         let rs = "use x;\n\npub fn a() {\n  1\n}\n\nstruct B {\n  x: i32,\n}\n";
@@ -1102,7 +1102,7 @@ mod tests {
             1000,
             true,
         );
-        assert!(out.contains("a@3-5"), "{out}");
+        assert!(out.contains("a@3,") || out.contains("a@3\n"), "{out}");
         let plain = render(
             &[("m.rs".to_string(), extract("m.rs", rs))],
             &["a".to_string()],
@@ -1140,7 +1140,7 @@ mod tests {
             .split(", ")
         {
             assert!(
-                piece.contains('@') && piece.split('@').nth(1).unwrap().contains('-'),
+                piece.contains('@') && piece.split('@').nth(1).unwrap().parse::<usize>().is_ok(),
                 "{piece}"
             );
         }

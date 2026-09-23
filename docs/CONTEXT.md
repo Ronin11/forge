@@ -65,7 +65,7 @@ ranked by nothing has no other signal than what a file carries.
 
 ## Line spans and the map factor (2026-09-22)
 
-Every symbol in the map now carries a span, rendered `name@start-end`:
+Every symbol in the map now carries a span, rendered `name@start-end` (since A3, `name@start`; see the end of this file):
 the line the declaration starts on and the line before the next
 declaration (the last symbol runs to the file's end). It is a cheap span
 with no brace matching, and it is enough for what it is for: the map's
@@ -85,3 +85,23 @@ call at which the first edit came, and tool calls per turn. Spans are
 the default when no draw was made. The factor is readable once each
 level has a few dozen landed tasks; at the current pace that is about
 a week with the weights at 0.5 each.
+
+## The tools in the sandbox, and `name@start` (A3)
+
+`forge-repomap` is on `PATH` inside a directive attempt's sandbox, not
+only for operations: `Forge::open` binds the directory beside the
+`forge` binary read-only, and `agent::agent_env` puts that directory in
+front of `PATH` for the agent and the checks alike. The model can run
+`forge-repomap outline <path>` and `forge-repomap def <name>` instead of
+grepping and reading whole files; the e2e test
+`a_directive_attempts_sandbox_can_run_forge_repomap_def` runs it from
+inside the sandbox.
+
+The repo pack says so in one line beside "Where things are" (shared by
+every task, never the task tail): outline lists a file's signatures with
+line ranges, def prints one item, use them before grep, Read with
+offset/limit before editing. Because outline and def give the ranges,
+the map renders `name@start` only (the end was the line before the next
+declaration and cost characters on every symbol). Within the same
+budgets in `repo-map.toml` and the 220-character file line, trailing
+symbols are dropped whole, never cut, so more files fit.

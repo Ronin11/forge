@@ -850,3 +850,13 @@ fn doctor_reports_each_projects_egress_policy_and_warns_when_the_sandbox_is_off(
     );
     assert!(out.contains("OK   egress.repo"), "{out}");
 }
+
+/// `forge-repomap` is on `PATH` inside a directive attempt's sandbox
+/// (src/agent.rs, `agent_env`; src/ctx.rs binds the directory).
+#[test]
+fn a_directive_attempts_sandbox_can_run_forge_repomap_def() {
+    let e = Env::new();
+    let o = e.run("repomapdef.sh", &["--retries", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(e.task(1).0, "succeeded");
+}

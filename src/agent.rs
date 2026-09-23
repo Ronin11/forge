@@ -221,6 +221,19 @@ pub fn agent_bin_for(step: &str) -> String {
     crate::config::env(&suffix).unwrap_or_else(|_| agent_bin())
 }
 
+/// `PATH` with the directory of this binary in front, where Forge's own
+/// tools (`forge-repomap`) live; `Forge::open` binds that directory into
+/// the sandbox, so a name on this `PATH` runs inside it too.
+fn path_with_bin_dir(path: &str) -> String {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.display().to_string()));
+    match dir {
+        Some(d) if !path.split(':').any(|p| p == d) => format!("{d}:{path}"),
+        _ => path.to_string(),
+    }
+}
+
 /// The environment the agent and the checks see, sandboxed or not. This is
 /// the one list; the sandbox overrides HOME on top of it.
 pub fn agent_env() -> Vec<(String, String)> {
@@ -239,6 +252,13 @@ pub fn agent_env() -> Vec<(String, String)> {
             ) || ["LC_", "ANTHROPIC_", "CODEX_"]
                 .iter()
                 .any(|p| k.starts_with(p))
+        })
+        .map(|(k, v)| {
+            if k == "PATH" {
+                (k, path_with_bin_dir(&v))
+            } else {
+                (k, v)
+            }
         })
         .collect()
 }

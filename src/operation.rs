@@ -70,7 +70,7 @@ fn operation_env(
             ("FORGE_HOT_FILES", hot_files.join(",")),
             ("FORGE_CACHE_DIR", cache_dir.display().to_string()),
             // The map's arm from the experiment (docs/CONTEXT.md, the map
-            // factor): `spans` renders `name@start-end`, `names` renders names
+            // factor): `spans` renders `name@start`, `names` renders names
             // only; spans when no experiment drew it.
             (
                 "FORGE_MAP_STYLE",
