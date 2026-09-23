@@ -12,6 +12,37 @@ protocol that keeps a client's state in sync without polling.
 A third client only has to follow this document, not read the engine,
 to stay correct.
 
+## Required vs. optional fields
+
+Every JSON document below is a table of fields; a field is **optional**
+only when its table entry says `... or null` (a nullable value the CLI
+may send as `null`) or its prose says outright that it is sometimes
+missing entirely (e.g. `Worker`'s `pid`/`exe`/`stale_binary`, present
+only while a worker is running). Every other field is **required**: the
+CLI always sends it, and a client should treat its absence as a bug in
+the CLI or the wire, not a value to paper over with a default.
+
+`forge-client` (`client/src/lib.rs`) enforces this: each row type derives
+`Deserialize` with `#[serde(default)]` on exactly its optional fields,
+never on a required one. A `forge` binary that omits a required field
+fails the parse with an error naming both the field and the verb that
+was run (`Forge::parse`), instead of silently handing back a zero, an
+empty string, or `false` for it. A hand-rolled client in another
+language should hold itself to the same rule: default only the fields
+marked optional above, and treat a missing required one as a parse
+error to surface, not swallow.
+
+## `forge-client`'s own deadline
+
+Every run of the `forge` binary through `forge-client`'s `Forge` handle
+(`client/src/lib.rs`) is held to `Forge::timeout`, a `Duration` on the
+handle itself, default 60 seconds. Past it, the child is killed and the
+error names the verb that timed out (`forge <verb args>: timed out after
+<duration>`) — a caller never blocks forever on a `forge` subprocess that
+hangs. The one exception is `Forge::subscribe` (`forge events --follow`):
+it is deliberately unbounded, and is torn down by dropping its
+[`Subscription`] or calling its [`Killer`] instead of a deadline.
+
 ## Verbs
 
 Every verb below is invoked as `forge <name> [args] --json` (or, for
