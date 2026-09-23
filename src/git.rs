@@ -22,6 +22,7 @@ const IDENTITY: (&str, &str) = ("Forge", "forge@localhost");
 struct Git {
     dir: PathBuf,
     identity: bool,
+    hardened: bool,
     env: Vec<(String, String)>,
     env_remove: Vec<String>,
 }
@@ -31,6 +32,7 @@ impl Git {
         Git {
             dir: dir.into(),
             identity: false,
+            hardened: false,
             env: Vec::new(),
             env_remove: Vec::new(),
         }
@@ -38,6 +40,13 @@ impl Git {
 
     fn with_identity(mut self) -> Self {
         self.identity = true;
+        self
+    }
+
+    /// Hooks, fsmonitor and auto-gc off for this spawn: for the one command
+    /// that must run with an agent's clone as its working directory.
+    fn hardened(mut self) -> Self {
+        self.hardened = true;
         self
     }
 
@@ -61,6 +70,18 @@ impl Git {
     async fn output(&self, args: &[&str]) -> Result<std::process::Output> {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.dir);
+        if self.hardened {
+            cmd.args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
+            ]);
+        }
         if self.identity {
             cmd.args(["-c", &format!("user.name={}", IDENTITY.0)]);
             cmd.args(["-c", &format!("user.email={}", IDENTITY.1)]);
@@ -192,7 +213,7 @@ pub async fn clone_task(
 // Deliberately a complete config, not a patch to metadata supplied by an agent.
 const KERNEL_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n\thooksPath = /dev/null\n";
 
-async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
+pub(crate) async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
     let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
     let dir = home.join("repositories").join(format!("{key}.git"));
     if !dir.exists() {
@@ -203,6 +224,93 @@ async fn kernel_repository(home: &Path, repo: &Path) -> Result<PathBuf> {
         std::fs::write(dir.join("config"), KERNEL_CONFIG)?;
     }
     Ok(dir)
+}
+
+/// Serializes work on one kernel-owned repository across processes.
+async fn kernel_lock(home: &Path, repo: &Path) -> Result<std::fs::File> {
+    let locks = home.join("repository-locks");
+    std::fs::create_dir_all(&locks)?;
+    let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(locks.join(key))?;
+    Ok(tokio::task::spawn_blocking(move || lock.lock().map(|_| lock)).await??)
+}
+
+/// A scratch checkout of `branch` cloned from the kernel-owned repository:
+/// its metadata is written by Forge, never imported from an agent. The
+/// landing merge, the re-verification and every push run from here or from
+/// the kernel repository itself. Replaces `dir` if it exists.
+pub async fn kernel_tree(home: &Path, repo: &Path, dir: &Path, branch: &str) -> Result<()> {
+    let kernel = kernel_repository(home, repo).await?;
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    Git::new(&kernel)
+        .line(&[
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            "--single-branch",
+            "--no-tags",
+            "--template=",
+            "--branch",
+            branch,
+            kernel.to_str().context("kernel path is not UTF-8")?,
+            dir.to_str().context("tree path is not UTF-8")?,
+        ])
+        .await?;
+    std::fs::write(
+        dir.join(".git/config"),
+        KERNEL_CONFIG.replace("bare = true", "bare = false"),
+    )?;
+    Ok(())
+}
+
+/// Make `clone` the kernel-made `tree`: the agent's directory is emptied and
+/// the tree's contents (metadata included) moved in, by plain file moves.
+/// No git command runs in either.
+pub fn adopt_tree(clone: &Path, tree: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(clone)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    for entry in std::fs::read_dir(tree)? {
+        let entry = entry?;
+        std::fs::rename(entry.path(), clone.join(entry.file_name()))?;
+    }
+    std::fs::remove_dir_all(tree)?;
+    Ok(())
+}
+
+/// Fetch `src_ref` of `src` into the kernel repository as `dest_ref`
+/// (forced: the ref is the kernel's) and return the commit it names.
+pub async fn stage(
+    home: &Path,
+    repo: &Path,
+    src: &Path,
+    src_ref: &str,
+    dest_ref: &str,
+) -> Result<String> {
+    let _lock = kernel_lock(home, repo).await?;
+    let kernel = kernel_repository(home, repo).await?;
+    let g = Git::new(&kernel);
+    g.line(&[
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "--",
+        src.to_str().context("source path is not UTF-8")?,
+        &format!("+{src_ref}:{dest_ref}"),
+    ])
+    .await?;
+    g.line(&["rev-parse", "--verify", dest_ref]).await
 }
 
 /// Import only the named task branch, then replace the agent's metadata with
@@ -217,14 +325,7 @@ pub async fn verification_checkout(
     branch: &str,
     base: &str,
 ) -> Result<()> {
-    let locks = home.join("repository-locks");
-    std::fs::create_dir_all(&locks)?;
-    let key = crate::job::sha256_hex(repo.to_string_lossy().as_bytes());
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(locks.join(key))?;
-    let _lock = tokio::task::spawn_blocking(move || lock.lock().map(|_| lock)).await??;
+    let _lock = kernel_lock(home, repo).await?;
     let kernel = kernel_repository(home, repo).await?;
     let g = Git::new(&kernel);
     let source = dir.to_str().context("clone path is not UTF-8")?;
@@ -341,13 +442,35 @@ pub async fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
         .await
 }
 
-/// Put a commit of `repo` into the task's clone as a local branch, so an
-/// agent with no remote can merge it. Forced: the branch is the kernel's.
-pub async fn place_branch(repo: &Path, dir: &Path, sha: &str, branch: &str) -> Result<()> {
-    let dir_s = dir.to_str().context("clone path is not UTF-8")?;
-    let refspec = format!("+{sha}:refs/heads/{branch}");
-    Git::new(repo)
-        .line(&["push", "--quiet", dir_s, &refspec])
+/// Put a commit into the task's clone as a local branch, so an agent with
+/// no remote can merge it. Forced: the branch is the kernel's. The commit is
+/// staged in the kernel repository and the clone *fetches* it, with hooks
+/// and auto-gc off: a push would run the clone's receive hooks.
+pub async fn place_branch(
+    home: &Path,
+    repo: &Path,
+    dir: &Path,
+    sha: &str,
+    branch: &str,
+) -> Result<()> {
+    let dest = format!("refs/heads/{branch}");
+    let src = kernel_repository(home, repo).await?;
+    let staged = format!("refs/forge/placed/{branch}");
+    {
+        let _lock = kernel_lock(home, repo).await?;
+        Git::new(&src).line(&["update-ref", &staged, sha]).await?;
+    }
+    Git::new(dir)
+        .hardened()
+        .line(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            src.to_str().context("kernel path is not UTF-8")?,
+            &format!("+{staged}:{dest}"),
+        ])
         .await?;
     Ok(())
 }
@@ -401,16 +524,6 @@ pub async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
         .line(&["merge-base", "--is-ancestor", ancestor, descendant])
         .await
         .is_ok()
-}
-
-/// Fast-forward `branch` on the remote to the clone's HEAD. Never forced:
-/// a branch that moved underneath rejects the push and the caller retries.
-pub async fn push_head_to(wt: &Path, url: &str, branch: &str) -> Result<()> {
-    let refspec = format!("HEAD:refs/heads/{branch}");
-    Git::new(wt)
-        .line(&["push", "--quiet", url, &refspec])
-        .await?;
-    Ok(())
 }
 
 /// Files whose net change on the branch differs between two bases: what a
@@ -777,33 +890,65 @@ pub async fn remote_url(repo: &Path, remote: &str) -> Option<String> {
 
 /// Whether the clone's HEAD is exactly what the remote holds for `branch`,
 /// i.e. every commit it added has been published.
-pub async fn published(wt: &Path, url: &str, branch: &str) -> Result<bool> {
-    let g = Git::new(wt);
-    let head = g.line(&["rev-parse", "HEAD"]).await?;
+pub async fn published(
+    home: &Path,
+    repo: &Path,
+    wt: &Path,
+    url: &str,
+    branch: &str,
+) -> Result<bool> {
+    let head = stage(home, repo, wt, "HEAD", "refs/forge/outgoing/published").await?;
+    let kernel = kernel_repository(home, repo).await?;
     let full = format!("refs/heads/{branch}");
-    let out = g.raw(&["ls-remote", url, &full]).await?;
+    let out = Git::new(&kernel).raw(&["ls-remote", url, &full]).await?;
     Ok(out.split_whitespace().next() == Some(head.as_str()))
 }
 
 /// Push exactly one branch to one remote URL by explicit refspec. Never
 /// forced, never the base branch, never a deletion. Runs on the host with
-/// the operator's credentials, never inside the sandbox.
-pub async fn push(wt: &Path, url: &str, branch: &str) -> Result<()> {
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    Git::new(wt)
-        .line(&["push", "--quiet", url, &refspec])
-        .await?;
-    Ok(())
+/// the operator's credentials, never inside the sandbox. Returns the commit
+/// pushed.
+pub async fn push(home: &Path, repo: &Path, wt: &Path, url: &str, branch: &str) -> Result<String> {
+    push_ref(home, repo, wt, "HEAD", url, branch).await
 }
 
 /// Push a branch from a clone into the registered checkout's refs (never
 /// its working tree): how the tests step publishes `verify/<id>` for the
 /// kernel to overlay from. The refspec is explicit and unforced.
-pub async fn push_to_repo(wt: &Path, repo: &Path, branch: &str) -> Result<()> {
+pub async fn push_to_repo(home: &Path, repo: &Path, wt: &Path, branch: &str) -> Result<String> {
     let repo_s = repo.to_str().context("repo path is not UTF-8")?;
-    let refspec = format!("HEAD:refs/heads/{branch}");
-    Git::new(wt)
-        .line(&["push", "--quiet", repo_s, &refspec])
+    push_ref(home, repo, wt, "HEAD", repo_s, branch).await
+}
+
+/// The one push path. `src_ref` of `src` is fetched into the kernel-owned
+/// repository, and the commit it names is pushed from there by object id:
+/// the source's hooks, config and credential helpers never run, and what is
+/// pushed is exactly the commit that was staged.
+pub async fn push_ref(
+    home: &Path,
+    repo: &Path,
+    src: &Path,
+    src_ref: &str,
+    url: &str,
+    branch: &str,
+) -> Result<String> {
+    let staged = format!("refs/forge/outgoing/{branch}");
+    let sha = stage(home, repo, src, src_ref, &staged).await?;
+    push_sha(home, repo, &sha, url, branch).await?;
+    Ok(sha)
+}
+
+/// Push a commit already in the kernel-owned repository, by object id.
+pub async fn push_sha(home: &Path, repo: &Path, sha: &str, url: &str, branch: &str) -> Result<()> {
+    let kernel = kernel_repository(home, repo).await?;
+    Git::new(&kernel)
+        .line(&[
+            "push",
+            "--quiet",
+            "--",
+            url,
+            &format!("{sha}:refs/heads/{branch}"),
+        ])
         .await?;
     Ok(())
 }
@@ -961,6 +1106,124 @@ pub async fn remote_branch_exists(url: &str, branch: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Every `Git::new(..)` call site, as `function:argument`. Kernel-owned:
+    /// the kernel repository (`kernel`, `&kernel`, the `&src` of
+    /// `place_branch`, the fresh verification checkouts and the directory
+    /// `kernel_repository` initializes). The rest run in a path the caller
+    /// names: the operator's registered repository, or a kernel-made tree or
+    /// clone whose contents were read out of the agent's before any check
+    /// ran. Nothing that pushes, or that runs a merge for landing, is in the
+    /// second group, and the only command aimed at an agent's clone is the
+    /// hardened fetch in `place_branch`. Adding a call site fails this test:
+    /// name it here, and say which group it is in.
+    const CALL_SITES: &[&str] = &[
+        // Kernel-owned.
+        "kernel_repository:&dir",
+        "kernel_tree:&kernel",
+        "stage:&kernel",
+        "verification_checkout:&kernel",
+        "verification_checkout:&fresh",
+        "verification_checkout:&fresh",
+        "place_branch:&src",
+        "published:&kernel",
+        "push_sha:&kernel",
+        // The hardened fetch into an agent's clone.
+        "place_branch:dir",
+        // Caller-named: registered repository or kernel-made tree.
+        "current_branch:repo",
+        "ref_exists:repo",
+        "clone_task:repo",
+        "clone_task:dir",
+        "fetch_ref:dir",
+        "fetch_branch:repo",
+        "rev_parse:repo",
+        "merge:dir",
+        "merge:dir",
+        "is_ancestor:dir",
+        "changed_paths_between:wt",
+        "file_patch:wt",
+        "graft:repo",
+        "graft:repo",
+        "commit_all:dir",
+        "commit_all:dir",
+        "commit_path:dir",
+        "commit_path:dir",
+        "init_commit_all:dir",
+        "reset_hard:dir",
+        "head:dir",
+        "show_file:dir",
+        "count_commits:wt",
+        "changed_paths:wt",
+        "diff_lines:repo",
+        "changed_with_status:wt",
+        "diff_text:dir",
+        "diff_shortstat:dir",
+        "dirty_paths:wt",
+        "dirty_tracked_paths:wt",
+        "remote_url:repo",
+        "ls_tree:repo",
+        "archive_into:repo",
+        "archive_all:repo",
+        "identity:git_dir",
+        "hand_commit_count:repo",
+        "remote_branch_exists:\".\"",
+    ];
+
+    fn call_sites() -> Vec<String> {
+        let src = include_str!("git.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let mut current = String::new();
+        let mut found = Vec::new();
+        for line in src.lines() {
+            let t = line.trim_start();
+            let t = t
+                .strip_prefix("pub(crate) ")
+                .or(t.strip_prefix("pub "))
+                .unwrap_or(t);
+            if let Some(rest) = t.strip_prefix("async fn ").or(t.strip_prefix("fn ")) {
+                current = rest.split(['(', '<']).next().unwrap().to_string();
+            }
+            let mut rest = line;
+            while let Some(i) = rest.find("Git::new(") {
+                rest = &rest[i + "Git::new(".len()..];
+                let arg = &rest[..rest.find(')').unwrap()];
+                found.push(format!("{current}:{arg}"));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn every_git_call_site_is_on_the_held_list() {
+        let mut found = call_sites();
+        let mut held: Vec<String> = CALL_SITES.iter().map(|s| s.to_string()).collect();
+        found.sort();
+        held.sort();
+        assert_eq!(found, held);
+    }
+
+    #[test]
+    fn no_push_or_landing_step_runs_git_in_a_callers_directory() {
+        let kernel_only = [
+            "stage",
+            "published",
+            "push_sha",
+            "push_ref",
+            "push",
+            "push_to_repo",
+        ];
+        for site in call_sites() {
+            let (func, arg) = site.split_once(':').unwrap();
+            if kernel_only.contains(&func) {
+                assert!(arg.contains("kernel"), "{site}");
+            }
+        }
+        // The one command in an agent's clone is a hardened fetch.
+        let src = include_str!("git.rs");
+        let at = src.find("Git::new(dir)\n        .hardened()").unwrap();
+        assert!(src[at..].contains("\"fetch\""));
+    }
+
     #[tokio::test]
     async fn kernel_config_is_exactly_kernel_written() {
         let home = tempfile::tempdir().unwrap();

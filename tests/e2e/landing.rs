@@ -1535,3 +1535,45 @@ fn a_landing_on_the_direct_workflow_does_not_run_assess() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+/// The only allowed outcome: the task lands on the base, and nothing the
+/// agent planted in its clone's metadata (a pre-push hook, a credential
+/// helper, an ssh command) or that a check plants in the tree it verifies
+/// runs anywhere outside the worktree.
+#[test]
+fn a_hostile_clone_still_lands_and_none_of_its_git_metadata_runs() {
+    let e = Env::new();
+    let plant = "parent=\"$(dirname \"$PWD\")\"; mkdir -p .git/hooks; \
+        printf '#!/bin/sh\\necho hook > \"%s/host-git-pre-push-marker\"\\n' \"$parent\" > .git/hooks/pre-push; \
+        chmod +x .git/hooks/pre-push; \
+        git config credential.helper \"!echo helper > '$parent/host-git-credential-marker'; false\"; true";
+    let o = e.forge(
+        "git-metadata-land.sh",
+        &[
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42 to answer.txt",
+            "--retries",
+            "0",
+            "--check",
+            plant,
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert_eq!(
+        origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+    for name in [
+        "host-git-pre-push-marker",
+        "host-git-credential-marker",
+        "host-git-ssh-marker",
+    ] {
+        for dir in [e.home.join("worktrees"), e.home.clone(), e.repo.clone()] {
+            assert!(!dir.join(name).exists(), "{name} in {}", dir.display());
+        }
+    }
+}

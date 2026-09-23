@@ -6084,7 +6084,8 @@ async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
                 .any(|l| l.id > t.id && l.state == "succeeded");
             if commits > 0
                 && !superseded
-                && let Err(reason) = gc_publish(&t, wt, commits, older_than, dry_run, now).await?
+                && let Err(reason) =
+                    gc_publish(&f.paths.home, &t, wt, commits, older_than, dry_run, now).await?
             {
                 return Ok(Err(reason));
             }
@@ -6139,6 +6140,7 @@ async fn gc(dry_run: bool, older_than: Option<i64>) -> Result<()> {
 /// the repo has one, else into the registered repository — `publish`'s
 /// own choice in `engine.rs`); `Err` with the reason to keep it otherwise.
 async fn gc_publish(
+    home: &Path,
     t: &Task,
     wt: &Path,
     commits: i64,
@@ -6152,7 +6154,7 @@ async fn gc_publish(
         None => None,
     };
     let mut published = match &url {
-        Some(u) => git::published(wt, u, &t.branch).await?,
+        Some(u) => git::published(home, repo, wt, u, &t.branch).await?,
         None => false,
     };
     let old_enough = older_than.is_some_and(|days| {
@@ -6160,10 +6162,10 @@ async fn gc_publish(
             .is_some_and(|fin| now.saturating_sub(fin) >= days * 86_400)
     });
     if !published && old_enough && !dry_run {
-        match &url {
-            Some(u) => git::push(wt, u, &t.branch).await?,
-            None => git::push_to_repo(wt, repo, &t.branch).await?,
-        }
+        let _ = match &url {
+            Some(u) => git::push(home, repo, wt, u, &t.branch).await?,
+            None => git::push_to_repo(home, repo, wt, &t.branch).await?,
+        };
         published = true;
     }
     if published {

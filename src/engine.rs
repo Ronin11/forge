@@ -872,12 +872,18 @@ async fn run_directive_step(
             AttemptState::Succeeded => {
                 if step.action.contract == Contract::Tests {
                     let tests_dir = tests_clone_dir(&t.worktree);
-                    git::push_to_repo(&tests_dir, repo, &format!("verify/{}", t.id))
+                    git::push_to_repo(&f.paths.home, repo, &tests_dir, &format!("verify/{}", t.id))
                         .await
                         .task()?;
                     if let Some(url) = &remote_url
-                        && let Err(e) =
-                            git::push(&tests_dir, url, &format!("verify/{}", t.id)).await
+                        && let Err(e) = git::push(
+                            &f.paths.home,
+                            repo,
+                            &tests_dir,
+                            url,
+                            &format!("verify/{}", t.id),
+                        )
+                        .await
                     {
                         f.report.emit(
                             id,
@@ -1238,8 +1244,8 @@ async fn publish(
     let mut failed: Option<End> = None;
     if let Some(url) = &remote_url {
         let timer = Timer::now();
-        match git::push(wt, url, &t.branch).await {
-            Ok(()) => {
+        match git::push(&f.paths.home, repo, wt, url, &t.branch).await {
+            Ok(_) => {
                 t.pushed = true;
                 compare = git::compare_url(url, &t.base_branch, &t.branch);
                 f.report.emit(
@@ -1300,8 +1306,8 @@ async fn publish(
         // No remote: the branch still leaves the worktree, into the
         // registered repository, where `git branch` shows it and a
         // human can merge it.
-        match git::push_to_repo(wt, repo, &t.branch).await {
-            Ok(()) => f.report.emit(
+        match git::push_to_repo(&f.paths.home, repo, wt, &t.branch).await {
+            Ok(_) => f.report.emit(
                 id,
                 Event::Note {
                     text: &format!(

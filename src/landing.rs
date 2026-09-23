@@ -117,6 +117,17 @@ pub enum Integrate {
     Failed(String),
 }
 
+/// A scratch tree that leaves no trace: removed, with its provider state,
+/// when the landing that made it ends by any path.
+struct TempTree(PathBuf);
+
+impl Drop for TempTree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        crate::sandbox::discard_provider_state(&self.0);
+    }
+}
+
 /// One landing at a time per repository, across every worker process:
 /// an advisory lock on a file under FORGE_HOME, held until dropped.
 pub(crate) async fn repo_lock(f: &Forge, repo: &Path) -> Result<std::fs::File, Fault> {
@@ -201,14 +212,22 @@ pub async fn integrate(
     attempt_no: &mut i64,
 ) -> Result<Integrate, Fault> {
     let repo = Path::new(&t.repo);
-    let wt = Path::new(&t.worktree);
+    let home = &f.paths.home;
+    // The agent's clone is only ever a fetch source (and target for the
+    // placed base). The merge, the re-verification and every push run from
+    // a tree cloned from the kernel-owned repository.
+    let clone = Path::new(&t.worktree);
     let _lock = repo_lock(f, repo).await?;
+    let branch_ref = format!("refs/heads/{}", t.branch);
+    let staged = git::stage(home, repo, clone, "HEAD", &branch_ref)
+        .await
+        .task()?;
     // The verdict names one commit; landing merges and pushes exactly it.
     // Between that verify and this lock, nothing should have moved the
     // branch — but if it did, catch it here rather than fast-forward the
     // base to something no check ever ran on.
     if let Some(verified) = last_verified_sha(f, t.id)? {
-        let head_now = git::head(wt).await.task()?;
+        let head_now = staged.clone();
         if head_now != verified {
             let d = format!(
                 "the branch moved before landing began: verified {}, branch is now {}",
@@ -235,6 +254,11 @@ pub async fn integrate(
             return Ok(Integrate::Failed(d));
         }
     }
+    let tree = TempTree(f.paths.worktrees.join(format!("landing-{}", t.id)));
+    git::kernel_tree(home, repo, &tree.0, &t.branch)
+        .await
+        .task()?;
+    let wt = tree.0.as_path();
     let placed = format!("forge/{}", t.base_branch);
     let mut base_sha = t.base_sha.clone();
     for round in 0..3 {
@@ -273,10 +297,16 @@ pub async fn integrate(
                 .task()?
         };
         let mut detail = String::new();
-        if main_sha != base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
-            git::place_branch(repo, wt, &main_sha, &placed)
+        if main_sha != base_sha {
+            let base_ref = format!("refs/forge/base/{}", t.base_branch);
+            git::stage(home, repo, repo, &main_sha, &base_ref)
                 .await
                 .task()?;
+            git::place_branch(home, repo, wt, &main_sha, &placed)
+                .await
+                .task()?;
+        }
+        if main_sha != base_sha && !git::is_ancestor(wt, &main_sha, "HEAD").await {
             let message = format!("Merge {} into {}", t.base_branch, t.branch);
             match git::merge(wt, &main_sha, &message).await.task()? {
                 git::Merge::UpToDate => {}
@@ -289,6 +319,9 @@ pub async fn integrate(
                     );
                 }
                 git::Merge::Conflict(files) => {
+                    git::place_branch(home, repo, clone, &main_sha, &placed)
+                        .await
+                        .task()?;
                     let d = format!(
                         "{} moved to {}; conflicts in {}",
                         t.base_branch,
@@ -336,6 +369,7 @@ pub async fn integrate(
         let cfg_now = config::load_at(repo, wt, &base_sha).await.task()?;
         f.allow_egress(wt, &cfg_now);
         let overlay = overlay_refs(repo, t.id, None).await;
+        let candidate = git::head(wt).await.task()?;
         let v = verify_merged_tree(
             f,
             MergeVerifyArgs {
@@ -352,6 +386,10 @@ pub async fn integrate(
         )
         .await?;
         if v.state != AttemptState::Succeeded {
+            // The coder continues from the merged tree, as it always has.
+            if candidate != staged {
+                git::adopt_tree(clone, wt).task()?;
+            }
             *attempt_no += 1;
             let attempt_id = record_verdict(f, t, *attempt_no, *seq, &base_sha, &v).await?;
             let d = format!("{detail}{}", v.reason);
@@ -422,7 +460,35 @@ pub async fn integrate(
 
         *seq += 1;
         let timer = Timer::now();
-        if let Err(e) = git::push(wt, url, &t.branch).await {
+        // The tree that was verified must be the tree that is pushed.
+        let moved = match git::stage(home, repo, wt, "HEAD", &branch_ref).await {
+            Ok(sha) if sha == candidate => None,
+            Ok(sha) => Some(format!(
+                "the merged tree moved during verification: verified {}, now {}",
+                short(&candidate),
+                short(&sha)
+            )),
+            Err(e) => Some(format!("{e:#}")),
+        };
+        if let Some(d) = moved {
+            op(
+                f,
+                t.id,
+                &timer,
+                OpRow {
+                    seq: *seq,
+                    name: "push",
+                    kernel: true,
+                    ok: false,
+                    exit: None,
+                    detail: &d,
+                    attempt_id: None,
+                    output: "",
+                },
+            )?;
+            return Ok(Integrate::Failed(d));
+        }
+        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.branch).await {
             let d = format!("push of {} failed: {e:#}", t.branch);
             op(
                 f,
@@ -467,7 +533,7 @@ pub async fn integrate(
 
         *seq += 1;
         let timer = Timer::now();
-        if let Err(e) = git::push_head_to(wt, url, &t.base_branch).await {
+        if let Err(e) = git::push_sha(home, repo, &candidate, url, &t.base_branch).await {
             let d = format!("fast-forward of {} rejected: {e:#}", t.base_branch);
             op(
                 f,
@@ -498,7 +564,7 @@ pub async fn integrate(
             }
             return Ok(Integrate::Failed(d));
         }
-        let sha = git::head(wt).await.task()?;
+        let sha = candidate.clone();
         let _ = git::fetch_branch(repo, remote, &t.base_branch).await;
         // The task's hidden tests join the standing suite.
         let own = format!("verify/{}", t.id);
@@ -527,8 +593,17 @@ pub async fn integrate(
                 .task()?
                 .is_some()
             {
-                folded = match git::push(repo, url, "forge-verify").await {
-                    Ok(()) => format!(
+                folded = match git::push_ref(
+                    home,
+                    repo,
+                    repo,
+                    "refs/heads/forge-verify",
+                    url,
+                    "forge-verify",
+                )
+                .await
+                {
+                    Ok(_) => format!(
                         "; {} hidden test file(s) folded into forge-verify",
                         files.len()
                     ),
@@ -865,7 +940,7 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         steps.push(IntegrateStep::Verified { task_id: t.id });
     }
     if matches!(outcome, IntegrateOutcome::Ready) {
-        git::push_to_repo(&dir, &repo, &branch).await?;
+        git::push_to_repo(&f.paths.home, &repo, &dir, &branch).await?;
         let _ = std::fs::remove_dir_all(&dir);
         crate::sandbox::discard_provider_state(&dir);
     }
