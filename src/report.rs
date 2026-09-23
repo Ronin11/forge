@@ -3,8 +3,9 @@
 //! to the engine.
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const EVENT_LOG_SIZE_LIMIT: u64 = 50 * 1024 * 1024;
@@ -315,9 +316,35 @@ pub struct Reporter {
     log: Option<PathBuf>,
     prefix: bool,
     quiet: bool,
+    /// Tasks a write failure has already been surfaced for, so a directory
+    /// that stays unwritable for an entire attempt costs one `Note`, not
+    /// one per event (see `note_dropped`).
+    noted_drops: Mutex<HashSet<i64>>,
 }
 
 static OUT: Mutex<()> = Mutex::new(());
+
+/// The file `dropped_log_task_count` reads: one task id per line, appended
+/// once the first time that task's event log write fails. Sits beside the
+/// log itself (`events.jsonl` -> `events.dropped`) so it shares the log's
+/// directory and survives across processes without a database dependency.
+fn dropped_marker_path(log_path: &Path) -> PathBuf {
+    log_path.with_extension("dropped")
+}
+
+/// How many distinct tasks have lost at least one event-log line, for
+/// `forge doctor`'s `logs` check. Reads the marker file `note_dropped`
+/// maintains; missing or unreadable means zero, never an error.
+pub fn dropped_log_task_count(log_path: &Path) -> usize {
+    let Ok(content) = std::fs::read_to_string(dropped_marker_path(log_path)) else {
+        return 0;
+    };
+    content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect::<HashSet<_>>()
+        .len()
+}
 
 impl Reporter {
     pub fn new(prefix: bool, log: Option<PathBuf>) -> Reporter {
@@ -325,6 +352,7 @@ impl Reporter {
             log,
             prefix,
             quiet: false,
+            noted_drops: Mutex::new(HashSet::new()),
         }
     }
 
@@ -335,11 +363,43 @@ impl Reporter {
             log: None,
             prefix: false,
             quiet: true,
+            noted_drops: Mutex::new(HashSet::new()),
         }
     }
 
     fn append_log(&self, task_id: i64, ev: &Event) {
         self.append_log_with_limit(task_id, ev, EVENT_LOG_SIZE_LIMIT);
+    }
+
+    /// The first time `task_id`'s event log write fails, records it in the
+    /// durable marker file and prints one `Note` directly to stderr (never
+    /// through `append_log`, which is exactly what just failed). Every
+    /// later failure for the same task, this attempt or a later one in the
+    /// same process, is silent: the operator already knows.
+    fn note_dropped(&self, task_id: i64, path: &Path, err: &std::io::Error) {
+        let mut noted = self.noted_drops.lock().unwrap_or_else(|p| p.into_inner());
+        if !noted.insert(task_id) {
+            return;
+        }
+        drop(noted);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dropped_marker_path(path))
+        {
+            let _ = writeln!(f, "{task_id}");
+        }
+        let text = format!("event log write failed at {}: {err}", path.display());
+        let lines = render(Event::Note { text: &text });
+        let _guard = OUT.lock().unwrap_or_else(|p| p.into_inner());
+        let mut errw = std::io::stderr().lock();
+        for l in lines {
+            let _ = if self.prefix {
+                writeln!(errw, "[{task_id}] {l}")
+            } else {
+                writeln!(errw, "{l}")
+            };
+        }
     }
 
     fn append_log_with_limit(&self, task_id: i64, ev: &Event, size_limit: u64) {
@@ -362,12 +422,13 @@ impl Reporter {
             }
             let _ = std::fs::rename(path, &path_1);
         }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+        let result = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-        {
-            let _ = writeln!(f, "{v}");
+            .and_then(|mut f| writeln!(f, "{v}"));
+        if let Err(e) = result {
+            self.note_dropped(task_id, path, &e);
         }
     }
 
@@ -883,6 +944,50 @@ mod tests {
         assert!(size_1 > 0, "events.jsonl.1 should have content");
         assert!(size_2 > 0, "events.jsonl.2 should have content");
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// A log path under a directory this process cannot write to: many
+    /// failed events for the same task cost exactly one `Note` (checked via
+    /// the marker file `note_dropped` appends to, since a unit test has no
+    /// clean way to assert on stderr), and `dropped_log_task_count` — what
+    /// `forge doctor`'s `logs` check reports — counts that one task once.
+    #[test]
+    fn a_write_failure_notes_once_per_task_and_counts_for_doctor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join("forge_test_events_dropped");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let locked = temp_dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let log_path = locked.join("events.jsonl");
+        // The marker file must already exist: once the directory loses its
+        // write bit, appending to an existing file still works (only
+        // traversal is needed), but creating `events.jsonl` for the first
+        // time does not — which is exactly the failure under test.
+        fs::write(log_path.with_extension("dropped"), b"").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let reporter = Reporter::new(false, Some(log_path.clone()));
+        let event = Event::Note {
+            text: "does not matter",
+        };
+        for _ in 0..30 {
+            reporter.append_log_with_limit(1, &event, EVENT_LOG_SIZE_LIMIT);
+        }
+        // A second task's first failure still gets its own note.
+        reporter.append_log_with_limit(2, &event, EVENT_LOG_SIZE_LIMIT);
+
+        let marker = std::fs::read_to_string(log_path.with_extension("dropped")).unwrap();
+        assert_eq!(
+            marker.lines().collect::<Vec<_>>(),
+            vec!["1", "2"],
+            "one marker line per task, not per event"
+        );
+        assert_eq!(dropped_log_task_count(&log_path), 2);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
