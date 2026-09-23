@@ -22,7 +22,7 @@ target="${1:-$host}"
 # Cargo.toml in tests/release.rs, so a new crate that builds a binary and
 # is not added here fails `cargo test --workspace` instead of shipping
 # silently short. forge-test is not a crate yet; add it here the day it is.
-BINS="forge forge-web forge-portal forge-tui forge-repomap"
+BINS="forge forge-web forge-portal forge-tui forge-repomap forge-test"
 
 echo "building $target release..." >&2
 if [ "$target" = "$host" ]; then

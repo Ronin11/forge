@@ -1,5 +1,5 @@
 [workspace]
-members = ["tui", "repomap", "web", "client", "portal"]
+members = ["tui", "repomap", "web", "client", "portal", "forge-test"]
 
 [package]
 name = "forge"
@@ -8,6 +8,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
+forge-test = { path = "forge-test" }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }

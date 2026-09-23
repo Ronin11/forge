@@ -734,6 +734,7 @@ dependencies = [
  "clap",
  "croner",
  "forge-client",
+ "forge-test",
  "jsonschema",
  "libc",
  "reqwest",
@@ -778,6 +779,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "forge-test"
+version = "0.1.0"
 
 [[package]]
 name = "forge-tui"

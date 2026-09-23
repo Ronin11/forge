@@ -78,6 +78,26 @@ the task's facts in their environment, `FORGE_TASK_ID`, `FORGE_BASE_SHA`,
 gives an operation its environment. docs/ACTIONS.md, "Checks and known
 fixes", has the list and what it is for.
 
+## The failing-test parser
+
+A check's `failing_tests` field is filled by the `forge-test` crate
+(`forge-test/src/lib.rs`), which has no dependency on the kernel and ships
+as the `forge-test` binary in `FORGE_BIN_DIR`; `src/checks.rs` calls its
+library. `forge-test failing < output` prints the names, one per line.
+It reads the merged output tail and recognises, per line:
+
+- go test: `--- FAIL: TestName (0.00s)`;
+- pytest: `FAILED path::test - reason`;
+- jest: `✕ name` or `✗ name`;
+- cargo test: `test foo::bar ... FAILED`, the indented name list under
+  `failures:`, `---- foo::bar stdout ----`, and
+  `thread 'foo::bar' panicked at` (the `main` and unnamed threads are not
+  tests). Several test binaries in one run accumulate; a compile error has
+  no test lines and names nothing.
+
+Names appear once, in order of first appearance. Output in no known format
+yields an empty list rather than a guess.
+
 ## L0: `no-stray-files`
 
 Fails when the attempt's net additions match `*.bak`, `*.backup`,

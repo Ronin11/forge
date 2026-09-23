@@ -43,6 +43,7 @@ const BINS: &[&str] = &[
     "forge-web",
     "forge-portal",
     "forge-repomap",
+    "forge-test",
     "forge-tui",
 ];
 

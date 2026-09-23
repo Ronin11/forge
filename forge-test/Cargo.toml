@@ -1,0 +1,13 @@
+[package]
+name = "forge-test"
+version = "0.1.0"
+edition = "2024"
+description = "Names the failing tests in go, pytest, jest and cargo test output. No model, no kernel."
+
+[lib]
+name = "forge_test"
+path = "src/lib.rs"
+
+[[bin]]
+name = "forge-test"
+path = "src/main.rs"

@@ -94,28 +94,9 @@ async fn drain(
     }
 }
 
-/// Test names from the formats Forge recognises; unknown output yields
-/// nothing rather than a guess.
-pub fn failing_tests(out: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in out.lines().map(str::trim) {
-        if let Some(rest) = line.strip_prefix("--- FAIL: ") {
-            // go test
-            if let Some(n) = rest.split_whitespace().next() {
-                names.push(n.to_string());
-            }
-        } else if let Some(rest) = line.strip_prefix("FAILED ").filter(|r| r.contains("::")) {
-            // pytest
-            if let Some(n) = rest.split_whitespace().next() {
-                names.push(n.to_string());
-            }
-        } else if let Some(rest) = line.strip_prefix("✕ ").or_else(|| line.strip_prefix("✗ ")) {
-            // jest
-            names.push(rest.trim().to_string());
-        }
-    }
-    names
-}
+/// Test names from the formats Forge recognises (go, pytest, jest, cargo);
+/// the parser lives in the `forge-test` crate.
+pub use forge_test::failing_tests;
 
 /// `env` is added to the command's environment: the task's facts
 /// (`operation::task_facts`: `FORGE_TASK_ID`, `FORGE_BASE_SHA`,
@@ -230,29 +211,6 @@ pub fn last_lines(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extracts_go_pytest_and_jest_failures_only() {
-        let out = "\
-=== RUN   TestA
---- FAIL: TestA (0.00s)
---- PASS: TestB (0.00s)
-FAILED tests/test_x.py::test_one - AssertionError
-FAILED not a pytest line
-  ✕ renders the header (12 ms)
-  ✓ renders the footer
-random FAIL text
-";
-        assert_eq!(
-            failing_tests(out),
-            vec![
-                "TestA",
-                "tests/test_x.py::test_one",
-                "renders the header (12 ms)"
-            ]
-        );
-        assert!(failing_tests("all good").is_empty());
-    }
 
     #[test]
     fn tail_keeps_only_the_end() {

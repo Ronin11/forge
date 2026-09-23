@@ -301,6 +301,7 @@ tests/e2e/          the real binary against fake agents in tests/fakes/
 client/   forge-client: the one Rust client of the CLI; typed rows from --json
 portal/   forge-portal: read-only project page at /p/<token>, no login
 repomap/  forge-repomap: symbol index and task-ranked file list
+forge-test/  forge-test: the failing-test parser (go, pytest, jest, cargo) and its binary
 tui/      forge-tui: the operator's seat, a client of the CLI only
 web/      forge-web: the same seat in a browser
 ```

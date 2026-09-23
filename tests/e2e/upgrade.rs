@@ -52,7 +52,13 @@ fn build_tarball(dir: &Path, version: &str) -> PathBuf {
     let pkg = dir.join(&name);
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_forge"), pkg.join("forge")).unwrap();
-    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+    for b in [
+        "forge-web",
+        "forge-portal",
+        "forge-repomap",
+        "forge-test",
+        "forge-tui",
+    ] {
         write_fake(&pkg.join(b), "#!/bin/sh\n# new\nexit 0\n");
     }
     sh(Command::new("tar")
@@ -84,6 +90,7 @@ fn old_bin_dir(dir: &Path) -> PathBuf {
         "forge-web",
         "forge-portal",
         "forge-repomap",
+        "forge-test",
         "forge-tui",
     ] {
         write_fake(&bins.join(b), "#!/bin/sh\n# old\nexit 0\n");
@@ -186,7 +193,13 @@ fn forge_upgrade_installs_migrates_and_restarts_web_portal_then_worker_last() {
     let real = std::fs::read(env!("CARGO_BIN_EXE_forge")).unwrap();
     assert_eq!(std::fs::read(u.bins.join("forge")).unwrap(), real);
     assert!(u.binary("previous/forge").contains("old"));
-    for b in ["forge-web", "forge-portal", "forge-repomap", "forge-tui"] {
+    for b in [
+        "forge-web",
+        "forge-portal",
+        "forge-repomap",
+        "forge-test",
+        "forge-tui",
+    ] {
         assert!(u.binary(b).contains("new"), "{b}: {}", u.binary(b));
         assert!(u.binary(&format!("previous/{b}")).contains("old"), "{b}");
     }
@@ -313,6 +326,7 @@ fn forge_upgrade_restores_the_previous_binaries_when_the_web_check_fails() {
         "forge-web",
         "forge-portal",
         "forge-repomap",
+        "forge-test",
         "forge-tui",
     ] {
         assert!(u.binary(b).contains("old"), "{b}: {}", u.binary(b));
