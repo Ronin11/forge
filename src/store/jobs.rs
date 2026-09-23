@@ -204,6 +204,7 @@ pub(super) const JOB_COLUMNS: &[&str] = &[
     "workflow_source",
     "due_at",
     "retry_count",
+    "worker_pid",
 ];
 
 pub(super) const JOB_STEP_COLUMNS: &[&str] = &[
@@ -581,7 +582,7 @@ impl Store {
         let mut stmt =
             c.prepare("SELECT id, worker_pid FROM jobs WHERE state='running' ORDER BY id")?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([], |r| Ok((r.get("id")?, r.get("worker_pid")?)))?
             .collect::<rusqlite::Result<Vec<(i64, Option<i64>)>>>()?;
         Ok(rows
             .into_iter()
