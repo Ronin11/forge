@@ -69,6 +69,9 @@ server like `forge-web` that reads through the CLI's JSON, scoped to one
 project per link. It writes through two verbs only: `forge answer` for
 Needs you, and `forge ask` for the box.
 
+A write's request body is bounded at 64 KiB; over that, the same fixed
+write-error page, at 413.
+
 Every `forge answer` the portal runs carries `--project <resolved>`
 beside `--by customer`, naming both the project its token resolved to
 and the contact it writes as. The kernel (`queue::answer`) refuses,

@@ -44,8 +44,8 @@ case "$1" in
     esac ;;
   project)
     case "$2" in
-      list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"repos":[{"repo":"/repos/demo","scope":null}],"created_at":1}]' ;;
-      show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[{\"repo\":\"/repos/$3\",\"scope\":null}],\"created_at\":1}" ;;
+      list) echo '[{"name":"demo","purpose":"a demo project","queued":1,"running":0,"succeeded":2,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":3.5,"jobs_today":0,"jobs_ok":0,"jobs_failed":0,"jobs_needs_human":0,"jobs_skipped":0,"protected":[],"repos":[{"repo":"/repos/demo","scope":null}],"created_at":1}]' ;;
+      show) echo "{\"name\":\"$3\",\"purpose\":\"a demo project\",\"queued\":1,\"running\":0,\"succeeded\":2,\"failed\":0,\"unverified\":0,\"blocked\":0,\"withdrawn\":0,\"cost_usd\":3.5,\"jobs_today\":0,\"jobs_ok\":0,\"jobs_failed\":0,\"jobs_needs_human\":0,\"jobs_skipped\":0,\"protected\":[],\"workflow\":null,\"per_task_usd\":null,\"per_initiative_usd\":null,\"repos\":[{\"repo\":\"/repos/$3\",\"scope\":null}],\"created_at\":1}" ;;
       backlog) echo "[{\"id\":1,\"project\":\"$3\",\"text\":\"do the thing\",\"created_at\":1,\"done_at\":null}]" ;;
       deploy)
         case "$3" in

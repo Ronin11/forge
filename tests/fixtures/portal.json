@@ -14,10 +14,13 @@
   "run_workflows": [
     {
       "name": "nightly-sync",
+      "description": "syncs the nightly price sheet",
       "jobs": [
         {
           "started_at": 1789769299,
           "state": "ok",
+          "dry_run": false,
+          "effects": [],
           "reason": null
         }
       ]

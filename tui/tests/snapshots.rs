@@ -57,7 +57,7 @@ fn under_tz<T>(tz: Option<&str>, f: impl FnOnce() -> T) -> T {
 const FAKE: &str = r#"#!/bin/bash
 case "$1" in
   snapshot) cat <<'JSON'
-{"events_offset":0,"tasks":[{"id":12,"state":"running","workflow":"tdd","attempts":2,"cost_usd":1.35,"project":"forge","task":"add snapshot tests for the tui"},{"id":11,"state":"succeeded","workflow":"direct","attempts":1,"cost_usd":0.1,"project":"forge","task":"fix typo in docs"}],"requests":[],"worker":{"running":true,"pid":555,"exe":"","stale_binary":false}}
+{"events_offset":0,"tasks":[{"id":12,"state":"running","workflow":"tdd","attempts":2,"cost_usd":1.35,"repo":"/r","text":"add snapshot tests for the tui","task":"add snapshot tests for the tui","created_at":1,"created":"","trust":"operator","project":"forge"},{"id":11,"state":"succeeded","workflow":"direct","attempts":1,"cost_usd":0.1,"repo":"/r","text":"fix typo in docs","task":"fix typo in docs","created_at":1,"created":"","trust":"operator","project":"forge"}],"requests":[],"worker":{"running":true,"pid":555,"exe":"","stale_binary":false}}
 JSON
   ;;
   log | requests) echo '[]' ;;
@@ -73,7 +73,7 @@ JSON
   trace)
     id="$2"
     cat <<JSON
-{"task":{"id":$id,"state":"succeeded","workflow":"tdd","reason":"","branch":"forge/$id-x","base_sha":"abcdef1234567890","project":"forge","initiative":3,"after":[],"retry_of":null,"text":"add snapshot tests for the tui"},"attempts":[{"attempt_no":1,"step":"code","state":"succeeded","num_turns":9,"cost_usd":0.42,"reason":"","verdict":[]}],"ops":[{"name":"clone","ok":true,"detail":"ok"},{"name":"verify","ok":true,"detail":"ok"}],"deploys":[{"id":1,"project":"forge","target":"prod","sha":"abcdef1234567890","started_at":1,"finished_at":2,"check_ok":true,"check_output":"ok","rolled_back_to":null,"reason":""}],"assessment":{"score":82,"findings":[{"path":"tui/src/lib.rs","finding":"missing coverage of the initiative screen","severity":"minor"}],"model":"claude-sonnet-5","provider":"anthropic","cost_usd":0.05,"created_at":1}}
+{"task":{"id":$id,"state":"succeeded","workflow":"tdd","reason":"","branch":"forge/$id-x","base_sha":"abcdef1234567890","project":"forge","initiative":3,"after":[],"retry_of":null,"text":"add snapshot tests for the tui"},"attempts":[{"attempt_no":1,"step":"code","step_seq":0,"state":"succeeded","started_at":1,"timed_out":false,"num_turns":9,"tool_calls":0,"cost_usd":0.42,"agent_ms":0,"commits":1,"files_changed":1,"dirty":false,"start_sha":"","end_sha":"","log_path":"","tokens":{},"rate_limits":{},"inputs":{},"outputs":{},"reason":"","verdict":[],"envelope":{}}],"ops":[{"id":1,"seq":0,"name":"clone","kernel":true,"started_at":0,"ms":0,"ok":true,"detail":"ok","output":""},{"id":2,"seq":1,"name":"verify","kernel":true,"started_at":0,"ms":0,"ok":true,"detail":"ok","output":""}],"resolved":null,"diagnosis":[],"deploys":[{"id":1,"project":"forge","target":"prod","sha":"abcdef1234567890","started_at":1,"finished_at":2,"check_ok":true,"check_output":"ok","rolled_back_to":null,"reason":""}],"assessment":{"score":82,"findings":[{"path":"tui/src/lib.rs","finding":"missing coverage of the initiative screen","severity":"minor"}],"model":"claude-sonnet-5","provider":"anthropic","cost_usd":0.05,"created_at":1}}
 JSON
   ;;
   job)
@@ -85,7 +85,7 @@ JSON
       show)
         id="$3"
         cat <<JSON
-{"id":$id,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1790000000,"finished_at":1790000050,"cost_usd":0.12,"verdict_json":"[]","due_at":1790003600,"steps":[{"id":1,"job_id":$id,"seq":1,"action":"run-checks","kind":"directive","provider":"anthropic","model":"claude-sonnet-5","cost_usd":0.05,"started_at":1000,"finished_at":1020,"exit_code":0,"output_ref":""},{"id":2,"job_id":$id,"seq":2,"action":"notify","kind":"shell","provider":"","model":"","cost_usd":null,"started_at":1020,"finished_at":1050,"exit_code":0,"output_ref":""}],"effects":[{"id":1,"job_id":$id,"seq":1,"kind":"message","target":"ops-channel","summary":"posted the nightly summary","dry_run":false},{"id":2,"job_id":$id,"seq":2,"kind":"file","target":"reports/nightly.md","summary":"wrote the report","dry_run":false}]}
+{"id":$id,"project":"forge","workflow":"nightly-cleanup","workflow_hash":"h1","landed_sha":"deadbeef","trigger_kind":"schedule","trigger_ref":"0 3 * * *","state":"ok","workflow_source":"repo","dry_run":false,"started_at":1790000000,"finished_at":1790000050,"cost_usd":0.12,"verdict_json":"[]","due_at":1790003600,"steps":[{"id":1,"job_id":$id,"seq":1,"action":"run-checks","kind":"directive","provider":"anthropic","model":"claude-sonnet-5","cost_usd":0.05,"started_at":1000,"finished_at":1020,"exit_code":0,"output_ref":"","tail":""},{"id":2,"job_id":$id,"seq":2,"action":"notify","kind":"shell","provider":"","model":"","cost_usd":null,"started_at":1020,"finished_at":1050,"exit_code":0,"output_ref":"","tail":""}],"effects":[{"id":1,"job_id":$id,"seq":1,"kind":"message","target":"ops-channel","summary":"posted the nightly summary","dry_run":false},{"id":2,"job_id":$id,"seq":2,"kind":"file","target":"reports/nightly.md","summary":"wrote the report","dry_run":false}]}
 JSON
       ;;
       *) echo "unexpected job: $*" >&2; exit 2 ;;
@@ -110,6 +110,7 @@ fn fake_forge() -> Fake {
     }
     let forge = Forge {
         bin: bin.to_string_lossy().into_owned(),
+        ..Forge::new()
     };
     Fake { _dir: dir, forge }
 }
@@ -282,7 +283,7 @@ fn a_scripted_interaction_moves_down_opens_a_task_and_goes_back() {
 fn inbox_fake() -> Fake {
     let fake = fake_forge();
     let script = FAKE.replace("  log | requests) echo '[]' ;;", r#"
-  log) echo '[{"id":44,"state":"unverified","task":"Ready to land","workflow":"direct"}]' ;;
+  log) echo '[{"id":44,"state":"unverified","workflow":"direct","attempts":1,"cost_usd":0.1,"repo":"/r","text":"Ready to land","task":"Ready to land","created_at":1,"created":"","trust":"operator"}]' ;;
   requests) cat "$(dirname "$0")/requests.json" ;;
   answer | withdraw | land)
     printf '%s\n' "$@" > "$(dirname "$0")/action"
