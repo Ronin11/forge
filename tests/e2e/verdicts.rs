@@ -570,3 +570,18 @@ fn version_starts_with_the_crate_version() {
         "expected output to start with the crate version: {out}"
     );
 }
+
+#[test]
+fn verification_does_not_execute_agent_git_metadata() {
+    let e = Env::new();
+    let o = e.run("git-metadata.sh", &["--retries", "0", "--check", "git -c user.name=Test -c user.email=test@example.com commit --allow-empty -qm probe && git reset --hard HEAD~1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    let attempts = e.attempts(1);
+    assert_eq!(check(&attempts[0].4, "L1", "answer"), Some(true));
+    assert_eq!(check(&attempts[0].4, "L2", "task-check-1"), Some(true));
+    for name in ["host-git-hook-marker", "host-git-fsmonitor-marker"] {
+        assert!(!e.home.join("worktrees").join(name).exists(), "{name}");
+    }
+}

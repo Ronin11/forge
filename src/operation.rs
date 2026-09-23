@@ -307,6 +307,9 @@ pub(crate) async fn run_operation(
         );
     }
     if step.action.mutates() {
+        git::verification_checkout(&f.paths.home, &repo, &wt, &t.branch, &t.base_branch)
+            .await
+            .task()?;
         let timer = Timer::now();
         let committed = git::commit_all(&wt, &format!("forge: {}", step.action.name))
             .await

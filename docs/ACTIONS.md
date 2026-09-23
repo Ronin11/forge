@@ -594,3 +594,16 @@ requires = ["[verify] namespace in forge.toml", "a check named test"]
 ```
 
 Verify and push are not in that list, on purpose.
+
+After each agent attempt, Forge fetches the explicit task branch into a
+kernel-owned bare repository under `FORGE_HOME/repositories`, one per registered
+repository. Its complete configuration is kernel-written, disables hooks, and
+contains no executable configuration keys. This repository is never mounted
+into a sandbox. Fetch is the only host Git operation that reads the agent's
+Git metadata; Git's upload-pack does not honor repository-local hooks or pack
+hooks. Before L0, Forge replaces the clone with a fresh checkout from that
+repository, preserving ordinary files (including uncommitted changes) but
+never the agent's Git metadata. Verification, hidden-suite overlays, and
+attempt recording use this fresh tree. Only the selected branch and trusted
+base are fetched into it, so other tasks' verification refs remain hidden.
+Landing and push retain their existing flow.
