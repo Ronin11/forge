@@ -389,6 +389,41 @@ fn real_end(chars: &[char], line_starts: &[usize], start_line: usize, lang: Lang
                 }
                 i += 1;
             }
+            'r' | 'b'
+                if lang == Lang::Rust
+                    && !(i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')) =>
+            {
+                // `r"…"`, `r#"…"#`, `br#"…"#`: a raw string, no escapes.
+                let mut j = i;
+                if chars[j] == 'b' {
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'r') {
+                    j += 1;
+                    let mut hashes = 0;
+                    while chars.get(j) == Some(&'#') {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if chars.get(j) == Some(&'"') {
+                        j += 1;
+                        while j < chars.len() {
+                            if chars[j] == '\n' {
+                                line += 1;
+                            } else if chars[j] == '"'
+                                && (1..=hashes).all(|k| chars.get(j + k) == Some(&'#'))
+                            {
+                                j += hashes;
+                                break;
+                            }
+                            j += 1;
+                        }
+                        i = (j + 1).min(chars.len());
+                        continue;
+                    }
+                }
+                i += 1; // an identifier, or a byte string the `"` arm handles
+            }
             '"' => {
                 i += 1;
                 while i < chars.len() && chars[i] != '"' {
@@ -1088,6 +1123,19 @@ mod tests {
         let syms = extract("m.rs", rs);
         let f = syms.iter().find(|s| s.name == "f").unwrap();
         assert_eq!((f.start, f.end), (1, 3));
+    }
+
+    /// A `}` or `"` inside a raw string never closes the span, and a raw
+    /// string's trailing backslash is not an escape.
+    #[test]
+    fn a_brace_inside_a_raw_string_does_not_close_the_span() {
+        let rs = "pub fn example() {\n    let _s = r#\"a quote \" and a brace }\"#;\n}\n";
+        let syms = extract("m.rs", rs);
+        assert_eq!(syms[0].end, 3);
+        let rs = "fn g() {\n    let _s = r\"\\\";\n    let _t = 1;\n}\n";
+        let syms = extract("m.rs", rs);
+        let g = syms.iter().find(|s| s.name == "g").unwrap();
+        assert_eq!((g.start, g.end), (1, 4));
     }
 
     /// `'a` is a lifetime, not a char literal, so it never sends the scan
