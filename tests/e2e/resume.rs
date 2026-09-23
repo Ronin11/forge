@@ -314,3 +314,38 @@ fn the_worker_holds_while_a_rate_window_is_at_its_cap_and_resumes_after_the_rese
     assert!(out.contains("no dollar cap"), "{out}");
     assert!(out.contains("windows 5h ≤ 90%"), "{out}");
 }
+
+#[test]
+fn the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff() {
+    let e = Env::new();
+    let dir = e.home.join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("experiment.toml"),
+        "[factors.continuation]\nfresh = 1.0\n",
+    )
+    .unwrap();
+    let o = e.run("freshcont.sh", &["--retries", "1"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let a = e.attempts(1);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1].1, "succeeded");
+    let prompt = e.log_text(1, 2);
+    for part in [
+        "Handoff: you are continuing",
+        "git log --oneline",
+        "first step of the work",
+        "git diff --stat",
+        "step.txt",
+        "What the checks found so far",
+        "found:   agent exit 1",
+        "src/notes.txt",
+        "Reached max turns (30)",
+        "The task:\\nwrite 42 to answer.txt",
+    ] {
+        assert!(prompt.contains(part), "missing {part:?} in {prompt}");
+    }
+    let doc: serde_json::Value = e.trace_json("1");
+    assert_eq!(doc["attempts"][1]["inputs"]["continuation"], "fresh");
+    assert!(doc["attempts"][1]["inputs"]["resumed"].is_null());
+}

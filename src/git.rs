@@ -860,6 +860,26 @@ pub async fn diff_shortstat(dir: &Path, from: &str, to: &str) -> Result<String> 
         .to_string())
 }
 
+/// `git log --oneline` for the commits on the branch since `from`.
+pub async fn log_oneline(dir: &Path, from: &str) -> Result<String> {
+    let range = format!("{from}..HEAD");
+    Ok(Git::new(dir)
+        .line(&["log", "--oneline", &range])
+        .await?
+        .trim()
+        .to_string())
+}
+
+/// `git diff --stat` of the tree (committed and uncommitted tracked
+/// changes) against `from`.
+pub async fn diff_stat_tree(dir: &Path, from: &str) -> Result<String> {
+    Ok(Git::new(dir)
+        .line(&["diff", "--stat", from])
+        .await?
+        .trim()
+        .to_string())
+}
+
 /// Porcelain status entries: anything uncommitted, untracked included.
 pub async fn dirty_paths(wt: &Path) -> Result<Vec<String>> {
     Ok(porcelain_paths(
@@ -1158,6 +1178,8 @@ mod tests {
         "changed_with_status:wt",
         "diff_text:dir",
         "diff_shortstat:dir",
+        "diff_stat_tree:dir",
+        "log_oneline:dir",
         "dirty_paths:wt",
         "dirty_tracked_paths:wt",
         "remote_url:repo",

@@ -268,6 +268,8 @@ impl Store {
             /// one was drawn (docs/CONTEXT.md, the map factor).
             map: Option<String>,
             tools: Option<String>,
+            /// The `continuation` factor's level (resume or fresh).
+            continuation: Option<String>,
         }
         let c = self.lock();
         let tasks: Vec<TaskFacts> = {
@@ -291,6 +293,13 @@ impl Store {
                 let tools = serde_json::from_str::<serde_json::Value>(&explore)
                     .ok()
                     .and_then(|v| v.get("tools").and_then(|m| m.as_str()).map(str::to_string));
+                let continuation = serde_json::from_str::<serde_json::Value>(&explore)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("continuation")
+                            .and_then(|m| m.as_str())
+                            .map(str::to_string)
+                    });
                 Ok(TaskFacts {
                     id: r.get("id")?,
                     workflow: r.get("workflow")?,
@@ -298,6 +307,7 @@ impl Store {
                     landed: !landed_sha.is_empty(),
                     map,
                     tools,
+                    continuation,
                 })
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -473,6 +483,15 @@ impl Store {
                     ex,
                 );
             }
+            if let Some(level) = &t.continuation {
+                bump(
+                    &mut groups,
+                    ("continuation".to_string(), level.clone()),
+                    t.landed,
+                    cost,
+                    ex,
+                );
+            }
             if let Some(level) = &t.tools {
                 let key = ("tools".to_string(), level.clone());
                 bump(&mut groups, key.clone(), t.landed, cost, ex);
@@ -510,6 +529,9 @@ impl Store {
                 ];
                 if let Some(map) = &t.map {
                     levels.push(("map".to_string(), map.clone()));
+                }
+                if let Some(level) = &t.continuation {
+                    levels.push(("continuation".to_string(), level.clone()));
                 }
                 if let Some(level) = &t.tools {
                     levels.push(("tools".to_string(), level.clone()));

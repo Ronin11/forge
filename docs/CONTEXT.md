@@ -152,3 +152,27 @@ Turns count assistant messages (deduplicated by message ID) or Codex
 edit/file-change event. No observed edit means null, not zero; shell
 edits without file-change events cannot identify that turn. Missing or
 unsupported logs produce null exploration. Replayed call IDs count once.
+
+## Continuing in a fresh session: the continuation factor (D1)
+
+A capped attempt used to resume its CLI session with `--resume`, carrying
+the whole context; 23% of read volume happens at contexts over 200k, mostly
+resumed continuations. The `continuation` factor, drawn from
+`experiment.toml` like `map` and `tools` (`[factors.continuation]`, levels
+`resume` and `fresh`), compares the two.
+
+- `resume` is today's behaviour.
+- `fresh` starts a new session, without `--resume`, when a continuation is
+  needed: the attempt hit the turn cap or was stopped early, or (for the
+  resume-on-failure path) the log's last usage shows a context over
+  `handoff::CONTEXT_THRESHOLD_TOKENS` (120k). Its prompt is the ordinary one
+  plus a handoff section built entirely by Forge, never by a model:
+  the commits on the branch since the attempt started (`git log --oneline`)
+  and `git diff --stat`; the journal's `found:` lines; the distinct paths the
+  previous session `Read`, from its log; the previous session's last
+  structured output or result text; and the task.
+
+The arm is recorded as `continuation` in the attempt's `inputs_json`
+(`resumed` stays empty for fresh). `forge stats --factors` reports
+`continuation:resume` against `continuation:fresh` on cost per landed task
+and landing rate. Test: `the_fresh_continuation_arm_launches_without_resume_and_carries_a_handoff`.

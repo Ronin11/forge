@@ -1001,6 +1001,7 @@ async fn run_directive_step(
                     resume = Some(Resume {
                         session: sid.clone(),
                         start_sha: a.start_sha.clone(),
+                        fresh_from: fresh_arm(t).then(|| PathBuf::from(&a.log_path)),
                     });
                     feedback = Some(if let Some(why) = &outcome.ended_early {
                         early_feedback(why, &outcome.early_signals)
@@ -1025,9 +1026,15 @@ async fn run_directive_step(
                             ),
                         },
                     );
+                    let over = fresh_arm(t)
+                        && std::fs::read_to_string(&a.log_path)
+                            .ok()
+                            .and_then(|l| crate::handoff::last_context_tokens(&l))
+                            .is_some_and(|n| n > crate::handoff::CONTEXT_THRESHOLD_TOKENS);
                     resume = Some(Resume {
                         session: sid.clone(),
                         start_sha: a.start_sha.clone(),
+                        fresh_from: over.then(|| PathBuf::from(&a.log_path)),
                     });
                     feedback = Some(verify::feedback(&verdict, &outcome, ts.max_turns));
                 } else {
@@ -1603,6 +1610,12 @@ async fn verified_branch_of(f: &Forge, old: i64) -> Option<VerifiedBranch> {
         });
     }
     None
+}
+
+/// Whether the task drew the `fresh` arm of the continuation factor
+/// (docs/CONTEXT.md): a continuation starts a new session on a handoff.
+fn fresh_arm(t: &Task) -> bool {
+    t.explore.get("continuation").map(String::as_str) == Some("fresh")
 }
 
 #[cfg(test)]

@@ -29,6 +29,10 @@ use std::time::Duration;
 pub struct Resume {
     pub session: String,
     pub start_sha: String,
+    /// The `fresh` arm of the continuation factor: the capped attempt's
+    /// log, from which a handoff is built for a new session. `None` resumes
+    /// the session.
+    pub fresh_from: Option<PathBuf>,
 }
 
 /// What one contract's attempt differs in.
@@ -79,7 +83,17 @@ pub async fn run_attempt(
         task_checks: t.checks.clone(),
         protected: cfg.protected.clone(),
         namespace: cfg.namespace.clone(),
-        resumed: resume.map(|r| r.session.clone()),
+        resumed: resume
+            .filter(|r| r.fresh_from.is_none())
+            .map(|r| r.session.clone()),
+        continuation: resume.map(|r| {
+            if r.fresh_from.is_some() {
+                "fresh"
+            } else {
+                "resume"
+            }
+            .to_string()
+        }),
         journal: journal.clone(),
         context: context.clone(),
         ..Default::default()
@@ -200,7 +214,12 @@ pub async fn run_attempt(
         },
     };
     let mut inputs = spec.inputs;
-    inputs.prompt_chars = spec.prompt.chars().count();
+    let mut spec_prompt = spec.prompt;
+    if let Some(prev) = resume.and_then(|r| r.fresh_from.as_deref()) {
+        let r = resume.expect("fresh_from implies a resume");
+        spec_prompt.push_str(&crate::handoff::build(f, t, &spec.dir, &r.start_sha, prev).await);
+    }
+    inputs.prompt_chars = spec_prompt.chars().count();
     let provider = f
         .providers
         .get(&t.provider)
@@ -223,9 +242,11 @@ pub async fn run_attempt(
         t,
         &step.action.name,
         &spec.dir,
-        &spec.prompt,
+        &spec_prompt,
         &log_path,
-        resume.map(|r| r.session.as_str()),
+        resume
+            .filter(|r| r.fresh_from.is_none())
+            .map(|r| r.session.as_str()),
         contract.writes(),
         &a.start_sha,
         provider,

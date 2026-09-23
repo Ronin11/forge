@@ -41,6 +41,10 @@ pub struct Inputs {
     /// The CLI session this attempt continued, when it resumed a capped one.
     #[serde(default)]
     pub resumed: Option<String>,
+    /// The continuation factor's arm (`resume` or `fresh`), when this
+    /// attempt continued a capped one.
+    #[serde(default)]
+    pub continuation: Option<String>,
     /// The journal the agent was shown: every earlier attempt in this piece
     /// of work, what it said it did, and what the kernel found. Verbatim.
     #[serde(default)]

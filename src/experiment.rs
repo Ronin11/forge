@@ -90,11 +90,11 @@ fn validate_factor(
     factor: &str,
     levels: BTreeMap<String, f64>,
 ) -> Result<BTreeMap<String, f64>> {
-    if factor == "map" || factor == "tools" {
-        let allowed = if factor == "map" {
-            ["spans", "names"]
-        } else {
-            ["outline", "plain"]
+    if factor == "map" || factor == "tools" || factor == "continuation" {
+        let allowed = match factor {
+            "map" => ["spans", "names"],
+            "tools" => ["outline", "plain"],
+            _ => ["resume", "fresh"],
         };
         for level in levels.keys() {
             if !allowed.contains(&level.as_str()) {

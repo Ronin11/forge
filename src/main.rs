@@ -24,6 +24,7 @@ mod experiment;
 
 mod git;
 mod graph;
+mod handoff;
 mod init;
 mod intake;
 mod job;
