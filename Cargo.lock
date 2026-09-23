@@ -784,6 +784,9 @@ dependencies = [
 [[package]]
 name = "forge-test"
 version = "0.1.0"
+dependencies = [
+ "toml",
+]
 
 [[package]]
 name = "forge-tui"

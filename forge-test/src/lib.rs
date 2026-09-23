@@ -1,6 +1,8 @@
 //! The failing-test parser: test names from go, pytest, jest and cargo test
 //! output. Unknown output yields nothing rather than a guess.
 
+pub mod run;
+
 /// Failing test names in order of first appearance, each once.
 pub fn failing_tests(out: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();

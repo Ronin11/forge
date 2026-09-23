@@ -11,3 +11,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "forge-test"
 path = "src/main.rs"
+
+[dependencies]
+toml = "0.9"
