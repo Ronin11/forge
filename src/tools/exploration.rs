@@ -17,9 +17,11 @@ fn path(p: &str, root: &str) -> String {
     Path::new(p)
         .strip_prefix(root)
         .unwrap_or(Path::new(p))
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect::<std::path::PathBuf>()
         .to_string_lossy()
-        .trim_start_matches("./")
-        .to_string()
+        .into_owned()
 }
 
 fn chars(v: &Value) -> u64 {
@@ -219,4 +221,113 @@ pub fn measure(log: &Path, root: &str, changed: &[String]) -> Option<Measures> {
         .map(|(_, n)| n)
         .sum();
     observed.then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn run(events: Vec<Value>, changed: &[String]) -> Option<Measures> {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("attempt.jsonl");
+        std::fs::write(
+            &log,
+            events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        measure(&log, "/wt", changed)
+    }
+
+    fn call(id: &str, message: &str, name: &str, input: Value) -> Value {
+        json!({"type":"assistant","message":{"id":message,"content":[{"type":"tool_use","id":id,"name":name,"input":input}]}})
+    }
+
+    fn result(id: &str, text: &str) -> Value {
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":text}]}})
+    }
+
+    #[test]
+    fn measures_chains_returned_characters_and_turns_without_replay_double_counts() {
+        let read = call(
+            "r",
+            "m1",
+            "Read",
+            json!({"file_path":"/wt/a.rs","offset":3,"limit":2}),
+        );
+        let events = vec![
+            call("g", "m0", "Grep", json!({"pattern":"foo"})),
+            read.clone(),
+            read,
+            result("r", "héllo"),
+            result("r", "replayed"),
+            call("r2", "m1", "Read", json!({"file_path":"/wt/b.rs"})),
+            result("r2", "ignore this"),
+            call("r3", "m1", "Read", json!({"file_path":"/wt/c.rs"})),
+            result("r3", "git changed"),
+            call("e", "m2", "Edit", json!({"file_path":"/wt/b.rs"})),
+            call(
+                "nav",
+                "m3",
+                "Bash",
+                json!({"command":"forge-repomap outline a.rs; forge-repomap def foo"}),
+            ),
+        ];
+        assert_eq!(
+            run(events, &["c.rs".into()]).unwrap(),
+            Measures {
+                grep_then_ranged_read_chains: 1,
+                unedited_read_chars: 5,
+                turns_before_first_edit: Some(2),
+                outline_calls: 1,
+                def_calls: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn codex_completed_items_pair_reads_and_count_navigation_once() {
+        let events = vec![
+            json!({"type":"turn.started"}),
+            json!({"type":"item.completed","item":{"id":"g","type":"command_execution","command":"rg foo a.rs","exit_code":0}}),
+            json!({"type":"item.started","item":{"id":"r","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,3p' a.rs\""}}),
+            json!({"type":"item.completed","item":{"id":"r","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,3p' a.rs\"","aggregated_output":"αβ","exit_code":0}}),
+            json!({"type":"item.started","item":{"id":"n","type":"command_execution","command":"forge-repomap def foo"}}),
+            json!({"type":"item.completed","item":{"id":"n","type":"command_execution","command":"forge-repomap def foo","exit_code":0}}),
+            json!({"type":"turn.started"}),
+            json!({"type":"item.completed","item":{"id":"e","type":"file_change","changes":[{"path":"other.rs"}]}}),
+        ];
+        assert_eq!(
+            run(events, &[]).unwrap(),
+            Measures {
+                grep_then_ranged_read_chains: 1,
+                unedited_read_chars: 2,
+                turns_before_first_edit: Some(1),
+                outline_calls: 0,
+                def_calls: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn unavailable_and_no_edit_are_not_fabricated_zeroes() {
+        assert_eq!(run(vec![json!({"type":"forge_prompt"})], &[]), None);
+        let mut error = result("r", "failure text");
+        error["message"]["content"][0]["is_error"] = json!(true);
+        let m = run(
+            vec![
+                call("r", "m", "Read", json!({"file_path":"/wt/a.rs"})),
+                error,
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(m, Measures::default());
+        assert_eq!(shell("echo forge-repomap def foo").def, 0);
+        assert!(shell("cat a.rs b.rs").read.is_none());
+    }
 }

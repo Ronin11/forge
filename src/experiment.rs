@@ -544,6 +544,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tools_factor_validates_saves_and_preserves_the_draw() {
+        let dir = tempfile::tempdir().unwrap();
+        let exp = set_factor(
+            dir.path(),
+            None,
+            "tools",
+            w(&[("outline", 1.0), ("plain", 1.0)]),
+        )
+        .unwrap();
+        let mut draw = BTreeMap::new();
+        extend_explore(&mut draw, 42, &BTreeMap::new(), Some(&exp));
+        assert!(matches!(draw["tools"].as_str(), "outline" | "plain"));
+        let original = draw.clone();
+        extend_explore(&mut draw, 43, &BTreeMap::new(), Some(&exp));
+        assert_eq!(draw, original);
+        save(dir.path(), &exp).unwrap();
+        assert_eq!(
+            load(dir.path()).unwrap().unwrap().factors["tools"],
+            w(&[("outline", 0.5), ("plain", 0.5)])
+        );
+        assert!(set_factor(dir.path(), None, "tools", w(&[("unknown", 1.0)])).is_err());
+    }
+
     // --- load: floor and role validation --------------------------------
 
     #[test]

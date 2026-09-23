@@ -630,6 +630,26 @@ mod tests {
     use crate::workflows::{ActionDef, Contract, Kind, Output, ResolvedStep};
     use std::collections::BTreeMap;
 
+    #[test]
+    fn tools_arms_share_their_own_pack_and_only_plain_omits_the_line() {
+        let cfg = test_cfg();
+        let mut task = Task::default();
+        let default_pack = repo_pack(&task, &cfg);
+        task.explore.insert("tools".into(), "outline".into());
+        assert_eq!(repo_pack(&task, &cfg), default_pack);
+        for arm in ["outline", "plain"] {
+            task.explore.insert("tools".into(), arm.into());
+            let pack = repo_pack(&task, &cfg);
+            assert_eq!(pack.contains("forge-repomap outline"), arm == "outline");
+            let mut other = task.clone();
+            other.task = "a different task".into();
+            other.id = 42;
+            assert_eq!(repo_pack(&other, &cfg), pack);
+            let prompt = code_prompt(&task, &cfg, &test_step(), 1, None, None, None);
+            assert!(prompt.starts_with(&format!("{PREAMBLE}{pack}")));
+        }
+    }
+
     fn test_cfg() -> config::Config {
         config::Config {
             checks: BTreeMap::new(),

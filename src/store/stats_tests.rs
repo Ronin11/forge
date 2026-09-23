@@ -1194,3 +1194,77 @@ fn task_repair_costs_only_landed_tasks_on_the_repo() {
     rows.sort_by_key(|(id, _)| *id);
     assert_eq!(rows, vec![(a.id, 3.5), (b.id, 1.5)], "{rows:?}");
 }
+
+#[test]
+fn tools_factor_means_include_retries_and_zeroes_but_not_missing_logs() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("t.db")).unwrap();
+    for (level, values) in [
+        ("outline", vec![Some(0), Some(4), None]),
+        ("plain", vec![None]),
+    ] {
+        let mut task = Task {
+            repo: "r".into(),
+            task: "t".into(),
+            workflow: "direct".into(),
+            state: TaskState::Failed,
+            started_at: Some(1),
+            finished_at: Some(2),
+            explore: [("tools".into(), level.into())].into(),
+            ..Default::default()
+        };
+        let id = s.insert_task(&task).unwrap();
+        task.id = id;
+        s.update_task(&task).unwrap();
+        for (i, value) in values.into_iter().enumerate() {
+            let a = s
+                .insert_attempt(&Attempt {
+                    task_id: id,
+                    attempt_no: i as i64 + 1,
+                    step: "code".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let outputs = crate::audit::Outputs {
+                tools: Some(crate::tools::Tools {
+                    exploration: value.map(|v| crate::tools::exploration::Measures {
+                        grep_then_ranged_read_chains: v,
+                        unedited_read_chars: v * 10,
+                        turns_before_first_edit: (v > 0).then_some(v),
+                        outline_calls: v,
+                        def_calls: v * 2,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            s.lock()
+                .execute(
+                    "UPDATE attempts SET outputs_json=?1 WHERE id=?2",
+                    params![serde_json::to_string(&outputs).unwrap(), a],
+                )
+                .unwrap();
+        }
+    }
+    let stats = s.factor_stats(&StatsFilter::default(), None).unwrap();
+    let outline = stats
+        .iter()
+        .find(|s| s.factor == "tools" && s.level == "outline")
+        .unwrap();
+    assert_eq!(outline.tasks, 1);
+    assert_eq!(outline.mean_grep_then_ranged_read_chains, Some(2.0));
+    assert_eq!(outline.mean_unedited_read_chars, Some(20.0));
+    assert_eq!(outline.mean_turns_before_first_edit, Some(4.0));
+    assert_eq!(outline.mean_outline_calls, Some(2.0));
+    assert_eq!(outline.mean_def_calls, Some(4.0));
+    let plain = stats
+        .iter()
+        .find(|s| s.factor == "tools" && s.level == "plain")
+        .unwrap();
+    assert_eq!(plain.mean_outline_calls, None);
+    assert!(
+        s.factor_stats(&StatsFilter::default(), Some(3))
+            .unwrap()
+            .is_empty()
+    );
+}
