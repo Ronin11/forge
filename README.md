@@ -104,7 +104,7 @@ forge gc [--dry-run]                                        # remove worktrees t
    cliff. The raw stream is the attempt's log, prompt first.
 
    The schema makes the agent's final result structured, never parsed out
-   of prose: `summary`, `changes[]` (every path touched), `checks_run[]`
+   of prose: `summary`, `checks_run[]`
    (only checks it actually ran, with the real outcome), `claims[]` each
    with evidence, and `needs_input` when it cannot proceed without the
    operator. All of it is a claim; step 4 compares it with what Forge
@@ -115,8 +115,11 @@ forge gc [--dry-run]                                        # remove worktrees t
    a row in the attempt's verdict. A level runs only if the one before it
    passed.
    - **L0** consistency with git: a structured result exists, clean tree,
-     at least one commit, `forge.toml` untouched, the reported `changes[]`
-     match what git saw in both directions, every claim has evidence. A
+     at least one commit, `forge.toml` untouched, every claim has evidence.
+     The verifier derives the stored `changes[]` from git for every
+     provider; it does not compare a model-reported file list against git.
+     Since `dca182f`, the result schema no longer asks the model for
+     `changes[]`. A
      `needs_input` question ends the task here with the question as its
      reason; retrying cannot answer it.
    - **L1** the repo's declared checks, in the sandbox, each under
@@ -359,9 +362,16 @@ or links the kernel (`tests/boundary.rs` enforces that). Run it with
 `forge-web` (in `web/`) is the same seat in a browser: the queue, the open
 questions with what each agent tried, a task's trace with its attempts,
 diagnosis and journal, and the live event feed. It is the same kind of
-client: every route is a forge verb's JSON passed through (`snapshot`,
+client: reads use forge verbs' JSON (`snapshot`,
 `log`, `trace`, `journal`), and the feed is `events --follow` as
-server-sent events. Read-only for now. It binds `127.0.0.1:7788` unless
+server-sent events. It also has write routes: answer and withdraw run
+`forge answer` and `forge withdraw`; retry and land run `forge retry` and
+`forge land`; initiative settings run `forge initiative set`; gc and
+deploy run `forge gc` and `forge deploy`. Each goes through the CLI verb
+via `forge-client`, as do workflow and plugin controls and webhook job
+firing (see [the client contract](docs/CLIENT.md)). `forge task set` is
+available in the CLI; this checkout has no web route for it.
+It binds `127.0.0.1:7788` unless
 told `--bind`, and every request needs the token it generates once into
 `FORGE_HOME/web.token`: it prints the link at start, the first visit
 sets a cookie. There are no routes without the token, so a tailnet proxy

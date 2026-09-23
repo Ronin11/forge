@@ -47,14 +47,25 @@ pub(crate) fn systemd_user_dir() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".config/systemd/user"))
 }
 
+/// `/run` in production; `tests/e2e/init.rs`'s session-path test points
+/// this at a tempdir holding its own `systemd/system` marker, since the
+/// real one can only be produced by actually booting under systemd — the
+/// one piece of `systemd_available` a test can't otherwise fake.
+fn systemd_run_dir() -> PathBuf {
+    std::env::var_os("FORGE_TEST_SYSTEMD_RUN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run"))
+}
+
 /// Whether a systemd user session is reachable at all: `sd_booted()`'s own
-/// check (`/run/systemd/system`, set only once systemd is pid 1) plus
+/// check (`<run>/systemd/system`, set only once systemd is pid 1) plus
 /// `XDG_RUNTIME_DIR`, which a login session sets and `systemctl --user`
 /// needs to find the session bus. Both are plain reads, so detecting "no
 /// systemd" (every sandbox and most CI containers) never spawns a process
 /// or touches disk.
 fn systemd_available() -> bool {
-    Path::new("/run/systemd/system").exists() && std::env::var_os("XDG_RUNTIME_DIR").is_some()
+    systemd_run_dir().join("systemd/system").exists()
+        && std::env::var_os("XDG_RUNTIME_DIR").is_some()
 }
 
 fn worker_unit(home: &Path, forge_bin: &Path, bin_dir: &Path) -> String {
@@ -152,12 +163,12 @@ fn install_units(home: &Path) -> Result<StepResult> {
             "systemd",
             files_changed,
             format!(
-                "wrote {} and {}; no systemd user session detected, so run by hand once one is available:\n  \
+                "wrote {worker} and {web}; no systemd user session detected, so run by hand once one is available:\n  \
                  systemctl --user daemon-reload\n  \
-                 systemctl --user enable --now forge-worker.service forge-web.service\n  \
+                 systemctl --user enable --now {worker} {web}\n  \
                  loginctl enable-linger",
-                worker_path.display(),
-                web_path.display(),
+                worker = worker_path.display(),
+                web = web_path.display(),
             ),
         ));
     }
@@ -186,14 +197,21 @@ fn install_units(home: &Path) -> Result<StepResult> {
         );
         Ok(())
     };
+    let worker_path_str = worker_path.to_string_lossy();
+    let web_path_str = web_path.to_string_lossy();
     sh(&["systemctl", "--user", "daemon-reload"])?;
+    // The unit file paths this run just wrote, not bare unit names: a
+    // bare "forge-worker.service" would let systemctl's own search path
+    // resolve to some other unit of the same name (the operator's real
+    // one, if `XDG_CONFIG_HOME` here is a test's own tempdir rather than
+    // the OS user's actual config directory).
     sh(&[
         "systemctl",
         "--user",
         "enable",
         "--now",
-        "forge-worker.service",
-        "forge-web.service",
+        &worker_path_str,
+        &web_path_str,
     ])?;
     sh(&["loginctl", "enable-linger"])?;
 

@@ -909,7 +909,7 @@ touched:
 
 | field | type | meaning |
 |---|---|---|
-| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose recorded `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
+| `tasks` | array of `{id, at, cost_usd}` | One entry per task with an attempt whose git-derived `changes` (the result envelope's `changes[]`, `src/envelope.rs`) named this path. `at` is the latest such attempt's finish time (Unix seconds); `cost_usd` sums only the cost of this task's attempts that touched the path, not the task's whole spend. |
 | `demotions` | array of `{id, at, reason}` | One entry per task whose attempt ended a review demotion (`reason` starting `"review demoted: "`) with at least one claim whose evidence text names this path as a substring. `at` is that attempt's finish time. |
 | `repair_cost_usd` | number | This file's share of the quality statistics' repair cost (`StatsWorkflowRow.repair_cost_usd` above): each task's own cached repair cost, divided evenly across every file its attempts touched, summed over every task that touched this one. |
 
@@ -1395,7 +1395,11 @@ across a rotation, not to the snapshot protocol itself.
   `trace <id> --json`, `/api/journal/<id>` →
   `journal <id> --json`, `/api/events?since=` → `events --since
   --follow` reframed as one SSE `data:` line per event, and
-  `POST /api/retry/<id>` → `forge retry <id>`. The browser's list view,
+  `POST /api/retry/<id>` → `forge retry <id>`. Write controls also run
+  the CLI verbs `answer`, `withdraw`, `land`, `initiative set`, `gc`,
+  and `deploy` through `forge-client`, as detailed below. `forge task set`
+  is available in the CLI but has no web route in this checkout.
+  The browser's list view,
   detail view, and run view apply the same re-read rules as above; the
   list view's `TaskRow.initiative`, when set, links to `/initiatives/<id>`.
   **Search** (web UI task 9, `web/src/search.js`). The `/tasks` list's
