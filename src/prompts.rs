@@ -663,6 +663,7 @@ mod tests {
             protected: vec![],
             namespace: vec![],
             egress: vec![],
+            environment_deny: vec![],
             config_path: "forge.toml".into(),
         }
     }

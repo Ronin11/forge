@@ -951,9 +951,14 @@ fn check_environment_grants(store: &Store) -> Vec<Check> {
         .iter()
         .map(|d| {
             format!(
-                "task {}: {}",
+                "task {}: {}{}",
                 d.task_id.map_or("-".to_string(), |t| t.to_string()),
-                d.question.trim_start_matches("Environment need: ")
+                d.question.trim_start_matches("Environment need: "),
+                if d.answered_by == "supervisor" {
+                    " (approved by the supervisor)"
+                } else {
+                    ""
+                }
             )
         })
         .collect();

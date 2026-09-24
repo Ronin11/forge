@@ -460,6 +460,11 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
             "blocked on a dependency, not a question".into(),
         ));
     }
+    if last.step == crate::env_supervisor::STEP {
+        return Ok(Ruled::Skipped(
+            "an environment denial is the operator's to answer".into(),
+        ));
+    }
     let q = serde_json::from_str::<Envelope>(&last.envelope_json)
         .ok()
         .and_then(|e| e.needs_input)

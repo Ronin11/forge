@@ -19,6 +19,18 @@ struct Raw {
     verify: VerifyRaw,
     #[serde(default)]
     sandbox: RepoSandboxRaw,
+    #[serde(default)]
+    environment: RepoEnvironmentRaw,
+}
+
+/// `[environment]` in the repository's forge.toml: what the repository
+/// forbids the supervisor to grant it, however the operator's table reads.
+/// A host (`registry.example.com`, `*.example.com`) or a cache path
+/// (`~/.cache/foo`). Read from the trusted base, like the rest of the file.
+#[derive(Deserialize, Default)]
+struct RepoEnvironmentRaw {
+    #[serde(default)]
+    deny: Vec<String>,
 }
 
 /// `[sandbox]` in the repository's forge.toml: what an attempt on this
@@ -87,6 +99,9 @@ pub struct Config {
     /// reach besides the model endpoint, typically the package registries
     /// its checks install from. Empty by default: nothing else.
     pub egress: Vec<crate::egress::Rule>,
+    /// `[environment] deny`: hosts and cache paths the supervisor may not
+    /// grant this repository (see `environment::within_ceiling`).
+    pub environment_deny: Vec<String>,
     /// Where the repository's config actually lives: `forge.toml` or
     /// `.forge/forge.toml`. Whatever this is, it is the path every rule
     /// that used to say `forge.toml` by name now means.
@@ -207,6 +222,7 @@ async fn parse(repo: &Path, text: &str, what: &str, config_path: &str) -> Result
             .map(|d| if d.ends_with('/') { d } else { format!("{d}/") })
             .collect(),
         egress,
+        environment_deny: raw.environment.deny,
         config_path: config_path.to_string(),
     })
 }

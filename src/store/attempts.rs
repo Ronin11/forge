@@ -111,6 +111,7 @@ pub struct Attempt {
 }
 
 /// Everything `Store::finish_attempt` writes back for an attempt that has run to completion.
+#[derive(Default)]
 pub struct FinishAttempt {
     /// The attempt row to update.
     pub id: i64,

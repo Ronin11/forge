@@ -260,8 +260,19 @@ impl Forge {
         need: &crate::environment::Need,
         trust: crate::store::Trust,
     ) -> Option<crate::environment::Grant> {
-        use crate::environment::Grant;
         let grant = self.environment.covers(need)?;
+        self.apply_grant(worktree, grant, trust)
+    }
+
+    /// Open `grant` for attempts in `worktree`, whoever allowed it; `None`
+    /// when it cannot be applied or was applied before.
+    pub fn apply_grant(
+        &self,
+        worktree: &Path,
+        grant: crate::environment::Grant,
+        trust: crate::store::Trust,
+    ) -> Option<crate::environment::Grant> {
+        use crate::environment::Grant;
         let declared = matches!(
             self.trust_policy(trust).egress,
             config::TrustEgress::Declared

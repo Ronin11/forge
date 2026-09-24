@@ -6,11 +6,30 @@
 //! `[environment]` table, what may be granted without asking; the engine
 //! applies a covered need (`ctx::Forge::grant_environment`), records it as
 //! a decision row by `forge` (`record`) and re-runs without spending a
-//! retry. A need the table does not cover is left as it always was.
+//! retry. A host or cache need the table does not cover goes to the
+//! supervisor (`env_supervisor`), which may approve only what
+//! `within_ceiling` allows; a denial reaches the operator as a yes/no
+//! question. Anything else is left as it always was.
 
 use crate::store::Store;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+
+/// Who allowed a grant: the operator's table, or the supervisor within the
+/// ceiling (`within_ceiling`) with its one-line reason.
+pub enum Approval {
+    Policy,
+    Supervisor(String),
+}
+
+impl Approval {
+    fn answered_by(&self) -> &'static str {
+        match self {
+            Approval::Policy => "forge",
+            Approval::Supervisor(_) => "supervisor",
+        }
+    }
+}
 
 /// The `decisions.kind` of a grant, which `forge doctor` lists.
 pub const DECISION_KIND: &str = "environment-grant";
@@ -94,7 +113,7 @@ fn refused_host(line: &str, by_url: bool) -> Option<Need> {
             && authority.len() < rest.len()
         {
             let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
-            if valid_host(host) {
+            if valid_host(host) || valid_wildcard(host) {
                 return Some(need(NeedKind::Host, &host.to_ascii_lowercase(), line));
             }
         }
@@ -115,6 +134,13 @@ fn refused_host(line: &str, by_url: bool) -> Option<Need> {
         }
     }
     None
+}
+
+/// A refusal can name a pattern (`*.example.org`); it is typed as a host
+/// need so the ceiling can refuse it by name rather than the line going
+/// unrecognized.
+fn valid_wildcard(h: &str) -> bool {
+    h.strip_prefix("*.").is_some_and(valid_host)
 }
 
 fn valid_host(h: &str) -> bool {
@@ -247,16 +273,32 @@ impl Policy {
         Ok(p)
     }
 
+    /// The table as the supervisor reads it, one line.
+    pub fn describe(&self) -> String {
+        format!(
+            "hosts: {}; cache paths (read-only): {}",
+            self.hosts.join(", "),
+            self.cache_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
     /// What may be granted for `need`, or nothing when the table does not
     /// cover it: a host the table lists (`*.suffix` entries match below the
     /// suffix), or a missing path under a listed cache. Binaries and
     /// toolchains are never granted here.
     pub fn covers(&self, need: &Need) -> Option<Grant> {
         match need.kind {
-            NeedKind::Host => self
-                .hosts
-                .iter()
-                .any(|h| host_matches(h, &need.target))
+            NeedKind::Host => (!need.target.contains('*'))
+                .then(|| {
+                    self.hosts
+                        .iter()
+                        .any(|h| host_matches(h, &need.target))
+                })
+                .unwrap_or(false)
                 .then(|| Grant::Host(need.target.clone())),
             NeedKind::Cache => {
                 let path = Path::new(&need.target);
@@ -277,25 +319,107 @@ fn host_matches(entry: &str, host: &str) -> bool {
     }
 }
 
-/// Record an applied grant as a decision row by `forge` on `task_id`,
-/// naming the need and its evidence.
-pub fn record(store: &Store, task_id: i64, repo: &str, need: &Need, grant: &Grant) -> Result<i64> {
+/// The most the supervisor may approve for `need`, or why nothing: one
+/// named host (never a wildcard, never github.com, never a model endpoint,
+/// never what the repository's `[environment] deny` lists), or the one
+/// directory under `~/.cache` the need's path is in, read-only. Pure code;
+/// the supervisor's ruling is checked against this, never the other way.
+pub fn within_ceiling(
+    need: &Need,
+    deny: &[String],
+    models: &[crate::egress::Rule],
+) -> Result<Grant, String> {
+    match need.kind {
+        NeedKind::Host => host_ceiling(&need.target, deny, models),
+        NeedKind::Cache => cache_ceiling(&need.target, deny),
+        NeedKind::Binary | NeedKind::Toolchain => Err(format!(
+            "a {} is never granted here",
+            need.kind.as_str()
+        )),
+    }
+}
+
+fn host_ceiling(host: &str, deny: &[String], models: &[crate::egress::Rule]) -> Result<Grant, String> {
+    if host.contains('*') {
+        return Err(format!(
+            "{host} is a wildcard; the most that may be granted is one named host"
+        ));
+    }
+    if !valid_host(host) {
+        return Err(format!("{host} is not a host name"));
+    }
+    if host == "github.com" || host.ends_with(".github.com") {
+        return Err("github.com is never granted".into());
+    }
+    if models.iter().any(|r| r.matches(host, 443).is_some()) {
+        return Err(format!("{host} is a model endpoint"));
+    }
+    if deny.iter().any(|d| host_matches(&d.to_ascii_lowercase(), host)) {
+        return Err(format!("the repository's forge.toml [environment] deny lists {host}"));
+    }
+    Ok(Grant::Host(host.to_string()))
+}
+
+fn cache_ceiling(target: &str, deny: &[String]) -> Result<Grant, String> {
+    let path = Path::new(target);
+    let cache = expand_home("~/.cache");
+    if !cache.is_absolute() {
+        return Err("no home directory to find ~/.cache in".into());
+    }
+    let Some(first) = path
+        .strip_prefix(&cache)
+        .ok()
+        .filter(|_| !target.contains(".."))
+        .and_then(|rest| rest.components().next())
+    else {
+        return Err(format!("{target} is not under {}", cache.display()));
+    };
+    let dir = cache.join(first);
+    if let Some(d) = deny
+        .iter()
+        .map(|d| expand_home(d))
+        .find(|d| dir.starts_with(d) || d.starts_with(&dir))
+    {
+        return Err(format!(
+            "the repository's forge.toml [environment] deny lists {}",
+            d.display()
+        ));
+    }
+    Ok(Grant::ReadOnly(dir))
+}
+
+/// Record an applied grant as a decision row by `by` on `task_id`, naming
+/// the need and its evidence; `who` says what allowed it.
+pub fn record(
+    store: &Store,
+    task_id: i64,
+    repo: &str,
+    need: &Need,
+    grant: &Grant,
+    by: &Approval,
+) -> Result<i64> {
     let question = format!(
         "Environment need: {} {}. Evidence: {}",
         need.kind.as_str(),
         need.target,
         need.evidence
     );
-    let answer = format!(
-        "Granted {} for this worktree by the [environment] policy; re-ran without counting a retry.",
-        grant.describe()
-    );
+    let answer = match by {
+        Approval::Policy => format!(
+            "Granted {} for this worktree by the [environment] policy; re-ran without counting a retry.",
+            grant.describe()
+        ),
+        Approval::Supervisor(why) => format!(
+            "Granted {} for this worktree on the supervisor's approval ({why}); re-ran without counting a retry.",
+            grant.describe()
+        ),
+    };
     let id = store.insert_decision_by(
         task_id,
         repo,
         &question,
         &answer,
-        "forge",
+        by.answered_by(),
         &need.target,
         None,
     )?;

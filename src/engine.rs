@@ -328,17 +328,57 @@ fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> Str
     text
 }
 
-/// Recognize an environment need in `text` and, when the policy covers it,
-/// apply it to the task's worktree and record the decision row by `forge`.
-/// `true` means applied: the caller runs again.
-fn apply_environment(f: &Forge, t: &Task, text: &str) -> Result<bool, Fault> {
+/// What became of an environment need found in a failure's text.
+enum Environment {
+    /// Nothing recognized, covered or approved: the failure stands.
+    Left,
+    /// A grant was applied and recorded: the caller runs again.
+    Applied,
+    /// The supervisor denied it: the task blocks on this question.
+    Ask(String),
+}
+
+/// Recognize an environment need in `text`. When the policy covers it,
+/// apply it to the task's worktree and record the decision row by `forge`;
+/// otherwise a host or cache need goes to the supervisor, whose approval
+/// within the ceiling is applied and recorded the same way, by `supervisor`
+/// (`env_supervisor`).
+async fn apply_environment(
+    f: &Forge,
+    t: &Task,
+    cfg: &config::Config,
+    text: &str,
+) -> Result<Environment, Fault> {
+    use crate::environment::Approval;
     let Some(need) = crate::environment::recognize(text) else {
-        return Ok(false);
+        return Ok(Environment::Left);
     };
-    let Some(grant) = f.grant_environment(Path::new(&t.worktree), &need, t.trust) else {
-        return Ok(false);
+    let (grant, by) = if f.environment.covers(&need).is_some() {
+        match f.grant_environment(Path::new(&t.worktree), &need, t.trust) {
+            Some(g) => (g, Approval::Policy),
+            None => return Ok(Environment::Left),
+        }
+    } else if crate::env_supervisor::applies(f, t, &need) {
+        match crate::env_supervisor::rule(f, t, &cfg.environment_deny, &need)
+            .await
+            .env()?
+        {
+            crate::env_supervisor::Ruled::Approved(g, why) => {
+                match f.apply_grant(Path::new(&t.worktree), g, t.trust) {
+                    Some(g) => (g, Approval::Supervisor(why)),
+                    None => return Ok(Environment::Left),
+                }
+            }
+            crate::env_supervisor::Ruled::Denied(why) => {
+                let q = crate::env_supervisor::question(&need, &why);
+                crate::env_supervisor::block(f, t, &need, &q).env()?;
+                return Ok(Environment::Ask(q));
+            }
+        }
+    } else {
+        return Ok(Environment::Left);
     };
-    crate::environment::record(&f.store, t.id, &t.repo, &need, &grant).env()?;
+    crate::environment::record(&f.store, t.id, &t.repo, &need, &grant, &by).env()?;
     f.report.emit(
         t.id,
         Event::Note {
@@ -350,7 +390,16 @@ fn apply_environment(f: &Forge, t: &Task, text: &str) -> Result<bool, Fault> {
             ),
         },
     );
-    Ok(true)
+    Ok(Environment::Applied)
+}
+
+/// The run ends blocked on a question for the operator.
+fn blocked_on(reason: String) -> StepFlow {
+    StepFlow::End(End::Blocked {
+        reason,
+        demoted: false,
+        to: None,
+    })
 }
 
 /// What one step of the run decided: move to the next step, go round
@@ -564,8 +613,12 @@ async fn run_operation_step(
     let (mut ok, mut detail) = run_operation(f, t, cfg, step, seq).await?;
     // A need the [environment] policy covers is granted and the step runs
     // again, no question and nothing counted; each grant applies once.
-    while !ok && apply_environment(f, t, &detail)? {
-        (ok, detail) = run_operation(f, t, cfg, step, seq).await?;
+    while !ok {
+        match apply_environment(f, t, cfg, &detail).await? {
+            Environment::Applied => (ok, detail) = run_operation(f, t, cfg, step, seq).await?,
+            Environment::Ask(reason) => return Ok(blocked_on(reason)),
+            Environment::Left => break,
+        }
     }
     if ok {
         return Ok(StepFlow::Next);
@@ -883,10 +936,15 @@ async fn run_directive_step(
         if matches!(
             a.state,
             AttemptState::ChecksFailed | AttemptState::AgentFailed | AttemptState::NeedsInput
-        ) && apply_environment(f, t, &environment_text(&a, &verdict))?
-        {
-            run.refund(seq);
-            continue;
+        ) {
+            match apply_environment(f, t, cfg, &environment_text(&a, &verdict)).await? {
+                Environment::Applied => {
+                    run.refund(seq);
+                    continue;
+                }
+                Environment::Ask(reason) => return Ok(blocked_on(reason)),
+                Environment::Left => {}
+            }
         }
         // A check that failed only inside the verification namespace
         // is the test author's failure, not the coder's: the coder
