@@ -1,0 +1,1 @@
+[{"project":"forge","name":"prod","repo":"/r","scope":null,"method":"deploy-command","args":{"host":"web1"},"check_cmd":"curl -f localhost","on_landing":true,"smoke_url":"http://localhost/"},{"project":"forge","name":"staging","repo":"/r","scope":null,"method":"rsync","args":{"host":"stage"},"check_cmd":"","on_landing":false,"smoke_url":null}]

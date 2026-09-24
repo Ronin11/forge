@@ -62,11 +62,25 @@ JSON
   ;;
   log | requests) echo '[]' ;;
   stats) cat "$(dirname "$0")/stats.json" ;;
+  doctor) cat "$(dirname "$0")/doctor.json"; exit 1 ;;
+  gc) echo "removed 3 worktrees" ;;
+  project)
+    case "$2" in
+      list) cat "$(dirname "$0")/projects.json" ;;
+      deploy) cat "$(dirname "$0")/deploy_targets.json" ;;
+      *) echo "unexpected project: $*" >&2; exit 2 ;;
+    esac ;;
+  deploy)
+    if [ "$2" = log ]; then
+      if [ "$4" = prod ]; then cat "$(dirname "$0")/deploy_log_prod.json"; else echo '[]'; fi
+    else
+      echo "deploy: $2 $3" >> "$(dirname "$0")/ran"; echo "deployed $2/$3"
+    fi ;;
   events) exit 0 ;;
   initiative)
     case "$2" in
       list) cat <<'JSON'
-[{"id":3,"project":"forge","outcome":"cover the tui with text-snapshot tests","state":"open","held_rule":null,"queued":1,"running":1,"succeeded":3,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":4.2,"budget_usd":null,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":2,"project":"forge","outcome":"an older, settled initiative","state":"done","held_rule":null,"queued":0,"running":0,"succeeded":5,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":9.9,"budget_usd":20.0,"stop_after_same_rule":3,"created_at":1,"settled_at":2}]
+[{"id":3,"project":"forge","outcome":"cover the tui with text-snapshot tests","state":"open","held_rule":null,"queued":1,"running":1,"succeeded":3,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":4.2,"budget_usd":null,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":7,"project":"equitizr","outcome":"the billing page shows usage-based line items","state":"held","held_rule":"budget","queued":1,"running":0,"succeeded":1,"failed":1,"unverified":0,"blocked":1,"withdrawn":0,"cost_usd":10.5,"budget_usd":10.0,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":2,"project":"forge","outcome":"an older, settled initiative","state":"done","held_rule":null,"queued":0,"running":0,"succeeded":5,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":9.9,"budget_usd":20.0,"stop_after_same_rule":3,"created_at":1,"settled_at":2}]
 JSON
       ;;
       set) echo "set: $*" >&2; [ "$3" = 7 ] && [ "$4" = --budget ] && [ "$5" = 25 ] && echo ok || exit 2 ;;
@@ -145,6 +159,20 @@ fn fake_forge() -> Fake {
 fn fake_forge_with_stats(stats: &str) -> Fake {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("stats.json"), stats).unwrap();
+    for (name, text) in [
+        ("projects.json", include_str!("fixtures/projects.json")),
+        (
+            "deploy_targets.json",
+            include_str!("fixtures/deploy_targets.json"),
+        ),
+        (
+            "deploy_log_prod.json",
+            include_str!("fixtures/deploy_log_prod.json"),
+        ),
+        ("doctor.json", include_str!("fixtures/doctor.json")),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
     let bin = dir.path().join("forge");
     std::fs::write(&bin, FAKE).unwrap();
     #[cfg(unix)]
@@ -559,4 +587,72 @@ fn the_factors_tab_is_hidden_when_the_field_is_absent() {
         "five tabs wrap back to the first"
     );
     assert_snapshot("stats_no_factors", &text);
+}
+
+/// Opens the screen `tabs` Tab presses from the queue, then presses `keys`.
+fn ops_app(fake: &Fake, tabs: usize, keys: &[KeyCode]) -> App {
+    let mut app = App::new(fake.forge.clone());
+    app.snapshot();
+    for _ in 0..tabs {
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    }
+    for key in keys {
+        app.handle_key(*key, KeyModifiers::NONE);
+    }
+    app
+}
+
+#[test]
+fn the_deploys_screen_lists_targets_with_verdicts_and_the_selected_log() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 5, &[]);
+    assert_eq!(app.screen(), Screen::Deploys);
+    let text = frame(&app);
+    assert!(text.contains("look FAILED") && text.contains("never deployed"));
+    assert!(text.contains("rolled back to aaaa1111"));
+    assert_snapshot("deploys", &text);
+    app.shutdown();
+}
+
+#[test]
+fn deploy_now_asks_first_and_only_y_runs_it() {
+    let fake = fake_forge();
+    let ran = fake._dir.path().join("ran");
+    let mut app = ops_app(&fake, 5, &[KeyCode::Char('d')]);
+    let text = frame(&app);
+    assert!(text.contains("Deploy forge/prod now? y confirm  n cancel"));
+    assert_snapshot("deploys_confirm", &text);
+    app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+    assert!(!ran.exists(), "n must not deploy");
+    app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(
+        std::fs::read_to_string(&ran).unwrap(),
+        "deploy: forge prod\n"
+    );
+    assert!(frame(&app).contains("deployed forge/prod"));
+    app.shutdown();
+}
+
+#[test]
+fn j_moves_the_deploy_selection_to_the_next_targets_log() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 5, &[KeyCode::Char('j')]);
+    let text = frame(&app);
+    assert!(text.contains("log: forge/staging") && text.contains("no deploys yet"));
+    app.shutdown();
+}
+
+#[test]
+fn the_doctor_screen_shows_checks_fixes_worktrees_windows_and_spend() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 6, &[]);
+    assert_eq!(app.screen(), Screen::Doctor);
+    let text = frame(&app);
+    assert!(text.contains("fix: start it with forge worker"));
+    assert!(text.contains("5h 82%") && text.contains("$4.20 of $20.00"));
+    assert_snapshot("doctor", &text);
+    app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(frame(&app).contains("removed 3 worktrees"));
+    app.shutdown();
 }

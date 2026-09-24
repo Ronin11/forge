@@ -24,6 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+pub mod ops;
 pub mod stats;
 pub mod time;
 
@@ -37,6 +38,8 @@ pub enum Screen {
     Initiatives,
     Jobs,
     Stats,
+    Deploys,
+    Doctor,
     Task,
     JobView,
     Initiative,
@@ -55,6 +58,7 @@ pub struct App {
     stats: Option<StatsDoc>,
     stats_tab: usize,
     stats_sort: Option<(&'static str, bool)>,
+    ops: ops::Ops,
     /// A budget (`true`) or stop-after (`false`) being typed for an initiative.
     limit_prompt: Option<(i64, bool, String)>,
     queue_sel: usize,
@@ -91,6 +95,7 @@ impl App {
             stats: None,
             stats_tab: 0,
             stats_sort: None,
+            ops: ops::Ops::default(),
             limit_prompt: None,
             queue_sel: 0,
             req_sel: 0,
@@ -140,6 +145,7 @@ impl App {
         if self.screen == Screen::Stats {
             self.load_stats();
         }
+        self.load_ops();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -416,7 +422,7 @@ impl App {
             Screen::Queue => self.tasks.get(self.queue_sel).map(|t| t.id),
             Screen::Requests => self.requests.get(self.req_sel).map(|r| r.id),
             Screen::Initiatives => None,
-            Screen::Jobs | Screen::Stats => None,
+            Screen::Jobs | Screen::Stats | Screen::Deploys | Screen::Doctor => None,
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
             Screen::JobView | Screen::Initiative => None,
         }
@@ -530,9 +536,12 @@ impl App {
             Screen::Jobs => {
                 self.job_sel = (self.job_sel + 1).min(self.jobs.len().saturating_sub(1))
             }
-            Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {
-                self.scroll = self.scroll.saturating_add(1)
-            }
+            Screen::Task
+            | Screen::JobView
+            | Screen::Initiative
+            | Screen::Stats
+            | Screen::Deploys
+            | Screen::Doctor => self.scroll = self.scroll.saturating_add(1),
         }
     }
 
@@ -542,9 +551,12 @@ impl App {
             Screen::Requests => self.req_sel = self.req_sel.saturating_sub(1),
             Screen::Initiatives => self.init_sel = self.init_sel.saturating_sub(1),
             Screen::Jobs => self.job_sel = self.job_sel.saturating_sub(1),
-            Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {
-                self.scroll = self.scroll.saturating_sub(1)
-            }
+            Screen::Task
+            | Screen::JobView
+            | Screen::Initiative
+            | Screen::Stats
+            | Screen::Deploys
+            | Screen::Doctor => self.scroll = self.scroll.saturating_sub(1),
         }
     }
 
@@ -584,6 +596,9 @@ impl App {
                 _ => {}
             }
             self.prompt = Some((id, answer, text));
+            return false;
+        }
+        if self.ops_key(code) {
             return false;
         }
         match code {
@@ -643,12 +658,16 @@ impl App {
                     Screen::Requests => Screen::Initiatives,
                     Screen::Initiatives => Screen::Jobs,
                     Screen::Jobs => Screen::Stats,
+                    Screen::Stats => Screen::Deploys,
+                    Screen::Deploys => Screen::Doctor,
                     _ => Screen::Queue,
                 };
                 if self.screen == Screen::Stats {
                     self.scroll = 0;
                     self.load_stats();
                 }
+                self.scroll = 0;
+                self.load_ops();
             }
             KeyCode::Enter => match self.screen {
                 Screen::Jobs => {
@@ -657,7 +676,12 @@ impl App {
                         self.open_job(id);
                     }
                 }
-                Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {}
+                Screen::Task
+                | Screen::JobView
+                | Screen::Initiative
+                | Screen::Stats
+                | Screen::Deploys
+                | Screen::Doctor => {}
                 Screen::Initiatives => {
                     if let Some(id) = self.initiatives.get(self.init_sel).map(|i| i.id) {
                         self.scroll = 0;
@@ -772,6 +796,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ),
         tab(&format!("jobs ({})", app.jobs.len()), Screen::Jobs),
         tab("stats", Screen::Stats),
+        tab("deploy", Screen::Deploys),
+        tab("doctor", Screen::Doctor),
         tab("task", Screen::Task),
         tab("job", Screen::JobView),
     ]);
@@ -791,6 +817,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
             },
             body,
         ),
+        Screen::Deploys => ops::draw_deploys(frame, app, body),
+        Screen::Doctor => ops::draw_doctor(frame, app, body),
         Screen::Task => draw_task(frame, app, body),
         Screen::JobView => draw_job(frame, app, body),
         Screen::Initiative => draw_initiative(frame, app, body),
@@ -801,6 +829,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Stats => {
             "h/l tab  < > sort column  v reverse  j/k scroll  Tab switch  g refresh  q quit"
         }
+        Screen::Deploys => "j/k move  d deploy now  Tab switch  g refresh  q quit",
+        Screen::Doctor => "j/k scroll  x gc worktrees  Tab switch  g refresh  q quit",
         Screen::Requests => {
             "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
         }
@@ -816,6 +846,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
             "{} #{id}: {text}▏  Enter submit  Esc cancel",
             if *answer { "Answer" } else { "Withdraw reason" }
         ))
+    } else if let Some(text) = app.ops.prompt() {
+        Line::styled(text, Style::default().fg(Color::Yellow))
     } else if app.status.is_empty() {
         Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))
     } else {
@@ -1619,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_queue_requests_initiatives_jobs_stats_and_back() {
+    fn tab_cycles_through_every_screen_and_back() {
         let mut app = app_with("[]", "[]");
         assert_eq!(app.screen, Screen::Queue);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
@@ -1630,6 +1662,10 @@ mod tests {
         assert_eq!(app.screen, Screen::Jobs);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Stats);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Deploys);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Doctor);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Queue);
     }
