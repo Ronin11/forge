@@ -328,6 +328,17 @@ struct HomeRaw {
     /// the store: today just a project's secrets (see `ProjectHomeRaw`).
     #[serde(default)]
     projects: BTreeMap<String, ProjectHomeRaw>,
+    /// `[environment]`: what the kernel grants a repository automatically
+    /// when an attempt fails on a missing tool (see `environment`).
+    #[serde(default)]
+    environment: EnvironmentRaw,
+}
+
+/// `[environment]` in the operator's config; an absent key keeps its default.
+#[derive(Deserialize, Default)]
+struct EnvironmentRaw {
+    hosts: Option<Vec<String>>,
+    cache_paths: Option<Vec<String>>,
 }
 
 /// `[projects.<name>]` in the operator's config.
@@ -475,6 +486,8 @@ pub struct HomeConfig {
     /// A project's secrets, by project name (see `ProjectHomeRaw`); a
     /// project the operator declared none for is absent, not empty.
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[environment]`: the hosts and host cache paths granted automatically.
+    pub environment: crate::environment::Policy,
 }
 
 fn expand(p: &str) -> PathBuf {
@@ -904,6 +917,18 @@ auto_land = false
 # [roles]
 # review = \"devhome\"
 
+# What the kernel grants a repository automatically when an attempt fails on
+# a missing tool, instead of asking a person: `hosts` the egress proxy may be
+# opened to for that worktree (a proxy 403 naming one of them), `cache_paths`
+# on the host mounted read-only (a missing toolchain or browser cache under
+# one of them). A need outside these is left as a failure or a question.
+# Every grant is a decision row by forge, listed by `forge doctor` for 7 days.
+# See docs/OPS.md, \"Environment needs\".
+#
+# [environment]
+# hosts = [\"registry.npmjs.org\", \"nodejs.org\"]
+# cache_paths = [\"~/.cache/node-gyp\", \"~/.cache/ms-playwright\"]
+
 # A project's secrets, injected as environment for that project's jobs
 # (`forge job start`) and never into a prompt (see docs/JOBS.md).
 #
@@ -999,6 +1024,10 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .into_iter()
             .map(|(name, p)| (name, p.secrets))
             .collect(),
+        environment: crate::environment::Policy::build(
+            raw.environment.hosts,
+            raw.environment.cache_paths.map(|v| v.iter().map(|p| expand(p)).collect()),
+        )?,
     })
 }
 

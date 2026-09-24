@@ -162,6 +162,9 @@ pub struct Forge {
     pub roles: std::collections::BTreeMap<String, String>,
     /// A project's secrets, by project name (see `config::load_home`).
     pub project_secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[environment]`: what a failed attempt's environment need may be
+    /// granted automatically (see `environment`).
+    pub environment: crate::environment::Policy,
     pub sandbox: Option<Sandbox>,
     pub report: Reporter,
 }
@@ -205,6 +208,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            environment: home.environment,
             sandbox,
             report,
         })
@@ -226,6 +230,7 @@ impl Forge {
             providers: home.providers,
             roles: home.roles,
             project_secrets: home.project_secrets,
+            environment: home.environment,
             sandbox: None,
             report,
         })
@@ -242,6 +247,30 @@ impl Forge {
                 config::TrustEgress::Declared => sandbox.set_egress(worktree, &cfg.egress),
             }
         }
+    }
+
+    /// Apply what the environment policy grants for `need` to attempts in
+    /// `worktree`: the host on top of its egress, or the cache path
+    /// read-only. `None` when the policy does not cover the need, the
+    /// trust level reaches the model endpoints alone, there is no sandbox,
+    /// or the grant was already applied (a re-run would fail the same way).
+    pub fn grant_environment(
+        &self,
+        worktree: &Path,
+        need: &crate::environment::Need,
+        trust: crate::store::Trust,
+    ) -> Option<crate::environment::Grant> {
+        use crate::environment::Grant;
+        let sandbox = self.sandbox.as_ref()?;
+        let grant = self.environment.covers(need)?;
+        let fresh = match &grant {
+            Grant::Host(h) => {
+                matches!(self.trust_policy(trust).egress, config::TrustEgress::Declared)
+                    && sandbox.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
+            }
+            Grant::ReadOnly(p) => sandbox.grant_ro(worktree, p.clone()),
+        };
+        fresh.then_some(grant)
     }
 
     /// Where `repo`'s operations may cache what they compute

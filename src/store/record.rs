@@ -207,6 +207,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Decisions of `kind` recorded at or after `since`, newest first.
+    pub fn decisions_of_kind_since(&self, kind: &str, since: i64) -> Result<Vec<Decision>> {
+        let c = self.lock();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM decisions d WHERE d.kind = ?1 AND d.created_at >= ?2 ORDER BY d.id DESC",
+            DECISION_COLUMNS.join(", ")
+        ))?;
+        let rows = stmt.query_map(params![kind, since], decision_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Records `forge stats --reprice`'s run (docs/ECONOMIST.md,
     /// "Repricing a free-reporting provider"): a decision row like any
     /// other (docs/SUPERVISOR.md, "Every answer is a decision row"), but

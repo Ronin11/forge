@@ -309,6 +309,46 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     finish(&f, &mut t, &end, compare, &wt).await
 }
 
+/// The text an environment need is read from: the failing checks' tails,
+/// the attempt's reason and the question it asked.
+fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> String {
+    let mut text = a.reason.clone();
+    for c in verdict.checks.iter().filter(|c| !c.ok) {
+        text.push('\n');
+        text.push_str(&c.tail);
+    }
+    if let Some(q) = verdict.envelope.as_ref().and_then(|e| e.needs_input.as_ref()) {
+        text.push('\n');
+        text.push_str(&q.question);
+    }
+    text
+}
+
+/// Recognize an environment need in `text` and, when the policy covers it,
+/// apply it to the task's worktree and record the decision row by `forge`.
+/// `true` means applied: the caller runs again.
+fn apply_environment(f: &Forge, t: &Task, text: &str) -> Result<bool, Fault> {
+    let Some(need) = crate::environment::recognize(text) else {
+        return Ok(false);
+    };
+    let Some(grant) = f.grant_environment(Path::new(&t.worktree), &need, t.trust) else {
+        return Ok(false);
+    };
+    crate::environment::record(&f.store, t.id, &t.repo, &need, &grant).env()?;
+    f.report.emit(
+        t.id,
+        Event::Note {
+            text: &format!(
+                "environment {} {} granted ({}); running again, nothing counted",
+                need.kind.as_str(),
+                need.target,
+                grant.describe()
+            ),
+        },
+    );
+    Ok(true)
+}
+
 /// What one step of the run decided: move to the next step, go round
 /// again from wherever the cursor now points (a rewind), or end the run.
 enum StepFlow {
@@ -517,7 +557,12 @@ async fn run_operation_step(
     {
         return Ok(StepFlow::Next);
     }
-    let (ok, detail) = run_operation(f, t, cfg, step, seq).await?;
+    let (mut ok, mut detail) = run_operation(f, t, cfg, step, seq).await?;
+    // A need the [environment] policy covers is granted and the step runs
+    // again, no question and nothing counted; each grant applies once.
+    while !ok && apply_environment(f, t, &detail)? {
+        (ok, detail) = run_operation(f, t, cfg, step, seq).await?;
+    }
     if ok {
         return Ok(StepFlow::Next);
     }
@@ -824,6 +869,18 @@ async fn run_directive_step(
                     text: "rate     the provider refused this run; it does not count as an attempt",
                 },
             );
+            run.refund(seq);
+            continue;
+        }
+        // An environment need the policy covers (a host the proxy
+        // refused, a host cache) is applied and the attempt runs again;
+        // it does not count against the directive. What the table does
+        // not cover falls through as it always has.
+        if matches!(
+            a.state,
+            AttemptState::ChecksFailed | AttemptState::AgentFailed | AttemptState::NeedsInput
+        ) && apply_environment(f, t, &environment_text(&a, &verdict))?
+        {
             run.refund(seq);
             continue;
         }

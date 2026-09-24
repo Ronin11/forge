@@ -86,6 +86,18 @@ pub struct Sandbox {
     /// in here gets no cache bind at all. Keyed per repository so one
     /// repository's attempts can never poison a cache another reads.
     caches: Mutex<BTreeMap<PathBuf, PathBuf>>,
+    /// What the environment policy granted a worktree's attempts after a
+    /// failure (see `environment`): hosts on top of the declared egress,
+    /// host cache paths bound read-only. Kept apart from `declared` so
+    /// re-reading the repository's config never drops a grant.
+    granted: Mutex<BTreeMap<PathBuf, Granted>>,
+}
+
+/// One worktree's environment grants.
+#[derive(Default)]
+struct Granted {
+    hosts: Vec<Rule>,
+    ro: Vec<PathBuf>,
 }
 
 /// Quote `s` as a single POSIX shell argument.
@@ -219,6 +231,7 @@ impl Sandbox {
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            granted: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -232,16 +245,47 @@ impl Sandbox {
             .insert(worktree.to_path_buf(), rules.to_vec());
     }
 
+    /// Grant attempts in `worktree` one more host. `false` when it was
+    /// already granted, so a caller re-running on a grant cannot loop.
+    pub fn grant_host(&self, worktree: &Path, rule: Rule) -> bool {
+        let mut g = self.granted.lock().unwrap();
+        let hosts = &mut g.entry(worktree.to_path_buf()).or_default().hosts;
+        if hosts.iter().any(|r| r.to_string() == rule.to_string()) {
+            return false;
+        }
+        hosts.push(rule);
+        true
+    }
+
+    /// Bind `path` read-only into attempts in `worktree`. `false` when it
+    /// was already granted.
+    pub fn grant_ro(&self, worktree: &Path, path: PathBuf) -> bool {
+        let mut g = self.granted.lock().unwrap();
+        let ro = &mut g.entry(worktree.to_path_buf()).or_default().ro;
+        if ro.contains(&path) {
+            return false;
+        }
+        ro.push(path);
+        true
+    }
+
     /// Everything a command in `worktree` (or a directory below it) may
-    /// reach: the model endpoints and what its repository declared.
+    /// reach: the model endpoints, what its repository declared and what
+    /// the environment policy granted it.
     pub fn policy_for(&self, worktree: &Path) -> Policy {
         let declared = self.declared.lock().unwrap();
+        let granted = self.granted.lock().unwrap();
         let extra = worktree
             .ancestors()
             .find_map(|d| declared.get(d))
             .into_iter()
             .flatten();
-        Policy::new(self.model_hosts.iter().chain(extra).cloned())
+        let more = worktree
+            .ancestors()
+            .find_map(|d| granted.get(d))
+            .into_iter()
+            .flat_map(|g| g.hosts.iter());
+        Policy::new(self.model_hosts.iter().chain(extra).chain(more).cloned())
     }
 
     /// Declare where a command in `worktree` (or a directory below it) may
@@ -374,6 +418,14 @@ impl Sandbox {
         if let Some(d) = &self.dependency_cache {
             cmd.arg("--ro-bind-try").arg(d).arg(d);
         }
+        // Host caches the environment policy granted this worktree.
+        let granted = self.granted.lock().unwrap();
+        if let Some(g) = worktree.ancestors().find_map(|d| granted.get(d)) {
+            for d in &g.ro {
+                cmd.arg("--ro-bind-try").arg(d).arg(d);
+            }
+        }
+        drop(granted);
         // This repository's own cache (`FORGE_CACHE_DIR`), private to it
         // (see `ctx::Forge::declare_cache`): read-write, but never another
         // repository's, so one cannot poison a cache another reads.
@@ -468,6 +520,7 @@ mod tests {
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            granted: Mutex::new(BTreeMap::new()),
         };
         sandbox.set_cache_dir(&worktree, repo_cache.clone());
         let cmd = sandbox.command(&worktree, &["true".to_string()], &[]);
@@ -635,6 +688,7 @@ mod tests {
             proxies: Arc::new(Proxies::default()),
             declared: Mutex::new(BTreeMap::new()),
             caches: Mutex::new(BTreeMap::new()),
+            granted: Mutex::new(BTreeMap::new()),
         }
     }
 
