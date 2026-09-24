@@ -18,7 +18,13 @@ fn fixture() -> (tempfile::TempDir, Forge) {
     (dir, f)
 }
 
-fn fixture_task(project: &str, state: TaskState, retry_of: Option<i64>, initiative: i64) -> Task {
+#[rustfmt::skip]
+fn fixture_task(
+    project: &str,
+    state: TaskState,
+    retry_of: Option<i64>,
+    initiative: i64,
+) -> Task {
     Task {
         repo: "/repo".into(),
         task: "do the thing".into(),
