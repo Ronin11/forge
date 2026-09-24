@@ -626,4 +626,15 @@ CREATE INDEX decisions_task ON decisions(task_id, id);
 ALTER TABLE tasks ADD COLUMN trust TEXT NOT NULL DEFAULT 'operator';
 ",
     "ALTER TABLE jobs ADD COLUMN worker_pid INTEGER;",
+    // Trust by source for webhooks: the level a token carries (`forge
+    // project webhook token --trust`), and the level `forge job fire`
+    // recorded for the job a delivery started. A caller outside Forge is
+    // public unless the operator minted the token higher.
+    "
+ALTER TABLE webhook_tokens ADD COLUMN trust TEXT NOT NULL DEFAULT 'public';
+CREATE TABLE job_trust (
+  job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+  trust TEXT NOT NULL
+);
+",
 ];

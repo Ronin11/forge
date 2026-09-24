@@ -122,6 +122,30 @@ socket to put them on. Forge has neither: the CLI is the interface and
 it runs as you. Scopes would mean building a mediated surface, and that
 work belongs with multi-tenancy, not here.
 
+### Trust levels
+
+What a plugin can do as the operator is separate from what a task it
+files may do. Every task carries the trust of its source, and the
+`[trust.<level>]` policy in the operator's config bounds its budget,
+workflows, protected paths, egress, daily count and whether it lands
+itself:
+
+- **operator** (the CLI, the default): the operator's own request. Any
+  workflow, protected paths allowed, egress as the repository declares,
+  lands itself when verified.
+- **contact** (`--trust contact`): someone the operator knows. The Signal
+  plugin and the portal (through `forge ask`) file at
+  this level. Only the contact workflows (`reviewed`, `tdd-reviewed`,
+  `concierge`, `intake`), no protected paths, and it lands itself.
+- **public** (`--trust public`): a stranger. The github-issues plugin
+  files at this level. Only `reviewed`, a 1.00 USD budget, at most 5 a
+  day, model-only egress, no protected paths, and it never lands itself:
+  it ends unverified and a person runs `forge land <task>`.
+
+A webhook token carries a level too (`forge project webhook token
+<project> <name> --trust <level>`, default public); `forge job fire`
+records it on the job it starts, shown by `forge job show`.
+
 ## Supervision
 
 The worker starts every enabled plugin when it starts and stops them when

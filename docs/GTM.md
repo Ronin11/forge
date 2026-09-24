@@ -139,7 +139,15 @@ to sell; the rest are plumbing on tenancy that already exists.
    `forge.toml` declares (`[sandbox] egress`, the registries its setup
    names) and refuses the rest; the `egress-probe` operation asserts it
    and `forge doctor` reports it. That is what the github-issues plugin
-   was held for, and it is unheld. **Still to do for a customer:** each
+   was held for, and it is unheld, on a condition: every task it files
+   carries **public** trust, and the trust policy bounds it. Public may
+   run only `reviewed`, at a capped budget, at most 5 a day, with
+   model-only egress (not even the repository's declared hosts), no
+   protected paths, and it never lands itself: a person runs `forge
+   land`. Contacts (Signal, the portal) file at **contact** trust: the
+   contact workflows only, and they land themselves. The operator's own
+   CLI is **operator** trust; a webhook token carries whichever level it
+   was minted at (docs/PLUGINS.md, "Trust levels"). **Still to do for a customer:** each
    task in its own microVM or container with only that customer's tree
    and secrets, and the model token scoped to the task and expired when
    it ends. Today the token an attempt holds can still reach the model

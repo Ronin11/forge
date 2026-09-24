@@ -31,10 +31,10 @@ PROJECTS=alice:demo
 POLL_SECONDS=30
 
 # Repo and workflow `forge add` uses for a message from an allowed
-# sender that isn't a command (see SIGNAL_ALLOWED above); also
+# sender that isn't a command (see SIGNAL_ALLOWED above; filed at contact trust, which allows reviewed but not direct); also
 # PROJECTS' fallback project for a CONTACTS name's message.
 TARGET_REPO=/path/to/repo
-WORKFLOW=direct
+WORKFLOW=reviewed
 
 # Task states worth a Signal message, space-separated.
 NOTIFY_ON=blocked failed

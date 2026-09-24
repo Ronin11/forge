@@ -976,7 +976,14 @@ enum ProjectCmd {
 enum ProjectWebhookCmd {
     /// Mint a token for a project's webhook `<name>` and print it once:
     /// only its hash is kept, and it fires that one hook, nothing else
-    Token { project: String, name: String },
+    Token {
+        project: String,
+        name: String,
+        /// Trust level a delivery under this token carries: operator,
+        /// contact, or public (default public: the caller is outside Forge)
+        #[arg(long, default_value = "public")]
+        trust: String,
+    },
     /// Revoke every active token on a project's webhook `<name>`
     Revoke { project: String, name: String },
     /// A project's webhook tokens (never the tokens themselves): which
@@ -1592,7 +1599,11 @@ pub async fn main() -> Result<()> {
                 ProjectDeployCmd::Remove { project, name } => project_deploy_remove(project, name),
             },
             ProjectCmd::Webhook { cmd } => match cmd {
-                ProjectWebhookCmd::Token { project, name } => webhook_token(project, name),
+                ProjectWebhookCmd::Token {
+                    project,
+                    name,
+                    trust,
+                } => webhook_token(project, name, trust),
                 ProjectWebhookCmd::Revoke { project, name } => webhook_revoke(project, name),
                 ProjectWebhookCmd::List { project, json } => webhook_list(project, json),
             },
@@ -2606,19 +2617,19 @@ async fn job_fire(
     token: Option<String>,
 ) -> Result<()> {
     let f = Forge::open(false, false)?;
-    let valid = match token.as_deref() {
-        Some(t) if !t.is_empty() => f.store.webhook_token_valid(
+    let level = match token.as_deref() {
+        Some(t) if !t.is_empty() => f.store.webhook_token_trust(
             &project,
             &webhook,
             &crate::job::sha256_hex(t.as_bytes()),
         )?,
-        _ => false,
+        _ => None,
     };
-    if !valid {
+    let Some(level) = level else {
         bail!(
             "invalid webhook token for {project}/{webhook}: pass --token from `forge project webhook token`; a revoked, unknown or missing token is refused"
         );
-    }
+    };
     let bytes = match input.as_deref() {
         Some(p) => std::fs::read(p).with_context(|| format!("reading {}", p.display()))?,
         None => b"{}".to_vec(),
@@ -2643,7 +2654,9 @@ async fn job_fire(
         &trigger_ref,
         &input_text,
     )?;
-    if !started {
+    if started {
+        f.store.set_job_trust(id, level)?;
+    } else {
         eprintln!("job {id} already started for ref {trigger_ref}; nothing new started");
     }
     out!("{id}");
@@ -2652,7 +2665,8 @@ async fn job_fire(
 
 /// `forge project webhook token <project> <name>`: mint a token for a
 /// webhook and print it — the only time it is shown.
-fn webhook_token(project: String, name: String) -> Result<()> {
+fn webhook_token(project: String, name: String, trust: String) -> Result<()> {
+    let trust = crate::store::Trust::try_from(trust.as_str())?;
     if name.is_empty()
         || !name
             .chars()
@@ -2669,6 +2683,7 @@ fn webhook_token(project: String, name: String) -> Result<()> {
         &project,
         &name,
         &crate::job::sha256_hex(token.as_bytes()),
+        trust,
         unix_now(),
     )?;
     out!("{token}");
@@ -2701,6 +2716,7 @@ fn webhook_list(project: String, json: bool) -> Result<()> {
                     "id": t.id,
                     "project": t.project,
                     "name": t.name,
+                    "trust": t.trust.as_str(),
                     "created_at": t.created_at,
                     "revoked_at": t.revoked_at,
                 })
@@ -2861,6 +2877,9 @@ fn job_show(id: i64, json: bool) -> Result<()> {
     out!("job {} ({})", doc.id, doc.project);
     out!("workflow   {} ({})", doc.workflow, doc.workflow_source);
     out!("trigger    {} {}", doc.trigger_kind, doc.trigger_ref);
+    if let Some(t) = f.store.job_trust(id)? {
+        out!("trust      {}", t.as_str());
+    }
     out!(
         "state      {}{}",
         doc.state,

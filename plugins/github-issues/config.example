@@ -2,30 +2,25 @@
 # What this plugin depends on, and that it is met.
 #
 # It is the first intake that carries text a stranger wrote into an
-# agent. The agent cannot push (its clone has no remote and its home is
-# an empty tmpfs; the kernel lands only what the checks pass), and since
-# sandbox egress was bounded (docs/ROADMAP.md item 4) it cannot send the
-# repository's contents, or the model token it runs with, anywhere it
-# likes either: an attempt runs in a network namespace whose only route
-# out is an allowlist proxy. The proxy lets through the model endpoint,
-# always, and the hosts the target repository declares in its forge.toml:
+# agent, so every task it files carries public trust, and the
+# `[trust.public]` policy is the condition it runs under (docs/PLUGINS.md,
+# "Trust levels"; docs/GTM.md item 1). By default that policy is:
+#   - a daily cap: at most 5 public tasks in 24 hours, the rest wait;
+#   - a small budget (1.00 USD) and only the "reviewed" workflow;
+#   - model-only egress: the attempt's network namespace reaches the
+#     model endpoint and nothing else, not even the hosts the target
+#     repository's forge.toml declares in [sandbox] egress;
+#   - a human landing: the task ends unverified with its branch pushed
+#     and never lands itself; land it with `forge land <task>`.
+# The agent cannot push (its clone has no remote and its home is an empty
+# tmpfs), and Forge quotes the issue body and tells the model it is data,
+# which is a mitigation; the trust policy is the boundary. `forge doctor`
+# reports each project's policy (WARN when FORGE_SANDBOX=0, which lifts
+# it). Loosen it only in `[trust.public]` of your config.toml, knowing what
+# each field lets a stranger's text do.
 #
-#   [sandbox]
-#   egress = ["registry.npmjs.org"]
-#
-# and refuses everything else. Forge quotes the issue body and tells the
-# model it is data, which is a mitigation; the network policy is the
-# boundary. `forge doctor` reports each project's policy (WARN when
-# FORGE_SANDBOX=0, which lifts it), and the built-in egress-probe
-# operation asserts it from inside an attempt.
-#
-# Two things to know before enabling it:
-#   - Keep the target repository's [sandbox] egress to the registries its
-#     checks install from. Every host listed is a place a hostile issue
-#     can send the repository's contents; a host that accepts uploads
-#     (a paste site, an object store) does not belong there.
-#   - The model token is still the operator's, not scoped to the task
-#     (docs/GTM.md item 1). It can now reach only the model endpoint.
+# The model token is still the operator's, not scoped to the task
+# (docs/GTM.md item 1). It can reach only the model endpoint.
 # ---------------------------------------------------------------------
 
 # Copy this file to "config" next to plugin.toml (or into the installed

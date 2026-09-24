@@ -27,7 +27,7 @@ CONTACTS=
 PROJECTS=
 POLL_SECONDS=30
 TARGET_REPO=
-WORKFLOW=direct
+WORKFLOW=reviewed
 NOTIFY_ON="blocked failed"
 # A deploy that passes its check is quiet by default: a failed or
 # rolled-back deploy always sends a message (see docs/DEPLOY.md, "When a
@@ -448,7 +448,7 @@ handle_message() {
             record_message "$project" out "$dest" "$msg"
             ;;
         *)
-            out=$("$FORGE_BIN" add "$TARGET_REPO" "$body" --workflow "$WORKFLOW" 2>&1)
+            out=$("$FORGE_BIN" add "$TARGET_REPO" "$body" --workflow "$WORKFLOW" --trust contact 2>&1)
             id=$(printf '%s\n' "$out" | sed -n 's/.*queued task \([0-9]*\).*/\1/p')
             if [ -n "$id" ]; then
                 msg="queued task $id"
