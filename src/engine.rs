@@ -168,7 +168,7 @@ pub async fn run_task(f: Arc<Forge>, id: i64) -> Result<TaskState, Fault> {
     // Checks and rules come from the trusted base, never from the branch under test.
     let mut cfg = config::load_at(&repo, &wt, &t.base_sha).await.task()?;
     cfg.protected = f.effective_protected(&t, &cfg.protected);
-    f.allow_egress(&wt, &cfg);
+    f.allow_egress(&wt, &cfg, t.trust);
 
     f.report.emit(
         id,
@@ -1158,6 +1158,22 @@ async fn try_land(
     if !t.land {
         return Ok(Some(End::Verified));
     }
+    // A level that may not land itself ends here, the checks passed: a
+    // person lands it (`forge land`, the inbox page), and the on-landing
+    // assessment runs then.
+    if !f.trust_policy(t.trust).auto_land {
+        let reason = format!(
+            "trust {}: the checks passed, but tasks at this level do not land themselves; land it with forge land {id} or from the inbox page",
+            t.trust.as_str()
+        );
+        f.report.emit(
+            id,
+            Event::Note {
+                text: &format!("land     skipped: {reason}"),
+            },
+        );
+        return Ok(Some(End::Unverified(reason)));
+    }
     let (Some(url), Some(remote)) = (&remote_url, &base_cfg.push_remote) else {
         f.report.emit(
             id,
@@ -1209,7 +1225,7 @@ async fn try_land(
                 // The base moved: its checks and rules are the ones that apply now.
                 *cfg = config::load_at(repo, wt, &t.base_sha).await.task()?;
                 cfg.protected = f.effective_protected(t, &cfg.protected);
-                f.allow_egress(wt, cfg);
+                f.allow_egress(wt, cfg, t.trust);
                 run.rewind(c_idx, feedback);
                 return Ok(None);
             }

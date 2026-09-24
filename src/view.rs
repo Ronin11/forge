@@ -2644,6 +2644,8 @@ pub struct PortalInitiative {
     pub outcome: String,
     pub state: String,
     pub pieces: i64,
+    /// How many of those tasks have landed: "n of m" on the page.
+    pub done: i64,
 }
 
 /// One open question on `PortalDoc`, addressed to the customer: the
@@ -2668,6 +2670,15 @@ pub struct PortalLanded {
     pub text: String,
     pub pieces: Option<i64>,
     pub landed_at: i64,
+    /// When a deploy that followed this landing went live (Unix seconds);
+    /// `None` when none did.
+    pub deployed_at: Option<i64>,
+    /// That deploy's own id, what the portal routes its look-step
+    /// screenshot by; `Some` only when the screenshot exists.
+    pub deploy_id: Option<i64>,
+    /// The look step's screenshot file, for the portal's own streaming;
+    /// never rendered.
+    pub screenshot: Option<String>,
 }
 
 /// The confirmed intake brief on `PortalDoc`, in the person's own words
@@ -2857,6 +2868,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
                 outcome: r.outcome.clone(),
                 state: state.to_string(),
                 pieces: initiative_pieces(r),
+                done: r.succeeded,
             }
         })
         .collect();
@@ -2867,21 +2879,59 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
     // line, its title or a line derived from its request. Merged, newest
     // first, capped at ten.
     let mut landed: Vec<PortalLanded> = Vec::new();
+    let all_deploys = f.store.deploys(&p.name, None)?;
+    // The newest deploy that went live for any of `task_ids`.
+    let deploy_for = |task_ids: &[i64]| {
+        all_deploys
+            .iter()
+            .filter(|d| {
+                d.task_id.is_some_and(|t| task_ids.contains(&t))
+                    && d.check_ok == Some(true)
+                    && d.rolled_back_to.is_none()
+            })
+            .max_by_key(|d| d.started_at)
+            .map(|d| {
+                let shot = d.smoke_json.as_ref().map(|_| {
+                    f.paths
+                        .home
+                        .join("deploys")
+                        .join(d.id.to_string())
+                        .join("screenshot.png")
+                        .display()
+                        .to_string()
+                });
+                (d.started_at, shot.map(|s| (d.id, s)))
+            })
+    };
     for r in all_initiatives.iter().filter(|r| r.settled_at.is_some()) {
+        let ids: Vec<i64> = f
+            .store
+            .initiative_tasks(r.id)?
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        let dep = deploy_for(&ids);
         landed.push(PortalLanded {
             text: r.outcome.clone(),
             pieces: Some(initiative_pieces(r)),
             landed_at: r.settled_at.unwrap_or(0),
+            deployed_at: dep.as_ref().map(|d| d.0),
+            deploy_id: dep.as_ref().and_then(|d| d.1.as_ref().map(|s| s.0)),
+            screenshot: dep.and_then(|d| d.1.map(|s| s.1)),
         });
     }
     for t in latest
         .iter()
         .filter(|t| !t.landed_sha.is_empty() && t.initiative.is_none())
     {
+        let dep = deploy_for(&[t.id]);
         landed.push(PortalLanded {
             text: crate::render::landed_task_line(t),
             pieces: None,
             landed_at: t.finished_at.unwrap_or(0),
+            deployed_at: dep.as_ref().map(|d| d.0),
+            deploy_id: dep.as_ref().and_then(|d| d.1.as_ref().map(|s| s.0)),
+            screenshot: dep.and_then(|d| d.1.map(|s| s.1)),
         });
     }
     landed.sort_by(|a, b| b.landed_at.cmp(&a.landed_at));

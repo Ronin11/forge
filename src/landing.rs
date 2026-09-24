@@ -367,7 +367,7 @@ pub async fn integrate(
             base_sha = main_sha.clone();
         }
         let cfg_now = config::load_at(repo, wt, &base_sha).await.task()?;
-        f.allow_egress(wt, &cfg_now);
+        f.allow_egress(wt, &cfg_now, t.trust);
         let overlay = overlay_refs(repo, t.id, None).await;
         let candidate = git::head(wt).await.task()?;
         let v = verify_merged_tree(
@@ -863,7 +863,14 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
         overlay.push("forge-verify".into());
     }
     let cfg_base = config::load_at(&repo, &dir, &base_sha).await?;
-    f.allow_egress(&dir, &cfg_base);
+    // The most restricted egress among the tasks merged: a `model` level's
+    // branch never gets a registry because it is verified alongside others.
+    let trust = tasks
+        .iter()
+        .map(|t| t.trust)
+        .find(|l| f.trust_policy(*l).egress == config::TrustEgress::Model)
+        .unwrap_or_default();
+    f.allow_egress(&dir, &cfg_base, trust);
     let mut steps = Vec::new();
     let mut outcome = IntegrateOutcome::Ready;
     for (completed, t) in tasks.iter().enumerate() {

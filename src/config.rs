@@ -432,6 +432,7 @@ pub struct Supervisor {
 struct SandboxRaw {
     ro_paths: Option<Vec<String>>,
     rw_paths: Option<Vec<String>>,
+    dependency_cache: Option<String>,
 }
 
 /// What the sandbox exposes beyond the attempt's own holes: toolchains the
@@ -442,6 +443,11 @@ struct SandboxRaw {
 pub struct SandboxPaths {
     pub ro: Vec<PathBuf>,
     pub rw: Vec<PathBuf>,
+    /// `[sandbox] dependency_cache`: a directory the operator warms with
+    /// the repository's dependencies, bound read-only into every attempt so
+    /// a task at a `model`-egress trust level can run its checks with no
+    /// registry reachable. `None` when not configured.
+    pub dependency_cache: Option<PathBuf>,
 }
 
 pub struct HomeConfig {
@@ -592,8 +598,6 @@ pub enum TrustEgress {
 }
 
 impl TrustEgress {
-    /// No caller yet: egress enforcement is a later task (see
-    /// `HomeConfig::trust`, docs/ROADMAP.md item 4).
     #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -729,6 +733,10 @@ ro_paths = [\"~/.local/share/mise\"]
 # cargo verify content against the lockfile, so a poisoned cache cannot change
 # what installs.
 rw_paths = [\"~/.npm\", \"~/.cargo/registry\", \"~/.cargo/git\"]
+# Optional: a directory you warm with the repository's dependencies, bound
+# read-only into every attempt. A task at a trust level whose egress is
+# \"model\" reaches no registry, so its checks install from here.
+# dependency_cache = \"~/.cache/forge-deps\"
 
 [supervisor]
 # When a task blocks with a question, a read-only agent on a strong model
@@ -920,6 +928,7 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
         sandbox: SandboxPaths {
             ro: ro.iter().map(|p| expand(p)).collect(),
             rw: rw.iter().map(|p| expand(p)).collect(),
+            dependency_cache: raw.sandbox.dependency_cache.as_deref().map(expand),
         },
         supervisor: Supervisor {
             // FORGE_SUPERVISOR=0 turns it off for one process: the e2e

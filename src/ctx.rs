@@ -233,9 +233,14 @@ impl Forge {
 
     /// Tell the sandbox what a repository's config lets attempts in
     /// `worktree` reach besides the model endpoint. No-op unsandboxed.
-    pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config) {
+    pub fn allow_egress(&self, worktree: &Path, cfg: &config::Config, trust: crate::store::Trust) {
         if let Some(sandbox) = &self.sandbox {
-            sandbox.set_egress(worktree, &cfg.egress);
+            // A level whose egress is `model` reaches the model endpoints
+            // alone, whatever the repository declares.
+            match self.trust_policy(trust).egress {
+                config::TrustEgress::Model => sandbox.set_egress(worktree, &[]),
+                config::TrustEgress::Declared => sandbox.set_egress(worktree, &cfg.egress),
+            }
         }
     }
 
@@ -253,6 +258,15 @@ impl Forge {
     pub fn declare_cache(&self, worktree: &Path, repo: &Path) {
         if let Some(sandbox) = &self.sandbox {
             sandbox.set_cache_dir(worktree, self.cache_dir(repo));
+        }
+    }
+
+    /// The policy `[trust.<level>]` sets for `level`.
+    pub fn trust_policy(&self, level: crate::store::Trust) -> &config::TrustPolicy {
+        match level {
+            crate::store::Trust::Operator => &self.trust.operator,
+            crate::store::Trust::Contact => &self.trust.contact,
+            crate::store::Trust::Public => &self.trust.public,
         }
     }
 

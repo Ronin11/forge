@@ -856,6 +856,9 @@ pub struct PortalInitiative {
     pub outcome: String,
     pub state: String,
     pub pieces: i64,
+    /// How many of `pieces` have landed.
+    #[serde(default)]
+    pub done: i64,
 }
 
 /// One open question on [`PortalDoc`], addressed to the customer: the
@@ -880,6 +883,15 @@ pub struct PortalLanded {
     #[serde(default)]
     pub pieces: Option<i64>,
     pub landed_at: i64,
+    /// When a deploy that followed the landing went live.
+    #[serde(default)]
+    pub deployed_at: Option<i64>,
+    /// That deploy's id, what its screenshot is routed by.
+    #[serde(default)]
+    pub deploy_id: Option<i64>,
+    /// The look step's screenshot file; never rendered.
+    #[serde(default)]
+    pub screenshot: Option<String>,
 }
 
 /// The confirmed intake brief on [`PortalDoc`] (see docs/INTAKE.md):

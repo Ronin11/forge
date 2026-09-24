@@ -664,13 +664,27 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
     assert_eq!(refs[0]["url"], "https://github.com/acme/widgets/issues/42");
     assert_eq!(refs[0]["by"], "github-issues");
 
+    // A public task never lands itself (trust.public auto_land = false): it
+    // ends unverified with its branch pushed, and a person lands it.
     assert!(
-        wait_until(|| e.task(task_id).0 == "succeeded", Duration::from_secs(15)),
-        "expected the task to land: {:?}",
+        wait_until(
+            || e.task(task_id).0 == "unverified",
+            Duration::from_secs(15)
+        ),
+        "expected the task to end unverified: {:?}",
         e.task(task_id)
     );
     let (_, reason, _) = e.task(task_id);
-    assert!(reason.starts_with("landed"), "{reason}");
+    assert!(reason.contains("public"), "{reason}");
+    let mut land = e.cmd("ok.sh");
+    land.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fakes")
+            .join("assessor.sh"),
+    );
+    let o = land.args(["land", &task_id.to_string()]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
     // Wait for the `edit 42` call, not just the `comment 42` that precedes
     // it: the events loop runs both `gh` calls one after another for the
@@ -689,7 +703,7 @@ fn github_issues_files_a_task_and_reports_back_when_it_lands() {
     );
     let calls_text = std::fs::read_to_string(&calls).unwrap();
     assert!(calls_text.contains("comment 42"), "{calls_text}");
-    assert!(calls_text.contains("succeeded"), "{calls_text}");
+    assert!(calls_text.contains("unverified"), "{calls_text}");
     assert!(calls_text.contains("landed"), "{calls_text}");
     assert!(
         calls_text.contains("edit 42") && calls_text.contains("forge-done"),
