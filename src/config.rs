@@ -354,6 +354,9 @@ struct ProviderRaw {
     notes: Option<String>,
     price_usd_per_million_input: Option<f64>,
     price_usd_per_million_output: Option<f64>,
+    /// USD per premium request, for the copilot runner (see
+    /// `agent::Provider::price_per_request`); default 0.
+    price_usd_per_premium_request: Option<f64>,
     /// This provider's own rate-window caps; default to `[budget]`'s when
     /// absent (see `build_providers`).
     five_hour_max: Option<f64>,
@@ -800,6 +803,16 @@ journal_control = 0.0
 # [providers.openai]
 # runner = \"codex-cli\"
 # notes = \"signed in with codex login\"
+#
+# [providers.copilot]
+# runner = \"copilot-cli\"
+# notes = \"signed in with copilot login; a plan's premium requests\"
+# price_usd_per_premium_request = 0.04
+# (copilot meters premium requests, not tokens: 0 while the plan's monthly
+# allowance lasts, the list price per request over it. `api_key_env` may
+# name a variable holding a GitHub token, passed to the CLI as
+# COPILOT_GITHUB_TOKEN ahead of its stored login; the value never lives in
+# this file.)
 
 # runner = \"chat\" spawns no agent CLI at all: one HTTP call to an
 # OpenAI-compatible /chat/completions endpoint. It is refused for anything
@@ -1008,6 +1021,7 @@ fn build_providers(
                 notes: p.notes,
                 price_input_per_million: p.price_usd_per_million_input.unwrap_or(0.0),
                 price_output_per_million: p.price_usd_per_million_output.unwrap_or(0.0),
+                price_per_request: p.price_usd_per_premium_request.unwrap_or(0.0),
                 five_hour_max: p.five_hour_max.unwrap_or(budget.five_hour_max),
                 seven_day_max: p.seven_day_max.unwrap_or(budget.seven_day_max),
                 nudges: p.nudges.unwrap_or(0),
@@ -1553,6 +1567,30 @@ mod tests {
             c.providers["anthropic"].runner,
             crate::agent::Runner::ClaudeCli
         );
+    }
+
+    /// The commented copilot example in `DEFAULT_HOME_CONFIG`, uncommented:
+    /// the runner, and the per-request price the copilot runner charges by.
+    #[test]
+    fn a_copilot_provider_parses_its_runner_and_per_request_price() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[providers.copilot]\n\
+             runner = \"copilot-cli\"\n\
+             price_usd_per_premium_request = 0.04\n\
+             api_key_env = \"FORGE_GH_TOKEN\"\n",
+        )
+        .unwrap();
+        let c = load_home(dir.path()).unwrap();
+        let p = &c.providers["copilot"];
+        assert_eq!(p.runner, crate::agent::Runner::CopilotCli);
+        assert_eq!(p.model, None);
+        assert_eq!(p.price_per_request, 0.04);
+        assert_eq!(p.price_input_per_million, 0.0);
+        assert_eq!(p.api_key_env.as_deref(), Some("FORGE_GH_TOKEN"));
+        // The other runners never see a per-request price.
+        assert_eq!(c.providers["anthropic"].price_per_request, 0.0);
     }
 
     /// The two commented `runner = "chat"` examples in `DEFAULT_HOME_CONFIG`,

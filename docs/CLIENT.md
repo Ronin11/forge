@@ -1211,7 +1211,7 @@ the built-in `anthropic`, which needs no entry.
 | field | type | meaning |
 |---|---|---|
 | `name` | string | The provider's name, as `--provider NAME` and `[providers.<name>]` name it. |
-| `runner` | string | `claude-cli`, `codex-cli`, or `chat`. |
+| `runner` | string | `claude-cli`, `codex-cli`, `copilot-cli`, or `chat`. |
 | `model` | string or null | The model this provider runs when a task or its workflow step names none; `null` leaves it to the runner's own default. |
 | `base_url` | string or null | Set for `runner = "chat"` and an OpenAI-compatible endpoint that isn't the default. |
 | `api_key_env` | string or null | The environment variable holding the provider's API key; never the key itself. |
