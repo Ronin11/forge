@@ -962,103 +962,6 @@ pub async fn integrate_many(f: &Forge, ids: &[i64]) -> Result<IntegrateReport> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn render_shows_each_step_and_the_ff_only_instructions() {
-        let report = IntegrateReport {
-            base_branch: "main".into(),
-            base_sha: "abc123456789".into(),
-            repo: PathBuf::from("/repo"),
-            branch: "forge/integration-1".into(),
-            dir: PathBuf::from("/scratch"),
-            steps: vec![
-                IntegrateStep::Merged {
-                    task_id: 1,
-                    branch: "forge/task-1".into(),
-                    sha: "deadbeef00".into(),
-                },
-                IntegrateStep::Verified { task_id: 1 },
-                IntegrateStep::AlreadyContained { task_id: 2 },
-                IntegrateStep::Verified { task_id: 2 },
-            ],
-            outcome: IntegrateOutcome::Ready,
-        };
-        assert_eq!(
-            report.render(),
-            "base     main @ abc12345\n\
-             task 1    merged forge/task-1 as deadbeef\n\
-             task 1    verified with everything before it\n\
-             task 2    already contained\n\
-             task 2    verified with everything before it\n\
-             integrated 2 task(s) as forge/integration-1 in /repo\n  \
-             git -C /repo merge --ff-only forge/integration-1"
-        );
-    }
-
-    #[test]
-    fn render_stops_at_a_conflict_and_names_the_scratch_clone() {
-        let report = IntegrateReport {
-            base_branch: "main".into(),
-            base_sha: "abc123456789".into(),
-            repo: PathBuf::from("/repo"),
-            branch: "forge/integration-1".into(),
-            dir: PathBuf::from("/scratch"),
-            steps: vec![
-                IntegrateStep::Merged {
-                    task_id: 1,
-                    branch: "forge/task-1".into(),
-                    sha: "deadbeef00".into(),
-                },
-                IntegrateStep::Verified { task_id: 1 },
-            ],
-            outcome: IntegrateOutcome::Conflict {
-                task_id: 3,
-                files: vec!["answer.txt".into()],
-                completed: 1,
-            },
-        };
-        assert_eq!(
-            report.render(),
-            "base     main @ abc12345\n\
-             task 1    merged forge/task-1 as deadbeef\n\
-             task 1    verified with everything before it\n\
-             task 3    CONFLICT in answer.txt\n\
-             stopped after 1 task(s); the scratch clone is at /scratch"
-        );
-    }
-
-    #[test]
-    fn render_stops_when_the_merged_tree_fails_verification() {
-        let report = IntegrateReport {
-            base_branch: "main".into(),
-            base_sha: "abc123456789".into(),
-            repo: PathBuf::from("/repo"),
-            branch: "forge/integration-1".into(),
-            dir: PathBuf::from("/scratch"),
-            steps: vec![IntegrateStep::Merged {
-                task_id: 2,
-                branch: "forge/task-2".into(),
-                sha: "cafef00d00".into(),
-            }],
-            outcome: IntegrateOutcome::VerifyFailed {
-                task_id: 2,
-                reason: "shell check failed".into(),
-                completed: 1,
-            },
-        };
-        assert_eq!(
-            report.render(),
-            "base     main @ abc12345\n\
-             task 2    merged forge/task-2 as cafef00d\n\
-             task 2    checks FAIL after merging: shell check failed\n\
-             stopped after 1 task(s); the scratch clone is at /scratch"
-        );
-    }
-}
-
 /// Whether a blocked task's last attempt, though it did not settle,
 /// still leaves a branch worth landing: a review demotion the operator
 /// or the supervisor set aside, naming no defect the task requires
@@ -1175,5 +1078,102 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
             )
         }
         crate::landing::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_shows_each_step_and_the_ff_only_instructions() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![
+                IntegrateStep::Merged {
+                    task_id: 1,
+                    branch: "forge/task-1".into(),
+                    sha: "deadbeef00".into(),
+                },
+                IntegrateStep::Verified { task_id: 1 },
+                IntegrateStep::AlreadyContained { task_id: 2 },
+                IntegrateStep::Verified { task_id: 2 },
+            ],
+            outcome: IntegrateOutcome::Ready,
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 1    merged forge/task-1 as deadbeef\n\
+             task 1    verified with everything before it\n\
+             task 2    already contained\n\
+             task 2    verified with everything before it\n\
+             integrated 2 task(s) as forge/integration-1 in /repo\n  \
+             git -C /repo merge --ff-only forge/integration-1"
+        );
+    }
+
+    #[test]
+    fn render_stops_at_a_conflict_and_names_the_scratch_clone() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![
+                IntegrateStep::Merged {
+                    task_id: 1,
+                    branch: "forge/task-1".into(),
+                    sha: "deadbeef00".into(),
+                },
+                IntegrateStep::Verified { task_id: 1 },
+            ],
+            outcome: IntegrateOutcome::Conflict {
+                task_id: 3,
+                files: vec!["answer.txt".into()],
+                completed: 1,
+            },
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 1    merged forge/task-1 as deadbeef\n\
+             task 1    verified with everything before it\n\
+             task 3    CONFLICT in answer.txt\n\
+             stopped after 1 task(s); the scratch clone is at /scratch"
+        );
+    }
+
+    #[test]
+    fn render_stops_when_the_merged_tree_fails_verification() {
+        let report = IntegrateReport {
+            base_branch: "main".into(),
+            base_sha: "abc123456789".into(),
+            repo: PathBuf::from("/repo"),
+            branch: "forge/integration-1".into(),
+            dir: PathBuf::from("/scratch"),
+            steps: vec![IntegrateStep::Merged {
+                task_id: 2,
+                branch: "forge/task-2".into(),
+                sha: "cafef00d00".into(),
+            }],
+            outcome: IntegrateOutcome::VerifyFailed {
+                task_id: 2,
+                reason: "shell check failed".into(),
+                completed: 1,
+            },
+        };
+        assert_eq!(
+            report.render(),
+            "base     main @ abc12345\n\
+             task 2    merged forge/task-2 as cafef00d\n\
+             task 2    checks FAIL after merging: shell check failed\n\
+             stopped after 1 task(s); the scratch clone is at /scratch"
+        );
     }
 }
