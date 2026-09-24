@@ -168,3 +168,62 @@ fn a_sixth_public_task_in_a_day_is_refused_by_per_day() {
     assert!(stderr.contains("public"), "{stderr}");
     assert!(stderr.contains("5"), "{stderr}");
 }
+
+#[test]
+fn a_public_task_ends_unverified_with_its_branch_pushed_and_forge_land_lands_it() {
+    let e = Env::new();
+    let mut c = e.cmd("ok.sh");
+    for (role, fake) in [("REVIEW", "reviewer-ok.sh"), ("ASSESS", "assessor.sh")] {
+        c.env(
+            format!("FORGE_CLAUDE_BIN_{role}"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fakes")
+                .join(fake),
+        );
+    }
+    let o = c
+        .args([
+            "run",
+            e.repo.to_str().unwrap(),
+            "write 42",
+            "--trust",
+            "public",
+            "--workflow",
+            "reviewed",
+            "--retries",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(reason.contains("public"), "{reason}");
+    assert!(pushed);
+    assert!(e.origin_branches().contains("forge/1-write-42"));
+    assert!(
+        !e.origin_branches().contains("main"),
+        "the base is untouched"
+    );
+
+    let o = c_land(&e);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "unverified", "{reason}");
+    assert!(reason.starts_with("landed main @ "), "{reason}");
+    assert_eq!(
+        crate::support::origin_file(&e, "main", "answer.txt").as_deref(),
+        Some("42\n")
+    );
+}
+
+fn c_land(e: &Env) -> std::process::Output {
+    let mut c = e.cmd("ok.sh");
+    c.env(
+        "FORGE_CLAUDE_BIN_ASSESS",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fakes")
+            .join("assessor.sh"),
+    );
+    c.args(["land", "1"]).output().unwrap()
+}

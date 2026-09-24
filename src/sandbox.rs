@@ -63,6 +63,9 @@ pub struct Sandbox {
     /// discarded with it (see `command`), so one attempt can never poison
     /// what another reads from the operator's real cache.
     extra_rw: Vec<PathBuf>,
+    /// The operator-warmed dependency cache, read-only (`[sandbox]
+    /// dependency_cache`).
+    dependency_cache: Option<PathBuf>,
     /// The model endpoints every attempt may reach, whatever its repository
     /// declares (see `egress::model_rules`).
     model_hosts: Vec<Rule>,
@@ -198,6 +201,7 @@ impl Sandbox {
                 .chain(relay_dir)
                 .collect(),
             extra_rw: paths.rw.iter().cloned().chain(extra_rw).collect(),
+            dependency_cache: paths.dependency_cache.clone(),
             model_hosts,
             relay_exe,
             proxies: Arc::new(Proxies::default()),
@@ -346,6 +350,9 @@ impl Sandbox {
             cmd.arg("--overlay-src").arg(p);
             cmd.arg("--tmp-overlay").arg(p);
         }
+        if let Some(d) = &self.dependency_cache {
+            cmd.arg("--ro-bind-try").arg(d).arg(d);
+        }
         // This repository's own cache (`FORGE_CACHE_DIR`), private to it
         // (see `ctx::Forge::declare_cache`): read-write, but never another
         // repository's, so one cannot poison a cache another reads.
@@ -430,6 +437,7 @@ mod tests {
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![npm_cache.clone()],
+            dependency_cache: None,
             model_hosts: vec![Rule::parse("api.example.com").unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
@@ -587,6 +595,7 @@ mod tests {
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![],
             extra_rw: vec![],
+            dependency_cache: None,
             model_hosts: vec![Rule::parse(model).unwrap()],
             relay_exe: PathBuf::from("/opt/forge/forge"),
             proxies: Arc::new(Proxies::default()),
