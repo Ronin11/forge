@@ -12,7 +12,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use forge_client::{
-    Event, Forge, InitiativeRow, JobDoc, JobRow, Killer, RequestRow, TaskRow, TraceDoc, Worker,
+    Event, Forge, InitiativeDoc, InitiativeRow, JobDoc, JobRow, Killer, RequestRow, TaskRow,
+    TraceDoc, Worker,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -36,6 +37,7 @@ pub enum Screen {
     Jobs,
     Task,
     JobView,
+    Initiative,
 }
 
 pub struct App {
@@ -47,6 +49,9 @@ pub struct App {
     jobs: Vec<JobRow>,
     trace: Option<TraceDoc>,
     job: Option<JobDoc>,
+    initiative: Option<InitiativeDoc>,
+    /// A budget (`true`) or stop-after (`false`) being typed for an initiative.
+    limit_prompt: Option<(i64, bool, String)>,
     queue_sel: usize,
     req_sel: usize,
     init_sel: usize,
@@ -77,6 +82,8 @@ impl App {
             jobs: Vec::new(),
             trace: None,
             job: None,
+            initiative: None,
+            limit_prompt: None,
             queue_sel: 0,
             req_sel: 0,
             init_sel: 0,
@@ -297,6 +304,48 @@ impl App {
         }
     }
 
+    pub fn open_initiative(&mut self, id: i64) {
+        match self.forge.initiative_report(id) {
+            Ok(doc) => {
+                self.initiative = Some(doc);
+                self.screen = Screen::Initiative;
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// Raises the open initiative's budget or stop-after through
+    /// `forge initiative set`, then re-reads the report.
+    fn set_limit(&mut self, id: i64, budget: bool, text: &str) -> bool {
+        let text = text.trim();
+        let valid = if budget {
+            text.parse::<f64>().is_ok_and(|v| v.is_finite() && v > 0.0)
+        } else {
+            text.parse::<u32>().is_ok_and(|v| v > 0)
+        };
+        if !valid {
+            self.status = format!(
+                "not a valid {}: {text}",
+                if budget { "budget" } else { "stop-after" }
+            );
+            return false;
+        }
+        let id_s = id.to_string();
+        let flag = if budget { "--budget" } else { "--stop-after" };
+        match self.forge.run(&["initiative", "set", &id_s, flag, text]) {
+            Ok(_) => {
+                self.status = format!("initiative {id} updated");
+                self.open_initiative(id);
+                self.load_initiatives();
+                true
+            }
+            Err(e) => {
+                self.status = format!("{e:#}");
+                false
+            }
+        }
+    }
+
     /// The task the cursor is on, whichever screen shows it.
     pub fn current_id(&self) -> Option<i64> {
         match self.screen {
@@ -305,7 +354,7 @@ impl App {
             Screen::Initiatives => None,
             Screen::Jobs => None,
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
-            Screen::JobView => None,
+            Screen::JobView | Screen::Initiative => None,
         }
     }
 
@@ -417,7 +466,9 @@ impl App {
             Screen::Jobs => {
                 self.job_sel = (self.job_sel + 1).min(self.jobs.len().saturating_sub(1))
             }
-            Screen::Task | Screen::JobView => self.scroll = self.scroll.saturating_add(1),
+            Screen::Task | Screen::JobView | Screen::Initiative => {
+                self.scroll = self.scroll.saturating_add(1)
+            }
         }
     }
 
@@ -427,7 +478,9 @@ impl App {
             Screen::Requests => self.req_sel = self.req_sel.saturating_sub(1),
             Screen::Initiatives => self.init_sel = self.init_sel.saturating_sub(1),
             Screen::Jobs => self.job_sel = self.job_sel.saturating_sub(1),
-            Screen::Task | Screen::JobView => self.scroll = self.scroll.saturating_sub(1),
+            Screen::Task | Screen::JobView | Screen::Initiative => {
+                self.scroll = self.scroll.saturating_sub(1)
+            }
         }
     }
 
@@ -435,6 +488,23 @@ impl App {
     /// `run()`'s event loop uses, exposed so a test can drive it with a
     /// synthetic `KeyCode` and no terminal at all.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        if let Some((id, budget, mut text)) = self.limit_prompt.take() {
+            match code {
+                KeyCode::Esc => return false,
+                KeyCode::Enter => {
+                    if self.set_limit(id, budget, &text) {
+                        return false;
+                    }
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => text.push(c),
+                _ => {}
+            }
+            self.limit_prompt = Some((id, budget, text));
+            return false;
+        }
         if let Some((id, answer, mut text)) = self.prompt.take() {
             match code {
                 KeyCode::Esc => return false,
@@ -477,6 +547,12 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('b' | 's') if self.screen == Screen::Initiative => {
+                if let Some(id) = self.initiative.as_ref().map(|d| d.id) {
+                    self.limit_prompt = Some((id, code == KeyCode::Char('b'), String::new()));
+                    self.status.clear();
+                }
+            }
             KeyCode::Char('q') => return true,
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('j') | KeyCode::Down => self.down(),
@@ -499,7 +575,13 @@ impl App {
                         self.open_job(id);
                     }
                 }
-                Screen::Task | Screen::JobView => {}
+                Screen::Task | Screen::JobView | Screen::Initiative => {}
+                Screen::Initiatives => {
+                    if let Some(id) = self.initiatives.get(self.init_sel).map(|i| i.id) {
+                        self.scroll = 0;
+                        self.open_initiative(id);
+                    }
+                }
                 _ => {
                     if let Some(id) = self.current_id() {
                         self.scroll = 0;
@@ -510,6 +592,7 @@ impl App {
             KeyCode::Esc => match self.screen {
                 Screen::Task => self.screen = Screen::Queue,
                 Screen::JobView => self.screen = Screen::Jobs,
+                Screen::Initiative => self.screen = Screen::Initiatives,
                 _ => {}
             },
             _ => {}
@@ -569,7 +652,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let queued = app.tasks.iter().filter(|t| t.state == "queued").count();
     let running = app.tasks.iter().filter(|t| t.state == "running").count();
     let tab = |name: &str, s: Screen| {
-        if app.screen == s {
+        if app.screen == s || (s == Screen::Initiatives && app.screen == Screen::Initiative) {
             Span::styled(
                 format!(" {name} "),
                 Style::default().add_modifier(Modifier::REVERSED),
@@ -617,15 +700,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Jobs => draw_jobs(frame, app, body),
         Screen::Task => draw_task(frame, app, body),
         Screen::JobView => draw_job(frame, app, body),
+        Screen::Initiative => draw_initiative(frame, app, body),
     }
     let keys = match app.screen {
         Screen::Task | Screen::JobView => "j/k scroll  Esc back  r retry  R retry chain  q quit",
+        Screen::Initiative => "j/k scroll  b budget  s stop-after  Esc back  q quit",
         Screen::Requests => {
             "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
         }
         _ => "j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit",
     };
-    let foot_line = if let Some((id, answer, text)) = &app.prompt {
+    let foot_line = if let Some((id, budget, text)) = &app.limit_prompt {
+        Line::raw(format!(
+            "{} for initiative {id}: {text}▏  Enter submit  Esc cancel",
+            if *budget { "Budget USD" } else { "Stop after" }
+        ))
+    } else if let Some((id, answer, text)) = &app.prompt {
         Line::raw(format!(
             "{} #{id}: {text}▏  Enter submit  Esc cancel",
             if *answer { "Answer" } else { "Withdraw reason" }
@@ -805,6 +895,148 @@ fn draw_initiatives(frame: &mut Frame, app: &App, area: Rect) {
     let mut st = TableState::default();
     st.select((!app.initiatives.is_empty()).then_some(app.init_sel));
     frame.render_stateful_widget(table, area, &mut st);
+}
+
+/// Cost against budget as a bar of block characters, `width` cells wide.
+fn cost_bar(cost: f64, budget: Option<f64>, width: usize) -> String {
+    let Some(budget) = budget else {
+        return format!("${cost:.2}, no budget cap");
+    };
+    let ratio = if budget > 0.0 {
+        (cost / budget).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let filled = (ratio * width as f64).round() as usize;
+    let over = if cost > budget { "  over budget" } else { "" };
+    format!(
+        "{}{} ${cost:.2} of ${budget:.2}{over}",
+        "█".repeat(filled),
+        "░".repeat(width - filled)
+    )
+}
+
+fn elapsed(secs: i64) -> String {
+    let (h, m) = (secs / 3600, secs % 3600 / 60);
+    match (h, m) {
+        (0, 0) => format!("{secs}s"),
+        (0, m) => format!("{m}m"),
+        (h, m) => format!("{h}h{m:02}m"),
+    }
+}
+
+fn draw_initiative(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(d) = &app.initiative else {
+        frame.render_widget(
+            Paragraph::new("no initiative open").block(Block::bordered().title("initiative")),
+            area,
+        );
+        return;
+    };
+    let head = |t: &str| {
+        Line::from(Span::styled(
+            t.to_owned(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))
+    };
+    let mut state = vec![Span::styled(d.state.clone(), state_style(&d.state))];
+    if let (true, Some(rule)) = (d.state == "held", &d.held_rule) {
+        state.push(Span::styled(
+            format!("  held: {rule}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if let Some(secs) = d.elapsed_secs {
+        state.push(Span::raw(format!("  {} elapsed", elapsed(secs))));
+    }
+    let mut lines = vec![
+        Line::raw(d.outcome.clone()),
+        Line::from(state),
+        Line::raw(format!("cost   {}", cost_bar(d.cost_usd, d.budget_usd, 20))),
+        Line::raw(format!(
+            "stop after {} failures on the same rule",
+            d.stop_after_same_rule
+        )),
+        Line::raw(""),
+        head("Tasks"),
+    ];
+    for t in &d.tasks {
+        let retries = if t.retries > 0 {
+            format!(" ({} retries)", t.retries)
+        } else {
+            String::new()
+        };
+        let score = t.score.map(|s| format!("  {s}/10")).unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::raw(format!("  #{:<4}", t.id)),
+            Span::styled(format!("{:<11}", t.state), state_style(&t.state)),
+            Span::raw(format!(
+                "${:>6.2}{score}{retries}  {}",
+                t.cost_usd,
+                short(&t.reason, 60)
+            )),
+        ]));
+    }
+    if !d.refused.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(head("Refused"));
+        for r in &d.refused {
+            lines.push(Line::raw(format!("  {}: {}", r.rule, r.count)));
+        }
+    }
+    if !d.rulings.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(head("Rulings"));
+        for r in &d.rulings {
+            lines.push(Line::raw(format!(
+                "  task {}: {}",
+                r.task_id,
+                short(&r.question, 80)
+            )));
+            lines.push(Line::raw(format!("    {}", short(&r.answer, 90))));
+        }
+    }
+    if !d.questions.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(head("Questions"));
+        for q in &d.questions {
+            lines.push(Line::raw(format!(
+                "  task {}: {}",
+                q.task_id,
+                short(&q.question, 80)
+            )));
+            lines.push(Line::raw(format!(
+                "    {}",
+                q.answer
+                    .as_deref()
+                    .map_or("unanswered".to_owned(), |a| short(a, 90))
+            )));
+        }
+    }
+    if !d.deployed.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(head("Deploys"));
+        for x in &d.deployed {
+            let status = match (x.check_ok, &x.rolled_back_to) {
+                (Some(true), _) => "ok".to_owned(),
+                (Some(false), Some(to)) => format!("rolled back to {}", short(to, 8)),
+                (Some(false), None) => "failed".to_owned(),
+                (None, _) => "running".to_owned(),
+            };
+            lines.push(Line::raw(format!(
+                "  task {} {} {} {status}",
+                x.task_id,
+                x.target,
+                short(&x.sha, 8)
+            )));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((app.scroll, 0))
+            .block(Block::bordered().title(format!("initiative {} · {}", d.id, d.project))),
+        area,
+    );
 }
 
 fn draw_jobs(frame: &mut Frame, app: &App, area: Rect) {

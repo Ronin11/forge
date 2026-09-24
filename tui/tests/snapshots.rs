@@ -68,6 +68,43 @@ JSON
 [{"id":3,"project":"forge","outcome":"cover the tui with text-snapshot tests","state":"open","held_rule":null,"queued":1,"running":1,"succeeded":3,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":4.2,"budget_usd":null,"stop_after_same_rule":3,"created_at":1,"settled_at":null},{"id":2,"project":"forge","outcome":"an older, settled initiative","state":"done","held_rule":null,"queued":0,"running":0,"succeeded":5,"failed":0,"unverified":0,"blocked":0,"withdrawn":0,"cost_usd":9.9,"budget_usd":20.0,"stop_after_same_rule":3,"created_at":1,"settled_at":2}]
 JSON
       ;;
+      set) echo "set: $*" >&2; [ "$3" = 7 ] && [ "$4" = --budget ] && [ "$5" = 25 ] && echo ok || exit 2 ;;
+      report) cat <<'JSON'
+{
+  "id": 7,
+  "project": "equitizr",
+  "outcome": "the billing page shows usage-based line items",
+  "state": "held",
+  "held_rule": "budget",
+  "budget_usd": 10.0,
+  "stop_after_same_rule": 3,
+  "tasks": [
+    { "id": 40, "state": "succeeded", "reason": "", "retries": 0, "score": 8, "cost_usd": 3.2 },
+    { "id": 41, "state": "failed", "reason": "cargo test failed", "retries": 2, "score": null, "cost_usd": 4.75 },
+    { "id": 42, "state": "blocked", "reason": "needs input: which pricing tier?", "retries": 0, "score": null, "cost_usd": 2.55 },
+    { "id": 43, "state": "queued", "reason": "", "retries": 0, "score": null, "cost_usd": 0.0 }
+  ],
+  "refused": [
+    { "rule": "cargo clippy", "count": 3 },
+    { "rule": "cargo test", "count": 1 }
+  ],
+  "rulings": [
+    { "task_id": 41, "question": "is the retry budget worth raising?", "answer": "no, withdraw and refile narrower", "citations": "task 41, decision 12" }
+  ],
+  "questions": [
+    { "task_id": 42, "question": "which pricing tier?", "answer": null }
+  ],
+  "deployed": [
+    { "task_id": 40, "target": "prod", "sha": "cdcce8adba0629506cf8e6c6e8f3cb56479ce850", "check_ok": true, "rolled_back_to": null, "findings": [] }
+  ],
+  "cost_usd": 10.5,
+  "elapsed_secs": 5400,
+  "created_at": 1789760000,
+  "settled_at": null,
+  "proposal": null
+}
+JSON
+      ;;
       *) echo "unexpected initiative: $*" >&2; exit 2 ;;
     esac ;;
   trace)
@@ -190,6 +227,41 @@ fn the_initiative_list_renders_every_initiative() {
     let text = frame(&app);
     app.shutdown();
     assert_snapshot("initiative_list", &text);
+}
+
+#[test]
+fn a_held_initiative_renders_its_report() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.open_initiative(7);
+    assert_eq!(app.screen(), Screen::Initiative);
+    let text = frame(&app);
+    app.shutdown();
+    assert!(text.contains("held: budget"), "{text}");
+    assert!(text.contains("█"), "{text}");
+    assert_snapshot("initiative_held", &text);
+}
+
+#[test]
+fn the_budget_and_stop_after_keys_call_initiative_set() {
+    let fake = fake_forge();
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.open_initiative(7);
+    app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    for c in "25".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let typing = frame(&app);
+    assert!(
+        typing.contains("Budget USD for initiative 7: 25"),
+        "{typing}"
+    );
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    let after = frame(&app);
+    app.shutdown();
+    assert!(after.contains("initiative 7 updated"), "{after}");
 }
 
 #[test]
