@@ -304,3 +304,37 @@ as it was: the failure, or the question, reaches the operator.
 
 `forge doctor` lists every automatic grant of the last 7 days under
 `environment`.
+
+### A need the table does not cover
+
+A host or cache need the `[environment]` table does not cover goes to the
+supervisor (`src/env_supervisor.rs`), not the operator, when the supervisor is
+on. It is given the typed need, the evidence line, the table and a ceiling it
+may not exceed: **one named host** (never a wildcard, never `github.com`,
+never a model endpoint), or **one directory under `~/.cache`**, read-only.
+It approves or denies with a one-line reason.
+
+- An approval within the ceiling is applied like an automatic grant, the run
+  repeats without spending a retry, and the decision row (kind
+  `environment-grant`) is answered by `supervisor`; `forge doctor` lists it
+  with the automatic grants, marked as approved by the supervisor. It counts
+  against the per-lineage supervisor budget (`[supervisor] per_lineage`).
+- A denial, an approval past the ceiling, a failed supervisor run, or a
+  lineage over its budget reaches the operator as a question on the blocked
+  task (`forge requests`) that carries the need, the evidence and the reason,
+  and asks yes or no. The answer is recorded as a decision; to make a yes
+  stick, add the host or path to `[environment]` in `config.toml`, since the
+  retried task meets the same refusal.
+- Binaries and toolchains are never the supervisor's; they are left as before.
+
+The ceiling is code, not prompt text. The repository may narrow it in its
+`forge.toml`, read from the trusted base like the rest of the file:
+
+```toml
+[environment]
+deny = ["*.example.com", "~/.cache/secrets"]   # hosts, `*.suffix` hosts, cache paths
+```
+
+The operator widens what needs no asking by widening the `[environment]`
+table in `config.toml` (above); that table is never consulted by the
+supervisor's judgement, only read by code.

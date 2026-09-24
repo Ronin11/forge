@@ -292,14 +292,9 @@ impl Policy {
     /// toolchains are never granted here.
     pub fn covers(&self, need: &Need) -> Option<Grant> {
         match need.kind {
-            NeedKind::Host => (!need.target.contains('*'))
-                .then(|| {
-                    self.hosts
-                        .iter()
-                        .any(|h| host_matches(h, &need.target))
-                })
-                .unwrap_or(false)
-                .then(|| Grant::Host(need.target.clone())),
+            NeedKind::Host => (!need.target.contains('*')
+                && self.hosts.iter().any(|h| host_matches(h, &need.target)))
+            .then(|| Grant::Host(need.target.clone())),
             NeedKind::Cache => {
                 let path = Path::new(&need.target);
                 self.cache_paths
@@ -332,14 +327,17 @@ pub fn within_ceiling(
     match need.kind {
         NeedKind::Host => host_ceiling(&need.target, deny, models),
         NeedKind::Cache => cache_ceiling(&need.target, deny),
-        NeedKind::Binary | NeedKind::Toolchain => Err(format!(
-            "a {} is never granted here",
-            need.kind.as_str()
-        )),
+        NeedKind::Binary | NeedKind::Toolchain => {
+            Err(format!("a {} is never granted here", need.kind.as_str()))
+        }
     }
 }
 
-fn host_ceiling(host: &str, deny: &[String], models: &[crate::egress::Rule]) -> Result<Grant, String> {
+fn host_ceiling(
+    host: &str,
+    deny: &[String],
+    models: &[crate::egress::Rule],
+) -> Result<Grant, String> {
     if host.contains('*') {
         return Err(format!(
             "{host} is a wildcard; the most that may be granted is one named host"
@@ -354,8 +352,13 @@ fn host_ceiling(host: &str, deny: &[String], models: &[crate::egress::Rule]) -> 
     if models.iter().any(|r| r.matches(host, 443).is_some()) {
         return Err(format!("{host} is a model endpoint"));
     }
-    if deny.iter().any(|d| host_matches(&d.to_ascii_lowercase(), host)) {
-        return Err(format!("the repository's forge.toml [environment] deny lists {host}"));
+    if deny
+        .iter()
+        .any(|d| host_matches(&d.to_ascii_lowercase(), host))
+    {
+        return Err(format!(
+            "the repository's forge.toml [environment] deny lists {host}"
+        ));
     }
     Ok(Grant::Host(host.to_string()))
 }
@@ -554,5 +557,67 @@ mod tests {
         assert!(p.covers(&h("example.org")).is_none());
         assert!(p.covers(&h("nodejs.org")).is_none());
         assert!(Policy::build(Some(vec!["not a host".into()]), None).is_err());
+    }
+
+    fn ceiling_need(kind: NeedKind, target: &str) -> Need {
+        Need {
+            kind,
+            target: target.into(),
+            evidence: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_ceiling_is_one_named_host_never_a_wildcard_github_or_a_model() {
+        let models = vec![crate::egress::Rule::parse("*.anthropic.com").unwrap()];
+        let host = |t: &str, deny: &[&str]| {
+            let deny: Vec<String> = deny.iter().map(|d| d.to_string()).collect();
+            within_ceiling(&ceiling_need(NeedKind::Host, t), &deny, &models)
+        };
+        assert_eq!(
+            host("registry.example.net", &[]),
+            Ok(Grant::Host("registry.example.net".into()))
+        );
+        assert!(host("*.example.net", &[]).unwrap_err().contains("wildcard"));
+        assert!(host("github.com", &[]).is_err());
+        assert!(
+            host("api.anthropic.com", &[])
+                .unwrap_err()
+                .contains("model")
+        );
+        assert!(
+            host("a.example.net", &["*.example.net"])
+                .unwrap_err()
+                .contains("deny")
+        );
+        assert!(host("registry.example.net", &["other.net"]).is_ok());
+        assert!(within_ceiling(&ceiling_need(NeedKind::Binary, "tsc"), &[], &models).is_err());
+    }
+
+    #[test]
+    fn the_ceiling_for_a_cache_is_one_directory_under_home_cache_read_only() {
+        let home = expand_home("~/.cache");
+        let deep = home.join("foo/bar/baz");
+        let need = ceiling_need(NeedKind::Cache, deep.to_str().unwrap());
+        assert_eq!(
+            within_ceiling(&need, &[], &[]),
+            Ok(Grant::ReadOnly(home.join("foo")))
+        );
+        assert!(within_ceiling(&need, &["~/.cache/foo".into()], &[]).is_err());
+        let outside = ceiling_need(NeedKind::Cache, "/etc/.cache/x");
+        assert!(within_ceiling(&outside, &[], &[]).is_err());
+        let up = ceiling_need(NeedKind::Cache, home.join("../.ssh/id").to_str().unwrap());
+        assert!(within_ceiling(&up, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_refused_wildcard_is_typed_and_never_covered() {
+        let n = recognize("forge egress: *.example.net:443 is not allowed.").unwrap();
+        assert_eq!(
+            (n.kind, n.target.as_str()),
+            (NeedKind::Host, "*.example.net")
+        );
+        let p = Policy::build(Some(vec!["*.example.net".into()]), None).unwrap();
+        assert!(p.covers(&n).is_none());
     }
 }

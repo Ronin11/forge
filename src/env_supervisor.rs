@@ -191,7 +191,11 @@ pub fn block(f: &Forge, t: &Task, need: &Need, question: &str) -> Result<()> {
     f.store.finish_attempt(&FinishAttempt {
         id: a.id,
         state: AttemptState::NeedsInput,
-        reason: format!("needs input: environment {} {}", need.kind.as_str(), need.target),
+        reason: format!(
+            "needs input: environment {} {}",
+            need.kind.as_str(),
+            need.target
+        ),
         finished_at: Some(now),
         envelope_json: envelope.to_string(),
         ..Default::default()
