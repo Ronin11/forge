@@ -244,6 +244,39 @@ fn a_held_initiative_renders_its_report() {
 }
 
 #[test]
+fn refresh_re_reads_the_open_initiative_report() {
+    let fake = fake_forge();
+    let bin = fake._dir.path().join("forge");
+    let replacement = fake._dir.path().join("forge.new");
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    app.open_initiative(7);
+    let original = "the billing page shows usage-based line items";
+    assert!(frame(&app).contains(original));
+
+    for outcome in ["UPDATED OUTCOME", "SNAPSHOT OUTCOME"] {
+        std::fs::write(&replacement, FAKE.replace(original, outcome)).unwrap();
+        std::fs::set_permissions(&replacement, std::fs::metadata(&bin).unwrap().permissions())
+            .unwrap();
+        std::fs::rename(&replacement, &bin).unwrap();
+        if outcome == "UPDATED OUTCOME" {
+            app.refresh();
+        } else {
+            app.snapshot();
+        }
+        assert!(frame(&app).contains(outcome));
+        assert_eq!(app.screen(), Screen::Initiative);
+    }
+
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    app.refresh();
+    assert_eq!(app.screen(), Screen::Initiatives);
+    app.snapshot();
+    assert_eq!(app.screen(), Screen::Initiatives);
+    app.shutdown();
+}
+
+#[test]
 fn the_budget_and_stop_after_keys_call_initiative_set() {
     let fake = fake_forge();
     let mut app = App::new(fake.forge);

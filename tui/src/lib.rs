@@ -128,6 +128,7 @@ impl App {
         self.load_inbox();
         self.load_initiatives();
         self.load_jobs();
+        self.reload_initiative();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -253,6 +254,7 @@ impl App {
         self.load_inbox();
         self.load_initiatives();
         self.load_jobs();
+        self.reload_initiative();
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -301,6 +303,15 @@ impl App {
                 self.screen = Screen::JobView;
             }
             Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    fn reload_initiative(&mut self) {
+        if let Some(id) = self.initiative.as_ref().map(|doc| doc.id) {
+            match self.forge.initiative_report(id) {
+                Ok(doc) => self.initiative = Some(doc),
+                Err(e) => self.status = format!("{e:#}"),
+            }
         }
     }
 
