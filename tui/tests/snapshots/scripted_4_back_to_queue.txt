@@ -37,4 +37,4 @@ Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  j
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit
+j/k move  Enter open  / query  n next page  Esc clear  Tab switch  r retry  q quit

@@ -1,12 +1,20 @@
 Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
-┌tasks, newest first───────────────────────────────────────────────────────────────────────────────┐
-│ID    STATE       WF            ATT  COST    PROJECT      TASK                                    │
-│12    running     tdd           2    $1.35   forge        add snapshot tests for the tui          │
-│11    succeeded   direct        1    $0.10   forge        fix typo in docs                        │
+┌running attempts──────────────────────────────────────────────────────────────────────────────────┐
+│TASK   STEP               TURNS  CALLS  COST                                                      │
+│12     attempt 2 of 3     9      2      $0.42                                                     │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌activity  project: all  kind: all─────────────────────────────────────────────────────────────────┐
+│2026-09-21 19:43  #0    job             job 4 ok                                                  │
+│2026-09-21 19:43  #13   question        task 13 blocked                                           │
+│2026-09-21 19:43  #11   task done       task 11 succeeded                                         │
+│2026-09-21 19:43  #11   pushed          pushed forge/11                                           │
+│2026-09-21 19:43  #11   check           cargo test ok                                             │
+│2026-09-21 19:43  #12   attempt started attempt 2 of 3                                            │
+│2026-09-21 19:43  #12   task started    started                                                   │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -29,12 +37,4 @@ Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  j
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌live──────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k move  Enter open  / query  n next page  Esc clear  Tab switch  r retry  q quit
+j/k scroll  p project  f kind  c clear  Tab switch  q quit

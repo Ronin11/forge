@@ -656,3 +656,91 @@ fn the_doctor_screen_shows_checks_fixes_worktrees_windows_and_spend() {
     assert!(frame(&app).contains("removed 3 worktrees"));
     app.shutdown();
 }
+
+fn events(lines: &[&str]) -> Vec<forge_client::Event> {
+    lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_fixture_event_stream_renders_its_kinds() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 7, &[]);
+    assert_eq!(app.screen(), Screen::Activity);
+    for e in events(&[
+        r#"{"type":"task_started","task":12,"ts":1790000000,"text":"started"}"#,
+        r#"{"type":"attempt_started","task":12,"n":2,"of":3,"ts":1790000001,"text":"attempt 2 of 3"}"#,
+        r#"{"type":"tool_call","task":12,"name":"Edit","ts":1790000002,"text":"Edit x"}"#,
+        r#"{"type":"tool_call","task":12,"name":"Bash","ts":1790000003,"text":"Bash y"}"#,
+        r#"{"type":"agent_done","task":12,"turns":9,"cost_usd":0.42,"ts":1790000004,"text":"done"}"#,
+        r#"{"type":"check","task":11,"ts":1790000005,"text":"cargo test ok"}"#,
+        r#"{"type":"pushed","task":11,"ts":1790000006,"text":"pushed forge/11"}"#,
+        r#"{"type":"task_done","task":11,"state":"succeeded","ts":1790000007,"text":"task 11 succeeded"}"#,
+        r#"{"type":"task_done","task":13,"state":"blocked","reason":"needs input: which tier?","ts":1790000008,"text":"task 13 blocked"}"#,
+        r#"{"type":"job_finished","task":0,"job_id":4,"ts":1790000009,"text":"job 4 ok"}"#,
+    ]) {
+        app.apply(e);
+    }
+    let text = frame(&app);
+    for kind in [
+        "task started",
+        "attempt started",
+        "check",
+        "pushed",
+        "task done",
+        "question",
+        "job",
+    ] {
+        assert!(text.contains(kind), "missing {kind}");
+    }
+    assert!(text.contains("attempt 2 of 3"));
+    assert_snapshot("activity_feed", &text);
+
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    let text = frame(&app);
+    assert!(text.contains("kind: check") && !text.contains("pushed forge/11"));
+    app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert!(frame(&app).contains("project: forge"));
+    app.shutdown();
+}
+
+#[test]
+fn a_query_renders_the_verb_call_and_pages_by_before() {
+    let fake = fake_forge();
+    let script = FAKE.replace("  log | requests) echo '[]' ;;", &format!("{}  requests) echo '[]' ;;", r#"  log)
+    echo "$@" >> "$(dirname "$0")/log_calls"
+    case "$*" in
+      *--before*) echo '[{"id":9,"state":"failed","workflow":"tdd","attempts":3,"cost_usd":2.5,"repo":"/r","text":"older broken thing","task":"older broken thing","created_at":1,"created":"","trust":"operator","project":"forge"}]' ;;
+      *--grep*) echo '[{"id":10,"state":"failed","workflow":"tdd","attempts":3,"cost_usd":2.5,"repo":"/r","text":"broken parser","task":"broken parser","created_at":1,"created":"","trust":"operator","project":"forge"}]' ;;
+      *) echo '[]' ;;
+    esac ;;
+"#));
+    std::fs::write(&fake.forge.bin, script).unwrap();
+    let mut app = App::new(fake.forge.clone());
+    app.snapshot();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "state:failed project:forge broken parser".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    let text = frame(&app);
+    assert!(text.contains(
+        "forge log --json --limit 60 --state failed --project forge --grep broken parser"
+    ));
+    assert!(text.contains("broken parser"));
+    assert_snapshot("task_list_query", &text);
+    app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+    let calls = std::fs::read_to_string(fake._dir.path().join("log_calls")).unwrap();
+    assert!(
+        calls.contains("--grep broken parser --before 10"),
+        "{calls}"
+    );
+    assert!(frame(&app).contains("older broken thing"));
+    app.shutdown();
+}
