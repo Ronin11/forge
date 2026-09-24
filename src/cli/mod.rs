@@ -445,7 +445,14 @@ enum Cmd {
         /// true cost across all of them (see docs/ECONOMIST.md)
         #[arg(long)]
         factors: bool,
-        /// With --factors, only tasks that finished in the last N days
+        /// Every task that blocked with a question: per kind, the count,
+        /// who settled it (supervisor, operator, withdrawn), how many
+        /// were "do it as stated", the median hours waited, and the
+        /// operator's attention cost at [measure] operator_usd_per_hour
+        #[arg(long)]
+        questions: bool,
+        /// With --factors or --questions, only tasks that finished (or
+        /// blocked) in the last N days
         #[arg(long)]
         days: Option<i64>,
         /// Only this project's tasks (also adds the per-project section

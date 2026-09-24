@@ -166,6 +166,7 @@ pub(super) async fn stats(
     last: i64,
     by_role: bool,
     factors: bool,
+    questions: bool,
     days: Option<i64>,
     project: Option<String>,
     initiative: Option<i64>,
@@ -177,6 +178,9 @@ pub(super) async fn stats(
     let f = Forge::open(false, false)?;
     if reprice {
         return reprice_stats(&f, provider.as_deref(), force, json);
+    }
+    if questions {
+        return questions_stats(&f, days, json);
     }
     let scope = crate::store::StatsFilter {
         project,
@@ -328,6 +332,47 @@ pub(super) async fn stats(
                 j.skipped
             );
         }
+    }
+    Ok(())
+}
+
+/// `forge stats --questions [--days N] [--json]`: every task that blocked
+/// with a question in the window, per kind.
+fn questions_stats(f: &Forge, days: Option<i64>, json: bool) -> Result<()> {
+    let doc = crate::view::questions_doc(f, days)?;
+    if json {
+        out!("{}", serde_json::to_string_pretty(&doc)?);
+        return Ok(());
+    }
+    let hours = |h: Option<f64>| h.map_or("-".to_string(), |h| format!("{h:.1}"));
+    let cost = |c: Option<f64>| c.map_or("-".to_string(), |c| format!("${c:.2}"));
+    out!(
+        "{:<11} {:>5} {:>5} {:>6} {:>6} {:>6} {:>7} {:>9} {:>8} {:>9}",
+        "KIND",
+        "COUNT",
+        "OPEN",
+        "SUPERV",
+        "OPER",
+        "WITHDR",
+        "ASSTATED",
+        "MEDWAIT_H",
+        "ATT_H",
+        "ATT_COST"
+    );
+    for r in doc.kinds.iter().chain(std::iter::once(&doc.total)) {
+        out!(
+            "{:<11} {:>5} {:>5} {:>6} {:>6} {:>6} {:>7} {:>9} {:>8.2} {:>9}",
+            r.kind,
+            r.count,
+            r.open,
+            r.answered_by_supervisor,
+            r.answered_by_operator,
+            r.withdrawn,
+            r.as_stated,
+            hours(r.median_wait_hours),
+            r.attention_hours,
+            cost(r.attention_cost_usd)
+        );
     }
     Ok(())
 }

@@ -297,6 +297,7 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             last,
             by_role,
             factors,
+            questions,
             days,
             project,
             initiative,
@@ -306,8 +307,8 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             json,
         } => {
             stats(
-                tools, step, quality, journal, tests, last, by_role, factors, days, project,
-                initiative, reprice, provider, force, json,
+                tools, step, quality, journal, tests, last, by_role, factors, questions, days,
+                project, initiative, reprice, provider, force, json,
             )
             .await
         }

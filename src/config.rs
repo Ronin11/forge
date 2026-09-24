@@ -523,6 +523,8 @@ pub struct Budget {
 #[derive(Deserialize, Default)]
 struct MeasureRaw {
     journal_control: Option<f64>,
+    operator_usd_per_hour: Option<f64>,
+    attention_minutes_per_question: Option<f64>,
     /// `[measure] explore = { <role> = { provider = <name>, fraction =
     /// <0..1> } }`: see `Measure::explore`.
     #[serde(default)]
@@ -544,6 +546,13 @@ pub struct Measure {
     /// run with the journal off when the request itself does not say
     /// `--journal` or `--no-journal`. `0.0` (the default) assigns none.
     pub journal_control: f64,
+    /// What an hour of the operator's attention is worth, in dollars:
+    /// `forge stats --questions` prices the questions a person handled
+    /// with it. `None` (the default) prices nothing.
+    pub operator_usd_per_hour: Option<f64>,
+    /// How long handling one question takes the operator, for the same
+    /// figure. Waiting is not attention; this is the reading and answering.
+    pub attention_minutes_per_question: f64,
     /// Per-role exploration: each named role draws, independently and
     /// deterministically from the task id (see
     /// `queue::journal_control_draw`), into `provider` with probability
@@ -769,6 +778,12 @@ signals_to_end = 2
 # see docs/LATER.md, \"The journal measurement was ill-posed three times\".
 journal_control = 0.0
 
+# What an hour of your attention is worth, in dollars, and how many minutes
+# answering one question takes you: `forge stats --questions` multiplies the
+# questions a person handled by both. Leave the rate out to price nothing.
+# operator_usd_per_hour = 100.0
+# attention_minutes_per_question = 5.0
+
 # Per-role exploration: send a fixed fraction of a role's steps to a named
 # provider instead of its usual one, chosen deterministically from the task
 # id, when the task itself names no --provider (an explicit --provider is
@@ -966,6 +981,11 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .collect(),
         measure: Measure {
             journal_control: raw.measure.journal_control.unwrap_or(0.0),
+            operator_usd_per_hour: raw.measure.operator_usd_per_hour,
+            attention_minutes_per_question: raw
+                .measure
+                .attention_minutes_per_question
+                .unwrap_or(5.0),
             explore,
         },
         intake: Intake {

@@ -19,6 +19,7 @@ mod jobs;
 mod messages;
 mod migrations;
 mod projects;
+mod questions;
 mod record;
 mod stats;
 mod tasks;
@@ -34,6 +35,9 @@ pub use projects::{
     BacklogItem, Initiative, InitiativeUpdate, Project, ProjectDefaults, ProjectRepo, ProjectStat,
     ProjectTaskStats, is_placeholder_purpose,
 };
+#[cfg(test)]
+pub use questions::RetryFacts;
+pub use questions::{QuestionRecord, Resolution};
 pub use record::{Decision, TaskRef};
 pub use stats::{
     HumanAttentionProjectStat, HumanAttentionStat, JournalStat, RoleStat, StatsFilter, StepStat,

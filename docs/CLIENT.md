@@ -296,6 +296,10 @@ and does not parse stdout.
   mode only; the JSON form always carries `by_role`) prints the runner
   breakdown instead: attempts, outcomes, cost and wall time per (role,
   provider, model).
+- **`forge stats --questions [--days N] [--json]`** — every task that
+  blocked with a question in the window (all time without `--days`): one
+  [`QuestionsDoc`](#questionsdoc) object, not a `StatsDoc`. Text mode
+  prints the same rows as a table.
 - **`forge stats --reprice [--provider NAME] [--force] [--json]`** — write
   verb: sets `cost_usd` from recorded tokens on every attempt whose
   provider reported no cost (`cost_usd` 0 or NULL) but whose provider has
@@ -1172,6 +1176,41 @@ day. Always exactly 30 rows — a day with no activity is zeroed, not
 omitted — so a client can draw a fixed-width chart straight off the
 array. The `/stats` page (web UI task 5) draws this as an SVG chart of
 daily landings and daily spend, above its tabs.
+
+### `QuestionsDoc`
+
+The document `forge stats --questions --json` prints: `{days,
+operator_usd_per_hour, attention_minutes_per_question, kinds, total}`.
+It counts every task that blocked with a question whose blocking time
+falls in the window: an agent attempt that ended `needs_input`
+(`question`, `workflow` request, or `review` demotion), a blocked
+`job` question filed by a job's `ask:*` rung, or a task blocked on a
+`dependency`. Tasks the operator withdrew still count under the kind
+they blocked with.
+
+| field | type | meaning |
+|---|---|---|
+| `days` | integer or null | The `--days` window; null is all time. |
+| `operator_usd_per_hour` | number or null | `[measure] operator_usd_per_hour` in the operator's config; null when unset. |
+| `attention_minutes_per_question` | number | `[measure] attention_minutes_per_question` (default 5): what handling one question costs the operator. |
+| `kinds` | array of `QuestionKindRow` | Always five rows, in order: `review`, `question`, `workflow`, `job`, `dependency`. |
+| `total` | `QuestionKindRow` | The same fields over every kind, `kind` `"all"`. |
+
+`QuestionKindRow`:
+
+| field | type | meaning |
+|---|---|---|
+| `kind` | string | The kind, or `all`. |
+| `count` | integer | Questions of this kind. |
+| `open` | integer | Still blocked, waiting on a person. |
+| `answered_by_supervisor` | integer | Settled by a supervisor decision. |
+| `answered_by_operator` | integer | Settled by anyone else: the operator, a contact, a hand landing or a retry. |
+| `withdrawn` | integer | Withdrawn. `count` is `open` plus these three. |
+| `as_stated` | integer | Answered questions that were "do it as stated": the answer text only repeats the question's own ask, or the lineage's next task landed carrying the question's answer appended and nothing else. |
+| `median_wait_hours` | number or null | Median hours from blocking to being settled; an open question has waited until now. Null with no questions. |
+| `operator_handled` | integer | `answered_by_operator` plus `withdrawn`: what took a person's attention. |
+| `attention_hours` | number | `operator_handled` times `attention_minutes_per_question`, in hours. |
+| `attention_cost_usd` | number or null | `attention_hours` at `operator_usd_per_hour`; null when no rate is configured. |
 
 ### `PluginRow`
 

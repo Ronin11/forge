@@ -12,11 +12,13 @@ use serde::Serialize;
 
 mod jobs;
 mod projects;
+mod questions;
 mod stats;
 mod tasks;
 
 pub use jobs::*;
 pub use projects::*;
+pub use questions::*;
 pub use stats::*;
 pub use tasks::*;
 
