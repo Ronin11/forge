@@ -2681,6 +2681,18 @@ pub struct PortalLanded {
     pub screenshot: Option<String>,
 }
 
+/// One line on `PortalDoc`'s "Your requests" list, newest first, capped at
+/// ten: a task the customer asked for that belongs to no initiative.
+/// `state` is always one of "waiting", "being built", "needs you" or
+/// "done" — never the operator's task vocabulary. `text` is its title if
+/// it has one, else a line derived from the request.
+#[derive(Serialize)]
+pub struct PortalRequest {
+    pub text: String,
+    pub state: String,
+    pub created_at: i64,
+}
+
 /// The confirmed intake brief on `PortalDoc`, in the person's own words
 /// (see docs/INTAKE.md): "Your plan".
 #[derive(Serialize)]
@@ -2721,6 +2733,9 @@ pub struct PortalDoc {
     /// How many landed lines past the ten in `landed` — "and n more" (0
     /// when nothing was cut).
     pub landed_more: i64,
+    /// The customer's own requests and where each stands, newest first,
+    /// capped at ten.
+    pub requests: Vec<PortalRequest>,
     pub brief: Option<PortalBrief>,
     pub backlog: Vec<PortalBacklogItem>,
 }
@@ -2939,6 +2954,27 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
     landed.truncate(10);
     let landed_more = (landed_total - landed.len()) as i64;
 
+    // Your requests: each task outside an initiative, in plain words.
+    let mut requests: Vec<PortalRequest> = latest
+        .iter()
+        .filter(|t| t.initiative.is_none() && t.state != TaskState::Withdrawn)
+        .map(|t| {
+            let state = match t.state {
+                _ if !t.landed_sha.is_empty() => "done",
+                TaskState::Blocked if request_kind(&t.reason).0 == "question" => "needs you",
+                TaskState::Running | TaskState::Succeeded => "being built",
+                _ => "waiting",
+            };
+            PortalRequest {
+                text: crate::render::landed_task_line(t),
+                state: state.to_string(),
+                created_at: t.created_at,
+            }
+        })
+        .collect();
+    requests.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    requests.truncate(10);
+
     // The confirmed brief lives only on the intake task that produced it
     // (`t.plan`, see docs/INTAKE.md); a project carries no copy of its
     // own, so the most recent confirmed one is re-read here.
@@ -2974,6 +3010,7 @@ pub fn portal_doc(f: &Forge, p: &crate::store::Project) -> Result<PortalDoc> {
         questions,
         landed,
         landed_more,
+        requests,
         brief,
         backlog,
     })

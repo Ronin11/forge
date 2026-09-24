@@ -115,3 +115,56 @@ argv_debug() {
   done
   echo '{"type":"forge_test_argv","argv":'"$out]"'}'
 }
+
+# copilot_tool <id> <command>
+# Prints the tool.execution_start/tool.execution_complete pair copilot
+# emits around its bash tool, as agent.rs's copilot parser (and the
+# early-ending Watch it feeds) expects them.
+copilot_tool() {
+  local id="$1" cmd="$2"
+  echo '{"type":"tool.execution_start","data":{"toolCallId":"'"$id"'","toolName":"bash","arguments":{"command":"'"$cmd"'"}}}'
+  echo '{"type":"tool.execution_complete","data":{"toolCallId":"'"$id"'","success":true}}'
+}
+
+# copilot_message <text>
+# Prints an assistant.message frame with the given content (already
+# JSON-string-safe) and no tool requests, preceded by the model.call_finished
+# frame the parser counts as a turn.
+copilot_message() {
+  echo '{"type":"model.call_finished","data":{"turnId":"0"}}'
+  echo '{"type":"assistant.message","data":{"content":"'"$1"'","toolRequests":[]}}'
+}
+
+# copilot_envelope <summary> [path:kind ...]
+# Prints the assistant.message copilot gives phase two: the structured
+# envelope (the shape `codex_result` builds) inside a ```json fence, as a
+# model told "no fence" still tends to answer, so the parser's fence
+# stripping is exercised end to end.
+copilot_envelope() {
+  local summary="$1"
+  shift
+  local changes="[]"
+  if [ "$#" -gt 0 ]; then
+    changes="["
+    local sep=""
+    local entry path kind
+    for entry in "$@"; do
+      path="${entry%%:*}"
+      kind="${entry##*:}"
+      changes="$changes$sep{\"path\":\"$path\",\"kind\":\"$kind\"}"
+      sep=","
+    done
+    changes="$changes]"
+  fi
+  local text='{"schema_version":1,"summary":"'"$summary"'","needs_input":null,"changes":'"$changes"',"checks_run":[],"claims":[]}'
+  local escaped="${text//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  copilot_message '```json\n'"$escaped"'\n```'
+}
+
+# copilot_result <session_id> [premium_requests]
+# Prints the result frame that ends a copilot run: the session to resume and
+# the premium requests this run cost (default 1).
+copilot_result() {
+  echo '{"type":"result","sessionId":"'"$1"'","exitCode":0,"usage":{"premiumRequests":'"${2:-1}"'}}'
+}

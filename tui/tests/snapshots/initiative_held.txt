@@ -1,0 +1,40 @@
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
+┌initiative 7 · equitizr───────────────────────────────────────────────────────────────────────────┐
+│the billing page shows usage-based line items                                                     │
+│held  held: budget  1h30m elapsed                                                                 │
+│cost   ████████████████████ $10.50 of $10.00  over budget                                         │
+│stop after 3 failures on the same rule                                                            │
+│                                                                                                  │
+│Tasks                                                                                             │
+│  #40  succeeded  $  3.20  8/10                                                                   │
+│  #41  failed     $  4.75 (2 retries)  cargo test failed                                          │
+│  #42  blocked    $  2.55  needs input: which pricing tier?                                       │
+│  #43  queued     $  0.00                                                                         │
+│                                                                                                  │
+│Refused                                                                                           │
+│  cargo clippy: 3                                                                                 │
+│  cargo test: 1                                                                                   │
+│                                                                                                  │
+│Rulings                                                                                           │
+│  task 41: is the retry budget worth raising?                                                     │
+│    no, withdraw and refile narrower                                                              │
+│                                                                                                  │
+│Questions                                                                                         │
+│  task 42: which pricing tier?                                                                    │
+│    unanswered                                                                                    │
+│                                                                                                  │
+│Deploys                                                                                           │
+│  task 40 prod cdcce8ad ok                                                                        │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k scroll  b budget  s stop-after  Esc back  q quit
