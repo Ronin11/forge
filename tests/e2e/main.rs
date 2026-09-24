@@ -22,6 +22,7 @@ mod ops;
 mod plugins;
 mod providers;
 mod provision;
+mod questions;
 mod refs;
 mod resume;
 mod statusline;

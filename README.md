@@ -300,6 +300,7 @@ src/store/          SQLite, forward-only migrations by user_version, one file pe
   webhooks.rs       webhook_tokens: per-hook tokens (only their hashes) that let `forge job fire` start a webhook-triggered job
   events.rs         event_cursors: per project and run workflow, the events.jsonl offset its event trigger has examined up to
   stats.rs          forge stats: workflow/step/role/human-attention/time-to-live queries
+  questions.rs      forge stats --questions: every task that blocked with a question, and how it was settled
   factors.rs        forge stats --factors: factor levels, the main-effects fit, size classes
   stats_tests.rs    stats.rs's #[cfg(test)] mod, split out to keep stats.rs under the line bound
   daily.rs          StatsDoc.daily: landings and spend per UTC day, the /stats chart's kernel query

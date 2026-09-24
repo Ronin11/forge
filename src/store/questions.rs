@@ -59,7 +59,7 @@ impl Store {
                     OR EXISTS (SELECT 1 FROM attempts a WHERE a.task_id = t.id AND a.state = 'needs_input')
                  ORDER BY t.id",
             )?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
+            let rows = stmt.query_map([], |r| r.get("id"))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut out = Vec::new();
@@ -75,7 +75,7 @@ impl Store {
                 c.query_row(
                     "SELECT question FROM decisions WHERE task_id = ?1 AND retry_id = ?1 ORDER BY id LIMIT 1",
                     params![id],
-                    |r| r.get(0),
+                    |r| r.get("question"),
                 )
                 .optional()?
             };
@@ -117,7 +117,14 @@ impl Store {
                      WHERE task_id = ?1 AND created_at >= ?2 AND question != ?3
                      ORDER BY id LIMIT 1",
                     params![id, blocked_at, format!("task {id}'s spec")],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| {
+                        Ok((
+                            r.get("answered_by")?,
+                            r.get("answer")?,
+                            r.get("created_at")?,
+                            r.get("retry_id")?,
+                        ))
+                    },
                 )
                 .optional()?
             };
@@ -126,7 +133,7 @@ impl Store {
                     let c = self.lock();
                     let mut stmt =
                         c.prepare("SELECT id FROM tasks WHERE retry_of = ?1 ORDER BY id")?;
-                    let rows = stmt.query_map(params![id], |r| r.get(0))?;
+                    let rows = stmt.query_map(params![id], |r| r.get("id"))?;
                     rows.collect::<rusqlite::Result<_>>()?
                 };
                 let mut v = Vec::new();
