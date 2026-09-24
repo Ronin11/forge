@@ -70,7 +70,8 @@ pub fn recognize(text: &str) -> Option<Need> {
         .collect();
     lines
         .iter()
-        .find_map(|l| refused_host(l))
+        .find_map(|l| refused_host(l, false))
+        .or_else(|| lines.iter().find_map(|l| refused_host(l, true)))
         .or_else(|| lines.iter().find_map(|l| missing_cache(l)))
         .or_else(|| lines.iter().find_map(|l| missing_toolchain(l)))
         .or_else(|| lines.iter().find_map(|l| missing_binary(l)))
@@ -86,15 +87,18 @@ fn need(kind: NeedKind, target: &str, line: &str) -> Need {
 
 /// The proxy's own body (`forge egress: HOST:PORT is not allowed.`), or a
 /// tool's line naming a 403 and a URL (`403 Forbidden - GET https://HOST/..`).
-fn refused_host(line: &str) -> Option<Need> {
-    if let Some(rest) = line.split("forge egress: ").nth(1)
-        && let Some(authority) = rest.split(" is not allowed").next()
-        && authority.len() < rest.len()
-    {
-        let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
-        if valid_host(host) {
-            return Some(need(NeedKind::Host, &host.to_ascii_lowercase(), line));
+fn refused_host(line: &str, by_url: bool) -> Option<Need> {
+    if !by_url {
+        if let Some(rest) = line.split("forge egress: ").nth(1)
+            && let Some(authority) = rest.split(" is not allowed").next()
+            && authority.len() < rest.len()
+        {
+            let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+            if valid_host(host) {
+                return Some(need(NeedKind::Host, &host.to_ascii_lowercase(), line));
+            }
         }
+        return None;
     }
     if line.contains("403") {
         for scheme in ["https://", "http://"] {
