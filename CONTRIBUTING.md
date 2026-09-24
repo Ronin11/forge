@@ -88,3 +88,14 @@ of its line count at the CLI split's base plus 200. Do not add exceptions or
 raise ceilings. Delete an entry when its file is removed or reaches 1,500 lines
 or fewer; stale entries fail the test. CLI functions also retain their 80-line
 limit and existing exceptions in `src/cli/tests.rs`.
+
+## Function length
+
+Every function in a tracked Rust file, test-module functions included, is
+limited to 120 lines (signature through closing brace) by `tests/fn_length.rs`.
+Its allowlist records pre-existing long functions as (file, fn, ceiling,
+reason), each ceiling being the function's length when the rule was added plus
+20. A reason may say "test fixture", but the ceiling still holds. Do not add
+exceptions or raise ceilings. Delete an entry when its function shrinks to 120
+lines or fewer or is removed; stale entries fail the test, and an offender is
+reported with its length and ceiling.
