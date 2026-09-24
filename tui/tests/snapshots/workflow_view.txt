@@ -1,0 +1,40 @@
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
+┌workflow (read-only)──────────────────────────────────────────────────────────────────────────────┐
+│tdd (build, catalog)  /home/o/workflows/tdd.toml                                                  │
+│83% (55%-95%) $1.25/success 12 run(s)                                                             │
+│Resolved steps                                                                                    │
+│  1. write-tests [directive, claude-sonnet-5, 20 turns, 600s]                                     │
+│       writes - write failing tests                                                               │
+│  2. code [directive]                                                                             │
+│       writes - make them pass                                                                    │
+│  3. verify [operation]                                                                           │
+│File                                                                                              │
+│  name = "tdd"                                                                                    │
+│  description = "tests first"                                                                     │
+│  steps = ["write-tests", "code"]                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k move  Enter open  Esc back  Tab switch  g refresh  q quit

@@ -1,0 +1,40 @@
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
+┌workflows─────────────────────────────────────────────────────────────────────────────────────────┐
+│NAME             KIND   SOURCE    STEPS                  MEASURED                                 │
+│tdd              build  catalog   write-tests > code > v 83% (55%-95%) $1.25/success 12 run(s)    │
+│direct           build  catalog   code                   REGRESSION 50% (19%-81%) no successes 6 r│
+│nightly-cleanup  run    forge     run-checks > (notify)  2 run(s), not yet known                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k move  Enter open  Esc back  Tab switch  g refresh  q quit

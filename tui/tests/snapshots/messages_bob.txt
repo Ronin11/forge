@@ -1,0 +1,40 @@
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
+┌messages  project: forge  contact: bob────────────────────────────────────────────────────────────┐
+│Messages                                                                                          │
+│  2026-09-21 19:46  to bob (signal)                                                               │
+│      the release is queued, should land within the hour                                          │
+│Concierge decisions                                                                               │
+│  2026-09-21 19:45                                                                                │
+│      Q: which environment should this go to?                                                     │
+│      A: production, same as last time                                                            │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k scroll  p project  f contact  c clear  Tab switch  q quit

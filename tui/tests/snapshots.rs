@@ -63,6 +63,14 @@ JSON
   log | requests) echo '[]' ;;
   stats) cat "$(dirname "$0")/stats.json" ;;
   doctor) cat "$(dirname "$0")/doctor.json"; exit 1 ;;
+  message) cat "$(dirname "$0")/messages.json" ;;
+  decisions) cat "$(dirname "$0")/decisions.json" ;;
+  workflows)
+    case "$2" in
+      show) cat "$(dirname "$0")/workflow_tdd.json" ;;
+      --project) cat "$(dirname "$0")/workflows_project.json" ;;
+      *) cat "$(dirname "$0")/workflows.json" ;;
+    esac ;;
   gc) echo "removed 3 worktrees" ;;
   project)
     case "$2" in
@@ -170,6 +178,17 @@ fn fake_forge_with_stats(stats: &str) -> Fake {
             include_str!("fixtures/deploy_log_prod.json"),
         ),
         ("doctor.json", include_str!("fixtures/doctor.json")),
+        ("messages.json", include_str!("fixtures/messages.json")),
+        ("decisions.json", include_str!("fixtures/decisions.json")),
+        ("workflows.json", include_str!("fixtures/workflows.json")),
+        (
+            "workflows_project.json",
+            include_str!("fixtures/workflows_project.json"),
+        ),
+        (
+            "workflow_tdd.json",
+            include_str!("fixtures/workflow_tdd.json"),
+        ),
     ] {
         std::fs::write(dir.path().join(name), text).unwrap();
     }
@@ -742,5 +761,51 @@ fn a_query_renders_the_verb_call_and_pages_by_before() {
         "{calls}"
     );
     assert!(frame(&app).contains("older broken thing"));
+    app.shutdown();
+}
+
+#[test]
+fn the_messages_screen_shows_the_record_and_concierge_decisions_by_contact() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 8, &[]);
+    assert_eq!(app.screen(), Screen::Messages);
+    let text = frame(&app);
+    assert!(text.contains("from alice") && text.contains("to bob"));
+    assert!(text.contains("production, same as last time"));
+    assert!(
+        !text.contains("raise the budget?"),
+        "only the concierge's own"
+    );
+    assert_snapshot("messages", &text);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    let text = frame(&app);
+    assert!(text.contains("contact: bob") && !text.contains("from alice"));
+    assert_snapshot("messages_bob", &text);
+    app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(frame(&app).contains("contact: all"));
+    app.shutdown();
+}
+
+#[test]
+fn the_workflows_screen_lists_the_catalog_and_opens_one_read_only() {
+    let fake = fake_forge();
+    let mut app = ops_app(&fake, 9, &[]);
+    assert_eq!(app.screen(), Screen::Workflows);
+    let text = frame(&app);
+    assert!(text.contains("83% (55%-95%) $1.25/success 12 run(s)"));
+    assert!(
+        text.contains("REGRESSION") && text.contains("not yet known"),
+        "{text}"
+    );
+    assert_snapshot("workflows", &text);
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    let text = frame(&app);
+    assert!(text.contains("Resolved steps") && text.contains("steps = [\"write-tests\""));
+    assert_snapshot("workflow_view", &text);
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(frame(&app).contains("read-only"));
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(frame(&app).contains("NAME"));
     app.shutdown();
 }

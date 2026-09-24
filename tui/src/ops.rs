@@ -72,6 +72,8 @@ impl App {
                 self.load_doctor();
                 self.load_initiatives();
             }
+            Screen::Messages => self.load_messages(),
+            Screen::Workflows => self.load_workflows(),
             _ => {}
         }
     }

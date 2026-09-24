@@ -25,9 +25,11 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 pub mod activity;
+pub mod messages;
 pub mod ops;
 pub mod stats;
 pub mod time;
+pub mod workflows;
 
 /// What a client keeps of the stream: the last events per task, as text.
 const LIVE_PER_TASK: usize = 200;
@@ -42,6 +44,8 @@ pub enum Screen {
     Deploys,
     Doctor,
     Activity,
+    Messages,
+    Workflows,
     Task,
     JobView,
     Initiative,
@@ -62,6 +66,8 @@ pub struct App {
     stats_sort: Option<(&'static str, bool)>,
     ops: ops::Ops,
     activity: activity::Activity,
+    messages: messages::Messages,
+    workflows: workflows::Workflows,
     query: String,
     query_prompt: Option<String>,
     /// A budget (`true`) or stop-after (`false`) being typed for an initiative.
@@ -102,6 +108,8 @@ impl App {
             stats_sort: None,
             ops: ops::Ops::default(),
             activity: activity::Activity::default(),
+            messages: messages::Messages::default(),
+            workflows: workflows::Workflows::default(),
             query: String::new(),
             query_prompt: None,
             limit_prompt: None,
@@ -428,9 +436,13 @@ impl App {
             Screen::Queue => self.tasks.get(self.queue_sel).map(|t| t.id),
             Screen::Requests => self.requests.get(self.req_sel).map(|r| r.id),
             Screen::Initiatives => None,
-            Screen::Jobs | Screen::Stats | Screen::Deploys | Screen::Doctor | Screen::Activity => {
-                None
-            }
+            Screen::Jobs
+            | Screen::Stats
+            | Screen::Deploys
+            | Screen::Doctor
+            | Screen::Activity
+            | Screen::Messages
+            | Screen::Workflows => None,
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
             Screen::JobView | Screen::Initiative => None,
         }
@@ -550,7 +562,9 @@ impl App {
             | Screen::Stats
             | Screen::Deploys
             | Screen::Doctor
-            | Screen::Activity => self.scroll = self.scroll.saturating_add(1),
+            | Screen::Activity
+            | Screen::Messages
+            | Screen::Workflows => self.scroll = self.scroll.saturating_add(1),
         }
     }
 
@@ -566,7 +580,9 @@ impl App {
             | Screen::Stats
             | Screen::Deploys
             | Screen::Doctor
-            | Screen::Activity => self.scroll = self.scroll.saturating_sub(1),
+            | Screen::Activity
+            | Screen::Messages
+            | Screen::Workflows => self.scroll = self.scroll.saturating_sub(1),
         }
     }
 
@@ -608,7 +624,9 @@ impl App {
             self.prompt = Some((id, answer, text));
             return false;
         }
-        if self.ops_key(code) || (!mods.contains(KeyModifiers::CONTROL) && self.activity_key(code))
+        if self.ops_key(code)
+            || (!mods.contains(KeyModifiers::CONTROL)
+                && (self.activity_key(code) || self.messages_key(code) || self.workflows_key(code)))
         {
             return false;
         }
@@ -672,6 +690,8 @@ impl App {
                     Screen::Stats => Screen::Deploys,
                     Screen::Deploys => Screen::Doctor,
                     Screen::Doctor => Screen::Activity,
+                    Screen::Activity => Screen::Messages,
+                    Screen::Messages => Screen::Workflows,
                     _ => Screen::Queue,
                 };
                 if self.screen == Screen::Stats {
@@ -694,7 +714,9 @@ impl App {
                 | Screen::Stats
                 | Screen::Deploys
                 | Screen::Doctor
-                | Screen::Activity => {}
+                | Screen::Activity
+                | Screen::Messages
+                | Screen::Workflows => {}
                 Screen::Initiatives => {
                     if let Some(id) = self.initiatives.get(self.init_sel).map(|i| i.id) {
                         self.scroll = 0;
@@ -812,6 +834,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         tab("deploy", Screen::Deploys),
         tab("doctor", Screen::Doctor),
         tab("activity", Screen::Activity),
+        tab("messages", Screen::Messages),
+        tab("workflows", Screen::Workflows),
         tab("task", Screen::Task),
         tab("job", Screen::JobView),
     ]);
@@ -834,6 +858,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Deploys => ops::draw_deploys(frame, app, body),
         Screen::Doctor => ops::draw_doctor(frame, app, body),
         Screen::Activity => activity::draw(frame, app, body),
+        Screen::Messages => messages::draw(frame, app, body),
+        Screen::Workflows => workflows::draw(frame, app, body),
         Screen::Task => draw_task(frame, app, body),
         Screen::JobView => draw_job(frame, app, body),
         Screen::Initiative => draw_initiative(frame, app, body),
@@ -847,6 +873,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Deploys => "j/k move  d deploy now  Tab switch  g refresh  q quit",
         Screen::Doctor => "j/k scroll  x gc worktrees  Tab switch  g refresh  q quit",
         Screen::Activity => "j/k scroll  p project  f kind  c clear  Tab switch  q quit",
+        Screen::Messages => "j/k scroll  p project  f contact  c clear  Tab switch  q quit",
+        Screen::Workflows => "j/k move  Enter open  Esc back  Tab switch  g refresh  q quit",
         Screen::Requests => {
             "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
         }
@@ -1693,6 +1721,10 @@ mod tests {
         assert_eq!(app.screen, Screen::Doctor);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Activity);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Messages);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Workflows);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Queue);
     }
