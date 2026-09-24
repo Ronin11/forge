@@ -1,11 +1,34 @@
-Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jobs (2)  stats  task
-┌blocked tasks: decisions waiting on you───────────────────────────────────────────────────────────┐
-│ID    KIND        WF            TO           REQUEST                                              │
-│41    question    reviewed      designer     Which color should we use?                           │
-│42    question    tdd           operator     Keep the old endpoint?                               │
-│43    dependency  direct        operator     waits on task 14 (failed: checks)                    │
-│45    workflow    reviewed      operator     The deploy step is missing                           │
-│44    unverified  direct        operator     Verified work waiting to land                        │
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  stats  task
+ Workflows  Quality  By role  Human attention  Time to live  Factors
+┌stats─────────────────────────────────────────────────────────────────────────────────────────────┐
+│role       provider  model         kind     att succeed% turns cost  secs landed broke base broke%│
+│code       anthropic claude-sonnet attempt  30  70%      14.2  $0.90 310s 18     1          6%    │
+│review     anthropic claude-opus-5 attempt  18  94%      4.0   $0.35 90s  -      -          -     │
+│run-checks anthropic claude-haiku- job_step 6   -        0.0   $0.05 20s  -      -          -     │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -14,27 +37,4 @@ Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jo
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌request───────────────────────────────────────────────────────────────────────────────────────────┐
-│task 41  Choose the palette                                                                       │
-│to: designer                                                                                      │
-│                                                                                                  │
-│Which color should we use?                                                                        │
-│last attempt: Checked the settings; need a product decision.                                      │
-│                                                                                                  │
-│did: Inspected the theme settings                                                                 │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit
+h/l tab  < > sort column  v reverse  j/k scroll  Tab switch  g refresh  q quit

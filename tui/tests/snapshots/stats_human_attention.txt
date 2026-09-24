@@ -1,27 +1,9 @@
-Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jobs (2)  stats  task
-┌blocked tasks: decisions waiting on you───────────────────────────────────────────────────────────┐
-│ID    KIND        WF            TO           REQUEST                                              │
-│41    question    reviewed      designer     Which color should we use?                           │
-│42    question    tdd           operator     Keep the old endpoint?                               │
-│43    dependency  direct        operator     waits on task 14 (failed: checks)                    │
-│45    workflow    reviewed      operator     The deploy step is missing                           │
-│44    unverified  direct        operator     Verified work waiting to land                        │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌request───────────────────────────────────────────────────────────────────────────────────────────┐
-│task 41  Choose the palette                                                                       │
-│to: designer                                                                                      │
-│                                                                                                  │
-│Which color should we use?                                                                        │
-│last attempt: Checked the settings; need a product decision.                                      │
-│                                                                                                  │
-│did: Inspected the theme settings                                                                 │
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  stats  task
+ Workflows  Quality  By role  Human attention  Time to live  Factors
+┌By workflow───────────────────────────────────────────────────────────────────────────────────────┐
+│workflow hash     landed answers hand wdrawn handc events evt/land                                │
+│tdd      a1b2c3d4 15     3       1    1      0     5      0.33                                    │
+│direct   e5f6a7b8 0      0       0    2      0     2      -                                       │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -37,4 +19,22 @@ Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jo
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit
+┌By project────────────────────────────────────────────────────────────────────────────────────────┐
+│project landed answers hand wdrawn handc events evt/land                                          │
+│forge   18     3       1    3      0     7      0.39                                              │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+h/l tab  < > sort column  v reverse  j/k scroll  Tab switch  g refresh  q quit

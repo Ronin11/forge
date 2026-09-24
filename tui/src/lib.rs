@@ -12,8 +12,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use forge_client::{
-    Event, Forge, InitiativeDoc, InitiativeRow, JobDoc, JobRow, Killer, RequestRow, TaskRow,
-    TraceDoc, Worker,
+    Event, Forge, InitiativeDoc, InitiativeRow, JobDoc, JobRow, Killer, RequestRow, StatsDoc,
+    TaskRow, TraceDoc, Worker,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -24,6 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+pub mod stats;
 pub mod time;
 
 /// What a client keeps of the stream: the last events per task, as text.
@@ -35,6 +36,7 @@ pub enum Screen {
     Requests,
     Initiatives,
     Jobs,
+    Stats,
     Task,
     JobView,
     Initiative,
@@ -50,6 +52,9 @@ pub struct App {
     trace: Option<TraceDoc>,
     job: Option<JobDoc>,
     initiative: Option<InitiativeDoc>,
+    stats: Option<StatsDoc>,
+    stats_tab: usize,
+    stats_sort: Option<(&'static str, bool)>,
     /// A budget (`true`) or stop-after (`false`) being typed for an initiative.
     limit_prompt: Option<(i64, bool, String)>,
     queue_sel: usize,
@@ -83,6 +88,9 @@ impl App {
             trace: None,
             job: None,
             initiative: None,
+            stats: None,
+            stats_tab: 0,
+            stats_sort: None,
             limit_prompt: None,
             queue_sel: 0,
             req_sel: 0,
@@ -129,6 +137,9 @@ impl App {
         self.load_initiatives();
         self.load_jobs();
         self.reload_initiative();
+        if self.screen == Screen::Stats {
+            self.load_stats();
+        }
         self.queue_sel = self.queue_sel.min(self.tasks.len().saturating_sub(1));
         self.req_sel = self.req_sel.min(self.requests.len().saturating_sub(1));
         self.refreshed = Instant::now();
@@ -282,6 +293,48 @@ impl App {
         self.job_sel = self.job_sel.min(self.jobs.len().saturating_sub(1));
     }
 
+    /// `forge stats --json`, read when the stats screen opens and on `g`.
+    fn load_stats(&mut self) {
+        match self.forge.stats() {
+            Ok(doc) => {
+                let tabs = stats::visible_tabs(&doc).len();
+                self.stats_tab = self.stats_tab.min(tabs - 1);
+                self.stats = Some(doc);
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    fn stats_tab_step(&mut self, forward: bool) {
+        let Some(doc) = &self.stats else { return };
+        let n = stats::visible_tabs(doc).len();
+        self.stats_tab = if forward {
+            (self.stats_tab + 1) % n
+        } else {
+            (self.stats_tab + n - 1) % n
+        };
+        self.stats_sort = None;
+        self.scroll = 0;
+    }
+
+    /// Moves the sort key along the tab's columns, none at both ends.
+    fn stats_sort_step(&mut self, forward: bool) {
+        let Some(doc) = &self.stats else { return };
+        let tabs = stats::visible_tabs(doc);
+        let tab = tabs[self.stats_tab.min(tabs.len() - 1)];
+        let keys = stats::sort_keys(doc, tab);
+        let at = self
+            .stats_sort
+            .and_then(|(k, _)| keys.iter().position(|&x| x == k));
+        let next = match (at, forward) {
+            (None, true) => Some(0),
+            (None, false) => keys.len().checked_sub(1),
+            (Some(i), true) => (i + 1 < keys.len()).then_some(i + 1),
+            (Some(i), false) => i.checked_sub(1),
+        };
+        self.stats_sort = next.map(|i| (keys[i], stats::starts_descending(doc, tab, keys[i])));
+    }
+
     pub fn open_task(&mut self, id: i64) {
         match self
             .forge
@@ -363,7 +416,7 @@ impl App {
             Screen::Queue => self.tasks.get(self.queue_sel).map(|t| t.id),
             Screen::Requests => self.requests.get(self.req_sel).map(|r| r.id),
             Screen::Initiatives => None,
-            Screen::Jobs => None,
+            Screen::Jobs | Screen::Stats => None,
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
             Screen::JobView | Screen::Initiative => None,
         }
@@ -477,7 +530,7 @@ impl App {
             Screen::Jobs => {
                 self.job_sel = (self.job_sel + 1).min(self.jobs.len().saturating_sub(1))
             }
-            Screen::Task | Screen::JobView | Screen::Initiative => {
+            Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {
                 self.scroll = self.scroll.saturating_add(1)
             }
         }
@@ -489,7 +542,7 @@ impl App {
             Screen::Requests => self.req_sel = self.req_sel.saturating_sub(1),
             Screen::Initiatives => self.init_sel = self.init_sel.saturating_sub(1),
             Screen::Jobs => self.job_sel = self.job_sel.saturating_sub(1),
-            Screen::Task | Screen::JobView | Screen::Initiative => {
+            Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {
                 self.scroll = self.scroll.saturating_sub(1)
             }
         }
@@ -564,6 +617,19 @@ impl App {
                     self.status.clear();
                 }
             }
+            KeyCode::Char('h') | KeyCode::Left if self.screen == Screen::Stats => {
+                self.stats_tab_step(false)
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.screen == Screen::Stats => {
+                self.stats_tab_step(true)
+            }
+            KeyCode::Char('<') if self.screen == Screen::Stats => self.stats_sort_step(false),
+            KeyCode::Char('>') if self.screen == Screen::Stats => self.stats_sort_step(true),
+            KeyCode::Char('v') if self.screen == Screen::Stats => {
+                if let Some((_, desc)) = &mut self.stats_sort {
+                    *desc = !*desc;
+                }
+            }
             KeyCode::Char('q') => return true,
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('j') | KeyCode::Down => self.down(),
@@ -576,7 +642,12 @@ impl App {
                     Screen::Queue => Screen::Requests,
                     Screen::Requests => Screen::Initiatives,
                     Screen::Initiatives => Screen::Jobs,
+                    Screen::Jobs => Screen::Stats,
                     _ => Screen::Queue,
+                };
+                if self.screen == Screen::Stats {
+                    self.scroll = 0;
+                    self.load_stats();
                 }
             }
             KeyCode::Enter => match self.screen {
@@ -586,7 +657,7 @@ impl App {
                         self.open_job(id);
                     }
                 }
-                Screen::Task | Screen::JobView | Screen::Initiative => {}
+                Screen::Task | Screen::JobView | Screen::Initiative | Screen::Stats => {}
                 Screen::Initiatives => {
                     if let Some(id) = self.initiatives.get(self.init_sel).map(|i| i.id) {
                         self.scroll = 0;
@@ -700,6 +771,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Screen::Initiatives,
         ),
         tab(&format!("jobs ({})", app.jobs.len()), Screen::Jobs),
+        tab("stats", Screen::Stats),
         tab("task", Screen::Task),
         tab("job", Screen::JobView),
     ]);
@@ -709,6 +781,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Requests => draw_requests(frame, app, body),
         Screen::Initiatives => draw_initiatives(frame, app, body),
         Screen::Jobs => draw_jobs(frame, app, body),
+        Screen::Stats => stats::draw(
+            frame,
+            &stats::StatsView {
+                doc: app.stats.as_ref(),
+                tab: app.stats_tab,
+                sort: app.stats_sort,
+                scroll: app.scroll,
+            },
+            body,
+        ),
         Screen::Task => draw_task(frame, app, body),
         Screen::JobView => draw_job(frame, app, body),
         Screen::Initiative => draw_initiative(frame, app, body),
@@ -716,6 +798,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let keys = match app.screen {
         Screen::Task | Screen::JobView => "j/k scroll  Esc back  r retry  R retry chain  q quit",
         Screen::Initiative => "j/k scroll  b budget  s stop-after  Esc back  q quit",
+        Screen::Stats => {
+            "h/l tab  < > sort column  v reverse  j/k scroll  Tab switch  g refresh  q quit"
+        }
         Screen::Requests => {
             "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
         }
@@ -1534,7 +1619,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_queue_requests_initiatives_jobs_and_back() {
+    fn tab_cycles_queue_requests_initiatives_jobs_stats_and_back() {
         let mut app = app_with("[]", "[]");
         assert_eq!(app.screen, Screen::Queue);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
@@ -1543,6 +1628,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Initiatives);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Jobs);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Stats);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Queue);
     }

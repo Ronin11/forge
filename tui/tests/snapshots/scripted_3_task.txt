@@ -1,4 +1,4 @@
-Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  stats  task
 ┌trace─────────────────────────────────────────────────────────────────────────────────────────────┐
 │task 11  succeeded  tdd                                                                           │
 │branch forge/11-x   base abcdef12                                                                 │

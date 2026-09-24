@@ -1,0 +1,36 @@
+{
+  "workflows": [
+    {"workflow": "tdd", "hash": "a1b2c3d4", "pieces": 20, "succeeded": 16, "failed": 2, "blocked": 1, "unverified": 1, "attempts": 31, "mean_cost_usd": 1.25, "cost_per_success_usd": 1.56, "landed": 15, "cost_per_landed_usd": 1.67, "broke_base": 1, "broke_base_share": 0.0667, "repaired": 2, "repaired_share": 0.1333, "repair_cost_usd": 0.8, "true_cost_per_landed_usd": 1.72, "churn_share": 0.12, "rate": 0.8, "rate_lo": 0.58, "rate_hi": 0.92, "regressed": false},
+    {"workflow": "direct", "hash": "e5f6a7b8", "pieces": 8, "succeeded": 3, "failed": 4, "blocked": 1, "unverified": 0, "attempts": 12, "mean_cost_usd": 0.4, "cost_per_success_usd": 1.07, "landed": 3, "cost_per_landed_usd": 1.07, "broke_base": 0, "broke_base_share": 0.0, "repaired": 0, "repaired_share": 0.0, "repair_cost_usd": 0.0, "true_cost_per_landed_usd": 1.07, "churn_share": null, "rate": 0.375, "rate_lo": 0.14, "rate_hi": 0.69, "regressed": true},
+    {"workflow": "docs", "hash": "99aa88bb", "pieces": 0, "succeeded": 0, "failed": 0, "blocked": 0, "unverified": 0, "attempts": 0, "mean_cost_usd": 0.0, "cost_per_success_usd": null, "landed": 0, "cost_per_landed_usd": null, "broke_base": 0, "broke_base_share": null, "repaired": 0, "repaired_share": null, "repair_cost_usd": 0.0, "true_cost_per_landed_usd": null, "churn_share": null, "rate": 0.0, "rate_lo": 0.0, "rate_hi": 0.0, "regressed": false}
+  ],
+  "by_role": [
+    {"role": "code", "provider": "anthropic", "model": "claude-sonnet-5", "kind": "attempt", "attempts": 30, "succeeded": 21, "succeeded_share": 0.7, "mean_turns": 14.2, "mean_cost_usd": 0.9, "mean_secs": 310.0, "landed": 18, "broke_base": 1, "broke_base_share": 0.0556, "repair_cost_usd": 0.8, "true_cost_per_landed_usd": 1.5, "churn_share": 0.1},
+    {"role": "review", "provider": "anthropic", "model": "claude-opus-5-5", "kind": "attempt", "attempts": 18, "succeeded": 17, "succeeded_share": 0.9444, "mean_turns": 4.0, "mean_cost_usd": 0.35, "mean_secs": 90.0},
+    {"role": "run-checks", "provider": "anthropic", "model": "claude-haiku-4-5", "kind": "job_step", "attempts": 6, "succeeded": 0, "succeeded_share": null, "mean_turns": 0.0, "mean_cost_usd": 0.05, "mean_secs": 20.0}
+  ],
+  "assessment_correlation": [
+    {"measure": "churn", "rho": -0.42, "n": 12},
+    {"measure": "repair_cost", "rho": null, "n": 1}
+  ],
+  "human_attention": [
+    {"workflow": "tdd", "hash": "a1b2c3d4", "landed": 15, "operator_answers": 3, "hand_landed": 1, "withdrawals": 1, "hand_commits": 0, "events": 5, "events_per_landed": 0.3333},
+    {"workflow": "direct", "hash": "e5f6a7b8", "landed": 0, "operator_answers": 0, "hand_landed": 0, "withdrawals": 2, "hand_commits": 0, "events": 2, "events_per_landed": null}
+  ],
+  "human_attention_projects": [
+    {"project": "forge", "landed": 18, "operator_answers": 3, "hand_landed": 1, "withdrawals": 3, "hand_commits": 0, "events": 7, "events_per_landed": 0.3889}
+  ],
+  "time_to_live": [
+    {"workflow": "tdd", "hash": "a1b2c3d4", "n": 15, "median_secs": 640.0, "p90_secs": 1900.0},
+    {"workflow": "direct", "hash": "e5f6a7b8", "n": 0, "median_secs": null, "p90_secs": null}
+  ],
+  "time_to_live_projects": [
+    {"project": "forge", "n": 18, "median_secs": 700.0, "p90_secs": 2100.0}
+  ],
+  "factors": [
+    {"factor": "provider:code", "level": "anthropic", "tasks": 24, "landed": 18, "rate": 0.75, "rate_lo": 0.55, "rate_hi": 0.88, "mean_true_cost_usd": 1.5, "is_reference": true, "effect": null, "effect_se": null},
+    {"factor": "provider:code", "level": "codex", "tasks": 4, "landed": 0, "rate": 0.0, "rate_lo": 0.0, "rate_hi": 0.49, "mean_true_cost_usd": null, "is_reference": false, "effect": null, "effect_se": null},
+    {"factor": "size", "level": "small", "tasks": 14, "landed": 12, "rate": 0.857, "rate_lo": 0.6, "rate_hi": 0.96, "mean_true_cost_usd": 0.9, "is_reference": true, "effect": null, "effect_se": null},
+    {"factor": "size", "level": "large", "tasks": 6, "landed": 3, "rate": 0.5, "rate_lo": 0.19, "rate_hi": 0.81, "mean_true_cost_usd": 2.4, "is_reference": false, "effect": 0.4711, "effect_se": 0.2033}
+  ]
+}
