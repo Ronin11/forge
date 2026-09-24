@@ -24,6 +24,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+pub mod activity;
 pub mod ops;
 pub mod stats;
 pub mod time;
@@ -40,6 +41,7 @@ pub enum Screen {
     Stats,
     Deploys,
     Doctor,
+    Activity,
     Task,
     JobView,
     Initiative,
@@ -59,6 +61,9 @@ pub struct App {
     stats_tab: usize,
     stats_sort: Option<(&'static str, bool)>,
     ops: ops::Ops,
+    activity: activity::Activity,
+    query: String,
+    query_prompt: Option<String>,
     /// A budget (`true`) or stop-after (`false`) being typed for an initiative.
     limit_prompt: Option<(i64, bool, String)>,
     queue_sel: usize,
@@ -96,6 +101,9 @@ impl App {
             stats_tab: 0,
             stats_sort: None,
             ops: ops::Ops::default(),
+            activity: activity::Activity::default(),
+            query: String::new(),
+            query_prompt: None,
             limit_prompt: None,
             queue_sel: 0,
             req_sel: 0,
@@ -138,6 +146,10 @@ impl App {
             }
             Err(e) => self.status = format!("{e:#}"),
         }
+        if !self.query.is_empty() {
+            self.run_query(None);
+        }
+        self.seed_running();
         self.load_inbox();
         self.load_initiatives();
         self.load_jobs();
@@ -154,6 +166,7 @@ impl App {
     /// One event from the stream: remembered as live text, and a flag for
     /// what it changed, so the lists and the trace are re-read only then.
     pub fn apply(&mut self, event: Event) {
+        self.activity.record(&event);
         let job_id = match &event {
             Event::JobStarted { job_id, .. } | Event::JobFinished { job_id, .. } => Some(*job_id),
             _ => None,
@@ -252,14 +265,7 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        match self
-            .forge
-            .json(&["log", "--json", "--limit", "60"])
-            .and_then(|v| Ok(serde_json::from_value::<Vec<TaskRow>>(v)?))
-        {
-            Ok(rows) => self.tasks = rows,
-            Err(e) => self.status = format!("{e:#}"),
-        }
+        self.run_query(None);
         match self
             .forge
             .json(&["requests", "--json"])
@@ -422,7 +428,9 @@ impl App {
             Screen::Queue => self.tasks.get(self.queue_sel).map(|t| t.id),
             Screen::Requests => self.requests.get(self.req_sel).map(|r| r.id),
             Screen::Initiatives => None,
-            Screen::Jobs | Screen::Stats | Screen::Deploys | Screen::Doctor => None,
+            Screen::Jobs | Screen::Stats | Screen::Deploys | Screen::Doctor | Screen::Activity => {
+                None
+            }
             Screen::Task => self.trace.as_ref().and_then(|t| t.task["id"].as_i64()),
             Screen::JobView | Screen::Initiative => None,
         }
@@ -541,7 +549,8 @@ impl App {
             | Screen::Initiative
             | Screen::Stats
             | Screen::Deploys
-            | Screen::Doctor => self.scroll = self.scroll.saturating_add(1),
+            | Screen::Doctor
+            | Screen::Activity => self.scroll = self.scroll.saturating_add(1),
         }
     }
 
@@ -556,7 +565,8 @@ impl App {
             | Screen::Initiative
             | Screen::Stats
             | Screen::Deploys
-            | Screen::Doctor => self.scroll = self.scroll.saturating_sub(1),
+            | Screen::Doctor
+            | Screen::Activity => self.scroll = self.scroll.saturating_sub(1),
         }
     }
 
@@ -598,7 +608,8 @@ impl App {
             self.prompt = Some((id, answer, text));
             return false;
         }
-        if self.ops_key(code) {
+        if self.ops_key(code) || (!mods.contains(KeyModifiers::CONTROL) && self.activity_key(code))
+        {
             return false;
         }
         match code {
@@ -660,6 +671,7 @@ impl App {
                     Screen::Jobs => Screen::Stats,
                     Screen::Stats => Screen::Deploys,
                     Screen::Deploys => Screen::Doctor,
+                    Screen::Doctor => Screen::Activity,
                     _ => Screen::Queue,
                 };
                 if self.screen == Screen::Stats {
@@ -681,7 +693,8 @@ impl App {
                 | Screen::Initiative
                 | Screen::Stats
                 | Screen::Deploys
-                | Screen::Doctor => {}
+                | Screen::Doctor
+                | Screen::Activity => {}
                 Screen::Initiatives => {
                     if let Some(id) = self.initiatives.get(self.init_sel).map(|i| i.id) {
                         self.scroll = 0;
@@ -798,6 +811,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         tab("stats", Screen::Stats),
         tab("deploy", Screen::Deploys),
         tab("doctor", Screen::Doctor),
+        tab("activity", Screen::Activity),
         tab("task", Screen::Task),
         tab("job", Screen::JobView),
     ]);
@@ -819,6 +833,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ),
         Screen::Deploys => ops::draw_deploys(frame, app, body),
         Screen::Doctor => ops::draw_doctor(frame, app, body),
+        Screen::Activity => activity::draw(frame, app, body),
         Screen::Task => draw_task(frame, app, body),
         Screen::JobView => draw_job(frame, app, body),
         Screen::Initiative => draw_initiative(frame, app, body),
@@ -831,12 +846,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Screen::Deploys => "j/k move  d deploy now  Tab switch  g refresh  q quit",
         Screen::Doctor => "j/k scroll  x gc worktrees  Tab switch  g refresh  q quit",
+        Screen::Activity => "j/k scroll  p project  f kind  c clear  Tab switch  q quit",
         Screen::Requests => {
             "j/k move  a answer  w withdraw  l land  Enter open  Tab switch  q quit"
         }
+        Screen::Queue => {
+            "j/k move  Enter open  / query  n next page  Esc clear  Tab switch  r retry  q quit"
+        }
         _ => "j/k move  Enter open  Tab switch  r retry  R retry chain  g refresh  q quit",
     };
-    let foot_line = if let Some((id, budget, text)) = &app.limit_prompt {
+    let foot_line = if let Some(text) = &app.query_prompt {
+        Line::raw(format!("Query: {text}▏  Enter run  Esc cancel"))
+    } else if let Some((id, budget, text)) = &app.limit_prompt {
         Line::raw(format!(
             "{} for initiative {id}: {text}▏  Enter submit  Esc cancel",
             if *budget { "Budget USD" } else { "Stop after" }
@@ -899,7 +920,11 @@ fn draw_queue(frame: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .block(Block::bordered().title("tasks, newest first"));
+    .block(Block::bordered().title(if app.query.is_empty() {
+        "tasks, newest first".to_owned()
+    } else {
+        format!("forge {}", activity::log_args(&app.query, None).join(" "))
+    }));
     let mut st = TableState::default();
     st.select((!app.tasks.is_empty()).then_some(app.queue_sel));
     frame.render_stateful_widget(table, area, &mut st);
@@ -1666,6 +1691,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Deploys);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Doctor);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.screen, Screen::Activity);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.screen, Screen::Queue);
     }

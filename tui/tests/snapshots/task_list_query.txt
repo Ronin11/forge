@@ -1,8 +1,8 @@
-Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
-┌tasks, newest first───────────────────────────────────────────────────────────────────────────────┐
+Forge  0 queued, 0 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
+┌forge log --json --limit 60 --state failed --project forge --grep broken parser───────────────────┐
 │ID    STATE       WF            ATT  COST    PROJECT      TASK                                    │
-│12    running     tdd           2    $1.35   forge        add snapshot tests for the tui          │
-│11    succeeded   direct        1    $0.10   forge        fix typo in docs                        │
+│10    failed      tdd           3    $2.50   forge        broken parser                           │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
