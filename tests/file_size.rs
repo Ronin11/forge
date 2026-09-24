@@ -47,11 +47,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "Existing module awaiting a focused split",
     ),
     (
-        "src/view.rs",
-        4891,
-        "Existing module awaiting a focused split",
-    ),
-    (
         "src/worker.rs",
         1917,
         "Existing module awaiting a focused split",
