@@ -20,6 +20,9 @@ pub struct Decision {
     /// Who the question was addressed to, copied from the task's
     /// `question_to` at answer time; `None` means the operator.
     pub answered_for: Option<String>,
+    /// `demotion-as-task` when the kernel's own rule made the ruling (see
+    /// docs/WORKFLOWS.md); empty for every other decision.
+    pub kind: String,
 }
 
 /// An external reference a plugin or the operator recorded on a task: the
@@ -46,6 +49,7 @@ pub(super) const DECISION_COLUMNS: &[&str] = &[
     "citations",
     "retry_id",
     "answered_for",
+    "kind",
 ];
 
 fn decision_from_row(r: &Row) -> rusqlite::Result<Decision> {
@@ -60,6 +64,7 @@ fn decision_from_row(r: &Row) -> rusqlite::Result<Decision> {
         citations: r.get("citations")?,
         retry_id: r.get("retry_id")?,
         answered_for: r.get("answered_for")?,
+        kind: r.get("kind")?,
     })
 }
 
@@ -106,6 +111,15 @@ impl Store {
         self.lock().execute(
             "UPDATE decisions SET retry_id=?2 WHERE id=?1",
             params![decision_id, retry_id],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a decision as the kernel's own ruling of `kind`.
+    pub fn set_decision_kind(&self, decision_id: i64, kind: &str) -> Result<()> {
+        self.lock().execute(
+            "UPDATE decisions SET kind=?2 WHERE id=?1",
+            params![decision_id, kind],
         )?;
         Ok(())
     }

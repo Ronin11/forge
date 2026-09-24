@@ -637,4 +637,8 @@ CREATE TABLE job_trust (
   trust TEXT NOT NULL
 );
 ",
+    // What kind of ruling a decision row records, when the kernel rather
+    // than a person or the supervisor made it: `demotion-as-task` (see
+    // docs/WORKFLOWS.md, "Review"). Empty for every other decision.
+    "ALTER TABLE decisions ADD COLUMN kind TEXT NOT NULL DEFAULT '';",
 ];

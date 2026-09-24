@@ -1092,6 +1092,7 @@ mod tests {
             citations: String::new(),
             retry_id: None,
             answered_for: None,
+            kind: String::new(),
         }];
         let text = interview_prompt(&t, &test_cfg(), &step, &decisions, None);
 

@@ -70,6 +70,20 @@ markdown, not a diagram: a diagram can be generated from this for display
 but is never parsed to execute. SQLite later means registering name and
 hash the first time a task uses one.
 
+### A review demotion that names a defect is a task
+
+A reviewer can only demote with executed evidence, and the demotion blocks
+the task as a question. One rule, in the kernel and before the supervisor,
+reads that text first: when it carries a reproduction (a fenced or inline
+command, or a step list ending in an observed-versus-expected line) and
+contains no question mark, it is a defect report, not a question. Forge
+files a follow-up task on the same lineage with the demotion as its text,
+starting from the demoted branch, and does not ask anyone. The rule spends
+the lineage's supervisor budget (`per_lineage`); once that is used, or when
+the demotion asks something ("should this be configurable?"), the task
+blocks as before. The ruling is a decision row of kind `demotion-as-task`,
+which `forge stats --questions` counts.
+
 The set of step kinds is closed and small:
 
 - `code`: an agent in a per-task clone of the base branch, writing the

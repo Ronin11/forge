@@ -79,6 +79,24 @@ pub async fn drive(f: Arc<Forge>, id: i64) -> Result<TaskState> {
                 .and_then(|t| crate::supervisor::addressed_elsewhere(&t));
             if let Some(note) = addressed_elsewhere {
                 f.report.emit(id, Event::Note { text: &note });
+            } else if let Some(n) = crate::supervisor::demotion_as_task(&f, id)
+                .await
+                .unwrap_or_else(|e| {
+                    f.report.emit(
+                        id,
+                        Event::Note {
+                            text: &format!("demotion rule error: {e:#}"),
+                        },
+                    );
+                    None
+                })
+            {
+                f.report.emit(
+                    id,
+                    Event::Note {
+                        text: &format!("the demotion names a reproducible defect; filed task {n}"),
+                    },
+                );
             } else if let Err(e) = crate::supervisor::supervise(&f, id).await {
                 // The rung before the human: the supervisor reads the
                 // record and answers, files a prerequisite, or

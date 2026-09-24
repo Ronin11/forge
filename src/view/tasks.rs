@@ -173,6 +173,9 @@ pub struct DecisionRow {
     pub outcome: Option<String>,
     /// Who the question was addressed to; absent means the operator.
     pub answered_for: Option<String>,
+    /// `demotion-as-task` for the kernel's own ruling; absent otherwise.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub kind: String,
 }
 
 impl DecisionRow {
@@ -189,6 +192,7 @@ impl DecisionRow {
             retry_id: d.retry_id,
             outcome: outcome.map(|s| s.as_str().to_string()),
             answered_for: d.answered_for.clone(),
+            kind: d.kind.clone(),
         }
     }
 }

@@ -101,3 +101,60 @@ fn three_supervisor_answered_demotions_that_landed_are_do_it_as_stated() {
         "{text}"
     );
 }
+
+#[test]
+fn a_demotion_with_a_reproduction_files_a_follow_up_that_lands() {
+    let e = Env::new();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+        "reviewed",
+        "write 42",
+    );
+    assert!(!o.status.success());
+    assert_eq!(e.task(1).0, "blocked");
+    let doc: serde_json::Value = e.trace_json("2");
+    assert_eq!(doc["task"]["retry_of"], 1);
+    let text = doc["task"]["text"].as_str().unwrap();
+    assert!(text.contains("`xxd answer.txt` shows none"), "{text}");
+    let ds = e.decisions_json();
+    let d = &ds.as_array().unwrap()[0];
+    assert_eq!(d["retry_id"], 2);
+    let kind: String = e
+        .db()
+        .query_row("SELECT kind FROM decisions WHERE task_id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(kind, "demotion-as-task");
+
+    let o = e
+        .with_role("ok.sh", "REVIEW", "reviewer-ok.sh")
+        .args(["work", "--once"])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert_eq!(e.task(2).0, "succeeded");
+}
+
+#[test]
+fn a_demotion_that_asks_something_still_blocks_with_the_question() {
+    let e = Env::new();
+    let o = run_wf(
+        &e,
+        "ok.sh",
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-ask.sh")],
+        "reviewed",
+        "write 42",
+    );
+    assert!(!o.status.success());
+    let (state, reason, _) = e.task(1);
+    assert_eq!(state, "blocked");
+    assert!(reason.contains("should this be configurable?"), "{reason}");
+    let n: i64 = e
+        .db()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "no follow-up is filed");
+}

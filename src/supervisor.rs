@@ -338,6 +338,95 @@ pub fn addressed_elsewhere(t: &Task) -> Option<String> {
 
 /// Supervise one blocked task. Returns what was done; `Skipped` when the
 /// task is not the supervisor's to handle.
+/// Whether a review demotion is a task rather than a question: it carries
+/// a reproduction (a fenced or inline command, or a step list ending in an
+/// observed-versus-expected line) and asks the operator nothing.
+pub fn demotion_is_task(text: &str) -> bool {
+    if text.contains('?') {
+        return false;
+    }
+    let fenced = text.matches("```").count() >= 2;
+    let inline = text
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .any(|s| s.split_whitespace().count() >= 2);
+    let is_step = |l: &str| {
+        let l = l.trim_start();
+        let rest = l.trim_start_matches(|c: char| c.is_ascii_digit());
+        (rest.len() < l.len() && (rest.starts_with('.') || rest.starts_with(')')))
+            || l.starts_with("- ")
+            || l.starts_with("* ")
+    };
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let steps = lines.iter().filter(|l| is_step(l)).count() >= 2;
+    let last = lines.last().map(|l| l.to_lowercase()).unwrap_or_default();
+    let observed = last.contains("expected")
+        && ["got", "observed", "actual", "but", "instead", "saw"]
+            .iter()
+            .any(|w| last.contains(w));
+    fenced || inline || (steps && observed)
+}
+
+/// The kernel's rung before the supervisor: a review demotion that names a
+/// reproducible defect (`demotion_is_task`) is filed as a follow-up task on
+/// the same lineage, with the demotion as its text and the demoted branch
+/// kept, while the lineage is within the supervisor's budget. The rule's
+/// decision is recorded on the task with kind `demotion-as-task`. Returns
+/// the follow-up's id, or `None` when the rule does not apply and the task
+/// stays blocked.
+pub async fn demotion_as_task(f: &Forge, id: i64) -> Result<Option<i64>> {
+    let t = f.store.task(id)?.with_context(|| format!("no task {id}"))?;
+    if t.state != TaskState::Blocked {
+        return Ok(None);
+    }
+    let attempts = f.store.attempts(id)?;
+    let Some(last) = attempts.iter().rev().find(|a| a.is_agent()) else {
+        return Ok(None);
+    };
+    if last.state != AttemptState::NeedsInput {
+        return Ok(None);
+    }
+    let Some(q) = serde_json::from_str::<Envelope>(&last.envelope_json)
+        .ok()
+        .and_then(|e| e.needs_input)
+    else {
+        return Ok(None);
+    };
+    if q.kind != Kind::Review || !demotion_is_task(&q.question) {
+        return Ok(None);
+    }
+    let cfg = f.effective_supervisor(&t);
+    if f.store.supervisor_answers_in_lineage(id)? >= cfg.per_lineage {
+        return Ok(None);
+    }
+    let decision = f.store.insert_decision_by(
+        id,
+        &t.repo,
+        &q.question,
+        "filed the demotion as a follow-up task: it names a reproducible defect and asks nothing",
+        "supervisor",
+        "",
+        t.question_to.as_deref(),
+    )?;
+    f.store.set_decision_kind(decision, "demotion-as-task")?;
+    let after = t
+        .after
+        .iter()
+        .map(|&d| crate::queue::map_dep(f, d, &std::collections::HashMap::new()))
+        .collect::<Result<Vec<_>>>()?;
+    let req = crate::queue::retry_request(
+        &t,
+        &crate::queue::RetryOverrides::none(),
+        true,
+        after,
+        Some(q.question.clone()),
+    );
+    let n = crate::queue::enqueue(f, &req, Some(id)).await?;
+    f.store.set_decision_retry(decision, n.id)?;
+    Ok(Some(n.id))
+}
+
 pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
     if !f.supervisor.enabled {
         return Ok(Ruled::Skipped("supervisor disabled".into()));
