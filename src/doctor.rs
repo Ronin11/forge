@@ -233,6 +233,32 @@ fn check_egress(paths: &Paths, store: &Store) -> Vec<Check> {
             Err(e) => check("egress", Status::Fail, format!("running bwrap: {e}"), ""),
         }
     });
+    if let Ok(c) = config::load_home(&paths.home) {
+        let model_only = [&c.trust.operator, &c.trust.contact, &c.trust.public]
+            .iter()
+            .any(|p| p.egress == config::TrustEgress::Model);
+        out.push(match &c.sandbox.dependency_cache {
+            Some(d) if d.is_dir() => check(
+                "dependency_cache",
+                Status::Ok,
+                format!("{} is bound read-only into attempts", d.display()),
+                "",
+            ),
+            Some(d) => check(
+                "dependency_cache",
+                Status::Warn,
+                format!("{} does not exist", d.display()),
+                "warm it with the repository's dependencies; public work installs from it",
+            ),
+            None if model_only => check(
+                "dependency_cache",
+                Status::Warn,
+                "no [sandbox] dependency_cache: public work reaches no registry, so its setup check would fail without a cache",
+                "set dependency_cache in config.toml to a directory warmed with the repository's dependencies",
+            ),
+            None => check("dependency_cache", Status::Ok, "not configured", ""),
+        });
+    }
     let projects = match store.list_projects() {
         Ok(p) => p,
         Err(_) => return out,

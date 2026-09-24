@@ -5575,6 +5575,12 @@ pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<Strin
     if !t.landed_sha.is_empty() {
         bail!("task {id} already landed: {}", t.reason);
     }
+    if !by_hand && !f.trust_policy(t.trust).auto_land {
+        bail!(
+            "task {id} is at trust {}, which does not land itself; land it with forge land {id}",
+            t.trust.as_str()
+        );
+    }
     let repo = PathBuf::from(&t.repo);
     if !Path::new(&t.worktree).join(".git").exists() {
         bail!(

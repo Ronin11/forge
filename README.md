@@ -227,6 +227,18 @@ a node or cargo installed under it would be invisible. `rw_paths` (default
 read-write and shared across attempts; lockfile integrity is what makes
 that safe. Paths that do not exist are skipped.
 
+`dependency_cache` (optional, no default) is a directory you warm with a
+repository's dependencies, bound read-only into every attempt at the same
+path. A task at a trust level whose `egress` is `"model"` (`public` by
+default) runs with the proxy allowing the model endpoints only, so its
+checks cannot reach a registry and install from this cache instead (point
+the toolchain at it, e.g. `CARGO_HOME` or `npm_config_cache`, in the
+repository's `setup` check). Without it, `setup` runs with the declared
+registries as before and `forge doctor` warns that public work would need
+the cache. A level with `auto_land = false` never lands itself: its run
+ends unverified once the checks pass, with the branch pushed, and a person
+lands it with `forge land <id>` or from the inbox page.
+
 A check named `setup` runs before the others and gates them: if it fails,
 nothing else runs. Its outputs (`node_modules`, `target`) must be
 gitignored, or the next attempt fails L0 for a dirty tree.
