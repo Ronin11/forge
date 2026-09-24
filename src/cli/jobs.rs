@@ -525,10 +525,8 @@ fn job_log(project: String, json: bool) -> Result<()> {
 /// path: a lone argument is a workflow only when this directory holds a
 /// run workflow of that name, or when it names no directory and holds no
 /// path separator.
-pub(super) fn job_test_target(
-    workflow: Option<String>,
-    path: Option<PathBuf>,
-) -> (Option<String>, PathBuf) {
+#[rustfmt::skip]
+pub(super) fn job_test_target(workflow: Option<String>, path: Option<PathBuf>) -> (Option<String>, PathBuf) {
     match (workflow, path) {
         (Some(w), None) => {
             let named_here = Path::new(".forge/workflows")
