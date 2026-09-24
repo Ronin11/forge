@@ -19,12 +19,23 @@ fn forge_web_serve_runs_forge_web_from_path_with_the_bind_flag() {
     .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let o = std::process::Command::new(&forge)
-        .args(["web", "serve", "--bind", "127.0.0.1:9"])
-        .env("FORGE_HOME", &e.home)
-        .env("PATH", &path)
-        .output()
-        .unwrap();
+    // A sibling test forking while a script is open for write can make exec
+    // fail with ETXTBSY; retry briefly.
+    let mut tries = 0;
+    let o = loop {
+        match std::process::Command::new(&forge)
+            .args(["web", "serve", "--bind", "127.0.0.1:9"])
+            .env("FORGE_HOME", &e.home)
+            .env("PATH", &path)
+            .output()
+        {
+            Err(err) if err.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    };
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         std::fs::read_to_string(&out).unwrap().trim(),
@@ -69,12 +80,23 @@ fn forge_web_serve_skips_a_non_executable_forge_web_on_path() {
     )
     .unwrap();
     let path = format!("{}:{}", first.display(), second.display());
-    let o = std::process::Command::new(&forge)
-        .args(["web", "serve", "--bind", "127.0.0.1:9"])
-        .env("FORGE_HOME", &e.home)
-        .env("PATH", &path)
-        .output()
-        .unwrap();
+    // A sibling test forking while a script is open for write can make exec
+    // fail with ETXTBSY; retry briefly.
+    let mut tries = 0;
+    let o = loop {
+        match std::process::Command::new(&forge)
+            .args(["web", "serve", "--bind", "127.0.0.1:9"])
+            .env("FORGE_HOME", &e.home)
+            .env("PATH", &path)
+            .output()
+        {
+            Err(err) if err.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    };
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         std::fs::read_to_string(&out).unwrap().trim(),
