@@ -47,6 +47,7 @@ docs/CHECKS.md for the reference). Then:
 ```sh
 forge add <repo> "<task>"                    # queue a task
 forge work --once                            # drain the queue and exit
+forge web serve                              # run the web client (forge-web)
 forge web open                               # open the web client on this task's queue
 ```
 

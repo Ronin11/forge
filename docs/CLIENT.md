@@ -445,6 +445,12 @@ snapshot log requests decisions trace journal graph workflows stats events retry
 
 ## Reaching forge-web (operator)
 
+`forge web serve [--bind ADDR]` runs `forge-web`: it execs the
+`forge-web` binary found in the same directory as `forge` (where the
+symlinks under `~/.local/bin` and `target/release` put it), else on
+`PATH`, passing `--bind` through. It embeds nothing; a missing binary is
+a one-line error naming where it looked.
+
 `forge web link [--bind ADDR]` and `forge web open [--bind ADDR]` are not
 part of the client contract above — they print no JSON and no client
 invokes them — but they are how an operator reaches a running (or

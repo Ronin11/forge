@@ -30,6 +30,7 @@ mod tdd;
 mod trust;
 mod upgrade;
 mod verdicts;
+mod web;
 mod webhooks;
 mod worker;
 mod workflows;
