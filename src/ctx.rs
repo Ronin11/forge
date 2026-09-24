@@ -261,14 +261,20 @@ impl Forge {
         trust: crate::store::Trust,
     ) -> Option<crate::environment::Grant> {
         use crate::environment::Grant;
-        let sandbox = self.sandbox.as_ref()?;
         let grant = self.environment.covers(need)?;
-        let fresh = match &grant {
-            Grant::Host(h) => {
-                matches!(self.trust_policy(trust).egress, config::TrustEgress::Declared)
-                    && sandbox.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
+        let declared = matches!(
+            self.trust_policy(trust).egress,
+            config::TrustEgress::Declared
+        );
+        // Unsandboxed there is nothing to open, so the grant is recorded
+        // and the run repeats all the same.
+        let fresh = match (&self.sandbox, &grant) {
+            (_, Grant::Host(_)) if !declared => false,
+            (Some(sb), Grant::Host(h)) => {
+                sb.grant_host(worktree, crate::egress::Rule::parse(h).ok()?)
             }
-            Grant::ReadOnly(p) => sandbox.grant_ro(worktree, p.clone()),
+            (Some(sb), Grant::ReadOnly(p)) => sb.grant_ro(worktree, p.clone()),
+            (None, _) => true,
         };
         fresh.then_some(grant)
     }

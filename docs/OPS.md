@@ -265,3 +265,42 @@ The second-signal abort path applies the same rule. Inspect `forge job show`,
 Recovery uses the persisted effect rows; it cannot identify an external effect
 that happened before its row was recorded. PID ownership also cannot distinguish
 a dead process from an unrelated process that has reused its PID.
+
+## Environment needs
+
+A missing tool is a policy decision, never a human question. When an
+operation step (setup, a check) or an attempt fails and its output tail, or
+the question the agent asked, names an environment need, the kernel
+recognizes it (`src/environment.rs`, pure code) as one of:
+
+- a **host** the egress proxy refused (its 403 line, `forge egress:
+  HOST:PORT is not allowed`, or a tool's `403` line naming a URL);
+- a **binary** missing from PATH;
+- a missing **toolchain**;
+- a missing **cache** under `~/.cache` (a Playwright browser, node headers).
+
+`[environment]` in `config.toml`, beside the egress policy in
+`docs/SYSTEM.md`, says which needs are granted without asking:
+
+```toml
+[environment]
+hosts = ["registry.npmjs.org", "index.crates.io", "static.crates.io", "nodejs.org",
+         "cdn.playwright.dev", "playwright.azureedge.net",
+         "playwright-akamai.azureedge.net", "playwright-verizon.azureedge.net"]
+cache_paths = ["~/.cache/node-gyp", "~/.cache/ms-playwright"]
+```
+
+Those are the defaults; a key you write replaces its list (`hosts = []`
+grants no host). A refused host on the list is added to that worktree's
+egress, and a missing cache under a listed path is mounted read-only into
+its sandbox. Either way the kernel records a decision row answered by
+`forge` (kind `environment-grant`) naming the need and the evidence line,
+and runs the step or attempt again. That run is not a retry: nothing is
+counted against the task, and each grant applies once, so a need that
+survives its grant fails as it would have. A task at a trust level whose
+egress is `model` never gets a host. Binaries and toolchains are recognized
+but never granted here, and a need the table does not cover is left exactly
+as it was: the failure, or the question, reaches the operator.
+
+`forge doctor` lists every automatic grant of the last 7 days under
+`environment`.

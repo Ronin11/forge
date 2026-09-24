@@ -63,7 +63,11 @@ pub struct Need {
 /// The first environment need in `text`, or nothing. Lines are read in
 /// order; a proxy refusal outranks the rest because it is unambiguous.
 pub fn recognize(text: &str) -> Option<Need> {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     lines
         .iter()
         .find_map(|l| refused_host(l))
@@ -95,7 +99,10 @@ fn refused_host(line: &str) -> Option<Need> {
     if line.contains("403") {
         for scheme in ["https://", "http://"] {
             if let Some(rest) = line.split(scheme).nth(1) {
-                let authority = rest.split(['/', ' ', '"', '\'', ')', '>']).next().unwrap_or("");
+                let authority = rest
+                    .split(['/', ' ', '"', '\'', ')', '>'])
+                    .next()
+                    .unwrap_or("");
                 let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
                 if valid_host(host) {
                     return Some(need(NeedKind::Host, &host.to_ascii_lowercase(), line));
@@ -117,9 +124,15 @@ fn valid_host(h: &str) -> bool {
 /// `Executable doesn't exist at /home/u/.cache/ms-playwright/...`, node-gyp
 /// missing its headers directory.
 fn missing_cache(line: &str) -> Option<Need> {
-    let missing = ["doesn't exist", "does not exist", "ENOENT", "No such file", "not found"]
-        .iter()
-        .any(|m| line.contains(m));
+    let missing = [
+        "doesn't exist",
+        "does not exist",
+        "ENOENT",
+        "No such file",
+        "not found",
+    ]
+    .iter()
+    .any(|m| line.contains(m));
     if !missing {
         return None;
     }
@@ -194,10 +207,7 @@ impl Default for Policy {
     fn default() -> Self {
         Policy {
             hosts: DEFAULT_HOSTS.iter().map(|h| h.to_string()).collect(),
-            cache_paths: DEFAULT_CACHE_PATHS
-                .iter()
-                .map(|p| expand_home(p))
-                .collect(),
+            cache_paths: DEFAULT_CACHE_PATHS.iter().map(|p| expand_home(p)).collect(),
         }
     }
 }
@@ -219,7 +229,10 @@ impl Policy {
                 crate::egress::Rule::parse(h)
                     .map_err(|e| e.context(format!("environment.hosts: {h}")))?;
             }
-            p.hosts = hosts.iter().map(|h| h.trim().to_ascii_lowercase()).collect();
+            p.hosts = hosts
+                .iter()
+                .map(|h| h.trim().to_ascii_lowercase())
+                .collect();
         }
         if let Some(paths) = cache_paths {
             if let Some(bad) = paths.iter().find(|p| !p.is_absolute()) {
@@ -273,7 +286,15 @@ pub fn record(store: &Store, task_id: i64, repo: &str, need: &Need, grant: &Gran
         "Granted {} for this worktree by the [environment] policy; re-ran without counting a retry.",
         grant.describe()
     );
-    let id = store.insert_decision_by(task_id, repo, &question, &answer, "forge", &need.target, None)?;
+    let id = store.insert_decision_by(
+        task_id,
+        repo,
+        &question,
+        &answer,
+        "forge",
+        &need.target,
+        None,
+    )?;
     store.set_decision_kind(id, DECISION_KIND)?;
     Ok(id)
 }
@@ -303,20 +324,30 @@ mod tests {
     fn a_missing_browser_cache_names_the_path() {
         let n = recognize("browserType.launch: Executable doesn't exist at /home/u/.cache/ms-playwright/chromium-1140/chrome-linux/chrome").unwrap();
         assert_eq!(n.kind, NeedKind::Cache);
-        assert_eq!(n.target, "/home/u/.cache/ms-playwright/chromium-1140/chrome-linux/chrome");
+        assert_eq!(
+            n.target,
+            "/home/u/.cache/ms-playwright/chromium-1140/chrome-linux/chrome"
+        );
     }
 
     #[test]
     fn a_missing_binary_or_toolchain_is_typed() {
         let n = recognize("bash: line 1: cargo-nextest: command not found").unwrap();
-        assert_eq!((n.kind, n.target.as_str()), (NeedKind::Binary, "cargo-nextest"));
+        assert_eq!(
+            (n.kind, n.target.as_str()),
+            (NeedKind::Binary, "cargo-nextest")
+        );
         let n = recognize("sh: 1: tsc: not found").unwrap();
         assert_eq!((n.kind, n.target.as_str()), (NeedKind::Binary, "tsc"));
-        let n = recognize("error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed").unwrap();
+        let n = recognize("error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed")
+            .unwrap();
         assert_eq!(n.kind, NeedKind::Toolchain);
         assert_eq!(n.target, "nightly-x86_64-unknown-linux-gnu");
         let n = recognize("error: no such file: forge-repomap not found in PATH").unwrap();
-        assert_eq!((n.kind, n.target.as_str()), (NeedKind::Binary, "forge-repomap"));
+        assert_eq!(
+            (n.kind, n.target.as_str()),
+            (NeedKind::Binary, "forge-repomap")
+        );
     }
 
     #[test]
@@ -339,18 +370,36 @@ mod tests {
     #[test]
     fn the_default_table_covers_the_registries_and_the_playwright_cdn() {
         let p = policy();
-        for h in ["registry.npmjs.org", "index.crates.io", "static.crates.io", "nodejs.org", "cdn.playwright.dev"] {
-            let n = Need { kind: NeedKind::Host, target: h.into(), evidence: String::new() };
+        for h in [
+            "registry.npmjs.org",
+            "index.crates.io",
+            "static.crates.io",
+            "nodejs.org",
+            "cdn.playwright.dev",
+        ] {
+            let n = Need {
+                kind: NeedKind::Host,
+                target: h.into(),
+                evidence: String::new(),
+            };
             assert_eq!(p.covers(&n), Some(Grant::Host(h.into())), "{h}");
         }
-        let n = Need { kind: NeedKind::Host, target: "evil.example".into(), evidence: String::new() };
+        let n = Need {
+            kind: NeedKind::Host,
+            target: "evil.example".into(),
+            evidence: String::new(),
+        };
         assert_eq!(p.covers(&n), None);
     }
 
     #[test]
     fn a_cache_is_covered_only_under_a_listed_path() {
         let p = policy();
-        let n = |t: &str| Need { kind: NeedKind::Cache, target: t.into(), evidence: String::new() };
+        let n = |t: &str| Need {
+            kind: NeedKind::Cache,
+            target: t.into(),
+            evidence: String::new(),
+        };
         assert_eq!(
             p.covers(&n("/h/.cache/ms-playwright/chromium-1/chrome")),
             Some(Grant::ReadOnly(PathBuf::from("/h/.cache/ms-playwright")))
@@ -361,10 +410,18 @@ mod tests {
 
     #[test]
     fn a_binary_is_never_granted_and_the_operator_can_narrow_the_table() {
-        let b = Need { kind: NeedKind::Binary, target: "tsc".into(), evidence: String::new() };
+        let b = Need {
+            kind: NeedKind::Binary,
+            target: "tsc".into(),
+            evidence: String::new(),
+        };
         assert_eq!(policy().covers(&b), None);
         let p = Policy::build(Some(vec!["*.example.org".into()]), Some(vec![])).unwrap();
-        let h = |t: &str| Need { kind: NeedKind::Host, target: t.into(), evidence: String::new() };
+        let h = |t: &str| Need {
+            kind: NeedKind::Host,
+            target: t.into(),
+            evidence: String::new(),
+        };
         assert!(p.covers(&h("a.example.org")).is_some());
         assert!(p.covers(&h("example.org")).is_none());
         assert!(p.covers(&h("nodejs.org")).is_none());

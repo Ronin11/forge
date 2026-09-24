@@ -268,6 +268,7 @@ src/directive.rs    one launcher for every bounded agent run, one reading of how
 src/doctor.rs       forge doctor
 src/egress.rs       the egress allowlist and its proxy
 src/engine.rs       run_task / run_attempt, Fault::{Task, Env}
+src/environment.rs  environment needs: the recognizer and the [environment] grant table
 src/envelope.rs     the result contract: schema and parser
 src/experiment.rs   the economist: experiment.toml's weighted draw and its weekly rebalance
 src/git.rs          the few git operations Forge performs

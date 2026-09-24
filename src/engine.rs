@@ -317,7 +317,11 @@ fn environment_text(a: &crate::store::Attempt, verdict: &verify::Verdict) -> Str
         text.push('\n');
         text.push_str(&c.tail);
     }
-    if let Some(q) = verdict.envelope.as_ref().and_then(|e| e.needs_input.as_ref()) {
+    if let Some(q) = verdict
+        .envelope
+        .as_ref()
+        .and_then(|e| e.needs_input.as_ref())
+    {
         text.push('\n');
         text.push_str(&q.question);
     }

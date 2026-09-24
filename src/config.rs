@@ -1026,7 +1026,9 @@ pub fn load_home(home: &Path) -> Result<HomeConfig> {
             .collect(),
         environment: crate::environment::Policy::build(
             raw.environment.hosts,
-            raw.environment.cache_paths.map(|v| v.iter().map(|p| expand(p)).collect()),
+            raw.environment
+                .cache_paths
+                .map(|v| v.iter().map(|p| expand(p)).collect()),
         )?,
     })
 }

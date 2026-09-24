@@ -8,6 +8,7 @@ mod concierge;
 mod contracts;
 mod deploy;
 mod economist;
+mod environment;
 mod fixtures;
 mod graph;
 mod init;

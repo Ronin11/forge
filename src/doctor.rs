@@ -928,6 +928,47 @@ fn check_rate_limit(f: &Forge) -> Vec<Check> {
     out
 }
 
+/// Every automatic environment grant of the last 7 days (docs/OPS.md,
+/// "Environment needs"): what the kernel opened for a repository without
+/// asking, so a person can see what the policy is doing.
+fn check_environment_grants(store: &Store) -> Vec<Check> {
+    let since = unix_now() - 7 * 86_400;
+    let grants = match store.decisions_of_kind_since(crate::environment::DECISION_KIND, since) {
+        Ok(g) => g,
+        Err(e) => {
+            return vec![check("environment", Status::Warn, format!("{e:#}"), "")];
+        }
+    };
+    if grants.is_empty() {
+        return vec![check(
+            "environment",
+            Status::Ok,
+            "no automatic grants in the last 7 days",
+            "",
+        )];
+    }
+    let lines: Vec<String> = grants
+        .iter()
+        .map(|d| {
+            format!(
+                "task {}: {}",
+                d.task_id.map_or("-".to_string(), |t| t.to_string()),
+                d.question.trim_start_matches("Environment need: ")
+            )
+        })
+        .collect();
+    vec![check(
+        "environment",
+        Status::Ok,
+        format!(
+            "{} automatic grant(s) in the last 7 days\n{}",
+            grants.len(),
+            lines.join("\n")
+        ),
+        "the [environment] table in config.toml decides what is granted",
+    )]
+}
+
 pub fn run() -> Result<Vec<Check>> {
     match Paths::resolve() {
         Ok(paths) => run_at(paths),
@@ -972,6 +1013,7 @@ pub fn run_at(paths: Paths) -> Result<Vec<Check>> {
     out.extend(check_schema(&store));
     out.extend(check_project_purposes(&store));
     out.extend(check_egress(&paths, &store));
+    out.extend(check_environment_grants(&store));
     out.extend(check_workflows(&paths));
     out.extend(check_plugins(&paths, &store));
     out.extend(check_learning(&paths, &store));

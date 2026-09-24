@@ -19,8 +19,8 @@ mod directive;
 mod doctor;
 mod egress;
 mod engine;
-mod environment;
 mod envelope;
+mod environment;
 mod experiment;
 
 mod git;
