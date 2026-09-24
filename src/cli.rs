@@ -2774,6 +2774,11 @@ fn web_open(bind: String) -> Result<()> {
     Ok(())
 }
 
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 /// `forge web serve [--bind ADDR]`: exec `forge-web`, found in the
 /// directory of the running `forge` binary, else on PATH. Never embeds
 /// any web code; a missing binary is a one-line error naming both places.
@@ -2782,14 +2787,14 @@ fn web_serve(bind: Option<String>) -> Result<()> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.join("forge-web")))
-        .filter(|p| p.is_file());
+        .filter(|p| is_executable(p));
     let bin = match beside {
         Some(p) => p,
         None => {
             let path = std::env::var_os("PATH").unwrap_or_default();
             match std::env::split_paths(&path)
                 .map(|d| d.join("forge-web"))
-                .find(|p| p.is_file())
+                .find(|p| is_executable(p))
             {
                 Some(p) => p,
                 None => {
