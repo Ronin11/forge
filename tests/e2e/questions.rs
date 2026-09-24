@@ -108,7 +108,7 @@ fn a_demotion_with_a_reproduction_files_a_follow_up_that_lands() {
     let o = run_wf(
         &e,
         "ok.sh",
-        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-demote.sh")],
+        &[("FORGE_CLAUDE_BIN_REVIEW", "reviewer-repro.sh")],
         "reviewed",
         "write 42",
     );

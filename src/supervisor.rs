@@ -342,7 +342,13 @@ pub fn addressed_elsewhere(t: &Task) -> Option<String> {
 /// a reproduction (a fenced or inline command, or a step list ending in an
 /// observed-versus-expected line) and asks the operator nothing.
 pub fn demotion_is_task(text: &str) -> bool {
-    if text.contains('?') {
+    let lower = text.to_lowercase();
+    // An approval written into the demotion field names no defect.
+    if text.contains('?')
+        || ["no defect", "no issue", "approving", "looks good"]
+            .iter()
+            .any(|p| lower.contains(p))
+    {
         return false;
     }
     let fenced = text.matches("```").count() >= 2;
