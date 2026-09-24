@@ -77,3 +77,14 @@ Keep changes focused, explain the behavior being changed, and provide concrete
 validation evidence. The standing sizing rule is one directive, table, or view
 per task; [the second engineering review](docs/REVIEW-2.md) records its context.
 For vulnerabilities, follow [the private reporting guidance](SECURITY.md#reporting-a-problem).
+
+## Source file size
+
+Every tracked Rust file in the workspace is limited to 1,500 lines by
+`tests/file_size.rs` (`git ls-files` excludes build output). Split larger files
+by responsibility the way `src/store/` and `src/cli/` were split. The test's
+allowlist records pre-existing large files, each with a reason and a ceiling
+of its line count at the CLI split's base plus 200. Do not add exceptions or
+raise ceilings. Delete an entry when its file is removed or reaches 1,500 lines
+or fewer; stale entries fail the test. CLI functions also retain their 80-line
+limit and existing exceptions in `src/cli/tests.rs`.
