@@ -894,6 +894,16 @@ pub struct PortalLanded {
     pub screenshot: Option<String>,
 }
 
+/// One line on [`PortalDoc`]'s "Your requests" list: `state` is one of
+/// "waiting", "being built", "needs you" or "done".
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PortalRequest {
+    pub text: String,
+    pub state: String,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
 /// The confirmed intake brief on [`PortalDoc`] (see docs/INTAKE.md):
 /// "Your plan".
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -932,6 +942,9 @@ pub struct PortalDoc {
     pub landed: Vec<PortalLanded>,
     /// How many landed lines past the ten in `landed`.
     pub landed_more: i64,
+    /// The customer's own requests and where each stands, newest first.
+    #[serde(default)]
+    pub requests: Vec<PortalRequest>,
     #[serde(default)]
     pub brief: Option<PortalBrief>,
     pub backlog: Vec<PortalBacklogItem>,

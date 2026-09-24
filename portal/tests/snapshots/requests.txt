@@ -1,0 +1,2 @@
+<section><h2>Request something</h2><form class="ask" method="post" action="/p/good-token/request"><textarea name="message" placeholder="Request something" required></textarea><button type="submit">Request</button></form></section>
+<section><h2>Your requests</h2><ul class="plain"><li>Add a contact page <span class="state">(waiting)</span></li><li>Make the button bigger <span class="state">(being built)</span></li><li>Change the button colour <span class="state">(needs you)</span></li><li>Fixed the footer link. <span class="state">(done)</span></li></ul></section>

@@ -741,6 +741,7 @@ operator's page (`forge trace`, `forge stats`), never to this one.
 | `questions` | array of `{task_id, text, asked_at}` | "Needs you": every open question on the project's tasks, answerable with `forge answer task_id ...`; `asked_at` Unix seconds, when the task blocked on it. |
 | `landed` | array of `{text, pieces, landed_at}` | "Done": one line per landed initiative (`text` its outcome, `pieces` how many tasks it took) and one line per landed task belonging to no initiative (`text` its title if it was filed in the customer's own words, else a line derived from the request's first sentence with any path-like token stripped and cut at 120 characters on a word boundary; `pieces` `null`), merged and sorted newest first, capped at ten (`landed_more` the rest). |
 | `landed_more` | integer | How many landed lines past the ten in `landed`; 0 when nothing was cut. |
+| `requests` | array of `{text, state, created_at}` | "Your requests": each of the customer's tasks outside an initiative, newest first, capped at ten; `state` one of `"waiting"`, `"being built"`, `"needs you"` (an open question addressed to the customer) or `"done"`; `text` its title or a line derived from the request. |
 | `brief` | `{where_it_runs, workflows}` or `null` | "Your plan": the most recent confirmed intake brief, `workflows` one paragraph per workflow in the person's own words (see docs/INTAKE.md); `null` for a project with no intake behind it. |
 | `backlog` | array of `{id, text, created_at}` | The rest of "Your plan": open backlog items, cut from the brief. |
 

@@ -44,7 +44,7 @@
 use anyhow::{Context, Result};
 use forge_client::{
     Forge, PortalBacklogItem, PortalBrief, PortalDeployTarget, PortalDoc, PortalInitiative,
-    PortalJobRun, PortalLanded, PortalQuestion, PortalWorkflow,
+    PortalJobRun, PortalLanded, PortalQuestion, PortalRequest, PortalWorkflow,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -623,6 +623,48 @@ fn render_ask(
     )
 }
 
+/// "Your requests": each request with its state in plain words.
+fn render_requests(items: &[PortalRequest]) -> String {
+    if items.is_empty() {
+        return r#"<p class="empty">No requests yet.</p>"#.to_string();
+    }
+    let mut out = String::from(r#"<ul class="plain">"#);
+    for r in items {
+        out.push_str(&format!(
+            r#"<li>{} <span class="state">({})</span></li>"#,
+            esc(&r.text),
+            esc(&r.state),
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
+/// What `forge ask` printed, as a plain account of what happens next.
+fn request_reply(out: &str) -> String {
+    let out = out.trim();
+    if out.starts_with("concierge: a request") {
+        "We've filed that as a task. It's waiting its turn, and you can follow it under Your requests.".to_string()
+    } else if out.starts_with("concierge: a need") {
+        "That needs a conversation first. We'll be in touch to talk it through.".to_string()
+    } else if out.starts_with("concierge: unclear") {
+        "We have a question back for you. You'll find it under Needs you.".to_string()
+    } else {
+        out.to_string()
+    }
+}
+
+fn render_request_form(token: &str, pending: Option<&str>) -> String {
+    let banner = match pending {
+        Some(reply) => format!(r#"<div class="msg out"><p>{}</p></div>"#, esc(reply)),
+        None => String::new(),
+    };
+    format!(
+        r#"{banner}<form class="ask" method="post" action="/p/{token}/request"><textarea name="message" placeholder="Request something" required></textarea><button type="submit">Request</button></form>"#,
+        token = esc(token),
+    )
+}
+
 fn render_plan(brief: &Option<PortalBrief>, backlog: &[PortalBacklogItem]) -> String {
     let mut out = String::new();
     match brief {
@@ -672,6 +714,7 @@ fn render_page(
     messages: &[ConvMessage],
     replies: &[ConvReply],
     pending: Option<(&str, &str)>,
+    requested: Option<&str>,
 ) -> String {
     // No purpose paragraph: a project's purpose is the operator's own
     // words, never the customer's (see docs/PORTAL.md).
@@ -683,6 +726,8 @@ fn render_page(
 <section><h2>Needs you</h2>{questions}</section>
 <section><h2>Done</h2>{landed}</section>
 <section><h2>Ask</h2>{ask}</section>
+<section><h2>Request something</h2>{request_form}</section>
+<section><h2>Your requests</h2>{requests}</section>
 <section><h2>Your plan</h2>{plan}</section>
 </main>"#,
         running = render_running(&doc.deploy_targets, &doc.run_workflows, token),
@@ -690,6 +735,8 @@ fn render_page(
         questions = render_questions(&doc.questions, token),
         landed = render_landed(&doc.landed, doc.landed_more, token),
         ask = render_ask(doc, token, messages, replies, pending),
+        request_form = render_request_form(token, requested),
+        requests = render_requests(&doc.requests),
         plan = render_plan(&doc.brief, &doc.backlog),
     );
     page(&doc.project, &format!("{header}{main}"))
@@ -704,11 +751,14 @@ fn render_full(
     project: &str,
     token: &str,
     pending: Option<(&str, &str)>,
+    requested: Option<&str>,
 ) -> Result<String> {
     let doc = forge.project_view(project)?;
     let messages = conversation_messages(forge, project)?;
     let replies = conversation_replies(forge, project)?;
-    Ok(render_page(&doc, token, &messages, &replies, pending))
+    Ok(render_page(
+        &doc, token, &messages, &replies, pending, requested,
+    ))
 }
 
 fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
@@ -752,7 +802,7 @@ fn handle_answer(mut req: Request, forge: &Forge, project: &str, token: &str) {
         let _ = req.respond(write_error(502));
         return;
     }
-    match render_full(forge, project, token, None) {
+    match render_full(forge, project, token, None, None) {
         Ok(page) => {
             let _ = req.respond(html(200, &page));
         }
@@ -781,7 +831,35 @@ fn handle_ask(mut req: Request, forge: &Forge, project: &str, token: &str) {
             return;
         }
     };
-    match render_full(forge, project, token, Some((&message, &reply))) {
+    match render_full(forge, project, token, Some((&message, &reply)), None) {
+        Ok(page) => {
+            let _ = req.respond(html(200, &page));
+        }
+        Err(_) => {
+            let _ = req.respond(write_error(502));
+        }
+    }
+}
+
+/// Files a request through the concierge, the same `forge ask` the Ask box
+/// uses, and answers with what happens next in plain words.
+fn handle_request(mut req: Request, forge: &Forge, project: &str, token: &str) {
+    let Some(body) = read_body(&mut req) else {
+        let _ = req.respond(write_error(413));
+        return;
+    };
+    let Some(message) = form_value(&body, "message").filter(|m| !m.trim().is_empty()) else {
+        let _ = req.respond(write_error(400));
+        return;
+    };
+    let reply = match forge.run(&["ask", project, &message, "--from", CONTACT]) {
+        Ok(out) => request_reply(&out),
+        Err(_) => {
+            let _ = req.respond(write_error(502));
+            return;
+        }
+    };
+    match render_full(forge, project, token, None, Some(&reply)) {
         Ok(page) => {
             let _ = req.respond(html(200, &page));
         }
@@ -808,7 +886,7 @@ fn handle(req: Request, forge: &Forge, limiter: &RateLimiter) {
         let _ = req.respond(not_found());
         return;
     }
-    let write_route = matches!(sub, Some("answer") | Some("ask"));
+    let write_route = matches!(sub, Some("answer") | Some("ask") | Some("request"));
     match (req.method(), write_route) {
         (&Method::Get, false) | (&Method::Post, true) => {}
         _ => {
@@ -831,12 +909,13 @@ fn handle(req: Request, forge: &Forge, limiter: &RateLimiter) {
         match sub {
             Some("answer") => handle_answer(req, forge, &project, token),
             Some("ask") => handle_ask(req, forge, &project, token),
+            Some("request") => handle_request(req, forge, &project, token),
             _ => unreachable!(),
         }
         return;
     }
     match sub {
-        None => match render_full(forge, &project, token, None) {
+        None => match render_full(forge, &project, token, None, None) {
             Ok(page) => {
                 let _ = req.respond(html(200, &page));
             }
