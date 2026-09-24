@@ -430,7 +430,7 @@ fn render_initiatives(items: &[PortalInitiative], more: i64) -> String {
         out.push_str(&format!(
             r#"<li><div>{outcome}</div><div class="pieces">{pieces}</div><div class="date">{state}</div></li>"#,
             outcome = esc(&i.outcome),
-            pieces = esc(&pieces_phrase(i.pieces)),
+            pieces = esc(&format!("{} — {} of {} done", pieces_phrase(i.pieces), i.done, i.pieces)),
             state = esc(&cap_first(&i.state)),
         ));
     }
@@ -439,7 +439,7 @@ fn render_initiatives(items: &[PortalInitiative], more: i64) -> String {
     out
 }
 
-fn render_landed(items: &[PortalLanded], more: i64) -> String {
+fn render_landed(items: &[PortalLanded], more: i64, token: &str) -> String {
     if items.is_empty() {
         return r#"<p class="empty">Nothing has shipped yet.</p>"#.to_string();
     }
@@ -449,8 +449,18 @@ fn render_landed(items: &[PortalLanded], more: i64) -> String {
             Some(n) => format!(r#"<div class="pieces">{}</div>"#, esc(&pieces_phrase(n))),
             None => String::new(),
         };
+        let live = match l.deployed_at {
+            Some(at) => format!(r#"<div class="date">{}</div>"#, time_tag("Live since ", at)),
+            None => String::new(),
+        };
+        let shot = match (l.deploy_id, l.screenshot.is_some()) {
+            (Some(id), true) => format!(
+                r#"<div><img src="/p/{token}/shot/done/{id}" alt="how it looked when it went live"></div>"#
+            ),
+            _ => String::new(),
+        };
         out.push_str(&format!(
-            r#"<li><div>{text}</div>{pieces}<div class="date">{date}</div></li>"#,
+            r#"<li><div>{text}</div>{pieces}<div class="date">{date}</div>{live}{shot}</li>"#,
             text = esc(&l.text),
             date = time_tag("Shipped ", l.landed_at),
         ));
@@ -678,7 +688,7 @@ fn render_page(
         running = render_running(&doc.deploy_targets, &doc.run_workflows, token),
         initiatives = render_initiatives(&doc.initiatives, doc.initiatives_more),
         questions = render_questions(&doc.questions, token),
-        landed = render_landed(&doc.landed, doc.landed_more),
+        landed = render_landed(&doc.landed, doc.landed_more, token),
         ask = render_ask(doc, token, messages, replies, pending),
         plan = render_plan(&doc.brief, &doc.backlog),
     );
@@ -702,6 +712,14 @@ fn render_full(
 }
 
 fn screenshot_path<'a>(doc: &'a PortalDoc, target: &str) -> Option<&'a str> {
+    if let Some(id) = target.strip_prefix("done/") {
+        let id: i64 = id.parse().ok()?;
+        return doc
+            .landed
+            .iter()
+            .find(|l| l.deploy_id == Some(id))
+            .and_then(|l| l.screenshot.as_deref());
+    }
     doc.deploy_targets
         .iter()
         .find(|t| t.name == target)
@@ -836,7 +854,7 @@ fn handle(req: Request, forge: &Forge, limiter: &RateLimiter) {
             };
             let target = sub
                 .strip_prefix("shot/")
-                .filter(|t| !t.is_empty() && !t.contains('/'));
+                .filter(|t| !t.is_empty() && t.matches('/').count() <= 1 && !t.ends_with('/'));
             let file = target.and_then(|t| screenshot_path(&doc, t));
             match file.and_then(|p| std::fs::File::open(p).ok()) {
                 Some(f) => {
