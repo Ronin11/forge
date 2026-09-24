@@ -165,6 +165,10 @@ pub fn model_rules(providers: &BTreeMap<String, crate::agent::Provider>) -> Vec<
             // The API, and the sign-in the CLI refreshes its token against.
             Runner::ClaudeCli => &["*.anthropic.com", "*.claude.com", "claude.ai"],
             Runner::CodexCli => &["*.openai.com", "chatgpt.com"],
+            // The Copilot API and the GitHub API its token is checked
+            // against; not github.com itself, which is not a model
+            // endpoint and would be a route out for anything.
+            Runner::CopilotCli => &["*.githubcopilot.com", "api.github.com"],
             Runner::Chat => &[],
         };
         rules.extend(own.iter().filter_map(|h| Rule::parse(h).ok()));

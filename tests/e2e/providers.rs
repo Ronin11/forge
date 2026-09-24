@@ -470,3 +470,112 @@ fn a_task_routed_by_role_runs_while_anthropics_window_is_at_its_cap() {
          (started {started}, anthropic resets {resets})"
     );
 }
+
+/// A task on a copilot-cli provider runs end to end through the same worker
+/// path: two phases (the work, then the resumed session asked for the
+/// envelope, which arrives inside a code fence), the flags the runner adds,
+/// and cost from premium requests at the provider's per-request price —
+/// with no token counts, since the CLI reports none.
+#[test]
+fn a_task_on_a_copilot_provider_runs_end_to_end_and_prices_premium_requests() {
+    let e = Env::new();
+    write_config(
+        &e,
+        "[providers.fake-copilot]\nrunner = \"copilot-cli\"\nmodel = \"copilot-fake-model\"\n\
+         price_usd_per_premium_request = 0.04\n",
+    );
+    let mut cmd = e.cmd("ok.sh");
+    cmd.env("FORGE_COPILOT_BIN", codex_fake("copilot-ok.sh"));
+    cmd.args([
+        "run",
+        e.repo.to_str().unwrap(),
+        "write 42 to answer.txt",
+        "--provider",
+        "fake-copilot",
+        "--retries",
+        "0",
+    ]);
+    let o = cmd.output().expect("forge run");
+    eprintln!(
+        "--- forge run --provider fake-copilot ---\n{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let (state, reason, pushed) = e.task(1);
+    assert_eq!(state, "succeeded", "{reason}");
+    assert!(reason.starts_with("landed "), "{reason}");
+    assert!(pushed);
+
+    let c = e.db();
+    let (runner, provider, cost_usd, input_tokens): (String, String, Option<f64>, Option<i64>) = c
+        .query_row(
+            "SELECT runner, provider, cost_usd, input_tokens FROM attempts WHERE task_id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(runner, "copilot-cli");
+    assert_eq!(provider, "fake-copilot");
+    // One premium request per phase, at $0.04 each.
+    let cost = cost_usd.expect("a real cost, not absent");
+    assert!((cost - 0.08).abs() < 1e-9, "{cost}");
+    assert_eq!(
+        input_tokens, None,
+        "copilot reports no tokens; none are invented"
+    );
+
+    let log = e.log_text(1, 1);
+    let argvs: Vec<Vec<String>> = log
+        .lines()
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            (v["type"] == "forge_test_argv").then(|| {
+                v["argv"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.as_str().unwrap().to_string())
+                    .collect()
+            })
+        })
+        .collect();
+    assert_eq!(
+        argvs.len(),
+        2,
+        "phase one (fresh) and phase two (resumed, asked for the report): {argvs:?}"
+    );
+    let (phase_one, phase_two) = (&argvs[0], &argvs[1]);
+    for argv in [phase_one, phase_two] {
+        for flag in [
+            "--output-format",
+            "--allow-all-tools",
+            "--disable-builtin-mcps",
+            "-C",
+        ] {
+            assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
+        }
+        assert!(argv.contains(&"copilot-fake-model".to_string()), "{argv:?}");
+        // The prompt follows `-p` last; the fake drops the prompt itself.
+        assert_eq!(argv.last().map(String::as_str), Some("-p"), "{argv:?}");
+    }
+    assert!(
+        !phase_one.contains(&"--resume".to_string()),
+        "{phase_one:?}"
+    );
+    assert!(phase_two.contains(&"--resume".to_string()), "{phase_two:?}");
+    assert!(
+        phase_two.contains(&"copilot-fake-sess-1".to_string()),
+        "{phase_two:?}"
+    );
+    assert!(
+        log.contains("\"forge_copilot_usage\",\"premium_requests\":2"),
+        "{log}"
+    );
+
+    let doc = e.trace_json(1);
+    let a = &doc["attempts"][0];
+    assert_eq!(a["runner"], "copilot-cli");
+    assert_eq!(a["provider"], "fake-copilot");
+}

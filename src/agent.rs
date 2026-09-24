@@ -73,9 +73,9 @@ pub struct RateLimits {
     pub seven_day: Option<(f64, i64)>,
 }
 
-/// Which backend runs a provider: the two agent CLIs Forge knows how to
+/// Which backend runs a provider: the three agent CLIs Forge knows how to
 /// build a launch's argv and env for and parse the event stream of, plus a
-/// third that spawns no CLI at all — one HTTP call to an OpenAI-compatible
+/// fourth that spawns no CLI at all — one HTTP call to an OpenAI-compatible
 /// `/chat/completions` endpoint, the whole of a job's directive step
 /// (docs/JOBS.md, "Steps"; see `run_chat`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -83,6 +83,8 @@ pub enum Runner {
     #[default]
     ClaudeCli,
     CodexCli,
+    /// GitHub Copilot CLI, `copilot -p`; see `run_copilot`.
+    CopilotCli,
     Chat,
 }
 
@@ -91,6 +93,7 @@ impl Runner {
         match self {
             Runner::ClaudeCli => "claude-cli",
             Runner::CodexCli => "codex-cli",
+            Runner::CopilotCli => "copilot-cli",
             Runner::Chat => "chat",
         }
     }
@@ -102,9 +105,10 @@ impl std::str::FromStr for Runner {
         match s {
             "claude-cli" => Ok(Runner::ClaudeCli),
             "codex-cli" => Ok(Runner::CodexCli),
+            "copilot-cli" => Ok(Runner::CopilotCli),
             "chat" => Ok(Runner::Chat),
             other => Err(format!(
-                "unknown runner {other:?}; expected \"claude-cli\", \"codex-cli\" or \"chat\""
+                "unknown runner {other:?}; expected \"claude-cli\", \"codex-cli\", \"copilot-cli\" or \"chat\""
             )),
         }
     }
@@ -138,6 +142,11 @@ pub struct Provider {
     /// its own (codex): 0 for a local model.
     pub price_input_per_million: f64,
     pub price_output_per_million: f64,
+    /// USD per premium request, for a runner whose CLI meters requests
+    /// rather than tokens (copilot: a plan's monthly allowance, then a list
+    /// price per request over it); 0 within the allowance. Never consulted
+    /// by the other runners.
+    pub price_per_request: f64,
     /// This provider's own rate-window caps (fractions of the window), as
     /// `[providers.<name>]` may override; default to the operator's
     /// `[budget]` caps when it does not (see `config::build_providers`).
@@ -167,6 +176,7 @@ impl Default for Provider {
             notes: None,
             price_input_per_million: 0.0,
             price_output_per_million: 0.0,
+            price_per_request: 0.0,
             five_hour_max: 0.9,
             seven_day_max: 0.95,
             nudges: 0,
@@ -189,6 +199,22 @@ pub fn codex_bin() -> String {
 pub fn codex_bin_for(step: &str) -> String {
     let suffix = format!("CODEX_BIN_{}", step.to_ascii_uppercase().replace('-', "_"));
     crate::config::env(&suffix).unwrap_or_else(|_| codex_bin())
+}
+
+/// The copilot CLI, `FORGE_COPILOT_BIN` overridden (the copilot-cli fake in
+/// tests, an alternate build on an operator's machine).
+pub fn copilot_bin() -> String {
+    crate::config::env("COPILOT_BIN").unwrap_or_else(|_| "copilot".to_string())
+}
+
+/// `copilot_bin`'s per-step override, `FORGE_COPILOT_BIN_<STEP>`; see
+/// `agent_bin_for`.
+pub fn copilot_bin_for(step: &str) -> String {
+    let suffix = format!(
+        "COPILOT_BIN_{}",
+        step.to_ascii_uppercase().replace('-', "_")
+    );
+    crate::config::env(&suffix).unwrap_or_else(|_| copilot_bin())
 }
 
 /// The binary behind a bare name, past any version-manager shim or wrapper:
@@ -249,7 +275,7 @@ pub fn agent_env() -> Vec<(String, String)> {
                     | "CODEX_HOME"
                     | "FAKE_SLEEP"
                     | "FAKE_SLEEP_SECS"
-            ) || ["LC_", "ANTHROPIC_", "CODEX_"]
+            ) || ["LC_", "ANTHROPIC_", "CODEX_", "COPILOT_"]
                 .iter()
                 .any(|p| k.starts_with(p))
         })
@@ -754,6 +780,15 @@ pub async fn run(l: Launch<'_>) -> Result<Outcome> {
                 );
             }
             run_codex(l).await
+        }
+        Runner::CopilotCli => {
+            if l.no_tools {
+                anyhow::bail!(
+                    "the copilot backend cannot yet guarantee no tool use for a directive step \
+                     (docs/JOBS.md, \"Steps\"); route this step's role to a claude provider instead"
+                );
+            }
+            run_copilot(l).await
         }
         Runner::Chat => {
             if !l.no_tools {
@@ -1353,13 +1388,15 @@ result for everything done in this thread so far: schema_version, summary, \
 checks_run, claims, and needs_input if you stopped for a reason \
 before finishing, matching the schema you were given exactly.";
 
-/// One spawn of a codex `exec` phase to exit or timeout, writing every raw
-/// line to `log` and folding it into `out`/`watch` via `apply_codex_event` —
-/// the plumbing `run_codex`'s two phases share. Returns the exit code, and
-/// whether this phase itself timed out; the caller decides what either means
-/// for the attempt as a whole.
-#[allow(clippy::too_many_arguments)]
-async fn run_codex_phase(
+/// One spawn of an agent CLI phase to exit or timeout, writing every raw
+/// line to `log` and folding each JSON frame into `out`/`watch` through
+/// `apply` — the plumbing the codex and copilot runners' phases share.
+/// `apply` returns the early-ending text when a frame trips enough signals,
+/// which ends the phase. Returns the exit code, and whether this phase
+/// itself timed out; the caller decides what either means for the attempt
+/// as a whole.
+#[allow(clippy::too_many_arguments)] // one launch, its stream's sinks, and the parser: a struct would only rename the list
+async fn run_json_phase(
     l: &Launch<'_>,
     argv: &[String],
     extra_env: &[(String, String)],
@@ -1367,6 +1404,7 @@ async fn run_codex_phase(
     log: &mut File,
     out: &mut Outcome,
     watch: &mut Watch,
+    apply: &mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send),
 ) -> Result<(Option<i32>, bool, String)> {
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
@@ -1404,11 +1442,7 @@ async fn run_codex_phase(
                 );
             }
             writeln!(log, "{v}")?;
-            if v["type"] == "item.started" && v["item"]["type"] == "command_execution" {
-                let name = v["item"]["command"].as_str().unwrap_or("command_execution");
-                l.report.emit(l.task_id, Event::ToolCall { name });
-            }
-            if let Some(text) = apply_codex_event(&v, out, watch, l.writes) {
+            if let Some(text) = apply(&v, out, watch) {
                 writeln!(
                     log,
                     "{{\"type\":\"forge_early_end\",\"forge_ms\":{},\"signals\":{}}}",
@@ -1457,6 +1491,29 @@ async fn run_codex_phase(
 
     let stderr_text = stderr_task.await.unwrap_or_default();
     Ok((exit_code, timed_out, stderr_text))
+}
+
+/// A codex `exec` phase: `run_json_phase` with the codex frame parser, each
+/// command execution reported as a tool call as it starts.
+#[allow(clippy::too_many_arguments)] // see run_json_phase
+async fn run_codex_phase(
+    l: &Launch<'_>,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    start: &Instant,
+    log: &mut File,
+    out: &mut Outcome,
+    watch: &mut Watch,
+) -> Result<(Option<i32>, bool, String)> {
+    let (report, task_id, writes) = (l.report, l.task_id, l.writes);
+    let mut apply = |v: &Value, out: &mut Outcome, watch: &mut Watch| {
+        if v["type"] == "item.started" && v["item"]["type"] == "command_execution" {
+            let name = v["item"]["command"].as_str().unwrap_or("command_execution");
+            report.emit(task_id, Event::ToolCall { name });
+        }
+        apply_codex_event(v, out, watch, writes)
+    };
+    run_json_phase(l, argv, extra_env, start, log, out, watch, &mut apply).await
 }
 
 /// The codex-cli backend, run in two phases. A weaker model asked to commit
@@ -1642,6 +1699,304 @@ async fn run_codex(l: Launch<'_>) -> Result<Outcome> {
                 + output as f64 * l.provider.price_output_per_million / 1_000_000.0,
         );
     }
+
+    if !stderr_text.trim().is_empty() {
+        writeln!(
+            log,
+            "{{\"type\":\"forge_stderr\",\"text\":{}}}",
+            serde_json::to_string(&stderr_text)?
+        )?;
+    }
+    out.stderr_text = stderr_text;
+    Ok(out)
+}
+
+/// Phase two's fixed prompt for the copilot runner, the schema appended:
+/// copilot has no schema flag at all, so the shape the answer must take is
+/// quoted in the prompt itself and the envelope read out of the final
+/// message (see `json_in_message`).
+const COPILOT_REPORT_PROMPT: &str = "Do no further work. Report the structured \
+result for everything done in this session so far: one JSON object matching \
+the JSON schema below exactly, with no prose before or after it and no code \
+fence.\n\nSchema:\n";
+
+/// The copilot CLI's argv for one phase, the prompt last (`-p <text>`, so a
+/// fake can drop it from its argv echo the way the codex fakes do): the
+/// JSON event stream; every tool and path auto-approved (non-interactive
+/// mode refuses to run without it; the sandbox, not the CLI's prompt, is
+/// the boundary, as for the other runners); the bundled GitHub MCP server
+/// off (an attempt gets the repository's tools and no other); no
+/// self-update; its own logs at error level; `-C` the worktree; `--model`
+/// when the launch names one (absent, the CLI's own choice); the provider's
+/// own args; `--resume <session>` to continue one.
+fn copilot_argv(bin: &str, l: &Launch<'_>, resume: Option<&str>, prompt: &str) -> Vec<String> {
+    let mut argv = vec![
+        bin.to_string(),
+        "--output-format".to_string(),
+        "json".to_string(),
+        "--allow-all-tools".to_string(),
+        "--allow-all-paths".to_string(),
+        "--disable-builtin-mcps".to_string(),
+        "--no-auto-update".to_string(),
+        "--log-level".to_string(),
+        "error".to_string(),
+        "-C".to_string(),
+        l.worktree.display().to_string(),
+    ];
+    if !l.model.is_empty() {
+        argv.push("--model".to_string());
+        argv.push(l.model.to_string());
+    }
+    argv.extend(l.provider.extra_args.iter().cloned());
+    if let Some(id) = resume {
+        argv.push("--resume".to_string());
+        argv.push(id.to_string());
+    }
+    argv.push("-p".to_string());
+    argv.push(prompt.to_string());
+    argv
+}
+
+/// The copilot tool a frame names, in the vocabulary `Watch` counts: its
+/// shell tool is a `Bash` call carrying the command, its file-writing
+/// tools are edits, anything else is a call and no more.
+fn copilot_tool_for_watch(name: &str, args: &Value) -> (&'static str, Value) {
+    match name {
+        "bash" | "shell" => (
+            "Bash",
+            serde_json::json!({ "command": args["command"].as_str().unwrap_or("") }),
+        ),
+        "edit" | "create" | "write" | "str_replace_editor" | "apply_patch" => ("Edit", Value::Null),
+        _ => ("Other", Value::Null),
+    }
+}
+
+/// The JSON object a final message carries, when it is one: the text as
+/// given, or the body of a ```json fence around it, provided it parses as a
+/// JSON object. `None` for prose.
+fn json_in_message(text: &str) -> Option<String> {
+    let mut body = text.trim();
+    if let Some(rest) = body.strip_prefix("```") {
+        let rest = rest.strip_prefix("json").unwrap_or(rest);
+        body = rest.strip_suffix("```").unwrap_or(rest).trim();
+    }
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .filter(Value::is_object)
+        .map(|_| body.to_string())
+}
+
+/// What the copilot stream counts that `Outcome` does not carry itself:
+/// the tool calls already counted (a request is announced on its
+/// `assistant.message` and again as `tool.execution_start`), and the
+/// premium requests the CLI's `result` frames report, which are what a
+/// plan meters (see `run_copilot`).
+#[derive(Default)]
+struct CopilotTally {
+    seen_tools: HashSet<String>,
+    premium_requests: i64,
+}
+
+/// One frame of the copilot CLI's `--output-format json` stream folded into
+/// `out` and `watch`: a `tool.execution_start` is a tool call (fed to the
+/// early-ending watch), a `model.call_finished` a turn, an `assistant.usage`
+/// frame's tokens are summed when the CLI sends one (1.0.88 sends none:
+/// only premium requests, on `result`), an `assistant.message` with
+/// content is the answer so far (the last wins: phase one's prose, then
+/// phase two's envelope), a `session.error` a failure unless an answer
+/// follows — and a refusal for a spent plan, which holds the provider an
+/// hour — and `result` names the session to resume. Returns the
+/// early-ending text when a tool call trips enough signals.
+fn apply_copilot_event(
+    v: &Value,
+    out: &mut Outcome,
+    watch: &mut Watch,
+    writes: bool,
+    tally: &mut CopilotTally,
+) -> Option<String> {
+    let d = &v["data"];
+    match v["type"].as_str() {
+        Some("tool.execution_start") => {
+            let id = d["toolCallId"].as_str().unwrap_or("");
+            if !id.is_empty() && !tally.seen_tools.insert(id.to_string()) {
+                return None;
+            }
+            out.tool_calls += 1;
+            let (name, input) =
+                copilot_tool_for_watch(d["toolName"].as_str().unwrap_or(""), &d["arguments"]);
+            watch.saw(name, &input);
+            if let Some(tripped) = watch.should_end(writes) {
+                let text = tripped
+                    .iter()
+                    .map(|(_, w)| w.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                out.ended_early = Some(text.clone());
+                return Some(text);
+            }
+        }
+        Some("model.call_finished") => out.num_turns += 1,
+        Some("assistant.usage") => {
+            let add = |slot: &mut Option<i64>, key: &str| {
+                if let Some(n) = d[key].as_i64() {
+                    *slot = Some(slot.unwrap_or(0) + n);
+                }
+            };
+            add(&mut out.input_tokens, "inputTokens");
+            add(&mut out.output_tokens, "outputTokens");
+            add(&mut out.cache_read_input_tokens, "cacheReadTokens");
+            add(&mut out.cache_creation_input_tokens, "cacheWriteTokens");
+        }
+        Some("assistant.message") => {
+            let content = d["content"].as_str().unwrap_or("");
+            if !content.trim().is_empty() {
+                out.got_result = true;
+                out.is_error = false;
+                out.structured = json_in_message(content);
+                out.result_text = content.to_string();
+            }
+        }
+        Some("session.error") => {
+            let msg = d["message"].as_str().unwrap_or("").to_ascii_lowercase();
+            out.is_error = true;
+            if ["rate limit", "usage limit", "quota"]
+                .iter()
+                .any(|s| msg.contains(s))
+            {
+                out.rate_limited = true;
+                out.rate_limits.five_hour = Some((1.0, crate::unix_now() + 3600));
+            }
+        }
+        Some("result") => {
+            if let Some(id) = v["sessionId"].as_str() {
+                out.session_id = Some(id.to_string());
+            }
+            tally.premium_requests += v["usage"]["premiumRequests"].as_i64().unwrap_or(0);
+        }
+        _ => {}
+    }
+    None
+}
+
+/// A copilot phase: `run_json_phase` with the copilot frame parser, each
+/// tool call reported as it starts.
+#[allow(clippy::too_many_arguments)] // see run_json_phase
+async fn run_copilot_phase(
+    l: &Launch<'_>,
+    argv: &[String],
+    extra_env: &[(String, String)],
+    start: &Instant,
+    log: &mut File,
+    out: &mut Outcome,
+    watch: &mut Watch,
+    tally: &mut CopilotTally,
+) -> Result<(Option<i32>, bool, String)> {
+    let (report, task_id, writes) = (l.report, l.task_id, l.writes);
+    let mut apply = |v: &Value, out: &mut Outcome, watch: &mut Watch| {
+        if v["type"] == "tool.execution_start" {
+            let name = v["data"]["toolName"].as_str().unwrap_or("tool");
+            report.emit(task_id, Event::ToolCall { name });
+        }
+        apply_copilot_event(v, out, watch, writes, tally)
+    };
+    run_json_phase(l, argv, extra_env, start, log, out, watch, &mut apply).await
+}
+
+/// The copilot-cli backend (GitHub Copilot CLI, `copilot -p`), run in the
+/// same two phases as codex and for the same reason, with one difference:
+/// copilot has no schema flag, so phase two quotes the schema in its prompt
+/// and the envelope is read out of the final message. Phase one runs the
+/// prompt (or resumes the attempt's session); once it ends, phase two
+/// resumes that session with `COPILOT_REPORT_PROMPT`. Stdin is closed in
+/// both: the prompt travels on argv. The CLI meters premium requests, not
+/// tokens (1.0.88 reports no token counts at all), so the attempt's cost is
+/// the requests its `result` frames report at the provider's
+/// `price_usd_per_premium_request` — 0 within a plan's allowance — plus
+/// whatever tokens it does report at the per-million prices.
+async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
+    let bin = real_bin(&copilot_bin_for(l.step));
+    let mut extra_env = crate::git::identity(&l.worktree.join(".git")).await;
+    extra_env.extend(l.provider.env.iter().cloned());
+    // The CLI reads COPILOT_GITHUB_TOKEN ahead of its stored login: when the
+    // operator's `api_key_env` names a variable holding a GitHub token, it
+    // is read from this process's environment at launch, never from the
+    // config file or the record (see `Provider::api_key_env`).
+    if let Some(var) = &l.provider.api_key_env
+        && let Ok(token) = std::env::var(var)
+    {
+        extra_env.push(("COPILOT_GITHUB_TOKEN".to_string(), token));
+    }
+    extra_env.push(("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()));
+
+    let mut log =
+        File::create(l.log_path).with_context(|| format!("creating {}", l.log_path.display()))?;
+    writeln!(
+        log,
+        "{{\"type\":\"forge_prompt\",\"text\":{}}}",
+        serde_json::to_string(l.prompt)?
+    )?;
+
+    let start = Instant::now();
+    let mut out = Outcome {
+        session_id: l.resume.map(|s| s.to_string()),
+        ..Outcome::default()
+    };
+    let mut watch = Watch::new(l.early_ending);
+    let mut tally = CopilotTally::default();
+
+    let argv1 = copilot_argv(&bin, &l, l.resume, l.prompt);
+    let (exit1, timed_out1, mut stderr_text) = run_copilot_phase(
+        &l, &argv1, &extra_env, &start, &mut log, &mut out, &mut watch, &mut tally,
+    )
+    .await?;
+    out.exit_code = exit1;
+    out.timed_out = timed_out1;
+
+    // Ask the same session to report itself structurally — only when there
+    // is one to resume; a run that never reached its `result` frame has
+    // nothing for phase two to continue.
+    if let Some(session) = out.session_id.clone() {
+        writeln!(
+            log,
+            "{{\"type\":\"forge_phase_two\",\"forge_ms\":{},\"session_id\":{}}}",
+            start.elapsed().as_millis(),
+            serde_json::to_string(&session)?
+        )?;
+        l.report.emit(
+            l.task_id,
+            Event::Note {
+                text: "phase 2  resuming the session for the structured report",
+            },
+        );
+        let prompt2 = format!("{COPILOT_REPORT_PROMPT}{}", l.schema);
+        let argv2 = copilot_argv(&bin, &l, Some(&session), &prompt2);
+        let (exit2, timed_out2, stderr2) = run_copilot_phase(
+            &l, &argv2, &extra_env, &start, &mut log, &mut out, &mut watch, &mut tally,
+        )
+        .await?;
+        out.exit_code = exit2;
+        out.timed_out = out.timed_out || timed_out2;
+        stderr_text.push_str(&stderr2);
+    }
+
+    out.early_signals = watch.tripped(l.writes).iter().map(|(k, _)| *k).collect();
+    out.early_near = watch.near(l.writes);
+    if !out.is_error {
+        out.is_error = out.exit_code.is_some_and(|c| c != 0);
+    }
+    out.wall_ms = start.elapsed().as_millis();
+
+    let mut cost = tally.premium_requests as f64 * l.provider.price_per_request;
+    if let (Some(input), Some(output)) = (out.input_tokens, out.output_tokens) {
+        cost += input as f64 * l.provider.price_input_per_million / 1_000_000.0
+            + output as f64 * l.provider.price_output_per_million / 1_000_000.0;
+    }
+    out.cost_usd = Some(cost);
+    writeln!(
+        log,
+        "{{\"type\":\"forge_copilot_usage\",\"premium_requests\":{}}}",
+        tally.premium_requests
+    )?;
 
     if !stderr_text.trim().is_empty() {
         writeln!(
@@ -2737,6 +3092,175 @@ fi\n"
 
         let err = run(l).await.unwrap_err();
         assert!(err.to_string().contains("no tools"), "{err}");
+    }
+
+    /// Captured frames from a `copilot -p --output-format json` run
+    /// (1.0.88): a message announcing a tool request, the same call
+    /// starting and completing, two model calls, a plain final message, and
+    /// the result frame naming the session and the premium requests spent.
+    fn copilot_fixture() -> Vec<&'static str> {
+        vec![
+            r#"{"type":"assistant.message","data":{"content":"","toolRequests":[{"toolCallId":"call_0","name":"bash","arguments":{"command":"echo 42 > answer.txt"}}]}}"#,
+            r#"{"type":"tool.execution_start","data":{"toolCallId":"call_0","toolName":"bash","arguments":{"command":"echo 42 > answer.txt"}}}"#,
+            r#"{"type":"tool.execution_complete","data":{"toolCallId":"call_0","success":true}}"#,
+            r#"{"type":"model.call_finished","data":{"turnId":"0"}}"#,
+            r#"{"type":"assistant.message","data":{"content":"wrote 42 to answer.txt","toolRequests":[]}}"#,
+            r#"{"type":"model.call_finished","data":{"turnId":"1"}}"#,
+            r#"{"type":"result","sessionId":"copilot-sess-1","exitCode":0,"usage":{"premiumRequests":2}}"#,
+        ]
+    }
+
+    fn run_copilot_fixture(lines: &[&str], thresholds: EarlyEnding) -> (Outcome, CopilotTally) {
+        let mut out = Outcome::default();
+        let mut watch = Watch::new(thresholds);
+        let mut tally = CopilotTally::default();
+        for line in lines {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if let Some(text) = apply_copilot_event(&v, &mut out, &mut watch, true, &mut tally) {
+                out.ended_early = Some(text);
+                break;
+            }
+        }
+        (out, tally)
+    }
+
+    #[test]
+    fn copilot_events_parse_into_the_outcome() {
+        let (out, tally) = run_copilot_fixture(&copilot_fixture(), thresholds(100, 100, 100, 2));
+        assert_eq!(out.session_id.as_deref(), Some("copilot-sess-1"));
+        assert_eq!(
+            out.tool_calls, 1,
+            "the request on the message and its execution_start are one call"
+        );
+        assert_eq!(out.num_turns, 2, "one per model call");
+        assert!(out.got_result && !out.is_error);
+        assert_eq!(out.result_text, "wrote 42 to answer.txt");
+        assert!(out.structured.is_none(), "prose is not a structured result");
+        assert_eq!(tally.premium_requests, 2);
+        assert_eq!(
+            out.input_tokens, None,
+            "1.0.88 reports no tokens, and none are invented"
+        );
+    }
+
+    #[test]
+    fn a_phase_two_copilot_message_carries_the_envelope_fenced_or_not() {
+        let mut lines = copilot_fixture();
+        lines.push(
+            r#"{"type":"assistant.message","data":{"content":"```json\n{\"schema_version\":1,\"summary\":\"wrote 42\",\"needs_input\":null,\"changes\":[],\"checks_run\":[],\"claims\":[]}\n```","toolRequests":[]}}"#,
+        );
+        lines.push(
+            r#"{"type":"result","sessionId":"copilot-sess-1","exitCode":0,"usage":{"premiumRequests":1}}"#,
+        );
+        let (out, tally) = run_copilot_fixture(&lines, thresholds(100, 100, 100, 2));
+        let structured: Value =
+            serde_json::from_str(&out.structured.expect("phase two's envelope")).unwrap();
+        assert_eq!(structured["summary"], "wrote 42");
+        assert_eq!(
+            tally.premium_requests, 3,
+            "both phases' requests count into the one attempt"
+        );
+        assert_eq!(json_in_message("{\"a\":1}").as_deref(), Some("{\"a\":1}"));
+        assert_eq!(
+            json_in_message("```\n{\"a\":1}\n```").as_deref(),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(
+            json_in_message("[1,2]"),
+            None,
+            "an array is not the envelope"
+        );
+        assert_eq!(json_in_message("done"), None);
+    }
+
+    #[test]
+    fn a_copilot_session_error_with_no_answer_is_a_failure_and_a_spent_plan_a_refusal() {
+        let lines = [
+            r#"{"type":"session.error","data":{"message":"stream disconnected"}}"#,
+            r#"{"type":"result","sessionId":"copilot-sess-2","exitCode":1,"usage":{"premiumRequests":0}}"#,
+        ];
+        let (out, _) = run_copilot_fixture(&lines, thresholds(100, 100, 100, 2));
+        assert!(out.is_error && !out.got_result && !out.rate_limited);
+
+        let lines = [
+            r#"{"type":"session.error","data":{"message":"You have exceeded your premium request quota"}}"#,
+        ];
+        let (out, _) = run_copilot_fixture(&lines, thresholds(100, 100, 100, 2));
+        assert!(out.is_error && out.rate_limited);
+        let (utilization, reset) = out.rate_limits.five_hour.unwrap();
+        assert_eq!(utilization, 1.0);
+        assert!(reset > crate::unix_now() + 3000, "held about an hour");
+    }
+
+    #[test]
+    fn copilot_tool_calls_feed_the_early_ending_watch() {
+        let lines = [
+            r#"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"bash","arguments":{"command":"grep foo"}}}"#,
+            r#"{"type":"tool.execution_start","data":{"toolCallId":"c2","toolName":"bash","arguments":{"command":"grep foo"}}}"#,
+            r#"{"type":"assistant.message","data":{"content":"never reached","toolRequests":[]}}"#,
+        ];
+        let (out, _) = run_copilot_fixture(&lines, thresholds(100, 100, 2, 1));
+        assert_eq!(
+            out.ended_early.as_deref(),
+            Some("`grep foo` run 2 times"),
+            "the repeated command trips the same Watch the claude runner uses"
+        );
+        assert!(!out.got_result, "the run ended before the message");
+    }
+
+    #[test]
+    fn copilot_argv_carries_the_stream_flags_model_resume_and_the_prompt_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = Reporter::new(false, None);
+        let provider = Provider {
+            runner: Runner::CopilotCli,
+            extra_args: vec!["--reasoning-effort".into(), "high".into()],
+            ..Provider::default()
+        };
+        let log_path = dir.path().join("log.jsonl");
+        let l = test_launch(
+            dir.path(),
+            &report,
+            &provider,
+            &log_path,
+            r#"{"type":"object"}"#,
+            false,
+            None,
+        );
+        let argv = copilot_argv("copilot", &l, Some("sess-1"), "do it");
+        assert_eq!(argv[0], "copilot");
+        for flag in [
+            "--allow-all-tools",
+            "--allow-all-paths",
+            "--disable-builtin-mcps",
+            "--no-auto-update",
+        ] {
+            assert!(argv.contains(&flag.to_string()), "{flag}: {argv:?}");
+        }
+        let at = |f: &str| argv.iter().position(|a| a == f).unwrap();
+        assert_eq!(argv[at("--output-format") + 1], "json");
+        assert_eq!(argv[at("-C") + 1], dir.path().display().to_string());
+        assert_eq!(argv[at("--model") + 1], "sonnet");
+        assert_eq!(argv[at("--reasoning-effort") + 1], "high");
+        assert_eq!(argv[at("--resume") + 1], "sess-1");
+        let n = argv.len();
+        assert_eq!(&argv[n - 2..], ["-p", "do it"], "the prompt is last");
+        assert!(
+            !copilot_argv("copilot", &l, None, "x").contains(&"--resume".to_string()),
+            "no resume on a fresh session"
+        );
+    }
+
+    #[test]
+    fn runner_from_str_accepts_copilot() {
+        assert_eq!("copilot-cli".parse::<Runner>().unwrap(), Runner::CopilotCli);
+        assert_eq!(Runner::CopilotCli.as_str(), "copilot-cli");
+        assert!(
+            "cowork-cli"
+                .parse::<Runner>()
+                .unwrap_err()
+                .contains("copilot-cli")
+        );
     }
 
     #[test]

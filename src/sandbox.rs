@@ -50,6 +50,10 @@ pub struct Sandbox {
     /// `home` shadows the operator's real `$HOME` at the identical path.
     config_dir: PathBuf,
     codex_dir: PathBuf,
+    /// copilot's real `~/.copilot`: read from, on the host, only to seed
+    /// each sandbox's private copy of its `config.json` (the login), never
+    /// bound in itself.
+    copilot_dir: PathBuf,
     /// The host's `~/.claude.json`, bound read-only at `CLAUDE_JSON_SEED`
     /// and copied into the tmpfs $HOME before the agent runs. Never bound
     /// at its real path: many claude CLIs write it concurrently (rename
@@ -155,6 +159,7 @@ impl Sandbox {
         for (k, v) in std::env::vars() {
             if k.starts_with("FORGE_CLAUDE_BIN_")
                 || k.starts_with("FORGE_CODEX_BIN")
+                || k.starts_with("FORGE_COPILOT_BIN")
                 || k.starts_with("FORGE2_CLAUDE_BIN_")
                 || k.starts_with("FORGE2_CODEX_BIN")
             {
@@ -169,6 +174,11 @@ impl Sandbox {
         if !bins.contains(&codex) && resolve_binary(&codex).is_ok() {
             bins.push(codex);
         }
+        // And the copilot CLI, on the same terms.
+        let copilot = crate::agent::copilot_bin();
+        if !bins.contains(&copilot) && resolve_binary(&copilot).is_ok() {
+            bins.push(copilot);
+        }
         for b in &bins {
             let (named, canonical) = resolve_binary(b)?;
             let real = PathBuf::from(crate::agent::real_bin(b));
@@ -182,6 +192,7 @@ impl Sandbox {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".claude"));
         let codex_dir = home.join(".codex");
+        let copilot_dir = home.join(".copilot");
         let claude_json_seed = home.join(".claude.json");
         // The relay is this binary, so its directory has to be visible.
         let relay_exe = std::env::current_exe().context("finding the forge binary")?;
@@ -192,6 +203,7 @@ impl Sandbox {
             agent_dirs: agent_dirs.into_iter().collect(),
             config_dir,
             codex_dir,
+            copilot_dir,
             claude_json_seed,
             extra_ro: paths
                 .ro
@@ -340,6 +352,15 @@ impl Sandbox {
         }
         cmd.arg("--bind").arg(&claude_priv).arg(&self.config_dir);
         cmd.arg("--bind").arg(&codex_priv).arg(&self.codex_dir);
+        // copilot's login lives in its `config.json`; the same private,
+        // reseeded copy, bound where the CLI expects its home.
+        let copilot_priv = provider_dir.join("copilot");
+        let _ = std::fs::create_dir_all(&copilot_priv);
+        let _ = std::fs::copy(
+            self.copilot_dir.join("config.json"),
+            copilot_priv.join("config.json"),
+        );
+        cmd.arg("--bind").arg(&copilot_priv).arg(&self.copilot_dir);
         // The operator's package caches: read through, an attempt's own
         // writes going to an invisible tmpfs overlay that bwrap discards
         // with the sandbox, so one attempt can never poison what another
@@ -418,8 +439,11 @@ mod tests {
         std::fs::create_dir_all(&worktree).unwrap();
         let config_dir = root.path().join("real/.claude");
         let codex_dir = root.path().join("real/.codex");
+        let copilot_dir = root.path().join("real/.copilot");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::create_dir_all(&copilot_dir).unwrap();
+        std::fs::write(copilot_dir.join("config.json"), "login").unwrap();
         std::fs::write(config_dir.join(".credentials.json"), "creds").unwrap();
         std::fs::write(config_dir.join("settings.json"), "settings").unwrap();
         std::fs::write(codex_dir.join("auth.json"), "auth").unwrap();
@@ -434,6 +458,7 @@ mod tests {
             agent_dirs: vec![PathBuf::from("/opt/agent")],
             config_dir: config_dir.clone(),
             codex_dir: codex_dir.clone(),
+            copilot_dir: copilot_dir.clone(),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![PathBuf::from("/opt/toolchain")],
             extra_rw: vec![npm_cache.clone()],
@@ -510,16 +535,24 @@ mod tests {
                     panic!("missing private provider bind {src:?} -> {dest:?}: {args:?}")
                 })
         };
+        let copilot_priv = provider_dir.join("copilot");
         let claude_bind = provider_bind(&claude_priv, &config_dir);
         let codex_bind = provider_bind(&codex_priv, &codex_dir);
+        let copilot_bind = provider_bind(&copilot_priv, &copilot_dir);
         assert!(worktree_bind < claude_bind && worktree_bind < codex_bind);
+        assert!(worktree_bind < copilot_bind);
         assert!(
             !args.windows(3).any(|w| matches!(
                 w[0].as_str(),
                 "--bind" | "--ro-bind" | "--bind-try" | "--ro-bind-try"
             ) && (w[1] == config_dir.to_str().unwrap()
-                || w[1] == codex_dir.to_str().unwrap())),
-            "the operator's real claude/codex directories must never be a bind source: {args:?}"
+                || w[1] == codex_dir.to_str().unwrap()
+                || w[1] == copilot_dir.to_str().unwrap())),
+            "the operator's real claude/codex/copilot directories must never be a bind source: {args:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(copilot_priv.join("config.json")).unwrap(),
+            "login"
         );
         assert_eq!(
             std::fs::read_to_string(claude_priv.join(".credentials.json")).unwrap(),
@@ -592,6 +625,7 @@ mod tests {
             agent_dirs: vec![],
             config_dir: PathBuf::from("/home/attempt/.claude"),
             codex_dir: PathBuf::from("/home/attempt/.codex"),
+            copilot_dir: PathBuf::from("/home/attempt/.copilot"),
             claude_json_seed: PathBuf::from("/home/real/.claude.json"),
             extra_ro: vec![],
             extra_rw: vec![],
