@@ -1,4 +1,4 @@
-Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  stats  task
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
  Workflows  Quality  By role  Human attention  Time to live  Factors
 ┌stats─────────────────────────────────────────────────────────────────────────────────────────────┐
 │factor        level     tasks landed rate (95% CI)        true cost ref effect(log$) se           │

@@ -1,0 +1,40 @@
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
+┌doctor────────────────────────────────────────────────────────────────────────────────────────────┐
+│Checks                                                                                            │
+│ok    binaries       git, cargo found                                                             │
+│warn  egress         no sandbox on this host                                                      │
+│                     fix: install bubblewrap                                                      │
+│warn  worktrees      3 retained, oldest 12d                                                       │
+│                     fix: run forge gc                                                            │
+│warn  rate_limit     anthropic close to its 5h window                                             │
+│                     fix: wait for the reset                                                      │
+│ok    spend          $4.20 today                                                                  │
+│fail  queue          worker is not running                                                        │
+│                     fix: start it with forge worker                                              │
+│Held initiatives                                                                                  │
+│  #7 equitizr held by budget: the billing page shows usage-based line items                       │
+│Worktrees                                                                                         │
+│  3 retained, oldest 12d                                                                          │
+│  x runs forge gc on them                                                                         │
+│Rate windows                                                                                      │
+│  anthropic: 5h 82% (resets 2026-09-21 20:43) · 7d 40% (resets 2026-09-27 14:36)                  │
+│Spend                                                                                             │
+│  $4.20 of $20.00                                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k scroll  x gc worktrees  Tab switch  g refresh  q quit

@@ -1,9 +1,27 @@
 Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  jobs (2)  stats  depl
- Workflows  Quality  By role  Human attention  Time to live  Factors
-┌By workflow───────────────────────────────────────────────────────────────────────────────────────┐
-│workflow hash     n  median p90                                                                   │
-│tdd      a1b2c3d4 15 640s   1900s                                                                 │
-│direct   e5f6a7b8 0  -      -                                                                     │
+┌deploy targets────────────────────────────────────────────────────────────────────────────────────┐
+│> forge/prod           deploy-command   web1       cdcce8ad check ok  smoke ok  look FAILED  2026-│
+│  forge/staging        rsync            stage      never deployed                                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌log: forge/prod, newest first─────────────────────────────────────────────────────────────────────┐
+│#9    cdcce8ad 2026-09-21 19:43  check ok  smoke ok  look FAILED                                  │
+│      landing of task 12                                                                          │
+│      blocking the header overlaps the logo                                                       │
+│#7    01234567 2026-09-20 15:56  check FAILED (rolled back to aaaa1111)  smoke -  look -          │
+│      landing of task 10                                                                          │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -19,22 +37,4 @@ Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (3)  j
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌By project────────────────────────────────────────────────────────────────────────────────────────┐
-│project n  median p90                                                                             │
-│forge   18 700s   2100s                                                                           │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-h/l tab  < > sort column  v reverse  j/k scroll  Tab switch  g refresh  q quit
+j/k move  d deploy now  Tab switch  g refresh  q quit
