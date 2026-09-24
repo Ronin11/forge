@@ -1058,3 +1058,122 @@ mod tests {
         );
     }
 }
+
+/// Whether a blocked task's last attempt, though it did not settle,
+/// still leaves a branch worth landing: a review demotion the operator
+/// or the supervisor set aside, naming no defect the task requires
+/// fixing, or a question whose L1 checks already ran on a clean,
+/// committed tree and all passed. The question or the demotion stands
+/// either way; neither says the commit itself is bad.
+pub(crate) fn landable_needs_input(f: &Forge, t: &Task) -> Result<bool> {
+    if t.state != TaskState::Blocked {
+        return Ok(false);
+    }
+    Ok(f.store
+        .attempts(t.id)?
+        .iter()
+        .rev()
+        .find(|a| a.is_agent())
+        .is_some_and(|a| {
+            a.state == crate::store::AttemptState::NeedsInput
+                && (a.reason.starts_with("review demoted")
+                    || crate::verify::l1_all_passed(
+                        &serde_json::from_str::<Vec<crate::checks::CheckResult>>(&a.verdict_json)
+                            .unwrap_or_default(),
+                    ))
+        }))
+}
+
+/// Land a task's verified branch on the base: a verified task, or one
+/// blocked on a review demotion or a question that a human or the
+/// supervisor set aside (see `landable_needs_input`). `by_hand` is true
+/// only for the operator's own `forge land`, never for the supervisor's
+/// automated accept-and-land (see `Task::hand_landed`, one of the
+/// human-attention signals). Returns the line to print.
+pub(crate) async fn land_task(f: &Forge, id: i64, by_hand: bool) -> Result<String> {
+    let Some(mut t) = f.store.task(id)? else {
+        bail!("no task {id}");
+    };
+    let demoted = landable_needs_input(f, &t)?;
+    if t.state != TaskState::Succeeded && t.state != TaskState::Unverified && !demoted {
+        bail!(
+            "task {id} is {}; only a verified task lands",
+            t.state.as_str()
+        );
+    }
+    if !t.landed_sha.is_empty() {
+        bail!("task {id} already landed: {}", t.reason);
+    }
+    if !by_hand && !f.trust_policy(t.trust).auto_land {
+        bail!(
+            "task {id} is at trust {}, which does not land itself; land it with forge land {id}",
+            t.trust.as_str()
+        );
+    }
+    let repo = PathBuf::from(&t.repo);
+    if !Path::new(&t.worktree).join(".git").exists() {
+        bail!(
+            "task {id}'s worktree is gone ({}); retry the task instead",
+            t.worktree
+        );
+    }
+    let cfg = config::load_working(&repo).await?;
+    let Some(remote) = cfg.push_remote.clone() else {
+        bail!("{} has no push remote; nothing to land on", repo.display());
+    };
+    let Some(url) = git::remote_url(&repo, &remote).await else {
+        bail!("remote {remote} has no URL in {}", repo.display());
+    };
+    let mut seq = f.store.ops(id)?.len() as i64;
+    let mut attempt_no = f.store.attempts(id)?.len() as i64;
+    match crate::landing::integrate(f, &mut t, &url, &remote, &mut seq, &mut attempt_no)
+        .await
+        .map_err(|e| match e {
+            crate::engine::Fault::Task(e) | crate::engine::Fault::Env(e) => e,
+        })? {
+        crate::landing::Integrate::Landed(sha) => {
+            t.reason = format!("landed {} @ {}", t.base_branch, &sha[..sha.len().min(8)]);
+            t.landed_sha = sha.clone();
+            t.landed_at = Some(crate::unix_now());
+            t.hand_landed = by_hand;
+            t.pushed = true;
+            if demoted {
+                t.state = TaskState::Succeeded;
+                t.finished_at = Some(crate::unix_now());
+            }
+            f.store.update_task(&t)?;
+            if let Some(iid) = t.initiative {
+                crate::view::maybe_settle_initiative(f, id, iid)?;
+            }
+            f.report.emit(
+                id,
+                crate::report::Event::TaskDone {
+                    state: t.state.as_str(),
+                    attempts: f.store.attempts(id)?.len(),
+                    cost: f.store.task_cost(id)?,
+                    reason: &t.reason,
+                    branch: &t.branch,
+                    pushed: true,
+                    compare: None,
+                    remove_cmd: "",
+                },
+            );
+            Ok(format!(
+                "landed task {id} on {} @ {}",
+                t.base_branch,
+                &sha[..8]
+            ))
+        }
+        crate::landing::Integrate::Rewind { first, .. } => {
+            // No need to store base_sha or reload cfg here: this command
+            // only reports the conflict and exits without touching `t` or
+            // `cfg` again. `forge retry` enqueues a brand-new task rather
+            // than resuming this one, so the stale base_sha left on this
+            // task is never read.
+            bail!(
+                "task {id} needs the coder again: {first}\n  forge retry {id} runs it through the integrator with the conflict as feedback"
+            )
+        }
+        crate::landing::Integrate::Failed(reason) => bail!("task {id} could not land: {reason}"),
+    }
+}

@@ -296,7 +296,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 
 /// Removes `<home>/plugins/<name>`, the installed copy `install` made.
 /// Stopping the plugin and clearing its enabled flag is the caller's job
-/// (the same store update `forge plugin disable` makes; see `cli::plugin_uninstall`),
+/// (the same store update `forge plugin disable` makes; see `cli::deploy::plugin_uninstall`),
 /// because that needs the store, which this module does not hold.
 /// `<home>/plugins-state/<name>` is left alone, deliberately: it is the
 /// plugin's own memory, not part of what was installed.

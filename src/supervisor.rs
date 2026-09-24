@@ -739,7 +739,7 @@ pub async fn supervise(f: &Forge, id: i64) -> Result<Ruled> {
                 &cited,
                 t.question_to.as_deref(),
             )?;
-            match crate::cli::land_task(f, id, false).await {
+            match crate::landing::land_task(f, id, false).await {
                 Ok(line) => {
                     f.report.emit(
                         id,
