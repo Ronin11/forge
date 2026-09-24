@@ -1,4 +1,4 @@
-Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  task  job
+Forge  0 queued, 1 running  worker 555   queue  requests (0)  initiatives (2)  jobs (2)  stats  task
 ┌initiative 7 · equitizr───────────────────────────────────────────────────────────────────────────┐
 │the billing page shows usage-based line items                                                     │
 │held  held: budget  1h30m elapsed                                                                 │

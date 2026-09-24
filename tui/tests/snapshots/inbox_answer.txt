@@ -1,4 +1,4 @@
-Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jobs (2)  task  job
+Forge  0 queued, 0 running  no worker   queue  requests (5)  initiatives (2)  jobs (2)  stats  task
 ┌blocked tasks: decisions waiting on you───────────────────────────────────────────────────────────┐
 │ID    KIND        WF            TO           REQUEST                                              │
 │41    question    reviewed      designer     Which color should we use?                           │

@@ -61,6 +61,7 @@ case "$1" in
 JSON
   ;;
   log | requests) echo '[]' ;;
+  stats) cat "$(dirname "$0")/stats.json" ;;
   events) exit 0 ;;
   initiative)
     case "$2" in
@@ -137,7 +138,13 @@ struct Fake {
 }
 
 fn fake_forge() -> Fake {
+    fake_forge_with_stats(include_str!("fixtures/stats.json"))
+}
+
+/// A fake `forge` whose `stats --json` prints `stats`.
+fn fake_forge_with_stats(stats: &str) -> Fake {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("stats.json"), stats).unwrap();
     let bin = dir.path().join("forge");
     std::fs::write(&bin, FAKE).unwrap();
     #[cfg(unix)]
@@ -464,4 +471,92 @@ fn inbox_lists_two_questions_and_supports_cli_actions() {
     app.pump();
     assert!(frame(&app).contains("Which color"));
     app.shutdown();
+}
+
+/// Opens the stats screen and steps `tab` tabs right, then presses `keys`.
+fn stats_frame(fake: Fake, tab: usize, keys: &[KeyCode]) -> String {
+    let mut app = App::new(fake.forge);
+    app.snapshot();
+    for _ in 0..4 {
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+    }
+    assert_eq!(app.screen(), Screen::Stats);
+    for _ in 0..tab {
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+    }
+    for key in keys {
+        app.handle_key(*key, KeyModifiers::NONE);
+    }
+    let text = frame(&app);
+    app.shutdown();
+    text
+}
+
+#[test]
+fn the_stats_workflows_tab_draws_the_rate_interval_as_a_bar() {
+    let text = stats_frame(fake_forge(), 0, &[]);
+    assert!(text.contains("REGRESSION"));
+    assert_snapshot("stats_workflows", &text);
+}
+
+#[test]
+fn the_stats_quality_tab_renders() {
+    assert_snapshot("stats_quality", &stats_frame(fake_forge(), 1, &[]));
+}
+
+#[test]
+fn the_stats_by_role_tab_renders() {
+    assert_snapshot("stats_by_role", &stats_frame(fake_forge(), 2, &[]));
+}
+
+#[test]
+fn the_stats_human_attention_tab_renders() {
+    assert_snapshot("stats_human_attention", &stats_frame(fake_forge(), 3, &[]));
+}
+
+#[test]
+fn the_stats_time_to_live_tab_renders() {
+    assert_snapshot("stats_time_to_live", &stats_frame(fake_forge(), 4, &[]));
+}
+
+#[test]
+fn the_stats_factors_tab_renders() {
+    assert_snapshot("stats_factors", &stats_frame(fake_forge(), 5, &[]));
+}
+
+#[test]
+fn a_stats_table_sorts_by_a_key_and_reverses() {
+    let by_landed = |keys: &[KeyCode]| {
+        let text = stats_frame(fake_forge(), 0, keys);
+        let at = |name: &str| text.find(name).unwrap();
+        (at("tdd"), at("direct"), text)
+    };
+    // 11 steps of `>` reach the landed column (11th of 12).
+    let mut keys = vec![KeyCode::Char('>'); 11];
+    let (tdd, direct, text) = by_landed(&keys);
+    assert!(tdd < direct, "landed sorts descending first:\n{text}");
+    assert!(text.contains("landed ▼"));
+    keys.push(KeyCode::Char('v'));
+    let (tdd, direct, text) = by_landed(&keys);
+    assert!(direct < tdd, "v reverses:\n{text}");
+    assert!(text.contains("landed ▲"));
+    assert_snapshot("stats_workflows_sorted", &text);
+}
+
+#[test]
+fn the_factors_tab_is_hidden_when_the_field_is_absent() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/stats.json")).unwrap();
+    doc.as_object_mut().unwrap().remove("factors");
+    let fake = fake_forge_with_stats(&doc.to_string());
+    let text = stats_frame(fake, 0, &[]);
+    assert!(!text.contains("Factors"));
+    assert!(text.contains("Time to live"));
+    let fake = fake_forge_with_stats(&doc.to_string());
+    let stepped = stats_frame(fake, 5, &[]);
+    assert!(
+        stepped.contains("Workflows"),
+        "five tabs wrap back to the first"
+    );
+    assert_snapshot("stats_no_factors", &text);
 }

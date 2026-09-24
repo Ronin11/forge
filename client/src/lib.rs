@@ -1395,15 +1395,119 @@ pub struct StatsFactorRow {
     pub mean_def_calls: Option<f64>,
 }
 
+/// One row of `StatsDoc.workflows`: outcomes, verified rate with its 95%
+/// interval, and the defect-escape and delayed-cost signals for one
+/// workflow name + definition hash. The legacy header-named keys are not
+/// modeled. See `docs/CLIENT.md`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsWorkflowRow {
+    pub workflow: String,
+    pub hash: String,
+    pub pieces: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub blocked: i64,
+    pub unverified: i64,
+    pub attempts: i64,
+    pub mean_cost_usd: f64,
+    #[serde(default)]
+    pub cost_per_success_usd: Option<f64>,
+    pub landed: i64,
+    #[serde(default)]
+    pub cost_per_landed_usd: Option<f64>,
+    #[serde(default)]
+    pub broke_base: i64,
+    #[serde(default)]
+    pub broke_base_share: Option<f64>,
+    #[serde(default)]
+    pub repaired: i64,
+    #[serde(default)]
+    pub repaired_share: Option<f64>,
+    #[serde(default)]
+    pub repair_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub true_cost_per_landed_usd: Option<f64>,
+    #[serde(default)]
+    pub churn_share: Option<f64>,
+    #[serde(default)]
+    pub rate: f64,
+    #[serde(default)]
+    pub rate_lo: f64,
+    #[serde(default)]
+    pub rate_hi: f64,
+    #[serde(default)]
+    pub regressed: bool,
+}
+
+/// One row of `StatsDoc.human_attention` (per workflow version) or
+/// `StatsDoc.human_attention_projects` (per project, `workflow` and `hash`
+/// empty, `project` set).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsAttentionRow {
+    #[serde(default)]
+    pub workflow: String,
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub project: String,
+    pub landed: i64,
+    pub operator_answers: i64,
+    pub hand_landed: i64,
+    pub withdrawals: i64,
+    pub hand_commits: i64,
+    pub events: i64,
+    #[serde(default)]
+    pub events_per_landed: Option<f64>,
+}
+
+/// One row of `StatsDoc.time_to_live` (per workflow version) or
+/// `StatsDoc.time_to_live_projects` (per project).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsTtlRow {
+    #[serde(default)]
+    pub workflow: String,
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub project: String,
+    pub n: i64,
+    #[serde(default)]
+    pub median_secs: Option<f64>,
+    #[serde(default)]
+    pub p90_secs: Option<f64>,
+}
+
+/// One row of `StatsDoc.assessment_correlation`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StatsCorrelationRow {
+    pub measure: String,
+    #[serde(default)]
+    pub rho: Option<f64>,
+    pub n: i64,
+}
+
 /// The document `forge stats --json` prints. `docs/CLIENT.md` documents
-/// the full shape (`workflows`, `steps`, `journal`, `no_journal`,
-/// `projects`, `by_role`, `factors`, `tools`); only `by_role` and
-/// `factors` are modeled here today, the rest added as a client needs
-/// them.
+/// the full shape; `steps`, `journal`, `no_journal`, `projects`, `jobs`,
+/// `daily` and `tools` are not modeled here yet. `factors` is `None` when
+/// the key is absent (an older `forge` without `--factors`).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct StatsDoc {
+    #[serde(default)]
+    pub workflows: Vec<StatsWorkflowRow>,
+    #[serde(default)]
     pub by_role: Vec<StatsRoleRow>,
-    pub factors: Vec<StatsFactorRow>,
+    #[serde(default)]
+    pub assessment_correlation: Vec<StatsCorrelationRow>,
+    #[serde(default)]
+    pub human_attention: Vec<StatsAttentionRow>,
+    #[serde(default)]
+    pub human_attention_projects: Vec<StatsAttentionRow>,
+    #[serde(default)]
+    pub time_to_live: Vec<StatsTtlRow>,
+    #[serde(default)]
+    pub time_to_live_projects: Vec<StatsTtlRow>,
+    #[serde(default)]
+    pub factors: Option<Vec<StatsFactorRow>>,
 }
 
 /// The document `forge graph REPO --json` prints: the module graph
