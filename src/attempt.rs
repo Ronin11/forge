@@ -488,6 +488,12 @@ pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fau
         Some(r) => r.start_sha.clone(),
         None => git::head(dir).await.task()?,
     };
+    // A supervisor may start in a fresh process, without run_task having
+    // installed this worktree's executor yet. Always use its trusted base.
+    let cfg = crate::config::load_at(Path::new(&t.repo), dir, &t.base_sha)
+        .await
+        .task()?;
+    f.allow_egress(dir, &cfg, t.trust);
     let execution = f.execution_inputs(dir);
     inputs.executor = execution.executor;
     inputs.guarantees = execution.guarantees;

@@ -300,6 +300,7 @@ src/prompts.rs      what each contract's agent is told, assembled from pieces
 src/queue.rs        how a task comes to exist; enqueue validates a TaskRequest
 src/render.rs       text rendering for documents: first sentence, path-like tokens stripped, word-boundary cuts
 src/report.rs       typed events; the stderr printer is one consumer
+src/executor.rs     executor contract, backend selection, and guarantees
 src/sandbox.rs      bubblewrap
 src/store/          SQLite, forward-only migrations by user_version, one file per table family
   mod.rs            types, column lists, open, schema_version, the migration runner

@@ -380,6 +380,34 @@ impl Sandbox {
         self.command(worktree, argv, env, &self.policy_for(worktree))
     }
 
+    fn wrapper_script(&self, relay_enabled: bool) -> String {
+        // The claude CLI's own config file, not the credential-bearing
+        // config directory: seed it into the tmpfs $HOME as a real, private
+        // file before exec, so the CLI's rename-over-a-lockfile update
+        // never races another sandbox's copy of the same host file. Absent
+        // on the host, the `--ro-bind-try` above is a no-op and this `cp`
+        // silently does nothing, which is fine: the agent just starts
+        // without one.
+        let dest = self.home.join(".claude.json");
+        // Then the egress relay, in the background: it dies with the
+        // namespace when the command ends. Its ready file is what the
+        // command waits for, so its first request never beats the listener.
+        let relay = if relay_enabled {
+            format!(
+                "{} egress-relay --ready {RELAY_READY} >/dev/null 2>&1 & \
+                 i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; ",
+                shell_quote(&self.relay_exe.to_string_lossy())
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "cp -f {} {} 2>/dev/null; {relay}exec \"$@\"",
+            shell_quote(CLAUDE_JSON_SEED),
+            shell_quote(&dest.to_string_lossy())
+        )
+    }
+
     pub fn command(
         &self,
         worktree: &Path,
@@ -520,31 +548,7 @@ impl Sandbox {
             cmd.arg("--bind-try").arg(&dir).arg(&dir);
         }
         cmd.arg("--chdir").arg(worktree).arg("--");
-        // The claude CLI's own config file, not the credential-bearing
-        // config directory: seed it into the tmpfs $HOME as a real, private
-        // file before exec, so the CLI's rename-over-a-lockfile update
-        // never races another sandbox's copy of the same host file. Absent
-        // on the host, the `--ro-bind-try` above is a no-op and this `cp`
-        // silently does nothing, which is fine: the agent just starts
-        // without one.
-        let dest = self.home.join(".claude.json");
-        // Then the egress relay, in the background: it dies with the
-        // namespace when the command ends. Its ready file is what the
-        // command waits for, so its first request never beats the listener.
-        let relay = if socket.is_some() {
-            format!(
-                "{} egress-relay --ready {RELAY_READY} >/dev/null 2>&1 & \
-                 i=0; while [ ! -e {RELAY_READY} ] && [ $i -lt 500 ]; do i=$((i+1)); sleep 0.01; done; ",
-                shell_quote(&self.relay_exe.to_string_lossy())
-            )
-        } else {
-            String::new()
-        };
-        let script = format!(
-            "cp -f {} {} 2>/dev/null; {relay}exec \"$@\"",
-            shell_quote(CLAUDE_JSON_SEED),
-            shell_quote(&dest.to_string_lossy())
-        );
+        let script = self.wrapper_script(socket.is_some());
         cmd.args(["/bin/sh", "-c"]).arg(script).arg("sh");
         cmd.args(argv);
         cmd.env_clear();
