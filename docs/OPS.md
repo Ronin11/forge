@@ -240,7 +240,9 @@ copy.
 drifts from them, so a new crate that ships a binary cannot be forgotten.
 
 `.github/workflows/release.yml` runs on a `v*` tag: one job per target
-triple in its matrix (`x86_64-unknown-linux-gnu` today), each running
+triple in its matrix (`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`; a
+macOS install runs attempts on the host backend, since bubblewrap is
+Linux), each running
 `scripts/release.sh` for its target, checking that the tag equals the
 version the built binary reports, and attaching `dist/forge-*.tar.gz` and
 `dist/SHA256SUMS` to a GitHub release of the tag's name. To cut one: bump
