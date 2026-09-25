@@ -261,6 +261,8 @@ pub async fn run_attempt(
         spec_prompt.push_str(&crate::handoff::build(f, t, &spec.dir, &r.start_sha, prev).await);
     }
     inputs.prompt_chars = spec_prompt.chars().count();
+    inputs.prompt_hash = step.action.prompt_hash.clone();
+    inputs.includes = step.action.includes.clone();
     let provider = f
         .providers
         .get(&t.provider)

@@ -440,6 +440,10 @@ enum Cmd {
         /// model), role being the attempt step
         #[arg(long)]
         by_role: bool,
+        /// Attempts, outcomes and cost per (workflow, step, prompt hash):
+        /// two versions of a directive's prompt are two rows
+        #[arg(long)]
+        by_step: bool,
         /// Landing rate and true cost per factor level (provider per
         /// role, workflow, size class), with a main-effects fit of log
         /// true cost across all of them (see docs/ECONOMIST.md)

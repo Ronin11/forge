@@ -7,6 +7,7 @@ pub struct StatsOptions {
     pub tests: bool,
     pub last: i64,
     pub by_role: bool,
+    pub by_step: bool,
     pub factors: bool,
     pub questions: bool,
     pub days: Option<i64>,
@@ -187,6 +188,7 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         tests,
         last,
         by_role,
+        by_step,
         factors,
         questions,
         days,
@@ -208,6 +210,9 @@ pub(super) async fn stats(args: StatsOptions) -> Result<()> {
         project,
         initiative,
     };
+    if by_step {
+        return by_step_stats(&f, &scope, json);
+    }
     if json {
         let mut doc = crate::view::stats_doc(&f, &scope, days).await?;
         if tools {
@@ -657,6 +662,55 @@ fn test_run_stats(f: &Forge, last: i64) -> Result<()> {
             m(t.full_suite_runs),
             m(t.runs_without_edit),
             m(t.wall_ms) / 1000.0
+        );
+    }
+    Ok(())
+}
+
+/// Attempts per (workflow, step, prompt hash): the same step under two
+/// versions of its prompt reads as two rows, and a fragment change moves
+/// every step that includes it to a new one.
+fn by_step_stats(f: &Forge, scope: &crate::store::StatsFilter, json: bool) -> Result<()> {
+    let rows = f.store.prompt_stats(scope)?;
+    if json {
+        let v: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "workflow": r.workflow,
+                    "step": r.step,
+                    "prompt_hash": r.prompt_hash,
+                    "attempts": r.attempts,
+                    "succeeded": r.succeeded,
+                    "cost_usd": r.cost,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    out!(
+        "{:<10} {:<12} {:<64} {:>5} {:>4} {:>9}",
+        "WF",
+        "STEP",
+        "PROMPT",
+        "ATT",
+        "OK",
+        "COST"
+    );
+    for r in &rows {
+        out!(
+            "{:<10} {:<12} {:<64} {:>5} {:>4} {:>9}",
+            r.workflow,
+            r.step,
+            if r.prompt_hash.is_empty() {
+                "-"
+            } else {
+                &r.prompt_hash
+            },
+            r.attempts,
+            r.succeeded,
+            format!("${:.2}", r.cost)
         );
     }
     Ok(())

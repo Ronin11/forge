@@ -18,6 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+mod library;
+pub use library::{FRAGMENTS_DIR, Include, UNTRUSTED_DATA, text_hash};
+use library::{fragment_problems, load_prompt_file};
+
 /// Names the engine inserts itself; a user operation may not shadow them.
 pub const KERNEL_OPS: &[&str] = &["verify", "push", "integrate", "land", "clone"];
 
@@ -485,6 +489,10 @@ struct ActionRaw {
     /// Directive: text appended verbatim as a final "This step:" section
     /// of the role prompt the agent receives.
     prompt: Option<String>,
+    /// Directive: the prompt lives in this file beside the action, in the
+    /// catalog, and may include fragments (`{{> name}}`). Instead of
+    /// `prompt`, not with it.
+    prompt_file: Option<String>,
     /// Directive: the JSON Schema a job step's structured output is
     /// validated against before the next step sees it (docs/JOBS.md,
     /// "Steps"). Unused by a build workflow, which holds every directive to
@@ -526,6 +534,16 @@ pub struct ActionDef {
     pub paths: Vec<String>,
     pub brief: String,
     pub prompt: Option<String>,
+    /// The catalog file `prompt` was read from, when it came from one.
+    #[serde(default)]
+    pub prompt_file: Option<String>,
+    /// Hash of `prompt` as the attempt is given it (includes expanded);
+    /// empty when the action has no prompt of its own.
+    #[serde(default)]
+    pub prompt_hash: String,
+    /// The fragments `prompt` includes, with each one's hash.
+    #[serde(default)]
+    pub includes: Vec<Include>,
     pub schema: Option<String>,
     pub file_into_initiative: bool,
     pub overlay: bool,
@@ -916,6 +934,12 @@ fn ensure(home: &Path) -> Result<PathBuf> {
             std::fs::write(&p, text)?;
         }
     }
+    let fragments = dir.join(FRAGMENTS_DIR);
+    std::fs::create_dir_all(&fragments)?;
+    let untrusted = fragments.join("untrusted-data.md");
+    if !untrusted.exists() {
+        std::fs::write(&untrusted, UNTRUSTED_DATA)?;
+    }
     Ok(dir)
 }
 
@@ -1020,11 +1044,12 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
             || !raw.paths.is_empty()
             || !raw.brief.is_empty()
             || raw.prompt.is_some()
+            || raw.prompt_file.is_some()
             || raw.schema.is_some()
             || raw.file_into_initiative)
     {
         bail!(
-            "{}: contract, paths, brief, prompt, schema, and file_into_initiative apply to directives only",
+            "{}: contract, paths, brief, prompt, prompt_file, schema, and file_into_initiative apply to directives only",
             path.display()
         );
     }
@@ -1034,6 +1059,7 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
         jsonschema::validator_for(&v)
             .with_context(|| format!("{}: `schema` is not a valid JSON Schema", path.display()))?;
     }
+    library::check_prompt_file(path, raw.prompt.is_some(), raw.prompt_file.as_deref())?;
     if raw.kind == Kind::Directive && (raw.overlay || raw.verifies) {
         bail!(
             "{}: overlay and verifies apply to operations only",
@@ -1100,7 +1126,10 @@ fn parse_action(path: &Path, text: &str, hash: String) -> Result<ActionDef> {
         contract,
         paths: raw.paths,
         brief: raw.brief,
+        prompt_hash: raw.prompt.as_deref().map(text_hash).unwrap_or_default(),
         prompt: raw.prompt,
+        prompt_file: raw.prompt_file,
+        includes: Vec::new(),
         schema: raw.schema,
         file_into_initiative: raw.file_into_initiative,
         overlay: raw.overlay,
@@ -1342,8 +1371,13 @@ pub fn load_catalog(home: &Path) -> Result<Catalog> {
     let (raw_actions, mut problems) = load_dir(
         toml_files(&dir.join("actions"))?,
         |p| format!("actions/{}", p.file_name().unwrap().to_string_lossy()),
-        |p, t| parse_action(p, t, blob_hash(&dir, p)?),
+        |p, t| {
+            let mut a = parse_action(p, t, blob_hash(&dir, p)?)?;
+            load_prompt_file(&dir, p, &mut a)?;
+            Ok(a)
+        },
     )?;
+    problems.extend(fragment_problems(&dir));
     let mut actions = BTreeMap::new();
     for a in raw_actions {
         if a.description.trim().is_empty() {

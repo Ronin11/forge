@@ -38,6 +38,13 @@ pub struct Inputs {
     pub protected: Vec<String>,
     pub namespace: Vec<String>,
     pub prompt_chars: usize,
+    /// Hash of the directive's own prompt text as it was given, includes
+    /// expanded; empty when the action has none (or before this was recorded).
+    #[serde(default)]
+    pub prompt_hash: String,
+    /// The fragments that prompt included, with each one's hash.
+    #[serde(default)]
+    pub includes: Vec<crate::workflows::Include>,
     /// The CLI session this attempt continued, when it resumed a capped one.
     #[serde(default)]
     pub resumed: Option<String>,
