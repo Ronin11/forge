@@ -629,13 +629,19 @@ fn check_worker(paths: &Paths) -> Vec<Check> {
         return Vec::new();
     };
     vec![match (w.running, w.stale) {
-        (true, true) => check(
+        (true, Some(true)) => check(
             "worker",
             Status::Warn,
             format!("pid {} runs a binary rebuilt since it started", w.pid),
             "restart the worker (one SIGTERM drains it, or systemctl --user restart forge-worker)",
         ),
-        (true, false) => check("worker", Status::Ok, format!("pid {} running", w.pid), ""),
+        (true, Some(false)) => check("worker", Status::Ok, format!("pid {} running", w.pid), ""),
+        (true, None) => check(
+            "worker",
+            Status::Ok,
+            format!("pid {} running (no /proc: stale-binary check skipped)", w.pid),
+            "",
+        ),
         (false, _) => check(
             "worker",
             Status::Warn,
