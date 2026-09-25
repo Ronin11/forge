@@ -968,7 +968,7 @@ async fn run_directive_step(args: RunDirectiveStep<'_>) -> Result<StepFlow, Faul
         // The provider refused the run: not an attempt the agent
         // spent. The hold at the top of the loop waits for the
         // window; the same feedback and session go again.
-        if outcome.rate_limited {
+        if outcome.rate_limited && a.state != AttemptState::Unverified {
             f.report.emit(
                 id,
                 Event::Note {

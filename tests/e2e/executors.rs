@@ -160,6 +160,15 @@ fn review_host_repo_operation_on_verify_ref_runs_on_host() {
 
 #[test]
 fn ssh_executor_syncs_runs_and_retains_an_unverified_branch() {
+    assert_ssh_attempt(0);
+}
+
+#[test]
+fn ssh_executor_syncs_back_after_a_failed_remote_command() {
+    assert_ssh_attempt(7);
+}
+
+fn ssh_fixture() -> (Env, std::path::PathBuf, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let e = Env::new();
     let bin = e._dir.path().join("transport");
@@ -195,6 +204,7 @@ while [ "$1" = "-o" ]; do shift 2; done
 test "$1" = "forge@remote" || exit 91
 shift
 if [ "$*" = "claude --version" ]; then echo 'claude fake'; exit 0; fi
+case "$*" in mktemp*) cat >/dev/null;; esac
 exec /bin/sh -c "$*"
 "#,
     );
@@ -203,12 +213,15 @@ exec /bin/sh -c "$*"
         "remote-agent",
         &format!(
             r#"#!/bin/bash
+read -r first_line
+test -n "$first_line" || exit 95
 case "$PWD" in /tmp/forge-executor.*) ;; *) exit 92;; esac
 test "$(cat outbound.txt)" = "synced to remote" || exit 93
 test "$ANTHROPIC_SSH_TEST" = "spaces and 'quotes' \$dollars" || exit 94
 rm outbound.txt
 printf '%s' "$PWD" > remote-location.txt
-exec {}
+{}
+exit "$ANTHROPIC_EXIT"
 "#,
             fake.display()
         ),
@@ -223,6 +236,11 @@ exec {}
     std::fs::write(e.repo.join("outbound.txt"), "synced to remote").unwrap();
     git(&e.repo, &["add", "."]);
     git(&e.repo, &["commit", "-qm", "select remote executor"]);
+    (e, bin, remote_agent)
+}
+
+fn assert_ssh_attempt(exit: i32) {
+    let (e, bin, remote_agent) = ssh_fixture();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = e
         .cmd("ok.sh")
@@ -230,6 +248,7 @@ exec {}
         .env("FORGE_SANDBOX", "1")
         .env("FORGE_CLAUDE_BIN", &remote_agent)
         .env("ANTHROPIC_SSH_TEST", "spaces and 'quotes' $dollars")
+        .env("ANTHROPIC_EXIT", exit.to_string())
         .args([
             "run",
             e.repo.to_str().unwrap(),

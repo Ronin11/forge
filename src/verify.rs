@@ -87,6 +87,25 @@ pub struct Subject<'a> {
     pub plan_rows: bool,
 }
 
+async fn remote_verdict(s: &Subject<'_>) -> Result<Option<Verdict>> {
+    if !s
+        .sandbox
+        .is_some_and(|e| e.backend(s.worktree) == crate::executor::Backend::Ssh)
+    {
+        return Ok(None);
+    }
+    let facts = GitFacts {
+        commits: crate::git::count_commits(s.worktree, s.base_sha).await?,
+        changed: crate::git::changed_paths(s.worktree, s.base_sha).await?,
+        changed_now: crate::git::changed_paths(s.worktree, s.start_sha).await?,
+        dirty: crate::git::dirty_paths(s.worktree).await?,
+    };
+    let mut verdict = Verdict::open(&facts);
+    verdict.state = AttemptState::Unverified;
+    verdict.reason = "remote executor: the kernel could not run the checks itself".into();
+    Ok(Some(verdict))
+}
+
 impl Subject<'_> {
     /// The task's facts as environment for every check run on its tree:
     /// the same list an operation gets (`operation::task_facts`).
@@ -901,6 +920,9 @@ pub async fn verify_operation(s: Subject<'_>) -> Result<Verdict> {
 /// merge can carry a change past L0 that no single directive committed by
 /// itself.
 pub async fn verify_integration(s: &Subject<'_>) -> Result<Verdict> {
+    if let Some(verdict) = remote_verdict(s).await? {
+        return Ok(verdict);
+    }
     let changed = crate::git::changed_paths(s.worktree, s.base_sha).await?;
     let dirty = crate::git::dirty_paths(s.worktree).await?;
     let facts = GitFacts {
@@ -946,12 +968,10 @@ pub async fn verify_directive(
     s: &Subject<'_>,
     agent: &Outcome,
 ) -> Result<Verdict> {
-    if s.sandbox
-        .is_some_and(|e| !e.guarantees(s.worktree).checks_under_kernel_control)
-    {
-        let mut verdict = Verdict::open(&GitFacts::default());
-        verdict.state = AttemptState::Unverified;
-        verdict.reason = "remote executor: the kernel could not run the checks itself".into();
+    if let Some(mut verdict) = remote_verdict(s).await? {
+        verdict.envelope = envelope::parse(agent.structured.as_deref(), &agent.result_text)
+            .ok()
+            .flatten();
         return Ok(verdict);
     }
     let agent_reason = crate::directive::agent_failure(agent);

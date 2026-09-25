@@ -100,14 +100,23 @@ fn ssh_command(
 ) -> Command {
     use crate::sandbox::shell_quote;
     let local = worktree.to_string_lossy();
+    let relocate = |value: &str| {
+        if value == local.as_ref() {
+            ".".to_owned()
+        } else if let Some(relative) = value.strip_prefix(&format!("{local}/")) {
+            format!("./{relative}")
+        } else {
+            value.to_owned()
+        }
+    };
     let args = argv
         .iter()
-        .map(|a| shell_quote(&a.replace(local.as_ref(), ".")))
+        .map(|a| shell_quote(&relocate(a)))
         .collect::<Vec<_>>()
         .join(" ");
     let vars = env
         .iter()
-        .map(|(k, v)| shell_quote(&format!("{k}={}", v.replace(local.as_ref(), "."))))
+        .map(|(k, v)| shell_quote(&format!("{k}={}", relocate(v))))
         .collect::<Vec<_>>()
         .join(" ");
     let remote = format!("env -i {vars} {args}");
@@ -119,7 +128,7 @@ set -eu
 dest=$1
 tree=$2
 run=$3
-scratch=$(ssh "$dest" 'mktemp -d /tmp/forge-executor.XXXXXXXXXX')
+scratch=$(ssh "$dest" 'mktemp -d /tmp/forge-executor.XXXXXXXXXX' </dev/null)
 case "$scratch" in /tmp/forge-executor.*) ;; *) exit 125 ;; esac
 case "$scratch" in *[!a-zA-Z0-9/._-]*) exit 125 ;; esac
 trap 'ssh "$dest" "rm -rf -- $scratch" </dev/null >/dev/null 2>&1 || true' EXIT
@@ -135,6 +144,15 @@ exit "$status"
         &remote,
     ]);
     command
+}
+
+/// Remote CLIs are resolved by the remote shell, never by local mise.
+pub fn agent_bin(execution: Option<&Execution>, path: &Path, name: String) -> String {
+    if execution.is_some_and(|e| e.backend(path) == Backend::Ssh) {
+        name
+    } else {
+        crate::agent::real_bin(&name)
+    }
 }
 
 /// Selection is installed only by the kernel when it reads trusted config.
