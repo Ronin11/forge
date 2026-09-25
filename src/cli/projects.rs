@@ -1,3 +1,16 @@
+/// Arguments for `project_set`, kept together for one project set operation.
+struct ProjectSet {
+    name: String,
+    purpose: Option<String>,
+    workflow: Option<String>,
+    per_task_usd: Option<f64>,
+    per_initiative_usd: Option<f64>,
+    supervisor_model: Option<String>,
+    supervisor_per_lineage: Option<u32>,
+    protected: Vec<String>,
+    role: Vec<String>,
+}
+
 use super::initiatives::*;
 use super::project_targets::*;
 use super::*;
@@ -348,18 +361,18 @@ fn parse_role_providers(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_set(
-    name: String,
-    purpose: Option<String>,
-    workflow: Option<String>,
-    per_task_usd: Option<f64>,
-    per_initiative_usd: Option<f64>,
-    supervisor_model: Option<String>,
-    supervisor_per_lineage: Option<u32>,
-    protected: Vec<String>,
-    role: Vec<String>,
-) -> Result<()> {
+fn project_set(args: ProjectSet) -> Result<()> {
+    let ProjectSet {
+        name,
+        purpose,
+        workflow,
+        per_task_usd,
+        per_initiative_usd,
+        supervisor_model,
+        supervisor_per_lineage,
+        protected,
+        role,
+    } = args;
     let f = Forge::open(false, false)?;
     let role_providers = parse_role_providers(&f, &role)?;
     let d = crate::store::ProjectDefaults {
@@ -643,7 +656,7 @@ async fn dispatch_project(cmd: Cmd) -> Result<()> {
                 supervisor_per_lineage,
                 protected,
                 role,
-            } => project_set(
+            } => project_set(ProjectSet {
                 name,
                 purpose,
                 workflow,
@@ -653,7 +666,7 @@ async fn dispatch_project(cmd: Cmd) -> Result<()> {
                 supervisor_per_lineage,
                 protected,
                 role,
-            ),
+            }),
             ProjectCmd::Backlog {
                 name,
                 add,

@@ -306,10 +306,24 @@ async fn dispatch_stats(cmd: Cmd) -> Result<()> {
             force,
             json,
         } => {
-            stats(
-                tools, step, quality, journal, tests, last, by_role, factors, questions, days,
-                project, initiative, reprice, provider, force, json,
-            )
+            stats(crate::cli::statistics::StatsOptions {
+                tools,
+                step,
+                quality,
+                journal,
+                tests,
+                last,
+                by_role,
+                factors,
+                questions,
+                days,
+                project,
+                initiative,
+                reprice,
+                provider,
+                force,
+                json,
+            })
             .await
         }
         _ => unreachable!("command routed to the wrong family"),

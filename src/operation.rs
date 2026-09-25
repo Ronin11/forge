@@ -211,16 +211,16 @@ pub(crate) async fn run_operation(
         Vec::new()
     };
     let r = if step.action.output_full() {
-        checks::run_one_capped(
-            "OP",
-            &step.action.name,
-            &argv,
-            &cwd,
-            f.sandbox.as_ref(),
+        checks::run_one_capped(crate::checks::RunOneCapped {
+            level: "OP",
+            name: &step.action.name,
+            argv: &argv,
+            cwd: &cwd,
+            sandbox: f.sandbox.as_ref(),
             timeout,
-            &env,
-            checks::FULL_OUTPUT_BYTES,
-        )
+            env: &env,
+            cap_bytes: checks::FULL_OUTPUT_BYTES,
+        })
         .await
     } else {
         checks::run_one(

@@ -89,7 +89,6 @@ pub struct MessageFilter {
 impl Store {
     /// Record a message on a channel: `direction` is `In` for one that
     /// came from `contact`, `Out` for one sent to them.
-    #[allow(clippy::too_many_arguments)]
     pub fn insert_message(
         &self,
         project: &str,

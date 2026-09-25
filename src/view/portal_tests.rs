@@ -83,18 +83,18 @@ fn portal_doc_never_carries_a_forbidden_key_even_when_the_project_has_everything
         .start_deploy("equitizr", "prod", "abc123", 100, None)
         .unwrap();
     f.store
-        .finish_deploy(
-            deploy_id,
-            101,
-            true,
-            "ok",
-            None,
-            "",
-            Some(true),
-            Some(r#"{"screenshot":"screenshot.png"}"#),
-            Some(true),
-            Some("[]"),
-        )
+        .finish_deploy(crate::store::FinishDeploy {
+            id: deploy_id,
+            at: 101,
+            check_ok: true,
+            check_output: "ok",
+            rolled_back_to: None,
+            reason: "",
+            smoke_ok: Some(true),
+            smoke_json: Some(r#"{"screenshot":"screenshot.png"}"#),
+            look_ok: Some(true),
+            look_json: Some("[]"),
+        })
         .unwrap();
 
     let landed = insert(

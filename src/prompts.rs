@@ -157,7 +157,6 @@ pub fn preamble(t: &Task, cfg: &config::Config, branch: &str, outcome: Option<&s
     p
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn code_prompt(
     t: &Task,
     cfg: &config::Config,
@@ -218,7 +217,6 @@ This directive may only change these paths: {}. Anything else fails verification
     p
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn tests_prompt(
     t: &Task,
     cfg: &config::Config,
@@ -300,7 +298,6 @@ pub fn early_feedback(why: &str, signals: &[&str]) -> String {
 
 /// The plan contract's prompt: read, decide, change nothing; a plan the
 /// coder follows or a question for the operator.
-#[allow(clippy::too_many_arguments)]
 pub fn plan_prompt(
     t: &Task,
     cfg: &config::Config,

@@ -1116,3 +1116,7 @@ mod column_tests {
         }
     }
 }
+
+pub use deploys::FinishDeploy;
+
+pub use record::InsertDecisionBy;

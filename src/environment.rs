@@ -417,15 +417,15 @@ pub fn record(
             grant.describe()
         ),
     };
-    let id = store.insert_decision_by(
+    let id = store.insert_decision_by(crate::store::InsertDecisionBy {
         task_id,
         repo,
-        &question,
-        &answer,
-        by.answered_by(),
-        &need.target,
-        None,
-    )?;
+        question: &question,
+        answer: &answer,
+        answered_by: by.answered_by(),
+        citations: &need.target,
+        answered_for: None,
+    })?;
     store.set_decision_kind(id, DECISION_KIND)?;
     Ok(id)
 }

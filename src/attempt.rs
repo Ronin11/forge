@@ -4,6 +4,45 @@
 //! the `Spec` the contract fills in: where the agent works, what it is
 //! told, which refs are overlaid, and what the verdict needs.
 
+/// Arguments for `run_attempt`, kept together for one run attempt operation.
+pub struct RunAttempt<'a> {
+    pub f: &'a Forge,
+    pub t: &'a Task,
+    pub cfg: &'a config::Config,
+    pub step: &'a ResolvedStep,
+    pub seq: i64,
+    pub attempt_no: i64,
+    pub feedback: Option<&'a str>,
+    pub resume: Option<&'a Resume>,
+}
+
+/// Arguments for `new_attempt`, kept together for one new attempt operation.
+pub struct NewAttempt<'a> {
+    pub f: &'a Forge,
+    pub t: &'a Task,
+    pub step: &'a str,
+    pub seq: i64,
+    pub dir: &'a Path,
+    pub attempt_no: i64,
+    pub inputs: Inputs,
+    pub resume: Option<&'a Resume>,
+    pub provider: &'a agent::Provider,
+}
+
+/// Arguments for `launch`, kept together for one launch operation.
+struct AttemptLaunch<'a> {
+    f: &'a Forge,
+    t: &'a Task,
+    step: &'a str,
+    worktree: &'a Path,
+    prompt: &'a str,
+    log_path: &'a Path,
+    resume: Option<&'a str>,
+    writes: bool,
+    start_sha: &'a str,
+    provider: &'a agent::Provider,
+}
+
 use crate::audit::{Inputs, Outputs};
 use crate::ctx::Forge;
 use crate::engine::{Classify, Fault};
@@ -51,17 +90,19 @@ struct Spec {
 
 /// Run one attempt of `step` for the task: build the contract's spec,
 /// open the attempt row, launch the agent, judge the result, record it.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_attempt(
-    f: &Forge,
-    t: &Task,
-    cfg: &config::Config,
-    step: &ResolvedStep,
-    seq: i64,
-    attempt_no: i64,
-    feedback: Option<&str>,
-    resume: Option<&Resume>,
+    args: RunAttempt<'_>,
 ) -> Result<(Attempt, Verdict, agent::Outcome), Fault> {
+    let RunAttempt {
+        f,
+        t,
+        cfg,
+        step,
+        seq,
+        attempt_no,
+        feedback,
+        resume,
+    } = args;
     let contract = step.action.contract;
     let repo = Path::new(&t.repo);
     // The initiative's outcome, when this task belongs to one: placed in
@@ -225,32 +266,32 @@ pub async fn run_attempt(
         .get(&t.provider)
         .with_context(|| format!("task {}: unknown provider {:?}", t.id, t.provider))
         .env()?;
-    let (mut a, log_path) = new_attempt(
+    let (mut a, log_path) = new_attempt(NewAttempt {
         f,
         t,
-        &step.action.name,
+        step: &step.action.name,
         seq,
-        &spec.dir,
+        dir: &spec.dir,
         attempt_no,
         inputs,
         resume,
         provider,
-    )
+    })
     .await?;
-    let outcome = launch(
+    let outcome = launch(AttemptLaunch {
         f,
         t,
-        &step.action.name,
-        &spec.dir,
-        &spec_prompt,
-        &log_path,
-        resume
+        step: &step.action.name,
+        worktree: &spec.dir,
+        prompt: &spec_prompt,
+        log_path: &log_path,
+        resume: resume
             .filter(|r| r.fresh_from.is_none())
             .map(|r| r.session.as_str()),
-        contract.writes(),
-        &a.start_sha,
+        writes: contract.writes(),
+        start_sha: &a.start_sha,
         provider,
-    )
+    })
     .await?;
     git::verification_checkout(
         &f.paths.home,
@@ -399,18 +440,18 @@ fn first_edit_call(log_path: &Path) -> Option<i64> {
     None
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn new_attempt(
-    f: &Forge,
-    t: &Task,
-    step: &str,
-    seq: i64,
-    dir: &Path,
-    attempt_no: i64,
-    mut inputs: Inputs,
-    resume: Option<&Resume>,
-    provider: &agent::Provider,
-) -> Result<(Attempt, PathBuf), Fault> {
+pub async fn new_attempt(args: NewAttempt<'_>) -> Result<(Attempt, PathBuf), Fault> {
+    let NewAttempt {
+        f,
+        t,
+        step,
+        seq,
+        dir,
+        attempt_no,
+        mut inputs,
+        resume,
+        provider,
+    } = args;
     let log_path = f.paths.logs.join(format!("{}-{attempt_no}.jsonl", t.id));
     // A resumed attempt is measured from where the capped one began: the
     // agent's report covers the whole session.
@@ -444,19 +485,19 @@ pub async fn new_attempt(
     Ok((a, log_path))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn launch(
-    f: &Forge,
-    t: &Task,
-    step: &str,
-    worktree: &Path,
-    prompt: &str,
-    log_path: &Path,
-    resume: Option<&str>,
-    writes: bool,
-    start_sha: &str,
-    provider: &agent::Provider,
-) -> Result<agent::Outcome, Fault> {
+async fn launch(args: AttemptLaunch<'_>) -> Result<agent::Outcome, Fault> {
+    let AttemptLaunch {
+        f,
+        t,
+        step,
+        worktree,
+        prompt,
+        log_path,
+        resume,
+        writes,
+        start_sha,
+        provider,
+    } = args;
     let model = attempt_model(step, &t.model, &t.model, provider);
     let outcome = crate::directive::launch(
         f,

@@ -428,15 +428,15 @@ pub async fn edit_task(f: &Forge, id: i64, edit: &TaskEdit) -> Result<Vec<String
     if !f.store.set_task_fields(id, &up)? {
         bail!("task {id} changed state before its spec could be set");
     }
-    let decision = f.store.insert_decision_by(
-        id,
-        &old.repo,
-        &format!("task {id}'s spec"),
-        &format!("set {}", changes.join(", ")),
-        "operator",
-        "",
-        old.question_to.as_deref(),
-    )?;
+    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+        task_id: id,
+        repo: &old.repo,
+        question: &format!("task {id}'s spec"),
+        answer: &format!("set {}", changes.join(", ")),
+        answered_by: "operator",
+        citations: "",
+        answered_for: old.question_to.as_deref(),
+    })?;
     f.store.set_decision_retry(decision, id)?;
     Ok(changes)
 }
@@ -1091,15 +1091,15 @@ pub async fn answer(
         .and_then(|e| e.needs_input)
         .map(|q| q.question)
         .with_context(|| format!("task {id}'s last attempt recorded no question"))?;
-    let decision = f.store.insert_decision_by(
-        id,
-        &old.repo,
-        &question,
-        text,
-        by,
+    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+        task_id: id,
+        repo: &old.repo,
+        question: &question,
+        answer: text,
+        answered_by: by,
         citations,
-        old.question_to.as_deref(),
-    )?;
+        answered_for: old.question_to.as_deref(),
+    })?;
     let new_text = if by == "operator" {
         format!(
             "{}\n\nOperator's answer to a question from an earlier attempt: {text}",
@@ -1162,15 +1162,15 @@ pub fn withdraw(f: &Forge, id: i64, reason: &str, by: &str) -> Result<i64> {
     } else {
         old.reason.clone()
     };
-    let decision = f.store.insert_decision_by(
-        id,
-        &old.repo,
-        &question,
-        reason,
-        by,
-        "",
-        old.question_to.as_deref(),
-    )?;
+    let decision = f.store.insert_decision_by(crate::store::InsertDecisionBy {
+        task_id: id,
+        repo: &old.repo,
+        question: &question,
+        answer: reason,
+        answered_by: by,
+        citations: "",
+        answered_for: old.question_to.as_deref(),
+    })?;
     f.store.set_decision_retry(decision, id)?;
     f.report.emit(id, Event::TaskWithdrawn { reason });
     if let Some(iid) = old.initiative {

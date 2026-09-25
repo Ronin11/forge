@@ -619,17 +619,17 @@ async fn event_tick(f: &Forge, runs: &[TickRun]) -> Result<()> {
                 continue;
             }
             let at = ev["ts"].as_i64().unwrap_or_else(unix_now);
-            match job::start_event(
+            match job::start_event(crate::job::StartEvent {
                 f,
                 project,
-                name,
-                &run.landed_sha,
-                &run.wf,
-                run.source,
+                workflow: name,
+                landed_sha: &run.landed_sha,
+                wf: &run.wf,
+                source: run.source,
                 offset,
                 at,
-                &line,
-            ) {
+                input: &line,
+            }) {
                 Ok(Some(id)) => {
                     eprintln!("======== job {id} starting (event {kind} on {project}, {name})");
                 }
@@ -1363,7 +1363,16 @@ mod tests {
     /// token check: resolve the workflow, then start the job.
     async fn fire(f: &Forge, name: &str, key: &str, input: &str) -> Result<(i64, bool)> {
         let (workflow, wf, source, sha) = webhook_workflow(f, "demo", name).await?;
-        job::start_webhook(f, "demo", &workflow, &sha, &wf, source, key, input)
+        job::start_webhook(crate::job::StartWebhook {
+            f,
+            project: "demo",
+            workflow: &workflow,
+            landed_sha: &sha,
+            wf: &wf,
+            source,
+            trigger_ref: key,
+            input_text: input,
+        })
     }
 
     #[tokio::test]

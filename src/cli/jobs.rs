@@ -371,16 +371,16 @@ async fn job_fire(
     let input_text = String::from_utf8(bytes).context("the input file must be UTF-8")?;
     let (workflow, wf, source, landed_sha) =
         worker::webhook_workflow(&f, &project, &webhook).await?;
-    let (id, started) = crate::job::start_webhook(
-        &f,
-        &project,
-        &workflow,
-        &landed_sha,
-        &wf,
+    let (id, started) = crate::job::start_webhook(crate::job::StartWebhook {
+        f: &f,
+        project: &project,
+        workflow: &workflow,
+        landed_sha: &landed_sha,
+        wf: &wf,
         source,
-        &trigger_ref,
-        &input_text,
-    )?;
+        trigger_ref: &trigger_ref,
+        input_text: &input_text,
+    })?;
     if started {
         f.store.set_job_trust(id, level)?;
     } else {

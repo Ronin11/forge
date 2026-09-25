@@ -3,6 +3,62 @@
 //! first. Numbers Forge records come from the CLI's accounting or Forge's
 //! own clock, never from the model's prose.
 
+/// Arguments for `run_once`, kept together for one run once operation.
+struct RunOnce<'a> {
+    sandbox: Option<&'a Sandbox>,
+    worktree: &'a Path,
+    argv: &'a [String],
+    identity: &'a [(String, String)],
+    prompt: &'a str,
+    bin: &'a str,
+    timeout: Duration,
+    writes: bool,
+    early_ending: crate::config::EarlyEnding,
+    task_id: i64,
+    report: &'a Reporter,
+    log: &'a mut File,
+}
+
+/// Arguments for `run_with_relaunch`, kept together for one run with relaunch operation.
+struct RunWithRelaunch<'a> {
+    sandbox: Option<&'a Sandbox>,
+    worktree: &'a Path,
+    argv: &'a [String],
+    identity: &'a [(String, String)],
+    prompt: &'a str,
+    bin: &'a str,
+    timeout: Duration,
+    writes: bool,
+    early_ending: crate::config::EarlyEnding,
+    task_id: i64,
+    report: &'a Reporter,
+    log: &'a mut File,
+}
+
+/// Arguments for `run_json_phase`, kept together for one run json phase operation.
+struct RunJsonPhase<'a> {
+    l: &'a Launch<'a>,
+    argv: &'a [String],
+    extra_env: &'a [(String, String)],
+    start: &'a Instant,
+    log: &'a mut File,
+    out: &'a mut Outcome,
+    watch: &'a mut Watch,
+    apply: &'a mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send + 'a),
+}
+
+/// Arguments for `run_copilot_phase`, kept together for one run copilot phase operation.
+struct RunCopilotPhase<'a> {
+    l: &'a Launch<'a>,
+    argv: &'a [String],
+    extra_env: &'a [(String, String)],
+    start: &'a Instant,
+    log: &'a mut File,
+    out: &'a mut Outcome,
+    watch: &'a mut Watch,
+    tally: &'a mut CopilotTally,
+}
+
 use crate::report::{Event, Reporter};
 use crate::sandbox::Sandbox;
 use anyhow::{Context, Result};
@@ -512,21 +568,21 @@ fn is_transient_bwrap_failure(stderr: &str) -> bool {
 /// per-line `forge_ms` timestamps, which must measure from this attempt's
 /// own spawn, not from whenever a caller-side retry loop happens to notice
 /// it finished.
-#[allow(clippy::too_many_arguments)]
-async fn run_once(
-    sandbox: Option<&Sandbox>,
-    worktree: &Path,
-    argv: &[String],
-    identity: &[(String, String)],
-    prompt: &str,
-    bin: &str,
-    timeout: Duration,
-    writes: bool,
-    early_ending: crate::config::EarlyEnding,
-    task_id: i64,
-    report: &Reporter,
-    log: &mut File,
-) -> Result<(Outcome, String)> {
+async fn run_once(args: RunOnce<'_>) -> Result<(Outcome, String)> {
+    let RunOnce {
+        sandbox,
+        worktree,
+        argv,
+        identity,
+        prompt,
+        bin,
+        timeout,
+        writes,
+        early_ending,
+        task_id,
+        report,
+        log,
+    } = args;
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(sandbox, worktree, argv, identity));
         c.stdin(Stdio::piped())
@@ -717,25 +773,25 @@ async fn run_once(
 /// failure, not an attempt, so it gets a few silent relaunches rather than
 /// burning one of the attempt's own retries. Any other quick exit (a real
 /// crash, a fast fake in tests) is returned as is.
-#[allow(clippy::too_many_arguments)]
-async fn run_with_relaunch(
-    sandbox: Option<&Sandbox>,
-    worktree: &Path,
-    argv: &[String],
-    identity: &[(String, String)],
-    prompt: &str,
-    bin: &str,
-    timeout: Duration,
-    writes: bool,
-    early_ending: crate::config::EarlyEnding,
-    task_id: i64,
-    report: &Reporter,
-    log: &mut File,
-) -> Result<(Outcome, String)> {
+async fn run_with_relaunch(args: RunWithRelaunch<'_>) -> Result<(Outcome, String)> {
+    let RunWithRelaunch {
+        sandbox,
+        worktree,
+        argv,
+        identity,
+        prompt,
+        bin,
+        timeout,
+        writes,
+        early_ending,
+        task_id,
+        report,
+        log,
+    } = args;
     const MAX_RELAUNCHES: u32 = 3;
     let mut relaunches = 0u32;
     loop {
-        let (out, stderr_text) = run_once(
+        let (out, stderr_text) = run_once(RunOnce {
             sandbox,
             worktree,
             argv,
@@ -748,7 +804,7 @@ async fn run_with_relaunch(
             task_id,
             report,
             log,
-        )
+        })
         .await?;
 
         let quick_exit = !out.timed_out && out.wall_ms < 2_000;
@@ -885,20 +941,20 @@ async fn run_claude(l: Launch<'_>) -> Result<Outcome> {
         serde_json::to_string(l.prompt)?
     )?;
 
-    let (mut out, stderr_text) = run_with_relaunch(
-        l.sandbox,
-        l.worktree,
-        &argv,
-        &identity,
-        l.prompt,
-        &bin,
-        l.timeout,
-        l.writes,
-        l.early_ending,
-        l.task_id,
-        l.report,
-        &mut log,
-    )
+    let (mut out, stderr_text) = run_with_relaunch(RunWithRelaunch {
+        sandbox: l.sandbox,
+        worktree: l.worktree,
+        argv: &argv,
+        identity: &identity,
+        prompt: l.prompt,
+        bin: &bin,
+        timeout: l.timeout,
+        writes: l.writes,
+        early_ending: l.early_ending,
+        task_id: l.task_id,
+        report: l.report,
+        log: &mut log,
+    })
     .await?;
 
     if !stderr_text.trim().is_empty() {
@@ -1467,17 +1523,17 @@ before finishing, matching the schema you were given exactly.";
 /// which ends the phase. Returns the exit code, and whether this phase
 /// itself timed out; the caller decides what either means for the attempt
 /// as a whole.
-#[allow(clippy::too_many_arguments)] // one launch, its stream's sinks, and the parser: a struct would only rename the list
-async fn run_json_phase(
-    l: &Launch<'_>,
-    argv: &[String],
-    extra_env: &[(String, String)],
-    start: &Instant,
-    log: &mut File,
-    out: &mut Outcome,
-    watch: &mut Watch,
-    apply: &mut (dyn FnMut(&Value, &mut Outcome, &mut Watch) -> Option<String> + Send),
-) -> Result<(Option<i32>, bool, String)> {
+async fn run_json_phase(args: RunJsonPhase<'_>) -> Result<(Option<i32>, bool, String)> {
+    let RunJsonPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+        apply,
+    } = args;
     let mut child = spawn_retrying_etxtbsy(|| {
         let mut c = Command::from(command_in(l.sandbox, l.worktree, argv, extra_env));
         c.stdin(Stdio::null())
@@ -1567,7 +1623,6 @@ async fn run_json_phase(
 
 /// A codex `exec` phase: `run_json_phase` with the codex frame parser, each
 /// command execution reported as a tool call as it starts.
-#[allow(clippy::too_many_arguments)] // see run_json_phase
 async fn run_codex_phase(
     l: &Launch<'_>,
     argv: &[String],
@@ -1585,7 +1640,17 @@ async fn run_codex_phase(
         }
         apply_codex_event(v, out, watch, writes)
     };
-    run_json_phase(l, argv, extra_env, start, log, out, watch, &mut apply).await
+    run_json_phase(RunJsonPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+        apply: &mut apply,
+    })
+    .await
 }
 
 /// The codex-cli backend, run in two phases. A weaker model asked to commit
@@ -1952,17 +2017,17 @@ fn apply_copilot_event(
 
 /// A copilot phase: `run_json_phase` with the copilot frame parser, each
 /// tool call reported as it starts.
-#[allow(clippy::too_many_arguments)] // see run_json_phase
-async fn run_copilot_phase(
-    l: &Launch<'_>,
-    argv: &[String],
-    extra_env: &[(String, String)],
-    start: &Instant,
-    log: &mut File,
-    out: &mut Outcome,
-    watch: &mut Watch,
-    tally: &mut CopilotTally,
-) -> Result<(Option<i32>, bool, String)> {
+async fn run_copilot_phase(args: RunCopilotPhase<'_>) -> Result<(Option<i32>, bool, String)> {
+    let RunCopilotPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+        tally,
+    } = args;
     let (report, task_id, writes) = (l.report, l.task_id, l.writes);
     let mut apply = |v: &Value, out: &mut Outcome, watch: &mut Watch| {
         if v["type"] == "tool.execution_start" {
@@ -1971,7 +2036,17 @@ async fn run_copilot_phase(
         }
         apply_copilot_event(v, out, watch, writes, tally)
     };
-    run_json_phase(l, argv, extra_env, start, log, out, watch, &mut apply).await
+    run_json_phase(RunJsonPhase {
+        l,
+        argv,
+        extra_env,
+        start,
+        log,
+        out,
+        watch,
+        apply: &mut apply,
+    })
+    .await
 }
 
 /// The copilot-cli backend (GitHub Copilot CLI, `copilot -p`), run in the
@@ -2017,9 +2092,16 @@ async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
     let mut tally = CopilotTally::default();
 
     let argv1 = copilot_argv(&bin, &l, l.resume, l.prompt);
-    let (exit1, timed_out1, mut stderr_text) = run_copilot_phase(
-        &l, &argv1, &extra_env, &start, &mut log, &mut out, &mut watch, &mut tally,
-    )
+    let (exit1, timed_out1, mut stderr_text) = run_copilot_phase(RunCopilotPhase {
+        l: &l,
+        argv: &argv1,
+        extra_env: &extra_env,
+        start: &start,
+        log: &mut log,
+        out: &mut out,
+        watch: &mut watch,
+        tally: &mut tally,
+    })
     .await?;
     out.exit_code = exit1;
     out.timed_out = timed_out1;
@@ -2042,9 +2124,16 @@ async fn run_copilot(l: Launch<'_>) -> Result<Outcome> {
         );
         let prompt2 = format!("{COPILOT_REPORT_PROMPT}{}", l.schema);
         let argv2 = copilot_argv(&bin, &l, Some(&session), &prompt2);
-        let (exit2, timed_out2, stderr2) = run_copilot_phase(
-            &l, &argv2, &extra_env, &start, &mut log, &mut out, &mut watch, &mut tally,
-        )
+        let (exit2, timed_out2, stderr2) = run_copilot_phase(RunCopilotPhase {
+            l: &l,
+            argv: &argv2,
+            extra_env: &extra_env,
+            start: &start,
+            log: &mut log,
+            out: &mut out,
+            watch: &mut watch,
+            tally: &mut tally,
+        })
         .await?;
         out.exit_code = exit2;
         out.timed_out = out.timed_out || timed_out2;
@@ -2386,20 +2475,20 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut log = tempfile::NamedTempFile::new().unwrap();
         let report = crate::report::Reporter::new(false, None);
-        run_with_relaunch(
-            None,
-            dir,
-            &[script.to_string_lossy().to_string()],
-            &[],
-            "prompt",
-            "agent.sh",
-            Duration::from_secs(5),
-            true,
-            thresholds(0, 0, 0, 0),
-            1,
-            &report,
-            log.as_file_mut(),
-        )
+        run_with_relaunch(RunWithRelaunch {
+            sandbox: None,
+            worktree: dir,
+            argv: &[script.to_string_lossy().to_string()],
+            identity: &[],
+            prompt: "prompt",
+            bin: "agent.sh",
+            timeout: Duration::from_secs(5),
+            writes: true,
+            early_ending: thresholds(0, 0, 0, 0),
+            task_id: 1,
+            report: &report,
+            log: log.as_file_mut(),
+        })
         .await
         .unwrap()
     }
@@ -2814,6 +2903,7 @@ fi\n"
         assert_eq!(structured["summary"], "done");
     }
 
+    // Reason: test fixture helper keeps independently varied inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn test_launch<'a>(
         worktree: &'a Path,
@@ -3015,6 +3105,7 @@ fi\n"
         }
     }
 
+    // Reason: test fixture helper keeps independently varied inputs explicit.
     #[allow(clippy::too_many_arguments)]
     fn chat_launch<'a>(
         worktree: &'a Path,

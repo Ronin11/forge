@@ -2,6 +2,7 @@ use super::*;
 
 /// Fills in every `FinishAttempt` field the `role_stats` tests never
 /// vary, so each test states only what it means to.
+// Reason: test fixture helper keeps independently varied inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn finish_attempt(
     s: &Store,
@@ -238,8 +239,16 @@ fn human_attention_and_time_to_live_count_hand_landing_withdrawal_and_deploy() {
     a.landed_sha = "asha".into();
     a.landed_at = Some(1100);
     let a = insert(a);
-    s.insert_decision_by(a.id, "r", "q", "operator answered", "operator", "", None)
-        .unwrap();
+    s.insert_decision_by(crate::store::InsertDecisionBy {
+        task_id: a.id,
+        repo: "r",
+        question: "q",
+        answer: "operator answered",
+        answered_by: "operator",
+        citations: "",
+        answered_for: None,
+    })
+    .unwrap();
 
     // Task B: landed by a human's `forge land`, then deployed.
     let mut b = base(2000);
@@ -251,9 +260,18 @@ fn human_attention_and_time_to_live_count_hand_landing_withdrawal_and_deploy() {
     let deploy_id = s
         .start_deploy("proj", "prod", "bsha", 2500, Some(b.id))
         .unwrap();
-    s.finish_deploy(
-        deploy_id, 2600, true, "ok", None, "", None, None, None, None,
-    )
+    s.finish_deploy(crate::store::FinishDeploy {
+        id: deploy_id,
+        at: 2600,
+        check_ok: true,
+        check_output: "ok",
+        rolled_back_to: None,
+        reason: "",
+        smoke_ok: None,
+        smoke_json: None,
+        look_ok: None,
+        look_json: None,
+    })
     .unwrap();
 
     // Task C: withdrawn, never landed.
@@ -858,6 +876,7 @@ fn factor_stats_recovers_a_planted_provider_effect_and_widens_a_thin_levels_inte
 
 /// Fills in every `FinishAttempt` field the three graph-overlay query
 /// tests below never vary.
+// Reason: test fixture helper keeps independently varied inputs explicit.
 #[allow(clippy::too_many_arguments)]
 fn finish_overlay_attempt(
     s: &Store,
